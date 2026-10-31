@@ -20,7 +20,7 @@ export type { ZoomRendererOptions, FrameStats, FlyOptions } from "./renderer";
 export { easeInOutCubic, flyDuration, interpolateCamera } from "./camera-anim";
 export { focusChain, focusId } from "./focus-path";
 
-export { buildScene, childNodes } from "./scene";
+export { buildScene, childNodes, testLayerIds } from "./scene";
 export type { ZoomScene } from "./scene";
 
 export {
@@ -82,7 +82,7 @@ export {
 export { composeRect, computeWorldRects, perimeterPoint, rectContains } from "./geometry";
 
 export { gridDimensions, packLayout } from "./layout";
-export type { LayoutChild, PackLayoutOptions } from "./layout";
+export type { LayoutChild, LayoutRelation, PackLayoutOptions } from "./layout";
 
 export {
   controlPoints,

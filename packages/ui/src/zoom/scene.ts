@@ -28,7 +28,7 @@ import {
   buildExternalLanes,
   type ExternalLane,
   type LaneCache,
-  railContent,
+  bandContent,
 } from "./externals";
 import { type PackCache, computeWorldRects, type WorldLayoutOptions } from "./geometry";
 import type { ZoomContainer, ZoomExternal, ZoomMap, ZoomNode, ZoomRelation } from "./types";
@@ -45,7 +45,7 @@ export interface ZoomScene {
    */
   drawChildren: Map<string, readonly ZoomNode[]>;
   /**
-   * Each parent's external systems: the rail its children leave room for, the
+   * Each parent's external systems: the band its children leave room for, the
    * dashed cards in it and the routed connectors (see `externals.ts`).
    */
   externalLanes: Map<string, ExternalLane>;
@@ -58,6 +58,8 @@ interface MapDerived {
   nodes: Map<string, ZoomNode>;
   externals: Map<string, ZoomExternal>;
   extBuckets: ReturnType<typeof bucketExternalRelations>;
+  /** Every relation per parent, for the layout to rank siblings by. */
+  layoutRelations: Map<string, ZoomRelation[]>;
   /** Unset until the first layout: they need to know which nodes are laid out. */
   relationsByParent?: Map<string, ZoomRelation[]>;
   drawChildren?: Map<string, readonly ZoomNode[]>;
@@ -71,10 +73,23 @@ const derivedByMap = new WeakMap<ZoomMap, MapDerived>();
 function deriveMap(map: ZoomMap): MapDerived {
   const nodes = new Map<string, ZoomNode>();
   for (const n of map.nodes) nodes.set(n.id, n);
+  const layoutRelations = new Map<string, ZoomRelation[]>();
+  for (const r of map.relations) {
+    const bucket = layoutRelations.get(r.parent_id);
+    if (bucket) bucket.push(r);
+    else layoutRelations.set(r.parent_id, [r]);
+  }
   const externals = new Map<string, ZoomExternal>();
   for (const e of map.externals ?? []) externals.set(e.id, e);
   const extBuckets = bucketExternalRelations(map.external_relations ?? [], nodes, externals);
-  return { nodes, externals, extBuckets, packs: new Map(), lanes: new Map() };
+  return {
+    nodes,
+    externals,
+    extBuckets,
+    layoutRelations,
+    packs: new Map(),
+    lanes: new Map(),
+  };
 }
 
 /**
@@ -98,8 +113,10 @@ export function buildScene(map: ZoomMap, layout: WorldLayoutOptions = {}): ZoomS
     nodes,
     map.root_id,
     layout,
-    (id, r) => (extBuckets.has(id) ? railContent(r) : r),
+    (id, r) => (extBuckets.has(id) ? bandContent(r) : r),
     shared ? d.packs : undefined,
+    d.layoutRelations,
+    testLayerIds(map),
   );
   // Which nodes are laid out does not depend on the root shape, so these hold
   // for every layout of the map.
@@ -118,6 +135,42 @@ export function buildScene(map: ZoomMap, layout: WorldLayoutOptions = {}): ZoomS
     externalLanes: buildExternalLanes(extBuckets, externals, worldRects, shared ? d.lanes : undefined),
     laidOutCount: worldRects.size,
   };
+}
+
+const testLayersByMap = new WeakMap<ZoomMap, ReadonlySet<string>>();
+
+/**
+ * Layers most of whose files are tests: the layout sets them aside in a side
+ * column (see `packLayout`), and the host offers "Show test links" only when
+ * there is one. Only files carry `is_test`; a curated test layer is known by
+ * what it holds, not by its (model-written) name. Same rule as the links
+ * filter's `isTestSubtree`. Memoized per map.
+ */
+export function testLayerIds(map: ZoomMap): ReadonlySet<string> {
+  let out = testLayersByMap.get(map);
+  if (out) return out;
+  const nodes = new Map(map.nodes.map((n) => [n.id, n] as const));
+  const count = (id: string): [number, number] => {
+    const n = nodes.get(id);
+    if (!n) return [0, 0];
+    if (n.kind === "file") return [1, n.is_test ? 1 : 0];
+    let files = 0;
+    let tests = 0;
+    for (const c of n.children) {
+      const [f, t] = count(c);
+      files += f;
+      tests += t;
+    }
+    return [files, tests];
+  };
+  const ids = new Set<string>();
+  for (const n of map.nodes) {
+    if (n.kind !== "layer") continue;
+    const [files, tests] = count(n.id);
+    if (tests * 2 > files) ids.add(n.id);
+  }
+  testLayersByMap.set(map, (out = ids));
+  return out;
 }
 
 /**

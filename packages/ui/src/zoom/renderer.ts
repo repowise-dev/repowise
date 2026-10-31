@@ -103,6 +103,7 @@ export class ZoomRenderer {
   private readonly pointer = new PointerPick();
   private relationVerbs: ReadonlySet<string> | null = null;
   private highlightIds: ReadonlySet<string> | null = null;
+  private showTestLinks = false;
   /** Until when the frame drops shadows, texture and relations (a pan). */
   private panUntil = 0;
   /** Until when the frame drops only shadows (zoom, keys). */
@@ -208,6 +209,13 @@ export class ZoomRenderer {
   setHighlight(ids: ReadonlySet<string> | null): void {
     if (ids === this.highlightIds) return;
     this.highlightIds = ids;
+    this.invalidate();
+  }
+
+  /** Draw the test layer's relations too (see `DrawOptions.showTestLinks`). */
+  setShowTestLinks(show: boolean): void {
+    if (show === this.showTestLinks) return;
+    this.showTestLinks = show;
     this.invalidate();
   }
 
@@ -414,6 +422,7 @@ export class ZoomRenderer {
       paper: this.paper,
       relationVerbs: this.relationVerbs,
       highlightIds: this.highlightIds,
+      showTestLinks: this.showTestLinks,
       lanes: this.focus.lanes,
     }, this.lastStats);
     if (this.onStats) {

@@ -29,7 +29,7 @@ import { useTranslations } from "next-intl";
 import { ScanSearch } from "lucide-react";
 import { PageFrame, PAGE_SHELL_TITLE } from "@repowise-dev/ui/shared/page-shell";
 import { ZoomCanvas } from "@repowise-dev/ui/zoom";
-import { indexRelationsByNode, summarizeRelations } from "@repowise-dev/ui/zoom";
+import { indexRelationsByNode, summarizeRelations, testLayerIds } from "@repowise-dev/ui/zoom";
 import type { ZoomCanvasHandle, ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
 import { useZoomMap } from "@/lib/hooks/use-graph";
 import { ZoomBreadcrumb } from "@/components/zoom/zoom-breadcrumb";
@@ -84,6 +84,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
   const [selected, setSelected] = useState<ZoomNode | null>(null);
   const [relationVerbs, setRelationVerbs] = useState<ReadonlySet<string> | null>(null);
   const [container, setContainer] = useState<string | null>(null);
+  const [showTestLinks, setShowTestLinks] = useState(false);
 
   // Snapshot the initial URL focus once so later URL writes don't re-trigger a jump.
   const initialFocus = useRef(focusParam ?? undefined).current;
@@ -124,6 +125,8 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     () => summarizeRelations(zoomMap?.relations ?? EMPTY_RELATIONS).verbs,
     [zoomMap],
   );
+  // The toggle only means something when a test layer was set aside.
+  const hasTestLayer = useMemo(() => (zoomMap ? testLayerIds(zoomMap).size > 0 : false), [zoomMap]);
   const { c4, containers, highlightIds, hasExternals } = useZoomC4(zoomMap, container);
   const canvasLabels = useZoomCanvasLabels();
   const showStats = process.env.NODE_ENV === "development";
@@ -156,6 +159,17 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
             }}
           />
         )}
+        {ready && hasTestLayer && (
+          <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+            <input
+              type="checkbox"
+              checked={showTestLinks}
+              onChange={(event) => setShowTestLinks(event.target.checked)}
+              className="h-4 w-4 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
+            />
+            {t("showTestLinks")}
+          </label>
+        )}
         {/* The export has its own endpoint and does not need the zoom map, but
             a map that failed to load is the cheapest signal that this repo has
             nothing indexed to export either. */}
@@ -178,6 +192,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
             showStats={showStats}
             relationVerbs={relationVerbs}
             highlightIds={highlightIds}
+            showTestLinks={showTestLinks}
             relationsByNode={relationsByNode}
             selectionInsetRight={ZOOM_SHEET_INSET_PX}
             minimapClassName="bottom-14 left-3"

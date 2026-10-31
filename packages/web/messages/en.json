@@ -624,7 +624,8 @@
       "loading": "Building the knowledge graph…",
       "error": "Could not load the knowledge graph for this repository.",
       "errorHint": "The server did not return a map. Check that the repository is indexed and the API is running, then try again.",
-      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds."
+      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds.",
+      "showTestLinks": "Show test links"
     },
     "refactoring": {
       "title": "Refactoring",
