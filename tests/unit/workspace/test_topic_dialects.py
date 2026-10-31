@@ -400,8 +400,6 @@ class TestNats:
     @pytest.mark.parametrize(
         ("rel", "src"),
         [
-            ("mqtt.js", "const mqtt = require('mqtt');\nclient.publish('home/kitchen/temp', v);\nclient.subscribe('home/#');\n"),
-            ("paho.py", "import paho.mqtt.client as mqtt\nclient.publish('home/kitchen/temp', v)\nclient.subscribe('home/#')\n"),
             ("ably.ts", "import * as Ably from 'ably';\nclient.publish('orders', d);\n"),
             ("main.go", 'nc.Publish("events.created", d)\n'),
         ],
@@ -425,6 +423,58 @@ class TestNats:
         src = _NATS_GO + 'nc.Subscribe("events.created", h)\n'
         c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert "pattern" not in c.meta
+
+
+class TestMqtt:
+    @pytest.mark.parametrize(
+        ("rel", "src"),
+        [
+            (
+                "mqtt.js",
+                "const mqtt = require('mqtt');\nclient.publish('home/kitchen/temp', v);\nclient.subscribe('home/#');\n",
+            ),
+            (
+                "paho.py",
+                "import paho.mqtt.client as mqtt\nclient.publish('home/kitchen/temp', v)\nclient.subscribe('home/#')\n",
+            ),
+            (
+                "paho.java",
+                'import org.eclipse.paho.client.mqttv3.MqttClient;\nclient.publish("home/kitchen/temp", v);\nclient.subscribe("home/#");\n',
+            ),
+            (
+                "hivemq.java",
+                'import com.hivemq.client.mqtt.MqttClient;\nclient.topic("home/kitchen/temp");\nclient.topicFilter("home/#");\n',
+            ),
+            (
+                "app.cs",
+                'using MQTTnet;\nbuilder.WithTopic("home/kitchen/temp");\nclient.SubscribeAsync("home/#");\n',
+            ),
+        ],
+    )
+    def test_mqtt_clients(self, tmp_path: Path, rel: str, src: str) -> None:
+        rows = _extract(tmp_path, rel, src)
+        pub = _one(rows, "provider")
+        sub = _one(rows, "consumer")
+        assert pub.contract_id == "topic::home/kitchen/temp"
+        assert pub.meta["broker"] == "mqtt"
+        assert "pattern" not in pub.meta
+        assert sub.contract_id == "topic::home/#"
+        assert sub.meta["broker"] == "mqtt"
+        assert sub.meta["pattern"] == "mqtt"
+
+    def test_nothing_without_an_mqtt_client(self, tmp_path: Path) -> None:
+        src = "client.publish('home/kitchen/temp', v);\nclient.subscribe('home/#');\n"
+        assert _extract(tmp_path, "plain.js", src) == []
+
+    def test_plain_topic_is_not_a_pattern(self, tmp_path: Path) -> None:
+        src = "const mqtt = require('mqtt');\nclient.subscribe('home/kitchen/temp');\n"
+        sub = _one(_extract(tmp_path, "mqtt.js", src), "consumer")
+        assert "pattern" not in sub.meta
+
+    def test_single_level_wildcard_is_a_pattern(self, tmp_path: Path) -> None:
+        src = "const mqtt = require('mqtt');\nclient.subscribe('home/+/temp');\n"
+        sub = _one(_extract(tmp_path, "mqtt.js", src), "consumer")
+        assert sub.meta["pattern"] == "mqtt"
 
 
 class TestKafkaPattern:
