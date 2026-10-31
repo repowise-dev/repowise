@@ -3478,6 +3478,7 @@ export interface PeriodHealthSummaryResponse {
   findings_introduced: number;
   findings_worsened: number;
   net_findings: number;
+  categories?: Record<string, number> | null;
 }
 
 /** Result of pinning a file's doc (issue #812). */

@@ -1,26 +1,27 @@
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
-import {
-  PeriodHealthHeadline,
-  type PeriodHealthCopy,
-} from "@repowise-dev/ui/commits/period-health-headline";
+import { PeriodLede, type PeriodLedeCopy } from "@repowise-dev/ui/commits/period-lede";
 import { RecentWins, type RecentWinsCopy } from "@repowise-dev/ui/commits/recent-wins";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import type { HistoryFilterValue } from "@repowise-dev/ui/commits/history-filters";
 import type { PeriodHealthSummaryResponse, WinsResponse } from "@repowise-dev/types/history";
 import { effectiveWindow } from "@/lib/commit-filters";
 
-async function headlineCopy(): Promise<PeriodHealthCopy> {
-  const t = await getTranslations("views.commits.headline");
+async function ledeCopy(): Promise<PeriodLedeCopy> {
+  const t = await getTranslations("views.commits.periodLede");
   return {
-    unit: (r) => t("unit", { n: r.better }),
-    good: (r) => t("good", { better: r.better, resolved: r.findingsBetter }),
-    mixed: (r) => t("mixed", { better: r.better, worse: r.worse, both: r.both, neutral: r.neutral }),
-    quiet: (r) => t("quiet", { analysed: r.analysed }),
-    catchingUpUnit: (r) => t("catchingUpUnit", { total: r.total }),
-    catchingUp: () => t("catchingUp"),
+    unit: (r) => t("unit", { n: r.total }),
+    mix: (r, top, second) =>
+      second && r.second
+        ? t("mixTwo", { topShare: r.top?.share ?? 0, top, second, secondShare: r.second.share })
+        : t("mix", { topShare: r.top?.share ?? 0, top }),
+    better: (r) => t("better", { resolved: r.health.findingsBetter, worse: r.health.findingsWorse }),
+    worse: (r) => t("worse", { resolved: r.health.findingsBetter, worse: r.health.findingsWorse }),
+    flat: (r) => (r.health.findingsBetter === 0 ? t("flatNone") : t("flat", { resolved: r.health.findingsBetter })),
+    notable: (subject, resolved) => t("notable", { subject, resolved }),
+    coverage: (r) => t("coverage", { analysed: r.health.analysed, total: r.total }),
     empty: () => t("empty"),
-    unscanned: (r) => t("unscanned", { n: r.unscanned }),
+    category: (id) => (t.has(`categories.${id}`) ? t(`categories.${id}`) : id),
   };
 }
 
@@ -42,12 +43,22 @@ async function winsCopy(): Promise<RecentWinsCopy> {
         ? t("refactorsWhy", { symbol, before, after })
         : t("refactorsWhyPlain", { symbol }),
     none: t("none"),
+    summary: (w) =>
+      [
+        w.findings_resolved.count > 0 && t("summaryResolved", { n: w.findings_resolved.count }),
+        w.files_improved.count > 0 && t("summaryHealthier", { n: w.files_improved.count }),
+        w.refactorings_landed.count > 0 && t("summaryRefactored", { n: w.refactorings_landed.count }),
+      ]
+        .filter(Boolean)
+        .join(", "),
   };
 }
 
 /**
- * The commit view's lede: the period headline (improvements first) beside the
- * window's wins. Both describe the selected window; the headline also follows
+ * The commit view's lede: what happened in the window (volume, the dominant
+ * kind of work, which way health moved, the notable change) beside the
+ * window's wins, which sit to its right on wide screens and under it on
+ * narrow ones. Both describe the selected window; the lede also follows
  * author, area and hotspots, the wins follow the author only, and their scope
  * line says so.
  */
@@ -72,9 +83,23 @@ export async function CommitsPeriod({
 
   return (
     <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10">
-      {summary ? <PeriodHealthHeadline summary={summary} period={period} copy={await headlineCopy()} /> : <div />}
+      {summary ? (
+        <PeriodLede
+          summary={summary}
+          // The wins follow the window and author only; under an area or
+          // hotspot filter their top commit may sit outside what the lede counts.
+          wins={filters.area || filters.hotspots ? null : wins}
+          period={period}
+          commitHref={(sha) => `${base}/commits?commit=${sha}`}
+          LinkComponent={Link}
+          copy={await ledeCopy()}
+        />
+      ) : (
+        <div />
+      )}
       {wins && (
         <RecentWins
+          collapsible
           wins={wins}
           scope={scope}
           LinkComponent={Link}

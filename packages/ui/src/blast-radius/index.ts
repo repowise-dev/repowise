@@ -15,3 +15,4 @@ export * from "./blast-map-model";
 export * from "./blast-radius-map";
 export * from "./blast-radius-verdict";
 export * from "./change-picker";
+export * from "./review-nudge";

@@ -541,7 +541,9 @@ async def get_commit_health_summary(
     neither, and the findings behind it; improvements first."""
     where = params.commit_filter(stamp=await current_stamp(session, repo_id))
     summary = await commit_period_summary(session, repo_id, where)
-    return period_response(summary, params.since, params.until)
+    response = period_response(summary, params.since, params.until)
+    response.categories = await crud.count_commit_categories(session, repo_id, where)
+    return response
 
 
 _HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 supporting diff-shape score

@@ -131,6 +131,7 @@
     }
   },
   "nav": {
+    "review": "Review",
     "dashboard": "Dashboard",
     "settings": "Settings",
     "overview": "Overview",
@@ -159,6 +160,7 @@
     "security": "Security"
   },
   "breadcrumb": {
+    "review": "Review",
     "overview": "Overview",
     "docs": "Docs",
     "chat": "Chat",
@@ -265,6 +267,10 @@
     "allCurrent": "Every index is current with its checkout. {parts}"
   },
   "views": {
+    "review": {
+      "title": "Review",
+      "description": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask."
+    },
     "files": {
       "title": "Files",
       "description": "Drill the map to see how the tree is shaped and where health is thin, then filter the table to find a specific file."
@@ -274,6 +280,28 @@
       "description": "The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
     },
     "commits": {
+      "periodLede": {
+        "better": "Health moved the right way: {resolved, plural, one {# finding} other {# findings}} resolved or improved, {worse, number} added or worsened.",
+        "worse": "Health slipped: {worse, plural, one {# finding} other {# findings}} added or worsened, {resolved, number} resolved or improved.",
+        "flatNone": "No analysed commit changed a health finding.",
+        "flat": "Health held even: {resolved, plural, one {# finding} other {# findings}} resolved or improved and as many added or worsened.",
+        "mix": "{topShare}% were {top}.",
+        "mixTwo": "{topShare}% were {top}, then {second} at {secondShare}%.",
+        "notable": "Biggest single cleanup: {subject}, {resolved, plural, one {# finding} other {# findings}} resolved.",
+        "coverage": "Health counts cover the {analysed, number} of {total, number} commits the current analyzer has read; the rest fill in as updates run.",
+        "unit": "{n, plural, one {commit} other {commits}}",
+        "empty": "No commits in this window.",
+        "categories": {
+          "feature": "features",
+          "fix": "fixes",
+          "refactor": "refactors",
+          "docs": "docs changes",
+          "test": "test changes",
+          "deps": "dependency updates",
+          "chore": "chores",
+          "other": "other work"
+        }
+      },
       "emptyTitle": "No scored commits yet",
       "emptyAction": "Go to overview",
       "title": "Commits",
@@ -284,12 +312,9 @@
       "changeRisk": "Change risk",
       "evolutionTitle": "How the work changed shape",
       "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show.",
-      "viewLabel": "History view",
+      "groupLabel": "Group history by",
       "viewByChange": "By change",
       "viewByCommit": "By commit",
-      "viewEvents": "Events",
-      "viewReview": "Review a change",
-      "reviewDescription": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask.",
       "listTitle": "Commit history",
       "listDescription": "Newest first, each led by what it did to code health. The filters narrow the whole repository, not the page.",
       "hotspotMark": "Hotspot",
@@ -311,6 +336,9 @@
         "catchingUp": "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis."
       },
       "wins": {
+        "summaryResolved": "{n} resolved",
+        "summaryHealthier": "{n} healthier",
+        "summaryRefactored": "{n} refactored",
         "title": "Recent wins",
         "wholeRepo": "whole repository",
         "findingsLabel": "Findings resolved",
@@ -957,36 +985,6 @@
       "breadcrumb": "Code Health",
       "notFoundTitle": "Module not found",
       "notFoundDescription": "The requested module path doesn't exist in this repository's index."
-    },
-    "events": {
-      "title": "Events",
-      "description": "What moved between two index runs in a row: owners, bus factor, hotspots, contracts, decisions, dead code and test reach, per component.",
-      "repository": "Whole repository",
-      "count": "{count, plural, one {# event} other {# events}}, newest first.",
-      "emptyTitle": "No events yet",
-      "baselineOnly": "{runs, plural, =0 {No component snapshot is stored yet.} one {One component snapshot is stored, the baseline.} other {# component snapshots are stored.}} Events are what moved between two index runs in a row, so they start after the next `repowise update` on a new commit.",
-      "nothingMoved": "Nothing crossed a threshold across {runs} stored component snapshots.",
-      "noMatch": "No event matches these filters across {runs} stored component snapshots.",
-      "loadErrorTitle": "Could not load events",
-      "loadErrorBody": "The event list could not be read from the server. Reload the page to try again.",
-      "kinds": {
-        "ownership_shift": "Declared owner changed",
-        "owner_inactive": "Main owners stopped changing it",
-        "bus_factor_drop": "Bus factor fell",
-        "new_hotspot": "Files became hotspots",
-        "contract_added": "Provided contract appeared",
-        "contract_broken": "Contract with consumers disappeared",
-        "decision_stale": "Governing decision went stale",
-        "dead_code_growth": "Dead-code findings grew",
-        "test_reach_drop": "Test reach fell"
-      },
-      "severities": {
-        "critical": "critical",
-        "high": "high",
-        "medium": "medium",
-        "low": "low",
-        "info": "info"
-      }
     },
     "security": {
       "title": "Security",
@@ -1820,6 +1818,28 @@
   },
   "commits": {
     "detail": {
+      "events": {
+        "title": "Flagged when this commit was indexed",
+        "description": "What the index run at this commit found had moved since the run before it.",
+        "repository": "Whole repository",
+        "kinds": {
+          "ownership_shift": "Declared owner changed",
+          "owner_inactive": "Main owners stopped changing it",
+          "bus_factor_drop": "Bus factor fell",
+          "new_hotspot": "Files became hotspots",
+          "contract_added": "Provided contract appeared",
+          "contract_broken": "Contract with consumers disappeared",
+          "decision_stale": "Governing decision went stale",
+          "dead_code_growth": "Dead-code findings grew",
+          "test_reach_drop": "Test reach fell"
+        },
+        "severities": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low"
+        }
+      },
       "title": "Review this commit",
       "fixPromptLabel": "Copy prompt to fix what this commit made worse",
       "fixPromptTitle": "Fix what this commit made worse",

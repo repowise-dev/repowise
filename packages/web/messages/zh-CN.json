@@ -131,6 +131,7 @@
     }
   },
   "nav": {
+    "review": "审查",
     "dashboard": "仪表盘",
     "settings": "设置",
     "overview": "概览",
@@ -159,6 +160,7 @@
     "security": "安全"
   },
   "breadcrumb": {
+    "review": "审查",
     "overview": "概览",
     "docs": "文档",
     "chat": "对话",
@@ -265,6 +267,10 @@
     "allCurrent": "所有索引都与其检出保持同步。{parts}"
   },
   "views": {
+    "review": {
+      "title": "审查",
+      "description": "选择一次变更（未提交的改动、分支或提交），查看它影响到哪些代码、应先查看哪些文件、该运行哪些测试以及该找谁审查。"
+    },
     "files": {
       "title": "文件",
       "description": "下钻这幅地图，看清目录树的形状以及健康度薄弱的位置，再筛选表格定位具体文件。"
@@ -274,6 +280,28 @@
       "description": "这些是这个代码库在其他地方看不到的信息：它有多大、从何时开始、工作发生在什么时间，以及它保持的纪录。"
     },
     "commits": {
+      "periodLede": {
+        "better": "健康状况向好：解决或改善了 {resolved} 个发现，新增或恶化 {worse} 个。",
+        "worse": "健康状况下滑：新增或恶化 {worse} 个发现，解决或改善了 {resolved} 个。",
+        "flatNone": "已分析的提交没有改变任何健康发现。",
+        "flat": "健康状况持平：解决或改善了 {resolved} 个发现，新增或恶化的数量相同。",
+        "mix": "{topShare}% 是{top}。",
+        "mixTwo": "{topShare}% 是{top}，其次是{second}，占 {secondShare}%。",
+        "notable": "最大的一次清理：{subject}，解决了 {resolved} 个发现。",
+        "coverage": "健康统计覆盖当前分析器已读取的 {analysed} / {total} 个提交，其余会随更新补齐。",
+        "unit": "个提交",
+        "empty": "此时间段内没有提交。",
+        "categories": {
+          "feature": "功能",
+          "fix": "修复",
+          "refactor": "重构",
+          "docs": "文档改动",
+          "test": "测试改动",
+          "deps": "依赖更新",
+          "chore": "杂项",
+          "other": "其他工作"
+        }
+      },
       "emptyTitle": "尚无已评分的提交",
       "emptyAction": "前往概览",
       "title": "提交",
@@ -284,12 +312,9 @@
       "changeRisk": "变更风险",
       "evolutionTitle": "工作形态如何变化",
       "evolutionDescription": "按提交标题归类出的各类提交随时间的变化。修复类高亮显示，因为这张图存在的意义就是展示这一条序列。",
-      "viewLabel": "历史视图",
+      "groupLabel": "历史分组方式",
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
-      "viewEvents": "事件",
-      "viewReview": "审查变更",
-      "reviewDescription": "选择一次变更（未提交的改动、分支或提交），查看它影响到哪些代码、应先查看哪些文件、该运行哪些测试以及该找谁审查。",
       "listTitle": "提交历史",
       "listDescription": "最新的在前，每行先显示它对代码健康的影响。筛选作用于整个仓库，而不仅是当前页。",
       "hotspotMark": "热点",
@@ -311,6 +336,9 @@
         "catchingUp": "此时间范围内的大多数提交尚未被当前分析器分析。最近的提交会随着更新优先分析；下面各行显示较早提交在之前分析中的方向。"
       },
       "wins": {
+        "summaryResolved": "已解决 {n}",
+        "summaryHealthier": "更健康 {n}",
+        "summaryRefactored": "已重构 {n}",
         "title": "近期成果",
         "wholeRepo": "整个仓库",
         "findingsLabel": "已解决的问题",
@@ -957,36 +985,6 @@
       "breadcrumb": "代码健康度",
       "notFoundTitle": "未找到模块",
       "notFoundDescription": "该仓库的索引中不存在请求的模块路径。"
-    },
-    "events": {
-      "title": "事件",
-      "description": "相邻两次索引之间发生的变化：按组件列出负责人、巴士系数、热点、契约、决策、死代码与测试覆盖。",
-      "repository": "整个仓库",
-      "count": "共 {count} 个事件，按时间从新到旧。",
-      "emptyTitle": "暂无事件",
-      "baselineOnly": "{runs, plural, =0 {尚未存储组件快照。} =1 {已存储 1 个组件快照，作为基线。} other {已存储 # 个组件快照。}}事件是相邻两次索引之间的变化，因此会在下一次针对新提交运行 `repowise update` 之后开始出现。",
-      "nothingMoved": "在已存储的 {runs} 个组件快照中，没有任何指标越过阈值。",
-      "noMatch": "在已存储的 {runs} 个组件快照中，没有符合这些筛选条件的事件。",
-      "loadErrorTitle": "无法加载事件",
-      "loadErrorBody": "无法从服务器读取事件列表。请刷新页面重试。",
-      "kinds": {
-        "ownership_shift": "声明的负责人已变更",
-        "owner_inactive": "主要负责人不再修改它",
-        "bus_factor_drop": "巴士系数下降",
-        "new_hotspot": "文件成为热点",
-        "contract_added": "出现新的提供方契约",
-        "contract_broken": "有使用方的契约消失",
-        "decision_stale": "治理决策已过时",
-        "dead_code_growth": "死代码发现增多",
-        "test_reach_drop": "测试覆盖下降"
-      },
-      "severities": {
-        "critical": "严重",
-        "high": "高",
-        "medium": "中",
-        "low": "低",
-        "info": "信息"
-      }
     },
     "security": {
       "title": "安全",
@@ -1820,6 +1818,28 @@
   },
   "commits": {
     "detail": {
+      "events": {
+        "title": "索引此提交时标记的事件",
+        "description": "在此提交上运行的索引发现，与上一次运行相比发生了变化的内容。",
+        "repository": "整个仓库",
+        "kinds": {
+          "ownership_shift": "声明的负责人已变更",
+          "owner_inactive": "主要负责人不再修改它",
+          "bus_factor_drop": "巴士系数下降",
+          "new_hotspot": "文件成为热点",
+          "contract_added": "出现新的提供方契约",
+          "contract_broken": "有使用方的契约消失",
+          "decision_stale": "治理决策已过时",
+          "dead_code_growth": "死代码发现增多",
+          "test_reach_drop": "测试覆盖下降"
+        },
+        "severities": {
+          "critical": "严重",
+          "high": "高",
+          "medium": "中",
+          "low": "低"
+        }
+      },
       "title": "审阅这次提交",
       "fixPromptLabel": "复制提示词，修复此提交带来的问题",
       "fixPromptTitle": "修复此提交带来的问题",

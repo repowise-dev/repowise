@@ -8,7 +8,7 @@ describe("repoNavGroups", () => {
 
   it("groups the repo pages by the question a reader brings", () => {
     expect(groups.map((g) => [g.id, g.items.map((i) => i.label)])).toEqual([
-      ["start", ["Overview", "Chat"]],
+      ["start", ["Overview", "Chat", "Review"]],
       ["understand", ["Docs", "Architecture", "Knowledge Graph", "Files"]],
       ["quality", ["Code Health", "Refactoring", "Tests", "Security"]],
       ["people", ["Ownership", "Commits", "Decisions"]],

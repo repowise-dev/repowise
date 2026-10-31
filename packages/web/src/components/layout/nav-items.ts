@@ -21,6 +21,7 @@ import {
   FlaskConical,
   FolderTree,
   GitCommitHorizontal,
+  GitPullRequestArrow,
   GitMerge,
   HeartPulse,
   LayoutDashboard,
@@ -83,6 +84,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
       items: [
         { label: "Overview", labelKey: "overview", href: `${base}/overview`, icon: Activity },
         { label: "Chat", labelKey: "chat", href: `${base}/chat`, icon: MessageSquare },
+        { label: "Review", labelKey: "review", href: `${base}/review`, icon: GitPullRequestArrow },
       ],
     },
     {
