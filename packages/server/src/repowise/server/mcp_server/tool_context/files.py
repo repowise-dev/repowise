@@ -10,8 +10,13 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
 from repowise.core.analysis.pr_blast import FileTests, file_tests
 from repowise.core.analysis.test_reachability import cached_test_files
+from repowise.core.persistence.models import GraphNode
+from repowise.server.mcp_server._directory import _dir_prefix, _rows_under
+from repowise.server.mcp_server._helpers import LIKE_ESCAPE, escape_like
 
 if TYPE_CHECKING:
     from repowise.server.mcp_server.tool_context.sections import CardState
@@ -37,11 +42,14 @@ _BASIS = (
 
 async def files_section(card: CardState) -> None:
     """Opt-in ``files`` block on a module or directory card."""
-    if not card.wants("files") or card.dir_path is None:
+    if not card.wants("files"):
+        return
+    if card.dir_path is None:
+        card.data["files_basis"] = "directory targets only"
         return
     test_files = await cached_test_files(card.session, card.repo_id)
     # Code files first: a cap then cuts test files, which need no test themselves.
-    paths = sorted((r.file_path for r in await card.dir_rows()), key=lambda p: (p in test_files, p))
+    paths = sorted(await _paths_under(card), key=lambda p: (p in test_files, p))
     found = await file_tests(card.session, card.repo_id, paths[:MAX_FILE_ROWS])
     rows = _fit([_row(path, tests) for path, tests in found.items()])
     block: dict[str, Any] = {
@@ -60,6 +68,21 @@ async def files_section(card: CardState) -> None:
     if not test_files:
         block["note"] = "the index holds no test files, so has_test false is not evidence"
     card.data["files"] = block
+
+
+async def _paths_under(card: CardState) -> set[str]:
+    """Files under the directory: git rows, and graph file nodes for files without one."""
+    res = await card.session.execute(
+        select(GraphNode.node_id.label("file_path")).where(
+            GraphNode.repository_id == card.repo_id,
+            GraphNode.node_type == "file",
+            GraphNode.node_id.like(
+                f"{escape_like(_dir_prefix(card.dir_path))}%", escape=LIKE_ESCAPE
+            ),
+        )
+    )
+    nodes = _rows_under(card.dir_path, list(res.all()), card.query.exclude_spec)
+    return {r.file_path for r in [*await card.dir_rows(), *nodes]}
 
 
 def _fit(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

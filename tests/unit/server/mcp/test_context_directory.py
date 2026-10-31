@@ -175,10 +175,12 @@ async def test_files_lists_every_file_with_its_tests(setup_mcp):
 
     card = (await get_context(["src/"], include=["files"]))["targets"]["src/"]
     files = card["files"]
-    assert files["total"] == 2 and files["complete"] is True
+    # middleware.py has a graph node and no git row; it is listed all the same.
+    assert files["total"] == 3 and files["complete"] is True
     assert "omitted" not in files and "note" not in files
-    assert files["counts"] == {"tested": 1, "untested": 1}
+    assert files["counts"] == {"tested": 1, "untested": 2}
     assert files["rows"] == [
+        {"path": "src/auth/middleware.py", "has_test": False},
         {
             "path": "src/auth/service.py",
             "has_test": True,
@@ -196,6 +198,7 @@ async def test_files_is_opt_in_and_directory_only(setup_mcp):
     assert "files" not in targets["src/"]
     asked = (await get_context(["src/auth/service.py"], include=["files"]))["targets"]
     assert "files" not in asked["src/auth/service.py"]
+    assert asked["src/auth/service.py"]["files_basis"] == "directory targets only"
 
 
 @pytest.mark.asyncio
@@ -205,8 +208,8 @@ async def test_files_over_the_cap_say_what_they_left_out(setup_mcp, monkeypatch)
 
     monkeypatch.setattr(files, "MAX_FILE_ROWS", 1)
     block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
-    assert block["total"] == 2 and block["complete"] is False and block["omitted"] == 1
-    assert [r["path"] for r in block["rows"]] == ["src/auth/service.py"]
+    assert block["total"] == 3 and block["complete"] is False and block["omitted"] == 2
+    assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
     assert "subdirectory" in block["hint"]
 
 
@@ -242,6 +245,6 @@ async def test_files_rows_stop_at_the_size_budget(setup_mcp, monkeypatch):
 
     monkeypatch.setattr(files, "MAX_ROW_CHARS", 100)
     block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
-    assert [r["path"] for r in block["rows"]] == ["src/auth/service.py"]
-    assert block["complete"] is False and block["omitted"] == 1
-    assert block["counts"] == {"tested": 1}
+    assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
+    assert block["complete"] is False and block["omitted"] == 2
+    assert block["counts"] == {"untested": 1}

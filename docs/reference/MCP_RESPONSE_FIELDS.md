@@ -257,7 +257,7 @@ Never complete for:
 
 ### files
 
-On a directory or module card only: every file under it, recursively, code files before tests and each group by path, with the test evidence `get_risk` reads for its test gaps.
+On a directory or module card: every indexed file under it (git rows and graph file nodes), recursively, code files before tests and each group by path, with the test evidence `get_risk` reads for its test gaps.
 
 - `total`, `complete`, `counts` (listed rows per state: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
 - Over 100 files: the first 100, `complete: false`, `omitted` and a `hint`. A cap cuts test files first; name a subdirectory as a target for the rest.
@@ -265,6 +265,7 @@ On a directory or module card only: every file under it, recursively, code files
 - `has_test: false` means none of the three exists. `type_only: true` marks a file that declares only types and needs no test.
 - A test file is `{path, is_test: true}`; a file that is not code is `{path, code: false}`.
 - `note` appears when the index holds no test files, so `has_test: false` is not evidence there.
+- On a file or symbol target the block is `files_basis: "directory targets only"`.
 
 ### suspects
 
