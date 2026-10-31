@@ -89,7 +89,7 @@ class _OversizeSkip(NamedTuple):
 
 
 class SkippedSourceFile(NamedTuple):
-    """A file with a real parser that traversal dropped on size.
+    """A parseable file dropped on size, or a document whose Markdown is too large.
 
     Carried as a record rather than folded into ``skipped_oversized`` because
     the count alone is what let this hide: "39 oversized" reads as lockfiles
@@ -101,7 +101,7 @@ class SkippedSourceFile(NamedTuple):
 
     path: str
     size_kb: int
-    reason: str  # "over_max_size" | "minified"
+    reason: str  # "over_max_size" | "minified" | "unreadable" | "extracted_over_max_size"
 
 
 class _DirIgnore(NamedTuple):
@@ -1306,7 +1306,8 @@ def size_verdict(
 
     Which ceiling applies depends on whether anything can actually read the
     file. A parserless file (lockfile, changelog, image, video) is bounded by
-    *max_file_size_bytes*, the caller-facing knob. A file whose language has a
+    *max_file_size_bytes*, the caller-facing knob, unless a document extractor
+    claims it and declares its own ceiling. A file whose language has a
     parser is bounded by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, which is
     deliberately *not* configurable: it is a memory budget (~95 MB of peak RSS
     per MB of source, times an 8-worker parse pool), not a preference, so
@@ -1316,6 +1317,11 @@ def size_verdict(
     the same code that made it missing.
     """
     language = _language_from_name_or_ext(abs_path)
+    if language is None:
+        # A document extractor's claim may declare its own source ceiling.
+        from .document_extractors import document_source_ceiling
+
+        max_file_size_bytes = document_source_ceiling(abs_path, max_file_size_bytes)
     # No parser, so size is the only signal.
     if language is None or language in _SKIP_GENERATED_CHECK:
         if size_bytes > max_file_size_bytes:

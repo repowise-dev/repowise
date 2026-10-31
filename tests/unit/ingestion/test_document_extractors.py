@@ -274,23 +274,138 @@ def test_extractor_failure_names_plugin_and_path(tmp_path, extractor_registry, m
         ingestion_phase._split_cached(tmp_path, [(file_info, path.read_bytes())], None)
 
 
+@dataclass
+class CeilingExtractor(FakeExtractor):
+    max_source_bytes: int = 1024 * 1024
+
+
+def _convert_in_parent(monkeypatch, markdown=lambda source: b"# Converted\n") -> list[str]:
+    """Replace the spawn-pool conversion so a parent-only extractor can run."""
+    from repowise.core.ingestion import source_reader
+
+    calls: list[str] = []
+
+    def convert(requests):
+        calls.extend(request[3] for request in requests)
+        return [markdown(request[4]) for request in requests]
+
+    monkeypatch.setattr(source_reader, "extract_documents_bounded", convert)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("extractor", "size", "indexed"),
+    [
+        (CeilingExtractor(), 600 * 1024, True),
+        (CeilingExtractor(), 1024 * 1024 + 1, False),
+        (FakeExtractor(), 500 * 1024, True),
+        (FakeExtractor(), 500 * 1024 + 1, False),
+    ],
+    ids=["within-declared", "over-declared", "default-within", "default-over"],
+)
 @pytest.mark.asyncio
-async def test_extracted_markdown_can_exceed_source_size_limit(
+async def test_claimed_source_uses_its_declared_size_ceiling(
+    tmp_path, extractor_registry, monkeypatch, extractor, size, indexed
+):
+    _register("sized", extractor)
+    calls = _convert_in_parent(monkeypatch)
+    (tmp_path / "deck.xyz").write_bytes(b"\x00" + b"x" * (size - 1))
+
+    parsed, file_infos, *_ = await _ingest(tmp_path)
+
+    assert ("deck.xyz" in {fi.path for fi in file_infos}) is indexed
+    assert any(item.file_info.path == "deck.xyz" for item in parsed) is indexed
+    assert calls == (["deck.xyz"] if indexed else [])
+    assert ChangeDetector(tmp_path)._document_eligible("deck.xyz", size) is indexed
+
+
+def test_declared_source_ceiling_is_clamped(tmp_path, extractor_registry):
+    from repowise.core.ingestion.document_extractors import (
+        MAX_DOCUMENT_SOURCE_BYTES,
+        document_source_ceiling,
+    )
+    from repowise.core.ingestion.traverser import size_verdict
+
+    _register("huge", CeilingExtractor(max_source_bytes=10 * MAX_DOCUMENT_SOURCE_BYTES))
+    path = tmp_path / "deck.xyz"
+
+    assert document_source_ceiling(path, 500 * 1024) == MAX_DOCUMENT_SOURCE_BYTES
+    assert size_verdict(path, MAX_DOCUMENT_SOURCE_BYTES) is None
+    assert size_verdict(path, MAX_DOCUMENT_SOURCE_BYTES + 1) is not None
+    # Unclaimed paths keep the caller's ceiling untouched.
+    assert document_source_ceiling(tmp_path / "deck.bin", 123) == 123
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, "1024", 1.5, None])
+def test_registration_rejects_invalid_max_source_bytes(extractor_registry, limit):
+    with pytest.raises(ValueError, match="max_source_bytes"):
+        _register("invalid-limit", CeilingExtractor(max_source_bytes=limit))
+    assert not document_extractors.all()
+
+
+class _RecordingProgress:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def on_message(self, level: str, text: str) -> None:
+        self.messages.append(text)
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
+
+
+@pytest.mark.asyncio
+async def test_extracted_markdown_over_ceiling_is_skipped_and_not_cached(
     tmp_path, extractor_registry, monkeypatch
 ):
-    from repowise.core.ingestion.traverser import _DEFAULT_MAX_FILE_SIZE_BYTES
+    from repowise.core.ingestion.source_reader import read_source
+    from repowise.core.ingestion.traverser import _SOURCE_MAX_FILE_SIZE_BYTES, SkippedSourceFile
+
+    _register("expanding", FakeExtractor())
+    calls = _convert_in_parent(monkeypatch, lambda source: b"x" * (_SOURCE_MAX_FILE_SIZE_BYTES + 1))
+    (tmp_path / "spec.xyz").write_bytes(b"\x00small")
+    (tmp_path / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    progress = _RecordingProgress()
+
+    result = await ingestion_phase._run_ingestion(
+        tmp_path,
+        exclude_patterns=None,
+        skip_tests=False,
+        skip_infra=False,
+        progress=progress,
+    )
+    parsed, file_infos, _structure, source_map, _builder, stats, _tech = result
+
+    assert [item.file_info.path for item in parsed] == ["main.py"]
+    assert [fi.path for fi in file_infos] == ["main.py"]
+    assert "spec.xyz" not in source_map
+    assert SkippedSourceFile("spec.xyz", 0, "extracted_over_max_size") in (
+        stats.skipped_source_files
+    )
+    assert any(
+        "Not indexed: spec.xyz" in line and "extracted Markdown over the 2,048 KB limit" in line
+        for line in progress.messages
+    )
+    document_cache = tmp_path / ".repowise" / "document-cache"
+    assert not document_cache.exists() or not any(document_cache.iterdir())
+    assert ChangeDetector(tmp_path).parse_bytes(b"\x00small", "spec.xyz") is None
+    assert read_source(tmp_path, "spec.xyz") is None
+    assert calls == ["spec.xyz"] * 3
+
+
+def test_mcp_reader_honours_the_declared_source_ceiling(tmp_path, extractor_registry, monkeypatch):
     from repowise.server.mcp_server._helpers import read_repo_file_text
 
-    calls = tmp_path / "calls.txt"
-    _register_spawn_extractor(monkeypatch, calls)
-    monkeypatch.setenv("REPOWISE_TEST_EXTRACTOR_PADDING", str(_DEFAULT_MAX_FILE_SIZE_BYTES))
-    (tmp_path / "spec.xyz").write_bytes(b"small")
-    parsed, _infos, _structure, source_map, *_ = await _ingest(tmp_path)
-    assert any(item.file_info.path == "spec.xyz" for item in parsed)
-    assert len(source_map["spec.xyz"]) > _DEFAULT_MAX_FILE_SIZE_BYTES
-    assert read_repo_file_text(tmp_path, "spec.xyz").encode() == source_map["spec.xyz"]
-    await _ingest(tmp_path)
-    assert _extractor_calls(calls) == ["spec.xyz"]
+    _register("sized", CeilingExtractor())
+    calls = _convert_in_parent(monkeypatch)
+    within = tmp_path / "within.xyz"
+    within.write_bytes(b"\x00" + b"x" * (600 * 1024))
+    over = tmp_path / "over.xyz"
+    over.write_bytes(b"\x00" + b"x" * (1024 * 1024))
+
+    assert read_repo_file_text(tmp_path, "within.xyz") == "# Converted\n"
+    assert read_repo_file_text(tmp_path, "over.xyz") is None
+    assert calls == ["within.xyz"]
 
 
 @pytest.mark.asyncio
@@ -735,3 +850,59 @@ async def test_workspace_extraction_failure_does_not_fall_back_to_reindex(
     _register_spawn_extractor(monkeypatch, tmp_path / "calls.txt", fail=True)
     with pytest.raises(DocumentExtractionError, match="spawn-test-extractor"):
         await _try_incremental_update(repo, CURRENT_GIT_HISTORY, base, None, False)
+
+
+@pytest.mark.parametrize("cause", ["source_over_ceiling", "markdown_over_ceiling"])
+def test_update_drops_a_document_that_can_no_longer_be_indexed(
+    tmp_path, extractor_registry, monkeypatch, cause
+):
+    from repowise.cli.helpers import save_state
+    from repowise.cli.main import cli
+    from repowise.core.ingestion.traverser import _SOURCE_MAX_FILE_SIZE_BYTES
+    from repowise.core.update_lock import release_update_lock
+    from tests.unit.cli.test_update_e2e import _db_snapshot, _git, _index_full, _make_git_repo
+    from tests.unit.cli.test_workspace_docs_pointer import CURRENT_GIT_HISTORY, CURRENT_STORE_FORMAT
+
+    repo = _make_git_repo(tmp_path)
+    _register("sized", CeilingExtractor(max_source_bytes=64))
+    _convert_in_parent(
+        monkeypatch,
+        lambda source: (
+            b"x" * (_SOURCE_MAX_FILE_SIZE_BYTES + 1)
+            if source.startswith(b"grown")
+            else b"# Spec\n\n## Section\n"
+        ),
+    )
+    document = repo / "spec.xyz"
+    document.write_bytes(b"initial")
+    _git(repo, "add", "spec.xyz")
+    _git(repo, "commit", "-m", "add document")
+    _index_full(repo)
+    assert any("spec.xyz" in node for node in asyncio.run(_db_snapshot(repo))["graph_node_ids"])
+    save_state(
+        repo,
+        {
+            "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
+            "docs_enabled": False,
+            **CURRENT_GIT_HISTORY,
+            **CURRENT_STORE_FORMAT,
+        },
+    )
+    document.write_bytes(b"grown " + (b"x" * 64 if cause == "source_over_ceiling" else b""))
+    _git(repo, "add", "spec.xyz")
+    _git(repo, "commit", "-m", "grow document")
+
+    [diff] = ChangeDetector(repo).get_changed_files("HEAD~1", "HEAD")
+    assert diff.status == "deleted"
+    assert diff.old_parsed is not None
+    assert diff.symbol_diff is not None
+
+    monkeypatch.chdir(repo.parent)
+    try:
+        result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
+    finally:
+        release_update_lock(repo)
+    assert result.exit_code == 0, result.output
+    assert not any(
+        "spec.xyz" in node for node in asyncio.run(_db_snapshot(repo))["graph_node_ids"]
+    ), result.output

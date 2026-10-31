@@ -56,7 +56,9 @@ def reparse_repo(
 
     fi_and_bytes = _read_sources(file_infos, None)
     # Read init/update's extractor-aware caches; leave writing them to those runs.
-    _cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, None, write_cache=False)
+    _cache, cached_hits, to_parse, _skipped = _split_cached(
+        repo_path, fi_and_bytes, None, write_cache=False
+    )
     results = parse_guarded(to_parse)
     report_parse_failures(to_parse, results)
     merged = _merge_parse_results(cached_hits, to_parse, results, None)

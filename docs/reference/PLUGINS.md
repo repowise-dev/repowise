@@ -337,16 +337,28 @@ routing uses the changed path and that blob's bytes, applying the current
 invocation's exclusions, directory boundaries and source-size rules before
 conversion. It does not reconstruct historical ignore files or configuration.
 
+Size limits for claimed documents:
+
+| Limit | Default | Notes |
+|-------|---------|-------|
+| Source file | 500 KB, the limit for any file with no parser | Set `max_source_bytes` (a positive `int`) on the extractor to change it for the extensions it claims. Registration rejects any other value |
+| Source file, hard ceiling | 100 MiB | A larger `max_source_bytes` is clamped to it. The parent process reads the whole file and sends it to a worker |
+| Extracted Markdown | 2 MB, the limit for parseable source files | Fixed |
+
+The source limit is checked during traversal, for historical Git blobs and for
+MCP reads, before the extractor runs. A document whose Markdown is over 2 MB is
+not indexed and its Markdown is not cached. The run continues and reports it
+with the other skipped files as
+`Not indexed: <path> (<size> KB, extracted Markdown over the 2,048 KB limit)`;
+traversal stats record the reason `extracted_over_max_size`. When an update
+finds that an indexed document has crossed either limit, the document is
+removed from the index as if it were deleted.
+
 Extraction runs in the existing spawned parse-worker pool with the
 `REPOWISE_PARSE_TIMEOUT_S` per-file deadline (60 seconds by default; `0`
 disables the deadline). A timeout, worker crash, unavailable pool or extractor
 exception fails the indexing run;
-Repowise deliberately does not retry plugin code in-process. Source eligibility
-still applies to the original document before conversion. There is no separate
-size limit on extracted Markdown: output is expected to be smaller than the
-eligible source, but this is an assumption, not a guarantee. A plugin that
-expands small input can increase processing, cache and parent-process memory
-usage. Workers also check
+Repowise deliberately does not retry plugin code in-process. Workers also check
 that the discovered extractor version matches the fingerprinted version. The
 existing worker memory cap (`REPOWISE_PARSE_WORKER_MEMORY_MB`, 2048 MiB by
 default; `0` disables it) is applied where the platform supports it, so these

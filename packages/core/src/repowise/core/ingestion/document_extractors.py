@@ -10,9 +10,19 @@ from repowise.core.registry.plugins import SeamRegistry
 
 from .models import FileInfo
 
+#: Hard ceiling on a claimed document's source bytes. The parent reads the
+#: whole file into memory and pickles it to a spawned worker, so a declared
+#: ``max_source_bytes`` above this is clamped to it.
+MAX_DOCUMENT_SOURCE_BYTES: int = 100 * 1024 * 1024  # 100 MiB
+
 
 class DocumentExtractor(Protocol):
-    """Convert a claimed source file into Markdown for the existing parser."""
+    """Convert a claimed source file into Markdown for the existing parser.
+
+    An implementation may also set ``max_source_bytes: int`` to raise or lower
+    the source size ceiling for the files it claims. Without it, a claimed file
+    keeps the size limit of any file with no parser.
+    """
 
     extensions: frozenset[str]
     version: str
@@ -47,6 +57,18 @@ def _validate_document_extractor(name: str, extractor: DocumentExtractor) -> Non
         raise ValueError(f"document extractor {name!r} must provide a non-empty string version")
     if not callable(getattr(extractor, "extract", None)):
         raise ValueError(f"document extractor {name!r} must provide extract(path, data)")
+    _validate_max_source_bytes(name, extractor)
+
+
+def _validate_max_source_bytes(name: str, extractor: DocumentExtractor) -> None:
+    if not hasattr(extractor, "max_source_bytes"):
+        return
+    limit = extractor.max_source_bytes
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError(
+            f"document extractor {name!r} has invalid max_source_bytes {limit!r}; "
+            "expected a positive int"
+        )
 
 
 class DocumentExtractorRegistry(SeamRegistry[DocumentExtractor]):
@@ -104,6 +126,20 @@ def document_extractor_for_path(
     if _language_from_name_or_ext(path) is not None:
         return None
     return _extension_claims().get(path.suffix.lower())
+
+
+def document_source_ceiling(path: Path | str, default: int) -> int:
+    """Source byte ceiling for *path*: its extractor's declared one, else *default*.
+
+    The one rule every eligibility check uses (traversal, historical blobs, MCP
+    reads). Decided from the extension alone, so it costs no I/O. An unclaimed
+    path gets *default* unchanged.
+    """
+    claim = document_extractor_for_path(path)
+    if claim is None:
+        return default
+    declared = getattr(claim[1], "max_source_bytes", None)
+    return min(default if declared is None else declared, MAX_DOCUMENT_SOURCE_BYTES)
 
 
 def is_extracted_document(

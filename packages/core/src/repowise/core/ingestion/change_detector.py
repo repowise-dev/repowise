@@ -127,6 +127,9 @@ class ChangeDetector:
         }
         self._document_policy = None
         self._document_cache = None
+        # Claimed documents whose latest parse was refused (ineligible source
+        # or Markdown over the ceiling), so a diff can tell them from failures.
+        self._unindexable_documents: set[str] = set()
         self._repo: object = None  # lazy git.Repo
         # Where repo_path sits inside the git working tree ("" when it is the
         # root). Git reports root-relative paths; the index is keyed relative
@@ -256,23 +259,11 @@ class ChangeDetector:
                 continue
             abs_path = self.repo_path / path
             if abs_path.is_file():
-                from .document_extractors import is_extracted_document
-
-                if not is_extracted_document(abs_path) or self._document_eligible(
-                    path, abs_path.stat().st_size
-                ):
-                    stale.append(self._added_from_disk(path, abs_path, status="modified"))
-                else:
-                    stale.append(
-                        FileDiff(
-                            path=path,
-                            status="deleted",
-                            old_path=path,
-                            old_parsed=None,
-                            new_parsed=None,
-                            symbol_diff=None,
-                        )
+                stale.append(
+                    self._unindexable_as_deleted(
+                        self._added_from_disk(path, abs_path, status="modified")
                     )
+                )
             else:
                 stale.append(
                     FileDiff(
@@ -371,13 +362,41 @@ class ChangeDetector:
         elif new_parsed:
             sym_diff = SymbolDiff(added=list(new_parsed.symbols))
 
+        return self._unindexable_as_deleted(
+            FileDiff(
+                path=path,
+                status=status,
+                old_path=old_path,
+                old_parsed=old_parsed,
+                new_parsed=new_parsed,
+                symbol_diff=sym_diff,
+            )
+        )
+
+    def _unindexable_as_deleted(self, diff: FileDiff) -> FileDiff:
+        """Report a document whose new version cannot be indexed as a deletion.
+
+        Its source grew past its ceiling or its Markdown is over the limit, so
+        the index must drop what it holds for the old version. A "modified"
+        diff with no new side would keep those rows and its page; "deleted"
+        removes them, tombstones the page and reports the old symbols removed.
+        """
+        if (
+            diff.new_parsed is not None
+            or diff.status not in ("modified", "renamed")
+            or diff.path not in self._unindexable_documents
+        ):
+            return diff
+        old_path = diff.old_path or diff.path
         return FileDiff(
-            path=path,
-            status=status,
+            path=old_path,
+            status="deleted",
             old_path=old_path,
-            old_parsed=old_parsed,
-            new_parsed=new_parsed,
-            symbol_diff=sym_diff,
+            old_parsed=diff.old_parsed,
+            new_parsed=None,
+            symbol_diff=SymbolDiff(removed=list(diff.old_parsed.symbols))
+            if diff.old_parsed
+            else None,
         )
 
     def detect_symbol_renames(
@@ -615,10 +634,12 @@ class ChangeDetector:
         from .parser import parse_file
         from .traverser import _detect_language
 
+        self._unindexable_documents.discard(path)
         lang = _detect_language(Path(path), source)
         claim = document_extractor_for_path(Path(path), language=lang)
         if claim is not None:
             if not self._document_eligible(path, len(source)):
+                self._unindexable_documents.add(path)
                 return None
             extractor_name, extractor = claim
             lang = "markdown"
@@ -640,22 +661,9 @@ class ChangeDetector:
             extractor_version=extractor.version if extractor is not None else None,
         )
         try:
-            parse_source = source
             if extractor_name is not None:
-                from .parse_cache import ParseCache
-                from .source_reader import read_document_sources
-
-                if self._document_cache is None:
-                    self._document_cache = ParseCache(self.repo_path / ".repowise")
-                    self._document_cache.load()
-                cached = self._document_cache.get(file_info, source_fingerprint(file_info, source))
-                if cached is not None:
-                    return cached
-                parse_source = read_document_sources(
-                    self.repo_path,
-                    [(extractor_name, extractor.version, Path(file_info.abs_path), path, source)],
-                )[0]
-            parsed = parse_file(file_info, parse_source)
+                return self._parse_document(file_info, source)
+            parsed = parse_file(file_info, source)
             parsed.content_hash = source_fingerprint(file_info, source)
             return parsed
         except Exception as exc:
@@ -665,6 +673,38 @@ class ChangeDetector:
                 raise
             log.warning("parse_file failed in ChangeDetector", path=path, error=str(exc))
             return None
+
+    def _parse_document(self, file_info: FileInfo, source: bytes) -> ParsedFile | None:
+        """Parse a claimed document from the parse cache or its extracted Markdown."""
+        from .document_extractors import source_fingerprint
+        from .parse_cache import ParseCache
+        from .parser import parse_file
+        from .source_reader import read_document_sources
+
+        if self._document_cache is None:
+            self._document_cache = ParseCache(self.repo_path / ".repowise")
+            self._document_cache.load()
+        cached = self._document_cache.get(file_info, source_fingerprint(file_info, source))
+        if cached is not None:
+            return cached
+        markdown = read_document_sources(
+            self.repo_path,
+            [
+                (
+                    file_info.extractor_name,
+                    file_info.extractor_version,
+                    Path(file_info.abs_path),
+                    file_info.path,
+                    source,
+                )
+            ],
+        )[0]
+        if markdown is None:
+            self._unindexable_documents.add(file_info.path)
+            return None
+        parsed = parse_file(file_info, markdown)
+        parsed.content_hash = source_fingerprint(file_info, source)
+        return parsed
 
     def _document_eligible(self, path: str, size_bytes: int) -> bool:
         from .traverser import FileTraverser
