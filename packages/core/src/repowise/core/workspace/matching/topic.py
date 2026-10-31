@@ -99,9 +99,26 @@ def pattern_matches(syntax: str, pattern: str, name: str) -> bool:
     return False
 
 
+def _celery_suffix_keys(
+    consumer: Contract, provider_index: dict[str, list[Contract]], known: list[str]
+) -> list[str]:
+    """Keys whose dotted function suffix matches a Celery consumer's suffix."""
+    function = str(consumer.meta.get("topic", "")).lower().split(".")[-1]
+    return [
+        key
+        for key, providers in provider_index.items()
+        if key.startswith(TOPIC_PREFIX)
+        and key not in known
+        and key[len(TOPIC_PREFIX) :].lower().split(".")[-1] == function
+        and any(p.meta.get("broker") == "celery" for p in providers)
+    ]
+
+
 def matching_keys(consumer: Contract, provider_index: dict[str, list[Contract]]) -> list[str]:
     """The provider keys *consumer* reaches: its own id, and every name its pattern matches."""
     keys = find_matching_keys(consumer.contract_id, provider_index)
+    if consumer.meta.get("broker") == "celery":
+        keys.extend(_celery_suffix_keys(consumer, provider_index, keys))
     syntax = consumer.meta.get(TOPIC_PATTERN)
     pattern = str(consumer.meta.get("topic", ""))
     if not syntax or not _WILDCARD_CHARS_RE.sub("", pattern):
@@ -120,7 +137,7 @@ def matching_keys(consumer: Contract, provider_index: dict[str, list[Contract]])
 # transport is configured outside the code (RabbitMQ, SQS, Redis, Kafka, NATS), so
 # either meets any broker but those. Every other pair must be the same broker: a
 # Kafka topic and a RabbitMQ queue that share a name are two things.
-_OWN_KIND_ONLY = frozenset({"bullmq"})
+_OWN_KIND_ONLY = frozenset({"bullmq", "celery"})
 _ANY_TRANSPORT = frozenset({"laravel", "nestjs", "dapr"})
 
 
