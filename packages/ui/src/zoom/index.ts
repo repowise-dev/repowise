@@ -35,7 +35,7 @@ export {
 } from "./relation-summary";
 export type { RelationDirections, RelationSummary, VerbCount } from "./relation-summary";
 
-export { hasRole, healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
+export { healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
 
 export {
   CONTAINER_KIND_LABEL,

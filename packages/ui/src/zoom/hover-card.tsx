@@ -8,6 +8,7 @@
  */
 
 import { type ReactNode, type Ref, memo, useMemo } from "react";
+import { formatScore } from "@repowise-dev/types/health";
 import { externalImporters } from "./externals";
 import { healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
 import { formatVerbCounts, relationDirections, summarizeRelations } from "./relation-summary";
@@ -148,9 +149,9 @@ function NodeBody({
 }
 
 /**
- * The two dots on the card, in words. They are drawn in the corners with no
- * key of their own, so the moment the pointer is on the card is the cheapest
- * place to say what they mean.
+ * The card's role icons and corner score, in words, plus on-flow, which the
+ * card leaves off (nearly every file is on a flow). The moment the pointer is
+ * on the card is the cheapest place to say what its marks mean.
  */
 function NodeSignals({ node }: { node: ZoomNode }) {
   const roles = nodeRoles(node);
@@ -163,7 +164,7 @@ function NodeSignals({ node }: { node: ZoomNode }) {
       )}
       {band && (
         <span className="tabular-nums">
-          Health {node.health_score!.toFixed(1)} {band}
+          Health {formatScore(node.health_score!)} {band}
         </span>
       )}
     </div>

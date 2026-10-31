@@ -140,7 +140,7 @@ function bucketRelations(
   return byParent;
 }
 
-/** Fill the card footer badge slot (see `cardBadge`) for every node, once. */
+/** Fill the card technology line's badge slot (see `cardBadge`) for every node, once. */
 function setContainerBadges(nodes: Map<string, ZoomNode>, list: readonly ZoomContainer[]): void {
   const containers = new Map(list.map((c) => [c.id, c] as const));
   for (const n of nodes.values()) {
