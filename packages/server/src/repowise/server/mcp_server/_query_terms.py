@@ -107,6 +107,28 @@ STOPWORDS = frozenset(
     }
 )
 
+# Verbs that frame what is asked ("where is X implemented", "how does X work")
+# rather than name it. Code rarely says them, so a ranking that weighs rare
+# words would let a page win on a class name that happens to hold one
+# (``NotImplemented``). Retrieval still searches them; ranking and coverage
+# do not count them.
+QUESTION_FRAME_VERBS = frozenset(
+    {
+        "work",
+        "works",
+        "working",
+        "implement",
+        "implemented",
+        "implementation",
+        "handle",
+        "handled",
+        "handles",
+        "handling",
+        "happen",
+        "happens",
+    }
+)
+
 # Terms shorter than this match too much of any identifier to be worth a
 # lookup; it is also the floor the rest of the answer pipeline already uses.
 _MIN_TERM_LEN = 3
@@ -150,3 +172,23 @@ def content_terms(
                 continue
             seen.setdefault(t, None)
     return sorted(seen, key=lambda t: (-len(t), t))[:max_terms]
+
+
+def path_words(text: str) -> set[str]:
+    """Lower-case words of a path or sentence, stopwords dropped. Two letters
+    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
+    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
+    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
+
+
+def paths_the_question_names(name: str, paths: list[str], question: str) -> list[str]:
+    """The files of *name*'s definitions whose path shares the most words with *question*.
+
+    "the cloudflare pages handler" names ``cloudflare-pages/handler.ts`` over
+    ``cloudflare-workers/serve-static.ts``. The name's own words do not count:
+    every definition shares them. Empty when no path shares a word.
+    """
+    asked = path_words(question) - path_words(name)
+    shared = {p: len(asked & path_words(p.rsplit(".", 1)[0])) for p in paths}
+    best = max(shared.values(), default=0)
+    return [p for p in paths if best and shared[p] == best]

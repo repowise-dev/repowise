@@ -187,13 +187,56 @@ async def test_multi_hop_path_within_depth_cap(session, repo_id):
     session.add(_edge(repo_id, mid2, builder, "imports"))
     await session.commit()
 
-    hits = [{"target_path": parser, "score": 5.0}]
+    # Retrieval returned builder, ranked low: a far endpoint it also matched.
+    hits = [{"target_path": parser, "score": 5.0}, {"target_path": builder, "score": 0.1}]
     combined, paths = await expand_via_flow_path(
         session, repo_id, hits, "how does parser feed the builder", set()
     )
-    assert any(h.get("target_path") == builder for h in combined)
+    assert next(h for h in combined if h.get("target_path") == builder)["score"] > 3.0
     # Undirected search: the path may be reported from either endpoint.
     assert paths and paths[0] in ([parser, mid1, mid2, builder], [builder, mid2, mid1, parser])
+
+
+async def test_a_far_file_only_its_name_matched_is_not_an_endpoint(session, repo_id):
+    """A word that is also a file name, three hops away through other files,
+    is a walk to a file name: nothing is injected and no path is served."""
+    parser, mid1, mid2, levels = (
+        "pkg/parser.py",
+        "pkg/helpers.py",
+        "pkg/vocabulary.py",
+        "pkg/levels.py",
+    )
+    for p in (parser, mid1, mid2, levels):
+        session.add(_page(repo_id, p))
+    session.add(_edge(repo_id, parser, mid1, "imports"))
+    session.add(_edge(repo_id, mid1, mid2, "imports"))
+    session.add(_edge(repo_id, mid2, levels, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": parser, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "what level of detail does the parser keep", set()
+    )
+    assert paths == []
+    assert combined is hits
+
+
+async def test_a_test_helper_sharing_the_name_is_not_an_endpoint(session, repo_id):
+    """A test that defines its own ``get_answer`` does not anchor a flow."""
+    helper = "tests/integration/test_instrument.py"
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, _CONF))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_symbol(repo_id, "get_answer", helper))
+    session.add(_edge(repo_id, _ANSWER, _CONF, "imports"))
+    session.add(_edge(repo_id, _CONF, helper, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}, {"target_path": _CONF, "score": 4.0}]
+    _combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does get_answer use confidence", {"get_answer"}
+    )
+    assert paths == [[_ANSWER, _CONF]]
 
 
 async def test_cross_language_anchor_dropped(session, repo_id):

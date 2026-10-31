@@ -159,7 +159,8 @@ async def _resolve_question_anchors(
             .order_by(WikiSymbol.file_path)
         )
         for (fp,) in res.all():
-            if fp:
+            # A test that defines a same-named helper is not where the flow runs.
+            if fp and not is_test_related_path(fp):
                 anchors.setdefault(fp, "symbol")
 
     # Module-name matches. Build a stem -> file_page paths map once, then keep
@@ -333,6 +334,17 @@ def _stitch(fwd: dict[str, Any], bwd: dict[str, Any], meet: str) -> list[str]:
     return left + right
 
 
+def _is_grounded(path: list[str], retrieved: set[str]) -> bool:
+    """Whether *path* is a flow the question asked about, not a walk to a file name.
+
+    A module anchor only matched a file name (``level`` -> ``levels.py``). When
+    retrieval also returned that file, or the question named a symbol in it,
+    any path within the depth cap counts. Otherwise only a direct neighbour
+    does: a longer path to it runs through hub files and joins unrelated code.
+    """
+    return len(path) == 2 or (path[0] in retrieved and path[-1] in retrieved)
+
+
 async def expand_via_flow_path(
     session: Any,
     repo_id: str,
@@ -383,11 +395,13 @@ async def expand_via_flow_path(
 
     adj = await file_adjacency(session, repo_id)
 
+    retrieved = {node_to_file(h.get("target_path") or "") for h in hits}
+    retrieved.update(p for p, src in anchors.items() if src == "symbol")
     paths: list[list[str]] = []
     for i in range(len(endpoints)):
         for j in range(i + 1, len(endpoints)):
             path = _bfs_path(adj, endpoints[i], endpoints[j], _FLOW_MAX_DEPTH)
-            if path and len(path) >= 2:
+            if path and len(path) >= 2 and _is_grounded(path, retrieved):
                 paths.append(path)
 
     if not paths:

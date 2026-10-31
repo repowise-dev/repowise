@@ -312,6 +312,10 @@ async def _defining_files(session, repo_id: str, idents: list[str]) -> list[str]
     out: list[str] = []
     for ident in idents:
         files = sorted({fp for name, fp in rows if fp and _names_symbol(ident, {name, name.lower()})})
+        # A test helper named after the code it stands in for is not where
+        # that name is defined, once production code defines it too.
+        production = [fp for fp in files if not is_test_related_path(fp)]
+        files = production or files
         if len(files) <= _MAX_DEFINING_FILES:
             out.extend(f for f in files if f not in out)
     return out

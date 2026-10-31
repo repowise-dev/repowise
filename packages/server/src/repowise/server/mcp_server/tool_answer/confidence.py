@@ -26,7 +26,10 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
-from repowise.server.mcp_server._query_terms import STOPWORDS, split_humps
+from repowise.server.mcp_server._query_terms import (
+    QUESTION_FRAME_VERBS,
+    paths_the_question_names,
+)
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_HIGH_SCORE_FLOOR,
@@ -556,16 +559,13 @@ def is_dominant(hits: list[dict], *, agreement_dominant: bool = False) -> bool:
 
 
 # Kept apart from `_query_terms.STOPWORDS` on purpose: these are dropped for
-# coverage only, retrieval still searches them.
-# Words that frame what is asked ("how does X work", "where is X implemented")
-# rather than name it. Code rarely says them, so a hit that answers the question
-# would otherwise read as missing its rarest word.
+# coverage only, retrieval still searches them. The frame verbs plus words a
+# coverage check should not demand of a hit ("code", "logic").
 _QUESTION_FRAME_STEMS = frozenset(
     _stem(w)
     for w in (
-        "work", "works", "working", "implement", "implemented", "implements",
-        "implementation", "handle", "handled", "handles", "handling", "happen",
-        "happens", "use", "used", "uses", "using", "way", "done", "code", "logic",
+        *QUESTION_FRAME_VERBS, "implements",
+        "use", "used", "uses", "using", "way", "done", "code", "logic",
     )
 )
 
@@ -1118,16 +1118,8 @@ def _split_settled(name: str, paths: list[str], question: str, answer_text: str)
 
     if all(named(p) for p in paths):
         return True
-    asked = _path_words(question) - _path_words(name)
-    picked = [p for p in paths if asked & _path_words(p.rsplit(".", 1)[0])]
+    picked = paths_the_question_names(name, paths, question)
     return len(picked) == 1 and named(picked[0])
-
-
-def _path_words(text: str) -> set[str]:
-    """Lower-case words of a path or sentence, stopwords dropped. Two letters
-    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
-    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
-    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
 
 
 def _clause_gate(s: _GradeState) -> None:
