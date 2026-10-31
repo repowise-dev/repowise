@@ -33,7 +33,7 @@ _PRESERVED_TABLES = (
 )
 
 _LEGACY_SAVINGS_TABLE = """
-CREATE TABLE savings (
+CREATE TABLE IF NOT EXISTS savings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
     filter TEXT NOT NULL,
@@ -44,9 +44,29 @@ CREATE TABLE savings (
 )
 """
 
+_OPPORTUNITIES_TABLE = """
+CREATE TABLE IF NOT EXISTS savings_opportunities (
+    observation_id TEXT PRIMARY KEY,
+    occurred_at TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    integration TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    estimated_potential_input_tokens INTEGER NOT NULL,
+    CHECK(length(integration) BETWEEN 1 AND 32
+        AND integration NOT GLOB '*[^a-z0-9_]*'
+        AND length(CAST(integration AS BLOB)) = length(integration)),
+    CHECK(estimated_potential_input_tokens >= 0)
+)
+"""
+
+_OPPORTUNITY_COLUMNS = (
+    "observation_id, occurred_at, repository_id, integration, kind, "
+    "estimated_potential_input_tokens"
+)
+
 _SCHEMA_TABLES = (
     """
-    CREATE TABLE savings_events (
+    CREATE TABLE IF NOT EXISTS savings_events (
         event_id TEXT PRIMARY KEY,
         schema_version INTEGER NOT NULL,
         idempotency_key TEXT NOT NULL,
@@ -111,14 +131,14 @@ _SCHEMA_TABLES = (
     )
     """,
     """
-    CREATE TABLE savings_event_omissions (
+    CREATE TABLE IF NOT EXISTS savings_event_omissions (
         event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
         omission_ref TEXT NOT NULL,
         PRIMARY KEY(event_id, omission_ref)
     )
     """,
     """
-    CREATE TABLE savings_event_correlations (
+    CREATE TABLE IF NOT EXISTS savings_event_correlations (
         event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
         kind TEXT NOT NULL,
         value_hash TEXT NOT NULL,
@@ -126,31 +146,21 @@ _SCHEMA_TABLES = (
         CHECK(length(value_hash) = 71)
     )
     """,
-    """
-    CREATE TABLE savings_opportunities (
-        observation_id TEXT PRIMARY KEY,
-        occurred_at TEXT NOT NULL,
-        repository_id TEXT NOT NULL,
-        integration TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        estimated_potential_input_tokens INTEGER NOT NULL,
-        CHECK(length(integration) BETWEEN 1 AND 32
-            AND integration NOT GLOB '*[^a-z0-9_]*'
-            AND length(CAST(integration AS BLOB)) = length(integration)),
-        CHECK(estimated_potential_input_tokens >= 0)
-    )
-    """,
+    _OPPORTUNITIES_TABLE,
 )
 
-_SCHEMA_INDEXES = (
-    "CREATE INDEX idx_savings_events_repo_time ON savings_events(repository_id, occurred_at)",
-    "CREATE INDEX idx_savings_events_surface_time ON savings_events(surface, occurred_at)",
-    "CREATE INDEX idx_savings_events_operation_time ON savings_events(operation, occurred_at)",
-    "CREATE INDEX idx_savings_events_agent_time ON savings_events(agent, occurred_at)",
-    "CREATE INDEX idx_savings_event_omissions_ref ON savings_event_omissions(omission_ref)",
-    "CREATE INDEX idx_savings_correlations_hash ON savings_event_correlations(kind, value_hash)",
-    "CREATE INDEX idx_savings_opportunities_repo_time ON savings_opportunities(repository_id, occurred_at)",
-    "CREATE INDEX idx_savings_created ON savings(created_at)",
+_SCHEMA_INDEXES = tuple(
+    f"CREATE INDEX IF NOT EXISTS {name} ON {target}"
+    for name, target in (
+        ("idx_savings_events_repo_time", "savings_events(repository_id, occurred_at)"),
+        ("idx_savings_events_surface_time", "savings_events(surface, occurred_at)"),
+        ("idx_savings_events_operation_time", "savings_events(operation, occurred_at)"),
+        ("idx_savings_events_agent_time", "savings_events(agent, occurred_at)"),
+        ("idx_savings_event_omissions_ref", "savings_event_omissions(omission_ref)"),
+        ("idx_savings_correlations_hash", "savings_event_correlations(kind, value_hash)"),
+        ("idx_savings_opportunities_repo_time", "savings_opportunities(repository_id, occurred_at)"),
+        ("idx_savings_created", "savings(created_at)"),
+    )
 )
 
 _REQUIRED_TABLES = frozenset(
@@ -171,29 +181,44 @@ def _has_current_schema(conn: sqlite3.Connection) -> bool:
     return tables >= _REQUIRED_TABLES
 
 
-def _apply_schema(conn: sqlite3.Connection) -> None:
-    """Reset obsolete telemetry and install the current schema.
+def _apply_schema(conn: sqlite3.Connection, version: int) -> None:
+    """Create whatever tables and indexes are missing. Never drops a row.
 
-    Caller owns the transaction. There is no row translation here by design:
-    the savings tables carry no data worth migrating, because no producer has
-    ever written one outside a test. The clean-reset policy is the plan's, not
-    an oversight -- see docs/architecture/savings-accounting.md.
+    Caller owns the transaction. A table that already exists keeps its rows, so
+    a sidecar missing one table gains it without losing the others.
     """
     for statement in _PRESERVED_TABLES:
         conn.execute(statement)
-    for table in (
-        "savings_event_omissions",
-        "savings_event_correlations",
-        "savings_opportunities",
-        "savings_events",
-        "savings",
-    ):
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    if version == 1 and _has_table(conn, "savings_opportunities"):
+        _rebuild_v1_opportunities(conn)
     conn.execute(_LEGACY_SAVINGS_TABLE)
     for statement in _SCHEMA_TABLES:
         conn.execute(statement)
     for statement in _SCHEMA_INDEXES:
         conn.execute(statement)
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _rebuild_v1_opportunities(conn: sqlite3.Connection) -> None:
+    """Copy v1 opportunities into a table with the v2 agent check.
+
+    v1 listed the agent ids in a CHECK, which rejects every agent added since.
+    SQLite cannot alter a CHECK, so the rows move to a new table. v1 events
+    keep their table: it had no agent check, and the writer validates ids.
+    """
+    conn.execute("ALTER TABLE savings_opportunities RENAME TO savings_opportunities_v1")
+    conn.execute(_OPPORTUNITIES_TABLE)
+    conn.execute(
+        f"INSERT OR IGNORE INTO savings_opportunities ({_OPPORTUNITY_COLUMNS}) "
+        f"SELECT {_OPPORTUNITY_COLUMNS} FROM savings_opportunities_v1"
+    )
+    conn.execute("DROP TABLE savings_opportunities_v1")
 
 
 def initialize_savings_schema(conn: sqlite3.Connection) -> None:
@@ -216,7 +241,7 @@ def initialize_savings_schema(conn: sqlite3.Connection) -> None:
                 f"version {SAVINGS_SCHEMA_VERSION}"
             )
         if version < SAVINGS_SCHEMA_VERSION or not _has_current_schema(conn):
-            _apply_schema(conn)
+            _apply_schema(conn, version)
             conn.execute(f"PRAGMA user_version={SAVINGS_SCHEMA_VERSION}")
         conn.commit()
     except BaseException:

@@ -8,11 +8,12 @@ Three surfaces answered those three questions three ways.
 
 Two of those answers are load-bearing and are fixed here.
 
-**The sidecar is repo-local and is never created.** A savings row belongs to the
-repository it describes, in the same file the costs page reads. Falling back to
+**The sidecar is repo-local.** A savings row belongs to the repository it
+describes, in the same file the costs page reads. Falling back to
 ``~/.repowise`` would put a row somewhere no dashboard looks and mix unrelated
-repositories into one ledger, so an absent sidecar means the repository never
-opted in and the event is dropped.
+repositories into one ledger. A repository's ``.repowise/`` directory is its
+opt-in: the sidecar is created there on the first write, and a directory without
+one records nothing.
 
 **Recording never raises.** Accounting sits behind a live tool call, a hook, and
 a shell command. A ledger that can fail a user's command is worse than no
@@ -48,6 +49,40 @@ def sidecar_path(repo_root: str | Path) -> Path:
     return Path(repo_root).joinpath(*_SIDECAR_PARTS)
 
 
+#: Short: the first write may come from a hook that budgets in milliseconds.
+_CREATE_BUSY_TIMEOUT_MS = 2000
+
+
+def ensure_sidecar(repo_root: str | Path) -> Path | None:
+    """The sidecar for *repo_root*, created when the repository has opted in.
+
+    ``None`` when *repo_root* has no ``.repowise/`` directory, or is the home
+    directory, whose ``.repowise/`` holds user config rather than a repository.
+    Uses plain ``sqlite3`` and the schema module, never ``distill.store``, so a
+    hook can call it without the structlog import. Raises on a failed create;
+    the recording functions swallow it.
+    """
+    db_path = sidecar_path(repo_root)
+    if db_path.is_file():
+        return db_path
+    root = Path(repo_root)
+    if not (root / ".repowise").is_dir() or root.resolve() == Path.home().resolve():
+        return None
+    import sqlite3
+
+    from repowise.core.savings.schema import initialize_savings_schema
+    from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
+
+    db_path.parent.mkdir(exist_ok=True)
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        apply_sqlite_pragmas(connection, _CREATE_BUSY_TIMEOUT_MS)
+        initialize_savings_schema(connection)
+    finally:
+        connection.close()
+    return db_path
+
+
 def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bool:
     """Record one savings event against *repo_root*. Never raises.
 
@@ -62,8 +97,8 @@ def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bo
     try:
         if not repo_root:
             return False
-        db_path = sidecar_path(repo_root)
-        if not db_path.is_file():
+        db_path = ensure_sidecar(repo_root)
+        if db_path is None:
             return False
         event = _build(payload, repo_root)
         if event is None:
@@ -210,8 +245,8 @@ def record_opportunity(repo_root: str | Path | None, payload: Mapping[str, Any])
     try:
         if not repo_root:
             return False
-        db_path = sidecar_path(repo_root)
-        if not db_path.is_file():
+        db_path = ensure_sidecar(repo_root)
+        if db_path is None:
             return False
 
         from repowise.core.distill.store import OmissionStore

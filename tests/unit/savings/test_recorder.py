@@ -1,8 +1,8 @@
 """The one write path every capture surface goes through.
 
 The behaviours here are the ones that used to be re-decided per surface, and
-the ones a surface must be able to rely on without checking: an absent sidecar
-is an opt-out rather than something to create, a malformed event never reaches
+the ones a surface must be able to rely on without checking: a directory
+without ``.repowise/`` never gets a ledger, a malformed event never reaches
 the caller as an exception, and a repository cannot be attributed an event it
 is not writing to.
 """
@@ -79,6 +79,24 @@ def test_an_absent_sidecar_is_an_opt_out_rather_than_something_to_create(
     tmp_path: Path,
 ) -> None:
     """A repository that never ran ``init`` does not acquire a ledger by being used."""
+    assert recorder.record_event(tmp_path, _event()) is False
+    assert not recorder.sidecar_path(tmp_path).exists()
+
+
+def test_an_opted_in_repository_gets_its_sidecar_on_the_first_write(tmp_path: Path) -> None:
+    """``.repowise/`` is the opt-in; a repo indexed before the sidecar existed records."""
+    (tmp_path / ".repowise").mkdir()
+    assert recorder.record_event(tmp_path, _event()) is True
+    with OmissionStore(recorder.sidecar_path(tmp_path)) as store:
+        assert store._conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
+
+
+def test_the_home_directory_never_gets_a_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``~/.repowise`` is user config, not a repository that opted in."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert recorder.record_event(tmp_path, _event()) is False
     assert not recorder.sidecar_path(tmp_path).exists()
 

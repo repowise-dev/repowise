@@ -100,6 +100,13 @@ def test_a_repository_without_a_sidecar_records_nothing(tmp_path: Path) -> None:
     assert not recorder.sidecar_path(tmp_path).exists()
 
 
+def test_an_opted_in_repository_without_a_sidecar_gets_one(tmp_path: Path) -> None:
+    """A repo indexed before the sidecar existed still records its hook savings."""
+    (tmp_path / ".repowise").mkdir()
+    _record(tmp_path)
+    assert len(_events(tmp_path)) == 1
+
+
 def test_two_replacements_stay_two_interactions(repo: Path) -> None:
     _record(repo)
     _record(repo)

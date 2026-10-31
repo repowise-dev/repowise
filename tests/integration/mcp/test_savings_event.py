@@ -215,10 +215,25 @@ async def test_attribution_is_unknown_without_an_announced_client(repo: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_repository_without_a_sidecar_records_nothing(
+async def test_an_indexed_repository_without_a_sidecar_records_its_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absent sidecar is an opt-out, and a tool call must still succeed."""
+    """A repo indexed before the sidecar existed creates it on its first call."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert len(_events(tmp_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_directory_without_repowise_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``.repowise/`` is an opt-out, and a tool call must still succeed."""
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
 
     async def get_overview() -> dict:

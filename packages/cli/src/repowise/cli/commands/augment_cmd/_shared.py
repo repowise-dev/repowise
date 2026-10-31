@@ -206,16 +206,26 @@ _FORGONE_TABLE_SQL = (
 _FORGONE_MIGRATION_SQL = "ALTER TABLE forgone_savings ADD COLUMN filter TEXT NOT NULL DEFAULT ''"
 
 
-def _omission_db(repo_path: Path) -> Path | None:
+def _omission_db(repo_path: Path, *, create: bool = False) -> Path | None:
     """The omission store, or None when this repo has not opted into one.
 
     Path spelled out rather than imported: the constants live in
     ``distill.store``, which imports structlog: 250ms to learn that a repo
     without an omission store has no omission store. Kept in sync by
-    ``test_the_omission_store_path_matches_distills``.
+    ``test_the_omission_store_path_matches_distills``. With *create*, a repo
+    with ``.repowise/`` but no store yet gets one, once, without that import.
     """
     db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
-    return db_path if db_path.exists() else None
+    if db_path.exists():
+        return db_path
+    if not create:
+        return None
+    try:
+        from repowise.core.savings.recorder import ensure_sidecar
+
+        return ensure_sidecar(repo_path)
+    except Exception:
+        return None
 
 
 def record_saving(
@@ -235,12 +245,11 @@ def record_saving(
     canonical report instead; writing both means this change neither regresses
     a published figure nor claims the old row improved.
 
-    Never creates the omission store: its absence means this repo has not
-    opted into distill bookkeeping, and a hook is not the place to decide
-    otherwise. Any failure is swallowed, because accounting must not cost the agent an
-    enrichment that is already computed.
+    Writes only in a repo that opted in with ``.repowise/``. Any failure is
+    swallowed, because accounting must not cost the agent an enrichment that
+    is already computed.
     """
-    db_path = _omission_db(repo_path)
+    db_path = _omission_db(repo_path, create=True)
     if db_path is None:
         return
     try:
@@ -350,7 +359,8 @@ def record_forgone(
 ) -> None:
     """Record a saving this repo *would* have made, had the surface been on.
 
-    Same never-create-the-store rule as :func:`record_saving`, into the
+    Never creates the omission store: a saving that did not happen is no
+    reason to open a ledger. Writes into the
     separate ``forgone_savings`` table so a hypothetical can never be summed
     into the published figure.
     """
