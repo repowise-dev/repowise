@@ -265,3 +265,111 @@ def test_definition_flag_needs_a_definition_at_line_start(tmp_path) -> None:
     (tmp_path / "m.txt").write_text("\n".join(lines) + "\n", "utf-8")
     matches = tool_symbol._live_grep_fallback(tmp_path, "m.txt", "config")
     assert [m["line"] for m in matches if m.get("defines")] == [4, 5, 6, 7]
+
+
+# --- fields of a class the index does not list -------------------------------
+
+_TS_CLASS = """\
+export class App<
+  E = {},
+> {
+  use: Middleware<E>
+  name = 'app'
+
+  constructor(use: Middleware<E>) {
+    // the use handler
+    this.use = (arg: string) => {
+      return arg
+    }
+  }
+}
+"""
+
+
+async def _owner(session, repo: str, path: str, name: str, start: int, end: int) -> None:
+    session.add(
+        WikiSymbol(
+            id=f"own-{path}-{name}",
+            repository_id=repo,
+            file_path=path,
+            symbol_id=f"{path}::{name}",
+            name=name,
+            qualified_name=name,
+            kind="class",
+            signature=f"class {name}",
+            start_line=start,
+            end_line=end,
+            language="typescript",
+        )
+    )
+    await session.commit()
+
+
+async def test_a_field_id_serves_its_declaration_and_assignment(setup_mcp, session, tmp_path) -> None:
+    from repowise.server.mcp_server import get_symbol
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text(_TS_CLASS, "utf-8")
+    await _owner(session, setup_mcp, "src/app.ts", "App", 1, 14)
+
+    for sid in ("src/app.ts::use", "src/app.ts::App::use", "src/app.ts::App.use"):
+        result = await get_symbol(sid)
+        assert result["resolution"] == "live_grep"
+        lines = result["fallback_lines"]
+        # The parameter (line 7) and the comment (line 8) are not the field.
+        assert [m["line"] for m in lines] == [4, 9]
+        assert {m["member_of"] for m in lines} == {"App"}
+        assert lines[1]["read"] == "src/app.ts:9-11"
+        assert "field of App" in result["note"]
+
+    other = await get_symbol("src/app.ts::Other::use")
+    assert "member_of" not in other["fallback_lines"][0]
+
+
+def test_member_lines_cover_python_and_go_fields() -> None:
+    from repowise.server.mcp_server.tool_symbol.misses import _member_lines
+
+    py = [
+        "class Client:",
+        "    limit: int = 3",
+        "    def __init__(self, timeout: int = 1):",
+        "        self.timeout = timeout",
+        "        # self.timeout = 0",
+        "class Other:",
+        "    def run(self):",
+        "        self.timeout = (",
+        "            2",
+        "        )",
+    ]
+    owners = [("Client", 1, 5), ("Other", 6, 10)]
+    hits = _member_lines(py, "c.py", "timeout", owners)
+    assert [(m["line"], m["member_of"]) for m in hits] == [(4, "Client"), (8, "Other")]
+    assert hits[1]["read"] == "c.py:8-10"
+    assert [m["line"] for m in _member_lines(py, "c.py", "limit", owners)] == [2]
+    assert [m["line"] for m in _member_lines(py, "c.py", "Other::timeout", owners)] == [8]
+
+    go = ["type Command struct {", "\t// Use is the one-line usage.", "\tUse string", "\tShort, Long string", "}"]
+    assert [m["line"] for m in _member_lines(go, "c.go", "Use", [("Command", 1, 5)])] == [3]
+    assert [m["line"] for m in _member_lines(go, "c.go", "Short", [("Command", 1, 5)])] == [4]
+
+
+def test_member_lines_leave_module_names_and_closers_alone(tmp_path) -> None:
+    from repowise.server.mcp_server.tool_symbol.misses import _grep_matches, _member_lines
+
+    # A module constant a class copies onto self keeps the plain grep, unless
+    # the id names the class.
+    (tmp_path / "f.py").write_text("DEFAULT = 3\n\nclass A:\n    def __init__(self):\n        self.DEFAULT = DEFAULT\n")
+    owners = [("A", 3, 5)]
+    plain, _ = _grep_matches(tmp_path, "f.py", "DEFAULT", owners)
+    assert 1 in [m["line"] for m in plain] and "member_of" not in plain[0]
+    scoped, _ = _grep_matches(tmp_path, "f.py", "A::DEFAULT", owners)
+    assert [m["line"] for m in scoped] == [5]
+
+    # A one-line assignment before a dedented closer opens no range.
+    ts = ["class A {", "  use: X;", "  constructor() {", "    this.use = 1;", "  }", "}"]
+    hits = _member_lines(ts, "a.ts", "use", [("A", 1, 6)])
+    assert [m["line"] for m in hits] == [2, 4]
+    assert not any("read" in m for m in hits)
+
+    # A one-member Python class still finds its member.
+    assert [m["line"] for m in _member_lines(["class A:", "    x: int = 3"], "a.py", "x", [("A", 1, 2)])] == [2]
