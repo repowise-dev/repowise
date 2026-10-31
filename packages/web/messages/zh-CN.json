@@ -1324,7 +1324,8 @@
       "stubTitle": "由索引构建，模型尚未撰写此页面。",
       "startHere": "从这里开始",
       "onboarding": "入门",
-      "modulesWithNoLayer": "未归入分层的模块（{count}）",
+      "walkthroughs": "流程讲解（{count}）",
+      "otherModules": "其他模块（{count}）",
       "codeReference": "代码参考",
       "codeReferenceMeta": "{files} 个文件 · {symbols} 个符号{other, plural, =0 {} other { · 其他 # 个}}"
     },

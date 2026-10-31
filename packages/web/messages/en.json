@@ -1324,7 +1324,8 @@
       "stubTitle": "Built from the index. A model has not written this page yet.",
       "startHere": "Start here",
       "onboarding": "Onboarding",
-      "modulesWithNoLayer": "Modules with no layer ({count})",
+      "walkthroughs": "Walkthroughs ({count})",
+      "otherModules": "Other modules ({count})",
       "codeReference": "Code reference",
       "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}"
     },
