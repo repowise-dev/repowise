@@ -92,3 +92,45 @@ class TestGoParser:
         fi = _make_file_info("go_pkg/calculator/calculator.go", "go")
         result = parser.parse_file(fi, GO_SOURCE)
         assert result.parse_errors == []
+
+    def test_module_docstring(self, parser: ASTParser) -> None:
+        fi = _make_file_info("go_pkg/calculator/calculator.go", "go")
+        result = parser.parse_file(fi, GO_SOURCE)
+        assert result.docstring == "Package calculator provides arithmetic with history."
+
+    def test_module_docstring_drops_detached_license_header(self, parser: ASTParser) -> None:
+        fi = _make_file_info("go_pkg/calculator/args.go", "go")
+        source = (
+            b"// Copyright 2013-2023 The Cobra Authors\n"
+            b"// Licensed under the Apache License, Version 2.0\n\n"
+            b"package cobra\n"
+        )
+        assert parser.parse_file(fi, source).docstring is None
+
+    def test_module_docstring_keeps_package_comment_after_license_header(
+        self, parser: ASTParser
+    ) -> None:
+        fi = _make_file_info("go_pkg/calculator/cobra.go", "go")
+        source = (
+            b"// Copyright 2013-2023 The Cobra Authors\n"
+            b"// Licensed under the Apache License, Version 2.0\n\n"
+            b"// Package cobra is a commander.\n"
+            b"package cobra\n"
+        )
+        assert parser.parse_file(fi, source).docstring == "Package cobra is a commander."
+
+    def test_module_docstring_ignores_build_constraint_above_package_comment(
+        self, parser: ASTParser
+    ) -> None:
+        fi = _make_file_info("go_pkg/calculator/linux.go", "go")
+        source = b"//go:build linux\n\n// Package x does y.\npackage x\n"
+        assert parser.parse_file(fi, source).docstring == "Package x does y."
+
+    def test_module_docstring_accepts_adjacent_block_comment(self, parser: ASTParser) -> None:
+        fi = _make_file_info("go_pkg/calculator/doc.go", "go")
+        source = b"/*\nPackage x provides helpers.\n*/\npackage x\n"
+        assert parser.parse_file(fi, source).docstring == "Package x provides helpers."
+
+    def test_module_docstring_none_when_no_comments(self, parser: ASTParser) -> None:
+        fi = _make_file_info("go_pkg/calculator/plain.go", "go")
+        assert parser.parse_file(fi, b"package x\n").docstring is None
