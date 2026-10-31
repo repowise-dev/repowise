@@ -162,11 +162,26 @@ class AffectedSignal(BaseModel):
     is_hotspot: bool | None = None
     health_score: float | None = None
     module: str | None = None
+    #: A test file: counted as a test to run, never as code the change reaches.
+    is_test: bool = False
+
+
+class ChangedOwner(BaseModel):
+    """Who owns some of the changed files, by primary authorship."""
+
+    email: str
+    name: str | None = None
+    #: Changed files this person is the primary owner of.
+    files: int
 
 
 class BlastRadiusResponse(BaseModel):
     #: Per affected file; only when the request asked ``with_graph``.
     affected_signals: list[AffectedSignal] | None = None
+    #: Owners of the changed files themselves; only with ``with_graph``.
+    changed_owners: list[ChangedOwner] | None = None
+    #: Commands that run the recommended tests, one per runner; only with ``with_graph``.
+    test_commands: list[str] | None = None
     direct_risks: list[DirectRiskEntry]
     transitive_affected: list[TransitiveEntry]
     cochange_warnings: list[CochangeWarning]

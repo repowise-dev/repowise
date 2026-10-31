@@ -14,9 +14,11 @@ co_change_partners_json field stored in git_metadata rows.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, text
@@ -26,6 +28,7 @@ from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.co_change import parse_partners
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GitMetadata, GraphNode, HealthFileMetric, Repository
 
 
@@ -119,6 +122,28 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
     return [p for p in gaps if p not in types]
 
 
+#: Package manifests per index state: scanning a checkout's package roots
+#: takes most of a second on a large repository, and they move only with it.
+_MANIFESTS = IndexStampCache(8)
+
+
+async def _test_runs(session: AsyncSession, repo_id: str, tests: list[str]) -> dict[str, list[str | None]]:
+    """Where each test runs (``npm --prefix pkg test``, a Go package...), from the
+    checkout's package roots. Without a checkout, only root-level JS runs are known."""
+    from repowise.core.analysis.health.refactoring.commands import js_root_runs, runs_for_tests
+    from repowise.core.ingestion.package_roots import scan_package_manifests
+
+    root = (
+        await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
+    ).scalar_one_or_none()
+    if not root or not Path(root).is_dir():
+        return js_root_runs(tests)
+    key = await _MANIFESTS.key(session, repo_id, root)
+    if key not in _MANIFESTS:
+        _MANIFESTS.remember(key, await asyncio.to_thread(scan_package_manifests, root))
+    return await asyncio.to_thread(runs_for_tests, Path(root), _MANIFESTS.get(key), tests)
+
+
 class PRBlastRadiusAnalyzer:
     """Compute blast radius for a proposed PR given its changed files."""
 
@@ -209,8 +234,22 @@ class PRBlastRadiusAnalyzer:
             **structural_impact_contract(structural_impact_score),
         }
         if with_graph:
-            result["affected_signals"] = await self._affected_signals(all_affected_paths)
+            result.update(await self._screen_extras(all_affected_paths, changed_files, test_impact))
         return result
+
+    async def _screen_extras(
+        self, affected: list[str], changed_files: list[str], test_impact: dict
+    ) -> dict[str, Any]:
+        """What a review screen adds: per-file signals, who owns the changed
+        files, and the commands that run the recommended tests."""
+        from repowise.core.analysis.test_reachability import cached_test_files
+
+        test_files = await cached_test_files(self._session, self._repo_id)
+        return {
+            "affected_signals": await self._affected_signals(affected, test_files),
+            "changed_owners": await self._changed_owners(changed_files),
+            "test_commands": await self._test_commands(test_impact),
+        }
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -374,12 +413,15 @@ class PRBlastRadiusAnalyzer:
             for p, d in sorted(visited.items(), key=lambda item: (item[1], item[0]))
         ]
 
-    async def _affected_signals(self, paths: list[str]) -> list[dict]:
-        """Per affected file: hotspot verdict, health score and module.
+    async def _affected_signals(
+        self, paths: list[str], test_files: frozenset[str] = frozenset()
+    ) -> list[dict]:
+        """Per affected file: hotspot verdict, health score, module, and whether it is a test.
 
         ``health_score`` and ``module`` stay ``None`` for a file health never
         scored; ``is_hotspot`` is ``None`` for a file with no git history row.
-        A missing signal is never read as healthy or cold.
+        A missing signal is never read as healthy or cold. ``is_test`` lets a
+        screen count the tests a change reaches apart from the code it reaches.
         """
         if not paths:
             return []
@@ -411,9 +453,47 @@ class PRBlastRadiusAnalyzer:
                 "is_hotspot": hotspot.get(p),
                 "health_score": health.get(p, (None, None))[0],
                 "module": health.get(p, (None, None))[1],
+                "is_test": p in test_files,
             }
             for p in paths
         ]
+
+    async def _changed_owners(self, changed_files: list[str], limit: int = 3) -> list[dict]:
+        """Who owns the changed files themselves, most files first.
+
+        Unlike :meth:`_recommend_reviewers`, which counts every affected file,
+        this is the person who knows the code being changed: "owns 8 of the 12
+        changed files" is a reason to ask; "owns 1,800 affected files" is not.
+        """
+        rows = await self._session.execute(
+            select(
+                GitMetadata.primary_owner_email, GitMetadata.primary_owner_name
+            ).where(
+                GitMetadata.repository_id == self._repo_id,
+                GitMetadata.file_path.in_(changed_files[:500]),
+            )
+        )
+        files: Counter[str] = Counter()
+        names: dict[str, str] = {}
+        for email, name in rows:
+            if email:
+                files[email] += 1
+                if name:
+                    names.setdefault(email, name)
+        ranked = sorted(files.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+        return [{"email": e, "name": names.get(e), "files": n} for e, n in ranked]
+
+    async def _test_commands(self, test_impact: dict) -> list[str]:
+        """The commands that run the recommended tests, one per runner."""
+        from repowise.core.analysis.health.refactoring.commands import commands_for_tests
+
+        tests = [r["test_id"] for r in test_impact.get("recommendations", [])]
+        if not tests:
+            return []
+        runs = await _test_runs(self._session, self._repo_id, tests)
+        return commands_for_tests(
+            tests, total=test_impact.get("recommendations_total"), runs=runs
+        )
 
     async def _cochange_warnings(
         self, changed_files: list[str], changed_set: set[str]

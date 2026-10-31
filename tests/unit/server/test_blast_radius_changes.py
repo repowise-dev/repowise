@@ -114,6 +114,48 @@ async def test_analyzes_a_branch_with_reach_edges_and_signals(client, session, t
     # No health row is unknown, never a score.
     assert signals["core.py"]["health_score"] is None
     assert body["recommended_reviewers"][0]["name"] == "Ann Lee"
+    assert signals["app.py"]["is_test"] is False
+    # Owners of the changed file itself; core.py has no history row, so none.
+    assert body["changed_owners"] == []
+    assert body["test_commands"] == []
+
+
+async def test_counts_tests_apart_and_names_the_changed_files_owner(client, session, tmp_path):
+    _git_repo(tmp_path)
+    repo = await create_test_repo(client, tmp_path)
+    rid = repo["id"]
+    for i, path in enumerate(("core.py", "tests/test_core.py")):
+        session.add(
+            GraphNode(id=f"n{i}", repository_id=rid, node_id=path, node_type="file", is_test=path.startswith("tests/"))
+        )
+    session.add(
+        GraphEdge(
+            id="e0",
+            repository_id=rid,
+            source_node_id="tests/test_core.py",
+            target_node_id="core.py",
+            edge_type="imports",
+        )
+    )
+    session.add(
+        GitMetadata(
+            repository_id=rid,
+            file_path="core.py",
+            primary_owner_email="bo@example.com",
+            primary_owner_name="Bo Chen",
+            primary_owner_commit_pct=0.9,
+        )
+    )
+    await session.commit()
+
+    body = (
+        await client.post(f"/api/repos/{rid}/blast-radius/change", json={"change_id": "branch:feat/x"})
+    ).json()
+
+    signals = {s["path"]: s for s in body["affected_signals"]}
+    assert signals["tests/test_core.py"]["is_test"] is True
+    assert signals["core.py"]["is_test"] is False
+    assert body["changed_owners"] == [{"email": "bo@example.com", "name": "Bo Chen", "files": 1}]
 
 
 async def test_plain_analysis_keeps_its_shape(session, client, tmp_path):
@@ -121,6 +163,8 @@ async def test_plain_analysis_keeps_its_shape(session, client, tmp_path):
     repo = await create_test_repo(client, tmp_path)
     result = await PRBlastRadiusAnalyzer(session, repo["id"]).analyze_files(["core.py"])
     assert "affected_signals" not in result
+    assert "changed_owners" not in result
+    assert "test_commands" not in result
     assert all("name" not in r for r in result["recommended_reviewers"])
     assert all("via" not in row for row in result["transitive_affected"])
 
