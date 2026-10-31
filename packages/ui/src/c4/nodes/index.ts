@@ -16,6 +16,8 @@ export const c4NodeTypes: NodeTypes = {
   external: ExternalSystemNode,
   container: ContainerNode,
   component: ComponentNode,
+  // The dashed system (L2) / container (L3) boundary behind the cards.
+  scopeFrame: ScopeFrameNode,
 };
 
 export const archNodeTypes: NodeTypes = {
@@ -26,8 +28,8 @@ export const archNodeTypes: NodeTypes = {
   // Curated sub-group card — same component, "subGroup" kind via data.
   subGroupCluster: LayerClusterNode,
   portal: PortalNode,
-  // Dashed "you are here" boundary behind the drilled tier (kg-ux §2.4).
-  scopeFrame: ScopeFrameNode,
+  // `scopeFrame` comes from c4NodeTypes: the dashed "you are here" boundary
+  // behind the drilled tier (kg-ux §2.4).
 };
 
 export { SystemNode, PersonNode, ExternalSystemNode, ContainerNode, ComponentNode };

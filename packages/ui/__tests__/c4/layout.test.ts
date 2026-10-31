@@ -50,4 +50,35 @@ describe("computeC4Layout", () => {
     const bottom = positions.get("bottom")!;
     expect(bottom.y).toBeGreaterThan(top.y);
   });
+
+  it("keeps boundary members inside the box and everything else out", async () => {
+    const nodes = [
+      { id: "pkg:a", width: 220, height: 110 },
+      { id: "pkg:b", width: 220, height: 110 },
+      { id: "ext:db", width: 180, height: 90 },
+    ];
+    const positions = await computeC4Layout(
+      nodes,
+      [
+        { id: "e1", source: "pkg:a", target: "pkg:b" },
+        { id: "e2", source: "pkg:b", target: "ext:db" },
+      ],
+      { boundary: { id: "frame", members: new Set(["pkg:a", "pkg:b"]) } },
+    );
+    const frame = positions.get("frame")!;
+    expect(frame).toBeDefined();
+    const within = (id: string) => {
+      const p = positions.get(id)!;
+      return (
+        p.x >= frame.x &&
+        p.y >= frame.y &&
+        p.x + p.width <= frame.x + frame.width &&
+        p.y + p.height <= frame.y + frame.height
+      );
+    };
+    // Members come back in absolute coordinates, not relative to the frame.
+    expect(within("pkg:a")).toBe(true);
+    expect(within("pkg:b")).toBe(true);
+    expect(within("ext:db")).toBe(false);
+  });
 });

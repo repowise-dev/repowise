@@ -5,7 +5,20 @@ import { Files, Flame, Skull } from "lucide-react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell } from "./node-shell";
 import { THEME } from "../theme/theme-variables";
+import { containerKindLabel } from "../../zoom/c4";
+import { techName } from "../../zoom/tech-names";
 import type { C4Container } from "../types";
+
+/**
+ * The band label and tone. A library is linked into the containers that run,
+ * so it gets its own quieter tone; with no kind joined in, the plain
+ * "Container · language" label stays.
+ */
+function containerIdentity(c: C4Container): { tone: string; kindLabel: string } {
+  if (c.kind === "library") return { tone: "library", kindLabel: "Library" };
+  if (c.kind) return { tone: "container", kindLabel: `Container · ${containerKindLabel(c.kind)}` };
+  return { tone: "container", kindLabel: c.language ? `Container · ${c.language}` : "Container" };
+}
 
 export interface ContainerNodeProps {
   container: C4Container;
@@ -34,12 +47,16 @@ function ContainerNodeImpl(props: NodeProps) {
       </span>,
     );
   }
+  const { tone, kindLabel } = containerIdentity(container);
+  const tech = container.technologies?.length
+    ? container.technologies.map(techName).join(" · ")
+    : undefined;
   return (
     <NodeShell
-      tone="container"
-      kindLabel={container.language ? `Container · ${container.language}` : "Container"}
+      tone={tone}
+      kindLabel={kindLabel}
       title={container.name}
-      subtitle={container.path !== container.name ? container.path : undefined}
+      subtitle={tech ?? (container.path !== container.name ? container.path : undefined)}
       selected={selected}
       hasDocs={hasDocs}
       footer={<div style={{ display: "flex", gap: 10 }}>{chips}</div>}

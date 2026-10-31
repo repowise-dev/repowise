@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Styled C4 relation edge — blueprint dashed smooth-step line with an
- * optional paper chip showing edge count and dominant edge type.
+ * Styled C4 relation edge — a smooth-step arrow, solid inside the system and
+ * dashed to an external, with a paper chip reading "verb · count".
  */
 
 import { memo } from "react";
@@ -14,6 +14,7 @@ import {
 } from "@xyflow/react";
 import { THEME } from "../theme/theme-variables";
 import type { C4EdgeData } from "../types";
+import { relationLabel } from "../relation-label";
 
 function RelationEdgeImpl(props: EdgeProps) {
   const {
@@ -28,7 +29,8 @@ function RelationEdgeImpl(props: EdgeProps) {
     data,
     selected,
   } = props;
-  const relation = (data as C4EdgeData | undefined)?.relation;
+  const edgeData = data as C4EdgeData | undefined;
+  const relation = edgeData?.relation;
 
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -48,11 +50,9 @@ function RelationEdgeImpl(props: EdgeProps) {
     ? (couplingWidth[relation.coupling ?? ""] ?? (relation.edge_count > 5 ? 2 : 1.25))
     : 1.25;
 
-  // The backend now ships a readable verb ("imports", "co-changes"); keep a
-  // bare-type fallback only for older payloads that predate it.
-  const label = relation
-    ? relation.label || (relation.edge_types[0] ?? "")
-    : "";
+  const label = relation ? relationLabel(relation) : "";
+  // Edges laid out before the flag existed keep the old all-dashed look.
+  const dashed = edgeData?.toExternal !== false && !selected;
 
   return (
     <>
@@ -60,7 +60,7 @@ function RelationEdgeImpl(props: EdgeProps) {
         id={id}
         path={edgePath}
         {...(markerEnd ? { markerEnd } : {})}
-        style={{ stroke, strokeWidth, strokeDasharray: selected ? "none" : "6 4" }}
+        style={{ stroke, strokeWidth, strokeDasharray: dashed ? "6 4" : "none" }}
       />
       {label && (
         <EdgeLabelRenderer>

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Node, Edge } from "@xyflow/react";
 import { buildC4Svg } from "../../src/c4/export/svg-exporter";
+import { relationLabel } from "../../src/c4/relation-label";
 import { exportArchitectureJson } from "../../src/c4/export/json-exporter";
 import { TONE_STYLES } from "../../src/graph-primitives/tone-styles";
 import type { ArchitectureView, ArchFilters, ArchNode, ArchEdge } from "../../src/c4/types";
@@ -272,3 +273,38 @@ describe("Export menu options", () => {
     expect(typeof downloadPng).toBe("function");
   });
 });
+
+describe("relation labels", () => {
+  const relation = { source_id: "a", target_id: "b", label: "imports", edge_count: 1359, edge_types: ["imports"] };
+
+  it("reads verb · count for a code relation", () => {
+    expect(relationLabel({ ...relation, coupling: "tight" })).toBe("imports · 1,359");
+  });
+
+  it("shows the verb alone on a synthetic relation", () => {
+    expect(relationLabel({ ...relation, label: "runs", edge_count: 1 })).toBe("runs");
+  });
+
+  it("draws solid inside the system and dashed to an external in the SVG", () => {
+    const node = (id: string, x: number): Node => ({
+      id,
+      type: "container",
+      position: { x, y: 0 },
+      width: 220,
+      height: 110,
+      data: { kind: "container", container: { id, name: id, path: id, language: "", file_count: 1, symbol_count: 1, hotspot_count: 0, dead_count: 0 } },
+    });
+    const edge = (toExternal: boolean): Edge => ({
+      id: `e-${toExternal}`,
+      source: "a",
+      target: "b",
+      data: { relation: { ...relation, coupling: "tight" }, toExternal },
+    });
+    const solid = buildC4Svg([node("a", 0), node("b", 300)], [edge(false)]);
+    const dashed = buildC4Svg([node("a", 0), node("b", 300)], [edge(true)]);
+    expect(solid).toContain("imports · 1,359");
+    expect(solid).not.toContain('stroke-dasharray="6 4"');
+    expect(dashed).toContain('stroke-dasharray="6 4"');
+  });
+});
+

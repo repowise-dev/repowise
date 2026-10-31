@@ -19,7 +19,7 @@ describe("NodeShell", () => {
       <NodeShell tone="file" kindLabel="FILE" title="test.py" selected={true} />,
     );
     const root = container.firstElementChild as HTMLElement;
-    expect(root.style.borderLeft).toContain("--color-viz-selection");
+    expect(root.style.borderColor).toContain("--color-viz-selection");
   });
 
   it("renders tour highlight with accentPulse animation", () => {
@@ -43,7 +43,7 @@ describe("NodeShell", () => {
       <NodeShell tone="file" kindLabel="FILE" title="test.py" diffState="changed" />,
     );
     const root = container.firstElementChild as HTMLElement;
-    expect(root.style.border).toContain("--color-viz-diff-changed");
+    expect(root.style.borderColor).toContain("--color-viz-diff-changed");
   });
 
   it("renders search highlight with dashed border", () => {
@@ -51,7 +51,7 @@ describe("NodeShell", () => {
       <NodeShell tone="file" kindLabel="FILE" title="test.py" searchHighlight={true} />,
     );
     const root = container.firstElementChild as HTMLElement;
-    expect(root.style.border).toContain("dashed");
+    expect(root.style.borderStyle).toContain("dashed");
   });
 
   it("renders docs badge when hasDocs is true", () => {

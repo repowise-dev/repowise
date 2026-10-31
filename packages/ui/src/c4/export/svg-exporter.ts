@@ -9,6 +9,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { C4EdgeData, C4NodeData } from "../types";
 import { TONE_STYLES, type ToneName } from "../../graph-primitives/tone-styles";
+import { relationLabel } from "../relation-label";
 import { resolveToken } from "../../shared/use-theme-tokens";
 import type { HealthBand } from "@repowise-dev/types/health";
 import { healthBand100 } from "../../health/tokens";
@@ -107,8 +108,12 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+function isLibrary(data: C4NodeData): boolean {
+  return data.kind === "container" && data.container.kind === "library";
+}
+
 function nodeTone(data: C4NodeData): ToneName {
-  return data.kind;
+  return isLibrary(data) ? "library" : data.kind;
 }
 
 function nodeTitle(data: C4NodeData): string {
@@ -146,7 +151,7 @@ function truncate(text: string, max: number): string {
 }
 
 function nodeKindLabel(data: C4NodeData): string {
-  return data.kind.toUpperCase();
+  return isLibrary(data) ? "LIBRARY" : data.kind.toUpperCase();
 }
 
 interface Bounds {
@@ -326,11 +331,14 @@ function renderEdge(e: Edge, nodesById: Map<string, Node>, pal: InkPalette): str
   const path = `M ${sx} ${sy} C ${sx} ${midY}, ${tx} ${midY}, ${tx} ${ty}`;
 
   const data = e.data as unknown as C4EdgeData | undefined;
-  const label = data?.relation?.label?.trim() ?? "";
+  const label = data?.relation ? relationLabel(data.relation).trim() : "";
+  // Same reading as the canvas: solid inside the system, dashed to an
+  // external (and for edges that predate the flag).
+  const dash = data?.toExternal === false ? "" : ' stroke-dasharray="6 4"';
 
   const parts: string[] = [];
   parts.push(
-    `<path d="${path}" fill="none" stroke="${pal.edge}" stroke-width="1.25" stroke-dasharray="6 4" marker-end="url(#c4-arrow)"/>`,
+    `<path d="${path}" fill="none" stroke="${pal.edge}" stroke-width="1.25"${dash} marker-end="url(#c4-arrow)"/>`,
   );
   if (label) {
     const lx = (sx + tx) / 2;

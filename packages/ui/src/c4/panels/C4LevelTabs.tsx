@@ -9,9 +9,9 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { level: 1, label: "L1 · Context", hint: "System + people + external systems" },
-  { level: 2, label: "L2 · Containers", hint: "Packages / deployable units" },
-  { level: 3, label: "L3 · Components", hint: "Sub-modules inside a container" },
+  { level: 1, label: "System context", hint: "System + people + external systems" },
+  { level: 2, label: "Containers", hint: "Packages / deployable units" },
+  { level: 3, label: "Components", hint: "Sub-modules inside a container" },
 ];
 
 export interface C4LevelTabsProps {
