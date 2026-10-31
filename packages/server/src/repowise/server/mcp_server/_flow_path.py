@@ -38,6 +38,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.code_origin import prefer_production
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._graph_files import (
@@ -140,9 +141,7 @@ async def _symbol_anchor_files(session: Any, repo_id: str, question_ids: set[str
         # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
         .order_by(WikiSymbol.file_path)
     )
-    # A test that defines a same-named helper is not where the flow runs.
-    files = [fp for (fp,) in res.all() if fp and not is_test_related_path(fp)]
-    return list(dict.fromkeys(files))
+    return prefer_production(list(dict.fromkeys(fp for (fp,) in res.all() if fp)))
 
 
 async def _resolve_question_anchors(

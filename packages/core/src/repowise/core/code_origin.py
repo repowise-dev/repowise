@@ -1040,6 +1040,15 @@ def path_origin(path: str) -> CodeOrigin:
     return code_origin(path)
 
 
+def prefer_production(paths: list[str]) -> list[str]:
+    """The *paths* whose code ships, in order, or all of them when none does.
+
+    A test helper, a vendored copy or a docs tutorial that defines a production
+    name is not where that name is defined, once production code defines it too.
+    """
+    return [p for p in paths if path_origin(p) == "production"] or list(paths)
+
+
 def ship_rank(path: str) -> int:
     """Sort key for ranked lists: product code 0, other non-test code 1, tests 2.
 

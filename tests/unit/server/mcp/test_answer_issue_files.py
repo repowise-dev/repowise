@@ -173,7 +173,7 @@ async def test_long_trace_queries_basenames_in_chunks(setup_mcp):
     assert issue.traced == ["src/auth/middleware.py"]
 
 
-async def test_a_test_helper_sharing_a_production_name_is_not_a_defining_file():
+async def test_a_copy_that_does_not_ship_is_not_a_defining_file():
     from repowise.server.mcp_server.tool_search_symbols import _defining_files
 
     class _Session:
@@ -189,7 +189,12 @@ async def test_a_test_helper_sharing_a_production_name_is_not_a_defining_file():
 
             return _Res()
 
-    shared = [("get_context", "src/tools/context.py"), ("get_context", "tests/test_instrument.py")]
+    shared = [
+        ("get_context", "src/tools/context.py"),
+        ("get_context", "tests/test_instrument.py"),
+        ("get_context", "vendor/toolkit/context.py"),
+        ("get_context", "docs_src/tutorial/context.py"),
+    ]
     assert await _defining_files(_Session(shared), "r", ["get_context"]) == ["src/tools/context.py"]
     only_test = [("make_user", "tests/factories.py")]
     assert await _defining_files(_Session(only_test), "r", ["make_user"]) == ["tests/factories.py"]

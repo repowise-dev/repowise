@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.server.mcp_server._flow_path import expand_via_flow_path
 
@@ -221,9 +223,11 @@ async def test_a_far_file_only_its_name_matched_is_not_an_endpoint(session, repo
     assert combined is hits
 
 
-async def test_a_test_helper_sharing_the_name_is_not_an_endpoint(session, repo_id):
-    """A test that defines its own ``get_answer`` does not anchor a flow."""
-    helper = "tests/integration/test_instrument.py"
+@pytest.mark.parametrize(
+    "helper", ["tests/integration/test_instrument.py", "docs_src/tutorial/answer.py"]
+)
+async def test_a_copy_that_does_not_ship_is_not_an_endpoint(session, repo_id, helper):
+    """A test or a docs tutorial that defines its own ``get_answer`` does not anchor a flow."""
     session.add(_page(repo_id, _ANSWER))
     session.add(_page(repo_id, _CONF))
     session.add(_symbol(repo_id, "get_answer", _ANSWER))
