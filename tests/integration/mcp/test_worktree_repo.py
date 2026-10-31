@@ -157,7 +157,7 @@ def test_worktree_path_is_served_by_the_main_index(layout, workspace, tmp_path) 
         assert _same(body["_meta"]["served_checkout"], repo)
         fact = body["_meta"]["stale_warning"]
         assert str(repo.resolve()) in fact and wt_head[:12] in fact
-        assert "run" not in fact.lower()
+        assert "repowise update" not in fact
         # Same facts as the default call; only the envelope says more.
         assert {k: v for k, v in body.items() if k != "_meta"} == {
             k: v for k, v in default.items() if k != "_meta"

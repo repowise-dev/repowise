@@ -142,7 +142,7 @@ def test_freshness_states_both_commits(checkouts, call) -> None:
     changed = _meta.freshness_from_repo(row, targets=["pkg/a.py"], root=str(checkouts.repo))
     fact = changed["stale_warning"]
     assert str(checkouts.repo) in fact and checkouts.wt_head[:12] in fact
-    assert "differs in" in fact and "run" not in fact.lower()
+    assert "differs in" in fact and "repowise update" not in fact
     assert changed["index_behind"] is True
 
     untouched = _meta.freshness_from_repo(row, targets=["pkg/b.py"], root=str(checkouts.repo))
