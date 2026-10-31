@@ -425,23 +425,29 @@ def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
 
 
-def _hook_scripts_row() -> DoctorCheck:
-    """Warn when a Claude Code hook runs a script that is not there.
+def _hook_scripts_row(repo_path: _DoctorPath | None = None) -> DoctorCheck:
+    """Warn when a repowise hook runs a script that is not there.
 
     The hook's guard exits 0 when its script is missing, so nothing else
     would ever say the hook did nothing.
     """
     name, check_id = "Agent hook scripts", "agent-hook-scripts"
     try:
-        from repowise.cli.editor_integrations.claude_config import claude_code_unresolved_hooks
+        from repowise.cli.editor_setup import (
+            describe_unresolved_hooks,
+            unresolved_hook_scripts,
+            unresolved_hooks_fix,
+        )
 
-        missing = claude_code_unresolved_hooks()
+        missing = unresolved_hook_scripts(repo_path)
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
     if not missing:
-        return _check(name, True, "every Claude Code hook finds its script", check_id=check_id)
-    detail = f"{', '.join(missing)} not found, so those hooks do nothing"
-    return _check(name, True, detail, check_id=check_id, warn=True, fix="repowise agents refresh")
+        return _check(name, True, "every repowise hook finds its script", check_id=check_id)
+    command, advice = unresolved_hooks_fix(missing)
+    detail = f"not found, so those hooks do nothing: {describe_unresolved_hooks(missing)}"
+    detail += f". {advice}" if advice else ""
+    return _check(name, True, detail, check_id=check_id, warn=True, fix=command)
 
 
 def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
@@ -456,5 +462,5 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         config_row,
         _omission_store_row(repo_path, distill_cfg),
         _rewrite_hook_row(distill_cfg),
-        _hook_scripts_row(),
+        _hook_scripts_row(repo_path),
     ]

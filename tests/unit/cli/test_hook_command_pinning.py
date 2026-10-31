@@ -12,6 +12,7 @@ import pytest
 
 from repowise.cli import mcp_config, self_heal
 from repowise.cli.editor_integrations import claude_config
+from repowise.cli.editor_setup import unresolved_hook_scripts
 
 _SUFFIX = ".exe" if sys.platform == "win32" else ""
 
@@ -86,12 +87,12 @@ def test_a_direct_command_falls_back_to_the_bare_name_for_a_path_with_a_space(
 
 def test_the_self_heal_pins_a_hook_that_relied_on_path(install, settings_path) -> None:
     _write_settings(settings_path, claude_config._AUGMENT_HOOK_COMMAND)
-    assert claude_config.claude_code_unresolved_hooks() == ["repowise-augment"]
+    assert unresolved_hook_scripts() == [("repowise-augment", claude_config.CLAUDE_SETTINGS_LABEL)]
 
     assert claude_config.migrate_claude_code_hooks()
 
     assert claude_config._augment_hook_command() in _commands(settings_path)
-    assert claude_config.claude_code_unresolved_hooks() == []
+    assert unresolved_hook_scripts() == []
 
 
 def test_the_self_heal_leaves_a_live_pin_to_another_install(install, settings_path, tmp_path) -> None:
@@ -226,3 +227,127 @@ def test_a_cursor_reinstall_repoints_the_hook(install, tmp_path, monkeypatch) ->
     assert [e["command"] for e in entries] == [
         f"{_script(install, 'repowise-rewrite')} --agent cursor"
     ]
+
+
+def _enable_plugin(settings_path: Path, hooks: dict) -> None:
+    """An enabled repowise plugin carrying *hooks*, laid out as Claude Code keeps it."""
+    install_path = settings_path.parent / "plugins" / "cache" / "repowise" / "9.9.9"
+    (install_path / "hooks").mkdir(parents=True)
+    (install_path / "hooks" / "hooks.json").write_text(json.dumps({"hooks": hooks}), "utf-8")
+    (settings_path.parent / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"plugins": {"repowise@repowise": [{"installPath": str(install_path)}]}}),
+        encoding="utf-8",
+    )
+    settings_path.write_text(
+        json.dumps({"enabledPlugins": {"repowise@repowise": True}}), encoding="utf-8"
+    )
+
+
+def _hooks(command: str, event: str = "PostToolUse") -> dict:
+    return {event: [{"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}
+
+
+def test_a_plugin_hook_off_path_is_reported_with_the_path_fix(install, settings_path) -> None:
+    from repowise.cli.editor_setup import unresolved_hooks_fix
+
+    _enable_plugin(settings_path, _hooks(claude_config._AUGMENT_HOOK_COMMAND))
+    missing = unresolved_hook_scripts()
+    assert missing == [("repowise-augment", "the repowise Claude Code plugin")]
+    # The plugin keeps the bare name, so the fix is PATH, not a repin.
+    assert unresolved_hooks_fix(missing) == (None, f"Add {install.resolve().as_posix()} to PATH.")
+
+
+def test_repo_local_hooks_off_path_are_reported(install, settings_path, tmp_path) -> None:
+    from repowise.core.owned_paths import (
+        CODEX_HOOK_COMMAND,
+        COVERAGE_HOOK_COMMAND,
+        HEALTH_GATE_HOOK_COMMAND,
+    )
+
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".codex").mkdir()
+    local = {**_hooks(COVERAGE_HOOK_COMMAND), **_hooks(HEALTH_GATE_HOOK_COMMAND, "PreToolUse")}
+    (repo / ".claude" / "settings.local.json").write_text(json.dumps({"hooks": local}), "utf-8")
+    (repo / ".codex" / "hooks.json").write_text(
+        json.dumps({"hooks": _hooks(CODEX_HOOK_COMMAND)}), "utf-8"
+    )
+    # A user's own hook in the same file is never ours to report.
+    mine = _hooks("my-tool --check")
+    (repo / ".claude" / "settings.local.json").write_text(
+        json.dumps({"hooks": {**local, "Stop": mine["PostToolUse"]}}), "utf-8"
+    )
+
+    assert unresolved_hook_scripts(repo) == [
+        ("repowise-augment", "repo/.claude/settings.local.json"),
+        ("repowise-augment", "repo/.codex/hooks.json"),
+    ]
+    assert unresolved_hook_scripts() == []  # no repo, no repo-local files
+
+
+def test_repo_local_hooks_resolve_when_the_script_is_on_path(
+    install, settings_path, tmp_path, monkeypatch
+) -> None:
+    from repowise.core.owned_paths import CODEX_HOOK_COMMAND
+
+    repo = tmp_path / "repo"
+    (repo / ".codex").mkdir(parents=True)
+    (repo / ".codex" / "hooks.json").write_text(
+        json.dumps({"hooks": _hooks(CODEX_HOOK_COMMAND)}), "utf-8"
+    )
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    assert unresolved_hook_scripts(repo) == []
+
+
+def test_doctor_and_init_name_each_place_and_the_fix(install, settings_path, tmp_path, monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from repowise.cli.commands.doctor_cmd._checks.integrations import _hook_scripts_row
+    from repowise.cli.commands.init_cmd._interactive import warn_unresolved_hooks
+
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    _enable_plugin(settings_path, _hooks(claude_config._AUGMENT_HOOK_COMMAND))
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["hooks"] = _hooks(claude_config._AUGMENT_HOOK_COMMAND)
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    row = _hook_scripts_row(tmp_path)
+    assert row.level == "warn"
+    assert "the repowise Claude Code plugin" in row.detail
+    assert "~/.claude/settings.json" in row.detail
+    # fix is one runnable command (the Setup page copies it); PATH goes in detail.
+    assert row.fix == "repowise agents refresh"
+    assert row.detail.endswith(f"Add {install.resolve().as_posix()} to PATH.")
+
+    console = MagicMock()
+    warn_unresolved_hooks(console, [tmp_path])
+    printed = str(console.print.call_args)
+    assert "the repowise Claude Code plugin" in printed and "to PATH" in printed
+
+
+def test_without_scripts_here_the_fix_is_a_reinstall(tmp_path, monkeypatch) -> None:
+    from repowise.cli.editor_setup import unresolved_hooks_fix
+
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    missing = [("repowise-augment", claude_config.CLAUDE_SETTINGS_LABEL)]
+    assert unresolved_hooks_fix(missing) == (
+        None,
+        "Reinstall repowise so repowise-augment is on PATH.",
+    )
+
+
+def test_init_never_fails_over_the_hook_check(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from repowise.cli import editor_setup
+    from repowise.cli.commands.init_cmd._interactive import warn_unresolved_hooks
+
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
+    def boom(_repo=None):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(editor_setup, "unresolved_hook_scripts", boom)
+    console = MagicMock()
+    warn_unresolved_hooks(console, [Path("repo")])
+    console.print.assert_not_called()

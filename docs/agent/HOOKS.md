@@ -70,8 +70,13 @@ Each hook names the entry point by the absolute path of the install that wrote
 it, with a PATH lookup as the fallback, so a CLI installed in a virtual
 environment that is not on PATH still runs its hooks. When another install runs
 and the pinned one is gone, the hook is repointed. `repowise doctor` warns
-("Agent hook scripts") when a hook's entry point cannot be found, and
-`repowise agents refresh` repoints every hook at the install you run it from.
+("Agent hook scripts") and `init` prints a line when a hook's entry point cannot
+be found. That covers these hooks, the plugin's, and the repo's own
+`.claude/settings.local.json` and `.codex/hooks.json` hooks. `repowise agents
+refresh` repoints the hooks in `~/.claude/settings.json` at the install you run
+it from. The plugin and repo-local hooks keep the bare name, since a plugin
+ships without the CLI and repo files may be committed, so for those the fix is
+to put the install's scripts directory on PATH.
 The Codex and Cursor rewrite hooks pin the same way.
 
 `repowise init --no-editor-setup` skips this group, along with the MCP server

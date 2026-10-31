@@ -116,6 +116,29 @@ describe("SetupPage", () => {
   });
 });
 
+describe("agent hook scripts row", () => {
+  it("lists a hook that cannot find its script under Needs attention with its fix", async () => {
+    renderPage(
+      setupFixture({
+        checks: [
+          {
+            id: "agent-hook-scripts",
+            name: "Agent hook scripts",
+            level: "warn",
+            detail: "not found, so those hooks do nothing: repowise-augment (repo/.codex/hooks.json). Add C:/env/Scripts to PATH.",
+            fix: null,
+          },
+        ],
+      }),
+    );
+    await screen.findByText("Agent hook scripts");
+    const row = within(document.querySelector("[data-row='check-agent-hook-scripts']") as HTMLElement);
+    expect(row.getByText(/Add C:\/env\/Scripts to PATH\./)).toBeTruthy();
+    // No single command fixes a PATH problem, so the row falls back to doctor.
+    expect(row.getByText("repowise doctor --format json")).toBeTruthy();
+  });
+});
+
 describe("unreadable sections", () => {
   it("says doctor couldn't run instead of showing an empty Needs attention", async () => {
     renderPage(setupFixture({ checks_available: false, checks: [] }));

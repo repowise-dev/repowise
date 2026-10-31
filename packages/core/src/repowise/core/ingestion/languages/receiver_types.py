@@ -39,9 +39,13 @@ from ..type_names import (
 )
 
 # A type as written before a declared name: optionally qualified, generic to two
-# levels, an array. A third level yields no match: a deliberate ceiling, since a
-# deeper group needs a real bracket matcher.
-_TYPE = r"[A-Z]\w*(?:\.\w+)*(?:<(?:[^<>]|<[^<>]*>)*>)?(?:\[\])*"
+# levels, an array of any rank (``[]``, ``[][]``, ``[,]``). A third level
+# yields no match: a deliberate ceiling, since a deeper group needs a real
+# bracket matcher.
+_TYPE = r"[A-Z]\w*(?:\.\w+)*(?:<(?:[^<>]|<[^<>]*>)*>)?(?:\[(?:,\s*)*\])*"
+
+# The same spelling, anchored: distinguishes ``Item[]`` from ``Item``.
+_TYPE_SPELLING = re.compile(_TYPE)
 
 # ``T name`` closed by punctuation that can end a declaration, which keeps it
 # off ``(Foo) bar`` and ``foo(Bar.BAZ, qux)``. The closer is captured because it
@@ -1071,6 +1075,11 @@ def _is_java_array(raw: str, language: str) -> bool:
     return language == "java" and raw.endswith(("]", "..."))
 
 
+def _is_csharp_array(raw: str, language: str) -> bool:
+    """A C# array spelling: ``Item[]``, ``Item[][]``, ``Item[,]``."""
+    return language == "csharp" and raw.endswith("]") and _TYPE_SPELLING.fullmatch(raw) is not None
+
+
 def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     """``(bare name, unwrapped)`` for *raw*, or ``(None, False)``.
 
@@ -1080,7 +1089,11 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     the lookup falls back to the bare name. A Java ``Token.Tag`` keeps its
     outer type, which picks the member type the lookup means.
     """
-    if _nests_in_a_builtin(raw, language) or _is_java_array(raw, language):
+    if (
+        _nests_in_a_builtin(raw, language)
+        or _is_java_array(raw, language)
+        or _is_csharp_array(raw, language)
+    ):
         return None, False
     inner = unwrap_pointer_like(raw) if language == "cpp" else None
     name = inner or (raw if raw.isidentifier() else bare_type_name(raw))
@@ -1204,7 +1217,9 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             raw = match.group("type")
             if raw not in resolved:
                 resolved[raw] = _usable_type_name(raw, language)
-                if resolved[raw][0] is None and language in _MARKED_BUILTIN_LANGUAGES:
+                if resolved[raw][0] is None and (
+                    language in _MARKED_BUILTIN_LANGUAGES or _is_csharp_array(raw, language)
+                ):
                     resolved[raw] = (_builtin_type_name(raw, language), False)
             type_name, unwrapped = resolved[raw]
             if type_name is None:
@@ -1248,6 +1263,12 @@ def _builtin_type_name(raw: str, language: str) -> str | None:
         dimensions = raw.replace(" ", "").count("[]") + raw.endswith("...")
         element = strip_type_arguments(raw.removesuffix("...")).strip()
         return _EXTERNAL_TYPE + element + "[]" * dimensions
+    if _is_csharp_array(raw, language):
+        # The array itself is the builtin, rank brackets kept (``Item[,]``
+        # is not ``Item[]``), so no call on it reaches the element type.
+        head, _, brackets = raw.partition("[")
+        element = strip_type_arguments(head).strip()
+        return _EXTERNAL_TYPE + element + "[" + brackets
     if _nests_in_a_builtin(raw, language):
         return _EXTERNAL_TYPE + strip_type_arguments(raw).strip()
     name = raw if raw.isidentifier() else bare_type_name(raw)
@@ -1709,10 +1730,10 @@ _CS_ITERABLE = (
 _CS_ELEMENT = r"[A-Za-z_]\w*(?:<[^<>\n]*>)?"
 _CS_ELEMENT_SHAPES = (
     re.compile(rf"{_CS_ITERABLE}\s*<\s*(?P<value>{_CS_ELEMENT})\??\s*>"),
-    re.compile(rf"(?P<value>{_CS_ELEMENT})\[\]"),
+    re.compile(rf"(?P<value>{_CS_ELEMENT})\[(?:,\s*)*\]"),
 )
 _CS_CONTAINER = (
-    rf"(?:{_CS_ITERABLE}\s*<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>|{_CS_ELEMENT}\[\])"
+    rf"(?:{_CS_ITERABLE}\s*<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>|{_CS_ELEMENT}\[(?:,\s*)*\])"
 )
 # A parameter, a local, a field or a property (``{`` opens its accessors).
 _CS_CONTAINER_DECLARATIONS = (
