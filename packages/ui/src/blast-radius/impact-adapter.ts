@@ -49,9 +49,9 @@ export interface ImpactAdapter {
   fileHref?(path: string): string;
 
   /**
-   * Rich reviewer panel for the analyzed changeset. Kept as a slot so each app
-   * supplies its own reviewer fetch (or omits it entirely — hosted may have no
-   * reviewer endpoint, which degrades to no panel rather than an error).
+   * @deprecated Not rendered: the review's "Who to ask" block names the
+   * changed files' owners from the analysis itself, so owners show once.
+   * Kept so a host that still passes it type-checks.
    */
   renderReviewers?(changedFiles: string[]): ReactNode;
 }

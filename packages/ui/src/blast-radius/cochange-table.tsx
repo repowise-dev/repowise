@@ -11,17 +11,17 @@ interface CochangeTableProps {
 const COLUMNS: ResponsiveColumn<CochangeWarning>[] = [
   {
     key: "changed",
-    header: "Changed File",
+    header: "Changed file",
     render: (r) => <FilePath path={r.changed} copyable />,
   },
   {
     key: "missing_partner",
-    header: "Missing Partner",
+    header: "Usually changes with it",
     render: (r) => <FilePath path={r.missing_partner} copyable />,
   },
   {
     key: "score",
-    header: "Co-change Count",
+    header: "Times together",
     align: "right",
     render: (r) => <span className="tabular-nums">{r.score}</span>,
   },

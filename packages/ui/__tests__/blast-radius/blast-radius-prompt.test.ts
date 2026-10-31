@@ -21,11 +21,28 @@ describe("buildBlastRadiusPrompt", () => {
     expect(p).toContain("`tests/test_a.py`");
     expect(p).toContain("`packages/core/src/a_helpers.py` (with `packages/core/src/a.py`)");
     expect(p).toContain("Ann <ann@example.com>, 40 files");
-    expect(p).toContain("120 files in 4 modules");
+    expect(p).toContain("120 source files in 4 modules");
     expect(p).toContain("Verdict:");
     // One test listed of 14: the rest are counted.
     expect(p).toContain("13 more of 14 in all");
     expect(p.split("\n").length).toBeLessThan(60);
+  });
+
+  it("states the verdict, counts tests apart, gives the commands, and names the changed files' owners", () => {
+    const p = buildBlastRadiusPrompt({
+      input: {
+        ...INPUT,
+        status: "Look first: 1 changed file changes often or has weak health.",
+        reach: { ...INPUT.reach, tests: 30 },
+        testCommands: ["pytest tests/test_a.py", "npm --prefix packages/ui test -- b.test.tsx"],
+        owners: [{ name: "Ann", email: "ann@example.com", files: 1, of: 2 }],
+      },
+    });
+    expect(p).toContain("Screen verdict: Look first: 1 changed file changes often or has weak health.");
+    expect(p).toContain("30 test files also import it (tests to run, not reach)");
+    expect(p).toContain(["pytest tests/test_a.py", "npm --prefix packages/ui test -- b.test.tsx"].join("\n"));
+    expect(p).toContain("## Owners of the changed files");
+    expect(p).toContain("Ann <ann@example.com>, owns 1 of the 2 changed files");
   });
 
   it("names each kind of change and how to read it", () => {
