@@ -131,7 +131,9 @@ changed after the session's previous read of it, and points at
 **Skeleton reads** (opt-in, `hooks.read_skeleton: true`). An unbounded `Read`
 of a large indexed file returns the file's skeleton, once per file per session.
 Signatures keep their real line numbers; bodies collapse to `... N lines (a-b)`
-markers, so the agent can range-read any elided span. Reading the file again
+markers, so the agent can range-read any elided span. When a file's skeleton
+is too long to serve, it comes back as an outline instead: one line per symbol
+at its real line number, long signatures cut short. Reading the file again
 with no range returns it whole. A skeleton read still satisfies Claude Code's
 read-before-edit check, so an `Edit` or `Write` on such a file raises a one-line
 warning, once per file, until the file is read in full.

@@ -23,6 +23,11 @@ Two modes:
   kept, and each function/method body elided to one marker carrying its line
   range. Classes are containers: their methods' bodies are elided, the rest
   of the class stays.
+- ``"outline"``: one line per symbol, nothing else. A multi-line signature
+  is joined onto its first line and cut at ``outline_width`` characters;
+  imports, docstrings and module code are elided with the bodies. For files
+  whose signatures alone are too long to serve, so the reader still gets
+  every symbol and the line range that reads it.
 
 This module is pure: it sees source text and symbol records, never a
 database. Callers (MCP tools, hooks, tests) fetch the rows and pass them in.
@@ -81,6 +86,9 @@ _DECOR_RE = re.compile(r"^\s*(?:#|//)\s*[-=~*#_]{4,}\s*$")
 
 _DOCSTRING_DELIMS = ('"""', "'''")
 
+#: Outline mode cuts a joined signature to this many characters by default.
+_OUTLINE_WIDTH = 120
+
 #: Symbol kinds whose body plus mode elides; every other kind is kept whole.
 _CALLABLE_KINDS = frozenset({"function", "method"})
 
@@ -111,7 +119,7 @@ class SkeletonResult:
     """Outcome of one skeletonization."""
 
     text: str
-    mode: str  # "smart" | "signatures" | "plus" | "raw"
+    mode: str  # "smart" | "signatures" | "plus" | "outline" | "raw"
     full_tokens: int
     skeleton_tokens: int
     symbol_count: int
@@ -132,6 +140,7 @@ def build_skeleton(
     token_budget: int = DEFAULT_TOKEN_BUDGET,
     query: str | None = None,
     hotspot: bool = False,
+    outline_width: int = _OUTLINE_WIDTH,
 ) -> SkeletonResult:
     """Skeletonize *source* by slicing on the persisted bounds in *symbols*.
 
@@ -151,6 +160,16 @@ def build_skeleton(
             full_tokens=full_tokens,
             skeleton_tokens=full_tokens,
             symbol_count=0,
+        )
+
+    if mode == "outline":
+        text = _outline(lines, usable, outline_width)
+        return SkeletonResult(
+            text=text,
+            mode="outline",
+            full_tokens=full_tokens,
+            skeleton_tokens=estimate_tokens(text),
+            symbol_count=len(usable),
         )
 
     focused = [sym for sym in usable if sym.focus]
@@ -290,6 +309,58 @@ def _elide_callable_bodies(
         body_start, body_end = body_span(lines, start, end)
         for i in range(body_start, body_end + 1):
             keep[i] = False
+
+
+def _outline(lines: list[str], symbols: list[SkeletonSymbol], width: int) -> str:
+    """Outline mode: each symbol's signature on its own first line, all else elided.
+
+    The joined signature replaces the text of the line it starts on, so every
+    kept line still sits at its real line number and every elision marker
+    still names the range it covers.
+    """
+    shown = list(lines)
+    keep = [False] * len(lines)
+    for sym in symbols:
+        start = sym.start_line - 1
+        end = signature_end(lines, start, sym.end_line - 1)
+        head = next(
+            (i for i in range(start, end + 1) if not lines[i].lstrip().startswith(("@", "#["))),
+            start,
+        )
+        joined = _join_signature(lines[head : end + 1])
+        if joined.count("(") > joined.count(")") and sym.signature:
+            # Longer than the scan window: the indexed signature is whole.
+            joined = _join_signature(sym.signature.splitlines())
+        if len(joined) > width:
+            joined = joined[: max(1, width - 3)].rstrip() + "..."
+        shown[head] = re.match(r"[ \t]*", lines[head]).group(0) + joined
+        keep[head] = True
+    # A run too short for a marker that _render would drop as blank would
+    # shift every line number after it, so short runs are shown as they are.
+    _keep_short_runs(keep)
+    return _render(shown, keep)
+
+
+def _join_signature(sig_lines: list[str]) -> str:
+    """A signature's lines joined onto one, without the padding inside brackets."""
+    joined = " ".join(part.strip() for part in sig_lines if part.strip())
+    joined = re.sub(r"([(\[]) ", r"\1", joined)
+    return re.sub(r",? ([)\]])", r"\1", joined)
+
+
+def _keep_short_runs(keep: list[bool]) -> None:
+    """Mark every omitted run of one or two lines as kept."""
+    i, total = 0, len(keep)
+    while i < total:
+        if keep[i]:
+            i += 1
+            continue
+        j = i
+        while j < total and not keep[j]:
+            j += 1
+        if j - i <= 2:
+            keep[i:j] = [True] * (j - i)
+        i = j
 
 
 def _docstring_lines(lines: list[str], start: int, end: int) -> list[int]:

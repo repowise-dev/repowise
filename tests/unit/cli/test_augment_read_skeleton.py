@@ -292,14 +292,14 @@ def test_the_omission_store_path_matches_distills(repo: Path) -> None:
 
 
 def test_the_replacement_is_smaller_than_what_it_replaced(repo: Path) -> None:
-    replacement = _read(repo).replacement
+    replacement = _served(_read(repo))
     assert replacement is not None
     full = (repo / "pkg" / "big.py").read_text(encoding="utf-8")
     assert len(replacement) < len(full) / 2
 
 
 def test_it_never_exceeds_the_output_cap(repo: Path) -> None:
-    replacement = _read(repo).replacement
+    replacement = _served(_read(repo))
     assert replacement is not None
     assert len(replacement) <= _MAX_OUTPUT_CHARS
 
@@ -312,6 +312,42 @@ def test_a_skeleton_too_large_for_the_cap_is_skipped_not_truncated(repo: Path) -
     _write_index(repo, "pkg/big.py", source)
 
     assert _read(repo).replacement is None
+
+
+def _long_signature_source(funcs: int = 70) -> str:
+    """Signatures long enough that signatures-only overflows the cap."""
+    out = ['"""Module docstring."""', "", "import os", ""]
+    for i in range(funcs):
+        out.append(f"def func_{i}(")
+        out.extend(f"    parameter_number_{j}: int = {j}," for j in range(9))
+        out.append("    ) -> int:")
+        out.extend(f"    total_{j} = parameter_number_0 + {j}" for j in range(10))
+        out.append("    return total_0")
+        out.append("")
+    return "\n".join(out)
+
+
+def test_a_file_whose_signatures_overflow_the_cap_is_served_as_an_outline(repo: Path) -> None:
+    import re
+
+    source = _long_signature_source()
+    (repo / "pkg" / "big.py").write_text(source, encoding="utf-8")
+    (repo / ".repowise" / "wiki.db").unlink()
+    _write_index(repo, "pkg/big.py", source)
+
+    replacement = _served(_read(repo))
+    assert replacement is not None
+    assert len(replacement) <= _MAX_OUTPUT_CHARS
+    assert "this is its outline" in replacement
+    # Every symbol is listed on its real line, its signature joined onto it.
+    lines = source.splitlines()
+    numbered = re.findall(r"^\s*(\d+)\t(.*)$", replacement, re.MULTILINE)
+    heads = [(int(n), text) for n, text in numbered if text.startswith("def ")]
+    assert len(heads) == 70
+    for n, text in heads:
+        assert text.startswith(lines[n - 1] + "parameter_number_0")
+    # Bodies stay recoverable: every elided span still names its range.
+    assert re.search(r"\.\.\. \d+ lines \(\d+-\d+\)", replacement)
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,9 @@ holds the first five, :func:`skeleton_replacement` the rest):
 5. **Indexed**, with symbol bounds persisted.
 6. **Worth it** — skeleton well under full, and the saving clears the floor.
 7. **Under the output cap**, whole. A truncated skeleton would lose its
-   trailing elision ranges, which is the part that makes this reversible.
+   trailing elision ranges, which is the part that makes this reversible, so
+   an overflowing render falls back to signatures only, then to an outline
+   (one line per symbol), and is skipped only when none of them fit.
 
 The harness capability probe, the ``hooks.read_skeleton`` opt-in, the
 Read-shaped wire payload, the no-payload-no-ledger-row rule and both ledger
@@ -160,13 +162,10 @@ def skeleton_replacement(
 
     text = _render(rel, result, total_lines)
     if len(text) > _MAX_OUTPUT_CHARS:
-        # Without this retry the cap scales backwards: the biggest files, which
-        # have the most to save, are the ones whose signatures alone overflow
-        # it. Signatures-only drops the docstring summaries and usually fits.
-        result = build_skeleton(source, symbols, mode="signatures")
-        text = _render(rel, result, total_lines)
-        if len(text) > _MAX_OUTPUT_CHARS:
+        fitted = _fit_under_cap(rel, source, symbols, total_lines)
+        if fitted is None:
             return None
+        result, text = fitted
     return Offer(
         key=rel,
         text=text,
@@ -178,6 +177,33 @@ def skeleton_replacement(
     )
 
 
+#: Tighter renders tried in order when the configured one overflows the cap.
+#: Without them the cap scales backwards: the biggest files, which have the
+#: most to save, are the ones whose signatures alone overflow it. Signatures
+#: drops the docstring summaries; the outline keeps one line per symbol, its
+#: signature cut at the given width.
+_FALLBACK_RENDERS: tuple[tuple[str, int], ...] = (
+    ("signatures", 0),
+    ("outline", 120),
+    ("outline", 64),
+)
+
+
+def _fit_under_cap(
+    rel: str, source: str, symbols: list[SkeletonSymbol], total_lines: int
+) -> tuple[SkeletonResult, str] | None:
+    """The first fallback render that fits the output cap, or None."""
+    from repowise.core.distill.skeleton import build_skeleton
+
+    for mode, width in _FALLBACK_RENDERS:
+        kwargs = {"outline_width": width} if width else {}
+        result = build_skeleton(source, symbols, mode=mode, **kwargs)
+        text = _render(rel, result, total_lines)
+        if len(text) <= _MAX_OUTPUT_CHARS:
+            return result, text
+    return None
+
+
 #: The elision marker ``_render`` in distill.skeleton emits: indent, then
 #: ``... N lines (start-end)``, 1-indexed and inclusive.
 _ELISION_RE = re.compile(r"^\s*\.\.\. \d+ lines \((\d+)-(\d+)\)\s*$")
@@ -186,10 +212,18 @@ _ELISION_RE = re.compile(r"^\s*\.\.\. \d+ lines \((\d+)-(\d+)\)\s*$")
 def _render(rel: str, result: SkeletonResult, total_lines: int) -> str:
     """Header plus numbered skeleton — the header is the reversibility contract."""
     body = _number(result.text, total_lines)
+    # The outline cuts long signatures, so it says so: a cut line ends in "...".
+    outline = (
+        "This file's full skeleton is over the size cap, so this is its outline: one "
+        "line per symbol, long signatures cut short with `...`.\n"
+        if result.mode == "outline"
+        else ""
+    )
     return (
         f"[repowise] Serving the indexed skeleton of {rel} in place of the full file "
         f"(~{result.skeleton_tokens} tokens vs ~{result.full_tokens}; "
         f"{result.symbol_count} symbols).\n"
+        f"{outline}"
         "There are two gutters. Ignore the outer one — Claude Code numbers the lines it "
         "is handed, and it is counting skeleton lines. The inner gutter is this file's "
         "real line numbers, and it is the one to Read against.\n"
