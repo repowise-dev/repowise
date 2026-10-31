@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
@@ -84,6 +85,7 @@ class ResolveMixin:
                         existing = self._graph[rh.child_id][rh.parent_id]
                         if rh.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rh.confidence
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.heritage")
 
@@ -725,6 +727,7 @@ class ResolveMixin:
                     existing["supplied_props"] = None
                 else:
                     existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.calls")
 

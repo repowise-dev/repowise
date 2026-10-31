@@ -40,6 +40,9 @@ meaning is versioned with the estimator.
 - `pre_budget_input_tokens`: observed serialized input immediately before the
   adapter's final response budget. For distill/hook this equals the bounded raw
   baseline; for counterfactual MCP it can differ from the replaced-input estimate.
+  MCP takes it in the delivered shape: the trust envelope and lean pass run on a
+  copy before it is sized, so only content the budget cut counts as dropped,
+  never metadata the lean pass removes from every reply.
 - `delivered_input_tokens`: final serialized input actually delivered, including
   recoverability markers and final metadata.
 - `dropped_input_tokens`: observed input removed by the operation,
@@ -110,11 +113,28 @@ sides, since Claude Code numbers the replacement it is handed too.
 | `get_context` module / symbol card | 600 per listed child file (cap 20,000) / 1,200 | a directory skim / locating a definition and its callers |
 | `get_answer`, synthesised at high or medium confidence | 400 for the search plus one Read of each cited file | the answer stands in for finding and reading its sources |
 | `get_answer`, low confidence or no provider | one Read per file whose whole verified body it inlined, plus 400 per other file it points at | a reply that says "verify" does not replace those reads; it replaces the search, as `search_codebase` credits, and any body it served, as `get_symbol` credits |
-| `get_why` | 3,000 per call plus 2,000 per file whose history it serves (cap 15,000) | searching decision records and commits for the question, and `git log -p` on each file: its median is 2,054 tokens across 23 httpx files and 3,089 across 16 files of this repository |
+| `get_why` | 3,000 per call that serves evidence, plus 2,000 per file whose history it serves (cap 15,000) | searching decision records and commits for the question, and `git log -p` on each file: its median is 2,054 tokens across 23 httpx files and 3,089 across 16 files of this repository |
 | `get_change_risk` | 500 plus 1,500 per changed file the score counted (cap 12,000) | reading the diff; declared from the scorer's own file count, which the default response does not show |
 
 A baseline that comes out below the response it replaces saves zero; it is
 never raised to make the tool look useful.
+
+A reply that served nothing replaced nothing, so it has no `R` and no per-call
+floor applies. Each tool decides that from its own reply:
+
+| Tool | Served nothing when |
+|---|---|
+| any tool | the reply carries `resolved: false` (an unknown decision, evidence or finding id) |
+| `get_why` | the reply has no `answer_basis` (no decision, episode, rationale, commit history, documentation or candidate was served); a reference lookup when `resolved` is false; the dashboard, which never has a basis, when every count is zero and every lane is empty |
+| `get_risk` | every target is unresolved (not indexed, no such path) and the reply names no file that may break or missed a co-change |
+| `get_health` | every named target is listed under `unresolved` and no file was measured |
+| `get_change_risk` | `status` is `nothing_to_score` (an empty diff) |
+| `get_blast_radius` | no requested target matched a service |
+| `get_context`, `search_codebase`, `get_answer` | every target card is an error, the result list is empty, or the reply points at no file |
+
+A reply that ran and found nothing to report, such as a dead-code sweep with no
+findings or a conformance check with no violations, still answered the question
+and keeps its floor.
 
 ## Correlation and attribution
 

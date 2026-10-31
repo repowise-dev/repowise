@@ -19,6 +19,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cancellation import check_cancelled
 from repowise.core.pipeline.parse_pool import (
     PENDING,
     ParseTimeoutError,
@@ -540,6 +541,7 @@ def _parse_in_process(
     for i, (_idx, (fi, source), _h) in enumerate(to_parse):
         if results[i] is not PENDING:
             continue
+        check_cancelled()
         try:
             if parser is None:
                 parser = ASTParser()

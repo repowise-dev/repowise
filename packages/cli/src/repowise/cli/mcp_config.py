@@ -265,6 +265,16 @@ def load_existing_config(config_path: Path) -> dict:
     return load_json_object(config_path)
 
 
+def read_hooks_block(path: Path) -> object:
+    """The ``hooks`` block of an agent's JSON hook file; None when absent or unreadable."""
+    if not path.is_file():
+        return None
+    try:
+        return load_existing_config(path).get("hooks")
+    except Exception:  # a broken file is reported by the checks that own it
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Per-agent delegators
 #

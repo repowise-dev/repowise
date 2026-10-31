@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
 
@@ -124,6 +126,212 @@ class TestCppBaseClassReceiver:
         _repo(tmp_path, specs_h)
         targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_align")
         assert not any(t.endswith("::set_align") for t in targets)
+
+
+@pytest.mark.parametrize("alias", ["using IV = V<int>;", "typedef V<int> IV;"])
+@pytest.mark.parametrize("header", [False, True, "guarded", "unparsed guard"])
+@pytest.mark.parametrize("declaration", ["auto v = IV();", "auto v = IV{};", "IV v;"])
+def test_a_cpp_type_alias_reaches_an_inherited_method(
+    tmp_path: Path, alias: str, header: bool | str, declaration: str
+) -> None:
+    types = (
+        "struct B {\n  int size() const { return 1; }\n};\n"
+        "template <class T> struct V : B {};\n" + alias + "\n"
+    )
+    prefix = types
+    if header:
+        if header == "unparsed guard":
+            # A class head split across #if/#else makes tree-sitter wrap the
+            # whole guard in an ERROR node, as it does for fmt/format.h.
+            types += "#if X\nstruct C {\n#else\nstruct C : B {\n#endif\n  void g();\n};\n"
+        if header in ("guarded", "unparsed guard"):
+            types = "#ifndef TYPES_H\n#define TYPES_H\n" + types + "#endif\n"
+        (tmp_path / "types.h").write_text(types)
+        prefix = '#include "types.h"\n'
+    (tmp_path / "a.cpp").write_text(prefix + "void f() {\n  " + declaration + "\n  v.size();\n}\n")
+    owner = "types.h" if header else "a.cpp"
+    assert owner + "::B::size" in _call_targets(_build(tmp_path), "a.cpp::f")
+
+
+@pytest.mark.parametrize("target", ["V", "V<int>"])
+def test_a_cpp_alias_chain_reaches_the_target_class(tmp_path: Path, target: str) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "template <class T = int> struct V {\n  void run() {}\n};\n"
+        f"using First = {target};\nusing Second = First;\ntypedef Second Last;\n"
+        "void f() {\n  Last v;\n  v.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::V::run"}
+
+
+@pytest.mark.parametrize(
+    "aliases",
+    [
+        "using IV = std::string;",
+        "using IV = Missing;",
+        "using IV = Other;\nusing Other = IV;",
+        "using IV = IV;",
+    ],
+)
+def test_an_unresolved_cpp_alias_invents_no_method_edge(tmp_path: Path, aliases: str) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct string {\n  void size() {}\n};\n"
+        "struct Other {\n  void size() {}\n};\n"
+        + aliases + "\nvoid f() {\n  IV v;\n  v.size();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+@pytest.mark.parametrize("target", ["std::chrono::weekday", "Missing"])
+def test_a_preprocessor_alias_keeps_its_fallback_class(tmp_path: Path, target: str) -> None:
+    # fmt/chrono.h: the alias and the class are the two sides of one #if.
+    (tmp_path / "a.cpp").write_text(
+        "#if defined(HAS_WEEKDAY)\nusing weekday = " + target + ";\n#else\n"
+        "class weekday {\n public:\n  unsigned c_encoding() const { return 0; }\n};\n#endif\n"
+        "unsigned f(weekday wd) {\n  return wd.c_encoding();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::weekday::c_encoding"}
+
+
+def test_a_cpp_alias_chain_has_a_depth_limit(tmp_path: Path) -> None:
+    aliases = "".join(f"using A{i} = A{i + 1};\n" for i in range(20))
+    (tmp_path / "a.cpp").write_text(
+        "struct A20 {\n  void run() {}\n};\n" + aliases
+        + "void f() {\n  A0 v;\n  v.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_two_headers_declaring_the_same_cpp_alias_refuse(tmp_path: Path) -> None:
+    for name in ("A", "B"):
+        (tmp_path / f"{name}.h").write_text(
+            f"struct {name} {{\n  void run() {{}}\n}};\nusing IV = {name};\n"
+        )
+    (tmp_path / "a.cpp").write_text(
+        '#include "A.h"\n#include "B.h"\nvoid f() {\n  IV v;\n  v.run();\n}\n'
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_an_alias_cannot_borrow_a_type_from_an_unincluded_file(tmp_path: Path) -> None:
+    (tmp_path / "other.h").write_text("struct Missing {\n  void run() {}\n};\n")
+    (tmp_path / "a.cpp").write_text(
+        "using IV = Missing;\nvoid f() {\n  IV v;\n  v.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    ["auto v = IV().other();", "auto v = IV(make()).other();", "auto v = IV() + other;"],
+)
+def test_a_cpp_constructor_expression_does_not_type_its_result(
+    tmp_path: Path, declaration: str
+) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct V {\n  void run() {}\n};\nusing IV = V;\n"
+        "void f() {\n  " + declaration + "\n  v.run();\n}\n"
+    )
+    assert "a.cpp::V::run" not in _call_targets(_build(tmp_path), "a.cpp::f")
+
+
+@pytest.mark.parametrize("scope", ["namespace ns", "void other()"])
+def test_a_scoped_cpp_alias_does_not_hide_an_unrelated_global_class(
+    tmp_path: Path, scope: str
+) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        + scope + " {\n  using Peer = External;\n}\n"
+        + "void f(Peer& peer) {\n  peer.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_an_in_scope_cpp_alias_cannot_borrow_a_global_class(
+    tmp_path: Path, scoped: bool
+) -> None:
+    body = "void f() {\n  using Peer = External;\n  Peer peer;\n  peer.run();\n}\n"
+    if scoped:
+        body = "namespace ns {\n" + body + "}\n"
+    (tmp_path / "a.cpp").write_text("struct Peer {\n  void run() {}\n};\n" + body)
+    assert "a.cpp::Peer::run" not in _call_targets(_build(tmp_path), "a.cpp::f")
+
+
+@pytest.mark.parametrize("before", [False, True])
+@pytest.mark.parametrize("compact", [False, True])
+def test_a_cpp_parameter_keeps_the_type_bound_before_a_body_alias(
+    tmp_path: Path, before: bool, compact: bool
+) -> None:
+    body = ["using Peer = External;", "peer.run();"]
+    if not before:
+        body.reverse()
+    function = "void f(Peer& peer) {\n" + "\n".join(body) + "\n}\n"
+    if compact:
+        function = function.replace("\n", " ")
+    (tmp_path / "a.cpp").write_text("struct Peer {\n  void run() {}\n};\n" + function)
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
+def test_a_cpp_field_keeps_the_type_bound_before_a_method_alias(tmp_path: Path) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        "struct Host {\n  Peer peer;\n  void f() {\n"
+        "    using Peer = External;\n    peer.run();\n  }\n};\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::Host::f") == {"a.cpp::Peer::run"}
+
+
+def test_a_redeclared_cpp_local_under_a_body_alias_declines(tmp_path: Path) -> None:
+    # Two `peer`s: only the one in the aliased block calls run().
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        "void f(bool c) {\n"
+        "  if (c) {\n    Peer peer;\n    (void)peer;\n  } else {\n"
+        "    using Peer = External;\n    Peer peer;\n    peer.run();\n  }\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_a_redeclared_cpp_local_without_a_matching_alias_keeps_its_edge(tmp_path: Path) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        "void f(bool c) {\n"
+        "  if (c) {\n    Peer peer;\n    (void)peer;\n  } else {\n"
+        "    using Other = External;\n    Peer peer;\n    peer.run();\n  }\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
+def test_cpp_alias_facts_record_target_and_scope() -> None:
+    from repowise.core.ingestion.call_receiver_typing.cpp import _cpp_facts_of
+
+    text = (
+        "#ifndef A_H\n#define A_H\nusing IV = V<int>;\n#endif\n"
+        "typedef struct {\n  int x;\n} Point;\n"
+        "typedef void (*Callback)(int);\n"
+        "namespace ns {\nusing Local = W;\n}\n"
+        "void f(Peer peer) {\n  using Body = W;\n}\n"
+    )
+    facts = _cpp_facts_of(text)
+    aliases = {alias.name: alias for alias in facts.aliases}
+
+    # A guarded file-scope alias keeps its target; a struct typedef is the
+    # class itself and a function-pointer typedef names no class.
+    assert aliases["IV"].target == "V" and aliases["IV"].scope is None
+    assert "Point" not in aliases and "Callback" not in aliases
+    # Namespace and body aliases bind their name only from their own start.
+    assert aliases["Local"].target is None
+    assert aliases["Body"].target is None
+    assert aliases["Body"].scope[0] == text.index("using Body")
+    assert "peer" in {binding.name for binding in facts.declarations}
+
+
+def test_a_cpp_typedef_struct_keeps_its_class_edges(tmp_path: Path) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "typedef struct Peer {\n  void run() {}\n} Peer;\n"
+        "void f() {\n  Peer peer;\n  peer.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
 
 
 class TestOtherLanguagesSkipTheCppBranch:

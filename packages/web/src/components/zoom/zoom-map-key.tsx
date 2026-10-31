@@ -1,35 +1,27 @@
 "use client";
 
 /**
- * The row that says what the map's marks mean, plus the controls over them.
+ * What the map's marks mean, plus the relation filter: one button in the
+ * canvas's control cluster that opens a popover.
  *
- * Chrome goes *around* a canvas, never on it, so this is a hairline row under
- * the map rather than another floating panel. It carries the two things a card
- * shows without naming: the accent dot in its top-right corner and the health
- * dot in its footer. Before this, a reader had no way to learn either one, and
- * the two dots shared a palette, so working out one taught you the wrong thing
- * about the other.
+ * A popover keeps the key one click (or Tab, Enter) away and leaves the full
+ * height to the map; the button shows a dot while a filter is on, so a
+ * thinned-out map never looks like a bug. The key explains the two marks a
+ * card shows without naming them: the accent dot in its top-right corner and
+ * the health dot in its footer. They share a palette, so each is described
+ * separately to keep a reader from reading one as the other.
  *
- * Why a verb filter now, when a single co-changes toggle was right before. The
- * toggle was sized against a map fed file-level edges only: the arrows carried
- * three verbs, 80.5% of them `imports`, four of the label vocabulary's seven
- * "could not occur at all" because they are symbol-level, and 89% of boxes had
- * one verb across every relation. A general filter would have done nothing on
- * nine boxes in ten.
- *
- * Projecting the symbol graph onto file pairs removed that argument rather than
- * weakening it. The four missing verbs now occur: Ocelot draws all seven, and
- * the share of boxes carrying more than one verb goes 48% -> 67% there and
- * 8% -> 32% on jhipster-sample-app. "Show me what calls what, not what imports
- * what" is a question the map can now answer, so the control earns its place.
- *
- * No verbs selected means every verb draws, rather than an empty canvas. A
- * filter whose natural resting state hides everything trains people not to
- * touch it.
+ * The filter selects relation verbs (imports, calls, and the rest of the
+ * label vocabulary), so "what calls what, not what imports what" is a
+ * question the map answers. No verbs selected means every verb draws, rather
+ * than an empty canvas: a filter whose resting state hides everything trains
+ * people not to touch it.
  */
 
+import { SlidersHorizontal } from "lucide-react";
 import { FilterChip } from "@repowise-dev/ui/health";
-import { type VerbCount, toggleVerb } from "@repowise-dev/ui/zoom";
+import { Popover, PopoverContent, PopoverTrigger } from "@repowise-dev/ui/ui/popover";
+import { techName, type VerbCount, type ZoomContainer, toggleVerb } from "@repowise-dev/ui/zoom";
 import {
   FAIR_MIN,
   GOOD_MIN,
@@ -37,8 +29,13 @@ import {
   NEEDS_WORK_MIN,
 } from "@repowise-dev/types/health";
 import { useTranslations } from "next-intl";
+import { ZOOM_GLASS, ZOOM_ICON_BUTTON } from "./zoom-controls";
+import { containerIcon } from "./c4-icons";
+import { useContainerKindLabel } from "./zoom-detail-c4";
 
 interface ZoomMapKeyProps {
+  /** What the page is, said once here rather than above the canvas. */
+  about: string;
   /** Every verb present in the loaded map, descending by count. */
   verbs: VerbCount[];
   /** Files placed in the tree, and files curation left in no layer. The second
@@ -49,25 +46,109 @@ interface ZoomMapKeyProps {
   /** Null = every relation draws; otherwise only these verbs do. */
   selected: ReadonlySet<string> | null;
   onSelectedChange: (verbs: ReadonlySet<string> | null) => void;
+  /** Deployables on the map, largest first; picking one dims the cards outside it. */
+  containers: readonly ZoomContainer[];
+  container: string | null;
+  onContainerChange: (id: string | null) => void;
+  /** The map draws dashed external-system cards, so the key says what they are. */
+  hasExternals: boolean;
 }
 
 function Dot({ className }: { className: string }) {
   return <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${className}`} />;
 }
 
-export function ZoomMapKey({
+export function ZoomMapKey({ about, ...body }: ZoomMapKeyProps) {
+  const t = useTranslations("zoom");
+  const filtered = body.selected !== null || body.container !== null;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={filtered ? t("mapKey.buttonFiltered") : t("mapKey.button")}
+          title={t("mapKey.button")}
+          className={`pointer-events-auto relative shrink-0 ${ZOOM_GLASS} ${ZOOM_ICON_BUTTON}`}
+        >
+          <SlidersHorizontal className="h-4 w-4" aria-hidden />
+          {filtered && (
+            <span
+              aria-hidden
+              className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent-primary)]"
+            />
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-[22rem] max-w-[calc(100vw-2rem)] space-y-3">
+        <p className="text-[13px] leading-relaxed text-[var(--color-text-primary)]">{about}</p>
+        <MapKeyBody {...body} />
+        <ContainerFilter
+          containers={body.containers}
+          container={body.container}
+          onContainerChange={body.onContainerChange}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * The deployables (C4 containers) as chips: picking one dims every card with
+ * no files in it, so "what is the API made of" is one click. A layer that
+ * spans several stays lit for each of them.
+ */
+function ContainerFilter({
+  containers,
+  container,
+  onContainerChange,
+}: Pick<ZoomMapKeyProps, "containers" | "container" | "onContainerChange">) {
+  const t = useTranslations("zoom");
+  const kindLabel = useContainerKindLabel();
+  if (containers.length < 2) return null;
+  return (
+    <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] pt-3">
+      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+        <span className="text-[var(--color-text-primary)]">{t("mapKey.containers")}</span>{" "}
+        {t("mapKey.containersHint")}
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {containers.map((c) => {
+          const Icon = containerIcon(c.kind);
+          return (
+            <FilterChip
+              key={c.id}
+              active={container === c.id}
+              onClick={() => onContainerChange(container === c.id ? null : c.id)}
+            >
+              <span className="inline-flex items-center gap-1" title={kindLabel(c.kind)}>
+                <Icon aria-hidden className="h-3 w-3 shrink-0" />
+                {c.name}
+                {c.technologies[0] && (
+                  <span className="text-[var(--color-text-tertiary)]">{techName(c.technologies[0])}</span>
+                )}
+              </span>
+            </FilterChip>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MapKeyBody({
   verbs,
   totalFiles,
   unclaimedFiles,
   selected,
   onSelectedChange,
-}: ZoomMapKeyProps) {
+  hasExternals,
+}: Omit<ZoomMapKeyProps, "about" | "containers" | "container" | "onContainerChange">) {
   const t = useTranslations("zoom");
   const filtered = selected !== null;
-
   return (
-    <div className="mt-3 border-t border-[var(--color-border-default)] pt-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between">
+    <>
+      <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] pt-3">
         <p className="min-w-0 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
           {filtered ? (
             t.rich("mapKey.showingFiltered", {
@@ -81,10 +162,10 @@ export function ZoomMapKey({
           )}
           {unclaimedFiles > 0 &&
             /* Silence when nothing is missing: "0 not shown" is noise. */
-            t("mapKey.unclaimed", {
+            ` ${t("mapKey.unclaimed", {
               shown: unclaimedFiles.toLocaleString(),
               total: (totalFiles + unclaimedFiles).toLocaleString(),
-            })}
+            })}`}
         </p>
         {verbs.length > 1 && (
           /* Counts sit on the chips so you can tell whether one is worth a
@@ -118,7 +199,7 @@ export function ZoomMapKey({
       {/* The dots. Health keeps the traffic light because the colours carry a
           band; the role dot is one accent hue meaning "there is something
           here", and the hover card names which. */}
-      <dl className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[12px] text-[var(--color-text-tertiary)]">
+      <dl className="flex flex-col gap-1.5 border-t border-[var(--color-border-default)] pt-3 text-[12px] text-[var(--color-text-tertiary)]">
         <div className="flex items-center gap-1.5">
           <Dot className="bg-[var(--color-accent-primary)]" />
           <dt className="sr-only">{t("mapKey.topRightDot")}</dt>
@@ -142,7 +223,17 @@ export function ZoomMapKey({
             })}
           </dd>
         </div>
+        {hasExternals && (
+          <div className="flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="inline-block h-2.5 w-4 shrink-0 rounded-[3px] border border-dashed border-[var(--color-text-muted)]"
+            />
+            <dt className="sr-only">{t("mapKey.dashedCard")}</dt>
+            <dd>{t("mapKey.externalsHelp")}</dd>
+          </div>
+        )}
       </dl>
-    </div>
+    </>
   );
 }

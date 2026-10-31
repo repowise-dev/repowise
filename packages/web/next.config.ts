@@ -9,6 +9,7 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  poweredByHeader: false,
   outputFileTracingRoot: path.join(__dirname, "../../"),
   transpilePackages: ["@repowise-dev/ui", "@repowise-dev/types", "@repowise-dev/api-client"],
   experimental: {
@@ -28,6 +29,18 @@ const nextConfig: NextConfig = {
       ".jsx": [".tsx", ".jsx"],
     };
     return config;
+  },
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        ],
+      },
+    ];
   },
   images: {
     unoptimized: true,

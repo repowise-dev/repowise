@@ -37,6 +37,8 @@ export interface ZoomPalette {
    */
   paperWash: string;
   nodeText: string;
+  /** Card body text (summaries, chips): quieter than the title, firmer than muted. */
+  textSecondary: string;
   textMuted: string;
   accent: string;
   /** Neutral connector hue (edges are intentionally low-emphasis). */
@@ -71,6 +73,7 @@ const TOKEN_SPEC: Record<keyof ZoomPalette, string> = {
   rule: "--color-zoom-card-rule",
   paperWash: "--color-zoom-card-paper-wash",
   nodeText: "--color-zoom-card-text",
+  textSecondary: "--color-text-secondary",
   textMuted: "--color-text-muted",
   accent: "--color-accent-primary",
   edge: "--color-zoom-edge",
@@ -101,6 +104,7 @@ const FALLBACK: ZoomPalette = {
   rule: "transparent",
   paperWash: "rgba(255,255,255,0.82)",
   nodeText: "black",
+  textSecondary: "dimgray",
   textMuted: "gray",
   accent: "blue",
   edge: "silver",

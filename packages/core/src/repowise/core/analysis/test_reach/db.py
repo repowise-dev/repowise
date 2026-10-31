@@ -22,12 +22,7 @@ from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
 from repowise.core.persistence.models import GraphNode, Repository
-from repowise.core.persistence.read_snapshots import (
-    is_current,
-    read_snapshot,
-    refresh_snapshot,
-    snapshot_key,
-)
+from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
 
 from .forward import CallGraphView, files_reached_by_tests
 from .hubs import call_hub_files
@@ -215,12 +210,6 @@ async def cached_test_masks(session: AsyncSession, repo_id: str) -> dict[str, fr
     if isinstance(stored, dict):
         return _cache.remember(key, {test: frozenset(hits) for test, hits in stored.items()})
     return _cache.remember(key, await _build_test_masks(session, repo_id))
-
-
-async def test_masks_stored(session: AsyncSession, repo_id: str) -> bool:
-    """Whether the masks are stored for the current index state."""
-    key = _masks_snapshot_key(await index_stamp(session, repo_id))
-    return await is_current(session, repo_id, MASKS_SNAPSHOT_KIND, key)
 
 
 async def write_test_masks_snapshot(session: AsyncSession, repo_id: str) -> bool:

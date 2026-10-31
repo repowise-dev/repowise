@@ -422,3 +422,19 @@ def agents_md_distill_section_installed(repo_path: Path) -> bool:
         # status`` calls. A file we cannot decode does not carry our section as
         # far as anyone can tell, and a status probe must not raise.
         return False
+
+
+def codex_project_hook_commands(repo_path: Path) -> list[str]:
+    """Commands of the repowise hooks in the repo's ``.codex/hooks.json``."""
+    from repowise.cli.mcp_config import read_hooks_block
+
+    hooks = read_hooks_block(Path(repo_path) / ".codex" / "hooks.json")
+    if not isinstance(hooks, dict):
+        return []
+    commands = [
+        h.get("command")
+        for group in hooks.values() if isinstance(group, list)
+        for entry in group if isinstance(entry, dict)
+        for h in entry.get("hooks") or [] if isinstance(h, dict)
+    ]
+    return [c for c in commands if isinstance(c, str) and "repowise-augment" in c]

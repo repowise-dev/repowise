@@ -22,7 +22,6 @@ from repowise.cli.commands.decision_batch import (
     _require_ids,
     _resolve_decision_id,
     _review_batch,
-    _rewrite_read_views,
     _Signer,
     _signer,
     _signing_options,
@@ -556,7 +555,6 @@ async def _persist_decision(
             existed = existing is not None or rec.title != fields.title
             stored = _Persisted(rec.id, rec.title, rec.status, rec.kind, existed, kept)
 
-        await _rewrite_read_views(sf, repo.id)
         # After the session commits, so a network embed never holds the write
         # transaction or vectors an uncommitted record.
         await _embed_decision(repo_path, *embed)

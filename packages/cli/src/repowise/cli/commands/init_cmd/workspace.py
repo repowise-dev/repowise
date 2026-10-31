@@ -1182,7 +1182,9 @@ def _offer_workspace_hooks(
         yes=yes,
         no_editor_setup=not editor_setup,
     )
-    warn_unresolved_hooks(console, no_editor_setup=not editor_setup)
+    warn_unresolved_hooks(
+        console, [r.path for r in selected], no_editor_setup=not editor_setup
+    )
 
 
 def _workspace_gaps(ctx: _WorkspaceCtx, totals: _WorkspaceTotals) -> list[str]:

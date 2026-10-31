@@ -463,7 +463,7 @@ def complete_setup(run: InitRun) -> None:
         yes=opts.yes,
         no_editor_setup=not opts.editor_setup,
     )
-    warn_unresolved_hooks(console, no_editor_setup=not opts.editor_setup)
+    warn_unresolved_hooks(console, [repo_path], no_editor_setup=not opts.editor_setup)
 
     # Last, so the panel reflects what setup did. `interactive` mirrors the
     # offers' gate: when they were skipped the panel names their hooks.

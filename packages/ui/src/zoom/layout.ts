@@ -12,6 +12,7 @@
  */
 
 import type { Rect } from "./camera";
+import { labelAspect } from "./card-content";
 import {
   CARD_ASPECT,
   PACK_GUTTER,
@@ -19,12 +20,16 @@ import {
   PACK_SIZE_MAX,
   PACK_SIZE_MIN,
 } from "./constants";
+import type { ZoomKind } from "./types";
 
 /** The minimal slice of a node the layout needs (placement order + sizing). */
 export interface LayoutChild {
   id: string;
   sibling_rank: number;
   importance: number;
+  /** When given (with `kind`), the card widens so this name fits (see `labelAspect`). */
+  name?: string;
+  kind?: ZoomKind;
 }
 
 export interface PackLayoutOptions {
@@ -36,7 +41,7 @@ export interface PackLayoutOptions {
   sizeMax?: number;
   /** Importance curve; <1 lifts small cards so minor nodes stay readable. */
   gamma?: number;
-  /** Card width : height. */
+  /** Card width : height (a long name may widen a card past it). */
   aspect?: number;
 }
 
@@ -67,13 +72,66 @@ interface Packed {
   h: number;
 }
 
+/** Column and row counts tried either side of the aspect estimate (see `packLayout`). */
+const COL_SEARCH = 2;
+
+interface PackedRows {
+  rows: Packed[][];
+  maxRowW: number;
+  totalH: number;
+  /** Uniform scale that fits the cluster in the unit box. */
+  scale: number;
+}
+
+function rowW(row: readonly Packed[], gutter: number): number {
+  return row.reduce((s, c) => s + c.w, 0) + Math.max(0, row.length - 1) * gutter;
+}
+
+function rowH(row: readonly Packed[]): number {
+  return row.reduce((m, c) => Math.max(m, c.h), 0);
+}
+
+/**
+ * Greedy rows against a target width, and their fit. `balanced` starts a new
+ * row once a card's centre (not its far edge) would pass the target, which
+ * evens the rows out when the target is the average row width.
+ */
+function packRows(
+  cards: readonly Packed[],
+  targetW: number,
+  gutter: number,
+  balanced: boolean,
+): PackedRows {
+  const rows: Packed[][] = [];
+  let cur: Packed[] = [];
+  let curW = 0;
+  for (const card of cards) {
+    const reach = balanced ? card.w / 2 : card.w;
+    if (cur.length > 0 && curW + gutter + reach > targetW) {
+      rows.push(cur);
+      cur = [];
+      curW = 0;
+    }
+    curW += (cur.length > 0 ? gutter : 0) + card.w;
+    cur.push(card);
+  }
+  if (cur.length > 0) rows.push(cur);
+  let maxRowW = 0;
+  let totalH = Math.max(0, rows.length - 1) * gutter;
+  for (const row of rows) {
+    maxRowW = Math.max(maxRowW, rowW(row, gutter));
+    totalH += rowH(row);
+  }
+  return { rows, maxRowW, totalH, scale: Math.min(1 / maxRowW, 1 / totalH) };
+}
+
 /**
  * Lay `children` out as an importance-weighted masonry pack inside the unit
  * parent box. Children are ordered by `sibling_rank` (most important first, so
  * the biggest cards read top-left), sized by importance normalised across the
- * sibling set, then greedily row-packed to ~`cols` cards per row. Rows are
- * centred (so left edges stagger) and each card is centred in its row band (so
- * top edges stagger); the whole cluster is uniform-fit into `[0,1]²`. Returns
+ * sibling set, widened where a long name needs it, then greedily row-packed to
+ * ~`cols` cards per row. Rows are centred (so left edges stagger) and each card
+ * is centred in its row band (so top edges stagger); the whole cluster is uniform-fit into `[0,1]²`. Returns
  * each child's rect in parent `[0,1]` space. Deterministic: stable order, ties
  * broken by id; no randomness.
  */
@@ -94,8 +152,13 @@ export function packLayout(
   // levels deep a card collapses into an unreadable sliver. Pre-divide by the
   // parent aspect: once `composeRect` re-applies it, each card lands at
   // `baseAspect` on screen at any depth. Clamp so an extreme parent shape can't
-  // invert or explode the local card.
-  const aspect = Math.min(8, Math.max(0.2, baseAspect / (parentAspect || 1)));
+  // invert or explode the local card. A card whose name needs more room than
+  // `baseAspect` gives is widened (never shortened, so importance still sets its
+  // height), and goes through the same pre-divide.
+  const localAspect = (c: LayoutChild): number => {
+    const want = c.name && c.kind ? Math.max(baseAspect, labelAspect(c.name, c.kind)) : baseAspect;
+    return Math.min(8, Math.max(0.2, want / (parentAspect || 1)));
+  };
 
   const out = new Map<string, Rect>();
   const n = children.length;
@@ -124,46 +187,35 @@ export function packLayout(
 
   const cards: Packed[] = ordered.map((c) => {
     const h = heightOf(c);
-    return { id: c.id, w: h * aspect, h };
+    return { id: c.id, w: h * localAspect(c), h };
   });
 
-  // Greedy row packing to a target width of ~`cols` average-width cards.
-  const { cols } = gridDimensions(n, parentAspect);
-  const avgW = cards.reduce((s, c) => s + c.w, 0) / n;
-  const targetRowW = cols * avgW + Math.max(0, cols - 1) * gutter;
-
-  const rows: Packed[][] = [];
-  let cur: Packed[] = [];
-  let curW = 0;
-  for (const card of cards) {
-    const add = (cur.length > 0 ? gutter : 0) + card.w;
-    if (cur.length > 0 && curW + add > targetRowW) {
-      rows.push(cur);
-      cur = [];
-      curW = 0;
-    }
-    curW += (cur.length > 0 ? gutter : 0) + card.w;
-    cur.push(card);
+  // Greedy row packing. The row target that fills the parent best depends on
+  // how the card widths happen to break, so try a few shapes around the
+  // aspect-matched grid estimate: `k` average cards per row, and `k` evenly
+  // filled rows. Keep the one whose uniform fit is largest (the biggest
+  // cards). Each try is one linear pass.
+  const { cols, rows: estRows } = gridDimensions(n, parentAspect / CARD_ASPECT);
+  const sumW = cards.reduce((s, c) => s + c.w, 0);
+  const avgW = sumW / n;
+  let best: PackedRows | null = null;
+  const consider = (tryRows: PackedRows): void => {
+    if (!best || tryRows.scale > best.scale + 1e-12) best = tryRows;
+  };
+  for (let k = Math.max(1, cols - COL_SEARCH); k <= Math.min(n, cols + COL_SEARCH); k++) {
+    consider(packRows(cards, k * avgW + (k - 1) * gutter, gutter, false));
   }
-  if (cur.length > 0) rows.push(cur);
-
-  const rowW = (row: Packed[]): number =>
-    row.reduce((s, c) => s + c.w, 0) + Math.max(0, row.length - 1) * gutter;
-  const rowH = (row: Packed[]): number => row.reduce((m, c) => Math.max(m, c.h), 0);
-
-  const maxRowW = Math.max(...rows.map(rowW));
-  const totalH = rows.reduce((s, r) => s + rowH(r), 0) + Math.max(0, rows.length - 1) * gutter;
-
-  // Uniform (aspect-preserving) fit of the packed cluster into the unit box,
-  // centred, so cards keep one shape and nothing spills outside the parent.
-  const scale = Math.min(1 / maxRowW, 1 / totalH);
+  for (let r = Math.max(1, estRows - COL_SEARCH); r <= Math.min(n, estRows + COL_SEARCH); r++) {
+    consider(packRows(cards, (sumW + (n - r) * gutter) / r, gutter, true));
+  }
+  const { rows, maxRowW, totalH, scale } = best!;
   const offX = (1 - maxRowW * scale) / 2;
   const offY = (1 - totalH * scale) / 2;
 
   let y = 0;
   for (const row of rows) {
     const h = rowH(row);
-    let x = (maxRowW - rowW(row)) / 2; // centre the row -> staggered left edges
+    let x = (maxRowW - rowW(row, gutter)) / 2; // centre the row -> staggered left edges
     for (const card of row) {
       const cy = y + (h - card.h) / 2; // centre in the band -> staggered top edges
       out.set(card.id, {

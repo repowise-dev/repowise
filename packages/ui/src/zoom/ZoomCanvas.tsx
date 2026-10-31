@@ -2,29 +2,37 @@
 
 /**
  * React host for the continuous-zoom canvas. Owns the `<canvas>`, the
- * `ZoomRenderer` instance, and the interaction layer: wheel-zoom, drag-pan,
- * keyboard pan/zoom, hover popover and click-to-select. It is a reusable
- * primitive: navigation chrome (breadcrumb, search box, detail panel, URL sync)
- * lives in the host page and drives the canvas through the imperative handle
- * (`flyTo`, `reset`) and the `onFocusChange` callback, so web and hosted share
- * the exact same canvas.
+ * `ZoomRenderer` instance, the minimap and the interaction layer: wheel-zoom,
+ * drag-pan, keyboard, hover popover and click-to-select. It is a reusable
+ * primitive: navigation chrome (breadcrumb, search box, controls, detail panel,
+ * URL sync) lives in the host page and drives the canvas through the imperative
+ * handle and the `onFocusChange` / `onSelect` callbacks, so web and hosted
+ * share the exact same canvas. Every command (key, pointer, handle) goes
+ * through `ZoomActions`, so a button and its shortcut cannot drift.
  */
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { type Camera, clampCamera, fitRoot, panByScreen, zoomAbout } from "./camera";
+import { type Camera, type Viewport, clampCamera, fitScale } from "./camera";
 import { type FlyOptions, ZoomRenderer, type FrameStats } from "./renderer";
-import { buildScene } from "./scene";
+import { buildScene, type ZoomScene } from "./scene";
+import { sceneRootRect, settleRootAspect } from "./relayout";
 import { resolveZoomPalette } from "./theme";
 import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
-import { describeRelations, summarizeRelations } from "./relation-summary";
-import { healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
+import { HoverCard } from "./hover-card";
+import { ZoomActions } from "./zoom-actions";
+import { DEFAULT_ZOOM_CANVAS_LABELS, type ZoomCanvasLabels } from "./zoom-canvas-labels";
+import { useZoomHover } from "./use-zoom-hover";
+import { useZoomInput } from "./use-zoom-input";
+import { ZoomMinimap, type ZoomMinimapHandle } from "./ZoomMinimap";
 import { useThemeVersion } from "../shared/use-theme-tokens";
 import { usePrefersReducedMotion } from "../hooks/use-prefers-reduced-motion";
 
@@ -33,6 +41,17 @@ export interface ZoomCanvasHandle {
   flyTo: (id: string, opts?: FlyOptions) => boolean;
   /** Fly back to the whole-system overview. */
   reset: (opts?: FlyOptions) => void;
+  /** Zoom about the viewport centre; a factor above 1 zooms in. */
+  zoomBy: (factor: number) => void;
+  /** Fly out to the parent of the focused node (the overview from one level down). */
+  up: () => void;
+  /**
+   * Select a node by id, or clear with null. Fires `onSelect` and pans the node
+   * clear of `selectionInsetRight`, so the host never pokes the renderer.
+   */
+  select: (id: string | null) => void;
+  /** Move keyboard focus to the canvas (e.g. after the host closes a sheet). */
+  focus: () => void;
 }
 
 export interface ZoomCanvasProps {
@@ -51,23 +70,45 @@ export interface ZoomCanvasProps {
    */
   relationVerbs?: ReadonlySet<string> | null;
   /**
+   * Dim every card outside this set of node ids (a container picked in the
+   * map key), or none when unset. Build it once per pick, not per render.
+   */
+  highlightIds?: ReadonlySet<string> | null;
+  /**
    * Relations incident to a node, for the hover card's one-line summary. The
    * host already indexes these for its detail panel, so it passes the lookup in
    * rather than the canvas walking the relation list a second time.
    */
   relationsByNode?: Map<string, ZoomRelation[]>;
+  /**
+   * Screen px the host covers on the canvas's right edge while a node is
+   * selected (a detail sheet). Selecting a node under that strip pans it clear;
+   * the canvas itself never resizes for it.
+   */
+  selectionInsetRight?: number;
+  /** Placement classes for the minimap, which shows once you zoom in. */
+  minimapClassName?: string;
+  /** Accessible names and hover-card copy, so a host can pass translated ones. */
+  labels?: Partial<ZoomCanvasLabels>;
 }
 
-const WHEEL_ZOOM_RATE = 0.0015;
-const CLICK_SLOP_PX = 4;
-const KEY_PAN_PX = 80;
-const KEY_ZOOM_FACTOR = 1.35;
+/** The minimap appears once the camera is this far past the overview fit. */
+const MINIMAP_ZOOM_RATIO = 1.15;
+/** Scratch viewport for the minimap threshold, so a camera frame allocates nothing. Written and read synchronously in `onView`. */
+const WHOLE_VP: Viewport = { w: 1, h: 1 };
+/** A resize settles this long before the overview is laid out to the new shape. */
+const RELAYOUT_DEBOUNCE_MS = 200;
+/** What the commands see in the one commit before the canvas is measured. */
+const UNMEASURED_SCENE: ZoomScene = {
+  rootId: "",
+  nodes: new Map(),
+  worldRects: new Map(),
+  relationsByParent: new Map(),
+  drawChildren: new Map(),
+  externalLanes: new Map(),
+  laidOutCount: 0,
+};
 
-interface HoverState {
-  node: ZoomNode;
-  sx: number;
-  sy: number;
-}
 
 export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function ZoomCanvas(
   {
@@ -78,27 +119,53 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
     initialFocusId,
     showStats,
     relationVerbs = null,
+    highlightIds = null,
     relationsByNode,
+    selectionInsetRight = 0,
+    minimapClassName = "bottom-3 left-3",
+    labels,
   },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<ZoomRenderer | null>(null);
+  const minimapRef = useRef<ZoomMinimapHandle | null>(null);
   const themeVersion = useThemeVersion();
   const reducedMotion = usePrefersReducedMotion();
   const reducedRef = useRef(reducedMotion);
   reducedRef.current = reducedMotion;
 
-  const scene = useMemo(() => buildScene(data), [data]);
+  // The overview packs to the canvas shape (see `rootRect`), so nothing is laid
+  // out until the canvas is measured (before the first paint); after that it
+  // is re-laid out only once a resize settles on a new shape.
+  const [rootAspect, setRootAspect] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const c = canvasRef.current;
+    if (c) setRootAspect(settleRootAspect(1, c.clientWidth, c.clientHeight));
+  }, []);
+  const scene = useMemo(
+    () => (rootAspect === null ? null : buildScene(data, { rootAspect })),
+    [data, rootAspect],
+  );
+  const copy = useMemo(() => ({ ...DEFAULT_ZOOM_CANVAS_LABELS, ...labels }), [labels]);
+  const sceneRef = useRef(scene ?? UNMEASURED_SCENE);
+  sceneRef.current = scene ?? UNMEASURED_SCENE;
   // Node index is derived from the data (stable identity) so the interaction
   // listeners are not torn down when the scene is rebuilt.
   const nodeById = useMemo(
     () => new Map(data.nodes.map((n) => [n.id, n] as const)),
     [data],
   );
+  const nodeByIdRef = useRef(nodeById);
+  nodeByIdRef.current = nodeById;
+  const insetRef = useRef(selectionInsetRight);
+  insetRef.current = selectionInsetRight;
 
-  const [hover, setHover] = useState<HoverState | null>(null);
   const [stats, setStats] = useState<FrameStats | null>(null);
+  // Flips only when crossing the threshold, so a zoom re-renders React at most
+  // twice, never per frame.
+  const [zoomedIn, setZoomedIn] = useState(false);
+  const zoomedRef = useRef(false);
 
   // Keep the latest callbacks in refs so the renderer and the native event
   // listeners (each created once) always call the current closure without being
@@ -109,20 +176,59 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   onSelectRef.current = onSelect;
   const onStatsRef = useRef<((s: FrameStats) => void) | undefined>(undefined);
   onStatsRef.current = showStats ? setStats : undefined;
+  const { hover, hideHover, onHoverRef, cardRef: hoverCardRef } = useZoomHover(canvasRef, nodeById);
+
+  const actions = useMemo(
+    () =>
+      new ZoomActions({
+        renderer: () => rendererRef.current,
+        scene: () => sceneRef.current,
+        node: (id) => nodeByIdRef.current.get(id),
+        insetRight: () => insetRef.current,
+        reducedMotion: () => reducedRef.current,
+        onSelect: (node) => onSelectRef.current?.(node),
+      }),
+    [],
+  );
 
   useImperativeHandle(
     ref,
     (): ZoomCanvasHandle => ({
-      flyTo: (id, opts) =>
-        rendererRef.current?.frameNode(id, { reducedMotion: reducedRef.current, ...opts }) ?? false,
-      reset: (opts) => {
-        const r = rendererRef.current;
-        if (!r) return;
-        r.animateTo(fitRoot(r.getViewport()), { reducedMotion: reducedRef.current, ...opts });
-      },
+      flyTo: actions.flyTo,
+      reset: actions.fit,
+      zoomBy: actions.zoomBy,
+      up: actions.up,
+      select: (id) => actions.select(id),
+      focus: () => canvasRef.current?.focus(),
     }),
-    [],
+    [actions],
   );
+
+  // Per camera frame: blit the minimap and flip `zoomedIn` on a threshold.
+  const onView = useCallback((cam: Camera, vp: Viewport) => {
+    // Against the whole canvas: an open sheet makes the overview fit smaller,
+    // which must not count as zooming in.
+    WHOLE_VP.w = vp.w;
+    WHOLE_VP.h = vp.h;
+    const zoomed = cam.scale > fitScale(WHOLE_VP, sceneRootRect(sceneRef.current)) * MINIMAP_ZOOM_RATIO;
+    if (zoomed !== zoomedRef.current) {
+      zoomedRef.current = zoomed;
+      setZoomedIn(zoomed);
+    }
+    minimapRef.current?.drawView(cam, vp);
+  }, []);
+
+  // The minimap mounts after the frame that showed it, so paint it on attach.
+  const attachMinimap = useCallback((handle: ZoomMinimapHandle | null) => {
+    minimapRef.current = handle;
+    const r = rendererRef.current;
+    if (handle && r) handle.drawView(r.getCamera(), r.getViewport());
+  }, []);
+
+  const onMinimapNavigate = useCallback(({ wx, wy }: { wx: number; wy: number }) => {
+    const r = rendererRef.current;
+    if (r) r.setCamera(clampCamera({ cx: wx, cy: wy, scale: r.getCamera().scale }));
+  }, []);
 
   // Create the renderer once the canvas mounts.
   useEffect(() => {
@@ -133,27 +239,51 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
       palette: resolveZoomPalette(),
       onStats: (s) => onStatsRef.current?.(s),
       onFocus: (chain) => onFocusRef.current?.(chain),
+      onView,
+      onHover: (hit, sx, sy) => onHoverRef.current(hit, sx, sy),
     });
     rendererRef.current = renderer;
 
-    const resizeObs = new ResizeObserver(() => renderer.resize());
+    let relayout: ReturnType<typeof setTimeout> | undefined;
+    const resizeObs = new ResizeObserver(() => {
+      renderer.resize();
+      actions.refitInset();
+      clearTimeout(relayout);
+      relayout = setTimeout(
+        () => setRootAspect((a) => settleRootAspect(a ?? 1, canvas.clientWidth, canvas.clientHeight)),
+        RELAYOUT_DEBOUNCE_MS,
+      );
+    });
     resizeObs.observe(canvas);
 
     return () => {
+      clearTimeout(relayout);
       resizeObs.disconnect();
+      actions.dispose();
       renderer.destroy();
       rendererRef.current = null;
     };
-  }, []);
+  }, [onView, actions]);
 
-  // Feed the scene + repaint on data change.
+  // Feed the scene + repaint. Only new data can drop or change the selected
+  // node; a re-layout keeps it, so the host is not told again.
+  const resyncedData = useRef<ZoomMap | null>(null);
   useEffect(() => {
+    if (!scene) return;
     rendererRef.current?.setScene(scene);
-  }, [scene]);
+    if (resyncedData.current !== data) {
+      resyncedData.current = data;
+      actions.resync();
+    }
+  }, [scene, data, actions]);
 
   useEffect(() => {
     rendererRef.current?.setRelationVerbs(relationVerbs);
   }, [relationVerbs]);
+
+  useEffect(() => {
+    rendererRef.current?.setHighlight(highlightIds);
+  }, [highlightIds]);
 
   // One-shot: jump to the URL-provided focus node once the canvas has done its
   // initial fit (it needs a real viewport size before a node rect can be framed).
@@ -178,163 +308,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
     rendererRef.current?.setPalette(resolveZoomPalette());
   }, [themeVersion]);
 
-  // Interaction: wheel-zoom + drag-pan + hover + click + keyboard. Native
-  // listeners so we can call preventDefault on wheel (React onWheel is passive).
-  // Handlers read `rendererRef.current` live (never a captured instance) so they
-  // stay correct if the renderer is recreated, and reset cleanly on pointercancel.
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const localPoint = (e: { clientX: number; clientY: number }) => {
-      const rect = canvas.getBoundingClientRect();
-      return { sx: e.clientX - rect.left, sy: e.clientY - rect.top };
-    };
-
-    let dragging = false;
-    let moved = 0;
-    let last = { x: 0, y: 0 };
-
-    const endDrag = (e: PointerEvent) => {
-      dragging = false;
-      canvas.style.cursor = "grab";
-      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      const { sx, sy } = localPoint(e);
-      const factor = Math.exp(-e.deltaY * WHEEL_ZOOM_RATE);
-      const next = clampCamera(zoomAbout(renderer.getCamera(), renderer.getViewport(), sx, sy, factor));
-      renderer.setCamera(next);
-    };
-
-    const onPointerDown = (e: PointerEvent) => {
-      dragging = true;
-      moved = 0;
-      last = { x: e.clientX, y: e.clientY };
-      canvas.setPointerCapture(e.pointerId);
-      canvas.style.cursor = "grabbing";
-      setHover(null);
-      rendererRef.current?.setHovered(null);
-    };
-
-    const onPointerMove = (e: PointerEvent) => {
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      if (dragging) {
-        const dx = e.clientX - last.x;
-        const dy = e.clientY - last.y;
-        moved += Math.abs(dx) + Math.abs(dy);
-        last = { x: e.clientX, y: e.clientY };
-        const cam: Camera = clampCamera(panByScreen(renderer.getCamera(), dx, dy));
-        renderer.setCamera(cam);
-        renderer.markPanFrame();
-        return;
-      }
-      const { sx, sy } = localPoint(e);
-      const id = renderer.pick(sx, sy);
-      renderer.setHovered(id);
-      const node = id ? nodeById.get(id) : undefined;
-      setHover(node ? { node, sx, sy } : null);
-      canvas.style.cursor = node ? "pointer" : "grab";
-    };
-
-    const selectAt = (sx: number, sy: number) => {
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      const id = renderer.pick(sx, sy);
-      const node = id ? (nodeById.get(id) ?? null) : null;
-      renderer.setSelected(node?.id ?? null);
-      onSelectRef.current?.(node);
-    };
-
-    const onPointerUp = (e: PointerEvent) => {
-      if (dragging && moved <= CLICK_SLOP_PX) {
-        const { sx, sy } = localPoint(e);
-        selectAt(sx, sy);
-      }
-      endDrag(e);
-    };
-
-    const onPointerCancel = (e: PointerEvent) => endDrag(e);
-    const onPointerLeave = () => {
-      setHover(null);
-      rendererRef.current?.setHovered(null);
-    };
-
-    const onDoubleClick = (e: MouseEvent) => {
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      const { sx, sy } = localPoint(e);
-      const id = renderer.pick(sx, sy);
-      // Double-click dives into whatever card is under the cursor. This is the
-      // intuitive "zoom into this" gesture (single click just selects); empty
-      // space is ignored so a stray double-click never yanks the camera.
-      if (id) renderer.frameNode(id, { reducedMotion: reducedRef.current });
-    };
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      const vp = renderer.getViewport();
-      const cam = renderer.getCamera();
-      switch (e.key) {
-        case "ArrowLeft":
-          renderer.setCamera(clampCamera(panByScreen(cam, KEY_PAN_PX, 0)));
-          break;
-        case "ArrowRight":
-          renderer.setCamera(clampCamera(panByScreen(cam, -KEY_PAN_PX, 0)));
-          break;
-        case "ArrowUp":
-          renderer.setCamera(clampCamera(panByScreen(cam, 0, KEY_PAN_PX)));
-          break;
-        case "ArrowDown":
-          renderer.setCamera(clampCamera(panByScreen(cam, 0, -KEY_PAN_PX)));
-          break;
-        case "+":
-        case "=":
-          renderer.setCamera(clampCamera(zoomAbout(cam, vp, vp.w / 2, vp.h / 2, KEY_ZOOM_FACTOR)));
-          break;
-        case "-":
-        case "_":
-          renderer.setCamera(clampCamera(zoomAbout(cam, vp, vp.w / 2, vp.h / 2, 1 / KEY_ZOOM_FACTOR)));
-          break;
-        case "Enter":
-          selectAt(vp.w / 2, vp.h / 2);
-          break;
-        case "Escape":
-          renderer.setSelected(null);
-          onSelectRef.current?.(null);
-          setHover(null);
-          return; // do not preventDefault on Escape
-        default:
-          return;
-      }
-      e.preventDefault();
-    };
-
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointercancel", onPointerCancel);
-    canvas.addEventListener("pointerleave", onPointerLeave);
-    canvas.addEventListener("dblclick", onDoubleClick);
-    canvas.addEventListener("keydown", onKeyDown);
-    return () => {
-      canvas.removeEventListener("wheel", onWheel);
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointercancel", onPointerCancel);
-      canvas.removeEventListener("pointerleave", onPointerLeave);
-      canvas.removeEventListener("dblclick", onDoubleClick);
-      canvas.removeEventListener("keydown", onKeyDown);
-    };
-  }, [nodeById]);
+  useZoomInput(canvasRef, rendererRef, actions, hideHover);
 
   return (
     <div className={`relative h-full w-full overflow-hidden ${className ?? ""}`}>
@@ -342,93 +316,39 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
         ref={canvasRef}
         tabIndex={0}
         role="application"
-        aria-label="Zoomable system map. Drag to pan, scroll to zoom, double-click a card to dive into it, arrow keys to pan, plus and minus to zoom, Enter to open the centre node."
-        className="h-full w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+        aria-label={copy.canvas}
+        className="h-full w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]"
         style={{ cursor: "grab" }}
       />
+      {zoomedIn && scene && (
+        <div className={`absolute z-10 ${minimapClassName}`}>
+          <ZoomMinimap
+            ref={attachMinimap}
+            scene={scene}
+            onNavigate={onMinimapNavigate}
+            label={copy.minimap}
+          />
+        </div>
+      )}
       {hover && (
         <HoverCard
           hover={hover}
           canvas={canvasRef.current}
-          relations={relationsByNode?.get(hover.node.id)}
+          cardRef={hoverCardRef}
+          relationsByNode={relationsByNode}
+          relationVerbs={relationVerbs}
+          nodeById={nodeById}
+          labels={copy}
         />
       )}
-      {showStats && stats && <StatsOverlay stats={stats} laidOut={scene.laidOutCount} />}
+      {showStats && stats && <StatsOverlay stats={stats} laidOut={scene?.laidOutCount ?? 0} />}
     </div>
   );
 });
 
-/**
- * A deliberately light tooltip: kind, name, path, a one-line summary and, when
- * the host supplies the index, what this box's arrows mean. The full metric
- * breakdown lives in the side panel (open on click), so the hover stays calm
- * and premium instead of dumping numbers.
- *
- * The relation line is here because the arrows appear on hover: naming them
- * anywhere else would explain a thing the reader is no longer looking at.
- */
-function HoverCard({
-  hover,
-  canvas,
-  relations,
-}: {
-  hover: HoverState;
-  canvas: HTMLCanvasElement | null;
-  relations: ZoomRelation[] | undefined;
-}) {
-  const { node } = hover;
-  const roles = nodeRoles(node);
-  const band = healthBandLabel(node.health_score);
-  // Flip the card toward the interior when the cursor is near the right/bottom
-  // edge, so it never spills off-canvas (N2).
-  const w = canvas?.clientWidth ?? 0;
-  const h = canvas?.clientHeight ?? 0;
-  const flipX = w > 0 && hover.sx > w * 0.66;
-  const flipY = h > 0 && hover.sy > h * 0.66;
-  const tx = flipX ? "calc(-100% - 14px)" : "14px";
-  const ty = flipY ? "calc(-100% - 14px)" : "14px";
-  return (
-    <div
-      className="pointer-events-none absolute z-10 max-w-[16rem] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2 text-xs shadow-xl"
-      style={{ left: hover.sx, top: hover.sy, transform: `translate(${tx}, ${ty})` }}
-    >
-      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        {KIND_LABEL[node.kind]}
-      </div>
-      <div className="mt-0.5 font-semibold text-[var(--color-text-primary)]">{node.name}</div>
-      {node.path && node.path !== node.name && (
-        <div className="truncate text-[var(--color-text-tertiary)]">{node.path}</div>
-      )}
-      {node.summary && (
-        <div className="mt-1 line-clamp-2 text-[var(--color-text-secondary)]">{node.summary}</div>
-      )}
-      {/* The two dots on the card, in words. They are drawn in the corners with
-          no key of their own, so the moment the pointer is on the card is the
-          cheapest place to say what they mean. */}
-      {(roles.length > 0 || band) && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[var(--color-text-secondary)]">
-          {roles.length > 0 && (
-            <span className="text-[var(--color-accent-primary)]">{roles.join(" · ")}</span>
-          )}
-          {band && (
-            <span className="tabular-nums">
-              Health {node.health_score!.toFixed(1)} {band}
-            </span>
-          )}
-        </div>
-      )}
-      {relations && relations.length > 0 && (
-        <div className="mt-1.5 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)] tabular-nums">
-          {describeRelations(summarizeRelations(relations))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function StatsOverlay({ stats, laidOut }: { stats: FrameStats; laidOut: number }) {
   return (
-    <div className="pointer-events-none absolute bottom-2 left-2 z-10 rounded bg-[var(--color-bg-overlay)] px-2 py-1 font-mono text-[10px] text-[var(--color-text-secondary)]">
+    <div className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-[var(--color-bg-overlay)] px-2 py-1 font-mono text-[10px] text-[var(--color-text-secondary)]">
       {stats.drawn} drawn · {stats.culled} culled · depth {stats.maxDepthDrawn} ·{" "}
       {stats.frameMs.toFixed(2)}ms · {laidOut} nodes
     </div>

@@ -119,6 +119,10 @@ _GENERATED_SENTENCE_RE = re.compile(
 # lines. Only the whole line counts: "Do not modify by hand without ..." or
 # "Generated code: see docs" in a hand-written file says something else.
 _GENERATED_BANNER_LINE_RE = re.compile(r"^GENERATED CODE - DO NOT MODIFY BY HAND\s*$")
+# Go's ``// Code generated ... DO NOT EDIT.`` banner (protoc-gen-go, stringer,
+# mockgen) may sit below a license header, past the first two lines. The whole
+# line must be the banner: prose that mentions the phrase says something else.
+_GO_GENERATED_BANNER_LINE_RE = re.compile(r"^CODE GENERATED\b.*\bDO NOT EDIT\.?\s*$")
 # Visual Studio rewrites resource headers, but ingestion must keep their include edges.
 _VISUAL_CPP_BANNER_LINE_RE = re.compile(r"^MICROSOFT VISUAL C\+\+ GENERATED INCLUDE FILE\.?\s*$")
 # Bison and flex open their C output with the tool's own sentence.
@@ -204,6 +208,7 @@ def _says_generated(text: str) -> bool:
     return bool(
         _GENERATED_SENTENCE_RE.search(text)
         or _GENERATED_BANNER_LINE_RE.search(text)
+        or _GO_GENERATED_BANNER_LINE_RE.search(text)
         or _VISUAL_CPP_BANNER_LINE_RE.search(text)
         or _PARSER_TOOL_BANNER_RE.search(text)
     )

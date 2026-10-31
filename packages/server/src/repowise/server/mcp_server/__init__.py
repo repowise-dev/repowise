@@ -176,6 +176,13 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
+    def lean_form(result: Any) -> Any:
+        return result if full_meta(fn.__name__) else lean_response(result)
+
+    def delivered_form(result: Any) -> Any:
+        """What the passes after the budget leave of *result*: envelope, then lean."""
+        return lean_form(finalize_trust_envelope(result, evidence_kind=evidence_kind))
+
     def budget(inner: Any) -> Any:
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
@@ -188,7 +195,9 @@ def tool_middleware(fn: Any) -> Any:
                 # rather than merely ignored: the measurement serializes the
                 # whole payload, and the outer layer's result is discarded.
                 if live.pre_budget_input_tokens is None:
-                    live.observe_pre_budget(savings_event.raw_response_tokens(raw))
+                    live.observe_pre_budget(
+                        savings_event.raw_response_tokens(raw, shape=delivered_form)
+                    )
                 live.repo_root = live.repo_root or (str(repo_root) if repo_root else None)
             result = enforce_response_budget(
                 fn.__name__,
@@ -213,8 +222,7 @@ def tool_middleware(fn: Any) -> Any:
     def lean(inner: Any) -> Any:
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
-            result = await inner(*args, **kwargs)
-            return result if full_meta(fn.__name__) else lean_response(result)
+            return lean_form(await inner(*args, **kwargs))
 
         return wrapped
 

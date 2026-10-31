@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Rect } from "../../src/zoom/camera";
 import { CARD_ASPECT } from "../../src/zoom/constants";
+import { labelAspect } from "../../src/zoom/card-content";
 import { gridDimensions, packLayout, type LayoutChild } from "../../src/zoom/layout";
 
 function child(id: string, rank: number, importance = 0.5): LayoutChild {
@@ -113,5 +114,50 @@ describe("packLayout", () => {
     const r = packLayout([child("only", 1, 0.5)], 1).get("only")!;
     expect(r.w).toBeCloseTo(1, 6);
     expect(r.x).toBeCloseTo(0, 6);
+  });
+
+  it("widens a card whose name needs room, keeping importance as its height", () => {
+    const kids: LayoutChild[] = [
+      { ...child("short", 1, 0.5), name: "Core", kind: "layer" },
+      { ...child("long", 2, 0.5), name: "Command Line Interface", kind: "layer" },
+    ];
+    const r = packLayout(kids, 1);
+    const short = r.get("short")!;
+    const long = r.get("long")!;
+    expect(short.w / short.h).toBeCloseTo(CARD_ASPECT, 5);
+    expect(long.w / long.h).toBeCloseTo(labelAspect("Command Line Interface", "layer"), 5);
+    expect(long.h).toBeCloseTo(short.h, 9);
+  });
+
+  it("keeps the name-aware aspect depth-stable", () => {
+    const kids: LayoutChild[] = Array.from({ length: 5 }, (_, i) => ({
+      ...child(`n${i}`, i + 1, (i + 1) / 5),
+      name: "Infrastructure Provisioning",
+      kind: "group" as const,
+    }));
+    const want = labelAspect("Infrastructure Provisioning", "group");
+    for (const parentAspect of [1, 1.5, 3]) {
+      for (const r of packLayout(kids, parentAspect).values()) {
+        expect((r.w * parentAspect) / r.h).toBeCloseTo(want, 5);
+      }
+    }
+  });
+
+  it("packs to the parent's shape: a wide parent gets fewer, longer rows", () => {
+    const kids = Array.from({ length: 12 }, (_, i) => child(`n${i}`, i + 1, ((i * 5) % 12) / 12));
+    const rowsIn = (aspect: number): number =>
+      new Set([...packLayout(kids, aspect).values()].map((r) => Math.round((r.y + r.h / 2) * 1e6))).size;
+    expect(rowsIn(1.75)).toBeLessThan(rowsIn(1));
+  });
+
+  it("fills the parent: the cluster spans the binding axis and most of the other", () => {
+    const kids = Array.from({ length: 11 }, (_, i) => child(`n${i}`, i + 1, ((i * 7) % 11) / 11));
+    for (const aspect of [1, 1.75, 2.4]) {
+      const rects = [...packLayout(kids, aspect).values()];
+      const spanX = Math.max(...rects.map((r) => r.x + r.w)) - Math.min(...rects.map((r) => r.x));
+      const spanY = Math.max(...rects.map((r) => r.y + r.h)) - Math.min(...rects.map((r) => r.y));
+      expect(Math.max(spanX, spanY)).toBeCloseTo(1, 6);
+      expect(Math.min(spanX, spanY)).toBeGreaterThan(0.7);
+    }
   });
 });

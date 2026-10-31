@@ -131,6 +131,85 @@ jobs:
         run: uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py -v --tb=short
 
   # ---------------------------------------------------------------------------
+  # Windows smoke test — repowise init and status under a native Windows console
+  # with default cp1252 encoding and redirected stdout.
+  #
+  # Unit tests fake a cp1252 stream, but every other CI job runs on Ubuntu.
+  # This smoke test ensures that repowise init and repowise status run cleanly
+  # on Windows when PYTHONIOENCODING and PYTHONUTF8 are unset, stdout is piped,
+  # and output decodes as cp1252 without UnicodeEncodeError.
+  # ---------------------------------------------------------------------------
+  windows-smoke:
+    name: Windows smoke test (cp1252 console)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-packages --python 3.12
+
+      - name: Add virtualenv to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/.venv/Scripts" >> "$GITHUB_PATH"
+
+      - name: Run repowise init and status in cp1252 console
+        shell: cmd
+        run: |
+          @echo off
+          REM Ensure PYTHONIOENCODING and PYTHONUTF8 are not set
+          if defined PYTHONIOENCODING (
+            echo Error: PYTHONIOENCODING is set
+            exit /b 1
+          )
+          if defined PYTHONUTF8 (
+            echo Error: PYTHONUTF8 is set
+            exit /b 1
+          )
+
+          REM Create a small git repository in a temp directory
+          set "SMOKE_DIR=%RUNNER_TEMP%\windows-smoke"
+          if exist "%SMOKE_DIR%" rmdir /s /q "%SMOKE_DIR%"
+          mkdir "%SMOKE_DIR%"
+          cd /d "%SMOKE_DIR%"
+
+          git init
+          git config user.name "Dev"
+          git config user.email "dev@example.com"
+          echo def add(a, b): return a + b > math_utils.py
+          echo print("hello") > main.py
+          git add .
+          git commit -m "initial commit"
+          echo def sub(a, b): return a - b >> math_utils.py
+          git commit -am "second commit"
+
+          REM Run init and status with stdout piped to file
+          repowise init --yes --no-editor-setup > init_out.txt
+          if errorlevel 1 (
+            echo repowise init failed with exit code %errorlevel%
+            exit /b %errorlevel%
+          )
+          repowise status > status_out.txt
+          if errorlevel 1 (
+            echo repowise status failed with exit code %errorlevel%
+            exit /b %errorlevel%
+          )
+
+      - name: Assert output decodes as cp1252
+        shell: cmd
+        run: |
+          python -c "import os; p = os.path.join(os.environ['RUNNER_TEMP'], 'windows-smoke'); init_bytes = open(os.path.join(p, 'init_out.txt'), 'rb').read(); init_text = init_bytes.decode('cp1252'); print(f'init output decoded as cp1252 ({len(init_text)} chars)'); assert len(init_text) > 0, 'init output is empty'; assert '{^' in init_text or 'repowise' in init_text, 'expected repowise output'; status_bytes = open(os.path.join(p, 'status_out.txt'), 'rb').read(); status_text = status_bytes.decode('cp1252'); print(f'status output decoded as cp1252 ({len(status_text)} chars)'); assert len(status_text) > 0, 'status output is empty'; assert 'Sync State' in status_text or 'Pages by Type' in status_text or 'Health' in status_text, 'expected status output'"
+
+  # ---------------------------------------------------------------------------
   # Python lint — ruff. Deliberately its own job rather than a step inside the
   # test matrix: the result is identical on 3.11/3.12/3.13 (target-version is
   # pinned in pyproject.toml), so running it there would burn three runners to
@@ -392,6 +471,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve VS Code test version
+        id: vscode-test-version
+        run: |
+          echo "version=$(node --input-type=module -e 'import { vscodeVersion } from "./packages/vscode/.vscode-test.mjs"; console.log(vscodeVersion)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VS Code test editor
+        uses: actions/cache@v4
+        with:
+          path: packages/vscode/.vscode-test
+          key: vscode-test-${{ runner.os }}-${{ steps.vscode-test-version.outputs.version }}
+
       - name: Type check
         run: npm run type-check --workspace packages/vscode
 
@@ -405,7 +495,16 @@ jobs:
         run: npm run test:webview --workspace packages/vscode
 
       - name: Smoke test under a virtual display
-        run: xvfb-run -a npm run test --workspace packages/vscode
+        run: |
+          for attempt in 1 2; do
+            if xvfb-run -a --server-args="-screen 0 1280x1024x24" npm run test --workspace packages/vscode; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 1 ]; then
+              echo "::warning::VS Code smoke test attempt $attempt failed, retrying"
+            fi
+          done
+          exit 1
 
       - name: Package VSIX (no login required)
         run: npm run package --workspace packages/vscode

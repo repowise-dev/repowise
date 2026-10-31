@@ -6,29 +6,28 @@
  * A continuous-zoom canvas of the system: start at the whole repo and zoom
  * *into* a card to reveal its layers, groups, folders and files, ranked by how
  * the system actually runs. The page wraps the shared `<ZoomCanvas>` with the
- * navigation chrome (breadcrumb, search-to-zoom, detail panel, first-visit hint)
- * and keeps the focused node in the URL so a zoom state is shareable.
+ * navigation chrome and keeps the focused node in the URL so a zoom state is
+ * shareable.
  *
- * The chrome sits *around* the canvas, not on it. It used to be four floating
- * panels — breadcrumb, search, detail panel, hint — over the one thing on the
- * page that cannot be read past, and two of them shared the top-right corner,
- * so selecting a node dropped the detail panel on top of the search box.
- * Breadcrumb and search are now a header row, the detail panel is a rail, and
- * the canvas keeps the hover card (which tracks the pointer) plus the one-time
- * gesture hint, which teaches the canvas itself and never returns once
- * dismissed. Anything permanent goes around the map, not on it.
+ * A full-bleed tool: one compact header row (title, where you are, search,
+ * export) and the map takes every pixel of height below it. What sits on the
+ * map is small, cornered and earns its place: the controls cluster bottom-left
+ * (zoom, fit, up, the map key popover, the one-time gesture hint), the minimap
+ * above it once you zoom in, and the detail sheet on the right edge while a
+ * card is selected.
  *
- * This replaced the earlier node-link / layered-C4 Knowledge Graph. The reusable
- * C4 machinery it used to render still lives on (backend `c4_builder`, the zoom
- * map's own `/zoom-map` endpoint, and `@repowise-dev/ui/c4` for the VS Code
- * webview); only the old web surface for it was retired.
+ * The sheet overlays the canvas instead of taking a grid column: a column would
+ * narrow the canvas, re-centre the camera on the new width and slide every card
+ * under the pointer, so the next double-click hit a different card. The canvas
+ * never resizes for chrome; it pans a selected card clear of the sheet only
+ * when the card would sit underneath (`selectionInsetRight`).
  */
 
-import { use, useCallback, useMemo, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useTranslations } from "next-intl";
 import { ScanSearch } from "lucide-react";
-import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { PageFrame, PAGE_SHELL_TITLE } from "@repowise-dev/ui/shared/page-shell";
 import { ZoomCanvas } from "@repowise-dev/ui/zoom";
 import { indexRelationsByNode, summarizeRelations } from "@repowise-dev/ui/zoom";
 import type { ZoomCanvasHandle, ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
@@ -39,25 +38,52 @@ import { ZoomDetailPanel } from "@/components/zoom/zoom-detail-panel";
 import { ZoomMapKey } from "@/components/zoom/zoom-map-key";
 import { ZoomHint } from "@/components/zoom/zoom-hint";
 import { ZoomExportButton } from "@/components/zoom/zoom-export-button";
+import { ZoomControls } from "@/components/zoom/zoom-controls";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { ZOOM_FRAME, ZoomCanvasError, ZoomCanvasSkeleton } from "@/components/zoom/zoom-canvas-state";
+import { useZoomCanvasLabels } from "@/components/zoom/use-zoom-canvas-labels";
+import { ZOOM_SHEET_INSET_PX, ZoomSheet } from "@/components/zoom/zoom-sheet";
+import { useZoomC4, ZoomC4Provider } from "@/components/zoom/zoom-detail-c4";
 
 /** Stable identities, so an unselected / unloaded render does not churn props. */
 const EMPTY_RELATIONS: ZoomRelation[] = [];
 const NO_RELATIONS: Map<string, ZoomRelation[]> = new Map();
+/** How long the focus holds still before it is written to the URL. */
+const FOCUS_URL_SETTLE_MS = 300;
+
+/**
+ * `write`, called only once the value has held still for `FOCUS_URL_SETTLE_MS`:
+ * the URL follows the camera once it stops, since focus changes fire for every
+ * node a fly passes through and each would be a history write.
+ */
+function useSettledWrite(write: (id: string | null) => unknown): (id: string | null) => void {
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return useCallback(
+    (id: string | null) => {
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => void write(id), FOCUS_URL_SETTLE_MS);
+    },
+    [write],
+  );
+}
 
 export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: string }> }) {
   const t = useTranslations("views.knowledgeGraph");
   const { id: repoId } = use(params);
 
-  const { zoomMap, error, isLoading } = useZoomMap(repoId);
+  const { zoomMap, error, isLoading, retry } = useZoomMap(repoId);
   const canvasRef = useRef<ZoomCanvasHandle | null>(null);
 
   const [focusParam, setFocusParam] = useQueryState(
     "focus",
     parseAsString.withOptions({ history: "replace", shallow: true }),
   );
+  const writeFocusParam = useSettledWrite(setFocusParam);
   const [chain, setChain] = useState<ZoomNode[]>([]);
   const [selected, setSelected] = useState<ZoomNode | null>(null);
   const [relationVerbs, setRelationVerbs] = useState<ReadonlySet<string> | null>(null);
+  const [container, setContainer] = useState<string | null>(null);
 
   // Snapshot the initial URL focus once so later URL writes don't re-trigger a jump.
   const initialFocus = useRef(focusParam ?? undefined).current;
@@ -66,20 +92,28 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     canvasRef.current?.flyTo(id);
   }, []);
 
+  // Selection lives in the canvas; the page asks it to change and hears back
+  // through `onSelect`, so the highlighted card and the sheet cannot disagree.
+  const select = useCallback((id: string | null) => {
+    canvasRef.current?.select(id);
+  }, []);
+  const closeSheet = useCallback(() => {
+    canvasRef.current?.select(null);
+    canvasRef.current?.focus();
+  }, []);
+
   const onFocusChange = useCallback(
     (next: ZoomNode[]) => {
       setChain(next);
       const deepest = next[next.length - 1];
-      // Keep the URL in step with where the camera has settled (root = no param).
-      void setFocusParam(deepest && deepest.parent_id ? deepest.id : null);
+      // Root = no param.
+      writeFocusParam(deepest && deepest.parent_id ? deepest.id : null);
     },
-    [setFocusParam],
+    [writeFocusParam],
   );
 
-  const allNodes = useMemo(() => zoomMap?.nodes ?? [], [zoomMap]);
-  const nodeById = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
   // Indexed once per map rather than per selection: this repo ships 3,694
-  // relations and both the rail and the hover card read them.
+  // relations and both the sheet and the hover card read them.
   const relationsByNode = useMemo(
     () => (zoomMap ? indexRelationsByNode(zoomMap) : NO_RELATIONS),
     [zoomMap],
@@ -90,91 +124,96 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     () => summarizeRelations(zoomMap?.relations ?? EMPTY_RELATIONS).verbs,
     [zoomMap],
   );
+  const { c4, containers, highlightIds, hasExternals } = useZoomC4(zoomMap, container);
+  const canvasLabels = useZoomCanvasLabels();
   const showStats = process.env.NODE_ENV === "development";
+  const ready = zoomMap && !isLoading;
 
   return (
-    <PageShell
-      title={t("title")}
-      icon={<ScanSearch />}
-      description={t("description")}
-      // The export has its own endpoint and does not need the zoom map, but a
-      // map that failed to load is the cheapest signal that this repo has
-      // nothing indexed to export either.
-      actions={<ZoomExportButton repoId={repoId} disabled={isLoading || !!error} />}
-      maxWidth="wide"
-    >
-      {isLoading && (
-        <div className="flex h-[520px] items-center justify-center text-sm text-[var(--color-text-secondary)]">
-          {t("loading")}
-        </div>
-      )}
-      {error && !isLoading && (
-        <div className="flex h-[520px] items-center justify-center text-sm text-[var(--color-error)]">
-          {t("error")}
-        </div>
-      )}
-      {zoomMap && !isLoading && (
-        <>
-          {/* The one chrome row: where you are, and how to get somewhere. */}
-          <div className="mb-3 flex items-start justify-between gap-3 border-b border-[var(--color-border-default)] pb-3">
-            <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />
-            <ZoomSearch
-              nodes={allNodes}
-              onPick={(id) => {
-                flyTo(id);
-                setSelected(nodeById.get(id) ?? null);
-              }}
-            />
-          </div>
-
-          {/* Canvas and rail are peers in a grid, so the panel can never land
-              on the map. Below xl the rail relocates under the canvas rather
-              than covering it or disappearing. */}
-          {/* Sized so the canvas and the key row below it both fit one screen.
-              The key row explains the arrows, and the canvas swallows the wheel
-              to zoom, so a reader whose pointer is over the map cannot scroll
-              down to find it. */}
-          <div
-            className={`grid h-[calc(100vh-21.5rem)] min-h-[400px] gap-4 ${
-              selected ? "xl:grid-cols-[minmax(0,1fr)_320px]" : "grid-cols-1"
-            }`}
+    <PageFrame maxWidth="wide" className="flex h-full min-h-0 flex-col gap-3 space-y-0">
+      <header className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h1 className={PAGE_SHELL_TITLE}>
+          <span
+            aria-hidden
+            className="inline-flex shrink-0 text-[var(--color-text-tertiary)] [&_svg]:h-5 [&_svg]:w-5"
           >
-            <div className="relative min-h-0 overflow-hidden rounded-lg">
-              <ZoomCanvas
-                ref={canvasRef}
-                data={zoomMap}
-                initialFocusId={initialFocus}
-                onSelect={setSelected}
-                onFocusChange={onFocusChange}
-                showStats={showStats}
-                relationVerbs={relationVerbs}
-                relationsByNode={relationsByNode}
-              />
-              <ZoomHint />
-            </div>
-            {selected && (
-              <div className="min-h-0 self-start xl:max-h-full">
+            <ScanSearch />
+          </span>
+          {t("title")}
+        </h1>
+        <div className="min-w-0 flex-1">
+          <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />
+        </div>
+        {/* Holds the search box's place while the map loads, so the header does not shift. */}
+        {isLoading && <Skeleton aria-hidden className="h-[26px] w-60" />}
+        {ready && (
+          <ZoomSearch
+            map={zoomMap}
+            onPick={(id) => {
+              // Select first: the sheet it opens is what the fly frames beside.
+              select(id);
+              flyTo(id);
+            }}
+          />
+        )}
+        {/* The export has its own endpoint and does not need the zoom map, but
+            a map that failed to load is the cheapest signal that this repo has
+            nothing indexed to export either. */}
+        <ZoomExportButton repoId={repoId} disabled={isLoading || !!error} />
+      </header>
+      {/* Said in full in the map key popover; kept here for screen readers,
+          who meet the page before the canvas. */}
+      <p className="sr-only">{t("description")}</p>
+
+      {isLoading && <ZoomCanvasSkeleton />}
+      {error && !isLoading && <ZoomCanvasError onRetry={() => void retry()} />}
+      {ready && (
+        <div className={ZOOM_FRAME}>
+          <ZoomCanvas
+            ref={canvasRef}
+            data={zoomMap}
+            initialFocusId={initialFocus}
+            onSelect={setSelected}
+            onFocusChange={onFocusChange}
+            showStats={showStats}
+            relationVerbs={relationVerbs}
+            highlightIds={highlightIds}
+            relationsByNode={relationsByNode}
+            selectionInsetRight={ZOOM_SHEET_INSET_PX}
+            minimapClassName="bottom-14 left-3"
+            labels={canvasLabels}
+          />
+          <ZoomControls canvas={canvasRef} canGoUp={chain.length > 1}>
+            <ZoomMapKey
+              about={t("description")}
+              verbs={verbs}
+              totalFiles={zoomMap.total_files}
+              unclaimedFiles={zoomMap.unclaimed_files ?? 0}
+              selected={relationVerbs}
+              onSelectedChange={setRelationVerbs}
+              containers={containers}
+              container={container}
+              onContainerChange={setContainer}
+              hasExternals={hasExternals}
+            />
+            <ZoomHint />
+          </ZoomControls>
+          {selected && (
+            <ZoomSheet onClose={closeSheet}>
+              <ZoomC4Provider value={c4}>
                 <ZoomDetailPanel
                   node={selected}
                   repoId={repoId}
                   relations={relationsByNode.get(selected.id) ?? EMPTY_RELATIONS}
                   relationVerbs={relationVerbs}
-                  onClose={() => setSelected(null)}
-                  onZoom={(id) => flyTo(id)}
+                  onClose={closeSheet}
+                  onZoom={flyTo}
                 />
-              </div>
-            )}
-          </div>
-
-          <ZoomMapKey
-            verbs={verbs}
-            totalFiles={zoomMap.total_files}
-            unclaimedFiles={zoomMap.unclaimed_files ?? 0}
-            selected={relationVerbs}
-            onSelectedChange={setRelationVerbs}
-          />
-        </>
+              </ZoomC4Provider>
+            </ZoomSheet>
+          )}
+        </div>
       )}
-    </PageShell>
+    </PageFrame>
   );
 }

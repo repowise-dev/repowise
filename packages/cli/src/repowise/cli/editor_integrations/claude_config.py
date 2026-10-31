@@ -11,10 +11,10 @@ from repowise.cli.agent_adapters.claude_code import SHELL_TOOL_MATCHER
 from repowise.cli.mcp_config import (
     generate_mcp_config,
     hook_pinned_paths,
-    hook_script_resolves,
     hook_shell_command,
     load_existing_config,
     merge_mcp_entry,
+    read_hooks_block,
     resolve_repowise_command,
 )
 
@@ -318,24 +318,39 @@ def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
     return changed
 
 
-def claude_code_unresolved_hooks() -> list[str]:
-    """Scripts a repowise hook in settings.json runs that would not be found.
+#: Where :func:`claude_code_hook_commands` says a user-level hook lives. Only
+#: these commands carry a pinned path that ``repowise agents refresh`` rewrites.
+CLAUDE_SETTINGS_LABEL = "~/.claude/settings.json"
+_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure")
 
-    Such a hook is silent by design (its guard exits 0), so this is where it
-    gets reported: ``repowise doctor`` and the end of ``init``. Only hooks
-    repowise writes are checked, never a user's own wrapper.
+
+def claude_code_hook_commands(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(where, command)`` for each repowise hook Claude Code runs here.
+
+    User settings, every enabled repowise plugin and, with *repo_path*, the
+    repo's ``settings.local.json``. Only hooks repowise writes count, never a
+    user's own wrapper.
     """
-    try:
-        hooks = load_existing_config(_claude_code_settings_path()).get("hooks")
-    except Exception:  # an unreadable file has nothing to report here
-        return []
-    missing: set[str] = set()
-    for hook in _all_hooks(hooks):
-        cmd = _hook_command(hook)
-        script = _REWRITE if _REWRITE in cmd else _AUGMENT
-        if _current_command(cmd) is not None and not hook_script_resolves(cmd, script):
-            missing.add(script)
-    return sorted(missing)
+    rows = [
+        (CLAUDE_SETTINGS_LABEL, _hook_command(h))
+        for h in _all_hooks(read_hooks_block(_claude_code_settings_path()))
+        if _current_command(_hook_command(h)) is not None
+    ]
+    for event in _PLUGIN_EVENTS:
+        for _, entries in _plugin_hook_entries(event):
+            rows += [
+                ("the repowise Claude Code plugin", _hook_command(h))
+                for h in _all_hooks({event: entries})
+                if _is_repowise_hook(h) or _is_rewrite_hook(h)
+            ]
+    if repo_path is not None:
+        local = _all_hooks(read_hooks_block(claude_code_local_settings_path(repo_path)))
+        rows += [
+            (f"{Path(repo_path).name}/.claude/settings.local.json", _hook_command(h))
+            for h in local
+            if _is_coverage_hook(h) or _is_health_gate_hook(h)
+        ]
+    return rows
 
 
 def _capture_entry() -> dict:

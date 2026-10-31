@@ -95,6 +95,15 @@ export function toggleVerb(
 }
 
 /**
+ * Verb counts as "calls 8 · imports 3". The count follows the verb so the
+ * phrase needs no plural agreement ("1 calls" read as a typo), and it matches
+ * the wording on the arrow labels.
+ */
+export function formatVerbCounts(verbs: readonly VerbCount[], sep = " · "): string {
+  return verbs.map((v) => `${v.verb} ${v.count.toLocaleString("en-US")}`).join(sep);
+}
+
+/**
  * The summary as one readable line.
  *
  * On a live index 89% of boxes have a single verb across all their relations,
@@ -104,13 +113,29 @@ export function toggleVerb(
 export function describeRelations(summary: RelationSummary): string {
   const { total, verbs } = summary;
   if (total === 0) return "No relations at this level";
-  const noun = total === 1 ? "relation" : "relations";
-  if (verbs.length === 1) {
-    const only = verbs[0]!.verb;
-    return total === 1 ? `1 ${only} relation` : `${total} ${noun}, all ${only}`;
-  }
-  const parts = verbs.map((v) => `${v.count} ${v.verb}`);
-  return `${total} ${noun}: ${parts.join(", ")}`;
+  if (total === 1) return `1 relation: ${verbs[0]!.verb}`;
+  if (verbs.length === 1) return `${total} relations, all ${verbs[0]!.verb}`;
+  return `${total} relations: ${formatVerbCounts(verbs, ", ")}`;
+}
+
+/** One node's relations split by direction: the arrows leaving it and arriving. */
+export interface RelationDirections {
+  outgoing: VerbCount[];
+  incoming: VerbCount[];
+}
+
+/**
+ * Verb counts for the relations leaving `nodeId` and those arriving at it, so
+ * "calls 3" can say which way the calls go.
+ */
+export function relationDirections(
+  relations: readonly ZoomRelation[],
+  nodeId: string,
+): RelationDirections {
+  return {
+    outgoing: summarizeRelations(relations.filter((r) => r.source_id === nodeId)).verbs,
+    incoming: summarizeRelations(relations.filter((r) => r.target_id === nodeId)).verbs,
+  };
 }
 
 /**
@@ -121,4 +146,16 @@ export function describeRelations(summary: RelationSummary): string {
 export function describeCap(summary: RelationSummary): string | null {
   if (summary.total <= summary.shown) return null;
   return `Showing the ${summary.shown} strongest`;
+}
+
+/**
+ * Verb-set equality, so a caller that rebuilds its verb set every render does
+ * not force a repaint. The sets hold at most the label vocabulary (seven
+ * verbs), so a pair of loops beats keeping a sorted key around.
+ */
+export function sameVerbSet(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
 }

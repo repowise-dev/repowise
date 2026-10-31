@@ -67,6 +67,13 @@ Node.js 20+, and its first run downloads the UI (about 50 MB, cached in
 [Docker image](../../docker/README.md) avoids installing Node. View by view:
 [Dashboard](DASHBOARD.md).
 
+After a first index, the dashboard opens on a three-step welcome: what stood
+out in your repo, connecting your agent, and what to add next. Setup
+(Settings > Setup) keeps the same list for later: agents, sync, coverage and a
+model, each with a prompt you can copy to your agent. The free index stays the
+default; add a model whenever you like from the dashboard or with
+`repowise generate`.
+
 ### 4. Connect your agent
 
 `init` wires your editors unless you pass `--no-editor-setup` (or set

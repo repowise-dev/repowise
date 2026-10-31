@@ -3,6 +3,8 @@ import {
   CO_CHANGES,
   describeCap,
   describeRelations,
+  formatVerbCounts,
+  relationDirections,
   toggleVerb,
   indexRelationsByNode,
   summarizeRelations,
@@ -84,13 +86,19 @@ describe("describeRelations", () => {
       rel("a", "c", "imports"),
       rel("a", "d", CO_CHANGES),
     ]);
-    expect(describeRelations(s)).toBe("3 relations: 2 imports, 1 co-changes");
+    expect(describeRelations(s)).toBe("3 relations: imports 2, co-changes 1");
   });
 
   it("keeps the singular readable rather than saying '1 relations, all imports'", () => {
     expect(describeRelations(summarizeRelations([rel("a", "b", "imports")]))).toBe(
-      "1 imports relation",
+      "1 relation: imports",
     );
+  });
+
+  it("puts the count after the verb so a single call never reads '1 calls'", () => {
+    const s = summarizeRelations([rel("a", "b", "co-changes"), rel("a", "c", "co-changes"), rel("a", "d", "calls")]);
+    expect(describeRelations(s)).toBe("3 relations: co-changes 2, calls 1");
+    expect(formatVerbCounts(s.verbs)).toBe("co-changes 2 · calls 1");
   });
 
   it("says so when there is nothing to show", () => {
@@ -133,5 +141,19 @@ describe("toggleVerb", () => {
     const before = new Set(["calls"]);
     toggleVerb(before, "imports");
     expect([...before]).toEqual(["calls"]);
+  });
+});
+
+describe("relationDirections", () => {
+  it("splits a node's relations into the arrows leaving it and arriving at it", () => {
+    const d = relationDirections(
+      [rel("a", "b", "calls"), rel("a", "c", "calls"), rel("d", "a", "imports"), rel("a", "e", "imports")],
+      "a",
+    );
+    expect(d.outgoing).toEqual([
+      { verb: "calls", count: 2 },
+      { verb: "imports", count: 1 },
+    ]);
+    expect(d.incoming).toEqual([{ verb: "imports", count: 1 }]);
   });
 });

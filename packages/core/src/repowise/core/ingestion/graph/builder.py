@@ -16,6 +16,7 @@ import networkx as nx
 import structlog
 
 from ...analysis.public_api import stamp_public_api
+from ...cancellation import check_cancelled
 from ..cohesion import (
     MODULE_DECLARATION_HINT,
     SAME_PACKAGE_HINT,
@@ -563,6 +564,7 @@ class GraphBuilder(
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.imports")
         if progress:
