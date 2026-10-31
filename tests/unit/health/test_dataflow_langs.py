@@ -19,6 +19,7 @@ from repowise.core.analysis.health.dataflow import (
     analyze_function,
     build_cfgs_for_file,
     find_extractions,
+    get_defuse_dialect,
 )
 from repowise.core.analysis.health.perf.promotion import _loop_iterations_independent
 
@@ -632,6 +633,85 @@ def test_java_switch_arm_writes_are_may_defs():
     assert switch_defs, "expected the arm writes to register as defs"
     use_lines = {u.line for b in fn.def_use.blocks.values() for u in b.uses if u.name == "y"}
     assert {d.line for d in switch_defs} <= use_lines  # ...and as paired uses
+
+
+@pytest.mark.parametrize(
+    ("loop_label", "switch_jump", "should_preserve_loop_state"),
+    [
+        ("", "continue;", True),
+        ("outer: ", "break outer;", True),
+        ("", "break;", False),
+        ("", "for (int k = 0; k < 2; k++) { continue; }", False),
+    ],
+)
+def test_java_switch_jump_keeps_loop_state_live_out(loop_label, switch_jump, should_preserve_loop_state):
+    src = f"""
+    class Demo {{
+        int f(int[] xs, int best) {{
+            {loop_label}for (int x : xs) {{
+                if (x > 5) {{
+                    best = x;
+                }}
+                if (best > 100) {{
+                    System.out.println(best);
+                }}
+                switch (x) {{
+                    case 0: {switch_jump}
+                    default: break;
+                }}
+                best = 0;
+            }}
+            return best;
+        }}
+    }}
+    """
+    fn = _first("java", src)
+    lmap = get_language_map("java")
+    stack = [fn.fn_node]
+    switch = None
+    while stack:
+        node = stack.pop()
+        if node.type == "switch_expression":
+            switch = node
+            break
+        stack.extend(node.named_children)
+    assert switch is not None
+    sdu = get_defuse_dialect("java").statement_def_use(switch, lmap, head_only=False)
+    has_loop_state_read = any(use.name == "best" for use in sdu.uses)
+    assert has_loop_state_read is should_preserve_loop_state
+
+
+def test_java_labeled_break_from_nested_loop_preserves_outer_loop_state():
+    src = """
+    class Demo {
+        int f(int[] xs, int outerBest) {
+            outer: for (int x : xs) {
+                outerBest = x;
+                for (int y : xs) {
+                    switch (y) {
+                        case 0: break outer;
+                        default: break;
+                    }
+                }
+                outerBest = 0;
+            }
+            return outerBest;
+        }
+    }
+    """
+    fn = _first("java", src)
+    lmap = get_language_map("java")
+    stack = [fn.fn_node]
+    switch = None
+    while stack:
+        node = stack.pop()
+        if node.type == "switch_expression":
+            switch = node
+            break
+        stack.extend(node.named_children)
+    assert switch is not None
+    sdu = get_defuse_dialect("java").statement_def_use(switch, lmap, head_only=False)
+    assert any(use.name == "outerBest" for use in sdu.uses)
 
 
 # A long Java method whose compute-average tail is a clean extraction.

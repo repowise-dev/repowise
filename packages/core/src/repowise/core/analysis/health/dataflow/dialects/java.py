@@ -62,6 +62,9 @@ _CONDITIONAL_KINDS = frozenset({"switch_expression", "switch_statement"})
 # Nested scopes whose identifiers belong to a different function. A
 # ``class_body`` covers anonymous-class methods inside an expression.
 _SCOPE_BOUNDARIES = frozenset({"lambda_expression", "class_body"})
+_LOOP_KINDS = frozenset({"for_statement", "enhanced_for_statement", "while_statement", "do_statement"})
+_FUNCTION_KINDS = frozenset({"method_declaration", "constructor_declaration", "lambda_expression", "class_body"})
+_JUMP_KINDS = frozenset({"break_statement", "continue_statement"})
 
 
 class JavaDeclaredTypes(DeclaredTypes):
@@ -263,6 +266,9 @@ class JavaDefUseDialect(BaseDefUseDialect):
             return
         if t in _CONDITIONAL_KINDS:
             self._process_may_def(node, defs, uses)
+            targets = _switch_loop_targets(node)
+            for loop in targets:
+                uses.extend(_loop_state(node, loop, self.identifier_kinds))
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; field name is not
@@ -290,6 +296,116 @@ class JavaDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._targets(child, defs, uses)
+
+
+def _switch_loop_targets(switch: Node) -> list[Node]:
+    nearest_loop = _enclosing_loop(switch)
+    if nearest_loop is None:
+        return []
+    targets: dict[int, Node] = {}
+    stack = list(switch.named_children)
+    while stack:
+        node = stack.pop()
+        if node.type in _JUMP_KINDS:
+            label = _jump_label(node)
+            if node.type == "continue_statement":
+                target = nearest_loop if label is None else _label_target_loop(_matching_label(node, label))
+                if target is not None:
+                    targets[target.id] = target
+            elif label is not None:
+                label_node = _matching_label(node, label)
+                for target in _loops_until_label(node, label_node):
+                    targets[target.id] = target
+            continue
+        if node.type in _LOOP_KINDS | _FUNCTION_KINDS:
+            continue
+        stack.extend(node.named_children)
+    return [targets[key] for key in sorted(targets)]
+
+
+def _enclosing_loop(node: Node) -> Node | None:
+    cur = node.parent
+    while cur is not None and cur.type not in _LOOP_KINDS:
+        if cur.type in _FUNCTION_KINDS:
+            return None
+        cur = cur.parent
+    return cur
+
+
+def _loop_state(switch: Node, loop: Node, identifier_kinds: frozenset[str]) -> list[Occurrence]:
+    line, column = switch.start_point[0] + 1, switch.start_point[1]
+    names: set[str] = set()
+    stack = [loop]
+    while stack:
+        node = stack.pop()
+        if node.type in identifier_kinds and _is_variable_identifier(node):
+            names.add(node_text(node))
+        stack.extend(node.named_children)
+    return [Occurrence(name, line, column) for name in sorted(names)]
+
+
+def _jump_label(jump: Node) -> str | None:
+    label = jump.child_by_field_name("label")
+    if label is None:
+        label = next((child for child in jump.named_children if child.type == "identifier"), None)
+    return node_text(label) if label is not None else None
+
+
+def _matching_label(node: Node, name: str) -> Node | None:
+    cur = node.parent
+    while cur is not None and cur.type not in _FUNCTION_KINDS:
+        if cur.type == "labeled_statement":
+            label = cur.child_by_field_name("label")
+            if label is None and cur.named_children:
+                label = cur.named_children[0]
+            if label is not None and node_text(label) == name:
+                return cur
+        cur = cur.parent
+    return None
+
+
+def _label_target_loop(label: Node | None) -> Node | None:
+    if label is None:
+        return None
+    body = label.child_by_field_name("body")
+    while body is not None and body.type == "labeled_statement":
+        body = body.child_by_field_name("body")
+    return body if body is not None and body.type in _LOOP_KINDS else None
+
+
+def _loops_until_label(jump: Node, label: Node | None) -> list[Node]:
+    if label is None:
+        return []
+    loops: list[Node] = []
+    cur = jump.parent
+    while cur is not None and cur.id != label.id:
+        if cur.type in _LOOP_KINDS:
+            loops.append(cur)
+        cur = cur.parent
+    return loops
+
+
+def _is_variable_identifier(node: Node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return True
+    if parent.type in {"type_identifier", "scoped_type_identifier", "integral_type", "floating_point_type"}:
+        return False
+    if parent.type == "field_access" and _same_node(parent.child_by_field_name("field"), node):
+        return False
+    if parent.type == "method_invocation" and _same_node(parent.child_by_field_name("name"), node):
+        return False
+    if parent.type == "object_creation_expression" and _same_node(parent.child_by_field_name("type"), node):
+        return False
+    return not (
+        parent.type == "method_reference"
+        and len(parent.named_children) > 1
+        and _same_node(parent.named_children[-1], node)
+    )
+
+
+def _same_node(left: Node | None, right: Node) -> bool:
+    return left is not None and left.id == right.id
 
 
 DIALECT = JavaDefUseDialect()
