@@ -1659,73 +1659,212 @@ class CallResolver(
         caller_id: str,
     ) -> ResolvedCall | None:
         """Resolve a free function call (no receiver)."""
-        target_name = call.target_name
-        # Every tier keys on the target name, so a name the repo declares
-        # nowhere can only be matched under an import alias (2a below).
-        declared = target_name in self._global_symbols
-        # A parameter or local of that name hides every tier below.
-        if self._shadowed_by_local(file_path, call, caller_id):
-            return None
-        # A C++ class member hides a same-named function, so the caller's class
-        # and its bases answer ahead of the flat same-file table. A qualified
-        # ``ns::f()`` names its scope, not the caller's class.
-        if not call.receiver_name and not call.scope_name:
-            own = self._cpp_class_member_call(file_path, call, caller_id, bare=True)
-            if own is not None:
-                return own
-
-        # Tier 1: same-file
-        handled, resolved = self._same_file_free_call(file_path, call, caller_id)
+        # Same-scope answers, then every tier from the language strategies down
+        # to the repo-wide fallback.
+        handled, resolved = self._scope_free_call(file_path, call, caller_id)
         if handled:
             return resolved
-        # Still the caller's own class, declared in a sibling partial fragment.
-        # Not asked when this file declares the name itself: Tier 1 declines a
-        # call into the caller's own overload set (one id), and a same-named
-        # overload in another fragment is no better evidence than that. Nor for a
-        # member call on its bare fallback: its receiver is not the caller's class.
-        if not call.receiver_name and target_name not in self._file_symbols.get(file_path, {}):
-            sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
+        return self._unscoped_free_call(file_path, call, caller_id)
 
+    def _scope_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Refusals and same-scope members that answer before any import tier."""
+        handled, resolved = self._local_scope_free_call(file_path, call, caller_id)
+        if handled:
+            return True, resolved
+        return self._same_file_scope_free_call(file_path, call, caller_id)
+
+    def _unscoped_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """The strategies, import and repo-wide tiers for a name no scope claims."""
+        # Every tier keys on the target name, so a name the repo declares
+        # nowhere can only be matched under an import alias (2a below).
+        declared = call.target_name in self._global_symbols
         # A language may see names no import mentions (a package sibling, a
         # C/C++ build target), and those beat the import and global tiers.
-        if declared:
-            hit = self._first_strategy_hit(
-                self._strategies_for(file_path).free, file_path, call, caller_id
-            )
-            if hit is not None:
-                return hit
-
-        # Tier 2: import-scoped
-        binding = self._import_bindings.get(file_path, {}).get(target_name)
-        hit = self._bound_import_call(call, caller_id, binding)
+        hit = self._declared_free_call(file_path, call, caller_id, declared)
         if hit is not None:
             return hit
+        # Tier 2: import-scoped.
+        binding = self._import_bindings.get(file_path, {}).get(call.target_name)
+        handled, resolved = self._imported_free_call(
+            file_path, call, caller_id, binding, declared
+        )
+        if handled:
+            return resolved
+        return self._repo_import_free_call(file_path, call, caller_id, binding)
+
+    def _local_scope_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """A local shadow refuses the call; a C++ member answers it first."""
+        if self._shadowed_by_local(file_path, call, caller_id):
+            return True, None
+        return self._bare_scope_member(file_path, call, caller_id)
+
+    def _bare_scope_member(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """The caller's own class member a bare call names, if any.
+
+        A qualified ``ns::f()`` names its scope, not the caller's class.
+        """
+        if call.receiver_name or call.scope_name:
+            return False, None
+        own = self._cpp_class_member_call(file_path, call, caller_id, bare=True)
+        if own is None:
+            return False, None
+        return True, own
+
+    def _same_file_scope_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Tier 1, then the caller's class declared in a sibling partial fragment.
+
+        The fragment is not asked when this file declares the name itself: Tier 1
+        declines a call into the caller's own overload set (one id), and a
+        same-named overload in another fragment is no better evidence than that.
+        Nor for a member call on its bare fallback: its receiver is not the
+        caller's class.
+        """
+        handled, resolved = self._same_file_free_call(file_path, call, caller_id)
+        if handled:
+            return True, resolved
+        sym_id = self._partial_fragment_class_member(file_path, call, caller_id)
+        if sym_id is None:
+            return False, None
+        return True, ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
+
+    def _partial_fragment_class_member(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> str | None:
+        """The caller's class member in a sibling fragment, when a bare call may name it.
+
+        Not asked when this file declares the name itself: Tier 1 declines a
+        call into the caller's own overload set (one id), and a same-named
+        overload in another fragment is no better evidence than that. Nor for a
+        member call on its bare fallback: its receiver is not the caller's class.
+        """
+        if call.receiver_name or call.target_name in self._file_symbols.get(file_path, {}):
+            return None
+        return self._partial_fragment_member(file_path, caller_id, call.target_name)
+
+    def _declared_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        declared: bool,
+    ) -> ResolvedCall | None:
+        """The language strategies that answer a name the repo declares."""
+        if not declared:
+            return None
+        return self._first_strategy_hit(
+            self._strategies_for(file_path).free, file_path, call, caller_id
+        )
+
+    def _imported_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        binding: NamedBinding | None,
+        declared: bool,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Tier 2: the import's own binding, then the refusals that end there."""
+        hit = self._bound_import_call(call, caller_id, binding)
+        if hit is not None:
+            return True, hit
         # A failed type-qualified import must not skip Java's caller-hierarchy
         # lookup or broaden to a same-named member from another imported type.
         if binding is not None and binding.member_of:
-            return self._implicit_inherited_call(file_path, call, caller_id)
-        # A Python name imported from outside the repository is that module's,
-        # not a same-named repo symbol a later tier would find. Python only:
-        # Python resolves a repo's own absolute imports by dotted path, while
-        # another language's import of the repo's own package by its published
-        # name may still be marked external and mean repo code. Ceiling: an
-        # in-repo ``except ImportError:`` fallback definition is not linked.
-        if (
+            return True, self._implicit_inherited_call(file_path, call, caller_id)
+        return self._import_stops(file_path, call, binding, declared)
+
+    def _import_stops(
+        self,
+        file_path: str,
+        call: CallSite,
+        binding: NamedBinding | None,
+        declared: bool,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Does a call with no import hit stop at Tier 2, with no edge?"""
+        if self._import_ends_resolution(file_path, call, binding, declared):
+            return True, None
+        return False, None
+
+    def _import_ends_resolution(
+        self,
+        file_path: str,
+        call: CallSite,
+        binding: NamedBinding | None,
+        declared: bool,
+    ) -> bool:
+        """Does a receiver-less call with no import hit stop here instead?"""
+        if self._is_external_python_binding(file_path, binding):
+            return True
+        # A Kotlin import from a library namespace the repo does not hold
+        # (``import java.io.IOException``) binds the name just as surely.
+        if not declared or call.target_name in self._library_imported_names(file_path):
+            return True
+        return self._ambiguous_csharp_construction(file_path, call)
+
+    def _ambiguous_csharp_construction(self, file_path: str, call: CallSite) -> bool:
+        """Could a bare C# call name a constructor of a type the repo declares?
+
+        Neither the type nor a same-named method is evidence for the other.
+        """
+        language = self._language_of(file_path)
+        return language == "csharp" and self._csharp_constructed_type_is_ambiguous(
+            file_path, call
+        )
+
+    def _is_external_python_binding(
+        self,
+        file_path: str,
+        binding: NamedBinding | None,
+    ) -> bool:
+        """Is a name imported from outside the repo, in a language resolving by path?
+
+        Python resolves a repo's own absolute imports by dotted path, while
+        another language's import of the repo's own package by its published
+        name may still be marked external and mean repo code. Ceiling: an
+        in-repo ``except ImportError:`` fallback definition is not linked.
+        """
+        return (
             binding is not None
             and (binding.source_file or "").startswith(_EXTERNAL_PREFIX)
             and self._language_of(file_path) == "python"
-        ):
-            return None
-        # A Kotlin import from a library namespace the repo does not hold
-        # (``import java.io.IOException``) binds the name just as surely.
-        if not declared or target_name in self._library_imported_names(file_path):
-            return None
-        if self._language_of(file_path) == "csharp" and self._csharp_constructed_type_is_ambiguous(
-            file_path, call
-        ):
-            return None
+        )
+
+    def _repo_import_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        binding: NamedBinding | None,
+    ) -> ResolvedCall | None:
+        """The later import tiers and the repo-wide free-function fallback."""
         return (
             self._named_import_call(file_path, call, caller_id, binding)
             or self._merged_import_call(file_path, call, caller_id)
@@ -1881,28 +2020,53 @@ class CallResolver(
 
     def _imported_symbol(self, binding: NamedBinding | None, name: str) -> str | None:
         """The repo symbol an imported *name* binds, one barrel hop followed."""
-        if not (binding and binding.source_file):
+        if binding is None or not binding.source_file:
             return None
-        source_file = binding.source_file
-        barrel = self._barrel_origins.get(source_file, {})
         lookup_name = binding.exported_name or name
-        if lookup_name in barrel:
-            source_file = barrel[lookup_name]
-        if binding.member_of:
-            # A static import names the member's type; a nested type's same-named member is another.
-            owned = self._file_methods.get(source_file, {}).get(
-                (binding.member_of, lookup_name)
-            )
-            if owned is not None:
-                return owned
-            owner_id = self._published(source_file, binding.member_of)
-            owner = self._symbols_by_id.get(owner_id or "")
-            if owner is None or owner.kind not in _TYPE_KINDS:
-                return None
-            return self._ancestor_method(
-                owner.id, lookup_name, "", class_chain_first=True
-            )
+        source_file = self._barrel_source(binding.source_file, lookup_name)
+        return self._imported_symbol_in(source_file, binding.member_of, lookup_name)
+
+    def _barrel_source(self, source_file: str, lookup_name: str) -> str:
+        """*source_file*, or the file a barrel re-exports *lookup_name* from."""
+        return self._barrel_origins.get(source_file, {}).get(lookup_name, source_file)
+
+    def _imported_symbol_in(
+        self,
+        source_file: str,
+        member_of: str | None,
+        lookup_name: str,
+    ) -> str | None:
+        """The imported symbol in *source_file*, scoped to its type when named."""
+        if member_of:
+            return self._imported_member_symbol(source_file, member_of, lookup_name)
         return self._published(source_file, lookup_name)
+
+    def _imported_member_symbol(
+        self,
+        source_file: str,
+        member_of: str,
+        lookup_name: str,
+    ) -> str | None:
+        """The member a type-qualified import names: its own, else an inherited one.
+
+        A static import names the member's type; a nested type's same-named
+        member is another, so a miss on the named type is not broadened to it.
+        """
+        owned = self._file_methods.get(source_file, {}).get((member_of, lookup_name))
+        if owned is not None:
+            return owned
+        owner = self._published_type(source_file, member_of)
+        if owner is None:
+            return None
+        return self._ancestor_method(owner.id, lookup_name, "", class_chain_first=True)
+
+    def _published_type(self, source_file: str, type_name: str) -> Symbol | None:
+        """The type symbol *type_name* is published as in *source_file*, if one."""
+        owner_id = self._published(source_file, type_name)
+        owner = self._symbols_by_id.get(owner_id or "")
+        if owner is None or owner.kind not in _TYPE_KINDS:
+            return None
+        return owner
 
     def _link_imported_aliases(self) -> None:
         """Redirect a module-level alias of an imported name onto its definition.

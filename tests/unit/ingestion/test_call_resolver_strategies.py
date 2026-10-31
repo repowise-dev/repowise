@@ -3081,6 +3081,56 @@ class TestJavaStaticImport:
         }
         assert callees == {"a/Base.java::Base::m"}
 
+    def test_a_static_import_binds_a_member_inherited_through_ancestors(
+        self, tmp_path: Path
+    ) -> None:
+        """A static import walks the named type's whole ancestor chain."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base { public static void m() { } }\n",
+                ),
+                "a/Mid.java": (
+                    "java",
+                    "package a;\npublic class Mid extends Base { }\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Mid {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n"
+                    "  }\n"
+                    "}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\n"
+                    "public class Use {\n"
+                    "  public void run() {\n"
+                    "    m();\n"
+                    "  }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {**{path: set() for path in parsed}, "b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "a/Ex.java::Ex": {"a/Mid.java::Mid"},
+                "a/Mid.java::Mid": {"a/Base.java::Base"},
+            },
+        )
+        callees = {
+            call.callee_id
+            for call in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
     def test_a_static_import_does_not_fall_back_to_a_nested_type_member(
         self, tmp_path: Path
     ) -> None:
