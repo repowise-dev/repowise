@@ -128,11 +128,6 @@ Running fully offline (§2) also means nothing is sent. Check state with
 **Retention:** events are kept for 90 days, then deleted. Only aggregate figures
 are used or shared.
 
-Note that [COMMERCIAL.md §2](COMMERCIAL.md#2-what-ships-in-open-source-agpl-30)
-summarizes this as "zero telemetry". The precise statement is the one here and
-in the telemetry reference: anonymous, opt-out, no code or identifiers, three
-off switches.
-
 ---
 
 ## 4. Self-hosted vs hosted: where the boundary sits
