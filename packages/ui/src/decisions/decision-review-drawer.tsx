@@ -33,6 +33,8 @@ export interface DecisionReviewDrawerProps {
   onClose: () => void;
   onAccept?: ((decision: DecisionRecord) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
+  /** Re-accepts a decision whose files moved. Given only where it applies. */
+  onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
   readOnlyReason?: string | undefined;
   pending?: boolean | undefined;
   /** The full record page, where its fields are edited. */
@@ -58,6 +60,7 @@ export function DecisionReviewDrawer({
   onClose,
   onAccept,
   onDismiss,
+  onReaffirm,
   readOnlyReason,
   pending,
   href,
@@ -83,6 +86,7 @@ export function DecisionReviewDrawer({
               reviewable={reviewable}
               onAccept={onAccept}
               onDismiss={onDismiss}
+              onReaffirm={onReaffirm}
               readOnlyReason={readOnlyReason}
               pending={pending}
               href={href}
@@ -171,21 +175,33 @@ function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers
   );
 }
 
-function DrawerVerbs({
-  d,
-  reviewable,
-  onAccept,
-  onDismiss,
-  readOnlyReason,
-  pending,
-  blockers,
-}: Pick<BodyProps, "d" | "reviewable" | "onAccept" | "onDismiss" | "readOnlyReason" | "pending"> & {
-  blockers: string[];
-}) {
-  if (!reviewable) return null;
+type VerbProps = Pick<
+  BodyProps,
+  "d" | "reviewable" | "onAccept" | "onDismiss" | "onReaffirm" | "readOnlyReason" | "pending"
+> & { blockers: string[] };
+
+function DrawerVerbs(props: VerbProps) {
+  const { reviewable, onReaffirm, readOnlyReason } = props;
+  if (!reviewable && !onReaffirm) return null;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
+  return onReaffirm ? <ReaffirmVerb {...props} onReaffirm={onReaffirm} /> : <ReviewVerbs {...props} />;
+}
+
+function ReaffirmVerb({
+  d,
+  pending,
+  onReaffirm,
+}: VerbProps & { onReaffirm: (decision: DecisionRecord) => void }) {
+  return (
+    <Button size="sm" disabled={pending} onClick={() => onReaffirm(d)}>
+      {pending ? "Reaffirming..." : "Reaffirm"}
+    </Button>
+  );
+}
+
+function ReviewVerbs({ d, onAccept, onDismiss, pending, blockers }: VerbProps) {
   return (
     <div className="flex items-center gap-2">
       {onAccept && (

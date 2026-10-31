@@ -1914,6 +1914,9 @@
       "dismissed": "已忽略。重新索引不会再提出它。",
       "acceptFailed": "接受失败：{message}",
       "dismissFailed": "忽略失败：{message}",
+      "reaffirmed": "已重新确认。它对所涉及的文件重新生效。",
+      "reaffirmFailed": "重新确认失败：{message}",
+      "bulkDismissed": "已忽略 {count} 条候选。",
       "actionFailed": "审阅操作失败。",
       "previous": "上一页",
       "next": "下一页"

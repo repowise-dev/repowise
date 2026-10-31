@@ -102,6 +102,19 @@ export async function patchDecision(
   );
 }
 
+/**
+ * Re-accept a governing decision after re-reading it, which clears
+ * `needs_review`. Refused (400) for a candidate or a withdrawn decision.
+ */
+export async function reaffirmDecision(
+  repoId: string,
+  decisionId: string,
+): Promise<DecisionRecordResponse> {
+  return apiPost<DecisionRecordResponse>(
+    `/api/repos/${repoId}/decisions/${decisionId}/reaffirm`,
+  );
+}
+
 export async function getDecisionEvidence(
   repoId: string,
   decisionId: string,

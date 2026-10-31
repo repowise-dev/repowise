@@ -1914,6 +1914,9 @@
       "dismissed": "Dismissed. Reindexing will not propose it again.",
       "acceptFailed": "Couldn't accept: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
+      "reaffirmed": "Reaffirmed. It is current again for the files it names.",
+      "reaffirmFailed": "Couldn't reaffirm: {message}",
+      "bulkDismissed": "Dismissed {count, plural, one {# candidate} other {# candidates}}.",
       "actionFailed": "The review action failed.",
       "previous": "Previous",
       "next": "Next"
