@@ -100,7 +100,9 @@ def _apply_default_verdict(
         return
     enabled = _ask_hooks_question(console_obj, len(repo_paths))
     if enabled is not None:
-        _apply_verdict(console_obj, adapter, repo_paths, enabled=enabled)
+        # A yes still keeps what a repo recorded (a workspace can mix opt-outs
+        # into the question); a no is an explicit decline and turns every key off.
+        _apply_verdict(console_obj, adapter, repo_paths, enabled=enabled, keep_recorded=enabled)
 
 
 def _ask_hooks_question(console_obj: Any, repo_count: int) -> bool | None:

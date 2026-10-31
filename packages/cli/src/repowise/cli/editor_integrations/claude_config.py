@@ -312,12 +312,20 @@ def _plugin_hook_entries(event: str) -> list[tuple[Path, list]]:
 
 
 def _plugin_rewrite_hook() -> tuple[Path, str] | None:
-    """``(hooks.json, matcher)`` of a plugin that ships the rewrite hook, else None."""
+    """``(hooks.json, matcher)`` of a plugin that ships the current rewrite hook.
+
+    A plugin build with an older matcher does not count, so the settings entry
+    (which install keeps current) stays the one that runs.
+    """
     for hooks_file, entries in _plugin_hook_entries("PreToolUse"):
-        matcher = _rewrite_matcher(entries)
-        if matcher is not None:
-            return hooks_file, matcher
+        if _rewrite_matcher(entries) == _REWRITE_MATCHER:
+            return hooks_file, _REWRITE_MATCHER
     return None
+
+
+def claude_code_plugin_ships_rewrite_hook() -> bool:
+    """True when an enabled repowise plugin runs the rewrite hook itself."""
+    return _plugin_rewrite_hook() is not None
 
 
 def set_claude_code_capture_hook(enabled: bool) -> Path | None:

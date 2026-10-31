@@ -245,3 +245,30 @@ def test_a_plugin_that_ships_the_rewrite_hook_is_not_doubled(settings_path, repo
     assert not data.get("hooks", {}).get("PreToolUse")
     assert claude_config.claude_code_rewrite_hook_matcher() == claude_config._REWRITE_MATCHER
     assert _distill_config(repo)["commands"]["enabled"] is True
+
+
+def test_a_plugin_with_an_older_matcher_keeps_the_settings_hook(settings_path) -> None:
+    old = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": claude_config._PLUGIN_REWRITE_HOOK_COMMAND}]}]}}
+    claude_config.install_claude_code_rewrite_hook()
+    _enable_plugin(settings_path, json.dumps(old))
+
+    assert claude_config.install_claude_code_rewrite_hook() == settings_path
+    assert claude_config._settings_rewrite_matcher() == claude_config._REWRITE_MATCHER
+
+
+def test_interactive_yes_keeps_a_workspace_repos_optout(
+    settings_path, workspace_repos, monkeypatch
+) -> None:
+    opted_out = workspace_repos[0]
+    offer_distill_rewrite_hook(MagicMock(), [opted_out], flag=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(ClaudeCodeAdapter, "detect", lambda self: True)
+    monkeypatch.setattr("click.confirm", lambda *a, **k: True)
+
+    offer_distill_rewrite_hook(MagicMock(), workspace_repos, flag=None)
+
+    assert _distill_config(opted_out)["commands"]["enabled"] is False
+    assert set(_hooks_config(opted_out).values()) == {False}
+    for rp in workspace_repos[1:]:
+        assert _distill_config(rp)["commands"]["enabled"] is True
