@@ -41,10 +41,9 @@ def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
                         status=spec.get("status", "active"),
                         source=spec.get("source", "cli"),
                         confidence=spec.get("confidence", 0.9),
+                        evidence_commits_json=json.dumps(spec.get("commits", [])),
                         staleness_score=spec.get("staleness", 0.0),
-                        affected_files_json=json.dumps(
-                            spec.get("affected_files", ["src/app.py"])
-                        ),
+                        affected_files_json=json.dumps(spec.get("affected_files", ["src/app.py"])),
                         evidence_file=spec["id"],
                     )
                 )
@@ -87,6 +86,67 @@ def test_decision_help_lists_subcommands() -> None:
         assert name in result.output
 
 
+def test_decision_dedupe_lexical_runs_without_an_embedder_or_vector_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import repowise.cli.providers.embedders as embedders
+    import repowise.cli.providers.vector_store as vector_store
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _seed_wiki_db(
+        repo,
+        [
+            {
+                "id": "a" * 32,
+                "title": "marked pin moves to the UMD path that marked v18 ships",
+                "decision": "The marked pin moves to the UMD path shipped in marked v18.",
+                "status": "proposed",
+                "source": "pr",
+                "commits": ["sha-1"],
+            },
+            {
+                "id": "b" * 32,
+                "title": "marked pin moved to the UMD path that marked v18 ships",
+                "decision": "The marked pin moved to the UMD path shipped in marked v18.",
+                "status": "proposed",
+                "source": "pr",
+                "commits": ["sha-1"],
+            },
+        ],
+    )
+
+    def _unexpected(*_args, **_kwargs):
+        raise AssertionError("lexical mode must not initialize an embedder or vector store")
+
+    monkeypatch.setattr(embedders, "resolve_embedder_for_repo", _unexpected)
+    monkeypatch.setattr(embedders, "build_embedder", _unexpected)
+    monkeypatch.setattr(vector_store, "build_vector_store", _unexpected)
+
+    result = CliRunner().invoke(cli, ["decision", "dedupe", str(repo), "--lexical"])
+
+    assert result.exit_code == 0, result.output
+    assert "Duplicate pairs >= 0.70   1" in result.output
+    assert "Nothing was written" in result.output
+
+
+def test_decision_dedupe_without_lexical_still_refuses_mock_embedder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import repowise.cli.providers.embedders as embedders
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _create_empty_index(repo)
+    monkeypatch.setattr(embedders, "resolve_embedder_for_repo", lambda _path: "mock")
+    monkeypatch.setattr(embedders, "build_embedder", lambda _name, _path: MockEmbedder())
+
+    result = CliRunner().invoke(cli, ["decision", "dedupe", str(repo)])
+
+    assert result.exit_code == 1
+    assert "not test vectors" in result.output
+
 
 def _stored_column(repo_root: Path, decision_id: str, column: str) -> str:
     """One column of a record as written, for the ones no command prints."""
@@ -121,15 +181,24 @@ def test_decision_add_records_without_prompting(indexed_repo: Path) -> None:
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Escape LIKE patterns",
-            "--decision", "Escape % and _ before interpolating",
-            "--rationale", "an unescaped pattern scans the table",
-            "--alternative", "match in Python",
-            "--consequence", "one more helper on the query path",
-            "--affects", "src/db/models.py",
-            "--tag", "database",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Escape LIKE patterns",
+            "--decision",
+            "Escape % and _ before interpolating",
+            "--rationale",
+            "an unescaped pattern scans the table",
+            "--alternative",
+            "match in Python",
+            "--consequence",
+            "one more helper on the query path",
+            "--affects",
+            "src/db/models.py",
+            "--tag",
+            "database",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -201,10 +270,14 @@ def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Prefer ruff check",
-            "--decision", "Run ruff check, never ruff format",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Prefer ruff check",
+            "--decision",
+            "Run ruff check, never ruff format",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -287,11 +360,16 @@ def test_the_kind_flag_records_the_noun(indexed_repo: Path) -> None:
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Commit as the user",
-            "--decision", "every commit is authored by the user",
-            "--kind", "agreement",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Commit as the user",
+            "--decision",
+            "every commit is authored by the user",
+            "--kind",
+            "agreement",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -308,10 +386,14 @@ def test_a_decision_added_without_the_flag_is_architectural(indexed_repo: Path) 
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Prefer ruff check here",
-            "--decision", "Run ruff check, never ruff format",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Prefer ruff check here",
+            "--decision",
+            "Run ruff check, never ruff format",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -478,6 +560,7 @@ def test_decision_list_shows_a_long_title_whole(indexed_repo: Path) -> None:
     # The column wraps, so every word survives in order, with other cells
     # between wrapped lines; independent of width and box style.
     assert re.search(r"\b" + r"\b.*?\b".join(map(re.escape, title.split())), result.output, re.S)
+
 
 def test_decision_confirm_promotes_proposed(indexed_repo: Path) -> None:
     _seed_wiki_db(
@@ -701,8 +784,14 @@ class TestTheLifecycleIsDrivableByAnAgent:
         result = CliRunner().invoke(
             cli,
             [
-                "decision", "deprecate", "c0ffee04", str(indexed_repo),
-                "--superseded-by", "c0ffee05", "--format", "json",
+                "decision",
+                "deprecate",
+                "c0ffee04",
+                str(indexed_repo),
+                "--superseded-by",
+                "c0ffee05",
+                "--format",
+                "json",
             ],
         )
 
@@ -819,9 +908,7 @@ def test_decision_add_stays_silent_when_the_repo_has_no_real_embedder(tmp_path, 
 
     monkeypatch.setattr(embedders, "resolve_embedder_for_repo", lambda p: "keyless")
     monkeypatch.setattr(embedders, "build_embedder", lambda name, p: KeylessEmbedder())
-    monkeypatch.setattr(
-        vector_store, "build_vector_store", lambda p, e: built.append(e) or None
-    )
+    monkeypatch.setattr(vector_store, "build_vector_store", lambda p, e: built.append(e) or None)
 
     asyncio.run(decision_cmd._embed_decision(tmp_path, "abc123", "t", "d", None))
 
