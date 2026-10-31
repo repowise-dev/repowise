@@ -796,6 +796,20 @@ def lean_response(result: Any) -> Any:
     return result
 
 
+def drop_false_status_flags(result: Any) -> Any:
+    """Remove ``false`` status flags from *result*'s ``_meta``, keeping the rest.
+
+    For a full-meta tool: its diagnostics stay, but ``embedder_degraded: false``
+    says nothing happened, as on every lean response. Telemetry reads the flag
+    before this runs, so it still sees both values.
+    """
+    meta = result.get("_meta") if isinstance(result, dict) else None
+    if isinstance(meta, dict):
+        for key in [k for k, v in meta.items() if v is False and _is_status_flag(k)]:
+            del meta[key]
+    return result
+
+
 def _lean_meta(meta: dict[str, Any]) -> None:
     for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, *_DEBUG_LAYER_KEYS, "embedder"):
         meta.pop(key, None)

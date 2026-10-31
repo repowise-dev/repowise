@@ -152,3 +152,32 @@ async def test_debug_meta_keeps_the_whole_shape(monkeypatch: pytest.MonkeyPatch)
 
     assert result["flag_truncated"] is False
     assert result["_meta"]["index_behind"] is False
+
+
+async def get_overview() -> dict[str, Any]:
+    return {"_meta": {"index_behind": False, "embedder_degraded": False, "contract_version": 4}}
+
+
+async def test_the_orientation_call_keeps_diagnostics_but_no_false_status_flag() -> None:
+    meta = (await tool_middleware(get_overview)())["_meta"]
+
+    assert "embedder_degraded" not in meta
+    assert meta["index_behind"] is False
+    assert meta["contract_version"] == 4
+
+
+async def test_the_orientation_call_keeps_a_raised_flag() -> None:
+    async def get_overview() -> dict[str, Any]:
+        return {"_meta": {"embedder_degraded": True}}
+
+    assert (await tool_middleware(get_overview)())["_meta"]["embedder_degraded"] is True
+
+
+async def test_debug_meta_keeps_the_orientation_calls_false_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+
+    meta = (await tool_middleware(get_overview)())["_meta"]
+
+    assert meta["embedder_degraded"] is False

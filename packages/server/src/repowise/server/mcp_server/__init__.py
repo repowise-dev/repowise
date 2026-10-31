@@ -132,6 +132,7 @@ def tool_middleware(fn: Any) -> Any:
     )
     from repowise.server.mcp_server._failure_shield import shield
     from repowise.server.mcp_server._meta import (
+        drop_false_status_flags,
         finalize_trust_envelope,
         full_meta,
         lean_response,
@@ -177,7 +178,10 @@ def tool_middleware(fn: Any) -> Any:
         return wrapped
 
     def lean_form(result: Any) -> Any:
-        return result if full_meta(fn.__name__) else lean_response(result)
+        if not full_meta(fn.__name__):
+            return lean_response(result)
+        # A full-meta tool keeps its diagnostics; debug mode keeps everything.
+        return result if full_meta() else drop_false_status_flags(result)
 
     def delivered_form(result: Any) -> Any:
         """What the passes after the budget leave of *result*: envelope, then lean."""
