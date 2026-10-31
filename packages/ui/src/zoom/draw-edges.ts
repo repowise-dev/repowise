@@ -133,6 +133,30 @@ export function focusedIn(scene: ZoomScene, parent: ZoomNode, focusId: string | 
 }
 
 /**
+ * Fill `inputs` with the focused card's relations, then the level's strongest
+ * at rest. Returns how many of them are the focused card's.
+ */
+function collectInputs(f: EdgeFrame, rels: readonly ZoomRelation[], q: EdgeQuery): number {
+  const { focusId, relationVerbs } = q;
+  if (focusId !== null) {
+    for (const r of rels) {
+      if (inputs.length >= EDGE_MAX_PER_PARENT) break;
+      if (touches(r, focusId) && wanted(f, r, relationVerbs)) pushInput(r);
+    }
+  }
+  const focused = inputs.length;
+  if (!q.atRest) return focused;
+  for (const r of rels) {
+    if (inputs.length - focused >= REST_EDGE_MAX) break;
+    // The focused card's links are the first set, drawn at full strength.
+    if (touches(r, focusId)) continue;
+    if (!q.showTestLinks && isHiddenTestLink(f.scene.nodes, r)) continue;
+    if (wanted(f, r, relationVerbs)) pushInput(r);
+  }
+  return focused;
+}
+
+/**
  * Draw the arrows among `parent`'s drawn `kids` that `q` asks for. Returns the
  * routed arrows to label: the focused card's when it is one of `kids`, the
  * at-rest set when nothing is focused, else none.
@@ -151,37 +175,23 @@ export function drawEdges(
   const rels = scene.relationsByParent.get(parent.id);
   if (!rels) return NO_EDGES;
   const f: EdgeFrame = { scene, parent, cam, vp, allDrawn: resetScratch(parent, kids) };
-  const { focusId, relationVerbs } = q;
-  if (focusId !== null) {
-    for (const r of rels) {
-      if (inputs.length >= EDGE_MAX_PER_PARENT) break;
-      if (touches(r, focusId) && wanted(f, r, relationVerbs)) pushInput(r);
-    }
-  }
-  const focused = inputs.length;
-  if (q.atRest) {
-    for (const r of rels) {
-      if (inputs.length - focused >= REST_EDGE_MAX) break;
-      // The focused card's links are the first set, drawn at full strength.
-      if (touches(r, focusId)) continue;
-      if (!q.showTestLinks && isHiddenTestLink(scene.nodes, r)) continue;
-      if (wanted(f, r, relationVerbs)) pushInput(r);
-    }
-  }
+  const focused = collectInputs(f, rels, q);
   if (inputs.length === 0) return NO_EDGES;
 
   // `routeEdges` keeps input order (every endpoint is anchored), so the first
   // `focused` routes are the focused card's.
   const routed = routeEdges(inputs, anchored);
-  const restAlpha = focusedIn(scene, parent, focusId) ? REST_DIM_ALPHA : REST_ALPHA;
+  const focusHere = focusedIn(scene, parent, q.focusId);
+  const restAlpha = focusHere ? REST_DIM_ALPHA : REST_ALPHA;
   routed.forEach((e, i) => {
     const to = anchored.get(e.targetId)!;
     const withArrow = to.w >= ARROW_MIN_BOX_PX && to.h >= ARROW_MIN_BOX_PX;
-    const a = alpha * (i < focused ? EDGE_FOCUS_ALPHA : restAlpha);
-    drawEdge(ctx, e.route, e.coupling, palette, a, withArrow, edgeStrokePx(e.edgeCount));
+    // Focused links keep `drawEdge`'s coupling width; at-rest ones step by edge count.
+    if (i < focused) drawEdge(ctx, e.route, e.coupling, palette, alpha * EDGE_FOCUS_ALPHA, withArrow);
+    else drawEdge(ctx, e.route, e.coupling, palette, alpha * restAlpha, withArrow, edgeStrokePx(e.edgeCount));
   });
-  if (focusedIn(scene, parent, focusId)) return focused === routed.length ? routed : routed.slice(0, focused);
+  if (focusHere) return focused === routed.length ? routed : routed.slice(0, focused);
   // A card focused elsewhere labels its own parent's arrows; one label set a
   // frame keeps the single-slot label memo (`edge-labels.ts`) from thrashing.
-  return focusId === null ? routed : NO_EDGES;
+  return q.focusId === null ? routed : NO_EDGES;
 }

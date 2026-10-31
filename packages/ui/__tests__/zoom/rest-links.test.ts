@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Camera } from "../../src/zoom/camera";
-import { EDGE_MAX_PER_PARENT } from "../../src/zoom/constants";
+import { EDGE_LINE_PX, EDGE_MAX_PER_PARENT } from "../../src/zoom/constants";
 import { type DrawOptions, drawScene } from "../../src/zoom/draw-tree";
 import {
   REST_EDGE_MAX,
@@ -174,6 +174,22 @@ describe("at-rest arrows", () => {
     expect(arrows(small, { levelId: "root", hoveredId: "l2" })).toBe(2);
     // A hovered card's links include its test links: they are its own.
     expect(arrows(small, { levelId: "root", hoveredId: "tests" })).toBe(4);
+  });
+
+  it("keep the coupling width on a hovered card's links, stepping only the rest", () => {
+    // l0's links (5,000 and 900 edges, loose) draw at the coupling width;
+    // the at-rest b -> c (120 edges) takes the edge-count step.
+    const scene = buildScene(small);
+    const r = scene.worldRects.get(small.root_id)!;
+    const cam: Camera = { cx: r.x + r.w / 2, cy: r.y + r.h / 2, scale: (VP.w * 0.9) / r.w };
+    const { ctx } = countingContext();
+    const widths: number[] = [];
+    const spy = new Proxy(ctx, {
+      get: (t, k: string) =>
+        k === "bezierCurveTo" ? () => widths.push(t.lineWidth) : (t as unknown as Record<string, unknown>)[k],
+    });
+    drawScene(spy, scene, cam, VP, palette, { selectedId: null, hoveredId: "l0", lowDetail: false, levelId: "root" });
+    expect(widths).toEqual([EDGE_LINE_PX, EDGE_LINE_PX, edgeStrokePx(120)]);
   });
 
   it("draw nothing mid-pan", () => {
