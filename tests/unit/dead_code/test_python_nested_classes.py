@@ -157,3 +157,109 @@ def use():
     assert "Outer.Inner" in refs
     # Same inner name under another class: not reached, not recorded.
     assert "Other.Inner" not in refs
+
+
+def test_pep_695_type_alias_quoted_local_ref():
+    import sys
+
+    import pytest
+
+    if sys.version_info < (3, 12):
+        pytest.skip("PEP 695 type statement requires Python 3.12+")
+    src = """
+from typing import Literal
+
+class LocalClass:
+    pass
+
+class BoundClass:
+    pass
+
+class UnusedClass:
+    pass
+
+type Alias = list["LocalClass"]
+type Box[T: "BoundClass"] = list[T]
+type Labels = Literal["UnusedClass"]
+"""
+    assert extract_python_local_refs(
+        src,
+        frozenset({"LocalClass", "BoundClass", "UnusedClass", "Alias", "Box", "Labels"}),
+    ) == frozenset({"LocalClass", "BoundClass"})
+
+
+def test_typing_type_alias_quoted_rhs_ref():
+    src = """
+import typing
+from typing import Literal, TypeAlias
+
+class LocalClass:
+    pass
+
+class QualifiedClass:
+    pass
+
+class UnusedClass:
+    pass
+
+Alias: TypeAlias = dict[str, "LocalClass"]
+QualifiedAlias: typing.TypeAlias = list["QualifiedClass"]
+Labels: TypeAlias = Literal["UnusedClass"]
+"""
+    refs = extract_python_local_refs(
+        src,
+        frozenset(
+            {
+                "LocalClass",
+                "QualifiedClass",
+                "UnusedClass",
+                "Alias",
+                "QualifiedAlias",
+                "Labels",
+            }
+        ),
+    )
+    assert refs == frozenset({"LocalClass", "QualifiedClass"})
+
+
+def test_generic_base_class_quoted_argument():
+    src = """
+from typing import Generic
+
+class LocalClass:
+    pass
+
+class Outer:
+    class Inner:
+        pass
+
+class MyClass(Generic["LocalClass"]):
+    pass
+
+class NestedGeneric(Generic["Outer.Inner"]):
+    pass
+"""
+    refs = extract_python_local_refs(
+        src,
+        frozenset({"LocalClass", "Outer", "MyClass", "NestedGeneric"}),
+        {("Outer", "Inner")},
+    )
+    assert refs == frozenset({"LocalClass", "Outer", "Outer.Inner"})
+
+
+def test_self_referential_type_alias_excluded():
+    import sys
+
+    src = """
+from typing import TypeAlias
+
+NodeList: TypeAlias = list["NodeList"]
+"""
+    assert extract_python_local_refs(src, frozenset({"NodeList"})) == frozenset()
+
+    if sys.version_info >= (3, 12):
+        pep695_src = """
+type Tree = list["Tree"]
+"""
+        assert extract_python_local_refs(pep695_src, frozenset({"Tree"})) == frozenset()
+
