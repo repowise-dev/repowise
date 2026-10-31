@@ -390,6 +390,25 @@ def test_add_warns_on_multiple_nonexistent_affects_paths(repo: Path) -> None:
     ]
 
 
+def test_add_warns_on_path_outside_repository(repo: Path, tmp_path: Path) -> None:
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("outside = True\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Outside",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "../outside.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ../outside.py"]
+
+
 def test_readd_keeping_stored_rationale_has_no_missing_rationale_warning(repo: Path) -> None:
     (repo / "src").mkdir()
     (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")

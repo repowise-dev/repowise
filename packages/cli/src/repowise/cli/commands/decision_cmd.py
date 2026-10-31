@@ -336,12 +336,13 @@ def _collect_add_warnings(
     """
     warnings: list[str] = []
     if kind != AGREEMENT_KIND:
+        resolved_root = repo_path.resolve()
         for p in fields.affected_files:
             clean = p.strip()
             if not clean:
                 continue
-            target = Path(clean) if Path(clean).is_absolute() else (repo_path / clean)
-            if not target.exists():
+            target = (repo_path / clean).resolve()
+            if not target.is_relative_to(resolved_root) or not target.exists():
                 warnings.append(f"affects path not found: {p}")
     if not (fields.rationale and fields.rationale.strip()):
         warnings.append("no rationale given")
