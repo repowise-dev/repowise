@@ -222,6 +222,13 @@ def test_generated_banner_negatives() -> None:
     assert not is_generated_header("a = 1\nb = 2\n# DO NOT EDIT\n")
 
 
+def test_binary_content_falls_back_to_the_path() -> None:
+    # A zipped Office file has no newlines in its head, like a minified bundle.
+    pptx = b"PK\x03\x04\x14\x00\x00\x00\x00\x00ppt/slides/slide1.xml<p:sld>" + b"a" * 5000
+    assert code_origin("design/deck.pptx", pptx) == "production"
+    assert code_origin("docs/deck.pptx", pptx) == "docs_example"
+
+
 @pytest.mark.parametrize("period", [".", ""])
 @pytest.mark.parametrize("path", ["src/modules/ZoomIt/ZoomIt/resource.h", "src/app/resource.h"])
 def test_visual_cpp_resource_header_is_generated_without_skipping_ingestion(

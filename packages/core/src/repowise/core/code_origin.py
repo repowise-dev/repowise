@@ -816,8 +816,11 @@ def _header_text(text: str | bytes | None) -> str:
     if isinstance(text, bytes):
         # Twenty lines of a hand-written file fit in 4 KB; a minified bundle
         # has no newlines, and its first 4 KB says as much as the rest.
-        return text[:4096].decode("utf-8", errors="ignore")
-    return text[:4096]
+        text = text[:4096].decode("utf-8", errors="ignore")
+    head = text[:4096]
+    # Binary content (a zipped .pptx, a PDF stream) has no banner and is no
+    # bundle; read as text it looks like one long minified line.
+    return "" if "\x00" in head else head
 
 
 def _split(path: str) -> tuple[str, str, list[str]] | None:
