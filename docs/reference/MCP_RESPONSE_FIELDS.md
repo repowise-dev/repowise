@@ -315,7 +315,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `not_rendered` | Bodies past the budget, each with a `fetch_with` range read |
 | `outlined`, `members`, `members_total` | Container too large to serve whole |
 | fallback lines | On a miss, closest matches from a live grep |
-| `source`, `created_at`, `original_tokens` | Omission ref: where the stored content came from |
+| `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from |
 
 `outlined: true` puts the header in `source` and `members` (each `symbol_id`, signature, lines; `members_total` when capped) in place of the body, with no `_meta.complete`.
 

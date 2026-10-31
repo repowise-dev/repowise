@@ -51,6 +51,7 @@ def _resolve_omission_ref(
 
     record: dict | None = None
     found_in: str | None = None
+    lines_total: int | None = None
     for alias, db_path in candidates:
         try:
             if not db_path.exists():
@@ -58,6 +59,10 @@ def _resolve_omission_ref(
             store = OmissionStore(db_path)
             try:
                 record = store.get_record(ref, query=query)
+                if record is not None and query is not None and not record.get("content"):
+                    raw = store.get(ref)
+                    if raw is not None:
+                        lines_total = len(raw.splitlines())
             finally:
                 store.close()
         except (OSError, sqlite3.Error):
@@ -99,5 +104,10 @@ def _resolve_omission_ref(
     if query is not None:
         response["query"] = query
         if not record.get("content"):
-            response["note"] = "No lines matched the query; omit query for the full content."
+            total = lines_total if lines_total is not None else 0
+            response["lines_total"] = total
+            line_word = "line" if total == 1 else "lines"
+            response["note"] = (
+                f"No lines matched the query; omit query for the full content ({total} {line_word})."
+            )
     return response

@@ -89,8 +89,24 @@ async def test_omission_query_that_matches_nothing_says_how_to_get_everything(
     assert result["kind"] == "omission"
     assert result["query"] == "zeta"
     assert not result["content"]
-    assert result["note"].startswith("No lines matched the query")
+    assert result["lines_total"] == 2
+    assert result["note"] == "No lines matched the query; omit query for the full content (2 lines)."
     assert "created_at" in result
+
+
+@pytest.mark.asyncio
+async def test_omission_query_no_match_reports_unfiltered_lines_total(
+    setup_mcp, omission_stores
+):
+    """Querying a non-matching pattern against a stored ref reports lines_total."""
+    from repowise.server.mcp_server import get_symbol
+
+    content_40 = "\n".join(f"item {i}" for i in range(40)) + "\n"
+    ref = _put(omission_stores["repo"], content_40)
+    result = await get_symbol(f"repowise#{ref}", query="nonexistent_match_pattern")
+    assert result["content"] == ""
+    assert result["lines_total"] == 40
+    assert result["note"] == "No lines matched the query; omit query for the full content (40 lines)."
 
 
 @pytest.mark.asyncio
