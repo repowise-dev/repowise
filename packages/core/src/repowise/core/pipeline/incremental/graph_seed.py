@@ -43,9 +43,11 @@ async def _database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
     The snapshot is only a hint, so a database that cannot answer means a full
     build, never a failed update.
     """
+    from sqlalchemy.exc import SQLAlchemyError
+
     try:
         return await _query_database_stamp(repo_path)
-    except Exception as exc:
+    except (SQLAlchemyError, OSError) as exc:
         log.warning("graph_seed_stamp_unavailable", error=str(exc))
         return None
 
