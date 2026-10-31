@@ -144,7 +144,8 @@ function drawTile(
     ctx.fillText(name, x, y);
     let mx = x + textWidth(ctx, 400, px, name) + TILE_MARK_GAP_PX;
     for (const m of cardRoleMarks(node)) {
-      if (m.role === "hotspot") continue;
+      // A tile too narrow for even the cut name keeps the score clear instead.
+      if (m.role === "hotspot" || mx + markPx > nameRight) continue;
       drawRoleGlyph(ctx, mx, y - markPx / 2, markPx, m.role, palette);
       mx += markPx + TILE_MARK_GAP_PX;
     }
