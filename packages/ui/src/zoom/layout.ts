@@ -354,13 +354,15 @@ export function packLayout(
   return out;
 }
 
-function packRanked(
-  children: readonly LayoutChild[],
+/**
+ * Size each of `ordered` (kept in order) in the parent's local `[0,1]` box:
+ * height by importance normalised across the set, width by aspect.
+ */
+function sizeCards(
+  ordered: readonly LayoutChild[],
   parentAspect: number,
   opts: PackLayoutOptions,
-  relations: readonly LayoutRelation[],
-): Map<string, Rect> {
-  const gutter = opts.gutter ?? PACK_GUTTER;
+): Packed[] {
   const sizeMin = opts.sizeMin ?? PACK_SIZE_MIN;
   const sizeMax = opts.sizeMax ?? PACK_SIZE_MAX;
   const gamma = opts.gamma ?? PACK_IMPORTANCE_GAMMA;
@@ -380,16 +382,6 @@ function packRanked(
     return Math.min(8, Math.max(0.2, want / (parentAspect || 1)));
   };
 
-  const out = new Map<string, Rect>();
-  const n = children.length;
-  if (n === 0) return out;
-
-  const byRank = [...children].sort(
-    (a, b) => a.sibling_rank - b.sibling_rank || (a.id < b.id ? -1 : 1),
-  );
-  const links = siblingLinks(byRank, relations);
-  const ordered = links ? dependencyOrder(byRank, links) : byRank;
-
   // Normalise importance across this sibling set so each parent shows a full
   // range of sizes (min-max within the group). If they are all equal, everyone
   // gets the max size (a uniform, generously-sized cluster).
@@ -407,10 +399,29 @@ function packRanked(
     return sizeMin + (sizeMax - sizeMin) * Math.pow(norm, gamma);
   };
 
-  const cards: Packed[] = ordered.map((c) => {
+  return ordered.map((c) => {
     const h = heightOf(c);
     return { id: c.id, w: h * localAspect(c), h };
   });
+}
+
+function packRanked(
+  children: readonly LayoutChild[],
+  parentAspect: number,
+  opts: PackLayoutOptions,
+  relations: readonly LayoutRelation[],
+): Map<string, Rect> {
+  const gutter = opts.gutter ?? PACK_GUTTER;
+  const out = new Map<string, Rect>();
+  const n = children.length;
+  if (n === 0) return out;
+
+  const byRank = [...children].sort(
+    (a, b) => a.sibling_rank - b.sibling_rank || (a.id < b.id ? -1 : 1),
+  );
+  const links = siblingLinks(byRank, relations);
+  const ordered = links ? dependencyOrder(byRank, links) : byRank;
+  const cards = sizeCards(ordered, parentAspect, opts);
 
   // Greedy row packing. The row target that fills the parent best depends on
   // how the card widths happen to break, so try a few shapes around the
