@@ -40,6 +40,9 @@ meaning is versioned with the estimator.
 - `pre_budget_input_tokens`: observed serialized input immediately before the
   adapter's final response budget. For distill/hook this equals the bounded raw
   baseline; for counterfactual MCP it can differ from the replaced-input estimate.
+  MCP takes it in the delivered shape: the trust envelope and lean pass run on a
+  copy before it is sized, so only content the budget cut counts as dropped,
+  never metadata the lean pass removes from every reply.
 - `delivered_input_tokens`: final serialized input actually delivered, including
   recoverability markers and final metadata.
 - `dropped_input_tokens`: observed input removed by the operation,

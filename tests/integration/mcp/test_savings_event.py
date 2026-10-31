@@ -297,6 +297,50 @@ async def test_the_raw_size_is_observed_before_anything_is_shed(repo: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_metadata_the_lean_pass_trims_is_not_a_drop(repo: Path) -> None:
+    """A reply the budget never cut drops nothing.
+
+    The raw size used to be taken before the trust envelope and the lean pass,
+    so the debug ``_meta`` and empty fields they remove counted as a measured
+    saving on every call, an empty reply included.
+    """
+
+    async def search_codebase(query: str) -> dict:
+        return {
+            "results": [],
+            "note": None,
+            "card": {"context": "", "lineage": []},
+            "_meta": {"timing_ms": 12.5, "index_age_days": 3, "completeness": {"shown": 0}},
+        }
+
+    await tool_middleware(search_codebase)("nothing")
+
+    event = _events(repo)[0]
+    assert event["pre_budget_input_tokens"] == event["delivered_input_tokens"]
+    assert event["dropped_input_tokens"] == 0
+    assert event["saved_input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_is_still_measured_in_the_delivered_shape(repo: Path) -> None:
+    async def get_context(targets: list[str]) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "filler": ["y" * 400 for _ in range(60)],
+            "_meta": {"timing_ms": 12.5, "index_age_days": 3},
+        }
+
+    await tool_middleware(get_context)(["a.py"])
+
+    event = _events(repo)[0]
+    # 60 x 400 chars of filler is about 6,000 tokens; most of it was shed.
+    assert event["dropped_input_tokens"] > 4_000
+    assert event["dropped_input_tokens"] == (
+        event["pre_budget_input_tokens"] - event["delivered_input_tokens"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_truncated_response_links_its_recovery_reference(repo: Path) -> None:
     """The event points at what was dropped, and dropping it is not optional.
 
@@ -389,3 +433,14 @@ async def test_the_minted_event_id_reaches_the_row(repo: Path) -> None:
         savings_event._record = original  # type: ignore[assignment]
 
     assert _events(repo)[0]["event_id"] == seen[0]
+
+
+def test_the_raw_size_is_shaped_on_a_copy() -> None:
+    from repowise.server.mcp_server._meta import lean_response
+    from repowise.server.mcp_server._savings import event as savings_event
+
+    raw = {"results": ["a"], "_meta": {"timing_ms": 12.5}}
+    shaped = savings_event.raw_response_tokens(raw, shape=lean_response)
+
+    assert raw == {"results": ["a"], "_meta": {"timing_ms": 12.5}}
+    assert shaped < savings_event.raw_response_tokens(raw)
