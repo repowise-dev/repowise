@@ -368,7 +368,7 @@ def index_file(
 
     # Each step writes its fields in turn, so a failure keeps the fields
     # the earlier steps already wrote.
-    authored = [c for c in commits if c.sha not in shallow_roots] if shallow_roots else commits
+    authored = _authored(commits, shallow_roots)
     try:
         _add_span(meta, commits, now)
         authors = _Authors.tally(authored, ninety_days_ago_ts)
@@ -389,6 +389,13 @@ def index_file(
         logger.debug("git_indexer_partial_failure", file_path=file_path, exc_info=True)
 
     return meta
+
+
+def _authored(commits: list[_CommitRec], shallow_roots: frozenset[str]) -> list[_CommitRec]:
+    """*commits* without a shallow clone's cut commits, which changed no file here."""
+    if not shallow_roots:
+        return commits
+    return [c for c in commits if c.sha not in shallow_roots]
 
 
 def decay_meta(file_path: str, commits: list[_CommitRec], as_of_ts: float | None) -> dict:
