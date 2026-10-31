@@ -1005,24 +1005,19 @@ def test_config_commands_do_not_need_an_index(tmp_path: Path) -> None:
     assert "No index found" not in result.output
 
 
-def _stored_views(repo_root: Path) -> set[str]:
+def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
+    indexed_repo: Path,
+) -> None:
+    """A decision drops only the actions view, and the write does not rebuild
+    it: the first reader stores it, so recording decisions stays fast."""
     import sqlite3
 
-    with sqlite3.connect(repo_root / ".repowise" / "wiki.db") as conn:
-        return {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
-
-
-def test_a_decision_write_stores_the_views_it_dropped(indexed_repo: Path) -> None:
-    """A decision is an input of the next-actions view, so its commit drops
-    that view; the command stores it again for the next reader."""
     from repowise.cli.commands._index_outcome import refresh_read_snapshots
 
     _seed_wiki_db(
-        indexed_repo, [{"id": "d" * 32, "title": "To dismiss", "status": "proposed"}]
+        indexed_repo, [{"id": "d" * 32, "title": "Seeded", "status": "proposed"}]
     )
-    # An index run stores every view; a decision then drops only ``actions``.
     assert refresh_read_snapshots(indexed_repo)
-
     added = CliRunner().invoke(
         cli,
         ["decision", "add", "--title", "Cache read views", "--decision", "Store them",
@@ -1030,23 +1025,7 @@ def test_a_decision_write_stores_the_views_it_dropped(indexed_repo: Path) -> Non
         input="",
     )  # fmt: skip
     assert added.exit_code == 0, added.output
-    assert "actions" in _stored_views(indexed_repo)
-
-    dismissed = CliRunner().invoke(
-        cli, ["decision", "dismiss", "dddddddd", "--yes", str(indexed_repo)]
-    )
-    assert dismissed.exit_code == 0, dismissed.output
-    assert "actions" in _stored_views(indexed_repo)
-
-
-def test_a_decision_write_never_builds_the_queue(indexed_repo: Path) -> None:
-    """With no stored queue the view is left for the next reader: a decision
-    write must not pay the index-time build."""
-    added = CliRunner().invoke(
-        cli,
-        ["decision", "add", "--title", "No views yet", "--decision", "Leave them",
-         str(indexed_repo)],
-        input="",
-    )  # fmt: skip
-    assert added.exit_code == 0, added.output
-    assert _stored_views(indexed_repo) == set()
+    with sqlite3.connect(indexed_repo / ".repowise" / "wiki.db") as conn:
+        kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
+    assert "actions" not in kinds
+    assert "fix_first" in kinds
