@@ -19,6 +19,7 @@ import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon"
 import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
 import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { healthMark, type HealthMark, type HealthMarkBand } from "@repowise-dev/ui/health/tokens";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
 import { getWorkspaceActions } from "@/lib/api/actions";
 import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
@@ -43,6 +44,15 @@ type Translator = (key: string, values?: Record<string, string | number>) => str
  *  figure is never reported as a total, so the cap cannot be read as one. */
 const COCHANGE_PREVIEW = 8;
 
+/** The three-band health mark as a text class, so the ribbon's figure takes
+ *  the same colour as the repository row it names (the five-band
+ *  `scoreTextColor` paints a 7.7 green while its row says Warning). */
+const MARK_TEXT: Record<HealthMarkBand, string> = {
+  healthy: "text-[var(--color-success)]",
+  warning: "text-[var(--color-warning)]",
+  alert: "text-[var(--color-error)]",
+};
+
 /**
  * The workspace overview.
  *
@@ -61,6 +71,12 @@ const COCHANGE_PREVIEW = 8;
  *     view; this page links to it.
  *   - The repo grid became `RepoRows`, so a repository's health leads the row
  *     that decides whether you open it.
+ *
+ * Order, top down: the lede (how many repositories, and which need fixing),
+ * the cross-repo ribbon, the repositories, "Do next" folded to one line, then
+ * contracts and co-changes. "Do next" used to sit above the repositories and,
+ * open, ran two actions per repository, which pushed the list this page exists
+ * for below the first screen.
  */
 export default async function WorkspaceDashboardPage() {
   const t = await getTranslations("views.workspace");
@@ -110,16 +126,22 @@ export default async function WorkspaceDashboardPage() {
   const docs = workspaceDocFreshness(repos);
   const docFreshness = docs.pct;
 
+  const health = lowestHealth(repos);
+
+  // Files and symbols are not here: the lede sentence above already says
+  // both, and the ribbon is for the signals that cut across repositories.
   const ribbon: RibbonStat[] = [
     {
-      label: t("ribbon.files"),
-      value: formatNumber(totals.files),
-      sub: t("ribbon.filesSub", { count: repos.length }),
-    },
-    {
-      label: t("ribbon.symbols"),
-      value: formatNumber(totals.symbols),
-      sub: t("ribbon.symbolsSub"),
+      label: t("ribbon.lowestHealth"),
+      value: health ? health.mark.value : "—",
+      valueColor: health ? MARK_TEXT[health.mark.band] : undefined,
+      sub: health
+        ? t("ribbon.lowestHealthSub", {
+            name: health.alias,
+            healthy: health.healthy,
+            scored: health.scored,
+          })
+        : t("ribbon.lowestHealthNone"),
     },
     {
       label: t("ribbon.docFreshness"),
@@ -192,8 +214,6 @@ export default async function WorkspaceDashboardPage() {
 
       <StatRibbon stats={ribbon} LinkComponent={Link} />
 
-      {actions && <WorkspaceNextActionsPanel data={actions} />}
-
       <OverviewSection
         title={t("reposTitle")}
         description={t("reposDescription")}
@@ -213,6 +233,10 @@ export default async function WorkspaceDashboardPage() {
           }
         />
       </OverviewSection>
+
+      {/* After the repositories, folded: the list it would fold open is per
+          repository, so it reads as "and here is what to do across these". */}
+      {actions && <WorkspaceNextActionsPanel data={actions} />}
 
       {contracts && contracts.total_contracts > 0 && (
         <OverviewSection
@@ -281,6 +305,32 @@ function byAttention(a: WorkspaceRepoEntry, b: WorkspaceRepoEntry): number {
   const ha = a.health_score ?? Number.POSITIVE_INFINITY;
   const hb = b.health_score ?? Number.POSITIVE_INFINITY;
   return ha - hb;
+}
+
+/**
+ * The weakest scored repository, and how many scored ones sit in the healthy
+ * band. Null when no repository has a score yet: an unmeasured workspace is
+ * not one whose lowest health is zero.
+ */
+function lowestHealth(repos: WorkspaceRepoEntry[]): {
+  alias: string;
+  score: number;
+  mark: HealthMark;
+  healthy: number;
+  scored: number;
+} | null {
+  // The wire carries 0-100; the health bands read 0-10.
+  const scored = repos
+    .filter((r) => r.health_score != null)
+    .map((r) => ({ alias: r.alias, score: r.health_score! / 10 }));
+  if (scored.length === 0) return null;
+  const low = scored.reduce((a, b) => (b.score < a.score ? b : a));
+  return {
+    ...low,
+    mark: healthMark(low.score),
+    healthy: scored.filter((r) => healthMark(r.score).band === "healthy").length,
+    scored: scored.length,
+  };
 }
 
 function toRow(repo: WorkspaceRepoEntry): RepoRow {

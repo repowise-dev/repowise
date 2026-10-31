@@ -924,10 +924,9 @@
         "andMore": "{list} 等另外 {count} 个"
       },
       "ribbon": {
-        "files": "文件",
-        "filesSub": "横跨 {count} 个仓库",
-        "symbols": "符号",
-        "symbolsSub": "函数、类与方法",
+        "lowestHealth": "最低健康度",
+        "lowestHealthSub": "{name} · {scored} 个已评分仓库中 {healthy} 个健康",
+        "lowestHealthNone": "尚无健康度快照",
         "docFreshness": "文档新鲜度",
         "docFreshnessNoPages": "尚未生成文档",
         "docFreshnessSub": "{fresh} / {pages} 页为最新",

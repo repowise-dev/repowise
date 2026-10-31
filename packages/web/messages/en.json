@@ -924,10 +924,9 @@
         "andMore": "{list} and {count} more"
       },
       "ribbon": {
-        "files": "Files",
-        "filesSub": "across {count, plural, one {# repository} other {# repositories}}",
-        "symbols": "Symbols",
-        "symbolsSub": "functions, classes and methods",
+        "lowestHealth": "Lowest health",
+        "lowestHealthSub": "{name} · {healthy} of {scored} scored {scored, plural, one {repository} other {repositories}} healthy",
+        "lowestHealthNone": "no health snapshot yet",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
         "docFreshnessSub": "{fresh} of {pages} pages fresh",
