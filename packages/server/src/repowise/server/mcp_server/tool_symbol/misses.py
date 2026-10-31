@@ -101,7 +101,10 @@ def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:
     path = symbol_id.strip().replace("\\", "/").strip("/")
     if not ctx.path or "::" in path or _pkg.is_excluded(path, exclude_spec):
         return None
-    return path if (Path(str(ctx.path)) / path).is_file() else None
+    root = Path(str(ctx.path)).resolve()
+    target = (root / path).resolve()
+    # Only a file inside the checkout: the reply must not confirm one outside it.
+    return path if target.is_relative_to(root) and target.is_file() else None
 
 
 async def _not_found_response(

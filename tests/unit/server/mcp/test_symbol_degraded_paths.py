@@ -150,6 +150,11 @@ async def test_a_bare_file_path_names_the_whole_file_and_range_calls(setup_mcp, 
     )
     missing = await get_symbol("pkg/ghost.py")
     assert missing["error"].startswith("Symbol not found: 'pkg/ghost.py'.")
+    (tmp_path.parent / "outside.txt").write_text("x\n", encoding="utf-8")
+    outside = await get_symbol("../outside.txt")
+    assert outside["error"].startswith("Symbol not found:")
+    folder = await get_symbol("pkg")
+    assert folder["error"].startswith("Symbol not found:")
 
 
 # ---------------------------------------------------------------------------

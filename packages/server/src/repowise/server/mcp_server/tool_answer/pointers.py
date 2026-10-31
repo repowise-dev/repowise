@@ -205,7 +205,9 @@ async def _callable_rows(ctx: Any, files: list[str], names: set[str]) -> list:
         return list(res.scalars().all())
 
 
-async def attach_pointers(payload: dict[str, Any], repo: str | None, question: str = "") -> None:
+async def attach_pointers(
+    payload: dict[str, Any], repo: str | None, question: str = "", chain: bool = False
+) -> None:
     """Add line ranges to the answer's quoted code and ``next_actions`` for unserved helpers."""
     answer = payload.get("answer")
     files = _answer_files(payload)
@@ -224,6 +226,4 @@ async def attach_pointers(payload: dict[str, Any], repo: str | None, question: s
         _log.debug("get_answer: locate pointers skipped", exc_info=True)
         return
     if calls := helper_calls(answer, rows, _served(payload)):
-        payload["next_actions"] = (
-            chain_first(calls, question) if payload.get("flow_path") else calls
-        )
+        payload["next_actions"] = chain_first(calls, question) if chain else calls
