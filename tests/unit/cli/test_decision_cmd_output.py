@@ -390,6 +390,25 @@ def test_add_warns_on_multiple_nonexistent_affects_paths(repo: Path) -> None:
     ]
 
 
+def test_add_warns_on_duplicate_invalid_affects_paths_without_repetition(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost.py",
+        "--affects",
+        "ghost.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ghost.py"]
+
+
 def test_add_warns_on_path_outside_repository(repo: Path, tmp_path: Path) -> None:
     outside_file = tmp_path / "outside.py"
     outside_file.write_text("outside = True\n", encoding="utf-8")

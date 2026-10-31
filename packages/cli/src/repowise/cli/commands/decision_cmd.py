@@ -341,9 +341,16 @@ def _collect_add_warnings(
             clean = p.strip()
             if not clean:
                 continue
-            target = (repo_path / clean).resolve()
-            if not target.is_relative_to(resolved_root) or not target.exists():
-                warnings.append(f"affects path not found: {p}")
+            try:
+                target = (repo_path / clean).resolve()
+                exists_under_repo = target.is_relative_to(resolved_root) and target.exists()
+            except (OSError, RuntimeError, ValueError):
+                exists_under_repo = False
+
+            if not exists_under_repo:
+                msg = f"affects path not found: {p}"
+                if msg not in warnings:
+                    warnings.append(msg)
     if not (fields.rationale and fields.rationale.strip()):
         warnings.append("no rationale given")
     return warnings
