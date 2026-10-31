@@ -489,13 +489,14 @@ def merge_json_object_member(
 
 
 def _file_newline(config_path: Path) -> str | None:
-    """LF for a file with no CRLF, else None (platform translation).
+    """The line ending the file already uses: CRLF if it has any, else LF.
 
-    A minimal edit read with universal newlines would otherwise write an LF
-    file back as CRLF on Windows, touching every line of it.
+    A minimal edit read with universal newlines would otherwise write it back
+    in the platform's ending (an LF file as CRLF on Windows, a CRLF file as
+    LF elsewhere), touching every line of it.
     """
     try:
-        return None if b"\r\n" in config_path.read_bytes() else "\n"
+        return "\r\n" if b"\r\n" in config_path.read_bytes() else "\n"
     except OSError:
         return None
 

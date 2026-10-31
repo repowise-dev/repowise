@@ -682,3 +682,15 @@ def test_a_stale_settings_entry_is_not_a_duplicate_of_the_plugin(
     _write(_settings(home), _entry(_arg(other)))
     report = TARGET.doctor()
     assert not any("registered twice" in issue for issue in report.issues)
+
+
+def test_a_crlf_file_stays_crlf(home: Path, repo: Path, monkeypatch) -> None:
+    _no_desktop(monkeypatch)
+    _code(home).write_bytes(_CLAUDE_JSON.replace("\n", "\r\n").encode("utf-8"))
+
+    claude_config.register_with_claude_code(repo)
+    raw = _code(home).read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n")
+
+    claude_config.uninstall_claude_code_mcp_entry()
+    assert _code(home).read_bytes() == _CLAUDE_JSON.replace("\n", "\r\n").encode("utf-8")
