@@ -125,6 +125,26 @@ def _token_matches_stem(token: str, stem: str) -> bool:
     return token + "s" == stem or token == stem + "s"
 
 
+async def _symbol_anchor_files(session: Any, repo_id: str, question_ids: set[str]) -> list[str]:
+    """Files defining a function, method or class the question names, in path order."""
+    if not question_ids:
+        return []
+    res = await session.execute(
+        select(WikiSymbol.file_path)
+        .where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.name.in_(sorted(question_ids)),
+            WikiSymbol.kind.in_(("function", "method", "class", "interface")),
+        )
+        # Insertion order here decides which anchors survive the
+        # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
+        .order_by(WikiSymbol.file_path)
+    )
+    # A test that defines a same-named helper is not where the flow runs.
+    files = [fp for (fp,) in res.all() if fp and not is_test_related_path(fp)]
+    return list(dict.fromkeys(files))
+
+
 async def _resolve_question_anchors(
     session: Any,
     repo_id: str,
@@ -143,25 +163,9 @@ async def _resolve_question_anchors(
     Returns ``{file_path: source}`` where source is ``"symbol"`` or
     ``"module"``. These are the endpoints the path search connects.
     """
-    anchors: dict[str, str] = {}
-
-    # Named symbols -> defining files.
-    if question_ids:
-        res = await session.execute(
-            select(WikiSymbol.file_path)
-            .where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.name.in_(sorted(question_ids)),
-                WikiSymbol.kind.in_(("function", "method", "class", "interface")),
-            )
-            # Insertion order here decides which anchors survive the
-            # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
-            .order_by(WikiSymbol.file_path)
-        )
-        for (fp,) in res.all():
-            # A test that defines a same-named helper is not where the flow runs.
-            if fp and not is_test_related_path(fp):
-                anchors.setdefault(fp, "symbol")
+    anchors: dict[str, str] = dict.fromkeys(
+        await _symbol_anchor_files(session, repo_id, question_ids), "symbol"
+    )
 
     # Module-name matches. Build a stem -> file_page paths map once, then keep
     # tokens that resolve tightly (not the generic ones).
@@ -334,6 +338,19 @@ def _stitch(fwd: dict[str, Any], bwd: dict[str, Any], meet: str) -> list[str]:
     return left + right
 
 
+def _grounded_paths(
+    adj: dict[str, list[str]], endpoints: list[str], retrieved: set[str]
+) -> list[list[str]]:
+    """The bounded shortest path between each pair of *endpoints* that is grounded."""
+    paths: list[list[str]] = []
+    for i in range(len(endpoints)):
+        for j in range(i + 1, len(endpoints)):
+            path = _bfs_path(adj, endpoints[i], endpoints[j], _FLOW_MAX_DEPTH)
+            if path and len(path) >= 2 and _is_grounded(path, retrieved):
+                paths.append(path)
+    return paths
+
+
 def _is_grounded(path: list[str], retrieved: set[str]) -> bool:
     """Whether *path* is a flow the question asked about, not a walk to a file name.
 
@@ -397,12 +414,7 @@ async def expand_via_flow_path(
 
     retrieved = {node_to_file(h.get("target_path") or "") for h in hits}
     retrieved.update(p for p, src in anchors.items() if src == "symbol")
-    paths: list[list[str]] = []
-    for i in range(len(endpoints)):
-        for j in range(i + 1, len(endpoints)):
-            path = _bfs_path(adj, endpoints[i], endpoints[j], _FLOW_MAX_DEPTH)
-            if path and len(path) >= 2 and _is_grounded(path, retrieved):
-                paths.append(path)
+    paths = _grounded_paths(adj, endpoints, retrieved)
 
     if not paths:
         return hits, []
