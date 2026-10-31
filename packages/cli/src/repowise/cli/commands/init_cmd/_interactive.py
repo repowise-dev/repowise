@@ -407,11 +407,14 @@ def warn_unresolved_hooks(
     try:
         for repo_path in repo_paths or [None]:
             missing += [m for m in unresolved_hook_scripts(repo_path) if m not in missing]
-        fix = unresolved_hooks_fix(missing)
+        command, advice = unresolved_hooks_fix(missing)
     except Exception:  # a finished init is never failed by an advisory line
         return
     if missing:
         console_obj.print(
             f"  [{WARN}]Hooks cannot find their script, so they do nothing: "
-            f"{describe_unresolved_hooks(missing)}. To fix: {fix}.[/]"
+            f"{describe_unresolved_hooks(missing)}."
+            + (f" Run '{command}'." if command else "")
+            + (f" {advice}" if advice else "")
+            + "[/]"
         )

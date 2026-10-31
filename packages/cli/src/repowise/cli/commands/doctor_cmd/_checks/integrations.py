@@ -444,9 +444,10 @@ def _hook_scripts_row(repo_path: _DoctorPath | None = None) -> DoctorCheck:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
     if not missing:
         return _check(name, True, "every repowise hook finds its script", check_id=check_id)
+    command, advice = unresolved_hooks_fix(missing)
     detail = f"not found, so those hooks do nothing: {describe_unresolved_hooks(missing)}"
-    fix = unresolved_hooks_fix(missing)
-    return _check(name, True, detail, check_id=check_id, warn=True, fix=fix)
+    detail += f". {advice}" if advice else ""
+    return _check(name, True, detail, check_id=check_id, warn=True, fix=command)
 
 
 def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:

@@ -132,7 +132,7 @@ def test_a_hook_whose_script_is_nowhere_is_reported(install, settings_path) -> N
     row = _hook_scripts_row()
     assert row.level == "warn"
     assert "repowise-augment" in row.detail
-    assert row.fix == "run 'repowise agents refresh'"
+    assert row.fix == "repowise agents refresh"
 
     claude_config.install_claude_code_hooks()
     assert _hook_scripts_row().level == "ok"
@@ -254,7 +254,7 @@ def test_a_plugin_hook_off_path_is_reported_with_the_path_fix(install, settings_
     missing = unresolved_hook_scripts()
     assert missing == [("repowise-augment", "the repowise Claude Code plugin")]
     # The plugin keeps the bare name, so the fix is PATH, not a repin.
-    assert unresolved_hooks_fix(missing) == f"add {install.resolve().as_posix()} to PATH"
+    assert unresolved_hooks_fix(missing) == (None, f"Add {install.resolve().as_posix()} to PATH.")
 
 
 def test_repo_local_hooks_off_path_are_reported(install, settings_path, tmp_path) -> None:
@@ -315,7 +315,9 @@ def test_doctor_and_init_name_each_place_and_the_fix(install, settings_path, tmp
     assert row.level == "warn"
     assert "the repowise Claude Code plugin" in row.detail
     assert "~/.claude/settings.json" in row.detail
-    assert row.fix.startswith("run 'repowise agents refresh'; add ")
+    # fix is one runnable command (the Setup page copies it); PATH goes in detail.
+    assert row.fix == "repowise agents refresh"
+    assert row.detail.endswith(f"Add {install.resolve().as_posix()} to PATH.")
 
     console = MagicMock()
     warn_unresolved_hooks(console, [tmp_path])
@@ -328,7 +330,10 @@ def test_without_scripts_here_the_fix_is_a_reinstall(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
     missing = [("repowise-augment", claude_config.CLAUDE_SETTINGS_LABEL)]
-    assert unresolved_hooks_fix(missing) == "reinstall repowise so repowise-augment is on PATH"
+    assert unresolved_hooks_fix(missing) == (
+        None,
+        "Reinstall repowise so repowise-augment is on PATH.",
+    )
 
 
 def test_init_never_fails_over_the_hook_check(monkeypatch) -> None:

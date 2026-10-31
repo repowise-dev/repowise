@@ -530,12 +530,14 @@ def unresolved_hook_scripts(repo_path: Path | None = None) -> list[tuple[str, st
     return missing
 
 
-def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> str:
-    """The one line that repairs *missing*, as :func:`unresolved_hook_scripts` returns it.
+def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> tuple[str | None, str | None]:
+    """``(command, advice)`` that repair *missing*, as :func:`unresolved_hook_scripts` returns it.
 
-    A user-settings hook is repinned by ``repowise agents refresh``. The plugin
-    and repo-local hooks keep the bare name (a plugin ships without the CLI,
-    and repo files may be committed), so for those the scripts go on PATH.
+    The command is one runnable line (doctor's ``fix``, the Setup page's copy
+    button): ``repowise agents refresh`` repins the user-settings hooks. The
+    plugin and repo-local hooks keep the bare name (a plugin ships without the
+    CLI, and repo files may be committed), so for those the advice is to put
+    the scripts on PATH, which no one command does on every platform.
     """
     from repowise.cli.editor_integrations.claude_config import CLAUDE_SETTINGS_LABEL
     from repowise.cli.mcp_config import resolve_repowise_command
@@ -543,13 +545,12 @@ def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> str:
     pinned = resolve_repowise_command("repowise-augment")
     if pinned == "repowise-augment":
         # This install has no scripts to point anything at.
-        return "reinstall repowise so repowise-augment is on PATH"
-    steps = []
-    if any(where == CLAUDE_SETTINGS_LABEL for _, where in missing):
-        steps.append("run 'repowise agents refresh'")
-    if any(where != CLAUDE_SETTINGS_LABEL for _, where in missing):
-        steps.append(f"add {Path(pinned).parent.as_posix()} to PATH")
-    return "; ".join(steps)
+        return None, "Reinstall repowise so repowise-augment is on PATH."
+    in_settings = any(where == CLAUDE_SETTINGS_LABEL for _, where in missing)
+    elsewhere = any(where != CLAUDE_SETTINGS_LABEL for _, where in missing)
+    command = "repowise agents refresh" if in_settings else None
+    advice = f"Add {Path(pinned).parent.as_posix()} to PATH." if elsewhere else None
+    return command, advice
 
 
 def describe_unresolved_hooks(missing: list[tuple[str, str]]) -> str:
