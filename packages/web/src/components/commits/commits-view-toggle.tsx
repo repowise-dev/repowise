@@ -3,21 +3,36 @@
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Segmented } from "@repowise-dev/ui/shared/segmented";
-import { commitsViewHref, type CommitsView } from "@/lib/changes";
+import { commitsLens, commitsViewHref, type CommitsLens, type CommitsView } from "@/lib/changes";
 
-/** The lens over the same history. Switching drops the other view's filters. */
+/** The page's lens: the history, or a change under review. Switching drops the other lens's filters. */
 export function CommitsViewToggle({ repoId, view }: { repoId: string; view: CommitsView }) {
   const t = useTranslations("views.commits");
   const router = useRouter();
   return (
-    <Segmented<CommitsView>
+    <Segmented<CommitsLens>
       label={t("viewLabel")}
+      value={commitsLens(view)}
+      options={[
+        { value: "history", label: t("viewHistory") },
+        { value: "review", label: t("viewReview") },
+      ]}
+      onChange={(next) => router.push(commitsViewHref(repoId, next === "review" ? "review" : "commits"))}
+    />
+  );
+}
+
+/** How the history list is grouped: one row per commit, or one per merged change. */
+export function HistoryGroupToggle({ repoId, view }: { repoId: string; view: "commits" | "changes" }) {
+  const t = useTranslations("views.commits");
+  const router = useRouter();
+  return (
+    <Segmented<"commits" | "changes">
+      label={t("groupLabel")}
       value={view}
       options={[
-        { value: "changes", label: t("viewByChange") },
         { value: "commits", label: t("viewByCommit") },
-        { value: "events", label: t("viewEvents") },
-        { value: "review", label: t("viewReview") },
+        { value: "changes", label: t("viewByChange") },
       ]}
       onChange={(next) => router.push(commitsViewHref(repoId, next))}
     />

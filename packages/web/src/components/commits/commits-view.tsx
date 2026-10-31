@@ -11,6 +11,7 @@ import { CommitQueue } from "./commit-queue";
 import { CommitDetailSheet } from "./commit-detail-sheet";
 import { CommitDistribution } from "./commit-distribution";
 import { CommitsPeriod } from "./commits-period";
+import { HistoryGroupToggle } from "./commits-view-toggle";
 import { historyFilters, isNarrowed, parseCommitFilters } from "@/lib/commit-filters";
 import {
   getAgentTrend,
@@ -107,7 +108,12 @@ export async function CommitsView({
       <OverviewSection
         title={t("listTitle")}
         description={t("listDescription")}
-        action={<CredibilityInfoButton />}
+        action={
+          <div className="flex items-end gap-2">
+            <HistoryGroupToggle repoId={repoId} view="commits" />
+            <CredibilityInfoButton />
+          </div>
+        }
       >
         <CommitQueue
           repoId={repoId}

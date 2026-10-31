@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTranslator } from "next-intl";
 import type { EvidenceItem } from "@repowise-dev/types/changes";
-import { type ChangesTranslator, commitsViewHref, evidenceValueText, evidenceWord, parseCommitsView } from "./changes";
+import { type ChangesTranslator, commitsLens, commitsViewHref, evidenceValueText, evidenceWord, parseCommitsView } from "./changes";
 import en from "../../messages/en.json";
 import zhCN from "../../messages/zh-CN.json";
 
@@ -79,12 +79,19 @@ it("says how many changed files a test reaches and how many are not known", () =
 describe("Commits page views", () => {
   it("reads only the known views and keeps the commit view param-free", () => {
     expect(parseCommitsView("changes")).toBe("changes");
-    expect(parseCommitsView("events")).toBe("events");
     expect(parseCommitsView("review")).toBe("review");
+    // An old Events link lands on the commit history.
+    expect(parseCommitsView("events")).toBe("commits");
     expect(parseCommitsView(undefined)).toBe("commits");
     expect(parseCommitsView("anything")).toBe("commits");
     expect(commitsViewHref("r1", "commits")).toBe("/repos/r1/commits");
-    expect(commitsViewHref("r1", "events")).toBe("/repos/r1/commits?view=events");
+    expect(commitsViewHref("r1", "changes")).toBe("/repos/r1/commits?view=changes");
     expect(commitsViewHref("r1", "review")).toBe("/repos/r1/commits?view=review");
+  });
+
+  it("puts both groupings of the history under one lens", () => {
+    expect(commitsLens("commits")).toBe("history");
+    expect(commitsLens("changes")).toBe("history");
+    expect(commitsLens("review")).toBe("review");
   });
 });

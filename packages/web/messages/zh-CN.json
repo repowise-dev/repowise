@@ -284,10 +284,11 @@
       "changeRisk": "变更风险",
       "evolutionTitle": "工作形态如何变化",
       "evolutionDescription": "按提交标题归类出的各类提交随时间的变化。修复类高亮显示，因为这张图存在的意义就是展示这一条序列。",
-      "viewLabel": "历史视图",
+      "viewLabel": "提交视图",
+      "viewHistory": "历史",
+      "groupLabel": "历史分组方式",
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
-      "viewEvents": "事件",
       "viewReview": "审查变更",
       "reviewDescription": "选择一次变更涉及的文件，查看依赖它们的代码、常与它们一起变更的文件，以及合适的审查者。",
       "listTitle": "提交历史",
@@ -957,36 +958,6 @@
       "breadcrumb": "代码健康度",
       "notFoundTitle": "未找到模块",
       "notFoundDescription": "该仓库的索引中不存在请求的模块路径。"
-    },
-    "events": {
-      "title": "事件",
-      "description": "相邻两次索引之间发生的变化：按组件列出负责人、巴士系数、热点、契约、决策、死代码与测试覆盖。",
-      "repository": "整个仓库",
-      "count": "共 {count} 个事件，按时间从新到旧。",
-      "emptyTitle": "暂无事件",
-      "baselineOnly": "{runs, plural, =0 {尚未存储组件快照。} =1 {已存储 1 个组件快照，作为基线。} other {已存储 # 个组件快照。}}事件是相邻两次索引之间的变化，因此会在下一次针对新提交运行 `repowise update` 之后开始出现。",
-      "nothingMoved": "在已存储的 {runs} 个组件快照中，没有任何指标越过阈值。",
-      "noMatch": "在已存储的 {runs} 个组件快照中，没有符合这些筛选条件的事件。",
-      "loadErrorTitle": "无法加载事件",
-      "loadErrorBody": "无法从服务器读取事件列表。请刷新页面重试。",
-      "kinds": {
-        "ownership_shift": "声明的负责人已变更",
-        "owner_inactive": "主要负责人不再修改它",
-        "bus_factor_drop": "巴士系数下降",
-        "new_hotspot": "文件成为热点",
-        "contract_added": "出现新的提供方契约",
-        "contract_broken": "有使用方的契约消失",
-        "decision_stale": "治理决策已过时",
-        "dead_code_growth": "死代码发现增多",
-        "test_reach_drop": "测试覆盖下降"
-      },
-      "severities": {
-        "critical": "严重",
-        "high": "高",
-        "medium": "中",
-        "low": "低",
-        "info": "信息"
-      }
     },
     "security": {
       "title": "安全",
