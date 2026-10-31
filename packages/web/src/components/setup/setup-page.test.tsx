@@ -163,8 +163,11 @@ describe("hosted card", () => {
     renderPage(doneFixture());
     expect(await screen.findByText("You're set up")).toBeTruthy();
     expect(screen.getByText("All of this, run for you and your team")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Start free" }).getAttribute("href")).toContain(
-      "src=local_web_setup_card",
+    expect(screen.getByRole("link", { name: "Start free" }).getAttribute("href")).toBe(
+      "https://repowise.dev/?src=local_web_setup_card",
+    );
+    expect(screen.getByRole("link", { name: "See what hosted adds" }).getAttribute("href")).toBe(
+      "https://repowise.dev/hosted?src=local_web_setup_card",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Hide on this machine" }));
