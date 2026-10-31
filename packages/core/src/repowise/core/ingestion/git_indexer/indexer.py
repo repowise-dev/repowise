@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 
+from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.forges import detect_forge
 
 from ._constants import (
@@ -185,6 +186,7 @@ class _FilePassInputs:
     provenance_classifier: Any
     note_agents: dict[str, Any]
     trace_index: Any
+    shallow_roots: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -362,6 +364,7 @@ class GitIndexer:
             provenance_classifier=prov_clf,
             note_agents=fallback_note_agents,
             trace_index=trace_index,
+            shallow_roots=shallow_roots(str(self.repo_path)),
         )
 
         async def _co_change_task() -> CoChangeWalk:
@@ -730,6 +733,7 @@ class GitIndexer:
             provenance_classifier=prov_clf,
             note_agents=fallback_note_agents,
             trace_index=trace_index,
+            shallow_roots=shallow_roots(str(self.repo_path)),
         )
         try:
             with timed(timings, "rebuild.git.changed_files"):
@@ -913,6 +917,7 @@ class GitIndexer:
                 note_agents=inputs.note_agents,
                 trace_index=inputs.trace_index,
                 history_only=file_path in inputs.history_only,
+                shallow_roots=inputs.shallow_roots,
             )
         except Exception:
             return {"file_path": file_path}
@@ -989,6 +994,7 @@ class GitIndexer:
         ``history_only``, and carries no code signal.
         """
         out: dict[str, dict] = {}
+        cut = shallow_roots(str(self.repo_path)) if history_files else frozenset()
         for fp in idle_paths:
             if fp in history_files:
                 # The history tier comes only from this shared walk, so this is
@@ -1006,6 +1012,7 @@ class GitIndexer:
                     as_of_ts=as_of_ts,
                     provenance_classifier=prov_clf,
                     history_only=True,
+                    shallow_roots=cut,
                 )
                 continue
             meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts)

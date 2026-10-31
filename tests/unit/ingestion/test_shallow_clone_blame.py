@@ -10,6 +10,7 @@ exclude them on a full clone, where the boundary commit's authorship is real.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -155,3 +156,74 @@ def test_shallow_clone_blame_ownership_matches_the_full_clone(tmp_path: Path) ->
     # near-100% line share (0.989 in the issue's own repro) — the boundary
     # commit's author credited with 90 lines she never wrote.
     assert shallow_meta["primary_owner_name"] != "Carol"
+
+
+def _clones(tmp_path: Path) -> tuple[Path, Path]:
+    """A full and a depth-1 clone of a two-commit repo whose root adds two files."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=origin, check=True)
+    (origin / "app.py").write_text("def a(): return 1\n")
+    (origin / "util.py").write_text("def u(): return 2\n")
+    _git(["add", "."], origin)
+    _commit(origin, "Alice", "alice@example.com", "2026-01-01T12:00:00Z", "feat: initial import")
+    (origin / "app.py").write_text("def a(): return 1\ndef b(): return 3\n")
+    _git(["add", "app.py"], origin)
+    _commit(origin, "Carol", "carol@example.com", "2026-06-15T12:00:00Z", "feat: add the b helper")
+    full, shallow = tmp_path / "full", tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", str(origin), str(full)], check=True)
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{origin.as_posix()}", str(shallow)],
+        check=True,
+    )
+    return full, shallow
+
+
+def _index(clone: Path, path: str) -> dict:
+    import git as gitpython
+
+    from repowise.core.analysis.changed_lines import shallow_roots
+
+    return index_file(
+        gitpython.Repo(clone), path, repo_path=clone, commit_limit=500,
+        follow_renames=False, include_blame=False, shallow_roots=shallow_roots(str(clone)),
+    )
+
+
+def _authors(meta: dict) -> list[str]:
+    return [a["name"] for a in json.loads(meta["top_authors_json"])]
+
+
+def _key_messages(meta: dict) -> list[str]:
+    return [c["message"] for c in json.loads(meta["significant_commits_json"])]
+
+
+def test_shallow_cut_commit_credits_no_author_and_is_no_key_commit(tmp_path: Path) -> None:
+    """At depth 1 git shows Carol's commit as adding util.py, which she never touched."""
+    _full, shallow = _clones(tmp_path)
+    meta = _index(shallow, "util.py")
+    # Still one of the commits the clone can see.
+    assert meta["commit_count_total"] == 1
+    assert _authors(meta) == []
+    assert _key_messages(meta) == []
+    assert meta["primary_owner_name"] is None
+
+
+def test_true_root_commit_keeps_its_author_and_key_commit(tmp_path: Path) -> None:
+    """A full clone's root commit is a real change: its author added these files."""
+    full, _shallow = _clones(tmp_path)
+    meta = _index(full, "util.py")
+    assert _authors(meta) == ["Alice"]
+    assert _key_messages(meta) == ["feat: initial import"]
+
+
+def test_git_indexer_passes_the_cut_to_every_file(tmp_path: Path) -> None:
+    import asyncio
+
+    from repowise.core.ingestion.git_indexer import GitIndexer
+
+    _full, shallow = _clones(tmp_path)
+    _summary, metas = asyncio.run(GitIndexer(shallow, read_only=True).index_repo("r"))
+    by_path = {m["file_path"]: m for m in metas}
+    assert _key_messages(by_path["util.py"]) == []
+    assert _authors(by_path["app.py"]) == []
