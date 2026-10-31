@@ -170,7 +170,9 @@ def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate 
     if base == "HEAD":
         return wip, []
     kept = _branches_ahead(repo_path, base, max_branches)
-    files = git_refs.files_by_ref(repo_path, base, [r.name for r, _ in kept])
+    # The same three-dot diff the analysis reads, so the count in the list is
+    # the count the verdict reports. One diff per kept branch, capped above.
+    files = {r.name: git_refs.changed_files(repo_path, base, r.name) for r, _ in kept}
     subjects = _branch_subjects(repo_path, [r.ref for r, _ in kept])
     branches = [
         ChangeCandidate(
@@ -183,7 +185,7 @@ def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate 
             head_sha=ref.sha,
             base=base,
             ahead=ahead,
-            files_changed=len(files[ref.name]) if ref.name in files else None,
+            files_changed=len(files[ref.name]),
             is_current=ref.name == current,
         )
         for ref, ahead in kept

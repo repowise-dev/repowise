@@ -152,3 +152,23 @@ async def test_paths_are_relative_to_a_checkout_below_the_git_root(client, tmp_p
 
     assert resp.status_code == 200
     assert resp.json()["changed_files"] == ["a.py"]
+
+
+async def test_branch_file_count_matches_what_the_analysis_reads(client, tmp_path):
+    """Two branches sharing a commit each count its files, as their diffs do."""
+    repo_dir = _git_repo(tmp_path)
+    _git(repo_dir, "checkout", "-q", "-b", "feat/y", "feat/x")
+    (repo_dir / "extra.py").write_text("y = 1\n", encoding="utf-8")
+    _git(repo_dir, "add", "extra.py")
+    _git(repo_dir, "commit", "-q", "-m", "feat: y on top of x")
+    _git(repo_dir, "checkout", "-q", "main")
+    repo = await create_test_repo(client, tmp_path)
+
+    body = (await client.get(f"/api/repos/{repo['id']}/blast-radius/changes")).json()
+    counts = {c["label"]: c["files_changed"] for c in body["changes"] if c["kind"] == "branch"}
+    for name, count in counts.items():
+        resp = await client.post(
+            f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": f"branch:{name}"}
+        )
+        assert resp.json()["changed_files_total"] == count, name
+    assert counts == {"feat/x": 1, "feat/y": 2}
