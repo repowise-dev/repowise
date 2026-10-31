@@ -21,8 +21,6 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_MAX_TOKENS_DEFAULT,
     _SYNTHESIS_MAX_TOKENS_ENV,
-    _SYNTHESIS_REASONING_MAX_TOKENS,
-    _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT,
     _SYNTHESIS_RETRY_TOKEN_FACTOR,
     _SYNTHESIS_TEMPERATURE,
     _synthesis_max_tokens,
@@ -32,28 +30,26 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
     _MAX_TIMEOUT_S,
     _TIMEOUT_ENV,
     _synthesis_failure_note,
-    _synthesis_reasoning_and_budget,
+    _synthesis_reasoning,
     _synthesis_timeout,
     synthesize,
 )
 
 # --- synthesis token budget -------------------------------------------------
 #
-# REPOWISE_SYNTHESIS_MAX_TOKENS: the hardcoded 1024 was headroom for a
-# non-reasoning model (answers target ~550 tokens) but is the WHOLE allowance
-# for one that spends the same budget on hidden thinking before any answer
-# token — measured against nanbeige returning nothing at 1024, a correct
-# cited answer at 8192. See _empty_completion_note below for the failure
-# this override exists to escape.
+# REPOWISE_SYNTHESIS_MAX_TOKENS: answers target ~550 tokens, but a thinking
+# model spends the same cap on hidden reasoning before any answer token. See
+# _empty_completion_note below for the failure this override exists to escape.
 
 
 @pytest.fixture(autouse=True)
 def _no_max_tokens_override(monkeypatch):
     monkeypatch.delenv(_SYNTHESIS_MAX_TOKENS_ENV, raising=False)
+    monkeypatch.setattr(synthesis_module, "_LOW_EFFORT_OK", {})
 
 
 def test_default_max_tokens_matches_the_documented_default():
-    assert _synthesis_max_tokens() == _SYNTHESIS_MAX_TOKENS_DEFAULT == 1024
+    assert _synthesis_max_tokens() == _SYNTHESIS_MAX_TOKENS_DEFAULT == 4096
     assert _SYNTHESIS_MAX_TOKENS == _SYNTHESIS_MAX_TOKENS_DEFAULT  # process-start default
 
 
@@ -617,63 +613,110 @@ async def test_degraded_answer_does_not_promise_hits_it_does_not_have():
     assert "ranked hit" not in answer
 
 
-# --- reasoning effort and budget per model ---------------------------------
+# --- reasoning effort per provider ------------------------------------------
 #
-# gpt-5.6-luna on ``auto`` thinks at its default effort and returned empty
-# answers inside the 1024 cap. Synthesis asks it for ``low`` with headroom.
+# The evidence is retrieved before synthesis, so a thinking model left on
+# ``auto`` is asked for ``low`` where ``low`` only trims its default thinking.
 
 
 def _openai(model: str):
     return get_provider("openai", api_key="sk-test", model=model, with_rate_limiter=False)
 
 
-def test_auto_on_an_openai_reasoning_model_becomes_low_with_headroom():
-    mode, max_tokens = _synthesis_reasoning_and_budget(_openai("gpt-5.6-luna"), "auto")
-    assert mode == "low"
-    assert max_tokens == _SYNTHESIS_REASONING_MAX_TOKENS == _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT
+async def test_auto_on_an_openai_reasoning_model_becomes_low():
+    assert await _synthesis_reasoning(_openai("gpt-5.6-luna"), "auto") == "low"
 
 
 @pytest.mark.parametrize("explicit", ["none", "medium", "high"])
-def test_an_explicit_reasoning_mode_is_kept(explicit):
-    mode, max_tokens = _synthesis_reasoning_and_budget(_openai("gpt-5.6-luna"), explicit)
-    assert mode == explicit
-    assert max_tokens == _SYNTHESIS_REASONING_MAX_TOKENS
+async def test_an_explicit_reasoning_mode_is_kept(explicit):
+    assert await _synthesis_reasoning(_openai("gpt-5.6-luna"), explicit) == explicit
 
 
-def test_a_non_reasoning_model_keeps_auto_and_the_cap():
-    assert _synthesis_reasoning_and_budget(_openai("gpt-4o"), "auto") == (
-        "auto",
-        _SYNTHESIS_MAX_TOKENS,
+async def test_a_non_reasoning_model_keeps_auto():
+    assert await _synthesis_reasoning(_openai("gpt-4o"), "auto") == "auto"
+
+
+class _LowCapable(_SlowProvider):
+    def supported_reasoning_modes(self):
+        return ("auto", "low", "medium", "high")
+
+
+@pytest.mark.parametrize("name", ["anthropic", "litellm", "openrouter", "deepseek", "ollama"])
+async def test_providers_where_low_can_switch_thinking_on_keep_auto(name):
+    """On these, ``low`` can turn thinking on for a model that does not think
+    by default, which would add cost."""
+    provider = _LowCapable(duration=0, budget=30.0)
+    provider.provider_name = name
+    assert await _synthesis_reasoning(provider, "auto") == "auto"
+
+
+def _gemini(monkeypatch, thinking: bool):
+    from repowise.core.providers.llm.base import ProviderModelOption
+
+    provider = get_provider(
+        "gemini", api_key="test", model="gemini-flash-test", with_rate_limiter=False
     )
+    listed: list[int] = []
+
+    def _options():
+        listed.append(1)
+        modes = ("auto", "minimal", "low", "medium", "high") if thinking else ("auto",)
+        return (ProviderModelOption(model="gemini-flash-test", label="x", reasoning_modes=modes),)
+
+    monkeypatch.setattr(provider, "available_model_options", _options)
+    return provider, listed
 
 
-def test_other_providers_keep_their_defaults():
-    anthropic = get_provider(
-        "anthropic", api_key="sk-test", model="claude-haiku-4-5", with_rate_limiter=False
-    )
-    assert _synthesis_reasoning_and_budget(anthropic, "auto") == ("auto", _SYNTHESIS_MAX_TOKENS)
-    assert _synthesis_reasoning_and_budget(_SlowProvider(0, 30.0), "auto") == (
-        "auto",
-        _SYNTHESIS_MAX_TOKENS,
-    )
+@pytest.mark.parametrize("thinking,expected", [(True, "low"), (False, "auto")])
+async def test_gemini_asks_low_only_for_a_listed_thinking_model(monkeypatch, thinking, expected):
+    provider, listed = _gemini(monkeypatch, thinking)
+    assert await _synthesis_reasoning(provider, "auto") == expected
+    assert await _synthesis_reasoning(provider, "auto") == expected
+    assert listed == [1], "the model list is read once per process"
 
 
-def test_max_tokens_helper_applies_the_env_override_to_the_reasoning_default(monkeypatch):
-    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "2000")
-    assert _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT) == 2000
-    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "junk")
-    assert (
-        _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
-        == _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT
-    )
+async def test_a_refused_low_is_asked_again_with_the_configured_mode():
+    """Gemini 2.5 models list thinking but reject a thinking level."""
+    from repowise.core.providers.llm.base import ProviderError
+
+    class _RefusesLow(_LowCapable):
+        provider_name = "gemini"
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["reasoning"] == "low":
+                raise ProviderError("gemini", "Thinking level is not supported for this model.")
+            return SimpleNamespace(content="the answer")
+
+    provider = _RefusesLow(duration=0, budget=30.0)
+    text, note, _ = await synthesize(provider, "sys", "user")
+    assert (text, note) == ("the answer", None)
+    assert [c["reasoning"] for c in provider.calls] == ["low", "auto"]
+
+    await synthesize(provider, "sys", "user")
+    assert provider.calls[-1]["reasoning"] == "auto", "low is not tried again"
+    assert len(provider.calls) == 3
 
 
-async def test_the_reasoning_settings_reach_the_call():
-    class _Reasoner(_SlowProvider):
+async def test_a_rate_limit_is_not_read_as_a_refused_mode():
+    from repowise.core.providers.llm.base import RateLimitError
+
+    class _Limited(_LowCapable):
         provider_name = "openai"
 
-        def supported_reasoning_modes(self):
-            return ("auto", "none", "low", "medium", "high", "xhigh")
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RateLimitError("openai", "429")
+
+    provider = _Limited(duration=0, budget=30.0)
+    text, note, _ = await synthesize(provider, "sys", "user")
+    assert text == "" and note
+    assert len(provider.calls) == 1
+
+
+async def test_the_reasoning_and_cap_reach_the_call():
+    class _Reasoner(_LowCapable):
+        provider_name = "openai"
 
     class _BurnedBudget(_Reasoner):
         async def generate(self, **kwargs):
@@ -683,34 +726,26 @@ async def test_the_reasoning_settings_reach_the_call():
     provider = _Reasoner(duration=0, budget=30.0)
     await synthesize(provider, "sys", "user")
     assert provider.calls[0]["reasoning"] == "low"
-    assert provider.calls[0]["max_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS
+    assert provider.calls[0]["max_tokens"] == _SYNTHESIS_MAX_TOKENS
 
     burned = _BurnedBudget(duration=0, budget=30.0)
     _, note, _ = await synthesize(burned, "sys", "user")
-    assert [c["max_tokens"] for c in burned.calls] == [
-        _SYNTHESIS_REASONING_MAX_TOKENS,
-        _SYNTHESIS_REASONING_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR,
-    ]
-    assert f"{_SYNTHESIS_REASONING_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR}-token" in note
+    retry_cap = _SYNTHESIS_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR
+    assert [c["max_tokens"] for c in burned.calls] == [_SYNTHESIS_MAX_TOKENS, retry_cap]
+    assert all(c["reasoning"] == "low" for c in burned.calls)
+    assert f"{retry_cap}-token" in note
 
 
-async def test_synthesize_uses_the_resolved_reasoning_budget(monkeypatch):
+async def test_synthesize_uses_the_resolved_cap(monkeypatch):
     """The env override lands in this module constant at import, so patching it
-    stands in for REPOWISE_SYNTHESIS_MAX_TOKENS on a reasoning model."""
-    monkeypatch.setattr(synthesis_module, "_SYNTHESIS_REASONING_MAX_TOKENS", 2000)
-
-    class _Reasoner(_SlowProvider):
-        provider_name = "openai"
-
-        def supported_reasoning_modes(self):
-            return ("auto", "low")
-
-    provider = _Reasoner(duration=0, budget=30.0)
+    stands in for REPOWISE_SYNTHESIS_MAX_TOKENS."""
+    monkeypatch.setattr(synthesis_module, "_SYNTHESIS_MAX_TOKENS", 2000)
+    provider = _SlowProvider(duration=0, budget=30.0)
     await synthesize(provider, "sys", "user")
     assert provider.calls[0]["max_tokens"] == 2000
 
 
-async def test_the_real_openai_provider_sends_low_effort_and_the_budget(monkeypatch):
+async def test_the_real_openai_provider_sends_low_effort_and_the_cap(monkeypatch):
     """auto -> low must reach the Chat Completions request as reasoning_effort."""
     provider = _openai("gpt-5.6-luna")
     sent: dict = {}
@@ -734,4 +769,4 @@ async def test_the_real_openai_provider_sends_low_effort_and_the_budget(monkeypa
 
     assert note is None and answer == "answer"
     assert sent["reasoning_effort"] == "low"
-    assert sent["max_completion_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS
+    assert sent["max_completion_tokens"] == _SYNTHESIS_MAX_TOKENS

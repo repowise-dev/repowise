@@ -398,13 +398,12 @@ _STOPWORDS = STOPWORDS
 _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
-# the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so it
-# gets a larger default, and the env override sets both. Low temperature: the
-# answer must track the excerpts, not embellish.
+# the token cap is headroom. A thinking model spends hidden reasoning from the
+# same cap before the first answer token, so the cap leaves room for both.
+# Providers bill the tokens produced, not the cap. Low temperature: the answer
+# must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
-_SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
-_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
+_SYNTHESIS_MAX_TOKENS_DEFAULT = 4096
 
 
 def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
@@ -427,11 +426,10 @@ def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
-_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
 # A reply stopped at the token cap is asked for once more with this many times
-# the cap. A thinking model can spend most of the first cap on hidden reasoning.
-_SYNTHESIS_RETRY_TOKEN_FACTOR = 4
+# the cap. Kept small so the retry stays inside common model output limits.
+_SYNTHESIS_RETRY_TOKEN_FACTOR = 2
 
 _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "

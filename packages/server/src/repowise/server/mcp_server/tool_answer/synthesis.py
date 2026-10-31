@@ -19,12 +19,12 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from repowise.core.providers.llm.base import RateLimitError
 from repowise.core.reasoning import ReasoningMode, resolve_reasoning
 from repowise.core.repo_config import load_repo_config
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_MAX_TOKENS_ENV,
-    _SYNTHESIS_REASONING_MAX_TOKENS,
     _SYNTHESIS_RETRY_TOKEN_FACTOR,
     _SYNTHESIS_TEMPERATURE,
 )
@@ -83,25 +83,52 @@ def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:
     return resolve_reasoning(config=config)
 
 
-def _synthesis_reasoning_and_budget(
-    provider, reasoning: ReasoningMode
-) -> tuple[ReasoningMode, int]:
-    """The reasoning mode and token cap one synthesis call is sent with.
+# Providers whose ``auto`` leaves a thinking model at its own default effort,
+# so ``low`` only trims thinking. Elsewhere ``low`` can switch thinking on for a
+# model that does not think by default (LiteLLM, OpenRouter, DeepSeek), which
+# would add cost, so those keep ``auto``.
+_LOW_EFFORT_PROVIDERS = frozenset({"openai", "gemini", "edenai", "kimi"})
+# (provider, model) -> whether synthesis may ask for ``low``. Filled once per
+# process, and set to False when the provider refuses ``low`` at call time.
+_LOW_EFFORT_OK: dict[tuple[str, str], bool] = {}
 
-    An OpenAI reasoning model left on ``auto`` thinks at its default effort and
-    can spend the whole cap before the first answer token, so synthesis asks
-    for ``low`` and gets reasoning headroom. An explicit mode is kept as given.
-    Other providers keep their defaults; their ``auto`` semantics differ.
+
+def _model_key(provider) -> tuple[str, str]:
+    return (
+        str(getattr(provider, "provider_name", "")),
+        str(getattr(provider, "model_name", "")),
+    )
+
+
+async def _accepts_low_effort(provider) -> bool:
+    key = _model_key(provider)
+    if key not in _LOW_EFFORT_OK:
+        try:
+            ok = "low" in provider.supported_reasoning_modes()
+            if not ok and key[0] == "gemini":
+                # Gemini knows its thinking models only after listing them.
+                options = await asyncio.to_thread(provider.available_model_options)
+                ok = any(o.model == key[1] and "low" in o.reasoning_modes for o in options)
+        except Exception:
+            # A provider that cannot report its modes must not fail the answer.
+            ok = False
+        _LOW_EFFORT_OK[key] = ok
+    return _LOW_EFFORT_OK[key]
+
+
+async def _synthesis_reasoning(provider, reasoning: ReasoningMode) -> ReasoningMode:
+    """The reasoning mode one synthesis call is sent with.
+
+    The evidence is already retrieved, so synthesis only writes it up: a
+    thinking model left on ``auto`` is asked for ``low``. Left on its default
+    effort it can spend most of the token cap before the first answer token.
+    A configured mode other than ``auto`` is kept as given.
     """
-    try:
-        modes = provider.supported_reasoning_modes()
-    except Exception:
-        # A provider that cannot report its modes must not fail the answer.
-        modes = ()
-    if getattr(provider, "provider_name", None) != "openai" or "low" not in modes:
-        return reasoning, _SYNTHESIS_MAX_TOKENS
-    effective: ReasoningMode = "low" if reasoning == "auto" else reasoning
-    return effective, _SYNTHESIS_REASONING_MAX_TOKENS
+    if reasoning != "auto" or getattr(provider, "provider_name", None) not in (
+        _LOW_EFFORT_PROVIDERS
+    ):
+        return reasoning
+    return "low" if await _accepts_low_effort(provider) else reasoning
 
 
 def _resolve_provider_for_answer(repo_path: Path | None = None):
@@ -445,6 +472,29 @@ async def _retry_past_cap(call, response, max_tokens: int, *, remaining_s: float
     return response, max_tokens
 
 
+async def _first_call(provider, prompts, configured, max_tokens, timeout_s, started):
+    """The first synthesis call: ``(call, response, failure, timed_out)``.
+
+    ``call`` is bound to the reasoning mode the reply came from, so a retry past
+    the token cap asks the same way. When the provider refuses the ``low`` mode
+    synthesis chose (Gemini 2.5 models reject thinking levels), the call is made
+    once more with the configured mode, and ``low`` is not tried again.
+    """
+    reasoning = await _synthesis_reasoning(provider, configured)
+    call = functools.partial(_generate_within, provider, *prompts, reasoning=reasoning)
+    response, failure, timed_out = await call(max_tokens=max_tokens, timeout_s=timeout_s)
+    refused = failure is not None and not timed_out and reasoning != configured
+    if not refused or isinstance(failure, RateLimitError):
+        return call, response, failure, timed_out
+    _log.info("get_answer synthesis: %s refused reasoning=low (%s)", _model_key(provider), failure)
+    _LOW_EFFORT_OK[_model_key(provider)] = False
+    remaining_s = timeout_s - (time.monotonic() - started)
+    if remaining_s <= 0:
+        return call, response, failure, timed_out
+    call = functools.partial(call, reasoning=configured)
+    return (call, *await call(max_tokens=max_tokens, timeout_s=remaining_s))
+
+
 async def synthesize(
     provider,
     system_prompt: str,
@@ -466,19 +516,19 @@ async def synthesize(
     a larger cap, inside the same time budget. A thinking model spends most of
     the cap on hidden reasoning, so the first reply can stop mid-sentence. If
     the retry fails or also hits the cap, the first usable text is kept and
-    ``stop_reason`` says it was cut.
+    ``stop_reason`` says it was cut. ``_synthesis_reasoning`` keeps that rare by
+    asking a thinking model for ``low`` effort.
 
     ``session_factory`` / ``repo_id`` are where the cost row lands. Both
     optional: with neither, the call is still priced and logged, just not
     persisted.
     """
     timeout_s = _synthesis_timeout(provider)
-    reasoning, max_tokens = _synthesis_reasoning_and_budget(provider, reasoning)
-    call = functools.partial(
-        _generate_within, provider, system_prompt, user_prompt, reasoning=reasoning
-    )
+    max_tokens = _SYNTHESIS_MAX_TOKENS
     started = time.monotonic()
-    response, failure, timed_out = await call(max_tokens=max_tokens, timeout_s=timeout_s)
+    call, response, failure, timed_out = await _first_call(
+        provider, (system_prompt, user_prompt), reasoning, max_tokens, timeout_s, started
+    )
     if failure is None:
         # Metered before the empty-completion branch: a reasoning model that
         # spends its whole budget on hidden thinking returns no text and is the
