@@ -29,6 +29,7 @@ import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import { DecisionReviewDrawer } from "./decision-review-drawer";
 import type { BulkReviewResult } from "./bulk-review";
+import { useBulkSelection, type BulkState, type Selection } from "./use-bulk-selection";
 import {
   formatDate,
   formatRelativeTimeOrNull,
@@ -204,60 +205,8 @@ export function DecisionReviewLanes({
   const selectable =
     lane === "candidates" && onDismissMany !== undefined && !readOnlyReason;
 
-  // Selection is of the rows on screen. A new page or lane is a different
-  // set of records, so the selection does not follow it.
-  const [selected, setSelected] = React.useState<ReadonlySet<string>>(new Set());
-  const [bulk, setBulk] = React.useState<BulkState | null>(null);
-  const rowIds = rows.map((d) => d.id).join(",");
-  React.useEffect(() => {
-    setSelected((prev) => {
-      const visible = new Set(rowIds.split(","));
-      const kept = [...prev].filter((id) => visible.has(id));
-      return kept.length === prev.size ? prev : new Set(kept);
-    });
-  }, [rowIds]);
-  // Bumped on a lane change, so a run still in flight cannot write its
-  // outcome into a lane the reader has since left.
-  const runRef = React.useRef(0);
-  React.useEffect(() => {
-    runRef.current += 1;
-    setSelected(new Set());
-    setBulk(null);
-  }, [lane]);
-
-  const toggle = (id: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const allSelected = rows.length > 0 && rows.every((d) => selected.has(d.id));
-  const toggleAll = () =>
-    setSelected(allSelected ? new Set() : new Set(rows.map((d) => d.id)));
-
-  const dismissSelected = async () => {
-    if (!onDismissMany) return;
-    const picked = rows.filter((d) => selected.has(d.id));
-    if (picked.length === 0) return;
-    const run = runRef.current;
-    setBulk({ total: picked.length, settled: 0, result: null });
-    let result: BulkReviewResult;
-    try {
-      result = await onDismissMany(picked, (settled) => {
-        if (runRef.current === run) setBulk((b) => (b ? { ...b, settled } : b));
-      });
-    } catch (err) {
-      // A host that throws instead of reporting per record still has to
-      // leave the bar usable, so the whole selection reads as refused.
-      const message = err instanceof Error ? err.message : String(err);
-      result = { done: [], failed: picked.map((decision) => ({ decision, message })) };
-    }
-    if (runRef.current !== run) return;
-    setBulk({ total: picked.length, settled: picked.length, result });
-    // What was refused stays selected, so a retry is one click.
-    setSelected(new Set(result.failed.map((f) => f.decision.id)));
-  };
+  const bulkRun = useBulkSelection(rows, lane, selectable ? onDismissMany : undefined);
+  const { selected, bulk } = bulkRun;
 
   // Acting from the drawer moves it to the next record, which is what makes
   // the drawer a queue and not a detour. Read before the host refreshes
@@ -280,15 +229,7 @@ export function DecisionReviewLanes({
     onReaffirm,
     readOnlyReason,
     pendingIds,
-    selection: selectable
-      ? {
-          selected,
-          toggle,
-          allSelected,
-          toggleAll,
-          busy: bulk !== null && bulk.result === null,
-        }
-      : undefined,
+    selection: selectable ? bulkRun.selection : undefined,
   });
 
   const tabs: ViewTab[] = DECISION_LANES.map((id) => {
@@ -363,11 +304,8 @@ export function DecisionReviewLanes({
             <BulkBar
               selected={selected.size}
               bulk={bulk}
-              onDismiss={() => void dismissSelected()}
-              onClear={() => {
-                setSelected(new Set());
-                setBulk(null);
-              }}
+              onDismiss={() => void bulkRun.dismissSelected()}
+              onClear={bulkRun.clear}
             />
           )}
           {/* A table, now that a row is one record at one height. The rows
@@ -454,20 +392,6 @@ interface ColumnContext {
   selection?: Selection | undefined;
 }
 
-interface Selection {
-  selected: ReadonlySet<string>;
-  toggle: (id: string) => void;
-  allSelected: boolean;
-  toggleAll: () => void;
-  busy: boolean;
-}
-
-interface BulkState {
-  total: number;
-  settled: number;
-  /** Null while the run is in flight. */
-  result: BulkReviewResult | null;
-}
 
 const CHECKBOX_CLS = "h-3.5 w-3.5 cursor-pointer accent-[var(--color-accent-primary)]";
 
@@ -691,30 +615,41 @@ function renderChangedCell(d: DecisionRecord) {
   );
 }
 
+/** The row is clickable, so a verb must not also open the drawer. */
+const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+
+function ReaffirmAction({
+  d,
+  pending,
+  onReaffirm,
+}: {
+  d: DecisionRecord;
+  pending: boolean;
+  onReaffirm: (decision: DecisionRecord) => void;
+}) {
+  return (
+    <div className="flex justify-end" onClick={stop} onKeyDown={stop}>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={pending}
+        title="Still right after re-reading it: mark it current again"
+        onClick={() => onReaffirm(d)}
+      >
+        {pending ? "Reaffirming..." : "Reaffirm"}
+      </Button>
+    </div>
+  );
+}
+
 function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
   const { onAccept, onDismiss, readOnlyReason } = ctx;
   const pending = ctx.pendingIds?.has(d.id) ?? false;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
-  // The row is clickable, so a verb must not also open the drawer.
-  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   if (ctx.lane === "needs_review") {
-    const onReaffirm = ctx.onReaffirm;
-    if (!onReaffirm) return null;
-    return (
-      <div className="flex justify-end" onClick={stop} onKeyDown={stop}>
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={pending}
-          title="Still right after re-reading it: mark it current again"
-          onClick={() => onReaffirm(d)}
-        >
-          {pending ? "Reaffirming..." : "Reaffirm"}
-        </Button>
-      </div>
-    );
+    return ctx.onReaffirm ? <ReaffirmAction d={d} pending={pending} onReaffirm={ctx.onReaffirm} /> : null;
   }
   if (!onAccept && !onDismiss) return null;
   // The same checks the engine refuses on, asked before the button is drawn,
