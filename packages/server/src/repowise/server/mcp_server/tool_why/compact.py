@@ -50,9 +50,10 @@ _REASON = (
 
 def compact_unanswered(result: dict[str, Any], call: Mapping[str, Any]) -> None:
     """Reduce a search with no governing decision to its verdict and best evidence."""
-    result.pop("try_instead", None)
     if result.get("mode") != "search":
         return
+    # A search reply names its evidence or says it found none; the redirect adds nothing.
+    result.pop("try_instead", None)
     targets = _targets(result, call)
     if _has_decision_rows(result):
         _fold_recalls(result, targets)

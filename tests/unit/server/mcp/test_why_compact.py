@@ -113,7 +113,13 @@ def test_a_governing_rule_keeps_the_full_card() -> None:
 
 
 def test_other_modes_are_untouched() -> None:
-    result = {"mode": "path", "path": _TARGET, "decisions": [], "origin_story": {"x": 1}}
+    result = {
+        "mode": "path",
+        "path": _TARGET,
+        "decisions": [],
+        "origin_story": {"x": 1},
+        "try_instead": ["get_answer"],
+    }
     before = copy.deepcopy(result)
     compact_unanswered(result, {"query": _TARGET})
     assert result == before
