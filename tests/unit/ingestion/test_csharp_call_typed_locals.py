@@ -148,6 +148,15 @@ def test_scan_marks_configure_await_assignment_as_awaited() -> None:
     ]
 
 
+def test_scan_reads_configure_await_after_a_generic_call() -> None:
+    found = scan_call_assignments(
+        "var x = await _f.Create<Item>(1).ConfigureAwait(false);", "csharp"
+    )
+    assert [(assignment.name, assignment.target, assignment.awaited) for assignment in found] == [
+        ("x", "Create", True)
+    ]
+
+
 def test_scan_reads_generic_and_awaited_calls() -> None:
     text = "var a = await svc.Get<Foo>(1);\nvar b = Make();\nvar c = Make() + 1;\n"
     found = scan_call_assignments(text, "csharp")
