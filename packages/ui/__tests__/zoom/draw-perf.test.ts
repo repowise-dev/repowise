@@ -100,7 +100,8 @@ describe("draw pass on a repository-sized map", () => {
   });
 
   it("drops card shadows while the camera moves and keeps the rest", () => {
-    const cam = cameraOn(HUB_FOLDER, 1400);
+    // A group of folders: cards. A folder of files draws flat tiles (see `draw-tiles.ts`).
+    const cam = cameraOn("g:0:0", 1400);
     const still = draw(cam).counts;
     const moving = draw(cam, { motion: true }).counts;
     expect(still.get("set:shadowBlur") ?? 0).toBeGreaterThan(0);

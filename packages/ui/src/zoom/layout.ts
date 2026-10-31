@@ -20,6 +20,7 @@ import {
   PACK_SIZE_MAX,
   PACK_SIZE_MIN,
 } from "./constants";
+import { fileLevelLayout } from "./layout-files";
 import type { ZoomKind } from "./types";
 
 /** The minimal slice of a node the layout needs (placement order + sizing). */
@@ -140,6 +141,9 @@ export function packLayout(
   parentAspect: number,
   opts: PackLayoutOptions = {},
 ): Map<string, Rect> {
+  // A parent of mostly files gets grouped tiles instead (see `layout-files.ts`).
+  const tiles = fileLevelLayout(children, parentAspect);
+  if (tiles) return tiles;
   const gutter = opts.gutter ?? PACK_GUTTER;
   const sizeMin = opts.sizeMin ?? PACK_SIZE_MIN;
   const sizeMax = opts.sizeMax ?? PACK_SIZE_MAX;

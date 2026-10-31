@@ -14,6 +14,7 @@ import { ALPHA_EPSILON, MIN_DRAW_PX } from "./constants";
 import { cardPreview } from "./card-preview";
 import { isOnScreen } from "./cull";
 import { drawEdges } from "./draw-edges";
+import { drawFileLevelNode } from "./draw-tiles";
 import { drawGrid } from "./draw-grid";
 import { drawEdgeLabels } from "./edge-labels";
 import type { RoutedEdge } from "./edges";
@@ -198,7 +199,10 @@ class DrawPass {
       card.lowDetail = this.opts.lowDetail;
       card.motion = this.motion;
       card.preview = hasChildren ? cardPreview(this.scene.nodes, node) : null;
-      drawCard(this.ctx, drawn, node, this.palette, alpha * dim, card, t, this.paper);
+      // A file in a mostly-files parent draws as a tile (see `draw-tiles.ts`).
+      if (!drawFileLevelNode(this.ctx, this.scene.nodes, drawn, node, this.palette, alpha * dim, card)) {
+        drawCard(this.ctx, drawn, node, this.palette, alpha * dim, card, t, this.paper);
+      }
     }
     const stats = this.stats;
     stats.drawn++;
