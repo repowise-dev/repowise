@@ -109,6 +109,7 @@ export interface AffectedSignal {
   is_hotspot?: boolean | null;
   health_score?: number | null;
   module?: string | null;
+  is_test?: boolean;
 }
 
 export interface AgentPromptResponse {
@@ -419,6 +420,8 @@ export interface BlastRadiusRequest {
 
 export interface BlastRadiusResponse {
   affected_signals?: AffectedSignal[] | null;
+  changed_owners?: ChangedOwner[] | null;
+  test_commands?: string[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -546,6 +549,8 @@ export interface ChangeBlastRadiusRequest {
 
 export interface ChangeBlastRadiusResponse {
   affected_signals?: AffectedSignal[] | null;
+  changed_owners?: ChangedOwner[] | null;
+  test_commands?: string[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -734,6 +739,13 @@ export interface ChangeRecord {
   metadata: ChangeForgeMetadata;
   evidence?: ChangeEvidence | null;
   evidence_building?: boolean;
+}
+
+/** Who owns some of the changed files, by primary authorship. */
+export interface ChangedOwner {
+  email: string;
+  name?: string | null;
+  files: number;
 }
 
 export interface ChangelogEntryModel {

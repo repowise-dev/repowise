@@ -146,6 +146,10 @@ export interface TestImpactResponse {
 export interface BlastRadiusResponse {
   /** Per affected file; only when the request asked `with_graph`. */
   affected_signals?: AffectedSignal[];
+  /** Owners of the changed files themselves; only with `with_graph`. */
+  changed_owners?: ChangedOwner[] | null;
+  /** Commands that run the recommended tests, one per runner; only with `with_graph`. */
+  test_commands?: string[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -175,6 +179,16 @@ export interface AffectedSignal {
   is_hotspot: boolean | null;
   health_score: number | null;
   module: string | null;
+  /** A test file: a test to run, never code the change reaches. Absent from older servers. */
+  is_test?: boolean;
+}
+
+/** Who owns some of the changed files, by primary authorship. */
+export interface ChangedOwner {
+  email: string;
+  name: string | null;
+  /** Changed files this person is the primary owner of. */
+  files: number;
 }
 
 export type ChangeCandidateKind = "working_tree" | "branch" | "commit";
