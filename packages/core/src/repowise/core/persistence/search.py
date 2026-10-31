@@ -205,6 +205,15 @@ def _pg_term(term: str) -> str:
     return f"{term}:*" if len(term) >= _PREFIX_MIN_CHARS else term
 
 
+def _first_match(lowered: str, query: str) -> tuple[int, int]:
+    position, matched_len = -1, 0
+    for term in _meaningful_terms(query):
+        found = lowered.find(term)
+        if found != -1 and (position == -1 or found < position):
+            position, matched_len = found, len(term)
+    return position, matched_len
+
+
 def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
     """A window of *content* centred on the first term of *query* it carries.
 
@@ -225,21 +234,71 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
     if not content:
         return ""
 
-    lowered = content.lower()
-    position = -1
-    for term in _meaningful_terms(query):
-        found = lowered.find(term)
-        if found != -1 and (position == -1 or found < position):
-            position = found
+    position, matched_len = _first_match(content.lower(), query)
     if position == -1:
-        return content[:length].rstrip()
+        end = min(length, len(content))
+        end = _snap_cut(content, end, min_pos=1, max_pos=end)
+        return content[: min(end, length)].rstrip()
 
     # Centre the window, then slide it back inside the page rather than
     # letting it run off an edge: a match in the first or last few characters
     # would otherwise return a window shorter than the budget for no reason.
     start = max(0, position - length // 2)
     start = min(start, max(0, len(content) - length))
-    return content[start : start + length].strip()
+    min_start = max(0, len(content) - length, position - length + matched_len)
+    start = _snap_cut(
+        content,
+        start,
+        min_pos=min_start,
+        max_pos=position,
+    )
+    end = min(len(content), start + length)
+    end = _snap_cut(
+        content,
+        end,
+        min_pos=position + matched_len,
+        max_pos=end,
+    )
+    return content[start:end].strip() or content[:length].strip()
+
+
+_SNAP_MAX_CHARS = 10
+
+
+def _scan_boundary(
+    content: str, cut: int, step: int, bound: int, max_chars: int = _SNAP_MAX_CHARS
+) -> int | None:
+    for i in range(1, max_chars + 1):
+        pos = cut + step * i
+        if (step < 0 and pos < bound) or (step > 0 and pos > bound):
+            break
+        if pos < 0 or pos >= len(content):
+            break
+        if content[pos].isspace():
+            return pos
+    return None
+
+
+def _snap_cut(
+    content: str,
+    cut: int,
+    max_chars: int = _SNAP_MAX_CHARS,
+    min_pos: int = 0,
+    max_pos: int | None = None,
+) -> int:
+    """Move *cut* to the nearest whitespace within max_chars characters if inside a word."""
+    limit = len(content) if max_pos is None else max_pos
+    if cut <= 0 or cut >= len(content):
+        return cut
+    if content[cut - 1].isspace() or content[cut].isspace():
+        return cut
+
+    left = _scan_boundary(content, cut, -1, min_pos, max_chars)
+    right = _scan_boundary(content, cut, 1, limit, max_chars)
+    candidates = [p for p in (left, right) if p is not None]
+    if not candidates:
+        return cut
+    return min(candidates, key=lambda p: abs(p - cut))
 
 
 def strip_leading_headings(text: str) -> str:
@@ -498,10 +557,7 @@ class FullTextSearch:
         """
         for chunk in chunked(list(pages)):
             await self.index_many(
-                [
-                    (p.page_id, p.title, p.content, p.summary, p.target_path, p.digest)
-                    for p in chunk
-                ]
+                [(p.page_id, p.title, p.content, p.summary, p.target_path, p.digest) for p in chunk]
             )
 
     async def index_many(

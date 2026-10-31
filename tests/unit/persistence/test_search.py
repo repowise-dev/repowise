@@ -183,7 +183,9 @@ async def test_index_many_spans_more_ids_than_one_statement_can_bind(fts):
     A wiki is thousands of pages, so the first real corpus would have been the
     first test of this path.
     """
-    pages = [(f"p{i}", f"Title {i}", "a page about chunking", "", f"{i}.py", "") for i in range(1200)]
+    pages = [
+        (f"p{i}", f"Title {i}", "a page about chunking", "", f"{i}.py", "") for i in range(1200)
+    ]
 
     await fts.index_many(pages)
     assert len(await _indexed_ids(fts)) == 1200
@@ -313,7 +315,6 @@ async def test_full_text_search_repository_id_filter(async_engine, async_session
     assert [r.page_id for r in b_hits] == ["p-b"]
 
 
-
 # ---------------------------------------------------------------------------
 # Batched page writes
 # ---------------------------------------------------------------------------
@@ -369,3 +370,23 @@ async def test_a_term_on_every_page_still_scores_positive_and_in_order(fts):
     assert len(scores) == 6
     assert all(s > 0.0 for s in scores), scores
     assert scores == sorted(scores, reverse=True)
+
+
+def test_snippet_window_never_exceeds_length_budget_when_snapping_left():
+    from repowise.core.persistence.search import snippet_around
+
+    content = "prefixword " + "a" * 80 + " target " + "b" * 80
+    snippet = snippet_around(content, "target", length=60)
+    assert len(snippet) <= 60
+
+
+def test_snap_cut_does_not_index_error_near_end_of_content():
+    from repowise.core.persistence.search import _snap_cut, snippet_around
+
+    content = "a" * 100
+    result = _snap_cut(content, cut=95, max_chars=10, min_pos=0, max_pos=100)
+    assert result == 95
+
+    content2 = "prefix " + "x" * 90 + " target"
+    snippet = snippet_around(content2, "target", length=40)
+    assert "target" in snippet

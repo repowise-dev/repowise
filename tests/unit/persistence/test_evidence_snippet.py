@@ -93,6 +93,24 @@ class TestSnippetAround:
         content = _OPENER + _MATCH + _TAIL
         assert snippet_around(content, "the").startswith("## Overview")
 
+    def test_window_edges_land_on_whitespace_for_prose(self):
+        content = _OPENER + _MATCH + _TAIL
+        window = snippet_around(content, "nested git checkout")
+        start_idx = content.find(window)
+        assert start_idx != -1
+        end_idx = start_idx + len(window)
+        if start_idx > 0:
+            assert content[start_idx - 1].isspace()
+        if end_idx < len(content):
+            assert content[end_idx].isspace()
+
+    def test_single_long_token_returns_non_empty_text(self):
+        long_token = "a" * 300
+        fallback = snippet_around(long_token, "something")
+        assert fallback == "a" * 200
+        matched = snippet_around(long_token, "a")
+        assert len(matched) == 200
+
 
 class TestStripLeadingHeadings:
     """A served snippet drops the heading that repeats its row's path."""
