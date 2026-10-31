@@ -24,7 +24,7 @@ from repowise.server.mcp_server._budget.budgeter import (
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
 from repowise.server.mcp_server._budget.hooks import run_post_enforce, run_post_shed
-from repowise.server.mcp_server._meta import full_meta
+from repowise.server.mcp_server._meta import collapse_omission, full_meta
 
 DEFAULT_RESPONSE_CHARS = 24_000
 EXPANDED_RESPONSE_CHARS = 32_000
@@ -943,6 +943,8 @@ def enforce_response_budget(
         trimmed = True
 
     run_post_enforce(tool, result, _call_arguments(signature, args, kwargs))
+    # Before the accounting below, so the stamped size is the delivered one.
+    collapse_omission(result)
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

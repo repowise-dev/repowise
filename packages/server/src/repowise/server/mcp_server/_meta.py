@@ -780,9 +780,9 @@ def lean_response(result: Any) -> Any:
 def collapse_omission(result: Any) -> Any:
     """One omission entry per response: ``_meta.omitted``, never a marker beside it.
 
-    Runs on every MCP response, including the tools that keep their full
-    ``_meta``. The marker restates the refs ``_meta.omitted`` lists and names
-    only the CLI route.
+    The response budget runs it on every MCP response, including the tools that
+    keep their full ``_meta``. The marker restates the refs ``_meta.omitted``
+    lists and names only the CLI route.
     """
     if isinstance(result, dict) and (result.get("_meta") or {}).get("omitted"):
         result.pop("omission_marker", None)
