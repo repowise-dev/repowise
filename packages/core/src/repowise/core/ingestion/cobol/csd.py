@@ -7,7 +7,9 @@ the ``PROGRAM`` attribute may be abbreviated as DFHCSDUP allows (``DEF
 TRANS(T) PROG(P)``). ``DEFINE TRANSACTION(T) ... PROGRAM(P)`` names the
 program transaction T runs; an ``ALTER`` naming another program adds it, so a
 transaction two programs can run links to neither. ``DELETE`` is ignored, which
-only keeps a deleted program a root.
+only keeps a deleted program a root. A Micro Focus ``DEFINE _PGMLIST(L)`` names
+the PLT startup programs it lists, one ``_PGMPH(PROG,n)`` each; other
+``_``-prefixed attributes are ignored.
 
 Ceiling: a line opening with a bare word ends the command, so an attribute
 value wrapped onto a new line drops the rest of that command (a missed link,
@@ -25,10 +27,12 @@ from ..models import FileInfo, ParsedFile, Symbol
 # A line opening with a bare word starts a command; ``DELETE(YES)`` is an attribute.
 _COMMAND = re.compile(r"^\s*([A-Z]+)(?=\s|$)", re.IGNORECASE)
 _RESOURCE = re.compile(
-    r"^\s*(?P<command>[A-Z]+)\s+(?P<resource>[A-Z]+)\s*\(\s*(?P<name>[^()\s]+)\s*\)(?P<rest>.*)",
+    r"^\s*(?P<command>[A-Z]+)\s+(?P<resource>_?[A-Z]+)\s*\(\s*(?P<name>[^()\s]+)\s*\)(?P<rest>.*)",
     re.IGNORECASE | re.DOTALL,
 )
 _PROGRAM_ATTR = re.compile(r"(?<![\w-])PROG[A-Z]*\s*\(\s*(?P<name>[^()\s]+)\s*\)", re.IGNORECASE)
+# ``_PGMPH(UBNKPLT1,1)`` in a ``_PGMLIST``: a startup program and its position.
+_PGMPH = re.compile(r"(?<![\w-])_PGMPH\s*\(\s*(?P<name>[^(),\s]+)\s*(?:,[^()]*)?\)", re.IGNORECASE)
 
 
 def _abbreviates(word: str, full: str, shortest: int) -> bool:
@@ -60,6 +64,8 @@ class CsdDefinition:
     line: int
     program: str | None = None
     command: str = "DEFINE"
+    # A ``_PGMLIST``'s startup programs, in the order it lists them.
+    programs: tuple[str, ...] = ()
 
 
 def read_csd(lines: Iterable[tuple[int, str]]) -> list[CsdDefinition]:
@@ -80,6 +86,7 @@ def read_csd(lines: Iterable[tuple[int, str]]) -> list[CsdDefinition]:
             continue
         resource = _resource(m.group("resource"))
         program = _PROGRAM_ATTR.search(m.group("rest")) if resource == "TRANSACTION" else None
+        startup = _PGMPH.finditer(m.group("rest")) if resource == "_PGMLIST" else ()
         out.append(
             CsdDefinition(
                 resource,
@@ -87,22 +94,30 @@ def read_csd(lines: Iterable[tuple[int, str]]) -> list[CsdDefinition]:
                 number,
                 program.group("name").upper() if program else None,
                 command,
+                tuple(p.group("name").upper() for p in startup),
             )
         )
     return out
 
 
 def defined_programs(definitions: list[CsdDefinition]) -> list[str]:
-    """The programs *definitions* make runnable: each PROGRAM, and each transaction's program."""
+    """The programs *definitions* make runnable: each PROGRAM, each transaction's program,
+    and each startup program a ``_PGMLIST`` lists."""
     names = {d.name for d in definitions if d.resource == "PROGRAM"}
     names |= {d.program for d in definitions if d.program}
+    names |= {p for d in definitions for p in d.programs}
     return sorted(names)
 
 
 def parse_csd_file(file_info: FileInfo, source: bytes) -> ParsedFile:
     """Each defined resource as a symbol: ``TRANSACTION CAUP PROGRAM(COACTUPC)``."""
     lines = source.decode("utf-8", errors="replace").splitlines()
-    definitions = [d for d in read_csd(enumerate(lines, 1)) if d.command == "DEFINE"]
+    # A ``_PGMLIST`` is a list of other programs, not a resource of its own.
+    definitions = [
+        d
+        for d in read_csd(enumerate(lines, 1))
+        if d.command == "DEFINE" and not d.resource.startswith("_")
+    ]
     symbols = [
         Symbol(
             id=f"{file_info.path}::{d.resource}:{d.name}",
