@@ -560,6 +560,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 | `git_archaeology` | No decision governs the path; `git_log` keeps its 5 newest rows, rest via the omission marker |
 | `provenance`, `evidence_refs` | Self-contained evidence refs. Matching ids mean shared evidence, not corroboration |
 
+- **A question no decision answers** (no top-level decision, no rule or candidate on a named file) gets a compact verdict: `reason`, at most 3 `code_rationale` rows (`path`, `lines`, `comment`), at most 2 `key_commits` (`sha`, `date`, `message`, `pr_number`; commits the question singled out first, then the file's key commits carrying its terms), and `more`, the `get_why(targets=[...])` call for the full file history. `repowise why --full` keeps the whole card.
 - Commit rows under `git_archaeology` and `origin_story.key_commits` inherit the block's `provenance`.
 - Read the lane, not `status`: `status: "active"` can lack acceptance. Only `repowise decision confirm` or a committed ADR marked accepted accepts.
 - `candidates` and `history` shed first under budget, so an absent lane may mean a tight budget.

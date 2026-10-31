@@ -87,6 +87,12 @@ _CALLS: list[tuple[str, str, dict[str, Any], tuple[str, ...]]] = [
     ("risk", "get_risk", {"targets": ["python_pkg/calculator.py"]}, ("targets",)),
     ("change_risk", "get_change_risk", {"revspec": "HEAD"}, ("directive",)),
     ("why", "get_why", {"query": "why does the calculator keep a history"}, ("mode",)),
+    (
+        "why_targeted",
+        "get_why",
+        {"query": "why does the calculator keep a history", "targets": ["python_pkg/calculator.py"]},
+        ("mode", "decisions"),
+    ),
     ("health", "get_health", {}, ("mode", "kpis")),
     ("dead_code", "get_dead_code", {}, ("summary", "tiers")),
 ]
@@ -241,6 +247,16 @@ def test_routine_response_is_lean(served, case_id) -> None:
     debug = {"contract_version", "timing_ms", *_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS}
     assert not debug & set(payload["_meta"]), f"{case_id} leaks {debug & set(payload['_meta'])}"
     assert lean_response(copy.deepcopy(payload)) == payload
+
+
+def test_why_with_no_decision_is_a_compact_verdict(served) -> None:
+    """No record governs the file: the verdict and its best evidence, not the file's card."""
+    payload = served["why_targeted"]
+    assert payload["decisions"] == []
+    assert "target_context" not in payload and "try_instead" not in payload
+    assert len(payload.get("code_rationale") or []) <= 3
+    assert len(payload.get("key_commits") or []) <= 2
+    assert _size(payload) < 3000
 
 
 def test_overview_carries_the_full_envelope(served) -> None:

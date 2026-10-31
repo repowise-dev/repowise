@@ -7,6 +7,9 @@ module that looks it up (e.g. ``path_mode.describe_decision_currency``), not her
 
 from __future__ import annotations
 
+from repowise.server.mcp_server.tool_why import (
+    compact as _compact,  # noqa: F401  registers its hook
+)
 from repowise.server.mcp_server.tool_why.caps import (
     _MAX_AFFECTED_FILES,
     _MAX_HEALTH_PROPOSED,
