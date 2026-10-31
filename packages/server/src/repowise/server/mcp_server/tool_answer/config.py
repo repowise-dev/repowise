@@ -368,6 +368,12 @@ _CANDIDATE_FILES_MAX = 5
 # The raw list is longer than either cap, so paths the citations already name
 # can be removed without leaving the served list short.
 _CANDIDATE_FILES_POOL = 10
+# A path scoring under this share of the top hit is not served in
+# candidate_files. Swept on 53 labelled candidates from 13 questions over four
+# repositories: the lowest file worth opening scored 0.38 of the top, and three
+# unrelated files scored under 0.2. Set below that lowest real file, not at it,
+# since a dropped file costs the agent a search and a served one costs a path.
+_CANDIDATE_FILES_SCORE_FLOOR = 0.3
 
 # Backstop TTL for cache rows. Commit stamping is the primary freshness gate;
 # this covers rows without a stamp (older rows, repos without git metadata).

@@ -32,7 +32,7 @@ class _Provider:
         return SimpleNamespace(content=self.content)
 
 
-def _patch_retrieval(monkeypatch, answer_mod, scores=(6.0, 1.0)):
+def _patch_retrieval(monkeypatch, answer_mod, scores=(6.0, 4.0)):
     async def _fake_retrieve(question, ctx):
         return [dict(hit, score=score) for hit, score in zip(_HITS, scores, strict=True)]
 
