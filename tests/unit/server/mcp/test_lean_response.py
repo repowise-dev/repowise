@@ -152,3 +152,19 @@ async def test_debug_meta_keeps_the_whole_shape(monkeypatch: pytest.MonkeyPatch)
 
     assert result["flag_truncated"] is False
     assert result["_meta"]["index_behind"] is False
+
+
+async def get_overview() -> dict[str, Any]:
+    return {
+        "summary": "x",
+        "omission_marker": "[repowise#aaaaaaaaaaaa: 3 lines omitted]",
+        "_meta": {"omitted": {"refs": ["repowise#aaaaaaaaaaaa"], "restore": "r"}},
+    }
+
+
+async def test_a_full_meta_tool_still_carries_one_omission_entry() -> None:
+    """get_overview keeps its whole envelope, but not a marker restating ``_meta.omitted``."""
+    result = await tool_middleware(get_overview)()
+
+    assert "omission_marker" not in result
+    assert result["_meta"]["omitted"]["refs"] == ["repowise#aaaaaaaaaaaa"]
