@@ -569,6 +569,253 @@ class TestRedis:
         ]
 
 
+class TestRedisStreamsAndLanguages:
+    """Redis in Go, Java and .NET, and streams: the shapes of issue #4662."""
+
+    _GO = 'import "github.com/redis/go-redis/v9"\n'
+    _LETTUCE = "import io.lettuce.core.api.sync.RedisCommands;\n"
+    _JEDIS = "import redis.clients.jedis.Jedis;\n"
+    _SPRING = "import org.springframework.data.redis.listener.RedisMessageListenerContainer;\n"
+    _SE = "using StackExchange.Redis;\n"
+
+    @staticmethod
+    def _rows(contracts) -> set[tuple[str, str, str, str]]:
+        return {
+            (c.role, c.contract_id, c.meta["kind"], c.meta.get("pattern", "")) for c in contracts
+        }
+
+    # -- Go ---------------------------------------------------------------
+
+    def test_go_pubsub(self, tmp_path: Path) -> None:
+        src = self._GO + (
+            'rdb.Publish(ctx, "orders", payload)\n'
+            'sub := rdb.Subscribe(ctx, "orders", "refunds")\n'
+            'rdb.PSubscribe(ctx, "audit.*")\n'
+        )
+        assert self._rows(_extract(tmp_path, "main.go", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::refunds", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+        }
+
+    def test_go_xadd_reads_the_stream_field(self, tmp_path: Path) -> None:
+        src = self._GO + 'rdb.XAdd(ctx, &redis.XAddArgs{Stream: "orders", Values: m})\n'
+        c = _one(_extract(tmp_path, "pub.go", src), "provider")
+        assert c.contract_id == "topic::orders"
+        assert c.meta == {"topic": "orders", "broker": "redis", "kind": "stream"}
+        assert c.symbol_name == "redis.XAdd('orders')"
+
+    def test_go_xreadgroup_drops_the_ids_beside_the_streams(self, tmp_path: Path) -> None:
+        src = self._GO + (
+            "rdb.XReadGroup(ctx, &redis.XReadGroupArgs{Group: g, Consumer: c,\n"
+            '  Streams: []string{"orders", "refunds", ">", ">"}})\n'
+        )
+        rows = _extract(tmp_path, "w.go", src)
+        assert sorted(c.contract_id for c in rows) == ["topic::orders", "topic::refunds"]
+        assert {c.role for c in rows} == {"consumer"}
+
+    def test_go_constant_folds_into_a_stream_name(self, tmp_path: Path) -> None:
+        src = self._GO + 'const Orders = "orders"\nrdb.XAdd(ctx, &redis.XAddArgs{Stream: Orders})\n'
+        assert _one(_extract(tmp_path, "pub.go", src), "provider").contract_id == "topic::orders"
+
+    def test_go_publish_needs_a_go_redis_import(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "bus.go", 'bus.Publish(ctx, "orders", payload)\n') == []
+
+    def test_go_redis_under_its_former_import_path(self, tmp_path: Path) -> None:
+        src = 'import "github.com/go-redis/redis/v8"\nrdb.Publish(ctx, "orders", p)\n'
+        assert _one(_extract(tmp_path, "pub.go", src), "provider").contract_id == "topic::orders"
+
+    # -- Java -------------------------------------------------------------
+
+    def test_spring_convert_and_send(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.data.redis.core.StringRedisTemplate;\n"
+            'redisTemplate.convertAndSend("orders", payload);\n'
+            'stringRedisTemplate.convertAndSend("refunds", payload);\n'
+        )
+        rows = _extract(tmp_path, "Pub.java", src)
+        assert sorted((c.contract_id, c.meta["broker"]) for c in rows) == [
+            ("topic::orders", "redis"),
+            ("topic::refunds", "redis"),
+        ]
+
+    def test_convert_and_send_on_a_rabbit_template_is_not_redis(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.data.redis.core.RedisTemplate;\n"
+            'rabbitTemplate.convertAndSend("orders", payload);\n'
+        )
+        assert {c.meta["broker"] for c in _extract(tmp_path, "Pub.java", src)} == {"rabbitmq"}
+
+    def test_spring_listener_container_topics(self, tmp_path: Path) -> None:
+        src = self._SPRING + (
+            'container.addMessageListener(a, new ChannelTopic("orders"));\n'
+            'container.addMessageListener(a, new PatternTopic("audit.*"));\n'
+        )
+        assert self._rows(_extract(tmp_path, "Cfg.java", src)) == {
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+        }
+
+    def test_a_channel_topic_with_no_listener_container_is_not_a_consumer(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            "import org.springframework.data.redis.listener.ChannelTopic;\n"
+            'ChannelTopic topic = new ChannelTopic("orders");\n'
+        )
+        assert _extract(tmp_path, "Pub.java", src) == []
+
+    def test_lettuce_publish_and_subscribe(self, tmp_path: Path) -> None:
+        src = self._LETTUCE + (
+            'commands.publish("orders", msg);\npubsub.sync().subscribe("orders", "refunds");\n'
+        )
+        assert self._rows(_extract(tmp_path, "L.java", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::refunds", "channel", ""),
+        }
+
+    def test_jedis_subscribe_skips_the_listener(self, tmp_path: Path) -> None:
+        src = self._JEDIS + (
+            'jedis.subscribe(listener, "orders", "refunds");\n'
+            'jedis.psubscribe(listener, "audit.*");\n'
+            'jedis.publish("orders", msg);\n'
+        )
+        assert self._rows(_extract(tmp_path, "J.java", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::refunds", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+        }
+
+    def test_java_streams(self, tmp_path: Path) -> None:
+        src = self._LETTUCE + (
+            'commands.xadd("orders", body);\n'
+            'commands.xreadgroup(Consumer.from("g", "c"), StreamOffset.lastConsumed("refunds"));\n'
+        )
+        assert self._rows(_extract(tmp_path, "S.java", src)) == {
+            ("provider", "topic::orders", "stream", ""),
+            ("consumer", "topic::refunds", "stream", ""),
+        }
+
+    def test_jedis_xreadgroup_reads_the_stream_of_its_entry(self, tmp_path: Path) -> None:
+        src = self._JEDIS + (
+            'jedis.xreadGroup("g", "c", p, Map.entry("orders", StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY));\n'
+            'Map.entry("not-a-stream", "x");\n'
+        )
+        assert [c.contract_id for c in _extract(tmp_path, "J.java", src)] == ["topic::orders"]
+
+    def test_spring_ops_for_stream(self, tmp_path: Path) -> None:
+        src = "import org.springframework.data.redis.core.StringRedisTemplate;\n" + (
+            'redisTemplate.opsForStream().add("orders", body);\n'
+            "redisTemplate.opsForStream().add(record);\n"
+        )
+        rows = _extract(tmp_path, "S.java", src)
+        assert self._rows(rows) == {("provider", "topic::orders", "stream", "")}
+
+    def test_java_calls_need_a_redis_client_import(self, tmp_path: Path) -> None:
+        src = 'bus.publish("orders", msg);\nbus.subscribe("orders");\nbus.xadd("orders", b);\n'
+        assert _extract(tmp_path, "Bus.java", src) == []
+
+    # -- .NET -------------------------------------------------------------
+
+    def test_stackexchange_pubsub(self, tmp_path: Path) -> None:
+        src = self._SE + (
+            "await sub.PublishAsync(\n"
+            '  new RedisChannel("orders", RedisChannel.PatternMode.Literal), msg);\n'
+            'sub.Publish(RedisChannel.Literal("refunds"), msg);\n'
+            'await sub.SubscribeAsync(RedisChannel.Pattern("audit.*"), h);\n'
+            'sub.Subscribe("plain", h);\n'
+        )
+        assert self._rows(_extract(tmp_path, "Svc.cs", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("provider", "topic::refunds", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+            ("consumer", "topic::plain", "channel", ""),
+        }
+
+    def test_stackexchange_streams(self, tmp_path: Path) -> None:
+        src = self._SE + (
+            'await db.StreamAddAsync("orders", "k", "v");\n'
+            'await db.StreamReadGroupAsync("refunds", "g", "c", ">");\n'
+            'db.StreamRead(new[] { new StreamPosition("audit", "0") });\n'
+        )
+        assert self._rows(_extract(tmp_path, "Svc.cs", src)) == {
+            ("provider", "topic::orders", "stream", ""),
+            ("consumer", "topic::refunds", "stream", ""),
+            ("consumer", "topic::audit", "stream", ""),
+        }
+
+    def test_a_dotnet_observable_is_not_a_channel(self, tmp_path: Path) -> None:
+        src = self._SE + "events.Subscribe(e => log(e));\n"
+        assert _extract(tmp_path, "Svc.cs", src) == []
+
+    def test_dotnet_calls_need_stackexchange_redis(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "Svc.cs", 'bus.Publish("orders", m);\n') == []
+
+    # -- JS and Python streams -------------------------------------------
+
+    def test_xadd_in_js_and_python(self, tmp_path: Path) -> None:
+        js = _extract(
+            tmp_path, "p.ts", "import Redis from 'ioredis';\nr.xadd('orders', '*', 'k', 'v');\n"
+        )
+        py = _extract(tmp_path, "p.py", "import redis\nr.xadd('refunds', {'k': 'v'})\n")
+        assert {(c.role, c.contract_id, c.meta["kind"]) for c in js + py} == {
+            ("provider", "topic::orders", "stream"),
+            ("provider", "topic::refunds", "stream"),
+        }
+
+    def test_node_redis_xreadgroup_reads_the_key(self, tmp_path: Path) -> None:
+        src = "import { createClient } from 'redis';\nawait c.xReadGroup(g, n, { key: 'orders', id: '>' });\n"
+        c = _one(_extract(tmp_path, "w.ts", src), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::orders", "stream")
+
+    # -- ends meeting -----------------------------------------------------
+
+    def test_a_go_stream_producer_links_a_java_reader(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching import match_contracts
+
+        go = _extract(
+            tmp_path / "go-svc",
+            "pub.go",
+            self._GO + 'rdb.XAdd(ctx, &redis.XAddArgs{Stream: "orders", Values: m})\n',
+            alias="go-svc",
+        )
+        java = _extract(
+            tmp_path / "java-worker",
+            "W.java",
+            self._LETTUCE + 'commands.xreadgroup(c, StreamOffset.lastConsumed("orders"));\n',
+            alias="java-worker",
+        )
+        links = match_contracts([*go, *java])
+        assert [(lk.provider_repo, lk.consumer_repo, lk.contract_id) for lk in links] == [
+            ("go-svc", "java-worker", "topic::orders")
+        ]
+
+    def test_a_dotnet_publisher_links_a_go_subscriber(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching import match_contracts
+
+        cs = _extract(
+            tmp_path / "cs",
+            "Pub.cs",
+            self._SE + 'await sub.PublishAsync(RedisChannel.Literal("orders"), msg);\n',
+            alias="cs-svc",
+        )
+        go = _extract(
+            tmp_path / "go",
+            "sub.go",
+            self._GO + 'rdb.Subscribe(ctx, "orders")\n',
+            alias="go-svc",
+        )
+        links = match_contracts([*cs, *go])
+        assert [(lk.provider_repo, lk.consumer_repo) for lk in links] == [("cs-svc", "go-svc")]
+
+    def test_bullmq_keeps_its_own_kind(self, tmp_path: Path) -> None:
+        src = "import { Queue } from 'bullmq';\nconst q = new Queue('orders');\nawait q.add('job', {});\n"
+        assert {c.meta["broker"] for c in _extract(tmp_path, "q.ts", src)} <= {"bullmq"}
+
+
 class TestNestMicroservices:
     _IMPORT = "import { EventPattern, MessagePattern, ClientProxy } from '@nestjs/microservices';\n"
 
