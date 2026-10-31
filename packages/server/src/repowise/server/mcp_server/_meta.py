@@ -605,6 +605,21 @@ def freshness_from_repo(
     return out
 
 
+def _borrowed_hit(
+    local_path: str | None, indexed_full: str, head: str, targets: list[str] | None
+) -> str | None:
+    """``"file"`` when a served file differs between the two commits, ``"repo"``
+    for a repo-level response or an unknown diff, else ``None``."""
+    if head == indexed_full:
+        return None
+    changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
+    if changed is None or (changed and targets is None):
+        return "repo"
+    if changed and targets and targets_hit_by_changes(targets, changed):
+        return "file"
+    return None
+
+
 def _borrowed_freshness(
     caller: Any, indexed_full: str | None, targets: list[str] | None, local_path: str | None
 ) -> dict[str, Any]:
@@ -621,15 +636,10 @@ def _borrowed_freshness(
     dirty = uncommitted_targets(str(caller.caller), targets)
     if dirty:
         out["working_tree_dirty"] = len(dirty)
-    hit: str | None = None  # "file" when a served file differs, "repo" otherwise
+    hit = None
     if head and indexed_full:
         out["index_behind"] = head != indexed_full
-        if head != indexed_full:
-            changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
-            if changed is None or (changed and targets is None):
-                hit = "repo"
-            elif changed and targets and targets_hit_by_changes(targets, changed):
-                hit = "file"
+        hit = _borrowed_hit(local_path, indexed_full, head, targets)
     if hit or dirty:
         out["stale_warning"] = _checkout.checkout_fact(
             caller, indexed_full, head, served_file=bool(dirty) or hit == "file"
