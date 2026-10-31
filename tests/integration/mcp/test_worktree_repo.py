@@ -196,7 +196,7 @@ def test_dirty_worktree_refuses_uncommitted_review(layout) -> None:
     finally:
         util.write_text(original, encoding="utf-8")
         _meta._dirty_paths_cache.clear()
-    assert "Uncommitted work" in risk["error"] and "revspec" in risk["remedy"]
+    assert "working tree" in risk["error"] and "revspec" in risk["remedy"]
     assert _same(risk["_meta"]["served_checkout"], repo)
     assert "pkg/util.py" not in ctx["_meta"]["stale_warning"]
     assert "differs in" in ctx["_meta"]["stale_warning"]
@@ -226,3 +226,31 @@ def test_worktree_with_its_own_index_is_served_from_it(layout) -> None:
     assert _same(from_own["_meta"]["served_checkout"], own)
     assert "stale_warning" not in from_own["_meta"]
     assert "pkg/extra.py" in json.dumps(from_own)
+
+
+def test_per_checkout_revspecs_are_refused_not_misread(layout) -> None:
+    repo, wt = layout["repo"], layout["wt"]
+    wt_head = _git(wt, "rev-parse", "HEAD")
+    reflog, ranged = asyncio.run(
+        _call(
+            repo,
+            [
+                ("get_change_risk", {"revspec": "HEAD@{1}", "repo": str(wt)}),
+                ("get_change_risk", {"revspec": "main..HEAD", "repo": str(wt)}),
+            ],
+            workspace=False,
+        )
+    )
+    assert "reflog" in reflog["error"]
+    assert ranged["ref"].endswith(wt_head), ranged.get("ref")
+
+
+def test_scoped_token_reaches_a_worktree_path_of_its_repo(layout, monkeypatch) -> None:
+    from repowise.server.mcp_server import _http_auth, _state
+
+    monkeypatch.setattr(_state, "_registry", None)
+    monkeypatch.setattr(_state, "_repo_path", str(layout["repo"]))
+    monkeypatch.setattr(_state, "_served_repo_id", "rid")
+    assert _http_auth._call_targets({"repo": str(layout["wt"])}) == [("rid", "repo")]
+    other = str(layout["other"])
+    assert _http_auth._call_targets({"repo": other}) == [(other,)]

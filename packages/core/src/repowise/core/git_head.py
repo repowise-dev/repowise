@@ -137,11 +137,11 @@ class Checkout:
 def find_checkout(path: str | Path) -> Checkout | None:
     """The git checkout that holds *path*, or ``None``.
 
-    Walks up to the nearest ``.git``. A ``.git`` file counts only when the
-    git directory it names points back at it (the ``gitdir`` file git keeps
-    for each linked worktree), so a hand-written pointer cannot claim a
-    repository's history. Submodules have no such file and do not resolve. Paths come back resolved, so case and separators
-    compare equal under :func:`os.path.normcase`.
+    Walks up to the nearest ``.git``. A linked worktree counts only when its
+    repository registered it (see :func:`_registered_worktree`), so a
+    hand-written pointer cannot claim a repository's history. Submodules are
+    not registered worktrees and do not resolve. Paths come back resolved,
+    so case and separators compare equal under :func:`os.path.normcase`.
     """
     try:
         start = Path(path).resolve()
@@ -153,14 +153,30 @@ def find_checkout(path: str | Path) -> Checkout | None:
         git_dir = resolve_git_dir(candidate)
         if git_dir is None or not git_dir.is_dir():
             return None
-        if (candidate / ".git").is_file() and not _points_back(git_dir, candidate):
-            return None
         common = _common_dir(git_dir)
+        linked = (candidate / ".git").is_file() or common != git_dir
+        if linked and not _registered_worktree(git_dir, common, candidate):
+            return None
         try:
             return Checkout(candidate, common.resolve())
         except OSError:
             return None
     return None
+
+
+def _registered_worktree(git_dir: Path, common: Path, root: Path) -> bool:
+    """Whether *root* is a worktree its repository registered.
+
+    Git keeps each linked worktree's state in ``<common>/worktrees/<name>``,
+    whose ``gitdir`` file names the worktree's ``.git``. Both halves are
+    checked, so neither a pointer file nor a copied git dir can claim a
+    repository by itself.
+    """
+    try:
+        registered = same_path(git_dir.parent, common / "worktrees")
+    except (OSError, ValueError):
+        return False
+    return registered and _points_back(git_dir, root)
 
 
 def _points_back(git_dir: Path, root: Path) -> bool:

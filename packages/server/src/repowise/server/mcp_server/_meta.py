@@ -621,18 +621,18 @@ def _borrowed_freshness(
     dirty = uncommitted_targets(str(caller.caller), targets)
     if dirty:
         out["working_tree_dirty"] = len(dirty)
-    hit = False
+    hit: str | None = None  # "file" when a served file differs, "repo" otherwise
     if head and indexed_full:
         out["index_behind"] = head != indexed_full
         if head != indexed_full:
             changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
             if changed is None or (changed and targets is None):
-                hit = True
-            elif changed and targets:
-                hit = targets_hit_by_changes(targets, changed)
+                hit = "repo"
+            elif changed and targets and targets_hit_by_changes(targets, changed):
+                hit = "file"
     if hit or dirty:
         out["stale_warning"] = _checkout.checkout_fact(
-            caller, indexed_full, head, served_file=bool(targets)
+            caller, indexed_full, head, served_file=bool(dirty) or hit == "file"
         )
     return out
 

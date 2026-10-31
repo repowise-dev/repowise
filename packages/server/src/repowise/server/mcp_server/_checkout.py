@@ -10,6 +10,8 @@ caller's HEAD.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 from collections import OrderedDict
 from contextvars import ContextVar
@@ -91,12 +93,35 @@ async def own_index_context(alias: str, root: Path) -> Any:
         registry = RepoRegistry(root, config, embedder_factory=_query_embedder)
         _own[key] = registry
         while len(_own) > _OWN_MAX:
-            await _own.popitem(last=False)[1].close()
+            _retire(_own.popitem(last=False)[1])
     _own.move_to_end(key)
     return await registry.get(alias)
 
 
+# A call may still hold an evicted context, so it closes after a grace period.
+# Ceiling: a call running longer than this loses its engine; a lease count
+# would remove the bound.
+_RETIRE_AFTER_S = 600.0
+_retiring: set[asyncio.Task[None]] = set()
+
+
+def _retire(registry: Any) -> None:
+    async def _close_later() -> None:
+        try:
+            await asyncio.sleep(_RETIRE_AFTER_S)
+        finally:
+            await registry.close()
+
+    task = asyncio.create_task(_close_later())
+    _retiring.add(task)
+    task.add_done_callback(_retiring.discard)
+
+
 async def close_own_index_contexts() -> None:
+    for task in list(_retiring):
+        task.cancel()  # its finally closes the registry now
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     while _own:
         await _own.popitem()[1].close()
 
@@ -129,39 +154,41 @@ def checkout_fact(
     return f"Facts below describe {caller.served}{at}; {caller.caller} is{head}."
 
 
-# ``HEAD`` alone or with a suffix (``HEAD~2``, ``HEAD^``), not ``ORIG_HEAD``
-# or ``origin/HEAD``.
-_HEAD = re.compile(r"(?<![\w/.-])HEAD(?![\w/-])")
+# ``HEAD`` or ``@`` alone, with a suffix (``HEAD~2``) or in a range
+# (``main..HEAD``); not ``ORIG_HEAD``, ``origin/HEAD`` or ``HEAD@{1}``.
+_HEAD = re.compile(r"(?<![\w/@-])(?:HEAD|@)(?![\w/@{-])")
 
 
 def caller_revspec(revspec: str | None) -> tuple[str | None, dict[str, Any] | None]:
     """*revspec* as the caller's checkout means it, or a refusal.
 
-    Commits are shared between worktrees, ``HEAD`` and the working tree are
-    not. ``HEAD`` becomes the caller's commit; omitted, it is the caller's
-    HEAD when its tree is clean. Uncommitted work in another checkout is out
-    of reach, so that call is refused rather than answered for this one.
+    Commits are shared between worktrees; ``HEAD``, the reflog and the
+    working tree are not. ``HEAD`` becomes the caller's commit; omitted, the
+    revspec is the caller's HEAD when its tree is clean. Anything that needs
+    the caller's own state and cannot get it is refused, never answered for
+    the served checkout.
     """
     caller = current()
     if caller is None or caller.own_index:
         return revspec, None
     head = read_head_commit(caller.caller)
-    if head is None:
-        return revspec, None
-    if revspec is not None:
-        return _HEAD.sub(head, revspec), None
-    from repowise.server.mcp_server._meta import _working_tree_dirty_paths
+    if revspec is not None and "@{" not in revspec:
+        if head is not None:
+            return _HEAD.sub(head, revspec), None
+        if not _HEAD.search(revspec):
+            return revspec, None
+    elif revspec is None and head is not None:
+        from repowise.server.mcp_server._meta import _working_tree_dirty_paths
 
-    if _working_tree_dirty_paths(str(caller.caller)) == frozenset():
-        return head, None
+        if _working_tree_dirty_paths(str(caller.caller)) == frozenset():
+            return head, None
     from repowise.server.mcp_server._savings.interaction import note_error_reason
 
-    # Dirty, or git could not say: either way that work is not readable here.
     note_error_reason("invalid_args")
     return None, {
         "error": (
-            f"Uncommitted work in {caller.caller} is not readable here: this "
-            f"server reads the working tree of {caller.served}."
+            f"The working tree, HEAD and reflog of {caller.caller} are not "
+            f"readable here: this server reads {caller.served}."
         ),
-        "remedy": "Pass revspec as a commit or range; commits are shared between worktrees.",
+        "remedy": "Pass revspec as commits or a range of them; commits are shared between worktrees.",
     }
