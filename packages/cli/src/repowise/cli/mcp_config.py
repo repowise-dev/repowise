@@ -107,6 +107,23 @@ def hook_direct_command(script: str, args: str) -> str:
     return f"{script if ' ' in pinned else pinned} {args}"
 
 
+def refreshed_direct_command(command: str, script: str, args: str, *, repin: bool) -> str | None:
+    """The command to write in place of a :func:`hook_direct_command` one, or None.
+
+    Only a command that is exactly ``<script or a path to it> <args>`` is
+    touched. ``repin`` (install) points it at the running install; without it
+    (the self-heal) only a bare name or a pinned path that is gone moves.
+    """
+    exe, _, rest = command.strip().partition(" ")
+    name = exe.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    want = hook_direct_command(script, args)
+    if name != script or rest != args or command == want:
+        return None
+    if repin or exe == script:
+        return want
+    return None if Path(exe).is_file() else want
+
+
 def hook_script_resolves(command: str, script: str) -> bool:
     """Whether a hook *command* written for *script* would find it to run.
 

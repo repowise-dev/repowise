@@ -165,6 +165,23 @@ def _write(path: Path, doc: dict) -> None:
     write_json_config(path, doc)
 
 
+def _refresh_rewrite_command(entries: list) -> bool:
+    """Point our entry at the running install's script. True when it moved."""
+    from repowise.cli.mcp_config import refreshed_direct_command
+
+    changed = False
+    for entry in entries:
+        command = entry.get("command") if isinstance(entry, dict) else None
+        if isinstance(command, str):
+            want = refreshed_direct_command(
+                command, _REWRITE_HOOK_COMMAND, "--agent cursor", repin=True
+            )
+            if want is not None:
+                entry["command"] = want
+                changed = True
+    return changed
+
+
 def install_cursor_rewrite_hook() -> Path | None:
     """Register the rewrite entry under ``preToolUse``; the path, or None on failure."""
     path = user_hooks_path()
@@ -179,6 +196,8 @@ def install_cursor_rewrite_hook() -> Path | None:
         if not any(_is_rewrite_hook(entry) for entry in entries):
             doc.setdefault("version", 1)
             entries.append(_rewrite_hook_entry())
+            _write(path, doc)
+        elif _refresh_rewrite_command(entries):
             _write(path, doc)
         return path
     except Exception:

@@ -85,6 +85,26 @@ def _migrate_rewrite_matcher(hook_list: list) -> bool:
     return changed
 
 
+def _refresh_rewrite_command(hook_list: list, *, repin: bool) -> bool:
+    """Repoint our entry's command at a script that exists. True when it moved."""
+    from repowise.cli.mcp_config import refreshed_direct_command
+
+    changed = False
+    for entry in hook_list:
+        hooks = entry.get("hooks") if isinstance(entry, dict) else None
+        for hook in hooks if isinstance(hooks, list) else []:
+            command = hook.get("command") if isinstance(hook, dict) else None
+            if not isinstance(command, str):
+                continue
+            want = refreshed_direct_command(
+                command, _REWRITE_HOOK_COMMAND, "--agent codex", repin=repin
+            )
+            if want is not None:
+                hook["command"] = want
+                changed = True
+    return changed
+
+
 def migrate_codex_rewrite_hook() -> bool:
     """Repoint an already-installed rewrite hook at the current matcher.
 
@@ -108,7 +128,8 @@ def migrate_codex_rewrite_hook() -> bool:
         pre_hooks = hooks.get("PreToolUse")
         if not isinstance(pre_hooks, list):
             return False
-        if not _migrate_rewrite_matcher(pre_hooks):
+        moved = _migrate_rewrite_matcher(pre_hooks)
+        if not (_refresh_rewrite_command(pre_hooks, repin=False) or moved):
             return False
         hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return True
@@ -183,9 +204,10 @@ def install_codex_rewrite_hook() -> Path | None:
         if not _has_rewrite_hook(pre_hooks):
             pre_hooks.append(_rewrite_hook_entry())
             hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-        elif _migrate_rewrite_matcher(pre_hooks):
-            # Present but pointed at a name Codex no longer uses. Reinstalling
-            # is the only repair path a user has, so it has to be one.
+        elif _migrate_rewrite_matcher(pre_hooks) | _refresh_rewrite_command(pre_hooks, repin=True):
+            # Present but pointed at a name Codex no longer uses, or at another
+            # install's script. Reinstalling is the only repair path a user
+            # has, so it has to be one.
             hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return hooks_path
     except Exception:

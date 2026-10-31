@@ -272,7 +272,7 @@ def _current_command(cmd: str) -> str | None:
     and health-gate commands carry a flag and are written elsewhere.
     """
     if cmd in ("repowise augment", _AUGMENT) or cmd.endswith(f"exec {_AUGMENT}; fi"):
-        return None if "--" in cmd else _augment_hook_command()
+        return None if " --" in cmd else _augment_hook_command()
     if cmd == _REWRITE or cmd.endswith(f"exec {_REWRITE}; fi"):
         return _rewrite_hook_command()
     if cmd.endswith(f"| {_AUGMENT}; fi;; esac"):

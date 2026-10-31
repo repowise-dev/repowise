@@ -173,3 +173,56 @@ def test_the_pinned_command_runs_the_script_in_a_shell(tmp_path, monkeypatch) ->
         capture_output=True, text=True, env=env, check=True,
     )
     assert out.stdout.strip() == "ran"
+
+
+@pytest.mark.parametrize(
+    ("command", "repin", "moves"),
+    [
+        ("repowise-rewrite --agent codex", False, True),  # bare: pin it
+        ("/gone/bin/repowise-rewrite --agent codex", False, True),  # dead pin
+        ("repowise-rewrite --agent codex --verbose", True, False),  # user's args
+        ("my-wrapper repowise-rewrite --agent codex", True, False),  # not ours
+    ],
+)
+def test_a_direct_command_moves_only_when_it_is_ours_and_stale(
+    install, command, repin, moves
+) -> None:
+    want = mcp_config.refreshed_direct_command(
+        command, "repowise-rewrite", "--agent codex", repin=repin
+    )
+    assert (want is not None) is moves
+    if moves:
+        assert want == f"{_script(install, 'repowise-rewrite')} --agent codex"
+
+
+def test_the_codex_self_heal_repoints_a_dead_pin(install, tmp_path, monkeypatch) -> None:
+    from repowise.cli.editor_integrations import codex_config
+
+    hooks_path = tmp_path / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir()
+    monkeypatch.setattr(codex_config, "_codex_hooks_path", lambda: hooks_path)
+    entry = codex_config._rewrite_hook_entry()
+    entry["hooks"][0]["command"] = "/gone/bin/repowise-rewrite --agent codex"
+    hooks_path.write_text(json.dumps({"hooks": {"PreToolUse": [entry]}}), encoding="utf-8")
+
+    assert codex_config.migrate_codex_rewrite_hook()
+    written = json.loads(hooks_path.read_text(encoding="utf-8"))
+    command = written["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert command == f"{_script(install, 'repowise-rewrite')} --agent codex"
+    assert not codex_config.migrate_codex_rewrite_hook()  # settled
+
+
+def test_a_cursor_reinstall_repoints_the_hook(install, tmp_path, monkeypatch) -> None:
+    from repowise.cli.agent_adapters import cursor
+
+    path = tmp_path / ".cursor" / "hooks.json"
+    path.parent.mkdir()
+    monkeypatch.setattr(cursor, "user_hooks_path", lambda: path)
+    old = {"command": "repowise-rewrite --agent cursor", "matcher": "Shell", "timeout": 5}
+    path.write_text(json.dumps({"version": 1, "hooks": {"preToolUse": [old]}}), encoding="utf-8")
+
+    assert cursor.install_cursor_rewrite_hook() == path
+    entries = json.loads(path.read_text(encoding="utf-8"))["hooks"]["preToolUse"]
+    assert [e["command"] for e in entries] == [
+        f"{_script(install, 'repowise-rewrite')} --agent cursor"
+    ]
