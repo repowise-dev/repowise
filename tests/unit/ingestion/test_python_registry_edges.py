@@ -16,16 +16,16 @@ from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
 
 
-def _parsed_files(root: Path) -> dict[str, ParsedFile]:
+def _parsed_files(tmp_path: Path, sources: dict[str, str]) -> dict[str, ParsedFile]:
+    """Parse *sources* in memory; *tmp_path* only supplies the absolute paths."""
     parser = ASTParser()
     parsed: dict[str, ParsedFile] = {}
-    for path in root.rglob("*.py"):
-        relative = path.resolve().relative_to(root.resolve()).as_posix()
+    for relative, source in sources.items():
         info = FileInfo(
             path=relative,
-            abs_path=str(path.resolve()),
+            abs_path=str(tmp_path / relative),
             language="python",
-            size_bytes=path.stat().st_size,
+            size_bytes=len(source.encode()),
             git_hash="",
             last_modified=datetime.now(),
             is_test=False,
@@ -33,47 +33,56 @@ def _parsed_files(root: Path) -> dict[str, ParsedFile]:
             is_api_contract=False,
             is_entry_point=False,
         )
-        parsed[relative] = parser.parse_file(info, path.read_bytes())
+        parsed[relative] = parser.parse_file(info, source.encode())
     return parsed
 
 
+def _context(
+    tmp_path: Path,
+    parsed: dict[str, ParsedFile],
+    sources: dict[str, str],
+    graph: nx.DiGraph,
+) -> ResolverContext:
+    return ResolverContext(
+        path_set=set(parsed),
+        stem_map={},
+        graph=graph,
+        repo_path=tmp_path,
+        source_map={path: source.encode() for path, source in sources.items()},
+    )
+
+
 def test_registry_tables_and_consumers_are_marked_as_module_registrations(tmp_path: Path):
-    (tmp_path / "dialects").mkdir()
-    (tmp_path / "dialects" / "python.py").write_text("DIALECT = object()\n")
-    (tmp_path / "dialects" / "__init__.py").write_text(
-        'from .python import DIALECT as PYTHON\n_REGISTER = (("python", PYTHON),)\n'
-    )
-    (tmp_path / "health.py").write_text(
-        "from .dialects import PERF_DIALECTS\n"
-        "def inspect():\n"
-        '    return PERF_DIALECTS.get("python")\n'
-    )
-    (tmp_path / "registry.py").write_text("def register_lazy(name, target):\n    pass\n")
-    (tmp_path / "tools").mkdir()
-    (tmp_path / "tools" / "__init__.py").write_text("")
-    (tmp_path / "tools" / "reader.py").write_text(
-        "from ..registry import cli_registry as registry\n"
-        "@registry.register()\n"
-        "def read():\n"
-        "    pass\n"
-    )
-    (tmp_path / "cli.py").write_text(
-        "from .registry import cli_registry\n"
-        'cli_registry.register_lazy("python", "dialects.python:DIALECT")\n'
-    )
-    parsed = _parsed_files(tmp_path)
+    sources = {
+        "dialects/python.py": "DIALECT = object()\n",
+        "dialects/__init__.py": (
+            'from .python import DIALECT as PYTHON\n_REGISTER = (("python", PYTHON),)\n'
+        ),
+        "health.py": (
+            "from .dialects import PERF_DIALECTS\n"
+            "def inspect():\n"
+            '    return PERF_DIALECTS.get("python")\n'
+        ),
+        "registry.py": "def register_lazy(name, target):\n    pass\n",
+        "tools/__init__.py": "",
+        "tools/reader.py": (
+            "from ..registry import cli_registry as registry\n"
+            "@registry.register()\n"
+            "def read():\n"
+            "    pass\n"
+        ),
+        "cli.py": (
+            "from .registry import cli_registry\n"
+            'cli_registry.register_lazy("python", "dialects.python:DIALECT")\n'
+        ),
+    }
+    parsed = _parsed_files(tmp_path, sources)
     graph = nx.DiGraph()
     for path in parsed:
         graph.add_node(path, node_type="file")
     graph.add_edge("dialects/__init__.py", "dialects/python.py", edge_type="imports")
     graph.add_edge("health.py", "dialects/__init__.py", edge_type="imports")
-    paths = set(parsed)
-    context = ResolverContext(
-        path_set=paths,
-        stem_map={},
-        graph=graph,
-        repo_path=tmp_path,
-    )
+    context = _context(tmp_path, parsed, sources, graph)
 
     add_framework_edges(graph, parsed, context, tech_stack=[])
 
@@ -99,27 +108,21 @@ def test_registry_tables_and_consumers_are_marked_as_module_registrations(tmp_pa
 def test_unrelated_register_calls_and_function_imports_stay_at_import_tier(
     tmp_path: Path,
 ):
-    (tmp_path / "registry.py").write_text("")
-    (tmp_path / "hooks.py").write_text(
-        "def shutdown():\n    pass\ndef get_tools():\n    pass\nevent_handlers = []\n"
-    )
-    (tmp_path / "caller.py").write_text(
-        "import atexit\n"
-        "from .hooks import shutdown, get_tools, event_handlers\n"
-        "atexit.register(shutdown)\n"
-    )
-    parsed = _parsed_files(tmp_path)
+    sources = {
+        "registry.py": "",
+        "hooks.py": "def shutdown():\n    pass\ndef get_tools():\n    pass\nevent_handlers = []\n",
+        "caller.py": (
+            "import atexit\n"
+            "from .hooks import shutdown, get_tools, event_handlers\n"
+            "atexit.register(shutdown)\n"
+        ),
+    }
+    parsed = _parsed_files(tmp_path, sources)
     graph = nx.DiGraph()
     for path in parsed:
         graph.add_node(path, node_type="file")
     graph.add_edge("caller.py", "hooks.py", edge_type="imports")
-    paths = set(parsed)
-    context = ResolverContext(
-        path_set=paths,
-        stem_map={},
-        graph=graph,
-        repo_path=tmp_path,
-    )
+    context = _context(tmp_path, parsed, sources, graph)
 
     add_framework_edges(graph, parsed, context, tech_stack=[])
 
@@ -128,27 +131,23 @@ def test_unrelated_register_calls_and_function_imports_stay_at_import_tier(
 
 
 def test_attribute_registry_receivers_create_registration_edges(tmp_path: Path):
-    (tmp_path / "handlers.py").write_text("def handler():\n    pass\n")
-    (tmp_path / "caller.py").write_text(
-        "from .handlers import handler\n"
-        "class App:\n"
-        "    def register_local(self):\n"
-        "        self._registry.register(handler)\n"
-        "    def register_plugin(self):\n"
-        "        app.state.plugins.register(handler)\n"
-    )
-    parsed = _parsed_files(tmp_path)
+    sources = {
+        "handlers.py": "def handler():\n    pass\n",
+        "caller.py": (
+            "from .handlers import handler\n"
+            "class App:\n"
+            "    def register_local(self):\n"
+            "        self._registry.register(handler)\n"
+            "    def register_plugin(self):\n"
+            "        app.state.plugins.register(handler)\n"
+        ),
+    }
+    parsed = _parsed_files(tmp_path, sources)
     graph = nx.DiGraph()
     for path in parsed:
         graph.add_node(path, node_type="file")
     graph.add_edge("caller.py", "handlers.py", edge_type="imports")
-    paths = set(parsed)
-    context = ResolverContext(
-        path_set=paths,
-        stem_map={},
-        graph=graph,
-        repo_path=tmp_path,
-    )
+    context = _context(tmp_path, parsed, sources, graph)
 
     add_framework_edges(graph, parsed, context, tech_stack=[])
 

@@ -95,6 +95,25 @@ def _append_unique(
         adjacency.setdefault(source, []).append(target)
 
 
+def _is_file_registration(
+    graph: Any, source: str, target: str, attrs: Mapping[str, Any]
+) -> bool:
+    """A framework or registry edge that joins two file nodes."""
+    registered = (
+        attrs.get("edge_type") == "framework"
+        or attrs.get("hint_source") == MODULE_REGISTRATION_HINT
+    )
+    return (
+        registered
+        and _node_type(graph, source) == "file"
+        and _node_type(graph, target) == "file"
+    )
+
+
+def _node_type(graph: Any, node_id: str) -> str | None:
+    return graph.nodes.get(node_id, {}).get("node_type")
+
+
 def call_line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
     raw = attrs.get("call_lines")
     if raw is None:
@@ -212,11 +231,7 @@ class ExecutionGraphIndex:
             for source, target, data in graph_edges:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
-                if (
-                    (edge_type == "framework" or attrs.get("hint_source") == MODULE_REGISTRATION_HINT)
-                    and graph.nodes.get(source, {}).get("node_type") == "file"
-                    and graph.nodes.get(target, {}).get("node_type") == "file"
-                ):
+                if _is_file_registration(graph, source, target, attrs):
                     _append_unique(registration_map, source, target)
                 lines = call_line_values(attrs) if edge_type == "calls" else ()
                 if lines:

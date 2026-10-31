@@ -1,4 +1,4 @@
-"""The reach walks over the stored graph: one query per level, the same walks as in memory.
+"""The reach walks over the stored graph: one query per need (in bounded batches).
 
 Each reader here answers the :class:`~.maps.Need` a walk yields with SQL over
 ``graph_edges`` / ``graph_nodes`` and drives the generators of :mod:`.walk`, so
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
@@ -105,8 +105,22 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     column, under 2 s without it).
     """
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES), "framework"]
+    edge_rows = await _call_edge_rows(session, repo_id, wanted)
+    registrations = _framework_registrations(edge_rows)
+    for src, dst in await _registration_rows(session, repo_id):
+        registrations.setdefault(src, set()).add(dst)
+    return ExecutionGraphIndex(
+        edge_rows=_execution_edge_rows(edge_rows),
+        registrations=registrations,
+    )
+
+
+async def _call_edge_rows(
+    session: AsyncSession, repo_id: str, edge_types: list[str]
+) -> list[Any]:
+    """The declaration, call and framework edges in one read."""
     params: dict[str, Any] = {"repo_id": repo_id}
-    ets = _in_clause("e", wanted, params)
+    ets = _in_clause("e", edge_types, params)
     rows = await session.execute(
         text(
             "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
@@ -116,30 +130,41 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
         ),
         params,
     )
-    # No call or spawn lines here: test reachability reads only forward/reverse,
-    # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
-    # still reached.
-    edge_rows = list(rows)
+    return list(rows)
+
+
+def _framework_registrations(edge_rows: list[Any]) -> dict[str, set[str]]:
     registrations: dict[str, set[str]] = {}
     for src, dst, edge_type, _origin in edge_rows:
-        if edge_type == "framework" and not src.startswith("framework:"):
+        if _is_framework_registration(src, edge_type):
             registrations.setdefault(src, set()).add(dst)
-    registration_rows = await session.execute(
+    return registrations
+
+
+def _is_framework_registration(src: str, edge_type: str | None) -> bool:
+    return edge_type == "framework" and not src.startswith("framework:")
+
+
+async def _registration_rows(session: AsyncSession, repo_id: str) -> Any:
+    return await session.execute(
         text(
             "SELECT source_node_id, target_node_id FROM graph_edges "
             "WHERE repository_id = :repo_id AND hint_source = :hint_source"
         ),
         {"repo_id": repo_id, "hint_source": MODULE_REGISTRATION_HINT},
     )
-    for src, dst in registration_rows:
-        registrations.setdefault(src, set()).add(dst)
-    return ExecutionGraphIndex(
-        edge_rows=(
-            (src, dst, edge_type, origin, None)
-            for src, dst, edge_type, origin in edge_rows
-            if edge_type != "framework"
-        ),
-        registrations=registrations,
+
+
+def _execution_edge_rows(
+    edge_rows: list[Any],
+) -> Iterator[tuple[str, str, str, str | None, None]]:
+    # No call or spawn lines here: test reachability reads only forward/reverse,
+    # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
+    # still reached.
+    return (
+        (src, dst, edge_type, origin, None)
+        for src, dst, edge_type, origin in edge_rows
+        if edge_type != "framework"
     )
 
 
@@ -785,16 +810,25 @@ async def _edges_into(
     targets: list[str],
     edge_types: list[str],
     excluded_origins: frozenset[str],
+    *,
+    include_hint_source: str | None = None,
+    legacy_filter: str = _LEGACY_CONFTEST_FILTER,
 ) -> list[tuple[str, str]]:
     """``(source, target)`` pairs arriving at *targets* along *edge_types*.
 
     Raw text SQL with an ``IN`` list, matching ``pr_blast._transitive_affected``:
     the edge table is the one place a per-level parameterised ``IN`` beats
-    loading every row, and the two walks should not disagree about how they read
-    it.
+    loading every row. Large levels are split into bounded batches to stay under
+    database parameter limits. *include_hint_source* widens the edge filter to
+    rows carrying that hint, which is how registry facts ride alongside the
+    framework edges.
     """
     shared: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", edge_types, shared)
+    edge_filter = f"edge_type IN ({ets})"
+    if include_hint_source is not None:
+        shared["hint_source"] = include_hint_source
+        edge_filter = f"(edge_type IN ({ets}) OR hint_source = :hint_source)"
     origin_filter = ""
     if excluded_origins:
         # NULL means the row predates the vocabulary, not "unknown", so it has
@@ -811,8 +845,8 @@ async def _edges_into(
             text(
                 "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
                 "WHERE repository_id = :repo_id "
-                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
-                f"{_LEGACY_CONFTEST_FILTER}"
+                f"AND target_node_id IN ({tgt}) AND {edge_filter}{origin_filter}"
+                f"{legacy_filter}"
             ),
             params,
         )
@@ -824,21 +858,12 @@ async def _registration_edges_into(
     session: AsyncSession, repo_id: str, targets: list[str]
 ) -> list[tuple[str, str]]:
     """Files wired into *targets* by framework edges or explicit registry facts."""
-    out: list[tuple[str, str]] = []
-    targets = list(dict.fromkeys(targets))
-    for start in range(0, len(targets), _IN_BATCH):
-        params: dict[str, Any] = {
-            "repo_id": repo_id,
-            "hint_source": MODULE_REGISTRATION_HINT,
-        }
-        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
-        rows = await session.execute(
-            text(
-                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-                "WHERE repository_id = :repo_id AND target_node_id IN "
-                f"({tgt}) AND (edge_type = 'framework' OR hint_source = :hint_source)"
-            ),
-            params,
-        )
-        out.extend((source, target) for source, target in rows)
-    return out
+    return await _edges_into(
+        session,
+        repo_id,
+        targets,
+        ["framework"],
+        frozenset(),
+        include_hint_source=MODULE_REGISTRATION_HINT,
+        legacy_filter="",
+    )

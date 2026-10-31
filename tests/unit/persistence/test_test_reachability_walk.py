@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import networkx as nx
 
+from repowise.core.analysis.test_reach.db import _registration_edges_into
 from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
@@ -116,6 +117,26 @@ async def test_framework_registered_module_is_reached_in_the_call_tier(async_ses
         "src/app.py",
         "src/router.py",
     }
+
+
+async def test_registration_edges_are_batched_without_dropping_targets(async_session):
+    repo = await insert_repo(async_session)
+    targets = [f"src/target_{index}.py" for index in range(501)]
+    edges = [
+        (f"src/registrar_{index}.py", target, "framework")
+        for index, target in enumerate(targets)
+    ]
+    await _seed(
+        async_session,
+        repo.id,
+        nodes=dict.fromkeys(targets, False),
+        edges=edges,
+    )
+
+    result = await _registration_edges_into(async_session, repo.id, targets)
+
+    assert len(result) == 501
+    assert set(result) == {(source, target) for source, target, _edge_type in edges}
 
 
 async def test_imported_registry_and_its_modules_are_followed_by_the_call_walk(async_session):

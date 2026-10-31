@@ -83,32 +83,70 @@ def call_walk(
     for _ in range(max_depth):
         if not frontier:
             break
-        level, frontier = frontier, []
-        queued: set[str] = set()
-        start = {node: dict(origins[node]) for node in level}
-        start = yield from _registered_symbols(start, avoid)
-        for caller, callee in (yield Need("callers", tuple(start))):
-            carried = start.get(callee)
-            if not carried:
-                continue
-            owner = file_of_symbol(caller)
-            if owner in test_files:
-                _record_test_hit(found, owner, caller, carried)
-                # A test is a leaf. Walking through one would let "test A calls
-                # shared helper B" drag B's unrelated targets in.
-                continue
-            if owner in avoid:
-                # A hub carries on only the seeds it declares itself.
-                carried = _seeds_declared_by(carried, owner)
-            if not _carry_closer(origins, caller, carried):
-                continue
-            if caller not in queued:
-                queued.add(caller)
-                frontier.append(caller)
+        frontier = yield from _call_level(frontier, origins, found, test_files, avoid)
+    return _reach_distances(found)
+
+
+def _call_level(
+    frontier: list[str],
+    origins: dict[str, dict[str, int]],
+    found: dict[str, dict[str, tuple[int, set[str]]]],
+    test_files: Collection[str],
+    avoid: Collection[str],
+) -> Walk[list[str]]:
+    """One call level: the nodes carrying a seed to the next level."""
+    queued: set[str] = set()
+    start = {node: dict(origins[node]) for node in frontier}
+    start = yield from _registered_symbols(start, avoid)
+
+    def advance(caller: str, callee: str) -> bool:
+        carried = start.get(callee)
+        if not carried:
+            return False
+        owner = file_of_symbol(caller)
+        if owner in test_files:
+            _record_test_hit(found, owner, caller, carried)
+            # A test is a leaf. Walking through one would let "test A calls
+            # shared helper B" drag B's unrelated targets in.
+            return False
+        if not _carry_closer(origins, caller, _carried_at_hub(carried, owner, avoid)):
+            return False
+        return _queue_once(caller, queued)
+
+    next_level: list[str] = []
+    for caller, callee in (yield Need("callers", tuple(start))):
+        if advance(caller, callee):
+            next_level.append(caller)
+    return next_level
+
+
+def _reach_distances(
+    found: dict[str, dict[str, tuple[int, set[str]]]],
+) -> dict[str, dict[str, ReachDistance]]:
+    """Each test's fewest hops to a seed, and how many of its symbols called at that depth."""
     return {
-        seed: {test: ReachDistance(depth, len(callers)) for test, (depth, callers) in tests.items()}
+        seed: {
+            test: ReachDistance(depth, len(callers))
+            for test, (depth, callers) in tests.items()
+        }
         for seed, tests in found.items()
     }
+
+
+def _queue_once(caller: str, queued: set[str]) -> bool:
+    if caller in queued:
+        return False
+    queued.add(caller)
+    return True
+
+
+def _carried_at_hub(
+    carried: Mapping[str, int], owner: str, avoid: Collection[str]
+) -> Mapping[str, int]:
+    """A hub carries on only the seeds it declares itself."""
+    if owner not in avoid:
+        return carried
+    return _seeds_declared_by(carried, owner)
 
 
 def _registered_symbols(
@@ -120,12 +158,7 @@ def _registered_symbols(
     closure before reading callers so a registrar's methods can lead back to a
     test in the same execution tier.
     """
-    file_origins: dict[str, dict[str, int]] = {}
-    for symbol, carried in start.items():
-        file = file_of_symbol(symbol)
-        known = file_origins.setdefault(file, {})
-        for seed, distance in carried.items():
-            known[seed] = min(distance, known.get(seed, distance))
+    file_origins = _file_origins(start)
 
     pending = dict(file_origins)
     while pending:
@@ -138,6 +171,18 @@ def _registered_symbols(
     return start
 
 
+def _file_origins(
+    start: Mapping[str, Mapping[str, int]],
+) -> dict[str, dict[str, int]]:
+    """The seeds each file represented in *start* carries, at its closest distance."""
+    file_origins: dict[str, dict[str, int]] = {}
+    for symbol, carried in start.items():
+        known = file_origins.setdefault(file_of_symbol(symbol), {})
+        for seed, distance in carried.items():
+            known[seed] = min(distance, known.get(seed, distance))
+    return file_origins
+
+
 def _registration_parents(
     pending: Mapping[str, Mapping[str, int]],
     relations: Collection[tuple[str, str]],
@@ -148,13 +193,20 @@ def _registration_parents(
         carried = pending.get(registered)
         if not carried:
             continue
-        if registrar in avoid:
-            carried = _seeds_declared_by(carried, registrar)
-        if carried:
-            parent_origins = parents.setdefault(registrar, {})
-            for seed, distance in carried.items():
-                parent_origins[seed] = min(distance, parent_origins.get(seed, distance))
+        _merge_origins(parents, registrar, _carried_at_hub(carried, registrar, avoid))
     return parents
+
+
+def _merge_origins(
+    parents: dict[str, dict[str, int]],
+    registrar: str,
+    carried: Mapping[str, int],
+) -> None:
+    if not carried:
+        return
+    parent_origins = parents.setdefault(registrar, {})
+    for seed, distance in carried.items():
+        parent_origins[seed] = min(distance, parent_origins.get(seed, distance))
 
 
 def _fresh_registration_origins(
@@ -164,15 +216,23 @@ def _fresh_registration_origins(
     pending: dict[str, dict[str, int]] = {}
     for registrar, carried in parents.items():
         known = file_origins.setdefault(registrar, {})
-        fresh = {
-            seed: distance
-            for seed, distance in carried.items()
-            if seed not in known or distance < known[seed]
-        }
+        fresh = _fresher(carried, known)
         if fresh:
             known.update(fresh)
             pending[registrar] = fresh
     return pending
+
+
+def _fresher(carried: Mapping[str, int], known: Mapping[str, int]) -> dict[str, int]:
+    return {
+        seed: distance
+        for seed, distance in carried.items()
+        if _is_fresher(seed, distance, known)
+    }
+
+
+def _is_fresher(seed: str, distance: int, known: Mapping[str, int]) -> bool:
+    return seed not in known or distance < known[seed]
 
 
 def _add_registered_symbols(
