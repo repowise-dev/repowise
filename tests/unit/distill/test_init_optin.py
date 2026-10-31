@@ -76,7 +76,7 @@ class TestOfferDistillRewriteHook:
         monkeypatch.setattr(ClaudeCodeAdapter, "detect", lambda self: True)
         console = MagicMock()
         offer_distill_rewrite_hook(console, [repo], flag=None, yes=yes)
-        assert _installed_commands(settings_path) == ["repowise-rewrite"]
+        assert _installed_commands(settings_path) == [claude_config._rewrite_hook_command()]
         assert _distill_config(repo)["commands"]["enabled"] is True
         assert _hooks_config(repo) == dict.fromkeys(HOOK_REPLACEMENT_SURFACES, True)
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
