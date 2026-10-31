@@ -73,3 +73,59 @@ def test_a_sql_include_resolves_to_a_dclgen_member() -> None:
     ctx = _ctx("app/cbl/COTRTUPC.cbl", "app/dcl/DCLTRTYP.dcl")
 
     assert resolve_cobol_import("DCLTRTYP", "app/cbl/COTRTUPC.cbl", ctx) == "app/dcl/DCLTRTYP.dcl"
+
+
+def test_dynamic_call_resolves_to_external_node_without_cics_prefix() -> None:
+    from repowise.core.ingestion.models import Import, ParsedFile
+    from tests.unit.ingestion.parser._helpers import _make_file_info
+
+    ctx = _ctx("app/cbl/CALLER.cbl")
+    imp = Import(
+        raw_statement="CALL WS-INPUT",
+        module_path="dynamic:WS-INPUT",
+        imported_names=["*"],
+        is_relative=False,
+        resolved_file=None,
+    )
+    parsed = ParsedFile(
+        file_info=_make_file_info("app/cbl/CALLER.cbl", "cobol"),
+        symbols=[],
+        imports=[imp],
+        exports=[],
+        export_aliases={},
+        calls=[],
+        heritage=[],
+    )
+    ctx.parsed_files = {"app/cbl/CALLER.cbl": parsed}
+    assert (
+        resolve_cobol_import("dynamic:WS-INPUT", "app/cbl/CALLER.cbl", ctx)
+        == "external:dynamic:WS-INPUT"
+    )
+
+
+def test_dynamic_cics_resolves_to_external_node_with_cics_prefix() -> None:
+    from repowise.core.ingestion.models import Import, ParsedFile
+    from tests.unit.ingestion.parser._helpers import _make_file_info
+
+    ctx = _ctx("app/cbl/CALLER.cbl")
+    imp = Import(
+        raw_statement="EXEC CICS XCTL PROGRAM(WS-PGM)",
+        module_path="dynamic:WS-PGM",
+        imported_names=["*"],
+        is_relative=False,
+        resolved_file=None,
+    )
+    parsed = ParsedFile(
+        file_info=_make_file_info("app/cbl/CALLER.cbl", "cobol"),
+        symbols=[],
+        imports=[imp],
+        exports=[],
+        export_aliases={},
+        calls=[],
+        heritage=[],
+    )
+    ctx.parsed_files = {"app/cbl/CALLER.cbl": parsed}
+    assert (
+        resolve_cobol_import("dynamic:WS-PGM", "app/cbl/CALLER.cbl", ctx)
+        == "external:cics-dynamic:WS-PGM"
+    )
