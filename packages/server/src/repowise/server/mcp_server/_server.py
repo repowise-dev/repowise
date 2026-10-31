@@ -780,22 +780,22 @@ _INSTRUCTIONS = (
     "file reads.\n"
     "- Use search_codebase(query) to find an identifier or literal: it "
     "returns `lines` (path, line, kind, text; definitions first) read from "
-    "live files, and `complete: true` means that is every match. Path-like "
+    "live files, and `complete: true` means that is every match. Path "
     "and concept queries rank files.\n"
     '- Use get_context(targets=[symbol], include=["references"]) before a '
     "rename or an update-all-callers change: it lists the definition, "
-    "imports and calls, and a `complete` list is the whole edit set.\n"
-    "- Use get_answer(question) for a how/where/why question: one cited "
-    "answer.\n"
+    "imports and calls, and a `complete` list is the whole edit set. On a "
+    'directory, include=["files"] lists its files and tests.\n'
+    "- Use get_answer(question) for one how/where/why question per call; "
+    "split a compound question.\n"
     "- Use get_risk before a non-trivial edit to a widely imported file, "
     "get_change_risk before committing a multi-file change, and get_why "
     "before changing an established pattern. Skip them for one-line fixes.\n"
-    "- Targets with uncommitted edits are flagged; the index is stale for "
-    "them until `repowise update --working-tree` runs.\n"
+    "- Targets with uncommitted edits are flagged as stale until "
+    "`repowise update --working-tree` runs.\n"
     "If the tools report that the repo has no index, tell the user to run "
     "'repowise init --yes --no-prose' in the repo root; it needs no API key "
-    "and makes no model calls. Suggest it, "
-    "do not run it yourself."
+    "or model calls. Suggest it, do not run it yourself."
 )
 
 #: Opt-in workspace tools, named only once the selected surface has them.

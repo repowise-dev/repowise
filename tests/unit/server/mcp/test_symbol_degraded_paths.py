@@ -136,6 +136,22 @@ async def test_range_read_refuses_an_excluded_path(setup_mcp, tmp_path, monkeypa
     assert "source" not in result
 
 
+@pytest.mark.asyncio
+async def test_a_bare_file_path_names_the_whole_file_and_range_calls(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_symbol
+
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "plain.py").write_text("x = 1\n", encoding="utf-8")
+    result = await get_symbol("pkg/plain.py")
+    assert result["error"] == (
+        "'pkg/plain.py' is a file, not a symbol. Whole file: "
+        'get_context(targets=["pkg/plain.py"], include=["skeleton"]). '
+        'Lines: get_symbol("pkg/plain.py:1-120").'
+    )
+    missing = await get_symbol("pkg/ghost.py")
+    assert missing["error"].startswith("Symbol not found: 'pkg/ghost.py'.")
+
+
 # ---------------------------------------------------------------------------
 # Argument handling
 # ---------------------------------------------------------------------------

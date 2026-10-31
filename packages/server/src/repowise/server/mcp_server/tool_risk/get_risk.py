@@ -472,16 +472,15 @@ async def get_risk(
     ``structural_impact_score`` appears only with ``include=["blast", "scales"]``.
 
     Default responses fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
-    ``_meta.recovery_unavailable`` names a storage failure.
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs.
     Include-gated blocks are projections, not omissions.
 
     Args:
         targets: file paths to assess; defaults to changed_files.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
-        include: opt-in blocks - "graph", "churn", "owners", "tests" (typed test
-            rows), "blast", "scales" (units, calibration), "changes".
+        include: "graph", "churn", "owners", "scales" (units, calibration),
+            "changes"; with changed_files only: "tests" (typed test rows), "blast".
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")

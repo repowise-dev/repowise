@@ -66,7 +66,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         # was never synthesised, and this row told the agent to distrust the
         # payload on the strength of it, so it re-searched after every call.
         # `confidence` there is graded from the evidence such a payload does carry.
-        "First call for any how/where/why question. "
+        "First call; one per how/where/why question. "
         + _KEYED_ONLY["get_answer"]
         + "`degraded` means no prose; `confidence` rates the evidence. `symbol_bodies` has live bodies.",
     ),

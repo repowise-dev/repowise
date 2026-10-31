@@ -96,6 +96,14 @@ def _live_grep_response(
     }
 
 
+def _bare_file_path(ctx: Any, symbol_id: str, exclude_spec: Any) -> str | None:
+    """*symbol_id* as a repo file path when it names a live file and no symbol in it."""
+    path = symbol_id.strip().replace("\\", "/").strip("/")
+    if not ctx.path or "::" in path or _pkg.is_excluded(path, exclude_spec):
+        return None
+    return path if (Path(str(ctx.path)) / path).is_file() else None
+
+
 async def _not_found_response(
     ctx: Any, repository: Any, symbol_id: str, exclude_spec: Any, t0: float
 ) -> dict:
@@ -104,12 +112,22 @@ async def _not_found_response(
         live = _live_grep_response(ctx, repository, symbol_id, exclude_spec, t0)
         if live is not None:
             return live
-    async with get_session(ctx.session_factory) as session:
-        suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
     from repowise.server.mcp_server._savings.interaction import note_error_reason
 
-    # Both replies below are a miss, with or without suggestions.
+    # Every reply below is a miss.
     note_error_reason("not_found")
+    if file_path := _bare_file_path(ctx, symbol_id, exclude_spec):
+        return {
+            "symbol_id": symbol_id,
+            "error": (
+                f"'{file_path}' is a file, not a symbol. Whole file: "
+                f'get_context(targets=["{file_path}"], include=["skeleton"]). '
+                f'Lines: get_symbol("{file_path}:1-120").'
+            ),
+            "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
+        }
+    async with get_session(ctx.session_factory) as session:
+        suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
     if suggestions:
         return {
             "symbol_id": symbol_id,

@@ -163,6 +163,15 @@ def test_the_opt_in_sections_bring_the_detail_back(gen):
     assert "never re-read them" in full
 
 
+@pytest.mark.parametrize("variant", ["how_to_work", "how_to_work_full"])
+def test_how_to_work_names_the_pre_edit_and_finish_calls(gen, variant):
+    rendered = gen.render(_full_data(sections=frozenset({variant})))
+    assert rendered.count("**Before an edit:**") == 1
+    assert 'get_risk(targets=["<file>"])' in rendered
+    assert 'get_change_risk(revspec="<base>..HEAD")' in rendered
+    assert 'get_health(targets=["<each file you touched>"])' in rendered
+
+
 def test_repo_facts_lead_the_block(gen):
     rendered = gen.render(_full_data())
     order = [rendered.index(_HEADINGS[s]) for s in ("hotspots", "health", "how_to_work", "tools")]
