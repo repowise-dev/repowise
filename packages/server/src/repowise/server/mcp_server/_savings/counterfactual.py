@@ -313,7 +313,8 @@ def change_risk_replaced_tokens(changed_files: int) -> int:
 
 def _estimate_get_change_risk(result: dict[str, Any]) -> int:
     """The declared value's fallback: ``features.nf`` when diagnostics carry it."""
-    if result.get("error"):
+    # An empty diff scored nothing, so it replaced no diff read.
+    if result.get("error") or result.get("status") == "nothing_to_score":
         return 0
     features = result.get("features")
     files = features.get("nf") if isinstance(features, dict) else None
@@ -332,9 +333,33 @@ def _why_files(result: dict[str, Any]) -> set[str]:
     return files
 
 
+def _why_served_nothing(result: dict[str, Any]) -> bool:
+    """Whether a ``get_why`` answer served no decision, rationale or history.
+
+    The tool stamps ``answer_basis`` only when some lane served evidence, so its
+    absence is the tool's own "found nothing". The dashboard never carries a
+    basis; it served nothing when every count is zero and every lane is empty.
+    """
+    mode = result.get("mode")
+    if mode == "reference":
+        # An evidence id can resolve to a commit with no decision row, which
+        # names no basis; the lookup's own ``resolved`` is its verdict.
+        return not result.get("resolved")
+    if mode != "health":
+        return not result.get("answer_basis")
+    counts = result.get("counts")
+    counted = isinstance(counts, dict) and any(
+        isinstance(n, int) and n > 0 for n in counts.values()
+    )
+    return not counted and not any(isinstance(v, list) and v for v in result.values())
+
+
 def _estimate_get_why(result: dict[str, Any]) -> int:
-    """Per-call floor plus a per-file term for each file whose history it serves."""
-    if result.get("error"):
+    """Per-call floor plus a per-file term for each file whose history it serves.
+
+    A reply that served nothing replaced nothing, so it earns no floor.
+    """
+    if result.get("error") or _why_served_nothing(result):
         return 0
     return min(WHY_MAX, WHY_FLOOR + len(_why_files(result)) * WHY_PER_FILE)
 
@@ -349,13 +374,17 @@ def _estimate_get_health(result: dict[str, Any]) -> int:
     """
     if result.get("error"):
         return 0
-    files = 0
-    for key in ("targets", "metrics"):
-        value = result.get(key)
-        if isinstance(value, list):
-            files = max(files, len(value))
+    targets = result.get("targets")
+    metrics = result.get("metrics")
+    unresolved = result.get("unresolved")
+    missed = len(unresolved) if isinstance(unresolved, list) else 0
+    files = max(
+        len(targets) - missed if isinstance(targets, list) else 0,
+        len(metrics) if isinstance(metrics, list) else 0,
+    )
     if not files:
-        return HEALTH_FLOOR
+        # Every named target missed the index: nothing was judged.
+        return 0 if missed else HEALTH_FLOOR
     return min(HEALTH_MAX, HEALTH_FLOOR + files * HEALTH_PER_FILE)
 
 
@@ -374,6 +403,17 @@ def _fixed_floor(tokens: int) -> Callable[[dict[str, Any]], int]:
 RISK_RELATED_FILE_KEYS = ("may_break", "missing_cochanges")
 
 
+def _assessed_targets(targets: Any) -> int:
+    """Target cards that assessed a file; an unresolved card assessed nothing."""
+    if not isinstance(targets, dict):
+        return 0
+    return sum(
+        1
+        for card in targets.values()
+        if not (isinstance(card, dict) and card.get("resolved") is False)
+    )
+
+
 def _estimate_get_risk(result: dict[str, Any]) -> int:
     """Per assessed target + per PR blast-radius file, floored at ``RISK_FLOOR``.
 
@@ -386,7 +426,7 @@ def _estimate_get_risk(result: dict[str, Any]) -> int:
     if result.get("error"):
         return 0
     targets = result.get("targets")
-    total = len(targets) * RISK_PER_TARGET if isinstance(targets, dict) else 0
+    total = _assessed_targets(targets) * RISK_PER_TARGET
     directive = result.get("directive")
     if isinstance(directive, dict):
         # Union the two lists: a file that both breaks and is a missed
@@ -397,6 +437,9 @@ def _estimate_get_risk(result: dict[str, Any]) -> int:
             if isinstance(related, list):
                 related_files.update(f for f in related if isinstance(f, str))
         total += len(related_files) * RISK_PER_RELATED_FILE
+    if isinstance(targets, dict) and targets and not total:
+        # Every named target was unresolved: the reply served no history.
+        return 0
     return max(RISK_FLOOR, total)
 
 
@@ -407,7 +450,8 @@ def _estimate_get_blast_radius(result: dict[str, Any]) -> int:
     repos to answer "what breaks if I change this". Undersold to a per-file
     floor and capped so a large fan-out never overstates.
     """
-    if result.get("error"):
+    # No target matched a service, so no fan-out was traced.
+    if result.get("error") or result.get("targets") == []:
         return 0
     impacted = result.get("total_impacted")
     n = impacted if isinstance(impacted, int) and impacted > 0 else 0
@@ -519,6 +563,9 @@ def replaced_tokens_for(tool: str, result: Any) -> int:
     estimator can't ground in the result dict. Never raises.
     """
     if not isinstance(result, dict):
+        return 0
+    # A lookup that found nothing to serve (an unknown id) replaced nothing.
+    if result.get("resolved") is False:
         return 0
     estimator = _ESTIMATORS.get(tool)
     if estimator is None:
