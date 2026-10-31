@@ -1322,6 +1322,7 @@ mislead the masker.
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 | **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
 | **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
+| **Topic (EventBridge)** | `PutEvents` (AWS SDK v2/v3, boto3 `put_events`) with `Source` and `DetailType` | CDK `eventPattern`, SAM / CloudFormation `EventBridgeRule` `Pattern` / `EventPattern` |
 
 RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
 a queue named through its declaration's result (`q.Name`).
