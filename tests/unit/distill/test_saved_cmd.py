@@ -394,6 +394,19 @@ def test_saved_explicit_path_argument(tmp_path: Path) -> None:
     assert "test_output" in result.output
 
 
+def test_saved_from_a_subdirectory_reads_the_repository_ledger(
+    repo_cwd: Path, monkeypatch
+) -> None:
+    _seed_canonical(repo_cwd)
+    sub = repo_cwd / "pkg" / "inner"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    result = CliRunner().invoke(saved_command, [])
+    assert result.exit_code == 0
+    assert "No savings recorded yet" not in result.output
+    assert "13,800" in result.output
+
+
 def test_missed_tip_offers_install_when_hook_is_absent(monkeypatch) -> None:
     monkeypatch.setattr(saved_cmd, "_rewrite_hook_installed", lambda: False)
     assert "repowise hook rewrite install" in saved_cmd._missed_tip()

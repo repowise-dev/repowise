@@ -5,7 +5,7 @@
 (ids only), so changes indexed while it runs neither shift nor repeat a page.
 A kept checklist is read back as
 :func:`~repowise.core.changes.collect.change_evidence` reads it (its outcomes
-follow HEAD); a missing one is built and kept. What every build would repeat
+follow HEAD, its components the catalog); a missing one is built and kept. What every build would repeat
 is done once for the period: the HEAD and window outcomes are read at, and the
 deep fix-history walk the risk item stands on (one ``git log`` primes every
 change's walk, see
@@ -215,21 +215,24 @@ async def _page_rows(run: _Pass, ids: list[str]) -> list[Any]:
 
 
 async def _read_kept(
-    run: _Pass, rows: Sequence[Any], key: Any
+    run: _Pass, rows: Sequence[Any], key: Any, catalog: str
 ) -> dict[str, ChangeEvidence | None]:
     """Each row's kept checklist (``None`` when none is kept), from the page
-    already read. Only a checklist whose outcomes were read at another HEAD
-    is read again, since that needs git for the change."""
+    already read. Only a checklist whose outcomes were read at another HEAD,
+    or whose components were resolved under another catalog, is read again."""
     kept = {r.change_id: collect.cached_evidence(r) for r in rows}
     stale = [
         r
         for r in rows
-        if kept[r.change_id] is not None
-        and await collect.outcomes_stale(run.root, kept[r.change_id], key)
+        if (got := kept[r.change_id]) is not None
+        and (
+            await collect.outcomes_stale(run.root, got, key)
+            or await collect.components_stale(run.root, got, catalog)
+        )
     ]
     for row in stale:
         kept[row.change_id] = await collect.change_evidence(
-            run.session, run.repo_id, run.root, row, key=key
+            run.session, run.repo_id, run.root, row, key=key, catalog=catalog
         )
     return kept
 
@@ -249,6 +252,7 @@ async def period_evidence(
         to_build = sum(request.refresh or not kept for _cid, kept in keys)
         request.plan(to_build if request.build else 0, run.total)
     key = await collect.outcomes_key(run.root)
+    catalog = await asyncio.to_thread(collect.catalog_digest, run.root)
     prime = _Prime(str(run.root))
     for start in range(0, run.total, PAGE):
         ids = [cid for cid, _kept in keys[start : start + PAGE]]
@@ -260,7 +264,9 @@ async def period_evidence(
             built = await _build_page(
                 run, missing, lambda r, s=start, ids=ids: s + ids.index(r.change_id) + 1
             )
-        kept = await _read_kept(run, [r for r in rows if r.change_id not in built], key)
+        kept = await _read_kept(
+            run, [r for r in rows if r.change_id not in built], key, catalog
+        )
         await session.commit()
         for row in rows:
             yield row, built.get(row.change_id) or kept.get(row.change_id)

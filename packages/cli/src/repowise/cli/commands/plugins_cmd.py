@@ -2,11 +2,44 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import asdict
 
 import click
 
 from repowise.cli.output import emit_json, format_option
+
+#: Modules that define a seam or register its built-in implementations. A seam
+#: is only listed once its module is imported; a guard test keeps this complete.
+BUILTIN_SEAM_MODULES = (
+    "repowise.core.changes.outcomes",
+    "repowise.core.changes.source",
+    "repowise.core.events.sinks",
+    "repowise.core.inventory.advisories",
+    "repowise.core.ownership.directory",
+    "repowise.core.pipeline.index_persistence",
+    "repowise.core.report.sections",
+    "repowise.core.report.render",
+    "repowise.core.suspects",
+    "repowise.server.auth",
+    "repowise.server.chat_session",
+    "repowise.server.chat_views",
+    "repowise.server.chat_datasets",
+)
+
+
+def _import_builtin_seams() -> None:
+    for name in BUILTIN_SEAM_MODULES:
+        try:
+            module = importlib.import_module(name)
+            if name == "repowise.server.chat_datasets":
+                module.dataset_names()  # imports the built-in dataset families
+        except ModuleNotFoundError as exc:
+            # Only a missing third-party package (server extras not installed)
+            # leaves a seam unlisted; a broken repowise import must surface.
+            missing = exc.name or ""
+            if missing == "repowise" or missing.startswith("repowise."):
+                raise
 
 
 @click.command("plugins")
@@ -16,17 +49,31 @@ def plugins_command(fmt: str) -> None:
     from rich.markup import escape
 
     from repowise.cli.helpers import console
-    from repowise.core.registry.plugins import ENTRY_POINT_GROUP, ENV_VAR, load_plugins, seams
+    from repowise.core.registry.plugins import (
+        ENTRY_POINT_GROUP,
+        ENV_VAR,
+        PLUGIN_API_VERSION,
+        load_plugins,
+        seams,
+    )
 
+    _import_builtin_seams()
     records = load_plugins()
     seam_rows = {
         name: {"default": registry.default, "implementations": registry.names}
         for name, registry in sorted(seams().items())
     }
     if fmt == "json":
-        emit_json({"plugins": [asdict(r) for r in records], "seams": seam_rows})
+        emit_json(
+            {
+                "api_version": PLUGIN_API_VERSION,
+                "plugins": [asdict(r) for r in records],
+                "seams": seam_rows,
+            }
+        )
         return
 
+    console.print(f"plugin API version {PLUGIN_API_VERSION}")
     if not records:
         console.print(
             f"No plugins loaded. Install one that declares a [bold]{ENTRY_POINT_GROUP}[/bold] "

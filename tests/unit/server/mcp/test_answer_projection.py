@@ -32,7 +32,7 @@ class _Provider:
         return SimpleNamespace(content=self.content)
 
 
-def _patch_retrieval(monkeypatch, answer_mod, scores=(6.0, 1.0)):
+def _patch_retrieval(monkeypatch, answer_mod, scores=(6.0, 4.0)):
     async def _fake_retrieve(question, ctx):
         return [dict(hit, score=score) for hit, score in zip(_HITS, scores, strict=True)]
 
@@ -377,7 +377,7 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     assert not set(result["candidate_files"]) & set(result.get("citations") or [])
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
     if legs["vector"] == "error":
-        assert result["_meta"]["retrieval_degraded"] == ["vector"]
+        assert result["_meta"]["degraded"] == ["retrieval:vector"]
 
 
 @pytest.mark.asyncio
@@ -424,8 +424,8 @@ async def test_real_embedding_failure_keeps_fts_evidence_in_final_projection(
 
     assert result["answer"]
     assert result.get("best_guesses") or result.get("retrieval")
-    assert "embed" in result["_meta"]["retrieval_degraded"]
-    assert "vector" in result["_meta"]["retrieval_degraded"]
+    assert "retrieval:embed" in result["_meta"]["degraded"]
+    assert "retrieval:vector" in result["_meta"]["degraded"]
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
 
 

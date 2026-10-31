@@ -98,6 +98,14 @@ def _make_commits(alias: str, entries: list[tuple[str, int, list[str]]]) -> list
     return [_GitCommit(author_email=e, timestamp=ts, files=files) for e, ts, files in entries]
 
 
+def _make_commits_with_sha(alias: str, entries: list[tuple[str, int, list[str], str]]) -> list[_GitCommit]:
+    """Helper: (email, ts, files, sha) tuples for evidence capture tests."""
+    return [
+        _GitCommit(author_email=e, timestamp=ts, files=files, sha=sha)
+        for e, ts, files, sha in entries
+    ]
+
+
 class TestCrossRepoCoChanges:
     def _detect_with_mocked_logs(
         self, repo_commits: dict[str, list[_GitCommit]], **kwargs
@@ -408,6 +416,69 @@ class TestCrossRepoCoChanges:
         ac_edges = [r for r in results if {r.source_repo, r.target_repo} == {"a", "c"}]
         assert len(ab_edges) == 5, "hyperactive pair capped"
         assert len(ac_edges) == 1, "weaker pair still present"
+
+
+    def test_evidence_captured_for_co_change_pair(self) -> None:
+        """A matched commit pair in a co-session leaves authors + commit pair
+        evidence on the edge (#483)."""
+        now = int(time.time())
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits_with_sha(
+                    "a",
+                    [
+                        ("x@co.com", now - 3600, ["f1.py"], "aaaa1111"),
+                    ],
+                ),
+                "b": _make_commits_with_sha(
+                    "b",
+                    [
+                        ("x@co.com", now - 7200, ["f2.py"], "bbbb2222"),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
+        assert len(results) == 1
+        r = results[0]
+        assert r.evidence is not None
+        assert r.evidence.authors == ["x@co.com"]
+        assert len(r.evidence.commit_pairs) == 1
+        pair = r.evidence.commit_pairs[0]
+        assert pair["source_sha"] == "aaaa1111"
+        assert pair["target_sha"] == "bbbb2222"
+        assert pair["gap_hours"] == 1.0  # 3600s apart = 1h
+        assert r.evidence.max_gap_hours == 1.0
+
+    def test_evidence_commit_pairs_capped(self) -> None:
+        """A pair backed by many co-sessions keeps at most the capped sample."""
+        now = int(time.time())
+        a_commits = [
+            _GitCommit(
+                author_email=f"x{i}@co.com",
+                timestamp=now - (i + 1) * 3600,
+                files=["f1.py"],
+                sha=f"aaaa{i:04d}",
+            )
+            for i in range(10)
+        ]
+        b_commits = [
+            _GitCommit(
+                author_email=f"x{i}@co.com",
+                timestamp=now - (i + 1) * 3600 - 600,
+                files=["f2.py"],
+                sha=f"bbbb{i:04d}",
+            )
+            for i in range(10)
+        ]
+        results = self._detect_with_mocked_logs(
+            {"a": a_commits, "b": b_commits},
+            min_score=0.0,
+            min_sessions=1,
+        )
+        assert len(results) >= 1
+        assert len(results[0].evidence.commit_pairs) <= 3  # _MAX_EVIDENCE_COMMIT_PAIRS
 
 
 class TestCoChangeTruncationTotals:
@@ -760,3 +831,109 @@ class TestOverlayPersistence:
         path = save_overlay(overlay, tmp_path)
         assert path.is_file()
         assert (tmp_path / ".repowise-workspace").is_dir()
+
+    def test_load_overlay_round_trips_evidence(self, tmp_path: Path) -> None:
+        """Evidence survives save -> load round trip."""
+        from repowise.core.workspace.cross_repo import (
+            CoChangeEvidence,
+            CrossRepoCoChange,
+            CrossRepoOverlay,
+            load_overlay,
+            save_overlay,
+        )
+
+        cc = CrossRepoCoChange(
+            source_repo="a",
+            source_file="f1.py",
+            target_repo="b",
+            target_file="f2.py",
+            strength=0.5,
+            frequency=2,
+            last_date="2026-06-01",
+            evidence=CoChangeEvidence(
+                authors=["x@co.com"],
+                commit_pairs=[
+                    {
+                        "source_sha": "aaaa1111",
+                        "target_sha": "bbbb2222",
+                        "date": "2026-06-01",
+                        "gap_hours": 2.0,
+                    }
+                ],
+                max_gap_hours=2.0,
+            ),
+        )
+        save_overlay(CrossRepoOverlay(co_changes=[cc]), tmp_path)
+        loaded = load_overlay(tmp_path)
+        assert loaded is not None
+        assert loaded.co_changes[0].evidence is not None
+        assert loaded.co_changes[0].evidence.authors == ["x@co.com"]
+        assert loaded.co_changes[0].evidence.commit_pairs[0]["source_sha"] == "aaaa1111"
+
+# ---------------------------------------------------------------------------
+# run_cross_repo_analysis with no repo changed
+# ---------------------------------------------------------------------------
+
+
+def _indexed_workspace(tmp_path: Path, aliases: list[str]):
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+    for alias in aliases:
+        (tmp_path / alias / ".repowise").mkdir(parents=True)
+    return WorkspaceConfig(repos=[RepoEntry(path=a, alias=a) for a in aliases])
+
+
+def test_no_changed_repo_reuses_the_stored_overlay(tmp_path: Path) -> None:
+    """A settings edit moves no git history, so nothing is walked again."""
+    import asyncio
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    stored = CrossRepoOverlay(repo_summaries={"api": {}, "web": {}}, total_co_changes=7)
+    save_overlay(stored, tmp_path)
+
+    with patch("repowise.core.workspace.cross_repo.detect_cross_repo_co_changes") as walk:
+        overlay = asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_not_called()
+    assert overlay.total_co_changes == 7
+
+
+def test_stored_overlay_for_other_repos_is_recomputed(tmp_path: Path) -> None:
+    import asyncio
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    save_overlay(CrossRepoOverlay(repo_summaries={"api": {}, "gone": {}}), tmp_path)
+
+    with patch(
+        "repowise.core.workspace.cross_repo.detect_cross_repo_co_changes", return_value=([], 0)
+    ) as walk:
+        overlay = asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_called_once()
+    assert set(overlay.repo_summaries) == {"api", "web"}
+
+
+def test_repo_re_indexed_after_the_overlay_is_recomputed(tmp_path: Path) -> None:
+    """A repo updated on its own since the overlay was written has new history."""
+    import asyncio
+    import os
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    out = save_overlay(CrossRepoOverlay(repo_summaries={"api": {}, "web": {}}), tmp_path)
+    state = tmp_path / "web" / ".repowise" / "state.json"
+    state.write_text("{}", encoding="utf-8")
+    later = out.stat().st_mtime + 10
+    os.utime(state, (later, later))
+
+    with patch(
+        "repowise.core.workspace.cross_repo.detect_cross_repo_co_changes", return_value=([], 0)
+    ) as walk:
+        asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_called_once()

@@ -225,6 +225,18 @@ def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
     assert [d["status"] for d in records if d["title"] == "Interactive title"] == ["active"]
 
 
+def test_decision_add_asks_again_for_a_blank_decision(indexed_repo: Path) -> None:
+    """Acceptance needs the text, so a blank answer is asked again, not stored."""
+    answers = "\nBlank first\ncontext\n   \nthe decision\nwhy\n\n\nsrc/app.py\n\n"
+    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "state what was chosen" in result.output
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    records = json.loads(listed.output)["decisions"]
+    assert [d["status"] for d in records if d["title"] == "Blank first"] == ["active"]
+
+
 def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> None:
     """A decision that names no files cannot be checked, so it cannot govern.
 
@@ -324,7 +336,12 @@ def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> Non
     )
 
     assert result.exit_code == 1, result.output
-    assert json.loads(result.output)["error"].startswith("--title and --decision")
+    payload = json.loads(result.output)
+    assert payload["error"].startswith("--title and --decision")
+
+    guidance = payload.get("guidance", "")
+    assert "prompted" not in guidance
+    assert "--decision" in guidance
 
 
 def test_decision_add_help_lists_a_flag_per_field() -> None:
@@ -443,6 +460,10 @@ def test_stale_only_counts_stale_rows_past_the_first_page(indexed_repo: Path) ->
         for i in range(100, 104)
     ]
     _seed_wiki_db(indexed_repo, rows)
+    # Stale is a property of accepted decisions only.
+    for i in range(100, 104):
+        confirmed = CliRunner().invoke(cli, ["decision", "confirm", f"{i:032x}", str(indexed_repo)])
+        assert confirmed.exit_code == 0, confirmed.output
 
     data = _list_json(indexed_repo, "--stale-only")
     assert (data["total"], data["truncated"], len(data["decisions"])) == (4, False, 4)
@@ -551,6 +572,60 @@ def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     assert "Proposed (needs review)" in result.output
 
 
+def test_decision_health_lists_print_the_whole_title(indexed_repo: Path) -> None:
+    title = "Backfill path mapping needs repo-tied evidence for deleted directories"
+    assert len(title) > 50
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj",
+                "title": title,
+                "status": "proposed",
+            },
+            {
+                "id": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+                "title": title,
+                "status": "active",
+                "staleness": 0.8,
+            },
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["decision", "health", str(indexed_repo)])
+    assert result.exit_code == 0, result.output
+    # Rich wraps long lines at the terminal width, so compare ignoring whitespace.
+    flattened = " ".join(result.output.split())
+    assert flattened.count(title) == 2, result.output
+
+
+def test_decision_health_lists_treat_titles_as_plain_text(indexed_repo: Path) -> None:
+    markup_title = "Use [bold]x[/bold] for the cache key"
+    closing_title = "Drop the [/] shorthand"
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "llllllllllllllllllllllllllllllll",
+                "title": markup_title,
+                "status": "proposed",
+            },
+            {
+                "id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+                "title": closing_title,
+                "status": "active",
+                "staleness": 0.8,
+            },
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["decision", "health", str(indexed_repo)])
+    assert result.exit_code == 0, result.output
+    flattened = " ".join(result.output.split())
+    assert markup_title in flattened, result.output
+    assert closing_title in flattened, result.output
+
+
 class TestTheLifecycleIsDrivableByAnAgent:
     """Confirm/dismiss/deprecate are how a decision gains and loses authority.
 
@@ -566,8 +641,8 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
-        assert payload == {"id": "c0ffee01", "status": "active", "action": "accepted"}
+        (only,) = json.loads(result.output)["results"]
+        assert (only["id"], only["status"], only["action"]) == ("c0ffee01", "active", "accepted")
 
     def test_dismiss_does_not_prompt_under_json(self, indexed_repo: Path):
         _seed_wiki_db(indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}])
@@ -577,7 +652,7 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == "dismissed"
+        assert json.loads(result.output)["results"][0]["status"] == "dismissed"
 
     def test_dismiss_yes_skips_the_prompt_for_a_person_too(self, indexed_repo: Path):
         _seed_wiki_db(indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}])
@@ -609,10 +684,10 @@ class TestTheLifecycleIsDrivableByAnAgent:
             cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
         )
 
-        assert json.loads(result.output) == {
-            "error": "decision_not_found",
-            "decision_id": "deadbeef",
-        }
+        payload = json.loads(result.output)
+        assert (payload["succeeded"], payload["failed"]) == (0, 1)
+        (only,) = payload["results"]
+        assert (only["given"], only["error"]) == ("deadbeef", "decision_not_found")
 
     def test_deprecate_records_the_successor(self, indexed_repo: Path):
         _seed_wiki_db(
@@ -632,7 +707,7 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == "deprecated"
+        assert json.loads(result.output)["results"][0]["status"] == "deprecated"
 
 
 def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) -> None:
@@ -662,9 +737,9 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
     )
 
     assert result.exit_code == 1, result.output
-    payload = json.loads(result.output)
-    assert payload["error"] == "acceptance_refused"
-    assert any("scope" in blocker for blocker in payload["blockers"])
+    (refused,) = json.loads(result.output)["results"]
+    assert refused["error"] == "acceptance_refused"
+    assert any("scope" in blocker for blocker in refused["blockers"])
 
     # And it is acceptable once the missing parts are supplied.
     fixed = CliRunner().invoke(
@@ -674,6 +749,8 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
             "confirm",
             "badbadba",
             str(indexed_repo),
+            "--decision",
+            "Keep the measured faster path",
             "--reason",
             "Because the alternative was measured slower",
             "--scope",
@@ -685,7 +762,7 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
         ],
     )
     assert fixed.exit_code == 0, fixed.output
-    assert json.loads(fixed.output)["status"] == "active"
+    assert json.loads(fixed.output)["results"][0]["status"] == "active"
 
 
 # --- a manual entry is embedded like a mined one ---------------------------
@@ -931,3 +1008,29 @@ def test_config_commands_do_not_need_an_index(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "No index found" not in result.output
+
+
+def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
+    indexed_repo: Path,
+) -> None:
+    """A decision drops only the actions view, and the write does not rebuild
+    it: the first reader stores it, so recording decisions stays fast."""
+    import sqlite3
+
+    from repowise.cli.commands._index_outcome import refresh_read_snapshots
+
+    _seed_wiki_db(
+        indexed_repo, [{"id": "d" * 32, "title": "Seeded", "status": "proposed"}]
+    )
+    assert refresh_read_snapshots(indexed_repo)
+    added = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--title", "Cache read views", "--decision", "Store them",
+         str(indexed_repo)],
+        input="",
+    )  # fmt: skip
+    assert added.exit_code == 0, added.output
+    with sqlite3.connect(indexed_repo / ".repowise" / "wiki.db") as conn:
+        kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
+    assert "actions" not in kinds
+    assert "fix_first" in kinds

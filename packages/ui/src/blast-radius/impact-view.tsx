@@ -191,7 +191,7 @@ export function ImpactView({
                 max={10}
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Math.max(1, Math.min(10, Number(e.target.value))))}
-                className="w-16 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+                className="w-16 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
                 aria-label="Maximum dependency depth (1–10)"
               />
             </label>

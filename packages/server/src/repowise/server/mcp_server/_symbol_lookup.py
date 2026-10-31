@@ -446,3 +446,31 @@ async def nearest_symbol_ids(
         dotted, list(by_key), n=NEAREST_LIMIT, cutoff=_NEAREST_CUTOFF
     )
     return [sid for key in keys for sid in by_key[key]][:NEAREST_LIMIT]
+
+
+async def spotlight_owners(
+    session, repo_id: str, keys: set[tuple[str, str]]
+) -> dict[tuple[str, str], WikiSymbol]:
+    """The symbol each ``(file, name)`` spotlight documents: the file's first of that name.
+
+    A spotlight's id is ``path::name`` and generation picks the first symbol
+    by line with that name, so a later same-named symbol (a second class's
+    ``__init__``) does not own the page.
+    """
+    if not keys:
+        return {}
+    rows = await session.execute(
+        select(WikiSymbol)
+        .where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path.in_({path for path, _ in keys}),
+            WikiSymbol.name.in_({name for _, name in keys}),
+        )
+        .order_by(WikiSymbol.start_line)
+    )
+    owners: dict[tuple[str, str], WikiSymbol] = {}
+    for row in rows.scalars().all():
+        key = (row.file_path, row.name)
+        if key in keys:
+            owners.setdefault(key, row)
+    return owners

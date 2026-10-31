@@ -139,6 +139,11 @@ _AGREEMENT_TOP_RANK_MAX = 1
 _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
+# Agreement fires near a 1.0 ratio, so on its own it starts "high" only above
+# this top score. Correct agreement highs on the answer gate scored 4.2 and
+# above; a wrong one, whose excerpt stopped before the branch it described,
+# scored 3.27.
+_AGREEMENT_HIGH_SCORE_FLOOR = 4.0
 
 # A keyless answer whose lead file sits below this many files of the unreranked
 # hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
@@ -147,8 +152,10 @@ _AGREEMENT_RANK_GAP = 1
 _LEAD_HYBRID_TOP_K = 4
 
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
-# A match downgrades confidence to "low" and drops the retrieval payload, since
-# a consumer told to read the source gains nothing from it in the cache.
+# Before the answer names any code, a match downgrades confidence to "low" and
+# drops the retrieval payload, since a consumer told to read the source gains
+# nothing from it in the cache. After a grounded claim it is a caveat
+# (_GAP_MARKERS below).
 _HEDGE_MARKERS = (
     "do not contain",
     "does not contain",
@@ -198,6 +205,29 @@ _HEDGE_MARKERS = (
     "did not surface",
     "was not surfaced",
     "was not found in",
+)
+
+# Phrases that admit part of what was asked is outside the evidence. Like a
+# hedge, one before the answer names any code is a non-answer ("low"); after a
+# grounded claim it is a caveat, held at "medium": "high" tells the agent not to
+# re-read, which the answer itself disputes. The bare "is not included/shown"
+# form is matched in confidence.py, where a following "in the checksum" marks
+# it as a statement about the code instead; so is "truncated in the excerpts".
+_GAP_MARKERS = (
+    "not in the retrieved",
+    "not in the excerpts",
+    "not in the evidence",
+    "outside the retrieved",
+    "outside the excerpts",
+    "not present in the provided",
+    "not present in the retrieved",
+    "not defined in the provided",
+    "not defined in the retrieved",
+    "not directly included",
+    "not fully included",
+    "not fully visible",
+    "not fully shown",
+    "cannot be definitively",
 )
 
 # Page content chars attached per top hit, for synthesis and the pointer payload.
@@ -310,7 +340,25 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     body grounds the answer only when it carries what else was asked;
 #     constructors fold into their class and a file the question rules out is
 #     dropped.
-_ANSWER_SCHEMA_VERSION = 23
+# 24: an admission after a grounded claim is a caveat (medium), not a hedge; a
+#     verified constant line the answer states earns high; a question name no
+#     code defines or writes grades low.
+# 25: a question name defined in several files holds a high answer at medium
+#     unless the answer tells them apart; a name written as an owner
+#     (``Client.get``) anchors its definition; candidate_files skips files only
+#     the graph walk added.
+# 26: a value set inside a function body anchors that function; each later
+#     clause of a compound question adds its best file to the served hits.
+# 27: hedge phrases match through markdown markup; agreement alone starts high
+#     only above its own score floor; a scoped question's name nothing under
+#     the scope writes grades low.
+# 28: a stated value line earns high under the score floor and at any rank;
+#     held-at-medium notes for the identifier gate and a weak dominant top.
+# 29: a reply stopped at the token cap is retried once with a larger cap; an
+#     answer whose text was cut off is held at medium.
+# 30: an answer saying the code it describes was cut from its excerpts
+#     ("not fully visible", "truncated in the retrieved") admits a gap.
+_ANSWER_SCHEMA_VERSION = 30
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
@@ -324,6 +372,12 @@ _CANDIDATE_FILES_MAX = 5
 # The raw list is longer than either cap, so paths the citations already name
 # can be removed without leaving the served list short.
 _CANDIDATE_FILES_POOL = 10
+# A path scoring under this share of the top hit is not served in
+# candidate_files. Swept on 53 labelled candidates from 13 questions over four
+# repositories: the lowest file worth opening scored 0.38 of the top, and three
+# unrelated files scored under 0.2. Set below that lowest real file, not at it,
+# since a dropped file costs the agent a search and a served one costs a path.
+_CANDIDATE_FILES_SCORE_FLOOR = 0.3
 
 # Backstop TTL for cache rows. Commit stamping is the primary freshness gate;
 # this covers rows without a stamp (older rows, repos without git metadata).
@@ -354,13 +408,12 @@ _STOPWORDS = STOPWORDS
 _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
-# the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so it
-# gets a larger default, and the env override sets both. Low temperature: the
-# answer must track the excerpts, not embellish.
+# the token cap is headroom. A thinking model spends hidden reasoning from the
+# same cap before the first answer token, so the cap leaves room for both.
+# Providers bill the tokens produced, not the cap. Low temperature: the answer
+# must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
-_SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
-_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
+_SYNTHESIS_MAX_TOKENS_DEFAULT = 4096
 
 
 def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
@@ -383,8 +436,10 @@ def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
-_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
+# A reply stopped at the token cap is asked for once more with this many times
+# the cap. Kept small so the retry stays inside common model output limits.
+_SYNTHESIS_RETRY_TOKEN_FACTOR = 2
 
 _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "

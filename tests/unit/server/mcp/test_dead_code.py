@@ -139,7 +139,9 @@ class _EveryFileConsumed:
 async def test_cross_repo_cut_reaches_summary_and_rollups(setup_mcp, monkeypatch):
     from repowise.server.mcp_server import get_dead_code, tool_dead_code
 
-    monkeypatch.setattr(tool_dead_code, "_cross_repo_lookup", lambda: _EveryFileConsumed())
+    monkeypatch.setattr(
+        tool_dead_code, "_cross_repo_cut", lambda alias: {"lookup": _EveryFileConsumed(), "alias": alias}
+    )
 
     result = await get_dead_code(group_by="directory", min_confidence=0.0)
     summary = result["summary"]
@@ -165,7 +167,9 @@ class _EveryFileCalled(_EveryFileConsumed):
 async def test_the_default_floor_reads_the_cut_confidence(setup_mcp, monkeypatch):
     from repowise.server.mcp_server import get_dead_code, tool_dead_code
 
-    monkeypatch.setattr(tool_dead_code, "_cross_repo_lookup", lambda: _EveryFileCalled())
+    monkeypatch.setattr(
+        tool_dead_code, "_cross_repo_cut", lambda alias: {"lookup": _EveryFileCalled(), "alias": alias}
+    )
 
     # 0.9 / 0.7 / 0.5 cut to 0.27 / 0.21 / 0.15: none clears 0.4.
     result = await get_dead_code()

@@ -9,7 +9,7 @@ from tree_sitter import Node
 
 from ..extractors import node_text
 from ..language_configs import LanguageConfig
-from ..models import CallReceiver, CallSite, FileInfo, Symbol
+from ..models import STRING_LITERAL_RECEIVER, CallReceiver, CallSite, FileInfo, Symbol
 from ..parser_helpers import (
     _argument_literal_types,
     _argument_names,
@@ -23,6 +23,12 @@ from ..parser_helpers import (
 from ..python_tasks import is_fire_and_forget
 
 _node_text = node_text
+
+# ``Outer.Inner``: capitalised names, each after the first holding a lower-case
+# letter, so ``X.CONST`` is not one. Same shape as the java.scm member-type pattern.
+_JAVA_MEMBER_TYPE_PATH = re.compile(r"[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)+")
+
+_KOTLIN_STRING_LITERALS = ("string_literal", "multiline_string_literal")
 
 def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     """Describe an inner call captured as another call's receiver.
@@ -65,6 +71,17 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     return CallReceiver(target_name, receiver_name, argument_count)
 
 
+def _java_member_type_receiver(node: Node, inner: CallReceiver, src: str) -> CallReceiver:
+    """*inner* with its ``Outer.Inner`` receiver, as the chain head ``Outer.Inner.m()`` writes it."""
+    obj = node.child_by_field_name("object")
+    if obj is None or obj.type != "field_access":
+        return inner
+    path = "".join(_node_text(obj, src).split())
+    if not _JAVA_MEMBER_TYPE_PATH.fullmatch(path):
+        return inner
+    return replace(inner, receiver_name=path)
+
+
 def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
     """Describe a Kotlin call captured as another call's receiver."""
     named = call.named_children
@@ -76,6 +93,7 @@ def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
         return None
     count = _count_arguments(arguments)
 
+    callee = _kotlin_operand(callee)
     if callee.type == "identifier":
         return CallReceiver(_node_text(callee, src).strip(), None, count)
     if callee.type != "navigation_expression" or len(callee.named_children) != 2:
@@ -85,9 +103,10 @@ def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
     if target.type != "identifier":
         return None
 
+    receiver = _kotlin_operand(receiver)
     if receiver.type == "call_expression":
         receiver_name = None
-    elif receiver.type in ("identifier", "this_expression") or (
+    elif receiver.type in ("identifier", "this_expression", *_KOTLIN_STRING_LITERALS) or (
         receiver.type == "navigation_expression"
         and [child.type for child in receiver.named_children]
         == ["this_expression", "identifier"]
@@ -99,6 +118,18 @@ def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
     if receiver.type != "call_expression" and receiver_name is None:
         return None
     return CallReceiver(_node_text(target, src).strip(), receiver_name, count)
+
+
+def _kotlin_operand(node: Node) -> Node:
+    """The name under a Kotlin prefix or postfix operator, else *node* itself.
+
+    tree-sitter-kotlin binds the operator before the call, so ``!a.f()`` and
+    ``a!!.f()`` put ``!a`` / ``a!!`` where the receiver goes.
+    """
+    named = node.named_children
+    if node.type == "unary_expression" and len(named) == 1 and named[0].type == "identifier":
+        return named[0]
+    return node
 
 
 def _function_target(function: Node) -> tuple[Node | None, Node | None]:
@@ -171,10 +202,42 @@ def _dart_argument_count(selector: Node | None) -> int | None:
 
 
 
+def _dart_receiver_path(head: Node, target: Node, src: str) -> str | None:
+    """The Dart receiver as a plain dotted path: ``r``, or ``r.item`` for ``r.item.m()``.
+
+    A Dart member access is no node of its own: the head is followed by flat
+    ``selector`` siblings, and the ones between it and the method's selector
+    are the field links. Each must be a plain ``.name``; anything else (a
+    call, an index, a ``?.`` hop) drops the site, as it does for TypeScript
+    and Python, so it never reaches the bare-call tiers.
+    """
+    method_selector = target.parent.parent if target.parent is not None else None
+    parts = [_node_text(head, src).strip()]
+    link = head.next_named_sibling
+    while link is not None and link != method_selector:
+        accessor = link.named_children[0] if link.named_child_count == 1 else None
+        if accessor is None or accessor.type != "unconditional_assignable_selector":
+            return None
+        names = [c for c in accessor.named_children if c.type == "identifier"]
+        if len(names) != 1:
+            return None
+        parts.append(_node_text(names[0], src).strip())
+        link = link.next_named_sibling
+    return ".".join(parts) if link is not None else None
+
+
 # The receiver captures that are themselves a member access, by language (the
 # queries widen only these two), and what a plain dotted path of names looks
 # like once whitespace is gone.
-_PATH_RECEIVERS = frozenset({("typescript", "member_expression"), ("python", "attribute")})
+_PATH_RECEIVERS = frozenset(
+    {
+        ("typescript", "member_expression"),
+        ("python", "attribute"),
+        ("apex", "field_access"),
+        ("java", "field_access"),
+        ("kotlin", "navigation_expression"),
+    }
+)
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
 
 
@@ -189,10 +252,18 @@ def _receiver_text(language: str, node: Node, src: str) -> str | None:
     if language == "java" and node.type != "super" and getattr(sibling, "type", None) == "super":
         # ``S.super.m()``: ``S`` qualifies the ``super`` its own pattern captures.
         return None
+    if language == "kotlin" and node.type in _KOTLIN_STRING_LITERALS:
+        return STRING_LITERAL_RECEIVER
+    if language == "kotlin" and node.type == "super_expression":
+        # ``super<I>`` keeps ``I`` as the call's scope; ``super@Outer`` is dropped.
+        return None if "@" in _node_text(node, src) else "super"
     text = _node_text(node, src).strip()
     if (language, node.type) not in _PATH_RECEIVERS:
         return text
     path = "".join(text.split())
+    if language == "kotlin":
+        # ``a.b!!.c`` and ``a?.b`` name the same fields as ``a.b.c`` and ``a.b``.
+        path = path.replace("!!", "").replace("?.", ".")
     return path if _DOTTED_PATH.fullmatch(path) else None
 
 
@@ -244,7 +315,9 @@ def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
     return frozenset(props_set)
 
 
-def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+def _fold_receiverless_twins(
+    calls: list[tuple[tuple[int, int, str], CallSite]],
+) -> list[tuple[tuple[int, int, str], CallSite]]:
     """Fold the receiver-less copy of a member call into the copy with a receiver.
 
     A grammar's bare-call pattern that leaves the object unconstrained (Java's
@@ -256,15 +329,15 @@ def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]])
     """
     member_sites = {site for site, call in calls if not _is_bare(call)}
     bare_sites = {site for site, call in calls if site in member_sites and _is_bare(call)}
-    folded: list[CallSite] = []
+    folded: list[tuple[tuple[int, int, str], CallSite]] = []
     for site, call in calls:
         if _is_bare(call):
             if site not in member_sites:
-                folded.append(call)
+                folded.append((site, call))
         elif call.receiver_name and site in bare_sites:
-            folded.append(replace(call, bare_name_fallback=True))
+            folded.append((site, replace(call, bare_name_fallback=True)))
         else:
-            folded.append(call)
+            folded.append((site, call))
     return folded
 
 
@@ -272,23 +345,32 @@ def _is_bare(call: CallSite) -> bool:
     return not (call.receiver_name or call.receiver_call)
 
 
-def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
-    """One call per ``(line, target, receiver)``, keeping the richest record.
+def _dedupe_calls(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+    """One call per ``(site, receiver)``, keeping the richest record.
 
     Two scoped-call patterns can match the same two-part call (one keeps the
     qualifier), so the richer record wins whichever order they arrive in.
+    Keyed on the call node, not the line: ``f(a, f(b))`` holds two calls, and
+    so does ``.add(x).add(x, y)`` even across lines, since every link of a
+    chain reports the chain's first line. Each may bind a different overload.
     """
-    deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
-    for call in calls:
-        key = (call.line, call.target_name, call.receiver_name)
+    deduplicated: dict[tuple[tuple[int, int, str], str | None], CallSite] = {}
+    for site, call in calls:
+        key = (site, call.receiver_name)
         existing = deduplicated.get(key)
-        if (
-            existing is None
-            or (existing.receiver_call is None and call.receiver_call is not None)
-            or (existing.scope_name is None and call.scope_name is not None)
-        ):
+        if existing is None or _richer(call, existing):
             deduplicated[key] = call
     return list(deduplicated.values())
+
+
+def _richer(call: CallSite, existing: CallSite) -> bool:
+    """Does *call* carry something the same-keyed *existing* record lacks?"""
+    if existing.receiver_call is None and call.receiver_call is not None:
+        return True
+    if existing.scope_name is None and call.scope_name is not None:
+        return True
+    # A bare ``m()`` beside ``a.b.m()`` on its line keeps every tier.
+    return existing.on_unnamed_object and not call.on_unnamed_object
 
 
 def _extract_calls(
@@ -356,20 +438,28 @@ def _call_from_match(
         if receiver_call_nodes
         else None
     )
+    if language == "java" and receiver_call is not None and receiver_call.receiver_name is None:
+        receiver_call = _java_member_type_receiver(receiver_call_nodes[0], receiver_call, src)
     if receiver_call_nodes and receiver_call is None and language == "kotlin":
         # Avoid resolving an unsupported chained call by its bare name.
         return None
     scope_nodes = capture_dict.get("call.scope", [])
     line = site_node.start_point[0] + 1
-    arguments = _overload_arguments(language, arg_nodes)
+    on_unnamed_object = (
+        language == "java"
+        and receiver_name is None
+        and not receiver_call_nodes
+        and _java_object_is_unnamed(site_node)
+    )
+    arguments, argument_count = _call_arguments(language, site_node, arg_nodes)
     call = CallSite(
         target_name=target_name,
         receiver_name=receiver_name,
         caller_symbol_id=_find_enclosing_symbol(line, symbol_ranges),
         line=line,
-        argument_count=_count_arguments(arg_nodes[0]) if arg_nodes else None,
+        argument_count=argument_count,
         receiver_call=receiver_call,
-        argument_types=_argument_literal_types(arguments, src),
+        argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
         scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,
         edge_type=(
@@ -379,8 +469,41 @@ def _call_from_match(
         # Ceiling: schedulers matched by name, the task followed within its
         # own function only (see ``python_tasks``).
         spawned=language == "python" and is_fire_and_forget(site_node, src),
+        program_call=language == "cobol" and site_node.type == "call_statement",
+        bare_name_fallback=on_unnamed_object,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
+
+
+def _call_arguments(
+    language: str, site_node: Node, arg_nodes: list[Node]
+) -> tuple[list[Node], int | None]:
+    """A call's argument expressions for overload reading, and how many it passes.
+
+    A Kotlin infix call's argument capture is its right operand, the one argument.
+    """
+    if language == "kotlin" and site_node.type == "infix_expression":
+        return arg_nodes, 1
+    count = _count_arguments(arg_nodes[0]) if arg_nodes else None
+    return _overload_arguments(language, arg_nodes), count
+
+
+def _java_object_is_unnamed(site_node: Node) -> bool:
+    """Does this Java call have an object, other than a qualified ``this``?
+
+    Asked only of a match with no receiver, so true only on the bare pattern's
+    copy. Where a receiver pattern names the object (``a.m()``, ``this.m()``),
+    ``_fold_receiverless_twins`` drops this copy and sets ``bare_name_fallback``
+    on the named one, which then means a bare-name fallback, not this.
+    ``Outer.this.m()`` is an implicit receiver, read as bare.
+    """
+    if site_node.type != "method_invocation":
+        return False
+    obj = site_node.child_by_field_name("object")
+    if obj is None:
+        return False
+    field = obj.child_by_field_name("field") if obj.type == "field_access" else None
+    return field is None or field.type != "this"
 
 
 def _call_names(
@@ -412,7 +535,11 @@ def _call_names(
         return None
     receiver_name = None
     if receiver_nodes:
-        receiver_name = _receiver_text(language, receiver_nodes[0], src)
+        receiver_name = (
+            _dart_receiver_path(receiver_nodes[0], target_node, src)
+            if language == "dart"
+            else _receiver_text(language, receiver_nodes[0], src)
+        )
         if receiver_name is None:
             return None
     if receiver_name and language == "php":

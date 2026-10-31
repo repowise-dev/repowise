@@ -168,6 +168,23 @@ def test_a_secret_that_predates_the_change_is_not_blamed_on_it(repo):
     assert _scan(repo).findings == []
 
 
+def test_a_nul_byte_inside_a_patch_does_not_split_its_commit(repo):
+    # Past git's 8000-byte binary sniff, so the NUL lines appear in the patch.
+    pad = "# pad\n" * 1500
+    _write(repo, "sep.ts", f'{pad}const SEP = "\0";\nexport {{ SEP }};\n')
+    _write(repo, "use.ts", "export const n = 1;\n")  # a file after it in the same patch
+    _commit(repo, "add a NUL line")
+    _write(repo, "sep.ts", f"{pad}export {{}};\n")
+    _commit(repo, "remove it")
+    _write(repo, "cfg.py", f"AWS = '{KEY}'\n")
+    _commit(repo, "add key")
+    _write(repo, "cfg.py", "AWS = None\n")
+    _commit(repo, "remove key")
+    scan = _scan(repo)
+    assert scan.commits_scanned == 4
+    assert _kinds(scan) == [("aws_access_key", 1, True)]
+
+
 def test_code_smells_in_intermediate_commits_do_not_count(repo):
     _write(repo, "tmp.py", "eval('1')\n")
     _commit(repo, "smell")

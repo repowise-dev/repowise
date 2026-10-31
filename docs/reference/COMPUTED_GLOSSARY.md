@@ -169,7 +169,7 @@ workspace overlays, MCP responses, and CLI output.
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
 | File page context | Template data for one important source file. | `ContextAssembler.assemble_file_page()` | `{file_path, symbols, imports, dependencies, pagerank_score}` |
-| Symbol spotlight context | Template data for a top public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, source body, callers |
+| Symbol spotlight context | Template data for a most-called public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, docstring, resolved callers |
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
 | SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |

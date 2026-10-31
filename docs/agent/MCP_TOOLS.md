@@ -83,15 +83,16 @@ repowise mcp --all                             # every tool usable in this mode
 
 Every tool returns JSON with a `_meta` envelope ([fields](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope)). Check:
 
-- `stale_warning`: run `repowise update` (or `repowise update --working-tree` when `working_tree_dirty` is set) before trusting file-level detail. Absent means current.
+- `stale_warning`: run the `repowise update` it names before trusting file-level detail. Absent means current.
 - `complete`: content verified against the live file. Do not re-read it.
-- `state`: `degraded`, `partial` or `truncated`. A degraded empty result is a failed read, not an empty repository.
+- `degraded`: the parts of the server that failed for this call. A degraded empty result is a failed read, not an empty repository.
 - `get_answer`'s top-level `confidence` is its one trust signal.
-- Diagnostics such as `timing_ms` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
+- Empty fields, `null` and a `false` status flag are not sent; absence means nothing to report.
+- Diagnostics (`timing_ms`, index commits and age, budget accounting) ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
 
 ### Reversible truncation: `_meta.omitted`
 
-Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. Capped lists keep `*_total` counts. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
+Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. A list that was cut carries `<key>_total`, its size before the cut. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
 
 ### Unrecognised arguments: `ignored_arguments`
 
@@ -341,7 +342,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | `performance_confidence` | string | none | `high`, `medium`, `low` |
 | `performance_actionability` | string | none | `plan_ready`, `advisory`, `investigate`, `expected` |
 | `performance_sort` | string | `rank` | `rank`, `leverage`, `observations` |
-| `scope` | string | `"all"` | `production` drops test files from every figure |
+| `scope` | string | `"all"` | `production` drops test, tooling, vendored and generated files from every figure |
 | `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
 | `repo` | string | default repo | `"all"` not supported |
 

@@ -24,14 +24,13 @@ from repowise.core.persistence.models import (
     Page,
     Repository,
 )
-from repowise.server.auth import get_authorizer
+from repowise.server.auth import Action, authorize_repo, checks_repo_access, read_route
 from repowise.server.deps import get_db_session, get_fts, request_principal, verify_api_key
 from repowise.server.job_executor import execute_job
 from repowise.server.routers._repo_generate import (
     GenerateRequestBody,
     GenerateSelectionBody,  # noqa: F401 - re-exported beside the body that nests it
     _generate_job_config,
-    _reject_unknown_style,
     _validate_generate_selection,
     _validate_generate_style,
 )
@@ -48,7 +47,9 @@ from repowise.server.routers._repo_pricing import (
     probe_provider,
     resolve_provider,
 )
+from repowise.server.routers._repo_settings import repo_response, save_settings, stored_settings
 from repowise.server.routers._repo_summary import _freshness_for, _summary_rows_for
+from repowise.server.routers.page_archive import router as page_archive_router
 from repowise.server.schemas import (
     JobAcceptedResponse,
     RepoCreate,
@@ -67,6 +68,7 @@ router = APIRouter(
     tags=["repos"],
     dependencies=[Depends(verify_api_key)],
 )
+router.include_router(page_archive_router)
 
 
 async def _get_repo_or_404(session: AsyncSession, repo_id: str) -> Repository:
@@ -123,6 +125,9 @@ async def create_repo(
     configured — is enqueued immediately; the created job's id is returned
     as ``initial_job_id`` so clients can attach to its progress stream.
     """
+    if body.settings is not None:
+        # A style picked at registration lands in config.yaml like a PATCH.
+        body.settings = save_settings(body.local_path, body.settings, {})
     if not body.index:
         # Metadata-only registration: per-repo storage is created on first index.
         url, branch = _sent_metadata(body)
@@ -134,7 +139,7 @@ async def create_repo(
             default_branch=branch,
             settings=body.settings,
         )
-        return RepoResponse.from_orm(repo)
+        return repo_response(repo)
 
     from repowise.server.repo_db import ensure_repo_registration, upsert_registry_row
 
@@ -170,7 +175,7 @@ async def create_repo(
                     crud.keep_analysis_ran(repo.settings_json, body.settings)
                 )
             await repo_session.flush()
-            response = RepoResponse.from_orm(repo)
+            response = repo_response(repo)
             stored_url, stored_branch = repo.url, repo.default_branch
         else:  # pragma: no cover — the row was created two lines above
             raise HTTPException(status_code=500, detail="Repository registration failed")
@@ -239,7 +244,7 @@ async def list_repos(
     repos, indexed_repo_ids = await load_repositories(
         session, getattr(app_state, "workspace_sessions", {})
     )
-    responses = [RepoResponse.from_orm(r) for r in repos]
+    responses = [repo_response(r) for r in repos]
     heal_indexed_commits(responses)
     flag_unindexed(responses, indexed_repo_ids)
 
@@ -254,9 +259,8 @@ async def list_repos(
         responses.extend(unregistered_workspace_rows(ws_config, ws_root_path, matched))
 
     principal = request_principal(request)
-    if principal is not None and principal.repo_scope is not None:
-        authorizer = get_authorizer()
-        responses = [r for r in responses if authorizer.can_access_repo(principal, (r.id, r.name))]
+    if principal is not None and checks_repo_access(principal):
+        responses = [r for r in responses if authorize_repo(principal, (r.id, r.name), Action.READ)]
     return responses
 
 
@@ -309,7 +313,7 @@ async def get_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Get a single repository by ID."""
-    return RepoResponse.from_orm(await _get_repo_or_404(session, repo_id))
+    return repo_response(await _get_repo_or_404(session, repo_id))
 
 
 @router.patch("/{repo_id}", response_model=RepoResponse)
@@ -318,26 +322,31 @@ async def update_repo(
     body: RepoUpdate,
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
-    """Update repository fields."""
+    """Update repository fields.
+
+    ``exclude_patterns`` and ``wiki_style`` in ``settings`` go to the repo's
+    ``.repowise/config.yaml`` (where the CLI reads them), written first so a
+    failed write leaves the row untouched.
+    """
+    import json
+
     repo = await _get_repo_or_404(session, repo_id)
 
+    row_settings = None
+    if body.settings is not None:
+        row_settings = save_settings(
+            repo.local_path, body.settings, stored_settings(repo.settings_json)
+        )
     if body.name is not None:
         repo.name = body.name
     if body.url is not None:
         repo.url = body.url
     if body.default_branch is not None:
         repo.default_branch = body.default_branch
-    if body.settings is not None:
-        import json
-
-        # Validate a wiki_style setting up front so a typo surfaces as a 400 here
-        # rather than silently falling back to the default during generation.
-        style = body.settings.get("wiki_style")
-        if style is not None:
-            _reject_unknown_style(style, "wiki_style")
-        repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, body.settings))
+    if row_settings is not None:
+        repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, row_settings))
     await session.flush()
-    return RepoResponse.from_orm(repo)
+    return repo_response(repo)
 
 
 def _forget_workspace_member(app_state: Any, alias: str) -> bool:
@@ -571,10 +580,12 @@ async def generate_pages(
 
 
 @router.post("/{repo_id}/generate/estimate")
+@read_route
 async def generate_estimate(
     repo_id: str,
     request: Request,
     body: GenerateRequestBody,
+    provider: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Cost + page counts for a generate selection, including cascade fallout.
@@ -582,7 +593,8 @@ async def generate_estimate(
     Resolves the exact same scope the job would (rehydrating the graph and
     re-parsing), so the returned page count and estimate match what a launched
     job spends. Heavier than the pre-index preflight because it walks the real
-    dependency graph rather than a file count.
+    dependency graph rather than a file count. ``?provider=`` prices a
+    provider the repo does not use yet, so a picker can show the cost first.
     """
     repo = await _get_repo_or_404(session, repo_id)
 
@@ -605,8 +617,8 @@ async def generate_estimate(
     gen_config = _build_generation_config(repo_path, job_config, wiki_style)
 
     # Price with the repo's configured provider/model, if one resolves.
-    _client, provider_name, model_name, provider_error = resolve_provider(str(repo_path))
-    provider = {"name": provider_name, "model": model_name, "error": provider_error}
+    _client, provider_name, model_name, provider_error = resolve_provider(str(repo_path), provider)
+    priced_with = {"name": provider_name, "model": model_name, "error": provider_error}
 
     session_factory = _resolve_repo_session_factory(request.app.state, repo_id)
     state = _load_state(repo_path)
@@ -634,7 +646,7 @@ async def generate_estimate(
             "pages_by_type": {},
             "pages_to_mark_stale": 0,
             "unknown_page_ids": [],
-            "provider": provider,
+            "provider": priced_with,
             "estimate": None,
             "note": note,
         }
@@ -656,7 +668,7 @@ async def generate_estimate(
         "pages_by_type": pages_by_type,
         "pages_to_mark_stale": len(plan.stale_ids),
         "unknown_page_ids": list(plan.unknown_page_ids),
-        "provider": provider,
+        "provider": priced_with,
         "estimate": estimate,
     }
 
@@ -707,6 +719,7 @@ async def index_repo(
 
 
 @router.post("/{repo_id}/preflight")
+@read_route
 async def preflight_index(
     repo_id: str,
     request: Request,

@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES
 from repowise.core.persistence.crud.authority import (
     accepted_decision_ids,
     candidate_predicate,
@@ -73,7 +74,7 @@ async def _per_source(
 ) -> dict[str, dict[str, Any]]:
     """Records, accepted count and newest capture per stored source value.
 
-    Tombstoned candidates are excluded, because ``count_decisions_by_lane``
+    Retired candidates are excluded, because ``count_decisions_by_lane``
     excludes them: counting them here would make the Sources column sum to
     more than the total beside it.
     """
@@ -81,7 +82,10 @@ async def _per_source(
         await session.execute(
             select(DecisionRecord.id, DecisionRecord.source, DecisionRecord.created_at).where(
                 DecisionRecord.repository_id == repository_id,
-                or_(DecisionRecord.status != "dismissed", DecisionRecord.id.in_(accepted)),
+                or_(
+                    DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)),
+                    DecisionRecord.id.in_(accepted),
+                ),
             )
         )
     ).all()

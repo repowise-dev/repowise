@@ -85,12 +85,23 @@ unless you ask for it.
 
 ### `safe_to_delete`
 
-A finding is deletion-ready (the CLI's "Ready?" column) only when its
-confidence is `0.7` or higher and its path carries no runtime-load risk factor
-(config, environment, bootstrap, database, script or served-asset paths).
-Unreachable files, zombie packages and unused internals are never marked
-deletion-ready, whatever their confidence. In practice `safe_to_delete` means
-"an unused export with strong evidence".
+A finding is deletion-ready (the CLI's "Ready?" column) only when no blocker
+below applies. Each blocker that fires adds an evidence line naming it, and
+none changes confidence or tier. In practice `safe_to_delete` means "an unused
+export with strong evidence".
+
+- **Kind:** unreachable files, zombie packages and unused internals, whatever
+  their confidence.
+- **Confidence** below `0.7`.
+- **Runtime-load path:** config, environment, bootstrap, database, script,
+  served-asset or Salesforce Aura bundle paths.
+- **Docs or example code:** a docs build can include a file by path or line
+  range.
+- **Export only:** the symbol's own file uses it, so only the `export` is
+  unneeded.
+- **Weak resolution for the language in this repository:** the language is
+  unknown to the graph, its import support is not full, none of its call edges
+  has a recorded resolution, or more than half of them are name matches.
 
 ### Exempt by construction
 
@@ -160,8 +171,16 @@ The cases where a finding is most likely wrong:
   symbol re-exported through one for external callers can surface as an
   unused export.
 - **Published libraries.** Code consumed outside the repository has no
-  importer inside it. Packaged .NET projects are detected and held at `0.30`;
-  other ecosystems are not.
+  importer inside it. A public symbol of a library the build declares as
+  published is held at `0.30`, below the default floor, with an evidence line
+  naming the package. Published means: a packed .NET project or one with a
+  `PublicAPI.Shipped.txt`; a Go module whose root package is importable or
+  that builds no program (not its `main` or `internal/` packages); a Rust crate
+  with a library target and no `publish = false`; a Maven or Gradle module
+  that deploys (not a war, Spring Boot or `application` module); a
+  `pyproject.toml` with a `[project]` name and a `[build-system]` (not its
+  `_private` modules); a `package.json` that is not `private` and names an
+  entry. Apps in any of these ecosystems keep their findings.
 - **Test-only usage counts as usage.** A symbol only its tests import is not
   reported. There is no "used only in tests" classification.
 
@@ -178,18 +197,25 @@ against the cross-repo data before the confidence floor and the tiers:
   at the file, confidence is cut to 30% of its value and the `cross_repo_note`
   names the consumer.
 - Otherwise, if the file changes together with files in other repos (git
-  co-change), or the finding is an unused export and another repo depends on
-  this one as a package, the finding keeps its confidence and gains a note.
-  The note names a package dependent only when its link covers the file's
-  package (or records no manifest). These links say a consumer may exist, not
-  that one does.
+  co-change), or the finding is an unused export and another repo's package
+  imports reach its file, the finding keeps its confidence and gains a note.
+  A package import reaches the module or subpath it names and the files that
+  module's re-exports forward the imported names to. An export no import
+  reaches keeps its safety: the dependent cannot import it by package name.
+  Where the workspace has no recorded reach (an overlay from before it was
+  recorded, or an import it could not place), every file inside the package
+  directory counts. These links say a consumer may exist, not that one does.
 
 A finding with a note is never safe to delete, and a lowered one sits in the
 tier its new confidence names, so one cut below `0.4` is hidden by the default
 floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
 workspace repo and tags each finding with its alias. The CLI analyzes one repo
 per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
-the cut. See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
+the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
+`get_overview`), related work, the code graph, the chat dataset, `repowise export
+--full` and the assessment report read the same cut. Fix first and plan annotations
+are built per repo before the workspace pass, so they read stored values. See
+[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Accuracy and limits
 

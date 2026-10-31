@@ -140,17 +140,9 @@ async def test_a_partial_match_in_an_earlier_store_is_left_under_the_floor(two_r
     assert decision["repo"] == "beta"
     assert decision["source"] == "cli"
     assert decision["provenance"] == "human_decision"
+    # The row names the source; the id and repository resolve the rest.
     assert decision["evidence_refs"] == [
-        {
-            "id": "ev_fb245a52dbd371b929d4",
-            "repository": "beta",
-            "kind": "legacy",
-            "content_id": "338f3ae3ca60c54e7741",
-            "provenance": "human_decision",
-            "source": "cli",
-            "source_kind": "cli",
-            "verification_basis": "indexed",
-        }
+        {"id": "ev_fb245a52dbd371b929d4", "kind": "legacy", "repository": "beta"}
     ]
 
 
@@ -292,6 +284,8 @@ async def test_workspace_and_single_repo_share_alias_scoped_evidence_ids(tmp_pat
         workspace_ref = workspace["decisions"][0]["evidence_refs"][0]
         assert single_ref == workspace_ref
         assert single_ref["repository"] == "frontend"
+        resolved = await get_why(reference=single_ref)
+        assert resolved["resolved"] is True
         for result in (single, workspace):
             accounting = result["_meta"]["response_budget"]
             assert accounting["serialized_chars"] == len(

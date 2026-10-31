@@ -30,14 +30,16 @@ from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.core.repo_config import load_repo_config
-from repowise.core.support_paths import file_population
+from repowise.core.support_paths import file_population, is_doc_or_config_path
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
 from repowise.server.mcp_server._edit_sites import (
     _MAX_FILE_BYTES,
     MAX_REFERENCES_PER_FILE,
     MAX_TEXT_CHARS,
+    _bare_name,
     _cap_references_per_file,
+    _read_lines,
     reference_edit_set,
 )
 from repowise.server.mcp_server._helpers import (
@@ -55,6 +57,7 @@ from repowise.server.mcp_server._query_shape import (
     _qual_norm,
 )
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
+from repowise.server.mcp_server._verify import name_at_line
 
 _log = logging.getLogger("repowise.mcp.search")
 
@@ -95,6 +98,8 @@ def _literal(query: str) -> tuple[str, bool] | None:
         return m.group(2), False
     if len(q) >= 2 and _TOKEN.match(q) and not q.endswith("."):
         return q, True
+    if len(q) >= 2 and "/" in q and q.strip("./") and not any(char.isspace() for char in q):
+        return q, False
     if _is_code_shaped(q):
         return q, False
     return None
@@ -255,12 +260,36 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
     return rows, reasons + scan_reasons
 
 
-def production_lines(root: Path, token: str) -> list[dict[str, Any]]:
-    """The word-bounded lines holding *token* in production files, from the
-    same scan a literal search runs. For get_answer, which reads live lines
-    the wiki never rendered (function bodies, string literals)."""
-    rows, _reasons = _scan_listed(root, token, True)
+def word_scan(root: Path, token: str) -> tuple[list[dict[str, Any]], bool]:
+    """The word-bounded lines holding *token* in every listed file, from the
+    same scan a literal search runs, and whether that scan read them all. For
+    get_answer, which reads live lines the wiki never rendered (function
+    bodies, string literals). A file cut at the per-file line cap still served
+    rows, so it hides no file and leaves the scan complete."""
+    rows, reasons = _scan_listed(root, token, True)
+    return rows, all(r.startswith(_per_file_cap_reason()) for r in reasons)
+
+
+def _per_file_cap_reason() -> str:
+    """The reason a scan gives for files it cut at the per-file line cap."""
+    return f"over {MAX_LINES_PER_FILE} lines in"
+
+
+def production_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*rows* in production files, without tests, examples and docs."""
     return [r for r in rows if _scan_rank(r["path"]) == 0]
+
+
+def _hit_kinds(
+    rel: str, found: list[tuple[int, str]], definition: re.Pattern[str]
+) -> list[tuple[int, str, str]]:
+    """``(line number, line, kind)`` per hit in *rel*.
+
+    A key in a data file or a doc line is not a definition, whatever its shape.
+    """
+    if is_doc_or_config_path(rel):
+        return [(n, line, "match") for n, line in found]
+    return [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
 
 
 def scan_literal(
@@ -331,7 +360,7 @@ def scan_literal(
         if len(found) > MAX_LINES_PER_FILE:
             per_file_capped += 1
             del found[MAX_LINES_PER_FILE:]
-        hits = [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
+        hits = _hit_kinds(rel, found, definition)
         if len(rows) >= MAX_LINES:
             # Full: only definitions still earn a row, as they sort first.
             kept = [h for h in hits if h[2] == "definition"] if defs < MAX_LINES else []
@@ -360,7 +389,7 @@ def scan_literal(
     if binary_hits:
         reasons.append(f"{binary_hits} binary files contain the token")
     if per_file_capped:
-        reasons.append(f"over {MAX_LINES_PER_FILE} lines in {per_file_capped} files")
+        reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
     return rows, reasons
 
 
@@ -419,9 +448,13 @@ async def attach_line_hits(
 async def _attach(
     response: dict, query: str, mode: str, names: Container[str] | None, repo: str | None
 ) -> None:
-    if repo == "all" or mode == "path":
+    if repo == "all":
         return
     literal = _literal(query)
+    if mode == "path" and (
+        response.get("results") or literal is None or "/" not in literal[0]
+    ):
+        return
     candidates = _identifier_candidates(query, mode, names)
     if literal and not literal[1] and not _QUOTED.match(query.strip()):
         # Code punctuation names the text itself: an identifier inside it
@@ -436,22 +469,16 @@ async def _attach(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         root = Path(served_root(repository, ctx.path))
-        nodes = []
-        if candidates:
-            found = await _exact_symbols(session, repository.id, query, candidates)
-            nodes = [n for n in found if not is_excluded(n.file_path, spec)]
-        if len(nodes) > MAX_SYMBOLS:
-            response.update(
-                lines=[], complete=False, reasons=[f"{len(nodes)} symbols match; narrow the query"]
-            )
-            return
-        sets = [await reference_edit_set(session, repository.id, root, n) for n in nodes]
-    if sets:
-        rows, reasons = _merge(sets)
-    elif literal:
-        rows, reasons = await asyncio.to_thread(_scan_listed, root, *literal)
-    else:
+        found = await _exact_symbols(session, repository.id, query, candidates) if candidates else []
+        nodes = [n for n in found if not is_excluded(n.file_path, spec)]
+        # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
+        sets = None if len(nodes) > MAX_SYMBOLS else [
+            await reference_edit_set(session, repository.id, root, n) for n in nodes
+        ]
+    served = await _line_rows(root, nodes, sets, literal, response)
+    if served is None:
         return
+    rows, reasons = served
     mixed = not literal and len(query.split()) > 1
     order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
     # Production before test within each kind group: every kind for a mixed
@@ -492,6 +519,59 @@ async def _attach(
         response["reasons"] = reasons
     if response["lines"]:
         _reconcile_symbol_miss(response, literal_scan=not sets)
+
+
+async def _line_rows(
+    root: Path,
+    nodes: list[GraphNode],
+    sets: list[dict[str, Any]] | None,
+    literal: tuple[str, bool] | None,
+    response: dict,
+) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """``(rows, reasons)`` from the edit sets, a shared name's definitions, or a
+    literal scan; ``None`` when there is nothing to read."""
+    if sets is None:
+        return await asyncio.to_thread(_ambiguous_rows, root, nodes, response)
+    if sets:
+        return _merge(sets)
+    if literal:
+        return await asyncio.to_thread(_scan_listed, root, *literal)
+    return None
+
+
+def _ambiguous_rows(
+    root: Path, nodes: list[GraphNode], response: dict
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Definition rows for the *nodes* ``results`` does not show, and the reason saying so.
+
+    Between them ``results`` and these rows name every definition, once.
+    """
+    shown = {
+        (r.get("path") or r.get("file"), r.get("start_line"))
+        for r in response.get("results") or ()
+        if isinstance(r, dict) and r.get("type") == "symbol"
+    }
+    rest = [n for n in nodes if (n.file_path, n.start_line) not in shown]
+    reason = (
+        f"{len(nodes)} symbols share this name: definitions only, {len(nodes) - len(rest)}"
+        " in results and the rest here; search a path::Name id for one symbol's sites"
+    )
+    return _definition_rows(root, rest), [reason]
+
+
+def _definition_rows(root: Path, nodes: list[GraphNode]) -> list[dict[str, Any]]:
+    """A live ``definition`` row per node whose stored line still names it."""
+    rows: list[dict[str, Any]] = []
+    files: dict[str, list[str] | None] = {}
+    for node in nodes[: MAX_LINES + 1]:
+        rel, start = node.file_path, node.start_line or 0
+        if rel not in files:
+            files[rel] = _read_lines(root, rel)
+        lines = files[rel]
+        if lines and name_at_line(lines, _bare_name(node), start):
+            text = lines[start - 1].strip()[:MAX_TEXT_CHARS]
+            rows.append({"path": rel, "line": start, "kind": "definition", "text": text})
+    return rows
 
 
 def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:

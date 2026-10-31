@@ -10,8 +10,10 @@ gains a discriminator:
   narrows to the member whose parameters admit its argument count. Members
   that share a count also carry their erased parameter types,
   ``StringUtil.java::StringUtil::append#1(String)``, so an inserted overload
-  never renames its siblings. A Kotlin extension's receiver leads its types,
-  as it leads the JVM signature it compiles to: ``Byte.toHexString()`` is
+  never renames its siblings. C# members those types still join spell each
+  generic type with its arity, ``When#2(Func`2)`` beside ``When#2(Func`3)``.
+  A Kotlin extension's receiver leads its types, as it leads the JVM
+  signature it compiles to: ``Byte.toHexString()`` is
   ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
@@ -19,6 +21,9 @@ gains a discriminator:
 - `` `<digits> `` on a type segment: the CLR generic arity that tells a C#
   ``IFoo<T>`` from a same-file ``IFoo``, ``IFoo.cs::IFoo`1``. Its members
   carry the suffix in ``parent_name`` and so in their own ids.
+- ``#setter`` / ``#deleter`` on a Python property's ``@x.setter`` or
+  ``@x.deleter`` def, ``m.py::C::x#setter``. The getter keeps the plain id,
+  and no call names the mutator, so the suffix is no payload to split off.
 
 ``Symbol.name``, ``qualified_name`` and the signature never change, and a name
 declared once keeps its plain id. Discriminators are registered per language
@@ -28,12 +33,13 @@ below, so a language without an entry is untouched by construction.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 
+from .decorator_names import property_mutator_role
 from .models import Symbol
 from .return_types import signature_parameter_count, signature_parameters
-from .type_names import strip_type_arguments
+from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
@@ -301,6 +307,7 @@ def _rust_cfg_predicate(symbol: Symbol) -> str | None:
 # variant (C ``#if`` branches, Rust ``cfg``) registers here as its own function.
 _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
+    "apex": _parameter_count,
     "csharp": _parameter_count,
     "cpp": _parameter_count,
     "kotlin": _parameter_count,
@@ -351,18 +358,84 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
                 symbol.id = f"{base}#{key}"
 
 
+def split_python_property_mutators(symbols: list[Symbol]) -> None:
+    """Give a property's setter and deleter their own ids beside its getter, in place.
+
+    All three share a name, so one graph node would hold all three bodies.
+    """
+    taken = Counter(symbol.id for symbol in symbols)
+    for symbol in symbols:
+        role = property_mutator_role(symbol.decorators)
+        if role is not None and taken[symbol.id] > 1:
+            symbol.id = f"{symbol.id}#{role}"
+
+
 def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
-    """Append parameter types to every count two members share, when they differ."""
+    """Append parameter types to every count two members share, when they differ.
+
+    A C# pair the erased types still join (``Func<T, bool>`` and ``Func<T,
+    Ctx<T>, bool>``) is told apart by each type's generic arity instead.
+    """
     typed: dict[str, dict[int, str]] = defaultdict(dict)
     for index, (symbol, key) in enumerate(keyed):
         if key is not None:
             typed[key][index] = f"{key}{_parameter_types(symbol)}"
     out = list(keyed)
-    for by_index in typed.values():
+    for count, by_index in typed.items():
+        if keyed[next(iter(by_index))][0].language == "csharp":
+            by_index = _split_by_generic_arity(keyed, count, by_index)
         if len(set(by_index.values())) > 1:
             for index, key in by_index.items():
                 out[index] = (keyed[index][0], key)
     return out
+
+
+def _split_by_generic_arity(
+    keyed: list[tuple[Symbol, str | None]], count: str, by_index: dict[int, str]
+) -> dict[int, str]:
+    """*by_index* with each key two members share respelled with CLR arities.
+
+    Only the members that collide change; a sibling that does not keeps its id.
+    """
+    seen = Counter(by_index.values())
+    return {
+        index: f"{count}{_clr_parameter_types(keyed[index][0])}" if seen[key] > 1 else key
+        for index, key in by_index.items()
+    }
+
+
+# The array, pointer and nullable marks that may follow an erased type's name.
+_ERASED_MARKS = "[]*&?"
+
+
+def _clr_parameter_types(symbol: Symbol) -> str:
+    """``(Func`2,int)``: each erased type with its type argument count, as the CLR names it."""
+    parameters = signature_parameters(symbol.signature or "") or []
+    return "(" + ",".join(clr_parameter_type(p) for p in parameters) + ")"
+
+
+def clr_parameter_type(parameter: str) -> str:
+    """``Func<A, B> f`` -> ``Func`2``: the erased type with its type argument count."""
+    arity = parameter_type_arity(parameter)
+    erased = erased_type(parameter)
+    name = erased.rstrip(_ERASED_MARKS)
+    return f"{name}`{arity}{erased[len(name):]}" if arity else erased
+
+
+def parameter_type_arity(parameter: str) -> int:
+    """How many type arguments a C# parameter's type is given: ``Func<A, B> f`` -> 2."""
+    written = parameter.partition("=")[0].split()
+    return type_argument_count(" ".join(written[:-1]) or parameter)
+
+
+def same_parameters(declared: Symbol, defined: Symbol) -> bool:
+    """Do both declare one parameter list, by count and erased types?"""
+    count = _parameter_count(declared)
+    return (
+        count is not None
+        and count == _parameter_count(defined)
+        and _parameter_types(declared) == _parameter_types(defined)
+    )
 
 
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:
@@ -436,6 +509,7 @@ def _reparent_members(symbols: list[Symbol], owner: Symbol, segment: str) -> Non
 
 __all__ = [
     "base_symbol_id",
+    "clr_parameter_type",
     "disambiguate_colliding_ids",
     "has_overload_identity",
     "id_segment_name",
@@ -443,6 +517,8 @@ __all__ = [
     "outer_scope",
     "overload_sets",
     "pair_overloads",
+    "parameter_type_arity",
+    "split_python_property_mutators",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",

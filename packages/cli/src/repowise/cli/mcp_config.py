@@ -76,6 +76,75 @@ def resolve_repowise_command(script: str = "repowise") -> str:
     return script
 
 
+def hook_shell_command(script: str, run: str = "exec {}") -> str:
+    """POSIX shell hook command that runs *script* from the install writing it.
+
+    A hook that looked *script* up on PATH ran nothing when the script lived
+    only beside a venv's interpreter, and its guard made that silent. This
+    pins the absolute path from :func:`resolve_repowise_command`, keeps the
+    PATH lookup as a fallback, and stays silent only when neither resolves
+    (``repowise doctor`` reports that case). *run* is the invocation with
+    ``{}`` where the script goes. For per-user config only, for the same
+    reason as :func:`resolve_repowise_command`.
+    """
+    fallback = f"command -v {script} >/dev/null 2>&1; then {run.format(script)}"
+    pinned = resolve_repowise_command(script)
+    if pinned == script:
+        return f"if {fallback}; fi"
+    # Always quoted, so the path is found again by hook_script_resolves.
+    quoted = "'" + pinned.replace("'", "'\"'\"'") + "'"
+    return f"if [ -x {quoted} ]; then {run.format(quoted)}; elif {fallback}; fi"
+
+
+def hook_direct_command(script: str, args: str) -> str:
+    """The pinned script plus *args*, for hosts that run a hook command directly.
+
+    Left unquoted so the same string runs under sh, cmd and PowerShell (a
+    quoted first word is a string expression in PowerShell), which means a
+    path with a space falls back to the bare name on PATH.
+    """
+    pinned = resolve_repowise_command(script)
+    return f"{script if ' ' in pinned else pinned} {args}"
+
+
+def refreshed_direct_command(command: str, script: str, args: str, *, repin: bool) -> str | None:
+    """The command to write in place of a :func:`hook_direct_command` one, or None.
+
+    Only a command that is exactly ``<script or a path to it> <args>`` is
+    touched. ``repin`` (install) points it at the running install; without it
+    (the self-heal) only a bare name or a pinned path that is gone moves.
+    """
+    exe, _, rest = command.strip().partition(" ")
+    name = exe.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    want = hook_direct_command(script, args)
+    if name != script or rest != args or command == want:
+        return None
+    if repin or exe == script:
+        return want
+    return None if Path(exe).is_file() else want
+
+
+def hook_script_resolves(command: str, script: str) -> bool:
+    """Whether a hook *command* written for *script* would find it to run.
+
+    True when its pinned path exists or *script* is on this process's PATH,
+    which is the closest this side can get to the agent's own environment.
+    """
+    import shutil
+
+    if any(Path(p).is_file() for p in hook_pinned_paths(command)):
+        return True
+    return shutil.which(script) is not None
+
+
+def hook_pinned_paths(command: str) -> list[str]:
+    """The quoted absolute script paths a hook *command* pins (empty when unpinned)."""
+    import re
+
+    found = re.findall(r"""['"]([^'"]*repowise-[a-z]+(?:\.exe)?)['"]""", command)
+    return list(dict.fromkeys(found))
+
+
 def generate_mcp_config(repo_path: Path, *, command: str | None = None) -> dict:
     """Generate MCP config JSON for a repository.
 
@@ -131,9 +200,12 @@ def is_codex_cli_installed() -> bool:
 
 
 def is_codex_logged_in() -> bool:
-    """Return True when the local Codex CLI reports an authenticated session."""
+    """Return True when the local Codex CLI reports an authenticated session.
 
-    return is_codex_cli_installed() and CODEX.is_logged_in()
+    An unknown answer (login check skipped while offline) is not signed in.
+    """
+
+    return is_codex_cli_installed() and CODEX.is_logged_in() is True
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +263,16 @@ def load_existing_config(config_path: Path) -> dict:
     from repowise.cli.agent_targets.formats.json_merge import load_json_object
 
     return load_json_object(config_path)
+
+
+def read_hooks_block(path: Path) -> object:
+    """The ``hooks`` block of an agent's JSON hook file; None when absent or unreadable."""
+    if not path.is_file():
+        return None
+    try:
+        return load_existing_config(path).get("hooks")
+    except Exception:  # a broken file is reported by the checks that own it
+        return None
 
 
 # ---------------------------------------------------------------------------

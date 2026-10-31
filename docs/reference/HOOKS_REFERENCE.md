@@ -11,7 +11,7 @@ hand. For what each hook does and when it fires, see [HOOKS.md](../agent/HOOKS.m
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` | `~/.claude/settings.json` |
-| Claude Code | `PostToolUse` (opt-in decision capture prompt) | `Bash\|PowerShell` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
+| Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `repowise-augment`, only when the payload holds `git commit` (guarded) | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | `repowise-augment --coverage-only` (guarded) | the repo's `.claude/settings.local.json` |
 | Claude Code | `PreToolUse` (opt-in health gate) | `Bash\|PowerShell` | `repowise-augment --health-gate` (guarded) | the repo's `.claude/settings.local.json` |
 | Codex | `PreToolUse` (opt-in) | the shell tool | `repowise-rewrite --agent codex` | `~/.codex/hooks.json` |
@@ -23,7 +23,7 @@ Which switch turns each opt-in entry on:
 | Entry | Switch |
 |-------|--------|
 | Command rewrite | `repowise hook rewrite install`, or Yes at the `repowise init` prompt |
-| Decision capture prompt | `repowise decision config capture-prompt --on` ([decisions](../layers/DECISIONS.md)). The entry is per install, so one repo opting in adds a process start on shell calls for every repo on the machine; repos with the policy off return at once |
+| Decision capture prompt | On by default; `init` and the plugin install the entry, `repowise decision config capture-prompt --off` turns it off for one repo ([decisions](../layers/DECISIONS.md)). The entry is per install; a shell call that is not a commit costs one shell start and never starts Python |
 | Coverage re-ingest | `hooks.coverage_reingest: true` in `.repowise/config.yaml`, applied by the next `repowise coverage add`, `init` or `update` ([test intelligence](../layers/TEST_INTELLIGENCE.md)) |
 | Health gate | `repowise hook health-gate install`, which writes `hooks.health_gate: true` and the entry together |
 

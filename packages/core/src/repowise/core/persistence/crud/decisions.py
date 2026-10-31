@@ -164,7 +164,8 @@ async def upsert_decision(
         that the title query cannot see. ``identity_quote`` is not among the
         fields, because it is pinned at first capture.
         """
-        rec.status = status
+        # A restated proposal must not demote an accepted or retired record.
+        rec.status = _merge_status(rec.status, status)
         if kind is not None:
             rec.kind = _extraction_kind(kind)
         rec.context = context
@@ -337,6 +338,10 @@ async def list_decisions(
     if accepted is not None:
         predicate = accepted_predicate()
         q = q.where(predicate if accepted else ~predicate)
+    if accepted is False and status is None and not include_dismissed:
+        # Same candidate set ``count_decisions_by_lane`` counts: a retired
+        # candidate is history, not something to review.
+        q = q.where(DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)))
     order = decision_priority_order(sort)
     if accepted is False and sort != "recent":
         # A candidates page is a review queue, so it leads with the rows the
@@ -506,7 +511,9 @@ async def update_decision_status(
             await record_acceptance(
                 session,
                 rec,
-                action="superseded" if status == "superseded" else "dismissed",
+                # ``deprecated`` and ``dismissed`` share a currency; the action
+                # keeps which one happened.
+                action=status,
                 currency="superseded" if status == "superseded" else "dismissed",
                 accepter=accepter or "unrecorded",
                 kind=kind,

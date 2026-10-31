@@ -7,6 +7,7 @@ No imports from ``parser``, so there is no import cycle.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import structlog
@@ -43,7 +44,11 @@ from .lang_helpers.objc import (
     _objc_symbol_name,
 )
 from .lang_helpers.pascal import _dedupe_pascal_interface_symbols, _qualified_pascal_parent
-from .lang_helpers.source_prep import prepare_objectivec_source, prepare_pascal_source
+from .lang_helpers.source_prep import (
+    prepare_apex_source,
+    prepare_objectivec_source,
+    prepare_pascal_source,
+)
 from .lang_helpers.ts_js import _ts_nested_object_method_owner
 from .lang_helpers.type_heads import (
     TYPE_HEAD_EXTRACTORS,
@@ -52,6 +57,7 @@ from .lang_helpers.type_heads import (
     _rust_head_type_identifier,
     _rust_shadowed_by_type_param,
 )
+from .models import CSHARP_INTEGER_CONSTANT
 from .type_names import kotlin_extension_receiver
 
 log = structlog.get_logger(__name__)
@@ -89,10 +95,12 @@ __all__ = [
     "_rust_head_type_identifier",
     "_rust_shadowed_by_type_param",
     "_ts_nested_object_method_owner",
+    "cpp_template_type_name",
     "follow_renamed_hosts",
     "import_load_kind",
     "in_anonymous_class",
     "is_anonymous_member",
+    "prepare_apex_source",
     "prepare_objectivec_source",
     "prepare_pascal_source",
     "scope_segment",
@@ -266,6 +274,18 @@ def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bo
     return False, deferred
 
 
+def _has_missing_scope_separator(qualified: Node) -> bool:
+    """Is the ``::`` in this ``qualified_identifier`` a tree-sitter repair node?
+
+    When an unexpanded macro precedes a return type on the next line,
+    tree-sitter-cpp reads ``MACRO ReturnType name(...)`` as a declaration and
+    repairs it with a zero-width ``(MISSING "::")``, folding the return type
+    into a ``qualified_identifier`` scope. A real ``Foo::bar`` definition has
+    a ``::`` child with source text, so only the repaired shape trips this.
+    """
+    return any(child.type == "::" and child.is_missing for child in qualified.children)
+
+
 def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     """Return the parent class for a C/C++ ``Class::method`` definition.
 
@@ -287,10 +307,73 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     scope = parent.child_by_field_name("scope")
     if scope is None:
         return None
+    # tree-sitter-cpp repairs an unexpanded macro plus a return type on the
+    # following line into a qualified_identifier by inserting a zero-width
+    # ``(MISSING "::")`` node, so ``LIB_ALWAYS_INLINE box_contents_t`` +
+    # ``box_decode(...)`` reads as a declaration and the free function's
+    # return type is mistaken for the enclosing scope. A genuine
+    # ``Foo::bar`` definition carries a real ``::`` child, so skipping the
+    # missing one keeps out-of-line members classified correctly.
+    if _has_missing_scope_separator(parent):
+        return None
+    if scope.type == "template_type":
+        return cpp_template_type_name(scope, src)
     text = node_text(scope, src).strip()
     # ``scope`` may itself be a qualified path (``NS::Foo``); take the
     # last component — that's the immediate enclosing type.
     return text.rsplit("::", 1)[-1] or None
+
+
+_CPP_SPACE_RUN = re.compile(r"\s+")
+_CPP_BRACKET_SPACE = re.compile(r"(?<=<) | (?=>)")
+
+
+def cpp_template_type_name(node: Node, src: str) -> str:
+    """The class a C++ ``Name<Args>`` scope or class head names.
+
+    A member of the primary template, defined out of line, spells the
+    template's own parameters (``parse_context<Char>::f``) and belongs to
+    ``parse_context``, where a ``ctx.f()`` receiver lookup finds it. Any other
+    argument list is an explicit or partial specialization, a class of its
+    own: it keeps its arguments, on one line, so its members never merge with
+    the primary's.
+    """
+    name = node.child_by_field_name("name")
+    arguments = node.child_by_field_name("arguments")
+    if name is None or arguments is None:
+        return _CPP_SPACE_RUN.sub(" ", node_text(node, src).strip())
+    if _spells_enclosing_parameters(node, arguments, src):
+        return node_text(name, src)
+    return _CPP_BRACKET_SPACE.sub("", _CPP_SPACE_RUN.sub(" ", node_text(node, src).strip()))
+
+
+def _spells_enclosing_parameters(node: Node, arguments: Node, src: str) -> bool:
+    """Do *arguments* name an enclosing ``template <...>``'s parameters, in order?"""
+    spelled = [
+        node_text(arg, src).replace(" ", "").removesuffix("...") for arg in arguments.named_children
+    ]
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type == "template_declaration":
+            parameters = ancestor.child_by_field_name("parameters")
+            if parameters is not None and spelled == _template_parameter_names(parameters, src):
+                return True
+        ancestor = ancestor.parent
+    return False
+
+
+def _template_parameter_names(parameters: Node, src: str) -> list[str | None]:
+    """``template <typename T, int N, typename... Ts>`` -> ``["T", "N", "Ts"]``."""
+    names: list[str | None] = []
+    for parameter in parameters.named_children:
+        # ``template <typename> class C`` names C in its trailing ``class C``.
+        if parameter.type == "template_template_parameter_declaration":
+            parameter = parameter.named_children[-1]
+        name = parameter.child_by_field_name("name") or parameter.child_by_field_name("declarator")
+        if name is None:
+            name = next((c for c in parameter.named_children if c.type in ("type_identifier", "identifier")), None)
+        names.append(node_text(name, src).lstrip("*&. ") if name is not None else None)
+    return names
 
 
 def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:
@@ -383,27 +466,156 @@ _JAVA_INTEGER_LITERALS = frozenset(
 _JAVA_FLOATING_LITERALS = frozenset({"decimal_floating_point_literal", "hex_floating_point_literal"})
 
 
+# Apex literal nodes and the type each one has; ``null`` matches no exact type.
+_APEX_LITERAL_TYPES = {
+    "string_literal": "String",
+    "boolean": "Boolean",
+    "decimal_floating_point_literal": "Decimal",
+}
+
+
 def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
-    """A call's argument expressions, for a language whose overloads read them (Java).
+    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin).
 
     Read from the argument list already in hand, the way ``_count_arguments``
     counts it.
     """
-    if language != "java" or not arg_nodes:
+    if language == "kotlin":
+        return _kotlin_positional_arguments(arg_nodes)
+    if language not in ("java", "apex", "csharp") or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
-    return [
+    arguments = [
         c for c in arg_nodes[0].children if c.type not in skip_types and "comment" not in c.type
     ]
+    if language == "csharp":
+        # A named argument (``onRetry: f``) binds by name, so no position is known.
+        if any(a.child_by_field_name("name") is not None for a in arguments):
+            return []
+        return [a.named_children[-1] if a.named_children else a for a in arguments]
+    return arguments
 
 
-def _argument_literal_types(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:
+def _kotlin_positional_arguments(arg_nodes: list[Node]) -> list[Node]:
+    """Each Kotlin argument's expression, in order, or none at all.
+
+    A named or spread argument, or a trailing lambda, takes a parameter its
+    position does not say, so such a call is not read.
+    """
+    arguments = arg_nodes[0] if arg_nodes else None
+    if arguments is None or arguments.type != "value_arguments" or _kotlin_trailing_lambda(arguments):
+        return []
+    found = []
+    for argument in arguments.named_children:
+        if argument.type != "value_argument":
+            continue
+        parts = argument.named_children
+        if len(parts) != 1 or parts[0].type == "spread_expression":
+            return []
+        found.append(parts[0])
+    return found
+
+
+# Kotlin literals whose type no expected type changes; an unsuffixed integer
+# is an ``Int`` only where an ``Int`` overload exists, which is the one asked.
+_KOTLIN_LITERAL_TYPES = {"string_literal": "String", "character_literal": "Char"}
+_KOTLIN_BOOLEANS = frozenset({"true", "false"})
+# Kotlin's grammar reads these keywords as identifiers; they name no variable.
+_NOT_NAMES = frozenset({b"true", b"false", b"null", b"this"})
+
+
+def _kotlin_literal_type(node: Node, src: str) -> str | None:
+    text = node_text(node, src)
+    if node.type == "identifier":
+        return "Boolean" if text in _KOTLIN_BOOLEANS else None
+    if node.type != "number_literal":
+        return _KOTLIN_LITERAL_TYPES.get(node.type)
+    return _kotlin_number_type(text.lower().replace("_", ""))
+
+
+def _kotlin_number_type(lowered: str) -> str | None:
+    """``Long``, ``Int``, ``Float`` or ``Double`` for a lowercased number.
+
+    None when unsigned, and for an unsuffixed integer past ``Int``'s range,
+    which Kotlin types as a ``Long`` only where no ``Int`` is expected.
+    """
+    if lowered.endswith(("u", "ul")):
+        return None
+    if lowered.endswith("l"):
+        return "Long"
+    base = {"0x": 16, "0b": 2}.get(lowered[:2], 10)
+    if base == 10 and (fraction := _kotlin_fraction_type(lowered)) is not None:
+        return fraction
+    try:
+        value = int(lowered[2:] if base != 10 else lowered, base)
+    except ValueError:
+        return None
+    return "Int" if value < 2**31 else None
+
+
+def _kotlin_fraction_type(lowered: str) -> str | None:
+    if lowered.endswith("f"):
+        return "Float"
+    return "Double" if "." in lowered or "e" in lowered else None
+
+
+def _argument_literal_types(
+    arguments: list[Node], src: str, language: str = "java"
+) -> tuple[str | None, ...] | None:
     """The type of each literal argument, None where an argument is no literal.
 
-    None overall when no argument is a literal.
+    None overall when no argument is a literal. C# reports a lambda's and a
+    construction's shape instead (``_csharp_argument_shape``).
     """
-    types = tuple(_java_literal_type(argument, src) for argument in arguments)
+    literal_type = {
+        "apex": _apex_literal_type,
+        "csharp": _csharp_argument_shape,
+        "kotlin": _kotlin_literal_type,
+    }.get(language, _java_literal_type)
+    types = tuple(literal_type(argument, src) for argument in arguments)
     return types if any(types) else None
+
+
+def _csharp_argument_shape(node: Node, src: str) -> str | None:
+    """``=>2`` for a two-parameter lambda (``=>`` when unwritten), ``new Foo`` for a construction."""
+    if node.type == "lambda_expression":
+        parameters = node.child_by_field_name("parameters")
+        if parameters is not None and parameters.type == "implicit_parameter":
+            return "=>1"
+        return f"=>{len(parameters.named_children)}" if parameters is not None else "=>"
+    if node.type == "anonymous_method_expression":
+        parameters = next((c for c in node.named_children if c.type == "parameter_list"), None)
+        return "=>" if parameters is None else f"=>{len(parameters.named_children)}"
+    if node.type == "object_creation_expression":
+        created = node.child_by_field_name("type")
+        if created is not None and created.type == "generic_name":
+            created = created.named_children[0] if created.named_children else None
+        if created is not None and created.type == "identifier":
+            return f"new {node_text(created, src)}"
+    return _csharp_literal_type(node, src)
+
+
+# C# literal nodes whose type no target type changes.
+_CSHARP_LITERAL_TYPES = {
+    "string_literal": "string",
+    "verbatim_string_literal": "string",
+    "raw_string_literal": "string",
+    "interpolated_string_expression": "string",
+    "character_literal": "char",
+    "boolean_literal": "bool",
+}
+# Integer suffixes whose constant reaches exactly what a value of the type does.
+# An ``L`` constant is left untyped: when non-negative it also reaches ``ulong``.
+_CSHARP_INTEGER_SUFFIXES = {"": CSHARP_INTEGER_CONSTANT, "u": "uint", "ul": "ulong", "lu": "ulong"}
+
+
+def _csharp_literal_type(node: Node, src: str) -> str | None:
+    if node.type == "integer_literal":
+        suffix = node_text(node, src).lower().lstrip("0123456789abcdefx_")
+        return _CSHARP_INTEGER_SUFFIXES.get(suffix)
+    if node.type == "real_literal":
+        return {"f": "float", "m": "decimal"}.get(node_text(node, src)[-1:].lower(), "double")
+    return _CSHARP_LITERAL_TYPES.get(node.type)
 
 
 def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:
@@ -411,7 +623,10 @@ def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] |
 
     None overall when no argument is one. The resolver reads their declared types.
     """
-    names = tuple(node_text(a, src) if a.type == "identifier" else None for a in arguments)
+    names = tuple(
+        node_text(a, src) if a.type == "identifier" and a.text not in _NOT_NAMES else None
+        for a in arguments
+    )
     return names if any(names) else None
 
 
@@ -437,7 +652,92 @@ def _java_literal_type(node: Node, src: str) -> str | None:
         return "long" if node_text(node, src).endswith(("l", "L")) else "int"
     if node.type in _JAVA_FLOATING_LITERALS:
         return "float" if node_text(node, src).endswith(("f", "F")) else "double"
+    return _java_expression_type(node, src)
+
+
+def _java_expression_type(node: Node, src: str) -> str | None:
+    """A class literal, a String concatenation or a lambda's shape; else a plain literal."""
+    if node.type == "class_literal":
+        return "Class"
+    if node.type == "binary_expression":
+        return _java_concatenation_type(node, src)
+    if node.type == "lambda_expression":
+        return _java_lambda_shape(node)
     return _JAVA_LITERAL_TYPES.get(node.type)
+
+
+def _java_concatenation_type(node: Node, src: str) -> str | None:
+    """``"id " + id`` is a String: a ``+`` with a String literal operand."""
+    operator = node.child_by_field_name("operator")
+    if operator is None or node_text(operator, src) != "+":
+        return None
+    operands = (node.child_by_field_name("left"), node.child_by_field_name("right"))
+    if any(o is not None and _java_literal_type(o, src) == "String" for o in operands):
+        return "String"
+    return None
+
+
+# Expression bodies that suit a void and a value-returning interface alike.
+_JAVA_EITHER_BODIES = frozenset(
+    {"assignment_expression", "update_expression", "object_creation_expression"}
+)
+
+
+def _java_lambda_shape(node: Node) -> str | None:
+    """A lambda as ``->N:value``, ``->N:void`` or ``->N:either``, N its parameter count.
+
+    Read by overload choice against functional interfaces (``Runnable`` vs
+    ``Supplier``). A body that is a bare method call may or may not yield a
+    value, and a block ending in a throw fits both, so neither is judged.
+    """
+    body = node.child_by_field_name("body")
+    if body is None or body.type == "method_invocation":
+        return None
+    count = _lambda_parameter_count(node)
+    if body.type in _JAVA_EITHER_BODIES:
+        return f"->{count}:either"
+    if body.type != "block":
+        return f"->{count}:value"
+    returns = _block_returns(body)
+    if not returns and _ends_in_throw(body):
+        return None
+    return f"->{count}:{'value' if any(returns) else 'void'}"
+
+
+def _lambda_parameter_count(node: Node) -> int:
+    params = node.child_by_field_name("parameters")
+    if params is None:
+        return 0
+    if params.type == "identifier":
+        return 1
+    return sum(1 for c in params.named_children if "comment" not in c.type)
+
+
+def _ends_in_throw(block: Node) -> bool:
+    statements = [c for c in block.named_children if "comment" not in c.type]
+    return bool(statements) and statements[-1].type == "throw_statement"
+
+
+def _block_returns(block: Node) -> list[bool]:
+    """Whether each ``return`` in a lambda's own block carries a value.
+
+    A nested lambda's or class body's returns belong to it, not this lambda.
+    """
+    found: list[bool] = []
+    stack = list(block.named_children)
+    while stack:
+        node = stack.pop()
+        if node.type == "return_statement":
+            found.append(node.named_child_count > 0)
+        elif node.type not in ("lambda_expression", "class_body"):
+            stack.extend(node.named_children)
+    return found
+
+
+def _apex_literal_type(node: Node, src: str) -> str | None:
+    if node.type == "int":
+        return "Long" if node_text(node, src).endswith(("l", "L")) else "Integer"
+    return _APEX_LITERAL_TYPES.get(node.type)
 
 
 def _find_enclosing_symbol(

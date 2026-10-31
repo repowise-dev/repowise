@@ -31,11 +31,11 @@ class BaselineSample(NamedTuple):
 
 # Process-wide memo for the 200-commit baseline walk, which is the dominant cost
 # of a default get_change_risk call and is identical for every change scored
-# against the same repo state. Keyed on the *resolved anchor sha* (not the ref
-# name) so a new commit on HEAD busts the entry, plus every other input that
-# changes the sample (sample size, filters). Deliberately NOT keyed on the
-# target being scored: the sample is stored whole and the target's own score is
-# dropped when ranking, so two changes against the same history share one walk.
+# from the same anchor (a commit's parent, a range's merge-base, HEAD for
+# uncommitted work). Keyed on the *resolved anchor sha* (not the ref name) so a
+# new commit on HEAD busts the entry, plus every other input that changes the
+# sample (sample size, filters), so a commit and its ``sha^..sha`` range, or a
+# clean HEAD scored twice, share one walk.
 _BASELINE_CACHE: dict[tuple, list[BaselineSample]] = {}
 # Crude bound so a long-lived MCP server that scores many distinct changes does
 # not grow the memo without limit. On overflow the whole cache is dropped
@@ -49,7 +49,7 @@ def clear_baseline_cache() -> None:
     _BASELINE_CACHE.clear()
 
 
-def _resolve_anchor_sha(repo_path: str, anchor: str) -> str | None:
+def resolve_anchor_sha(repo_path: str, anchor: str) -> str | None:
     """Resolve *anchor* to a full sha for cache keying, or None if it cannot be.
 
     check=False: a bad anchor is not fatal here - it just means we skip caching
@@ -62,11 +62,10 @@ def _resolve_anchor_sha(repo_path: str, anchor: str) -> str | None:
 def _retained(samples: list[BaselineSample], excluded_ref: str) -> list[BaselineSample]:
     """The sample with the target commit's own entry removed.
 
-    Self-exclusion is a rank-time filter, not a property of the sample, so the
-    walk is cached whole and each target removes only itself. *excluded_ref* is
-    a commit sha, full or abbreviated - a ref *name* matches nothing, since the
-    sample is keyed by sha. Empty means nothing to exclude (a range or an
-    uncommitted change is not in the sample to begin with). An abbreviation
+    The live scorers pass empty: their sample runs back from before the change
+    (``service.history_ref``), so the change is never in it. A caller that ranks
+    against a sample holding the target passes its sha, full or abbreviated - a
+    ref *name* matches nothing, since the sample is keyed by sha. An abbreviation
     short enough to prefix-match several shas will drop all of them.
     """
     if not excluded_ref:
@@ -118,10 +117,9 @@ def baseline_samples(
 ) -> list[BaselineSample]:
     """Score the repo's recent commits to build a local risk distribution.
 
-    Returns :class:`BaselineSample` rows so a caller can exclude the change it
-    is ranking (see :func:`scores_excluding`) without needing a sample of its
-    own, and can rank a fix density against the same commits
-    (see :func:`densities_excluding`).
+    Returns :class:`BaselineSample` rows so a caller can rank a diff-shape
+    score (see :func:`scores_excluding`) and a fix density
+    (see :func:`densities_excluding`) against the same commits.
 
     One ``git log --numstat`` call (no per-commit author lookup), so it stays
     cheap enough for a pre-merge gate. Experience is left unknown for the
@@ -186,7 +184,7 @@ def baseline_samples_cached(
     the entry as soon as a new commit lands. When the anchor cannot be resolved
     the call falls through to an uncached computation.
     """
-    sha = _resolve_anchor_sha(repo_path, anchor)
+    sha = resolve_anchor_sha(repo_path, anchor)
     if sha is None:
         return baseline_samples(
             repo_path, anchor, limit, extensions, exclude_patterns, include_paths

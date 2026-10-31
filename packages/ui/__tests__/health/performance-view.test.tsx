@@ -220,7 +220,7 @@ describe("PerformanceView queue", () => {
     expect(within(first!).getByText(/2 call sites across 2 files/)).toBeTruthy();
     expect(within(first!).getByText("Plan ready")).toBeTruthy();
     expect(
-      within(first!).getByRole("button", { name: /^Copy prompt for your agent: Database call/ }),
+      within(first!).getByRole("button", { name: /^Copy prompt: Database call/ }),
     ).toBeTruthy();
     expect(within(first!).getByRole("link", { name: "Open plan" })).toBeTruthy();
     // The file is one verb among the row's others, behind its menu.
@@ -621,7 +621,7 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter({ getRefactoringPlan: async () => exact })} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt" }));
     expect(await screen.findByText("Prompt for your agent")).toBeTruthy();
     expect(await screen.findByText(/chars, approx/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("Causal performance opportunity");
@@ -652,7 +652,7 @@ describe("PerformanceView drawer", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt" }));
     expect(await screen.findByText(/served plan-1 generic/)).toBeTruthy();
     expect(served).toHaveBeenCalledWith("plan-1", "generic");
   });
@@ -661,7 +661,7 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt" }));
     expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
   });
 
@@ -669,7 +669,7 @@ describe("PerformanceView drawer", () => {
     const served = vi.fn(async (planId: string, flavor: string) => `served ${planId} ${flavor}`);
     render(<PerformanceView adapter={adapter({ getRefactoringPlanPrompt: served })} />);
     const [first] = await rows();
-    fireEvent.click(within(first!).getByRole("button", { name: /^Copy prompt for your agent:/ }));
+    fireEvent.click(within(first!).getByRole("button", { name: /^Copy prompt:/ }));
     // No plan fetch on this host, so the evidence handoff, and no drawer.
     expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
     expect(screen.queryByText("Show this cause on the map")).toBeNull();

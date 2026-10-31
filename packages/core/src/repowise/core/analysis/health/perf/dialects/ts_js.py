@@ -455,6 +455,7 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
         {"break_statement", "continue_statement", "return_statement", "throw_statement"}
     )
     scope_kinds = _FN_KINDS
+    statement_block_kinds = frozenset({"statement_block", "switch_case", "switch_default"})
 
     def _magnitude_of_expr(
         self, expr: Node | None, probe: SinkProbe, depth: int = 0

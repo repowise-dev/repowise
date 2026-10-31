@@ -365,3 +365,19 @@ async def test_include_paths_scope_the_score_and_every_block_that_reads_the_file
     assert seen == [["vendor/lib.py"]]
     nothing = await module.get_change_risk("HEAD", baseline=0, include_paths="docs/")
     assert nothing["status"] == "nothing_to_score"
+
+
+async def test_block_timings_ride_only_the_debug_meta(tool, make_repo, monkeypatch):
+    from repowise.server.mcp_server._meta import DEBUG_META_ENV
+    from repowise.server.mcp_server.tool_change_risk import cache
+
+    module = tool(seeded(make_repo))
+    monkeypatch.delenv(DEBUG_META_ENV, raising=False)
+    plain = await module.get_change_risk("HEAD", baseline=0)
+    assert "block_timing_ms" not in plain.get("_meta", {})
+
+    monkeypatch.setattr(cache, "_SCORED", type(cache._SCORED)())
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+    timed = (await module.get_change_risk("HEAD", baseline=0))["_meta"]["block_timing_ms"]
+    assert {"score", "health_delta", "impacted_tests", "patch_coverage"} <= set(timed)
+    assert all(isinstance(ms, int) and ms >= 0 for ms in timed.values())

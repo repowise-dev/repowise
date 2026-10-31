@@ -51,9 +51,9 @@ _TEMPLATES: dict[str, str] = {
         "if/elif ladder with polymorphism or a lookup table."
     ),
     "repeated_nesting": (
-        "Several nested blocks side by side usually mean the function "
-        "does several jobs. Split it into stages so each stage stays at "
-        "a single level of abstraction."
+        "Split the function into stages. Several nested blocks side by side "
+        "usually mean it does several jobs; give each stage its own helper "
+        "at a single level of abstraction."
     ),
     "large_method": (
         "Shorten the function. Extract paragraphs (each comment block "
@@ -186,10 +186,10 @@ _TEMPLATES: dict[str, str] = {
         "to check against."
     ),
     "stale_governance": (
-        "The architectural decision governing this file has gone stale: "
-        "the code has changed but the decision hasn't been reviewed. "
-        "Update or supersede the decision via `repowise decision edit` "
-        "so the rationale reflects the current implementation."
+        "Files governed by this file's architectural decision have changed "
+        "since the decision was recorded. Review it, and if it no longer "
+        "holds, update or supersede it via `repowise decision edit` so the "
+        "rationale reflects the current implementation."
     ),
     "contradictory_decision": (
         "Two active decisions make contradictory claims that affect this "
@@ -316,6 +316,28 @@ _TEMPLATES: dict[str, str] = {
         "Confirm the statement should touch every row. Add the WHERE clause it "
         "needs, or a comment stating that the full-table change is intended."
     ),
+    # Apex.
+    "apex_soql_injection": (
+        "Bind the value. Write it as a bind variable (`:value`) in the query "
+        "string, or pass it through String.escapeSingleQuotes before splicing it in."
+    ),
+    "apex_missing_sharing": (
+        "Declare the sharing mode. Add `with sharing` (or `inherited sharing`), or "
+        "`without sharing` with a comment saying why the class must see every record."
+    ),
+    "apex_hardcoded_id": (
+        "Look the record up instead. Query it by a stable field (DeveloperName, a "
+        "unique name) or read the Id from custom metadata or a custom setting."
+    ),
+    "apex_see_all_data": (
+        "Create the test's data. Insert the records the test needs (a test data "
+        "factory or @TestSetup) and drop SeeAllData=true."
+    ),
+    "cobol_unstructured_flow": (
+        "Return through the range exit. Replace the jump with a flag the caller "
+        "tests, or PERFORM the target paragraph, and set the next step with a "
+        "value instead of ALTER."
+    ),
 }
 
 
@@ -331,6 +353,18 @@ def suggestion_for(biomarker_type: str) -> str:
         "Review this finding and decide whether the underlying smell is "
         "worth refactoring or suppressing via `.repowise/health-rules.json`.",
     )
+
+
+def hint_for(biomarker_type: str) -> str | None:
+    """The first sentence of the marker's template, for a one-line fix hint.
+
+    ``None`` when the marker has no template: the generic fallback is no hint.
+    """
+    template = _TEMPLATES.get(canonical_biomarker(biomarker_type))
+    if template is None:
+        return None
+    head, dot, _ = template.partition(". ")
+    return head + "." if dot else template
 
 
 def annotate_finding(finding: dict[str, Any]) -> dict[str, Any]:

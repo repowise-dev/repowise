@@ -242,7 +242,7 @@ describe("ChatInterface shell", () => {
     const model = screen.getByTestId("model-slot");
     const shortcut = screen.getByText("Enter to send · Shift+Enter for newline");
     expect(model.compareDocumentPosition(shortcut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send message" }).className).not.toContain("accent-fill");
+    expect(screen.getByRole("button", { name: "Send message" }).className).not.toContain("action-primary");
   });
 
   it("announces meaningful stream transitions without announcing token deltas", () => {
@@ -321,9 +321,10 @@ describe("ChatInterface shell", () => {
   it("fills the send button only when there is text", () => {
     render(<ChatInterface repoId="r1" messages={[]} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />);
     const send = screen.getByRole("button", { name: "Send message" });
-    expect(send.className).not.toContain("accent-fill");
+    expect(send.className).not.toContain("action-primary");
     fireEvent.change(screen.getByLabelText("Chat message"), { target: { value: "hi" } });
-    expect(send.className).toContain("accent-fill");
+    expect(send.className).toContain("action-primary");
+    expect(send.className).not.toContain("accent-fill");
     expect(send.className).toContain("rounded-full");
   });
 });

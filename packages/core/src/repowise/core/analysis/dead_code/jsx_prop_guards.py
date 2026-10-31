@@ -466,11 +466,11 @@ def unsatisfied_prop_guard(
 
 
 def _use_predecessors(graph: Any, node: str) -> list[str]:
-    """Predecessors of *node* over a reachability-use edge."""
+    """Predecessors of *node* over a reachability-use edge, a recursive self-use aside."""
     return [
         pred
         for pred in graph.predecessors(node)
-        if graph[pred][node].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+        if pred != node and graph[pred][node].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
     ]
 
 

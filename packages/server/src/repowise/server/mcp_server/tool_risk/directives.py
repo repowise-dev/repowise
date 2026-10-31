@@ -326,6 +326,15 @@ def _cross_repo_relationships(
                     "reason": "live_repository_heads_not_compared",
                 },
                 **({"reason": "per_edge_match_provenance_not_retained"} if structural else {}),
+                # How far to trust the edge set, and this repo's unlinked calls.
+                **(
+                    {"graph_evidence": evidence}
+                    if (evidence := enricher.graph_evidence_brief())
+                    else {}
+                ),
+                **(
+                    {"http_calls": split} if (split := enricher.http_call_split(repo_alias)) else {}
+                ),
             },
         }
     except Exception:

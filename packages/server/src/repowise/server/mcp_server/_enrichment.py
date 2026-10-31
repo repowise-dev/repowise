@@ -13,6 +13,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from repowise.core.workspace.package_reach import package_link_reaches
+
 _log = logging.getLogger("repowise.mcp.enrichment")
 
 # Sentinels from _read_artifact: a parsed JSON ``null`` is a real payload.
@@ -113,16 +115,26 @@ class CrossRepoEnricher:
         # Contract indexes
         self._contracts: list[dict] = []
         self._contract_links: list[dict] = []
+        self._service_links: list[dict] = []
         self._contract_provider_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self._contract_consumer_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
         # Keyed by the ingestion symbol id, so a caller holding a symbol can
         # cross the contract link without scanning every contract.
         self._contract_symbol_index: dict[str, list[dict]] = defaultdict(list)
         self._link_provider_symbol_index: dict[str, list[dict]] = defaultdict(list)
+        # (repo, file, contract_id, role) -> origin, so a link row can name how
+        # each of its ends was read.
+        self._contract_origin_index: dict[tuple[Any, Any, Any, Any], str] = {}
 
         # Service-granular system graph from the workspace update. Read-only;
         # views over it live in core/types.
         self._system_graph: dict | None = None
+        # Read once per loaded graph: its evidence brief and parsed diagnostics.
+        self._evidence_brief: Any = _ABSENT
+        self._parsed_diagnostics: Any = _ABSENT
+        # Every link resolved to its service pair, built on the first
+        # links-between read and dropped with the artifacts it was built from.
+        self._links_index: Any = None
 
         # Provider changes from the latest update that break consumers, with the
         # impacted consumer files. Read-only.
@@ -304,8 +316,17 @@ class CrossRepoEnricher:
             self._package_dep_index[src_repo].append({"target_repo": tgt_repo, **evidence})
             # Reverse: who depends on target_repo
             self._package_dep_reverse[tgt_repo].append(src_repo)
+            reached = pd.get("reached_files")
+            if not isinstance(reached, list):
+                reached = None  # absent or malformed: the whole package counts
             self._package_dep_reverse_links[tgt_repo].append(
-                {"source_repo": src_repo, "target_repo": tgt_repo, **evidence}
+                {
+                    "source_repo": src_repo,
+                    "target_repo": tgt_repo,
+                    **evidence,
+                    # A set for the per-file test; None reads as the whole package.
+                    "reached_files": None if reached is None else frozenset(reached),
+                }
             )
         return malformed
 
@@ -320,6 +341,7 @@ class CrossRepoEnricher:
     def _ingest_contracts(self, data: dict) -> None:
         self._contracts = data.get("contracts", [])
         self._contract_links = data.get("contract_links", [])
+        self._service_links = data.get("service_links", [])
         self._contract_analysis = {
             "status": "available",
             "contract_version": data.get("version", 1),
@@ -355,6 +377,15 @@ class CrossRepoEnricher:
             symbol_id = contract.get("symbol_id")
             if symbol_id:
                 self._contract_symbol_index[symbol_id].append(contract)
+            origin = contract.get("origin")
+            if origin:
+                key = (
+                    contract.get("repo"),
+                    contract.get("file_path"),
+                    contract.get("contract_id"),
+                    contract.get("role"),
+                )
+                self._contract_origin_index[key] = origin
 
         _log.debug(
             "Contract enricher loaded: %d contracts, %d links",
@@ -370,6 +401,7 @@ class CrossRepoEnricher:
 
     def _ingest_system_graph(self, graph: dict) -> None:
         self._system_graph = graph
+        self._evidence_brief = self._parsed_diagnostics = _ABSENT
         _log.debug(
             "System graph loaded: %d nodes, %d edges",
             len(graph.get("nodes", [])),
@@ -444,6 +476,11 @@ class CrossRepoEnricher:
         return self._contract_links
 
     @property
+    def service_links(self) -> list[dict]:
+        """Service-level link rows: a host named but no route, and gateway routes."""
+        return self._service_links
+
+    @property
     def co_changes(self) -> list[dict]:
         """The stored co-change pairs, already capped by the miner."""
         return self._co_changes
@@ -476,6 +513,29 @@ class CrossRepoEnricher:
     def get_system_graph(self) -> dict | None:
         """Return the raw system graph dict (nodes, edges, diagnostics)."""
         return self._system_graph
+
+    def links_index(self) -> Any:
+        """The loaded artifacts' :class:`~repowise.core.workspace.links_between.LinksIndex`.
+
+        None without a system graph. Built once, so paging a pair never
+        rescans the estate's links.
+        """
+        if self._system_graph is None:
+            return None
+        if self._links_index is None:
+            from repowise.core.workspace.links_between import build_links_index
+
+            self._links_index = build_links_index(
+                self._system_graph,
+                {
+                    "contracts": self._contracts,
+                    "contract_links": self._contract_links,
+                    "service_links": self._service_links,
+                    "repo_provenance": self._contract_analysis.get("repo_provenance"),
+                },
+                {"package_deps": self._package_deps, "co_changes": self._co_changes},
+            )
+        return self._links_index
 
     @property
     def has_breaking_changes(self) -> bool:
@@ -543,6 +603,7 @@ class CrossRepoEnricher:
         )
         payload = metrics.to_dict()
         payload["repo_provenance"] = self._system_graph.get("repo_provenance", {})
+        payload["http_calls"] = self.http_call_split()
         return payload
 
     def get_diagnostics(self) -> dict | None:
@@ -550,6 +611,92 @@ class CrossRepoEnricher:
         if self._system_graph is None:
             return None
         return self._system_graph.get("diagnostics")
+
+    def graph_evidence_brief(self) -> dict | None:
+        """The graph's evidence ``state`` and ``reason`` codes when short of measured.
+
+        Core's :func:`graph_evidence`, the one every view reads; ``None`` when
+        measured or without a graph, so a default response stays flat.
+        """
+        if self._evidence_brief is _ABSENT:
+            self._evidence_brief = None
+            if self._system_graph is not None:
+                from repowise.core.workspace.graph_evidence import (
+                    EVIDENCE_MEASURED,
+                    graph_evidence,
+                )
+                from repowise.core.workspace.system_graph import SystemGraph
+
+                try:
+                    evidence = graph_evidence(SystemGraph.from_dict(self._system_graph))
+                    # Measured needs no caveat; otherwise the reason codes, not prose.
+                    if evidence.state != EVIDENCE_MEASURED:
+                        self._evidence_brief = {
+                            "state": evidence.state,
+                            "reason": ", ".join(r.code for r in evidence.reasons),
+                        }
+                except Exception:
+                    # An additive field: a bad graph never hides the block it rides on.
+                    _log.debug("Graph evidence unavailable", exc_info=True)
+        return self._evidence_brief
+
+    def _diagnostics_model(self) -> Any:
+        """The graph's diagnostics as :class:`ExtractionDiagnostics`, parsed once; else ``None``."""
+        if self._parsed_diagnostics is _ABSENT:
+            self._parsed_diagnostics = None
+            if raw := self.get_diagnostics():
+                from repowise.core.workspace.diagnostics import ExtractionDiagnostics
+
+                try:
+                    self._parsed_diagnostics = ExtractionDiagnostics.from_dict(raw)
+                except Exception:
+                    # An additive field: unreadable diagnostics drop only the counts.
+                    _log.debug("Extraction diagnostics unreadable", exc_info=True)
+        return self._parsed_diagnostics
+
+    def http_call_split(self, repo: str | None = None) -> dict | None:
+        """HTTP calls read, and of those not linked how many are served in-service.
+
+        ``not_linked`` excludes in-service calls, which ``in_service`` counts, as
+        the CLI diagnostics headline does. ``linked`` is workspace wide, so only
+        an unscoped call carries it. ``None`` without diagnostics, or for a
+        *repo* with no HTTP call.
+        """
+        diag = self._diagnostics_model()
+        if diag is None:
+            return None
+        by_reason, in_service = diag.http_unlinked(repo)
+        read = sum(
+            r.consumers_by_type.get("http", 0)
+            for r in diag.repo_breakdown
+            if repo in (None, r.repo)
+        )
+        split: dict[str, Any] = {"read": read}
+        if repo is None and diag.http_consumers_linked is not None:
+            split["linked"] = diag.http_consumers_linked
+        split["not_linked"] = sum(by_reason.values())
+        split["in_service"] = in_service
+        # A repo that read no HTTP call has nothing to split.
+        return split if repo is None or any(split.values()) else None
+
+    def link_provenance(self, link: dict, side: str) -> dict[str, str]:
+        """``strategy`` of *link* and ``origin`` of its *side* end, each only when stored.
+
+        Values pass through from :mod:`repowise.core.workspace.origins`; a store
+        written before either existed yields neither key.
+        """
+        contract_id = (
+            link.get("consumer_contract_id") or link.get("contract_id")
+            if side == "consumer"
+            else link.get("contract_id")
+        )
+        origin = self._contract_origin_index.get(
+            (link.get(f"{side}_repo"), link.get(f"{side}_file"), contract_id, side)
+        )
+        return {
+            **({"strategy": strategy} if (strategy := link.get("strategy")) else {}),
+            **({"origin": origin} if origin else {}),
+        }
 
     def get_cross_repo_partners(self, repo_alias: str, file_path: str) -> list[dict]:
         """Return cross-repo co-change partners for a file.
@@ -574,6 +721,14 @@ class CrossRepoEnricher:
     def get_package_consumers(self, repo_alias: str) -> list[dict]:
         """Typed package links whose source repository depends on *repo_alias*."""
         return self._package_dep_reverse_links.get(repo_alias, [])
+
+    def get_package_consumers_of(self, repo_alias: str, file_path: str) -> list[dict]:
+        """The package links of :meth:`get_package_consumers` whose imports reach *file_path*."""
+        return [
+            link
+            for link in self.get_package_consumers(repo_alias)
+            if package_link_reaches(link, file_path)
+        ]
 
     def get_cross_repo_summary(self) -> dict:
         """High-level cross-repo stats for the overview footer."""
@@ -617,23 +772,20 @@ class CrossRepoEnricher:
         return self._consumer_index.get((repo_alias, file_path), [])
 
     def get_affected_repos(self, repo_alias: str, file_path: str) -> list[str]:
-        """Return repo aliases that may be impacted by changes to this file.
+        """Other repos a concrete link ties to this file.
 
-        Combines co-change partners + package dep consumers + contract links.
+        A contract link on either side, or a package dependent whose imports
+        reach the file (:func:`package_link_reaches`). Co-change is history,
+        not a link, and a package dependency alone names no file.
         """
-        repos: set[str] = set()
-
-        for partner in self._co_change_index.get((repo_alias, file_path), []):
-            repos.add(partner["repo"])
-
-        for dep_repo in self._package_dep_reverse.get(repo_alias, []):
-            repos.add(dep_repo)
-
-        for link in self._contract_provider_index.get((repo_alias, file_path), []):
-            repos.add(link["consumer_repo"])
-
-        repos.discard(repo_alias)
-        return sorted(repos)
+        provided = self.get_contract_links_as_provider(repo_alias, file_path)
+        consumed = self.get_contract_links_as_consumer(repo_alias, file_path)
+        repos = {
+            *(link.get("consumer_repo") for link in provided),
+            *(link.get("provider_repo") for link in consumed),
+            *(link["source_repo"] for link in self.get_package_consumers_of(repo_alias, file_path)),
+        }
+        return sorted(repo for repo in repos if repo and repo != repo_alias)
 
     # Contract queries
 

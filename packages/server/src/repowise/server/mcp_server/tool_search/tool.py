@@ -11,6 +11,11 @@ from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_search as _pkg
+from repowise.server.mcp_server._answer_pipeline.leg_record import (
+    begin_leg_record,
+    degraded_legs,
+    retrieval_legs,
+)
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_repo,
@@ -46,6 +51,7 @@ from .ranking import (
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _reserve_symbol_tail,
     _sort_demoting_noise,
@@ -53,7 +59,6 @@ from .ranking import (
 from .retrieval import _federated_search, _fused_retrieve, _per_repo
 from .serve import (
     _apply_freshness_boost,
-    _assign_confidence,
     _attach_paths,
     _drop_internal_ranking_fields,
     _grep_hint_for,
@@ -116,6 +121,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     async with get_session(ctx.session_factory) as session:
         page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
         path_index = await file_path_index(session, repo_id)
+        minor = await _minor_spotlights(session, output, query, repo_id)
     # Tombstoned pages document deleted/renamed files — never results.
     output = [item for item in output if item["page_id"] not in tombstoned]
     _attach_paths(output, page_info)
@@ -130,7 +136,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
     _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    _sort_demoting_noise(output, query, minor)
     return _dedup_decisions(output)
 
 
@@ -169,7 +175,6 @@ async def _concept_search(
     ranked = list(output)
     output = output[:limit]
     await attach_hit_symbols(ctx, query, output)
-    _assign_confidence(output, "relevance_score", "confidence_score")
 
     response: dict = {
         "results": output,
@@ -241,12 +246,16 @@ async def search_codebase(
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)
     if not query.strip():
+        from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+        note_error_reason("invalid_args")
         return {
             "results": [],
             "error": "search_codebase requires `query` (or its alias `pattern`).",
             "_meta": _build_meta(),
         }
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
     # skipped by the next and reported once.
     fed = Federation() if repo == "all" else None
@@ -262,7 +271,7 @@ async def search_codebase(
         _pkg._lead_candidates(structured, issue, limit)
         await attach_line_hits(structured, query, resolved_mode, names, repo)
         attach_ignored_arguments(structured, ignored)
-        return structured
+        return _flag_degraded_legs(_drop_echoed_candidates(structured))
 
     if fed is not None:
         # kind is filtered per repo before each repo's limit cut, so the fused
@@ -271,7 +280,7 @@ async def search_codebase(
         if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
         attach_ignored_arguments(federated, ignored)
-        return federated
+        return _flag_degraded_legs(_drop_echoed_candidates(federated))
 
     response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
     await attach_line_hits(response, query, resolved_mode, names, repo)
@@ -279,4 +288,23 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
     _serve_snippets(response["results"])
+    return _flag_degraded_legs(_drop_echoed_candidates(response))
+
+
+def _drop_echoed_candidates(response: dict) -> dict:
+    """Drop ``candidates`` that only repeat the result paths in result order."""
+    candidates = response.get("candidates")
+    if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
+        return response
+    rows = [r for r in response.get("results") or [] if isinstance(r, dict)]
+    paths = list(dict.fromkeys(r["path"] for r in rows if r.get("path")))
+    if [c["path"] for c in candidates] == paths:
+        del response["candidates"]
+    return response
+
+
+def _flag_degraded_legs(response: dict) -> dict:
+    """Name the retrieval legs this reply ran without, as get_answer does."""
+    if degraded := degraded_legs(retrieval_legs()):
+        response.setdefault("_meta", {})["retrieval_degraded"] = degraded
     return response

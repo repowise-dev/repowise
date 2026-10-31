@@ -28,6 +28,7 @@ from repowise.core.persistence.sql import (  # noqa: F401
 )
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._query_shape import _is_path  # noqa: F401
+from repowise.server.mcp_server._why_relevance import floor_ranked, question_terms
 
 _log = logging.getLogger("repowise.mcp")
 
@@ -46,18 +47,33 @@ _VECTOR_TIMEOUT_DEFAULT_S = 30.0
 # A search an agent blocks on; past this the client's own tool timeout fires
 # first, so a larger value cannot produce results anyone still accepts.
 _VECTOR_TIMEOUT_MAX_S = 120.0
+# How long hybrid search waits for the vector leg once the other legs are in.
+# A warm leg takes ~0.3s (one embedding round trip); a cold store or a
+# rate-limited embedder takes 5-13s, and full-text hits are ready long before.
+_SEMANTIC_GRACE_ENV = "REPOWISE_SEMANTIC_GRACE_S"
+_SEMANTIC_GRACE_DEFAULT_S = 1.0
 
 
 def vector_search_timeout_s() -> float:
-    """Seconds one vector query may take, from env or the cold-start default.
+    """Seconds one vector query may take, from env or the cold-start default."""
+    return _env_seconds(_VECTOR_TIMEOUT_ENV, _VECTOR_TIMEOUT_DEFAULT_S)
+
+
+def semantic_grace_s() -> float:
+    """Seconds hybrid search waits for the vector leg after the other legs finish."""
+    return _env_seconds(_SEMANTIC_GRACE_ENV, _SEMANTIC_GRACE_DEFAULT_S)
+
+
+def _env_seconds(env: str, default: float) -> float:
+    """A positive number of seconds from *env*, capped, else *default*.
 
     An unparseable or non-positive value warns and keeps the default instead of
-    silently disabling the leg, matching how REPOWISE_EMBEDDING_TIMEOUT is
+    silently disabling the wait, matching how REPOWISE_EMBEDDING_TIMEOUT is
     resolved.
     """
-    raw = (os.environ.get(_VECTOR_TIMEOUT_ENV) or "").strip()
+    raw = (os.environ.get(env) or "").strip()
     if not raw:
-        return _VECTOR_TIMEOUT_DEFAULT_S
+        return default
     try:
         seconds = float(raw)
     except ValueError:
@@ -65,8 +81,8 @@ def vector_search_timeout_s() -> float:
     # NaN fails this too, so it lands on the default rather than on a budget
     # asyncio.wait_for would treat as already expired.
     if not seconds > 0:
-        _log.warning("Ignoring unusable %s=%r", _VECTOR_TIMEOUT_ENV, raw)
-        return _VECTOR_TIMEOUT_DEFAULT_S
+        _log.warning("Ignoring unusable %s=%r", env, raw)
+        return default
     return min(seconds, _VECTOR_TIMEOUT_MAX_S)
 
 
@@ -110,8 +126,11 @@ def embed_timeout_s() -> float:
 # ---------------------------------------------------------------------------
 
 
+_warned_ambiguous: set[str] = set()
+
+
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository — by path, by ID, or return the first one."""
+    """Resolve a repository by path, ID or name; with none, the served directory's."""
     if repo:
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
@@ -133,13 +152,30 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         if obj:
             return obj
         raise LookupError(f"Repository not found: {repo}")
+    return await _default_repo(session)
 
-    # Default: return the first (and often only) repository
-    result = await session.execute(select(Repository).limit(1))
-    obj = result.scalar_one_or_none()
-    if obj is None:
+
+async def _default_repo(session: AsyncSession) -> Repository:
+    """The served directory's row, else the only (or first) row."""
+    served = _state._repo_path
+    if served:
+        for key in dict.fromkeys((served, str(Path(served).resolve()))):
+            obj = await get_repository_by_path(session, key)
+            if obj:
+                return obj
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if not rows:
         raise LookupError("No repositories found. Run 'repowise init' first.")
-    return obj
+    if len(rows) > 1 and served and served not in _warned_ambiguous:
+        # A store split when an older version indexed a moved or copied repo.
+        _warned_ambiguous.add(served)
+        _log.warning(
+            "The index holds several repositories and none at %s; serving %s. "
+            "Pass `repo` to pick another.",
+            served,
+            rows[0].local_path,
+        )
+    return rows[0]
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +201,15 @@ def clean_signature(signature: str | None) -> str:
 def _is_workspace_mode() -> bool:
     """Return True if the MCP server is running in workspace mode."""
     return _state._registry is not None
+
+
+def _cross_repo_cut(alias: str | None) -> dict:
+    """``lookup`` and ``alias`` for the dead-code cross-repo cut
+    (``serve_findings``) on the repo *alias* names; both ``None`` outside
+    workspace mode, and an empty artifact simply cuts nothing."""
+    if not _is_workspace_mode():
+        return {"lookup": None, "alias": None}
+    return {"lookup": _state._cross_repo_enricher, "alias": alias}
 
 
 async def _resolve_repo_context(repo: str | None = None) -> Any:
@@ -214,6 +259,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
 
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("invalid_args")
     registry = _state._registry
     available = registry.get_all_aliases() if registry is not None else []
     return {
@@ -268,18 +316,8 @@ def attach_ignored_arguments(result: dict[str, Any], ignored: list[dict[str, Any
 # Origin story & alignment (used by get_context, get_why)
 # ---------------------------------------------------------------------------
 
-# Common stop-words stripped before commit/decision keyword overlap.
-_ORIGIN_STOP_WORDS = frozenset(
-    {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
-)
-
 #: Decisions the origin summary names, and the ceiling on its evidence clauses.
 _ORIGIN_NARRATED_DECISIONS = 3
-
-
-def _meaningful_words(text: str) -> set[str]:
-    """Lowercase keyword set with common stop-words removed."""
-    return set(text.lower().split()) - _ORIGIN_STOP_WORDS
 
 
 def _decision_body(record: object) -> str:
@@ -300,41 +338,47 @@ def _decision_body(record: object) -> str:
 
 
 def _commits_matching_decision(decision: dict, commits: list[dict]) -> list[dict]:
-    """Return commits whose messages share at least one keyword with *decision*."""
-    decision_text = (
-        f"{decision.get('title', '')} {decision.get('decision', '')} "
-        f"{decision.get('rationale', '')}"
-    )
-    decision_words = _meaningful_words(decision_text)
+    """Commits whose subject clears the relevance floor for the decision's title.
 
-    related_commits = []
-    for c in commits:
-        overlap = decision_words & _meaningful_words(c.get("message", ""))
-        if not overlap:
-            continue
-        related_commits.append(
-            {
-                "sha": c.get("sha", ""),
-                "message": c.get("message", ""),
-                "author": c.get("author", ""),
-                "date": c.get("date", ""),
-                "matching_keywords": sorted(overlap)[:5],
-            }
-        )
-    return related_commits
+    The title is the record's one-line statement, so a commit is evidence when
+    it says most of what the title says, rarer words weighing more. Rarity
+    comes from *commits*, the file's own history: a word every commit on the
+    file shares names the file, not the decision. Any one shared word used to
+    link nearly every commit to every decision.
+    """
+    statement = decision.get("title") or decision.get("decision") or ""
+    terms = question_terms(statement)
+    matched = floor_ranked(statement, commits, lambda c: c.get("message", ""), len(commits))
+    return [
+        {
+            "sha": c.get("sha", ""),
+            "message": c.get("message", ""),
+            "author": c.get("author", ""),
+            "date": c.get("date", ""),
+            "matching_keywords": [t for t in terms if t in c.get("message", "").lower()][:5],
+        }
+        for c in matched
+    ]
 
 
 def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[dict]) -> list[dict]:
-    """Attach commit evidence to each governing decision via keyword overlap."""
+    """The governing decisions that commits state, each with those commits.
+
+    A decision no commit states is left out: without evidence the row would
+    only repeat the decision lane.
+    """
     linked_decisions = []
     for d in governing_decisions:
+        evidence = _commits_matching_decision(d, commits)
+        if not evidence:
+            continue
         linked_decisions.append(
             {
                 "title": d.get("title", ""),
                 "status": d.get("status", ""),
                 "source": d.get("source", ""),
                 "rationale": d.get("rationale", ""),
-                "evidence_commits": _commits_matching_decision(d, commits),
+                "evidence_commits": evidence,
             }
         )
     return linked_decisions
@@ -343,14 +387,18 @@ def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[di
 def _origin_summary_parts(
     authors: list,
     earliest_commit: dict | None,
-    linked_decisions: list[dict],
+    narrated: list[tuple[str, dict | None]],
     primary: str,
     total: int,
     first_date: str,
     last_date: str,
     age: int,
 ) -> list[str]:
-    """Assemble the narrative sentences for an origin story."""
+    """Assemble the narrative sentences for an origin story.
+
+    *narrated* is ``(title, first evidence commit or None)`` per governing
+    decision the summary names.
+    """
     parts = [
         f"Created ~{first_date}, last modified {last_date} ({age} days old).",
         f"Primary author: {primary} ({total} total commits).",
@@ -362,17 +410,11 @@ def _origin_summary_parts(
             f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
         )
 
-    if linked_decisions:
-        named = linked_decisions[:_ORIGIN_NARRATED_DECISIONS]
-        parts.append(f"Governed by: {', '.join(d['title'] for d in named)}.")
-        # Unbounded, a file with 40 linked decisions got 16 evidence clauses,
-        # restating titles the caller's own cap had already removed.
-        for ld in named:
-            if ld["evidence_commits"]:
-                ec = ld["evidence_commits"][0]
-                parts.append(
-                    f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
-                )
+    if narrated:
+        parts.append(f"Governed by: {', '.join(title for title, _ in narrated)}.")
+        for title, ec in narrated:
+            if ec is not None:
+                parts.append(f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{title}".')
 
     if len(authors) > 1:
         names = [a.get("name", "") for a in authors[:3]]
@@ -404,6 +446,13 @@ def _build_origin_story(
         earliest_commit = sorted(commits, key=lambda c: c.get("date", ""))[0]
 
     linked_decisions = _link_decisions_to_commits(governing_decisions, commits)
+    first_evidence = {ld["title"]: ld["evidence_commits"][0] for ld in linked_decisions}
+    # Capped: unbounded, a file with 40 linked decisions got 16 evidence
+    # clauses, restating titles the caller's own cap had already removed.
+    narrated = [
+        (title, first_evidence.get(title))
+        for title in (d.get("title", "") for d in governing_decisions[:_ORIGIN_NARRATED_DECISIONS])
+    ]
 
     primary = git_meta.primary_owner_name or "unknown"
     total = git_meta.commit_count_total or 0
@@ -418,7 +467,7 @@ def _build_origin_story(
     parts = _origin_summary_parts(
         authors,
         earliest_commit,
-        linked_decisions,
+        narrated,
         primary,
         total,
         first_date,
@@ -557,7 +606,9 @@ def _compute_alignment(
             "This file is ungoverned — it may be an outlier or simply undocumented."
             if currencies
             else "This index holds no accepted decisions, so no file is governed "
-            "yet; a person accepts a candidate with `repowise decision confirm`."
+            "yet; review `repowise decision candidates` and accept one with "
+            "`repowise decision confirm <id> --agent <your slug>`, adding "
+            "`--evidence <commit|file>` or `--reason` if it lacks them."
         )
         return {
             "score": "none",
@@ -591,8 +642,8 @@ def _compute_alignment(
     candidates = [d for d in governing if d["id"] not in currencies]
     # Accepted, and neither binding nor withdrawn: it names nothing the
     # repository can be asked about. Counted on its own so the four lanes add
-    # up to ``governing_count``; without it a reader could subtract them and
-    # find records unaccounted for with nothing saying where they went.
+    # up to the records naming the file; without it a reader could find
+    # records unaccounted for with nothing saying where they went.
     uncheckable = [d for d in governing if currencies.get(d["id"]) == "uncheckable"]
 
     dir_path = "/".join(file_path.split("/")[:-1])
@@ -609,11 +660,11 @@ def _compute_alignment(
     return {
         "score": score,
         "explanation": explanation,
-        # Unchanged meaning, and deliberately not renamed: how many records
-        # name this file at all, which is what every existing consumer reads
-        # it as. The authority split is carried by the four counts below, and
-        # they sum to it: accepted + withdrawn + uncheckable + candidate.
-        "governing_count": len(governing),
+        # Accepted records that still bind, so it never disagrees with a note
+        # saying the candidates govern nothing. The four lane counts below
+        # (accepted, withdrawn, uncheckable, candidate) sum to the records
+        # naming this file.
+        "governing_count": len(accepted),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
         # Accepted once and now history: superseded, dismissed, or naming only

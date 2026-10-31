@@ -36,6 +36,7 @@ import { FilePath } from "../shared/file-path";
 import { ContractPromptButton } from "./contract-prompt-button";
 import { ContractTestsSection } from "./contract-tests-section";
 import { contractTypeLabel } from "./contract-type-label";
+import { contractOriginCopy, linkStrategyCopy } from "./link-provenance";
 import {
   contractLede,
   contractMetaEntries,
@@ -186,6 +187,7 @@ function Body({
     ? (codeLinks?.symbolHref?.(contract.repo, contract.symbol_id) ?? null)
     : null;
   const metaEntries = contractMetaEntries(contract.meta);
+  const origin = contractOriginCopy(contract.origin);
 
   return (
     <>
@@ -217,7 +219,7 @@ function Body({
               {fileHref ? (
                 <a
                   href={fileHref}
-                  className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <FilePath path={contract.file_path} line={contract.line} mode="full" accent />
                 </a>
@@ -301,6 +303,12 @@ function Body({
 
         <Section title="How it was found">
           <Facts>
+            {origin ? (
+              <Fact label="Found by">
+                {origin.label}
+                <span className="block text-[var(--color-text-tertiary)]">{origin.meaning}</span>
+              </Fact>
+            ) : null}
             <Fact label="Confidence">
               <span className="font-mono text-xs tabular-nums">
                 {Math.round(contract.confidence * 100)}%
@@ -428,6 +436,7 @@ function CounterpartRow({
     side === "provider" ? link.provider_file : link.consumer_file,
   );
   const symbolId = side === "provider" ? link.provider_symbol_id : link.consumer_symbol_id;
+  const strategy = linkStrategyCopy(link.strategy);
   // A consumer bound through another name (a queue on an exchange) keeps its own id.
   const id = side === "consumer" ? (link.consumer_contract_id ?? link.contract_id) : link.contract_id;
   const codeHref =
@@ -452,7 +461,7 @@ function CounterpartRow({
         </span>
       ) : null}
       <span className="block text-[10px] text-[var(--color-text-tertiary)]">
-        {link.match_type} match,{" "}
+        {strategy ? <span title={strategy.meaning}>{strategy.label}</span> : `${link.match_type} match`},{" "}
         <span className="font-mono tabular-nums">{Math.round(link.confidence * 100)}%</span>
       </span>
     </>
@@ -464,7 +473,7 @@ function CounterpartRow({
         <button
           type="button"
           onClick={() => onSelectContract({ repo, file_path: file, contract_id: id })}
-          className="-mx-1 min-w-0 flex-1 rounded-md px-1 py-0.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="-mx-1 min-w-0 flex-1 rounded-md px-1 py-0.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           aria-label={`Open the ${side} in ${repo}, ${file}`}
         >
           {content}

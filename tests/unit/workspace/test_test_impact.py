@@ -494,8 +494,20 @@ async def test_a_link_inside_one_repo_and_service_is_not_cross_repo(
     )
 
     assert result.summary["relevant_contract_links"] == 0
-    assert result.summary["reason"] == "no_matching_links"
+    # The only link is intra-service, so the map links no consumer across
+    # services and cannot say this file has none.
+    assert result.summary["reason"] == "no_contract_links"
     assert not result.recommendations
+
+
+async def test_a_map_with_links_elsewhere_says_no_matching_links(
+    workspace: WorkspaceIndex,
+) -> None:
+    result = await analyze_workspace_test_impact(
+        workspace, [BOUND], [{"repo": "backend", "path": "app/untouched.py"}]
+    )
+
+    assert result.summary["reason"] == "no_matching_links"
 
 
 async def test_a_changed_file_no_contract_names_is_reported(

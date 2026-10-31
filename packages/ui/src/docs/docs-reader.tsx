@@ -10,8 +10,10 @@ import {
 } from "lucide-react";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
-import { formatRelativeTime, formatTokens } from "../lib/format";
+import { formatTokens } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 import { getPageLabel, isStubFallbackPage } from "../lib/page-types";
+import { citationKey, citationLabel, readCitations } from "./citations";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
 import { ModuleHistory } from "./module-history";
@@ -33,16 +35,73 @@ import { Skeleton } from "../ui/skeleton";
  *  of everything the graph knows. */
 const RELATED_LIMIT = 5;
 
-const READER_VIEWS = [
-  { id: "page", label: "Page" },
-  { id: "reference", label: "Reference" },
-];
+export interface DocsReaderCopy {
+  selectPageTitle: string;
+  selectPageBody: string;
+  missingTitle: string;
+  /** Why the requested page is absent; `path` is the readable half of its id. */
+  missingBody: (path: React.ReactNode) => React.ReactNode;
+  builtFromIndex: string;
+  writtenBy: (model: string) => string;
+  writtenByModel: string;
+  updated: (relative: string) => string;
+  inModule: (name: string) => string;
+  openFilePage: string;
+  openFilePageTitle: (path: string) => string;
+  builtFromSources: (count: number) => string;
+  viewPage: string;
+  viewReference: string;
+  viewsLabel: string;
+  referenceIntro: string;
+  proseLost: string;
+  proseNotWritten: string;
+  previous: string;
+  next: string;
+  possibleInaccuracies: string;
+  related: string;
+  relatedReasons: Record<RelatedReason, string>;
+  moreRelated: (count: number) => string;
+}
 
-const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
-  imports: "imports",
-  "imported-by": "imported by",
-  "co-changes-with": "changes together",
-  "same-module": "same module",
+export const DEFAULT_DOCS_READER_COPY: DocsReaderCopy = {
+  selectPageTitle: "Select a page",
+  selectPageBody: "Choose a file or module from the tree to read what Repowise wrote about it.",
+  missingTitle: "No page for this one yet",
+  missingBody: (path) => (
+    <>
+      Repowise has not written a page for {path}. It documents the files that
+      carry the repository&apos;s shape first. Pick another from the tree, or
+      re-run the index with a wider page budget.
+    </>
+  ),
+  builtFromIndex: "Built from the index",
+  writtenBy: (model) => `Written by ${model}`,
+  writtenByModel: "Written by a model",
+  updated: (relative) => `updated ${relative}`,
+  inModule: (name) => `in ${name}`,
+  openFilePage: "Open file page",
+  openFilePageTitle: (path) => `Health, history and dependents for ${path}`,
+  builtFromSources: (n) => `Built from ${n} source${n === 1 ? "" : " files"}`,
+  viewPage: "Page",
+  viewReference: "Reference",
+  viewsLabel: "Page or reference",
+  referenceIntro:
+    "What this page carries for search and agents: the questions it answers, the identifiers behind it and its git history.",
+  proseLost:
+    "This page is built from the index. A model was meant to write over it on the last run and the call did not complete.",
+  proseNotWritten:
+    "This page is built from the index. A model can write the how and why on top of it.",
+  previous: "Previous",
+  next: "Next",
+  possibleInaccuracies: "Possible inaccuracies detected",
+  related: "Related",
+  relatedReasons: {
+    imports: "imports",
+    "imported-by": "imported by",
+    "co-changes-with": "changes together",
+    "same-module": "same module",
+  },
+  moreRelated: (n) => `+ ${n} more`,
 };
 
 // Remove a leading level-1 heading whose text is exactly the page title. The
@@ -126,6 +185,79 @@ interface DocsReaderProps {
    * on AI-written pages so only auto pages advertise the upgrade.
    */
   upgradeSlot?: React.ReactNode;
+  /**
+   * The page's own model action ("Write this page with AI" / "Rewrite with
+   * AI"), rendered at the end of the metadata row under the title. Host owns
+   * the launch and decides which pages can be written; omit it elsewhere.
+   */
+  pageActionSlot?: React.ReactNode;
+  /**
+   * Where the "out of date" mark in the metadata row links (the host's doc
+   * drift view). Without it the mark is plain text. A fresh page shows no mark.
+   */
+  freshnessHref?: string | undefined;
+  /** Overrides for the out-of-date wording, for a host translating it. */
+  freshnessLabels?: FreshnessLabels | undefined;
+  /** Overrides for the reader's other wording, for a host translating it. */
+  copy?: Partial<DocsReaderCopy> | undefined;
+}
+
+export interface FreshnessLabels {
+  /** `freshness_status: "stale"`: the code moved since the page was written. */
+  stale?: string;
+  /** `freshness_status: "outdated"`. */
+  outdated?: string;
+}
+
+const DEFAULT_FRESHNESS_LABELS: Required<FreshnessLabels> = {
+  stale: "May be out of date",
+  outdated: "Out of date",
+};
+
+/**
+ * Freshness as metadata: nothing when the page is fresh (the quiet default),
+ * a warning dot and a word when it is not. Keyed on the stored status only;
+ * the confidence score is not a freshness signal for pages built from the
+ * index, so it is never used as a fallback here.
+ */
+function FreshnessMark({
+  status,
+  href,
+  labels,
+  LinkComponent,
+}: {
+  status: string | undefined;
+  href?: string | undefined;
+  labels?: FreshnessLabels | undefined;
+  LinkComponent: ReaderLinkComponent;
+}) {
+  if (status !== "stale" && status !== "outdated") return null;
+  const text = labels?.[status] ?? DEFAULT_FRESHNESS_LABELS[status];
+  const inner = (
+    <>
+      <span
+        aria-hidden
+        className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+      />
+      {text}
+    </>
+  );
+  const cls = "inline-flex items-center gap-1.5 text-[var(--color-text-secondary)]";
+  return (
+    <>
+      {href ? (
+        <LinkComponent
+          href={href}
+          className={cn(cls, "hover:text-[var(--color-text-primary)] hover:underline")}
+        >
+          {inner}
+        </LinkComponent>
+      ) : (
+        <span className={cls}>{inner}</span>
+      )}
+      <span aria-hidden className="opacity-40">&middot;</span>
+    </>
+  );
 }
 
 export function DocsReader({
@@ -144,8 +276,13 @@ export function DocsReader({
   intelligenceSlot,
   versionHistorySlot,
   upgradeSlot,
+  pageActionSlot,
+  freshnessHref,
+  freshnessLabels,
+  copy,
 }: DocsReaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const c = useMemo(() => ({ ...DEFAULT_DOCS_READER_COPY, ...copy }), [copy]);
 
   const goToPageId = useCallback(
     (pageId: string) => {
@@ -178,22 +315,16 @@ export function DocsReader({
         </div>
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            {requested ? "No page for this one yet" : "Select a page"}
+            {requested ? c.missingTitle : c.selectPageTitle}
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] max-w-sm">
-            {requested ? (
-              <>
-                Repowise has not written a page for{" "}
-                <span className="font-mono text-[var(--color-text-primary)] break-all">
-                  {requested}
-                </span>
-                . Page selection is budgeted, so a repository is documented at
-                the files that carry its shape. Pick another from the tree, or
-                re-run the index with a wider page budget.
-              </>
-            ) : (
-              "Choose a file or module from the tree to read what Repowise wrote about it."
-            )}
+            {requested
+              ? c.missingBody(
+                  <span className="font-mono text-[var(--color-text-primary)] break-all">
+                    {requested}
+                  </span>,
+                )
+              : c.selectPageBody}
           </p>
         </div>
       </div>
@@ -217,6 +348,10 @@ export function DocsReader({
       intelligenceSlot={intelligenceSlot}
       versionHistorySlot={versionHistorySlot}
       upgradeSlot={upgradeSlot}
+      pageActionSlot={pageActionSlot}
+      freshnessHref={freshnessHref}
+      freshnessLabels={freshnessLabels}
+      c={c}
     />
   );
 }
@@ -273,6 +408,10 @@ function DocsReaderBody({
   intelligenceSlot,
   versionHistorySlot,
   upgradeSlot,
+  pageActionSlot,
+  freshnessHref,
+  freshnessLabels,
+  c,
 }: {
   page: DocPage;
   pages: DocPageSummary[];
@@ -287,6 +426,10 @@ function DocsReaderBody({
   intelligenceSlot?: React.ReactNode;
   versionHistorySlot?: React.ReactNode;
   upgradeSlot?: React.ReactNode;
+  pageActionSlot?: React.ReactNode;
+  freshnessHref?: string | undefined;
+  freshnessLabels?: FreshnessLabels | undefined;
+  c: DocsReaderCopy;
 }) {
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
@@ -393,16 +536,12 @@ function DocsReaderBody({
   );
 
   const sources = useMemo(() => {
-    const raw = page.metadata?.sources;
-    if (!Array.isArray(raw)) return [];
-    const byPath = new Map(pages.map((p) => [p.target_path, p]));
-    return (raw as Array<{ path?: string; kind?: string }>)
-      .map((s) => {
-        const path = typeof s?.path === "string" ? s.path : "";
-        return { path, kind: s?.kind ?? "", pageId: byPath.get(path)?.id };
-      })
-      .filter((s) => s.path);
+    const byPath = new Map(pages.map((p) => [p.target_path, p.id]));
+    return readCitations(page.metadata?.sources, (path) => byPath.get(path));
   }, [page.metadata, pages]);
+  // The commit the cited lines were read at; spans link to the forge at it.
+  const sourcesCommit =
+    typeof page.metadata?.sources_commit === "string" ? page.metadata.sources_commit.slice(0, 7) : "";
 
   // Resolved wiki link: a real href (middle-click opens in a new tab) with
   // plain clicks intercepted for in-app nav.
@@ -492,11 +631,9 @@ function DocsReaderBody({
             </h1>
 
             {/* One quiet provenance line: what kind of page this is, who wrote
-                it, and when. Previously this row carried an accent-filled
-                "Regenerate" pill immediately beside the h1, which read as a
-                statement about the page rather than an action on it and
-                out-shouted the title. The upgrade affordance now sits at the
-                end of the content, where a reader has seen the page is thin.
+                it, when, and whether it fell behind its code. A host's page
+                action (`pageActionSlot`) ends the row as plain model-coloured
+                text, so it never competes with the title.
 
                 "Written by <model>" / "Built from the index" is the Overview
                 page's vocabulary, deliberately: a page can lack prose because
@@ -509,21 +646,27 @@ function DocsReaderBody({
               <span aria-hidden className="opacity-40">&middot;</span>
               <span className="text-[var(--color-text-secondary)]">
                 {isTemplatePage
-                  ? "Built from the index"
+                  ? c.builtFromIndex
                   : page.model_name
-                    ? `Written by ${page.model_name}`
-                    : "Written by a model"}
+                    ? c.writtenBy(page.model_name)
+                    : c.writtenByModel}
               </span>
               <span aria-hidden className="opacity-40">&middot;</span>
+              <FreshnessMark
+                status={page.freshness_status}
+                href={freshnessHref}
+                labels={freshnessLabels}
+                LinkComponent={LinkComponent}
+              />
               <span title={page.updated_at}>
-                updated {formatRelativeTime(page.updated_at)}
+                <RelativeTime date={page.updated_at} template={c.updated("{time}")} />
               </span>
               {moduleSeg && (
                 <button
                   onClick={() => goToPageId(moduleSeg.pageId!)}
                   className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-accent)] hover:text-[var(--color-accent-primary)]"
                 >
-                  in {moduleSeg.label}
+                  {c.inModule(moduleSeg.label)}
                 </button>
               )}
               {layerName &&
@@ -567,11 +710,12 @@ function DocsReaderBody({
                 <LinkComponent
                   href={sourceFileHref}
                   className="shrink-0 text-xs font-medium text-[var(--color-accent-primary)] hover:underline"
-                  title={`Health, history and dependents for ${page.target_path}`}
+                  title={c.openFilePageTitle(page.target_path)}
                 >
-                  Open file page <span aria-hidden>&rarr;</span>
+                  {c.openFilePage} <span aria-hidden>&rarr;</span>
                 </LinkComponent>
               )}
+              {pageActionSlot}
             </div>
 
             {/* What this page was written from. The rail carried this as
@@ -585,37 +729,48 @@ function DocsReaderBody({
                 <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs text-[var(--color-text-secondary)]">
                   <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open/toc:rotate-90" />
                   <span>
-                    Built from {sources.length} source{sources.length === 1 ? "" : " files"}
+                    {c.builtFromSources(sources.length)}
                   </span>
                   <span className="ml-auto truncate font-mono text-[10px] text-[var(--color-text-tertiary)]">
                     {sources
                       .slice(0, 3)
-                      .map((s) => s.path.split("/").pop())
+                      .map((s) => citationLabel({ ...s, path: s.path.split("/").pop() ?? s.path }))
                       .join(", ")}
                     {sources.length > 3 && " …"}
                   </span>
                 </summary>
                 <ul className="flex flex-col gap-1 border-t border-[var(--color-border-default)] px-3.5 py-2.5">
-                  {sources.map((s) => (
-                    <li key={s.path} className="text-xs">
-                      {s.pageId ? (
-                        <button
-                          onClick={() => goToPageId(s.pageId!)}
-                          className="block w-full truncate text-left font-mono text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
-                          title={`${s.path} (${s.kind})`}
-                        >
-                          {s.path}
-                        </button>
-                      ) : (
-                        <span
-                          className="block truncate font-mono text-[var(--color-text-tertiary)]"
-                          title={`${s.path} (${s.kind})`}
-                        >
-                          {s.path}
-                        </span>
-                      )}
-                    </li>
-                  ))}
+                  {sources.map((s) => {
+                    const label = citationLabel(s);
+                    const title = `${label}${s.symbol ? ` ${s.symbol}` : ""} (${s.kind})${sourcesCommit ? ` @ ${sourcesCommit}` : ""}`;
+                    const linkClass =
+                      "block w-full truncate text-left font-mono text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]";
+                    const fileHref = buildFileHref?.(s.path);
+                    return (
+                      <li key={citationKey(s)} className="text-xs">
+                        {s.pageId && !s.lines ? (
+                          <button onClick={() => goToPageId(s.pageId!)} className={linkClass} title={title}>
+                            {label}
+                          </button>
+                        ) : s.url ? (
+                          <a href={s.url} target="_blank" rel="noopener noreferrer" className={linkClass} title={title}>
+                            {label}
+                          </a>
+                        ) : fileHref ? (
+                          <LinkComponent href={fileHref} className={linkClass} title={title}>
+                            {label}
+                          </LinkComponent>
+                        ) : (
+                          <span
+                            className="block truncate font-mono text-[var(--color-text-tertiary)]"
+                            title={title}
+                          >
+                            {label}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </details>
             )}
@@ -634,15 +789,17 @@ function DocsReaderBody({
                 digest is what search and agents read, one click away. */}
             {digest ? (
               <ViewTabs
-                tabs={READER_VIEWS}
+                tabs={[
+                  { id: "page", label: c.viewPage },
+                  { id: "reference", label: c.viewReference },
+                ]}
                 value={view}
                 onValueChange={(id) => setView(id === "reference" ? "reference" : "page")}
-                aria-label="Page or reference"
+                aria-label={c.viewsLabel}
               >
                 {showingReference && (
                   <p className="mb-4 text-xs text-[var(--color-text-tertiary)]">
-                    What this page carries for search and agents: the questions it answers,
-                    the identifiers behind it and its git history.
+                    {c.referenceIntro}
                   </p>
                 )}
                 {article(showingReference ? digest : visibleContent)}
@@ -675,9 +832,7 @@ function DocsReaderBody({
             {(proseLost || (isTemplatePage && upgradeSlot)) && (
               <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[var(--color-border-default)] pt-4">
                 <p className="text-xs text-[var(--color-text-tertiary)]">
-                  {proseLost
-                    ? "This page is built from the index. A model was meant to write over it on the last run and the call did not complete."
-                    : "This page is built from the index. A model can write the how and why on top of it."}
+                  {proseLost ? c.proseLost : c.proseNotWritten}
                 </p>
                 {upgradeSlot}
               </div>
@@ -694,7 +849,7 @@ function DocsReaderBody({
                     <ArrowLeft className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)]" />
                     <span className="min-w-0">
                       <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                        Previous
+                        {c.previous}
                       </span>
                       <span className="block truncate text-xs text-[var(--color-text-secondary)]">
                         {nav.prev.title}
@@ -711,7 +866,7 @@ function DocsReaderBody({
                   >
                     <span className="min-w-0">
                       <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                        Next
+                        {c.next}
                       </span>
                       <span className="block truncate text-xs text-[var(--color-text-secondary)]">
                         {nav.next.title}
@@ -731,7 +886,7 @@ function DocsReaderBody({
               (page.metadata.hallucination_warnings as string[]).length > 0 && (
                 <div className="mt-4 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-4 py-3">
                   <p className="text-xs font-medium text-[var(--color-warning)] mb-1.5">
-                    Possible inaccuracies detected
+                    {c.possibleInaccuracies}
                   </p>
                   <ul className="space-y-0.5">
                     {(page.metadata.hallucination_warnings as string[]).map((w, i) => (
@@ -753,30 +908,7 @@ function DocsReaderBody({
               {intelligenceSlot && (
                 <div className="flex flex-col gap-4">{intelligenceSlot}</div>
               )}
-              {relatedLinks.length > 0 && (
-                <div>
-                  <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                    Related
-                  </p>
-                  <ul className="flex flex-col gap-2">
-                    {relatedLinks.slice(0, RELATED_LIMIT).map((r) => (
-                      <li key={r.id}>
-                        <button
-                          onClick={() => goToPageId(r.id)}
-                          className="block w-full text-left text-xs leading-snug text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
-                        >
-                          {r.title}
-                        </button>
-                        {r.reason && (
-                          <span className="block font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                            {RELATED_REASON_LABELS[r.reason]}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <RelatedList links={relatedLinks} goToPageId={goToPageId} c={c} />
             </div>
           </div>
         </div>
@@ -807,38 +939,7 @@ function DocsReaderBody({
 
             {intelligenceSlot}
 
-            {relatedLinks.length > 0 && (
-              <div>
-                <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                  Related
-                </p>
-                <ul className="flex flex-col gap-2.5">
-                  {relatedLinks.slice(0, RELATED_LIMIT).map((r) => (
-                    <li key={r.id}>
-                      {/* Wraps rather than truncates. At 260px the old rail
-                          rendered "File: packages/server/src/repowise/s…",
-                          which names nothing. */}
-                      <button
-                        onClick={() => goToPageId(r.id)}
-                        className="block w-full text-left text-xs leading-snug text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
-                      >
-                        {r.title}
-                      </button>
-                      {r.reason && (
-                        <span className="block font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                          {RELATED_REASON_LABELS[r.reason]}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                {relatedLinks.length > RELATED_LIMIT && (
-                  <p className="mt-2 text-[10px] text-[var(--color-text-tertiary)]">
-                    + {relatedLinks.length - RELATED_LIMIT} more
-                  </p>
-                )}
-              </div>
-            )}
+            <RelatedList links={relatedLinks} goToPageId={goToPageId} c={c} />
 
             <BacklinksPanel
               backlinks={getBacklinks(page.metadata)}
@@ -866,6 +967,53 @@ function DocsReaderBody({
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Where to go next: the first few related pages, each with why it is related.
+ * One list for the rail and for its narrow-width place under the article.
+ */
+function RelatedList({
+  links,
+  goToPageId,
+  c,
+}: {
+  links: { id: string; title: string; reason?: RelatedReason }[];
+  goToPageId: (pageId: string) => void;
+  c: DocsReaderCopy;
+}) {
+  if (links.length === 0) return null;
+  return (
+    <div>
+      <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        {c.related}
+      </p>
+      <ul className="flex flex-col gap-2.5">
+        {links.slice(0, RELATED_LIMIT).map((r) => (
+          <li key={r.id}>
+            {/* Wraps rather than truncates. At 260px the old rail rendered
+                "File: packages/server/src/repowise/s…", which names nothing. */}
+            <button
+              onClick={() => goToPageId(r.id)}
+              className="block w-full text-left text-xs leading-snug text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
+            >
+              {r.title}
+            </button>
+            {r.reason && (
+              <span className="block font-mono text-[10px] text-[var(--color-text-tertiary)]">
+                {c.relatedReasons[r.reason]}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {links.length > RELATED_LIMIT && (
+        <p className="mt-2 text-[10px] text-[var(--color-text-tertiary)]">
+          {c.moreRelated(links.length - RELATED_LIMIT)}
+        </p>
       )}
     </div>
   );

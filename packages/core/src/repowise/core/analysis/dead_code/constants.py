@@ -47,6 +47,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.sh",
     "*.bash",
     "*.zsh",
+    # An Apex trigger is run by the platform on DML, and an anonymous-Apex
+    # script by a person or a CI job; nothing names either.
+    "*.trigger",
+    "*.apex",
     "*__init__.py",
     "*__main__.py",
     "*conftest.py",
@@ -855,6 +859,8 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",  # JAX-WS
+    "WebServiceProvider",
     "ApplicationScoped",
     "RequestScoped",
     "SessionScoped",
@@ -897,6 +903,14 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Module",
     "Provides",
     "Binds",
+    # Metro / Anvil: the generated graph constructs a contributed binding and
+    # loads a contributed binding container, so nothing names either.
+    "ContributesBinding",
+    "ContributesTo",
+    "ContributesIntoSet",
+    "ContributesIntoMap",
+    "ContributesMultibinding",
+    "BindingContainer",
     # Glide: its annotation processor generates ``GeneratedAppGlideModule``,
     # which instantiates the annotated class. Nothing in source names it.
     "GlideModule",

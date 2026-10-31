@@ -52,6 +52,7 @@ DEFAULT_REPORTS = (
     "coverage.out",
     "cover.out",
     "target/site/jacoco/jacoco.xml",
+    ".sfdx/tools/testresults/apex/test-result-codecoverage.json",
 )
 
 QUEUED_FILENAME = ".coverage.queued"

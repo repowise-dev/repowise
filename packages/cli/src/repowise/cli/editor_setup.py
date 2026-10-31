@@ -412,8 +412,12 @@ def write_editor_project_files(
 
     if is_editor_setup_disabled(no_editor_setup):
         _persist_project_file_optouts(repo_path, resolved_options)
+        # Only the flag is remembered: the env var describes the machine, not the repo.
+        if no_editor_setup:
+            _remember_editor_setup(repo_path, enabled=False)
         return []
 
+    _remember_editor_setup(repo_path, enabled=True)
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
 
     written: list[Path] = []
@@ -425,6 +429,26 @@ def write_editor_project_files(
             integration.write_project_files(console_obj, repo_path, resolved_options) or []
         )
     return written
+
+
+#: ``config.yaml`` key ``init --no-editor-setup`` sets to false. ``update`` reads it
+#: and leaves the editor files alone; a later ``init`` with editor setup turns it on.
+_EDITOR_SETUP_KEY = "editor_setup"
+
+
+def _editor_setup_declined(repo_path: Path) -> bool:
+    from repowise.cli.helpers import load_config
+
+    return load_config(repo_path).get(_EDITOR_SETUP_KEY) is False
+
+
+def _remember_editor_setup(repo_path: Path, *, enabled: bool) -> None:
+    """Record the repo's editor-setup choice, writing config only when it changes."""
+    from repowise.cli.helpers import save_config_partial
+
+    if _editor_setup_declined(repo_path) != enabled:
+        return
+    save_config_partial(repo_path, **{_EDITOR_SETUP_KEY: enabled})
 
 
 def _persist_project_file_optouts(repo_path: Path, options: EditorSetupOptions) -> None:
@@ -471,9 +495,67 @@ def refresh_editor_project_files(
     options: EditorSetupOptions | None = None,
     integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
-    """Refresh editor-managed project files without rewriting common MCP config."""
+    """Refresh editor-managed project files without rewriting common MCP config.
 
+    A repo initialised with ``--no-editor-setup`` gets nothing written.
+    """
+    if _editor_setup_declined(repo_path):
+        return
     resolved_options = options or EditorSetupOptions()
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)
+
+
+def unresolved_hook_scripts(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(script, where)`` for each repowise hook whose entry point would not be found.
+
+    Covers Claude Code's user settings, its plugin, and with *repo_path* the
+    repo's own Claude Code and Codex hook files. Those hooks exit quietly when
+    their script is missing, so this is the only place that says so.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_hook_commands
+    from repowise.cli.editor_integrations.codex_config import codex_project_hook_commands
+    from repowise.cli.mcp_config import hook_script_resolves
+
+    rows = claude_code_hook_commands(repo_path)
+    if repo_path is not None:
+        codex = f"{Path(repo_path).name}/.codex/hooks.json"
+        rows += [(codex, c) for c in codex_project_hook_commands(repo_path)]
+    missing: list[tuple[str, str]] = []
+    for where, command in rows:
+        script = "repowise-rewrite" if "repowise-rewrite" in command else "repowise-augment"
+        if not hook_script_resolves(command, script) and (script, where) not in missing:
+            missing.append((script, where))
+    return missing
+
+
+def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> tuple[str | None, str | None]:
+    """``(command, advice)`` that repair *missing*, as :func:`unresolved_hook_scripts` returns it.
+
+    The command is one runnable line (doctor's ``fix``, the Setup page's copy
+    button): ``repowise agents refresh`` repins the user-settings hooks. The
+    plugin and repo-local hooks keep the bare name (a plugin ships without the
+    CLI, and repo files may be committed), so for those the advice is to put
+    the scripts on PATH, which no one command does on every platform.
+    """
+    from repowise.cli.editor_integrations.claude_config import CLAUDE_SETTINGS_LABEL
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    pinned = resolve_repowise_command("repowise-augment")
+    if pinned == "repowise-augment":
+        # This install has no scripts to point anything at.
+        return None, "Reinstall repowise so repowise-augment is on PATH."
+    in_settings = any(where == CLAUDE_SETTINGS_LABEL for _, where in missing)
+    elsewhere = any(where != CLAUDE_SETTINGS_LABEL for _, where in missing)
+    command = "repowise agents refresh" if in_settings else None
+    advice = f"Add {Path(pinned).parent.as_posix()} to PATH." if elsewhere else None
+    return command, advice
+
+
+def describe_unresolved_hooks(missing: list[tuple[str, str]]) -> str:
+    """``repowise-augment (where, where), repowise-rewrite (where)``."""
+    by_script: dict[str, list[str]] = {}
+    for script, where in missing:
+        by_script.setdefault(script, []).append(where)
+    return ", ".join(f"{s} ({', '.join(w)})" for s, w in by_script.items())

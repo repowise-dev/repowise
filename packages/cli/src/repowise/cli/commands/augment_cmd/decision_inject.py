@@ -73,8 +73,9 @@ _MAX_GLOBAL_RULES = 2
 #: displaces an accepted decision that is injected today, which is the one
 #: thing restoring candidates must not do; a separate cap makes the trade
 #: explicit and bounded instead. Tighter than the accepted block by design:
-#: nobody has agreed to any of these.
-_CANDIDATE_TOKEN_CAP = 120
+#: nobody has agreed to any of these. The header is charged to this cap, so
+#: the 19 tokens its accept command costs are added back for the lines.
+_CANDIDATE_TOKEN_CAP = 139
 #: Never more than this many candidates, whatever the token budget allows.
 _MAX_CANDIDATE_ITEMS = 2
 #: And at most one of those slots may go to an unlinked repo-wide rule. A
@@ -257,7 +258,7 @@ def _collect_seeds(repo_path: Path) -> tuple[list[str], str]:
     dirty, branch = _dirty_files_and_branch(repo_path)
     seen: dict[str, None] = {}
     for f in dirty + _branch_changed_files(repo_path, branch) + _previous_session_edits(repo_path):
-        norm = f.replace("\\", "/").lstrip("./")
+        norm = f.replace("\\", "/").removeprefix("./")
         if norm:
             seen.setdefault(norm, None)
     return list(seen)[:_MAX_SEEDS], branch
@@ -585,12 +586,14 @@ _ACCEPTED_HEADER = (
     "(accumulated from prior sessions; follow them unless the user says otherwise):"
 )
 
-#: Candidates are mined, not agreed. The header carries the whole of that
+#: Candidates are proposed, not agreed. The header carries the whole of that
 #: distinction in the transcript, so it says it in words rather than leaving an
-#: agent to infer a lane from a blank line.
+#: agent to infer a lane from a blank line. Source-neutral: candidates come
+#: from PRs, commits, comments and agents as well as sessions.
 _CANDIDATE_HEADER = (
-    "[repowise] Proposed but NOT accepted - mined from prior sessions and "
-    "awaiting review. Weigh these; do not treat them as rules:"
+    "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
+    "do not treat them as rules. Review: repowise decision candidates; accept one as yourself: "
+    "repowise decision confirm <id> --agent <your slug> --evidence <commit|file>"
 )
 
 
@@ -849,7 +852,7 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
     if why:
         line += f" because {why}"
     if sessions_n >= 2:
-        line += f" (confirmed across {sessions_n} sessions)"
+        line += f" (seen in {sessions_n} sessions)"
     line += "."
 
     if session_id:

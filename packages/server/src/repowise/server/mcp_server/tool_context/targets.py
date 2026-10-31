@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -18,10 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.communities import has_community
+from repowise.core.generation.models import compute_page_id
 from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
@@ -40,6 +43,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
+from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
 from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
     _NO_SYMBOL_SUMMARY_SUFFIX,
@@ -226,7 +230,9 @@ def _file_page_docs(card: CardState, docs: dict[str, Any]) -> None:
     page = card.page
     if page is None:
         return
-    docs["title"] = page.title
+    if page.title != f"File: {page.target_path}":
+        # The generated title only repeats the path.
+        docs["title"] = page.title
     docs["summary"] = page.summary or ""
     if card.wants("full_doc"):
         docs["content_md"] = page.content
@@ -356,10 +362,15 @@ async def _directory_docs(card: CardState, docs: dict[str, Any]) -> None:
         f"{card.dir_path}: a directory with no module page; {len(paths)} file(s) "
         "under it have git history."
     )
+    _cap_file_rows(card, docs, [{"path": p} for p in paths])
+
+
+def _cap_file_rows(card: CardState, docs: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """``docs["files"]``, capped as symbols are, the rest recoverable from the collector."""
     cap_collection(
         docs,
         "files",
-        [{"path": p} for p in paths],
+        rows,
         _SYMBOL_CAP,
         card.query.collector,
         label=f"{card.target} :: docs.files beyond cap={_SYMBOL_CAP}",
@@ -374,8 +385,6 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
     exclude_spec = card.query.exclude_spec
     docs["title"] = page.title
     docs["summary"] = page.summary or ""
-    if page.section_number:
-        docs["section"] = page.section_number
     if card.wants("full_doc"):
         docs["content_md"] = page.content
         # Questions, identifiers, public API and git signals: kept off the
@@ -400,23 +409,31 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
                     "title": ch.title,
                     "target_path": ch.target_path,
                     "page_type": ch.page_type,
-                    "section": ch.section_number,
                 }
                 for ch in child_pages
             ],
             "target_path",
             exclude_spec,
         )
-    # Child file pages
+    await _module_file_docs(card, page, docs)
+
+
+async def _module_file_docs(card: CardState, page: Page, docs: dict[str, Any]) -> None:
+    """The module's file pages, ranked by PageRank and capped.
+
+    A large module's whole file list outweighs its page, so uncapped it cost
+    the page body and digest their room in the budget.
+    """
     res = await card.session.execute(
         select(Page).where(
             Page.repository_id == card.repo_id,
             Page.page_type == "file_page",
+            Page.freshness_status != TOMBSTONE,
             Page.target_path.like(f"{escape_like(page.target_path)}/%", escape=LIKE_ESCAPE),
         )
     )
     file_pages = res.scalars().all()
-    docs["files"] = filter_dicts_by_key(
+    rows = filter_dicts_by_key(
         [
             {
                 "path": f.target_path,
@@ -427,8 +444,11 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
             for f in file_pages
         ],
         "path",
-        exclude_spec,
+        card.query.exclude_spec,
     )
+    rank = await _file_ranks(card, {row["path"] for row in rows})
+    rows.sort(key=lambda row: (-rank[row["path"]], row["path"]))
+    _cap_file_rows(card, docs, rows)
 
 
 async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
@@ -449,11 +469,13 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
         if value:
             docs[key] = clean_signature(value) if attr == "signature" else value
     # File page summary (full content gated behind include=["full_doc"])
-    sym_page = await card.session.get(Page, f"file_page:{sym.file_path}")
+    sym_page = await file_backed_page(card.session, card.repo_id, sym.file_path)
+    if sym_page is not None and sym_page.freshness_status == TOMBSTONE:
+        sym_page = None
     if sym_page is not None:
         docs["file_summary"] = sym_page.summary or ""
-        if card.wants("full_doc"):
-            docs["documentation"] = sym_page.content
+    if card.wants("full_doc"):
+        await _symbol_documentation(card, sym, sym_page, docs)
     await _symbol_used_by(card, sym, docs)
     # Candidates
     if len(sym_matches) > 1:
@@ -470,6 +492,85 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
             "file_path",
             card.query.exclude_spec,
         )
+
+
+async def _symbol_documentation(
+    card: CardState, sym: Any, file_page: Page | None, docs: dict[str, Any]
+) -> None:
+    """The symbol's own page, else its entry on the file page, else nothing.
+
+    A spotlight is the page written about this symbol; the file page is shared
+    by every symbol in the file, so serving it whole repeats it per symbol.
+    ``file_summary`` still names the file; its page is one file target away.
+    """
+    spotlight = await _spotlight_page(card, sym)
+    if spotlight is not None:
+        docs["documentation"] = spotlight.content
+        return
+    entry = _file_page_entry(file_page.content or "", sym.name) if file_page else None
+    if entry:
+        docs["documentation"] = entry
+
+
+async def _spotlight_page(card: CardState, sym: Any) -> Page | None:
+    """The spotlight page written for *sym*, if one was and *sym* owns it."""
+    page = await card.session.get(
+        Page, compute_page_id("symbol_spotlight", f"{sym.file_path}::{sym.name}")
+    )
+    # A tombstoned spotlight was deselected or its file is gone; either way its
+    # body is no longer this symbol's documentation.
+    if page is None or page.freshness_status == TOMBSTONE:
+        return None
+    key = (sym.file_path, sym.name)
+    owner = (await spotlight_owners(card.session, card.repo_id, {key})).get(key)
+    start_line = getattr(sym, "start_line", None)
+    if owner is not None and start_line is not None and owner.start_line != start_line:
+        return None
+    return page
+
+
+_BULLET_SPAN_RE = re.compile(r"^(\s*)- `([^`]*)`")
+
+# Where a rendered declaration stops naming itself: its parameters, type,
+# value, generics or base list.
+_DECLARATION_HEAD_END_RE = re.compile(r"[(:=<\[{]|\s(?:extends|implements)\s")
+_IDENTIFIER_RE = re.compile(r"[\w$]+")
+
+
+def _file_page_entry(content: str, name: str) -> str | None:
+    """The file page's list entry for *name*, with its nested rows.
+
+    Matches a bullet whose leading code span declares the symbol, as the file
+    page's API list renders it. ``None`` when the page lists no such entry.
+    """
+    lines = content.splitlines()
+    for start, line in enumerate(lines):
+        match = _BULLET_SPAN_RE.match(line)
+        if match is None or _declared_name(match.group(2)) != name:
+            continue
+        depth = len(match.group(1))
+        end = start + 1
+        while end < len(lines) and _nested_under(lines[end], depth):
+            end += 1
+        return "\n".join(lines[start:end])
+    return None
+
+
+def _declared_name(span: str) -> str | None:
+    """The name a rendered declaration declares: the last word before its
+    parameters, type or value (``def area(self)`` -> ``area``). A path
+    (``src/app.py``) declares nothing."""
+    if "/" in span:
+        return None
+    head = _DECLARATION_HEAD_END_RE.split(span, maxsplit=1)[0]
+    words = _IDENTIFIER_RE.findall(head)
+    return words[-1] if words else None
+
+
+def _nested_under(line: str, depth: int) -> bool:
+    """True when *line* is indented deeper than a bullet at *depth*."""
+    stripped = line.lstrip()
+    return bool(stripped) and len(line) - len(stripped) > depth
 
 
 async def _symbol_user_files(
@@ -516,11 +617,11 @@ async def _symbol_user_files(
 
 
 async def _file_ranks(card: CardState, user_files: set[str]) -> dict[str, float]:
-    """PageRank per using file, 0.0 when the graph has no node for it.
+    """PageRank per file, 0.0 when the graph has no node for it.
 
-    Looked up by the folded path, not joined: a source whose symbol node is
-    missing has no file to join through and would rank 0.0. Chunked because
-    this binds one parameter per using file.
+    Looked up by path, not joined: a using symbol whose node is missing has
+    no file to join through and would rank 0.0. Chunked because this binds
+    one parameter per file.
     """
     best_rank: dict[str, float] = {p: 0.0 for p in user_files}
     ordered = sorted(user_files)

@@ -9,7 +9,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -270,6 +271,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -295,6 +297,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -320,6 +323,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -345,6 +349,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -370,6 +375,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -381,6 +387,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -395,8 +402,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "u"
+        ]
       },
       {
         "target_name": "SaveChangesAsync",
@@ -410,6 +420,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -425,8 +436,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "p"
+        ]
       },
       {
         "target_name": "Wait",
@@ -440,6 +454,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -507,7 +522,9 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "csharp/assertions.cs": {
     "file_info": {
@@ -519,7 +536,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -594,6 +612,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -608,7 +627,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -623,7 +646,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -638,7 +665,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -653,7 +684,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -668,7 +703,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -683,7 +722,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -698,7 +741,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -713,7 +760,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -728,7 +779,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -743,7 +798,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -758,7 +817,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -773,7 +836,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -788,7 +855,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -803,7 +874,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -818,7 +893,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -833,7 +912,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -848,7 +931,11 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -863,8 +950,15 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          null,
+          "int constant"
+        ],
+        "argument_names": [
+          "x",
+          null
+        ]
       }
     ],
     "heritage": [],
@@ -874,7 +968,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "csharp/classes.cs": {
     "file_info": {
@@ -886,7 +982,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1255,6 +1352,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1264,7 +1362,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "csharp/nested.cs": {
     "file_info": {
@@ -1276,7 +1376,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1374,6 +1475,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1383,6 +1485,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from repowise.core.analysis.decisions.lifecycle import DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class EvidencePreview(BaseModel):
@@ -51,9 +51,9 @@ class DecisionRecordResponse(BaseModel):
     # the linkage fields, so old records get it too.
     scope: str | None = None
     superseded_by: str | None
-    last_code_change: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    last_code_change: UTCDateTime | None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     # List-row evidence preview: the top-ranked evidence row's verbatim quote
     # plus how many evidence rows back the record. Populated by the list
     # endpoint only (None on detail/graph responses, which have the full
@@ -71,11 +71,19 @@ class DecisionRecordResponse(BaseModel):
     accepter: str | None = None
     accepter_kind: str | None = None
     accepter_session: str | None = None
+    # Why a record just created stayed a candidate, in the acceptance
+    # contract's words. Set by the create route only.
+    blockers: list[str] | None = None
+    # True when the stored ``decision`` is blank and ``decision`` carries the
+    # title fallback. Acceptance reads the stored text, so a review surface
+    # needs this to predict the "no decision text" refusal.
+    decision_text_missing: bool = False
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
         affected_files = json.loads(obj.affected_files_json)  # type: ignore[attr-defined]
         affected_modules = json.loads(obj.affected_modules_json)  # type: ignore[attr-defined]
+        decision_text = (obj.decision or "").strip()  # type: ignore[attr-defined]
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
@@ -89,7 +97,8 @@ class DecisionRecordResponse(BaseModel):
             # (the model's canonical one-line summary, always present) so no read
             # surface emits a body-less decision. New records get this at write
             # time in the harvest path; this covers pre-fix stored records.
-            decision=(obj.decision or "").strip() or obj.title,  # type: ignore[attr-defined]
+            decision=decision_text or obj.title,  # type: ignore[attr-defined]
+            decision_text_missing=not decision_text,
             rationale=obj.rationale,  # type: ignore[attr-defined]
             alternatives=json.loads(obj.alternatives_json),  # type: ignore[attr-defined]
             consequences=json.loads(obj.consequences_json),  # type: ignore[attr-defined]
@@ -349,9 +358,9 @@ class DecisionSettings(BaseModel):
     #: default | off | local_only | balanced | full | custom
     preset: str = "default"
     #: Whether an agent may grant a decision authority, as against withdrawing
-    #: it. False is the shipped posture, so a settings form that omits this
-    #: field is reporting the default rather than hiding a grant.
-    agent_acceptance: bool = False
+    #: it. True is the shipped posture; every agent grant is signed as the
+    #: agent's, so a person-only gate is the opt-out.
+    agent_acceptance: bool = True
     discovery: DecisionDiscoveryBudget = DecisionDiscoveryBudget()
     sources: list[DecisionSourceState] = []
     provider_available: bool = True

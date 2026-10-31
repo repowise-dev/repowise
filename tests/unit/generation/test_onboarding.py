@@ -210,6 +210,37 @@ def test_active_landscape_skipped_below_threshold() -> None:
     assert spec.build_context(sig) is None
 
 
+def test_active_landscape_is_dated_by_its_newest_commit_and_groups_by_directory() -> None:
+    """``last_commit_at`` arrives as a datetime from a fresh index and as an
+    ISO string from a rehydrated one; the newest of either kind dates the page.
+    A root-level file groups under ``(root)``, a nested one under its own
+    directory, not the top-level one."""
+    from datetime import UTC, datetime
+
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
+    assert spec is not None
+    paths = ["setup.py", *(f"pkg/core/f{i}.py" for i in range(11))]
+    git_meta = {
+        path: {
+            "commit_count_90d": 10,
+            "is_hotspot": path == "setup.py",
+            "last_commit_at": datetime(2026, 3, 1, tzinfo=UTC),
+        }
+        for path in paths
+    }
+    git_meta["pkg/core/f3.py"]["last_commit_at"] = "2026-05-22T10:00:00+00:00"
+    git_meta["pkg/core/f4.py"]["last_commit_at"] = "2026-04-01 09:00:00"
+    sig = _signals(files=[_file(p) for p in paths], git_meta=git_meta)
+
+    ctx = spec.build_context(sig)
+
+    assert ctx is not None
+    assert ctx.as_of == "2026-05-22"
+    dirs = {d.path: (d.total_commits_90d, d.file_count, d.hotspot_count) for d in ctx.hot_dirs}
+    assert dirs == {"pkg/core": (110, 11, 0), "(root)": (10, 1, 1)}
+    assert ctx.hot_dirs[0].path == "pkg/core"
+
+
 def test_active_landscape_fires_above_threshold() -> None:
     spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
     assert spec is not None
@@ -609,6 +640,28 @@ def test_how_it_works_fires_on_service_archetype() -> None:
     assert ctx.archetype == "service"
 
 
+def test_how_it_works_reads_an_application_main_as_a_service() -> None:
+    # No dependency manifest inventoried (a Gradle repo): the Boot main alone
+    # says service.
+    from dataclasses import replace
+
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    main = "provider/src/main/java/org/acme/ServerApplication.java"
+    sig = _signals(files=[_file(main, language="java", is_entry_point=True)])
+    sig = replace(sig, repo_structure=replace(sig.repo_structure, application_mains=[main]))
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+    assert ctx.archetype == "service"
+    assert ctx.archetype_evidence == [f"application main: `{main}`"]
+
+    # A sample main shipped with a library does not make the repo a service.
+    sample = "examples/demo/src/main/java/org/acme/DemoApplication.java"
+    sig = replace(sig, repo_structure=replace(sig.repo_structure, application_mains=[sample]))
+    ctx = spec.build_context(sig)
+    assert ctx is None or ctx.archetype != "service"
+
+
 def test_how_it_works_fires_on_cli_archetype_via_entry_point() -> None:
     spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None
@@ -664,6 +717,109 @@ def test_how_it_works_prefers_declared_broad_lifecycle_over_narrow_high_score() 
     assert ctx is not None
     assert ctx.flows[0].entry_point == "cli/main.py::main"
     assert ctx.flows[0].lifecycle_breadth == 4
+
+
+def test_how_it_works_walks_the_flow_that_drives_the_most_code() -> None:
+    """Reach leads the order, ahead of a declared entry point and breadth; a
+    declared entry point then beats breadth when reach ties."""
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+
+    def flow(entry: str, hops: list[str], reach: int) -> ExecutionFlow:
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=entry.rsplit("::", 1)[1],
+            entry_point_score=0.9,
+            trace=[entry, *hops],
+            depth=len(hops),
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    view = flow("ui/view.py::render", ["ui/a.py::a", "lib/b.py::b", "db/c.py::c"], reach=20)
+    update = flow("cli/update.py::run_update", ["cli/x.py::x", "cli/y.py::y"], reach=500)
+    entry = flow("cli/main.py::main", ["cli/p.py::p", "cli/q.py::q"], reach=20)
+    signals = _signals(
+        files=[_file("cli/main.py", is_entry_point=True)],
+        entry_points=["cli/main.py"],
+        flows=(view, entry, update),
+    )
+
+    ctx = spec.build_context(signals)
+
+    assert ctx is not None
+    assert [f.entry_point for f in ctx.flows] == [
+        "cli/update.py::run_update",
+        "cli/main.py::main",
+        "ui/view.py::render",
+    ]
+
+
+def test_collect_flows_ranks_filters_and_limits_the_candidates() -> None:
+    """End to end over ``_collect_flows``: a trace under ``_MIN_TRACE_HOPS`` is
+    dropped, only the ``_FLOW_CANDIDATE_LIMIT`` highest-reach flows are
+    considered, and the top ``_TOP_FLOWS`` come back in reach order."""
+    from repowise.core.generation.onboarding.subkinds import how_it_works as hiw
+
+    def flow(i: int, reach: int, hops: int = 3) -> ExecutionFlow:
+        entry = f"pkg/m{i}.py::f{i}"
+        trace = [entry, *(f"pkg/h{i}_{k}.py::h" for k in range(hops - 1))]
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=f"f{i}",
+            entry_point_score=0.5,
+            trace=trace,
+            depth=len(trace) - 1,
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    short = flow(0, reach=10_000, hops=2)  # most reach, but too short to walk
+    ranked = [flow(i, reach=1_000 - i) for i in range(1, hiw._FLOW_CANDIDATE_LIMIT + 5)]
+    signals = _signals(files=[_file("pkg/m1.py")], flows=(short, *reversed(ranked)))
+
+    chosen = hiw._collect_flows(signals)
+
+    assert [f.entry_point for f in chosen] == [
+        f"pkg/m{i}.py::f{i}" for i in range(1, hiw._TOP_FLOWS + 1)
+    ]
+    assert all(len(f.hops) >= hiw._MIN_TRACE_HOPS for f in chosen)
+
+
+def test_collect_flows_looks_only_at_the_candidate_limit() -> None:
+    """A flow past the limit by reach is never considered, even if it would
+    win a later tie-break."""
+    from repowise.core.generation.onboarding.subkinds import how_it_works as hiw
+
+    def flow(entry: str, reach: int) -> ExecutionFlow:
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=entry.rsplit("::", 1)[1],
+            entry_point_score=0.5,
+            trace=[entry, "lib/a.py::a", "lib/b.py::b"],
+            depth=2,
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    inside = [flow(f"pkg/m{i}.py::f{i}", reach=100) for i in range(hiw._FLOW_CANDIDATE_LIMIT)]
+    outside = flow("cli/main.py::main", reach=1)  # declared entry point, lowest reach
+    signals = _signals(
+        files=[_file("cli/main.py", is_entry_point=True)],
+        entry_points=["cli/main.py"],
+        flows=(outside, *inside),
+    )
+
+    chosen = hiw._collect_flows(signals)
+
+    assert "cli/main.py::main" not in {f.entry_point for f in chosen}
+    assert len(chosen) == hiw._TOP_FLOWS
 
 
 def test_how_it_works_treats_flat_repo_files_as_one_region() -> None:
@@ -1225,7 +1381,9 @@ def test_subkind_template_renders(subkind_slot: str, ctx_factory: Any) -> None:
     ctx = ctx_factory()
     assert ctx is not None, f"gate failed for {subkind_slot}"
     env = _jinja_env()
-    template = env.get_template(f"onboarding/{spec.template}")
+    # A deterministic subkind has no prompt; its page template is the page.
+    folder = "stub/onboarding" if spec.deterministic else "onboarding"
+    template = env.get_template(f"{folder}/{spec.template}")
     rendered = template.render(ctx=ctx, slot=subkind_slot)
     assert rendered.strip()  # non-empty
     assert "{{" not in rendered  # no unrendered Jinja

@@ -61,6 +61,7 @@ _SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
         "kotlin",
         "scala",
         "elixir",
+        "apex",
     ]
 )
 

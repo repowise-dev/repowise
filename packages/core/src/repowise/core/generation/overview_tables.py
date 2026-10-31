@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from pathlib import PurePosixPath
 
 import structlog
 
+from ..support_paths import DOC_EXTENSIONS
 from .concept_tree.vocabulary import HouseTerm
 from .house_vocabulary import SelectedTerm, cell, clamp, select_terms
 
@@ -39,10 +41,30 @@ CAPABILITY_TABLE_HEADING = "## What it does"
 # and the replacement eats the footer — which is what happened the moment the
 # deterministic overview stopped rendering a path table below its packages.
 _SECTION_END = r"(?=^#{1,2}[ \t]|^---[ \t]*$|\Z)"
-_PACKAGE_SECTION_RE = re.compile(
-    r"^##[ \t]+Packages[ \t]*\n(?:.*?)" + _SECTION_END,
-    re.MULTILINE | re.DOTALL,
-)
+
+
+def embed_section(content: str, heading: str, body: str | None) -> str:
+    """Return *content* with *body* under ``## heading``, idempotently.
+
+    An existing section of that name is replaced wholesale, whether a previous
+    run embedded it or the model wrote the heading itself, so a page reused
+    from an earlier run carries one copy of the current facts. With no *body*
+    the section is removed: the reused page still carries what that run
+    embedded, and the current facts have nothing to say there.
+    """
+    pattern = re.compile(
+        r"^##[ \t]+" + re.escape(heading) + r"[ \t]*\n(?:.*?)" + _SECTION_END,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not body:
+        return pattern.sub("", content, count=1)
+    section = f"## {heading}\n\n{body}\n\n"
+    if pattern.search(content):
+        # Function replacement: table cells carry backslashes and backticks
+        # that re.sub would otherwise read as group references.
+        return pattern.sub(lambda _m: section, content, count=1)
+    sep = "" if content.endswith("\n") else "\n"
+    return f"{content}{sep}\n{section}"
 
 
 def build_package_table(package_stats: list[dict]) -> str | None:
@@ -80,14 +102,7 @@ def embed_package_table(content: str, table: str | None) -> str:
     """
     if not table:
         return content
-
-    section = f"{PACKAGE_TABLE_HEADING}\n\n{table}\n\n"
-    if _PACKAGE_SECTION_RE.search(content):
-        # Function replacement: table cells carry backslashes and backticks
-        # that re.sub would otherwise read as group references.
-        return _PACKAGE_SECTION_RE.sub(lambda _m: section, content, count=1)
-    sep = "" if content.endswith("\n") else "\n"
-    return f"{content}{sep}\n{section}"
+    return embed_section(content, PACKAGE_TABLE_HEADING.removeprefix("## "), table)
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +119,6 @@ MAX_CAPABILITY_ROWS = 6
 #: Long enough for a sentence, short enough that a row stays one line to read.
 _MAX_CAPABILITY_DEFINITION = 160
 
-_CAPABILITY_SECTION_RE = re.compile(
-    r"^##[ \t]+What it does[ \t]*\n(?:.*?)" + _SECTION_END,
-    re.MULTILINE | re.DOTALL,
-)
-
 
 def select_capabilities(
     house_terms: Sequence[HouseTerm],
@@ -123,10 +133,17 @@ def select_capabilities(
     test are shared rather than derived twice — the front page is the top of
     the glossary by construction, which is also what a reader expects of it.
 
-    Only defined terms: a front-page row reading "—" says nothing, while the
-    glossary still lists them. Filtered before the cap so defined terms fill it.
+    Only terms a document defines: a front-page row reading "—" says nothing,
+    and a docstring describes one function rather than what the product does
+    ("Decisions are co-located in the page vector store ..." was the whole
+    table here once). The glossary still lists both. Filtered before the cap
+    so defined terms fill it.
     """
-    defined = [t for t in select_terms(house_terms, module_names) if t.definition]
+    defined = [
+        t
+        for t in select_terms(house_terms, module_names)
+        if t.definition and PurePosixPath(t.source_path).suffix.lower() in DOC_EXTENSIONS
+    ]
     return defined[:limit]
 
 
@@ -157,17 +174,7 @@ def build_capability_table(capabilities: Sequence[Capability]) -> str | None:
 def embed_capability_table(content: str, table: str | None) -> str:
     """Return *content* with *table* under ``## What it does``, idempotently.
 
-    Same contract as :func:`embed_package_table`: an existing section of that
-    name is replaced wholesale, so a reused or cached page picks up the current
-    selection instead of accumulating a second one. With no table the section
-    is removed: a page reused verbatim from an earlier run still carries the
-    rows that run selected, and the current selection has none.
+    :func:`embed_section`: with no table the section is removed, so a page
+    reused from an earlier run loses rows the current selection no longer has.
     """
-    if not table:
-        return _CAPABILITY_SECTION_RE.sub("", content, count=1)
-
-    section = f"{CAPABILITY_TABLE_HEADING}\n\n{table}\n\n"
-    if _CAPABILITY_SECTION_RE.search(content):
-        return _CAPABILITY_SECTION_RE.sub(lambda _m: section, content, count=1)
-    sep = "" if content.endswith("\n") else "\n"
-    return f"{content}{sep}\n{section}"
+    return embed_section(content, CAPABILITY_TABLE_HEADING.removeprefix("## "), table)

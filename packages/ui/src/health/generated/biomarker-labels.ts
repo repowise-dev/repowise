@@ -61,6 +61,11 @@ export const BIOMARKER_LABELS = {
   sql_select_star: "SELECT * in a view",
   sql_update_delete_without_where: "UPDATE/DELETE without WHERE",
   sql_cartesian_join: "Cartesian join",
+  apex_soql_injection: "SOQL injection",
+  apex_missing_sharing: "Apex class without sharing",
+  apex_hardcoded_id: "Hardcoded record Id",
+  apex_see_all_data: "Test sees all org data",
+  cobol_unstructured_flow: "GO TO or ALTER out of range",
 } as const;
 
 /** Renamed ids (old -> current), so rows stored under an old id get the current label. */

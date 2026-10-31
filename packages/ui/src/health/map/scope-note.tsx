@@ -16,7 +16,7 @@ import type { MapScope } from "./types";
 import type { MapCanvasLabels } from "./canvas-labels";
 
 const ACTION =
-  "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-wait disabled:opacity-60";
+  "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-wait disabled:opacity-60";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 

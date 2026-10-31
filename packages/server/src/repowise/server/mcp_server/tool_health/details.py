@@ -15,6 +15,7 @@ from repowise.core.persistence.crud import get_health_finding_by_public_id, get_
 from repowise.core.persistence.crud.analysis.actions import load_action
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import HealthFinding
+from repowise.server.mcp_server._helpers import _cross_repo_cut
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_health.analysis_meta import _attach_repository_analysis_meta
 from repowise.server.mcp_server.tool_health.pillars import (
@@ -56,7 +57,7 @@ async def _detail_response(
     refuses two before any read.
     """
     if fix_id:
-        return await _fix_detail_response(session, repository, fix_id)
+        return await _fix_detail_response(session, repository, fix_id, reference_repository)
     if finding_id:
         return await _finding_detail_response(
             session, repository, reference_repository, finding_id
@@ -167,14 +168,16 @@ _FIX_NOT_FOUND = (
 )
 
 
-async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> dict[str, Any]:
+async def _fix_detail_response(
+    session: Any, repository: Any, fix_id: str, alias: str | None = None
+) -> dict[str, Any]:
     """One Fix-first item in full: action steps, verify, risk, context.
 
     An ``act_`` id is a Do next action, the same one the REST actions route
     reads: its evidence rows and commands.
     """
     if fix_id.startswith(_ACTION_ID_PREFIX):
-        return await _action_detail_response(session, repository, fix_id)
+        return await _action_detail_response(session, repository, fix_id, alias)
     item = (await load_fix_first(session, repository.id, item_id=fix_id)).find(fix_id)
     result = {
         "mode": "fix_item",
@@ -192,10 +195,10 @@ async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> di
 
 
 async def _action_detail_response(
-    session: Any, repository: Any, action_id: str
+    session: Any, repository: Any, action_id: str, alias: str | None = None
 ) -> dict[str, Any]:
     """One Do next action in full, serialized as the REST actions route does."""
-    action = await load_action(session, repository.id, action_id)
+    action = await load_action(session, repository.id, action_id, **_cross_repo_cut(alias))
     result = {
         "mode": "action",
         "fix_id": action_id,

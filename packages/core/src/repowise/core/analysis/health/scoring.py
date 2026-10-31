@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from .grading import analysed_share
 from .models import HealthFileMetricData, HealthFindingData, Severity
-from .rows import field, scored_rows, split_tests, split_unscored
+from .rows import field, scored_rows, split_unscored
 from .shape_curve import continuous_base, group_by_function, saturated
 
 if TYPE_CHECKING:
@@ -165,7 +165,6 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     # --- floored: fired widely but weak / non-predictive at T0 ---
     "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
     "low_cohesion": 0.5,
-    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
@@ -224,6 +223,13 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",
     "contradictory_decision": "organizational",
+    # Advisory Apex markers; one family so grouped surfaces file them together.
+    "apex_soql_injection": "apex",
+    "apex_missing_sharing": "apex",
+    "apex_hardcoded_id": "apex",
+    "apex_see_all_data": "apex",
+    # Advisory COBOL marker.
+    "cobol_unstructured_flow": "cobol",
 }
 
 
@@ -279,7 +285,6 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # maintainability problem whether or not it is also a defect predictor.
     "complex_method": {"defect", "maintainability"},
     "complex_conditional": {"defect", "maintainability"},
-    "repeated_nesting": {"defect", "maintainability"},
     # Performance-risk detectors contribute to ``performance`` ONLY. They are
     # NOT defect predictors and must never move the surfaced (defect) score -
     # that exclusion is what keeps the defect golden guarantee intact.
@@ -326,10 +331,21 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Fires only beside complex_method and large_method on the same function, so
     # scoring it charged that function twice; dropping it moved no defect AUC.
     "brain_method": {ADVISORY_DIMENSION},
+    # A blind precision study judged 7 of 24 findings real: it fires on short
+    # functions with a few simple loops. Dropping it with four other weak markers
+    # cost 0.004 defect AUC.
+    "repeated_nesting": {ADVISORY_DIMENSION},
     # Its two inputs already deduct: complexity through complex_method, missing
     # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
     # which complex functions most need tests rather than moving the score.
     "untested_complexity": {ADVISORY_DIMENSION},
+    # Uncalibrated Apex markers: findings only until a defect corpus covers them.
+    "apex_soql_injection": {ADVISORY_DIMENSION},
+    "apex_missing_sharing": {ADVISORY_DIMENSION},
+    "apex_hardcoded_id": {ADVISORY_DIMENSION},
+    "apex_see_all_data": {ADVISORY_DIMENSION},
+    # Uncalibrated COBOL marker: GO TO and ALTER already add cognitive points.
+    "cobol_unstructured_flow": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -347,7 +363,6 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "nested_complexity": 1.0,
     "complex_method": 1.0,
     "complex_conditional": 1.0,
-    "repeated_nesting": 1.0,
     # SQL smells ship advisory (0.7) pending a precision spot-check on a
     # migrations-heavy corpus, mirroring how new perf markers land.
     "sql_high_complexity": 0.7,
@@ -363,7 +378,6 @@ _MAINTAINABILITY_CATEGORY: dict[str, str] = {
     "nested_complexity": "structural_complexity",
     "large_method": "structural_complexity",
     "complex_conditional": "structural_complexity",
-    "repeated_nesting": "structural_complexity",
     "complex_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
     "dry_violation": "duplication",
@@ -556,7 +570,13 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
         "mock_saturated_test",
         "hidden_coupling",
         "brain_method",
+        "repeated_nesting",
         "untested_complexity",
+        "apex_soql_injection",
+        "apex_missing_sharing",
+        "apex_hardcoded_id",
+        "apex_see_all_data",
+        "cobol_unstructured_flow",
     }
 )
 
@@ -957,6 +977,32 @@ def nloc_weighted_attr(rows: list[HealthFileMetricData], attr: str) -> float | N
     return sum(float(field(r, attr)) * _weight(r) for r in scored) / total_w
 
 
+def headline_split(rows: Sequence[Any]) -> tuple[float | None, float | None]:
+    """NLOC-weighted ``(structure, history)`` halves of the headline deduction.
+
+    The stored halves are unclamped, so a file under the floor holds more
+    points than its score lost. Each file's halves are scaled to its floored
+    deficit (``SCORE_MAX - score``) so the two always add up to ``SCORE_MAX``
+    minus the headline. ``(None, None)`` until every scored file carries the
+    split: halves over a subset would not add up to the headline.
+    """
+    split = scored_rows(rows)
+    if not split or any(
+        field(r, "structure_deduction", None) is None and field(r, "history_deduction", None) is None
+        for r in split
+    ):
+        return None, None
+    structure = history = 0.0
+    for r in split:
+        s = float(field(r, "structure_deduction", 0.0) or 0.0)
+        h = float(field(r, "history_deduction", 0.0) or 0.0)
+        scale = (SCORE_MAX - _row_score(r)) / (s + h) if s + h > 0 else 0.0
+        structure += s * scale * _weight(r)
+        history += h * scale * _weight(r)
+    total_w = sum(_weight(r) for r in split)
+    return structure / total_w, history / total_w
+
+
 def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
     """NLOC-weighted mean of ``score``, weighting each file by ``max(nloc, 1)``.
 
@@ -1003,6 +1049,23 @@ def hotspot_health(
     if not rows:
         return None
     return round(nloc_weighted_score(rows), 2)
+
+
+def production_average(metrics: Iterable[Any]) -> tuple[float | None, int]:
+    """``(score, file count)`` over the scored production files in *metrics*.
+
+    The only implementation of ``production_average``. Production is the file
+    set ``worst_performer`` is picked from (``ranking.split_in_scope``), so
+    tests, tooling, build scripts, vendored, generated and docs example files
+    are all left out. The score is ``None`` when no production file is scored.
+    """
+    # Imported here: ``ranking`` reads this module's score ceiling.
+    from .ranking import split_in_scope
+
+    production, _ = split_in_scope(scored_rows(metrics))
+    if not production:
+        return None, 0
+    return round(nloc_weighted_score(production), 2), len(production)
 
 
 def _empty_kpis(unanalysed: int) -> dict[str, object]:
@@ -1065,9 +1128,11 @@ def compute_kpis(
       ``None`` when no file carries a performance score.
     - ``structure_average`` / ``history_average`` and their hotspot pair: the
       headline's two halves, in deduction points, so a surface can say which
-      one is holding the score down. ``None`` until files carry the split.
-    - ``production_average``: ``average_health`` over non-test files, weighted
-      identically, so a narrowed view and a narrowed trend agree.
+      one is holding the score down. They sum to ``SCORE_MAX`` minus the
+      matching headline (``headline_split``). ``None`` until files carry the split.
+    - ``production_average``: ``average_health`` over production code, the
+      files ``worst_performer`` is picked from (``ranking.split_in_scope``):
+      no tests, tooling, build, vendored, generated or docs example files.
     - ``unanalysed_file_count``: files stored with no score because health has
       no dialect for their language. Every KPI above leaves them out; when no
       file is scored at all, the two headline averages are ``None``.
@@ -1086,17 +1151,14 @@ def compute_kpis(
     # Imported here: ``ranking`` reads this module's score ceiling.
     from .ranking import worst_kpis
 
-    # ``production_average`` keeps its own rule: every non-test file.
-    production, _ = split_tests(metrics)
+    production, production_count = production_average(metrics)
     maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
     maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
     perf_avg = nloc_weighted_attr(metrics, "performance_score")
     perf_hotspot = nloc_weighted_attr(hotspots, "performance_score")
-    splits = {
-        f"{half}_{scope}": nloc_weighted_attr(rows, f"{half}_deduction")
-        for half in ("structure", "history")
-        for scope, rows in (("average", metrics), ("hotspot", hotspots))
-    }
+    splits: dict[str, float | None] = {}
+    for scope, rows in (("average", metrics), ("hotspot", hotspots)):
+        splits[f"structure_{scope}"], splits[f"history_{scope}"] = headline_split(rows)
     return {
         "hotspot_health": hotspot_health(metrics, hotspot_paths),
         "average_health": round(nloc_weighted_score(metrics), 2),
@@ -1107,10 +1169,8 @@ def compute_kpis(
         "performance_average": round(perf_avg, 2) if perf_avg is not None else None,
         "performance_hotspot": round(perf_hotspot, 2) if perf_hotspot is not None else None,
         **{k: round(v, 2) if v is not None else None for k, v in splits.items()},
-        "production_average": (
-            round(nloc_weighted_score(production), 2) if production else None
-        ),
-        "production_file_count": len(production),
+        "production_average": production,
+        "production_file_count": production_count,
         "unanalysed_file_count": unanalysed,
         "analysed_share": analysed_share(len(metrics), unanalysed),
     }

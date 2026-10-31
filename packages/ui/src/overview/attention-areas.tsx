@@ -5,6 +5,21 @@ import { biomarkerLabel } from "../health/biomarker-glossary";
 import { SeverityMark } from "../health/severity-mark";
 import { FilePath } from "../shared/file-path";
 import { formatNumber } from "../lib/format";
+import type { Severity } from "../health/tokens";
+
+/** Area names, the empty line and severity words. English by default. */
+export interface AttentionAreasCopy {
+  areaLabel: (key: string) => string;
+  empty: string;
+  severity: (severity: Severity) => string | undefined;
+}
+
+export const ATTENTION_AREAS_COPY: AttentionAreasCopy = {
+  areaLabel: attentionSourceLabel,
+  empty: "Nothing needs attention right now.",
+  // Undefined keeps SeverityMark's own word.
+  severity: () => undefined,
+};
 
 /** What to call the lead item's kind. Health findings name their biomarker. */
 function leadKind(lead: NonNullable<OverviewAttentionAreaRow["lead"]>): string {
@@ -38,16 +53,19 @@ export function AttentionAreas({
   areas,
   prefix,
   LinkComponent,
+  copy,
 }: {
   /** `unit` names what the count is in, e.g. "open findings". */
   areas: InventoryArea[];
   prefix: string;
   LinkComponent?: React.ElementType | undefined;
+  copy?: Partial<AttentionAreasCopy> | undefined;
 }) {
   const A = LinkComponent ?? "a";
+  const c = { ...ATTENTION_AREAS_COPY, ...copy };
   if (areas.length === 0) {
     return (
-      <p className="text-xs text-[var(--color-success)]">Nothing needs attention right now.</p>
+      <p className="text-xs text-[var(--color-success)]">{c.empty}</p>
     );
   }
 
@@ -61,7 +79,7 @@ export function AttentionAreas({
               className="group flex flex-col gap-1 py-3 text-xs no-underline sm:flex-row sm:items-baseline sm:gap-4"
             >
               <span className="shrink-0 font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)] sm:w-32">
-                {attentionSourceLabel(area.key)}
+                {c.areaLabel(area.key)}
               </span>
 
               <span className="shrink-0 text-[var(--color-text-tertiary)] sm:w-48">
@@ -72,7 +90,7 @@ export function AttentionAreas({
               </span>
 
               <span className="min-w-0 flex-1 text-[var(--color-text-tertiary)]">
-                <AreaLead area={area} />
+                <AreaLead area={area} severityLabel={c.severity(area.severity)} />
               </span>
 
               <span
@@ -92,7 +110,13 @@ export function AttentionAreas({
 type InventoryArea = OverviewAttentionAreaRow & { unit?: string };
 
 /** The worst item in an area, its severity, and what the count is made of. */
-function AreaLead({ area }: { area: InventoryArea }) {
+function AreaLead({
+  area,
+  severityLabel,
+}: {
+  area: InventoryArea;
+  severityLabel: string | undefined;
+}) {
   const lead = area.lead;
   if (!lead) {
     return area.detail ? (
@@ -103,7 +127,7 @@ function AreaLead({ area }: { area: InventoryArea }) {
   const isPath = !!lead.target_id && lead.title === lead.target_id;
   return (
     <>
-      <SeverityMark severity={area.severity} className="mr-2" />
+      <SeverityMark severity={area.severity} label={severityLabel} className="mr-2" />
       {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
       {isPath ? (
         <FilePath

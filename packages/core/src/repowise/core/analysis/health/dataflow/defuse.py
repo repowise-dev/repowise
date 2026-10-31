@@ -132,6 +132,9 @@ def compute_def_use(
     blocks.setdefault(cfg.entry_id, BlockDefUse(cfg.entry_id))
     for occ in params:
         _add_def(occ, cfg.entry_id)
+    blocks.setdefault(cfg.exit_id, BlockDefUse(cfg.exit_id)).uses.extend(
+        dialect.exit_reads(fn_node)
+    )
 
     for block in cfg.blocks:  # ordered by id => deterministic def indices
         bdu = blocks.setdefault(block.id, BlockDefUse(block.id))

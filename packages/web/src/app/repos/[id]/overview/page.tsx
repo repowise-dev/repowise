@@ -13,6 +13,9 @@ import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrappe
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
 import { NextActionsPanel } from "@/components/overview/next-actions-panel";
 import { PublishOverviewSection } from "@/components/hosted/publish";
+import { WelcomeMoment } from "@/components/welcome/welcome-moment";
+import { welcomeFigures } from "@/lib/welcome-moment";
+import { overviewBodyCopy, overviewRelativeTime } from "./overview-copy";
 import {
   OverviewBody,
   OverviewSection,
@@ -21,11 +24,7 @@ import {
   type RepoIdentityMeta,
 } from "@repowise-dev/ui/overview";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
-import {
-  formatDateTime,
-  formatLOC,
-  formatRelativeTime,
-} from "@repowise-dev/ui/lib/format";
+import { formatDateTime, formatLOC } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -46,6 +45,8 @@ function identityMeta(
   summary: OverviewSummaryResponse,
   totalNloc: number | null,
   lastActivityAt: string | null | undefined,
+  t: (key: string, values?: Record<string, string>) => string,
+  relativeTime: (iso: string) => string,
 ): RepoIdentityMeta[] {
   const meta: RepoIdentityMeta[] = [];
   const primaryLanguage = summary.languages[0]?.language;
@@ -53,11 +54,11 @@ function identityMeta(
   meta.push({ label: summary.repo.default_branch, mono: true });
   if (summary.repo.head_commit) meta.push({ label: summary.repo.head_commit.slice(0, 7), mono: true });
   if (totalNloc != null) {
-    meta.push({ label: `${formatLOC(totalNloc)} lines`, mono: true });
+    meta.push({ label: t("identity.lines", { lines: formatLOC(totalNloc) }), mono: true });
   }
   if (lastActivityAt) {
     meta.push({
-      label: `synced ${formatRelativeTime(lastActivityAt)}`,
+      label: t("identity.synced", { when: relativeTime(lastActivityAt) }),
       title: formatDateTime(lastActivityAt),
     });
   }
@@ -100,7 +101,13 @@ export default async function OverviewPage({ params }: Props) {
   const lastActivityAt = sync.last_sync_at ?? sync.last_resync_at ?? health.last_indexed_at;
 
   // ── Identity ───────────────────────────────────────────────────────────
-  const meta = identityMeta(summary, totalNloc, lastActivityAt);
+  const meta = identityMeta(
+    summary,
+    totalNloc,
+    lastActivityAt,
+    tOverview,
+    await overviewRelativeTime(),
+  );
 
   // Priced by the server; no rates means the dialog shows no estimate.
   const active = providers?.active;
@@ -152,8 +159,21 @@ export default async function OverviewPage({ params }: Props) {
       summary={summary}
       routes={routes}
       LinkComponent={Link}
+      copy={await overviewBodyCopy()}
       slots={{
-        header,
+        header: (
+          <>
+            {header}
+            {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
+            <WelcomeMoment
+              repoId={id}
+              repoName={repo.name}
+              fileCount={stats.file_count}
+              figures={welcomeFigures(summary)}
+              hotspotPath={summary.top_hotspots[0]?.file_path ?? null}
+            />
+          </>
+        ),
         ask: <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />,
         beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the

@@ -142,3 +142,14 @@ def test_timed_records_even_when_the_block_raises() -> None:
         raise RuntimeError("boom")
 
     assert "kg" in timings.totals
+
+
+def test_scoped_view_records_under_its_prefix() -> None:
+    timings = PhaseTimings()
+    with timed(timings, "analysis.health.walk"):
+        pass
+    with timed(timings.scoped("rescore."), "analysis.health.walk"):
+        pass
+
+    # One table, two rows: the second visit does not fold into the first.
+    assert {"analysis.health.walk", "rescore.analysis.health.walk"} <= set(timings.totals)

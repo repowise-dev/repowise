@@ -8,12 +8,13 @@ rows newest first and files older commits under each file's current name (see
 from __future__ import annotations
 
 import functools
+import itertools
 import json
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import structlog
 
@@ -143,6 +144,8 @@ def _git_ai_notes_log(repo: object, commit_limit: int | None) -> str:
 #: shape version it carries. Bump the version when ``_LOG_FORMAT`` or the
 #: record layout changes, so an older cache is re-walked rather than misread.
 _WINDOW_CACHE_NAME = "commit_window_cache.json"
+#: The first deep walk's records (window included), cached the same way.
+_DEEP_CACHE_NAME = "commit_deep_cache.json"
 _WINDOW_CACHE_VERSION = 2  # v2: records carry rename rows (explicit -M)
 
 
@@ -158,7 +161,12 @@ def _record_ts(record: str) -> int:
 
 
 def _window_records(
-    repo: object, depth: int, cache_dir: Path | None, *, cache_writable: bool = True
+    repo: object,
+    depth: int,
+    cache_dir: Path | None,
+    *,
+    cache_writable: bool = True,
+    cache_name: str = _WINDOW_CACHE_NAME,
 ) -> list[str]:
     """The raw log records of the newest ``depth`` non-merge commits.
 
@@ -180,19 +188,20 @@ def _window_records(
     if cache_dir is None:
         return _log_records(repo, f"-{depth}")
 
-    cache_path = Path(cache_dir) / _WINDOW_CACHE_NAME
+    cache_path = Path(cache_dir) / cache_name
     try:
         head = repo.head.commit.hexsha  # type: ignore[attr-defined]
     except Exception:
         return _log_records(repo, f"-{depth}")
 
     try:
-        records = _cached_window_records(repo, cache_path, head, depth)
+        window = _cached_window_records(repo, cache_path, head, depth)
     except Exception:
-        records = None
+        window = _CachedWindow(None, at_head=False)
+    records = window.records
     if records is None:
         records = _log_records(repo, f"-{depth}")
-    if cache_writable:
+    if cache_writable and not window.at_head:
         _write_window_cache(cache_path, head, depth, records)
     return records
 
@@ -216,22 +225,27 @@ def _write_window_cache(cache_path: Path, head: str, depth: int, records: list[s
         logger.debug("commit_window_cache_write_failed", error=str(exc))
 
 
-def _log_records(repo: object, revisions: str) -> list[str]:
+def _log_records(repo: object, *revisions: str) -> list[str]:
     """The non-empty raw ``--numstat`` log records git returns for *revisions*."""
     from .git_indexer import _LOG_FORMAT, _RECORD_SEP
 
     # ``-M`` explicitly: the rename trail needs rename rows whatever the
     # repository's ``diff.renames`` says.
     raw = repo.git.log(  # type: ignore[attr-defined]
-        revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
+        *revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
     )
     return [rec for rec in raw.split(_RECORD_SEP) if rec.strip()]
 
 
+class _CachedWindow(NamedTuple):
+    records: list[str] | None  # None: the cache cannot serve
+    at_head: bool  # the cache was already taken at HEAD, so nothing to rewrite
+
+
 def _cached_window_records(
     repo: object, cache_path: Path, head: str, depth: int
-) -> list[str] | None:
-    """The cached window brought forward to *head*, or ``None`` when it cannot serve.
+) -> _CachedWindow:
+    """The cached window brought forward to *head*.
 
     Raises on an unreadable cache or a cached head that is not an ancestor of
     *head*; the caller treats both as a miss.
@@ -242,20 +256,31 @@ def _cached_window_records(
         or cached.get("depth") != depth
         or not isinstance(cached.get("records"), list)
     ):
-        return None
+        return _CachedWindow(None, at_head=False)
     cached_head = str(cached.get("head") or "")
     if cached_head == head:
-        return list(cached["records"])
+        return _CachedWindow(list(cached["records"]), at_head=True)
     if not cached_head:
-        return None
+        return _CachedWindow(None, at_head=False)
     # Raises when the cached head is unknown to this repository or
     # not behind HEAD, which is exactly when the cache is stale.
     repo.git.merge_base("--is-ancestor", cached_head, head)  # type: ignore[attr-defined]
-    merged = _log_records(repo, f"{cached_head}..{head}") + list(cached["records"])
+    fresh = _log_records(repo, f"{cached_head}..{head}")
+    cached_records = list(cached["records"])
+    # Git walks newest committer time first, so the time sort below is git's
+    # order only when neither part is out of time order (clock skew).
+    if not (_newest_first(fresh) and _newest_first(cached_records)):
+        return _CachedWindow(None, at_head=False)
+    merged = fresh + cached_records
     # Stable, so a fresh record stays ahead of a cached one at the
     # same second, which is where the full walk puts it too.
     merged.sort(key=_record_ts, reverse=True)
-    return merged[:depth]
+    return _CachedWindow(merged[:depth], at_head=False)
+
+
+def _newest_first(records: list[str]) -> bool:
+    stamps = [_record_ts(record) for record in records]
+    return all(a >= b for a, b in itertools.pairwise(stamps))
 
 
 def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commits: int) -> None:
@@ -626,6 +651,8 @@ def load_deep_commit_index(
     trace_index: object | None = None,
     stats_sink: dict[str, int | bool] | None = None,
     renames: RenameTrail | None = None,
+    cache_dir: Path | None = None,
+    cache_writable: bool = True,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket commits OLDER than the recent window for *wanted_files* only.
 
@@ -653,34 +680,28 @@ def load_deep_commit_index(
 
     Failures return an empty dict; every missed file then falls back to
     the per-file path.
-    """
-    from .git_indexer import _LOG_FORMAT, _RECORD_SEP
 
+    *cache_dir* keeps the newest ``skip + deep_limit`` records between runs
+    (see :func:`_window_records`) and slices this region from them, so an
+    update asks git only for the commits since the last walk.
+    """
     if not wanted_files:
         return {}
     _report(stats_sink, succeeded=False, commits=0)
 
     try:
-        raw = repo.git.log(  # type: ignore[attr-defined]
-            f"--skip={skip}",
-            f"-{deep_limit}",
-            "-M",
-            "--numstat",
-            "--no-merges",
-            f"--format={_LOG_FORMAT}",
-        )
+        records = _deep_records(repo, skip, deep_limit, cache_dir, cache_writable)
     except Exception as exc:
         logger.warning("deep_commit_index_failed", error=str(exc))
         return {}
 
-    if not raw:
+    if not records:
         _report(stats_sink, succeeded=True, commits=0)
         return {}
 
     labeler = _CommitLabeler(repo, skip + deep_limit, provenance_classifier, trace_index)
     buckets = _FileBuckets(wanted_files, cap=per_file_limit)
     commits_parsed = 0
-    records = [record for record in raw.split(_RECORD_SEP) if record.strip()]
     for header, numstat_lines in _commits_after(records, None):
         commits_parsed += 1
         raw_changes, moved = _parse_numstat(numstat_lines)
@@ -703,6 +724,24 @@ def load_deep_commit_index(
     return buckets.records
 
 
+def _deep_records(
+    repo: object, skip: int, deep_limit: int, cache_dir: Path | None, cache_writable: bool
+) -> list[str]:
+    """The raw records of ``git log --skip=<skip> -<deep_limit>``, cached when *cache_dir* is set."""
+    if cache_dir is None:
+        return _log_records(repo, f"--skip={skip}", f"-{deep_limit}")
+    # The cached list is the whole newest ``skip + deep_limit``, since commits
+    # move from the window into this region as HEAD advances.
+    newest = _window_records(
+        repo,
+        skip + deep_limit,
+        cache_dir,
+        cache_writable=cache_writable,
+        cache_name=_DEEP_CACHE_NAME,
+    )
+    return newest[skip:]
+
+
 def _underfilled(sample: HistorySample, indexable_files: set[str], per_file_limit: int) -> set[str]:
     return {path for path in indexable_files if len(sample.commits.get(path, ())) < per_file_limit}
 
@@ -723,10 +762,15 @@ class _SharedWalks:
         recent_commits: int,
         start: int,
         step: int,
+        cache_dir: Path | None = None,
+        cache_writable: bool = True,
     ) -> None:
         self._walk_deep = walk_deep
         self._total = total_commits
         self._step = step
+        self._start = start
+        self._cache_dir = cache_dir
+        self._cache_writable = cache_writable
         self.cursor = start
         self.deep_walked = False
         self.recent_complete = total_commits is not None and total_commits <= recent_commits
@@ -739,7 +783,15 @@ class _SharedWalks:
     def walk_next(self, sample: HistorySample, per_file_limit: int, wanted: set[str]) -> bool:
         """Top up *sample* from the next deep region; ``False`` when that walk failed."""
         stats: dict[str, int | bool] = {}
-        deep = self._walk_deep(wanted, skip=self.cursor, stats_sink=stats)
+        # Only the first region is cached: later ones start at a moving depth.
+        first = self.cursor == self._start
+        deep = self._walk_deep(
+            wanted,
+            skip=self.cursor,
+            stats_sink=stats,
+            cache_dir=self._cache_dir if first else None,
+            cache_writable=self._cache_writable,
+        )
         for path, records in deep.items():
             remaining = per_file_limit - len(sample.commits.get(path, ()))
             if remaining > 0 and records:
@@ -840,6 +892,8 @@ def load_sampled_commit_index(
         recent_commits=sample.global_commits,
         start=per_file_limit,
         step=deep_limit,
+        cache_dir=cache_dir,
+        cache_writable=cache_writable,
     )
     underfilled = _underfilled(sample, indexable_files, per_file_limit)
     while not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more():

@@ -2,7 +2,8 @@
 
 Only the clone-local exclude file is written, never ``.gitignore``: whether a
 file is shared is the team's call, and an exclude line is invisible to them.
-Which files count is :data:`~repowise.core.owned_paths.MACHINE_SPECIFIC_FILES`.
+Which files count is :data:`~repowise.core.owned_paths.MACHINE_SPECIFIC_FILES`, plus
+a workspace root's config and data directory.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from repowise.core.owned_paths import MACHINE_SPECIFIC_FILES
+from repowise.core.workspace.config import WORKSPACE_CONFIG_FILENAME, WORKSPACE_DATA_DIR
 
 HEADER = "# repowise (machine-specific)"
 
@@ -101,3 +103,16 @@ def add_to_exclude(repo_path: Path, paths: Iterable[str]) -> list[str]:
     except (OSError, UnicodeDecodeError):
         return []
     return added
+
+
+def keep_workspace_data_out(workspace_root: Path) -> list[str]:
+    """Exclude the workspace config and data dir when the workspace root is in a git work tree.
+
+    Both are per machine (local paths, index timestamps, derived analysis).
+    A path a ``.gitignore`` already covers gets no second line.
+    """
+    if _layout(workspace_root) is None:
+        return []
+    entries = [WORKSPACE_CONFIG_FILENAME, f"{WORKSPACE_DATA_DIR}/"]
+    ignored = _listed(workspace_root, ("check-ignore", "--no-index"), entries)
+    return add_to_exclude(workspace_root, [e for e in entries if e not in ignored])

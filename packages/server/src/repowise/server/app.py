@@ -73,6 +73,7 @@ from repowise.server.routers import (
     repos,
     search,
     security,
+    setup,
     stats,
     symbols,
     webhooks,
@@ -360,6 +361,7 @@ _ROUTERS = (
     feedback,
     actions,
     platform,
+    setup,
 )
 
 

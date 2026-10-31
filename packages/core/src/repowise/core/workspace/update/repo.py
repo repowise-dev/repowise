@@ -20,17 +20,15 @@ async def _merged_repo_excludes(
     repo_path: Path,
     extra_exclude_patterns: list[str] | None = None,
 ) -> list[str]:
-    """Merge config.yaml excludes with the persisted repo settings' excludes.
+    """config.yaml excludes, else a legacy settings copy, plus *extra_exclude_patterns*.
 
-    Local indexes read ``settings_json`` straight from the repo-local
-    ``wiki.db`` (cheaper than an engine for one row); a configured shared
-    database is the source of truth instead.
+    The legacy copy (``settings_json`` from before the web UI wrote
+    config.yaml) applies only while the file lacks the key. Local indexes read
+    it straight from the repo-local ``wiki.db`` (cheaper than an engine for one
+    row); a configured shared database is the source of truth instead.
     """
-    from ...repo_config import load_repo_config
-
-    patterns: list[str] = list(load_repo_config(repo_path).get("exclude_patterns") or [])
-
     from ...persistence.database import get_configured_db_url
+    from ...repo_config import resolve_file_settings
 
     configured_url = get_configured_db_url()
     if configured_url is None:
@@ -38,13 +36,10 @@ async def _merged_repo_excludes(
     else:
         settings_json = await _configured_settings_json(configured_url, repo_path)
 
-    if settings_json:
-        _merge_settings_excludes(patterns, settings_json)
-
-    for pattern in extra_exclude_patterns or []:
-        if pattern not in patterns:
-            patterns.append(pattern)
-    return patterns
+    stored = _settings_excludes(settings_json) if settings_json else {}
+    saved = resolve_file_settings(repo_path, stored).get("exclude_patterns") or []
+    merged = [p for p in saved if isinstance(p, str)] + list(extra_exclude_patterns or [])
+    return list(dict.fromkeys(merged))
 
 
 def _local_settings_json(repo_path: Path) -> str | None:
@@ -93,18 +88,18 @@ async def _configured_settings_json(configured_url: str, repo_path: Path) -> str
     return settings_json
 
 
-def _merge_settings_excludes(patterns: list[str], settings_json: str) -> None:
-    """Append the string ``exclude_patterns`` of *settings_json* not already in *patterns*."""
+def _settings_excludes(settings_json: str) -> dict[str, Any]:
+    """``{"exclude_patterns": ...}`` from *settings_json* when it has them, else ``{}``."""
     try:
         settings = _json.loads(settings_json)
-        if isinstance(settings, dict):
-            for value in settings.get("exclude_patterns") or []:
-                if isinstance(value, str) and value not in patterns:
-                    patterns.append(value)
     except Exception:
         _log.warning(
             "Could not parse settings_json; saved exclude patterns not applied", exc_info=True
         )
+        return {}
+    if isinstance(settings, dict) and "exclude_patterns" in settings:
+        return {"exclude_patterns": settings["exclude_patterns"]}
+    return {}
 
 
 @dataclass
@@ -136,6 +131,34 @@ class RepoUpdateResult:
     # True when this run walked the whole git history and persisted every row,
     # so the caller stamps ``git_history_version``.
     git_history_refreshed: bool = False
+    # Why the update could not apply, set only when the caller turned off the
+    # full-index fallback: "not_indexed", "config_changed", "base_missing" or
+    # "update_failed". ``skipped_reason`` is then "full_index_required", and
+    # ``error`` carries the exception on "update_failed".
+    full_index_reason: str | None = None
+    # True when every file's health was re-scored this run, so the caller can
+    # stamp ``last_full_rescore_at`` / ``health_analyzer_version``.
+    health_rescored: bool = False
+
+
+@dataclass
+class UpdateProducts:
+    """The in-memory products of one incremental update, for callers that reuse them.
+
+    The graph, parse and structure cover the whole repo. ``health_report`` is
+    the whole-repo report when health was re-scored, else the partial
+    (changed-files) one; either report may be ``None`` when its step failed.
+    """
+
+    parsed_files: list[Any]
+    source_map: dict[str, Any]
+    graph_builder: Any
+    repo_structure: Any
+    file_count: int
+    dead_code_report: Any
+    doc_drift_report: Any
+    health_report: Any
+    knowledge_graph_result: Any | None
 
 
 async def _incremental_repo_update(
@@ -146,6 +169,8 @@ async def _incremental_repo_update(
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
     force_full_git: bool = False,
+    products_sink: list[UpdateProducts] | None = None,
+    rescore_health: bool = False,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -155,6 +180,10 @@ async def _incremental_repo_update(
     analysis, and upsert the results. Deletions and renames prune stale rows
     and tombstone pages, as the single-repo path does. State-file updates stay
     with the caller.
+
+    *products_sink* receives one :class:`UpdateProducts` when the graph was
+    rebuilt; a run with no relevant changes rebuilds nothing and appends
+    nothing. *rescore_health* re-scores every file's health after persisting.
 
     Raises on failure — the caller falls back to the full pipeline.
     """
@@ -244,6 +273,28 @@ async def _incremental_repo_update(
         log=_log.info,
     )
 
+    rescored_report = (
+        await _rescore_repo_health(repo_path, graph_builder, parsed_files, merged_excludes)
+        if rescore_health
+        else None
+    )
+    if products_sink is not None:
+        products_sink.append(
+            UpdateProducts(
+                parsed_files=parsed_files,
+                source_map=source_map,
+                graph_builder=graph_builder,
+                repo_structure=_structure,
+                file_count=file_count,
+                dead_code_report=dead_code_report,
+                doc_drift_report=doc_drift_report,
+                health_report=(
+                    rescored_report if rescored_report is not None else partial_health_report
+                ),
+                knowledge_graph_result=kg,
+            )
+        )
+
     return RepoUpdateResult(
         alias=alias,
         updated=True,
@@ -252,7 +303,27 @@ async def _incremental_repo_update(
         kg_state=_export_kg_state(repo_path, alias, kg),
         working_tree_paths=working_tree_paths,
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
+        health_rescored=rescored_report is not None,
     )
+
+
+async def _rescore_repo_health(
+    repo_path: Path, graph_builder: Any, parsed_files: list, exclude_patterns: list[str]
+) -> Any:
+    """Every file's health re-scored against the just-persisted history, or ``None``.
+
+    Best-effort, like the CLI's periodic re-score: on failure the stored
+    scores stand and the result says health was not re-scored.
+    """
+    from ...pipeline.incremental.rescore import rescore_health_from_store
+
+    try:
+        return await rescore_health_from_store(
+            repo_path, graph_builder, parsed_files, exclude_patterns, log=_log.info
+        )
+    except Exception:
+        _log.warning("Health re-score failed for %s", repo_path, exc_info=True)
+    return None
 
 
 def _changed_file_diffs(
@@ -399,6 +470,9 @@ async def update_single_repo_index(
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
     progress: Any | None = None,
+    products_sink: list[UpdateProducts] | None = None,
+    full_index_fallback: bool = True,
+    rescore_health: bool = False,
 ) -> RepoUpdateResult:
     """Refresh the index for a single repo.
 
@@ -409,6 +483,15 @@ async def update_single_repo_index(
     fingerprint drift, which invalidates every persisted score), and any
     incremental failure run the full ingestion pipeline instead (index-only —
     no wiki pages).
+
+    Options for callers that run their own full index:
+
+    - *products_sink* receives the incremental run's :class:`UpdateProducts`
+      (graph, parse, structure, dead-code, doc-drift, health, knowledge graph).
+    - ``full_index_fallback=False`` returns ``skipped_reason="full_index_required"``
+      with ``full_index_reason`` set instead of running the full pipeline.
+    - ``rescore_health=True`` re-scores every file's health, not only the
+      changed ones, after the incremental write.
     """
     from ...repo_config import load_repo_config
 
@@ -429,17 +512,31 @@ async def update_single_repo_index(
             alias,
         )
 
-    if (
-        not drift.requires_full_reindex
-        and base_ref
-        and has_persisted_index
-        and commit_exists(repo_path, str(base_ref))
-    ):
-        incremental_result = await _try_incremental_update(
-            repo_path, state, str(base_ref), exclude_patterns, include_working_tree
+    reason = _full_index_reason(repo_path, drift, base_ref, has_persisted_index)
+    update_error: str | None = None
+    if reason is None:
+        incremental_result, update_error = await _try_incremental_update(
+            repo_path,
+            state,
+            str(base_ref),
+            exclude_patterns,
+            include_working_tree,
+            products_sink=products_sink,
+            rescore_health=rescore_health,
         )
         if incremental_result is not None:
             return incremental_result
+        reason = "update_failed"
+
+    if not full_index_fallback:
+        _log.info("workspace_update: %s needs a full index (%s)", alias, reason)
+        return RepoUpdateResult(
+            alias=alias,
+            updated=False,
+            skipped_reason="full_index_required",
+            full_index_reason=reason,
+            error=update_error,
+        )
 
     return await _full_index_update(
         repo_path,
@@ -450,6 +547,19 @@ async def update_single_repo_index(
         drift,
         progress,
     )
+
+
+def _full_index_reason(
+    repo_path: Path, drift: _ConfigDrift, base_ref: Any, has_persisted_index: bool
+) -> str | None:
+    """Why only a full index can refresh this repo, or ``None`` when an update can."""
+    if drift.requires_full_reindex:
+        return "config_changed"
+    if not base_ref or not has_persisted_index:
+        return "not_indexed"
+    if not commit_exists(repo_path, str(base_ref)):
+        return "base_missing"
+    return None
 
 
 class _ConfigDrift(NamedTuple):
@@ -505,10 +615,7 @@ def _drift_requirements(
     )
     require_health_success = requires_full_reindex and (
         changed_dependencies is None
-        or bool(
-            {"traversal", "git_history", "health", "other"}
-            & (changed_dependencies or set())
-        )
+        or bool({"traversal", "git_history", "health", "other"} & (changed_dependencies or set()))
     )
     return _ConfigDrift(requires_full_reindex, require_git_success, require_health_success)
 
@@ -519,24 +626,30 @@ async def _try_incremental_update(
     base_ref: str,
     exclude_patterns: list[str] | None,
     include_working_tree: bool,
-) -> RepoUpdateResult | None:
-    """The incremental update's result, or ``None`` to fall back to the full pipeline."""
+    *,
+    products_sink: list[UpdateProducts] | None = None,
+    rescore_health: bool = False,
+) -> tuple[RepoUpdateResult | None, str | None]:
+    """The incremental update's result, or ``None`` and the error to fall back on."""
     try:
-        return await _incremental_repo_update(
+        result = await _incremental_repo_update(
             repo_path,
             state=state,
             base_ref=base_ref,
             exclude_patterns=exclude_patterns,
             include_working_tree=include_working_tree,
             force_full_git=git_history_stale(state),
+            products_sink=products_sink,
+            rescore_health=rescore_health,
         )
-    except Exception:
+    except Exception as exc:
         _log.warning(
             "Incremental update failed for %s — falling back to the full pipeline",
             repo_path,
             exc_info=True,
         )
-    return None
+        return None, f"{type(exc).__name__}: {exc}"
+    return result, None
 
 
 async def _full_index_update(

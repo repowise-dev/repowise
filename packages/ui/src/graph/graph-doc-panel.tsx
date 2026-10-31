@@ -14,8 +14,8 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Markdown } from "../shared/markdown";
 import { ConfidenceBadge } from "../wiki/confidence-badge";
-import { formatRelativeTime } from "../lib/format";
 import type { DocPage } from "@repowise-dev/types/docs";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface GraphDocPanelProps {
   /** Node id whose docs are being shown. Used in the header subtitle. */
@@ -102,7 +102,7 @@ export function GraphDocPanel({
           )}
           <span className="text-[10px] text-[var(--color-text-tertiary)] flex items-center gap-1 ml-auto">
             <Clock className="h-2.5 w-2.5" />
-            {formatRelativeTime(page.updated_at)}
+            <RelativeTime date={page.updated_at} />
           </span>
         </div>
       )}

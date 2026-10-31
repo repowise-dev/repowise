@@ -70,12 +70,35 @@ __all__ = [
     "_stale_page_counts",
     "_stale_page_guidance",
     "_unregistered_detail",
+    "collect_repo_checks",
     "console",
 ]
 
 
+def _collect(
+    repo_path: _DoctorPath, *, quick: bool = False
+) -> tuple[CheckContext, list[DoctorCheck]]:
+    ctx = CheckContext(
+        repo_path=repo_path, repowise_dir=get_repowise_dir(repo_path), quick=quick
+    )
+    checks: list[DoctorCheck] = []
+    for group in (core_checks, provider_checks, store_checks, integration_checks):
+        checks.extend(group(ctx))
+    return ctx, checks
+
+
+def collect_repo_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """Every per-repo check for *repo_path*, in table order, without printing.
+
+    Read-only: nothing is repaired. Each row carries a stable ``id``, a
+    ``level`` and, when known, the ``fix`` command; ``repowise doctor
+    --format json`` serialises exactly these rows.
+    """
+    return _collect(repo_path)[1]
+
+
 def _run_repo_checks(
-    repo_path: _DoctorPath, repair: bool, *, fmt: str = "table"
+    repo_path: _DoctorPath, repair: bool, *, fmt: str = "table", quick: bool = False
 ) -> tuple[bool, list[DoctorCheck]]:
     """Run the standard health checks against one repo.
 
@@ -83,12 +106,9 @@ def _run_repo_checks(
     over every repo without duplicating the full check body. When
     ``fmt != "table"`` the table and advisory lines are not printed (repair
     is also skipped; callers must not pass ``repair=True`` with a
-    non-table format).
+    non-table format). *quick* skips the slow checks (see ``CheckContext.quick``).
     """
-    ctx = CheckContext(repo_path=repo_path, repowise_dir=get_repowise_dir(repo_path))
-    checks: list[DoctorCheck] = []
-    for group in (core_checks, provider_checks, store_checks, integration_checks):
-        checks.extend(group(ctx))
+    ctx, checks = _collect(repo_path, quick=quick)
     all_ok = all(c.ok for c in checks)
 
     if fmt != "table":

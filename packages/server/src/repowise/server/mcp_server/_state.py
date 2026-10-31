@@ -25,6 +25,9 @@ _served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False
+# Set by _lifespan when the directory has no .repowise/ and the server is
+# serving the empty in-memory store. Read by the mcp command for telemetry.
+_serving_no_index: bool = False
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
@@ -77,7 +80,25 @@ _vector_store_errors: dict[str, str] = {}
 _release_check: Any = None
 _release_announced: str | None = None
 
-# Whether ``get_answer``'s ``no-llm-provider`` degraded path has already named
-# what a key or local model would add in this process. Same once-per-process
-# shape as ``_release_announced``: a fact the caller only needs the first time.
-_keyless_note_announced: bool = False
+
+def init_tool_state(
+    session_factory: Any,
+    fts: Any,
+    vector_store: Any,
+    decision_store: Any | None = None,
+    repo_path: str | None = None,
+) -> None:
+    """Publish the resources every tool reads; ``None`` keeps the stored value.
+
+    Lives here, not in ``chat_tools``, so a CLI command can wire a tool
+    without importing the HTTP auth stack (about 0.5 s of FastAPI imports).
+    """
+    global _session_factory, _fts, _vector_store, _decision_store, _repo_path
+    _session_factory = session_factory
+    _fts = fts
+    _vector_store = vector_store
+    if decision_store is not None:
+        _decision_store = decision_store
+    if repo_path is not None:
+        _repo_path = repo_path
+

@@ -446,6 +446,28 @@ def _warmup_dotnet(ctx: ResolverContext) -> None:
             node["package_export"] = True
 
 
+def _warmup_ruby(ctx: ResolverContext) -> None:
+    """Mark each gem's entry file as published, for the per-symbol public API
+    flag (``analysis.public_api``).
+
+    A gem's front door is ``lib/<name>.rb`` beside its gemspec. Only the entry
+    is stamped here, together with the ``lib`` root it sits in
+    (``ruby_gem_lib``): the files it requires are not resolved yet, so
+    ``stamp_public_api`` follows them once imports are. With no gemspec nothing
+    is stamped.
+    """
+    from .resolvers.ruby import gem_entry_files
+
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    for path, lib_root in gem_entry_files(ctx).items():
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
+            node["ruby_gem_lib"] = lib_root
+
+
 def _warmup_rust(ctx: ResolverContext) -> None:
     """Stamp Cargo ``[[bin]]``/``[[test]]``/``[[bench]]``/``[[example]]``
     targets that name an explicit ``path`` as live, so a file Cargo discovers
@@ -746,6 +768,7 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
     "rust": ("graph.rust_targets", _warmup_rust),
+    "ruby": ("graph.ruby_gems", _warmup_ruby),
     "typescript": ("graph.ts_index", _warmup_typescript),
     "javascript": ("graph.ts_index", _warmup_typescript),
     "cpp": ("graph.cpp_index", _warmup_cpp),

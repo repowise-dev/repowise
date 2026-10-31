@@ -213,6 +213,13 @@ class Page(Base):
     digest: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     target_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Cross-run reuse key: a stable digest of the page's subject (the file /
+    # group / repo it documents) folded with a fingerprint of the renderer
+    # (prompt template, system prompt, language, style). Unlike ``source_hash``
+    # it survives RAG-context drift between runs, so an unchanged page is
+    # reused instead of re-billed on every full run. Empty for pages written
+    # before the key existed, or for a page with no stable subject.
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -226,6 +233,11 @@ class Page(Base):
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Developer-authored notes that survive LLM re-generation.
     human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A user hand-requested this page (UI "Generate doc"): it is regenerated
+    # on every reindex regardless of the selection heuristic, so the doc a
+    # user asked for keeps following the code instead of silently
+    # disappearing again (issue #812).
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # --- Where the page sits in the wiki -----------------------------------
     # Hierarchy lives here rather than being reassembled by each reader from
@@ -279,6 +291,46 @@ class PageVersion(Base):
     archived_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+
+
+class PageArchive(Base):
+    """A complete retired page record, excluded from live retrieval.
+
+    A structural page id can be reused after retirement. Each retirement has
+    its own identity, so the next incarnation never claims the old history.
+    The JSON snapshot preserves every column without a second page schema.
+    """
+
+    __tablename__ = "page_archive"
+    __table_args__ = (
+        Index("ix_page_archive_repo_page", "repository_id", "page_id"),
+        Index("ix_page_archive_repo_retired", "repository_id", "retired_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    page_id: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PageVersionArchive(Base):
+    """A retired version, owned by one specific page retirement."""
+
+    __tablename__ = "page_version_archive"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    archive_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("page_archive.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class GraphNode(Base):
@@ -1222,7 +1274,7 @@ class DecisionRecord(Base):
     # Provenance
     source: Mapped[str] = mapped_column(
         String(32), nullable=False, default=DEFAULT_DECISION_SOURCE
-    )  # git_archaeology | inline_marker | adr | pr | comment | session | cli
+    )  # git_archaeology | inline_marker | adr | pr | comment | session | agent | cli
     evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: The verbatim span this record's identity is keyed on, written once
@@ -1472,6 +1524,7 @@ class DecisionAcceptance(Base):
     #: actions land in the same transaction, and the tie decides who governs.
     seq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     #: accepted | reaffirmed | superseded | dismissed | returned_to_review | merged
+    #: | deprecated
     action: Mapped[str] = mapped_column(String(24), nullable=False, default="accepted")
     currency: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     #: The rationale, or the explicit reason a constraint has none.
@@ -1541,6 +1594,12 @@ class DecisionCandidateMeta(Base):
     #: Set when review folded this candidate into another record.
     merged_into: Mapped[str | None] = mapped_column(String(32), nullable=True)
     dismissed_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Who set ``dismissed_reason`` (a dismissal or a split request), signed
+    #: like an acceptance row. Here, not in the acceptance log, because a row
+    #: there would make the candidate a decision. Null predates the columns.
+    dismissed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dismissed_by_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    dismissed_session: Mapped[str | None] = mapped_column(String(64), nullable=True)
     first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

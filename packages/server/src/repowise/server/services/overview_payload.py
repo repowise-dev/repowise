@@ -310,8 +310,9 @@ async def health_block(
     }
 
 
-async def attention_block(session: AsyncSession, repo_id: str) -> dict:
-    """``attention``, ``attention_summary`` and ``onboarding_targets``."""
+async def attention_block(session: AsyncSession, repo_id: str, cut: dict | None = None) -> dict:
+    """``attention``, ``attention_summary`` and ``onboarding_targets``; *cut* is
+    the dead-code cross-repo cut's inputs (``deps.cross_repo_cut_inputs``)."""
     decision_health = await crud.get_decision_health_summary(session, repo_id)
     # Silos only. The full knowledge map also computes top owners and
     # onboarding targets, and paying for those here meant loading the content
@@ -328,6 +329,7 @@ async def attention_block(session: AsyncSession, repo_id: str) -> dict:
         repo_id,
         decision_health=decision_health,
         knowledge_silos=knowledge_silos,
+        **(cut or {}),
     )
     return {
         "attention": result["items"],

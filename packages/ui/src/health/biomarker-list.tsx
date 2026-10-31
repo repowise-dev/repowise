@@ -193,7 +193,7 @@ function BiomarkerGroup({
           }
         }}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer rounded-t-lg hover:bg-[var(--color-bg-elevated)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer rounded-t-lg hover:bg-[var(--color-bg-elevated)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         {expanded ? (
           <ChevronDown className="h-4 w-4 text-[var(--color-text-tertiary)]" />

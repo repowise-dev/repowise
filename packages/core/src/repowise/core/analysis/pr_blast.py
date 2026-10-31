@@ -84,7 +84,7 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
     their own.
     """
     from repowise.core.analysis.test_reachability import (
-        load_test_files,
+        cached_test_files,
         read_under,
         tests_matching_by_name,
         tests_reaching,
@@ -95,7 +95,7 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
 
     if not paths:
         return []
-    test_files = await load_test_files(session, repo_id)
+    test_files = await cached_test_files(session, repo_id)
     candidates = [p for p in paths if is_code_file(p) and p not in test_files]
     if not candidates:
         return []

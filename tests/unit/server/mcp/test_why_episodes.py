@@ -28,8 +28,6 @@ from repowise.core.precedent.store import (
     default_store_path,
 )
 from repowise.server.mcp_server._episodes import (
-    _MAX_EVIDENCE_BODY_CHARS,
-    _MAX_SCOPE_NODES,
     bank_overflow,
     currency,
     enrich_episode_counts,
@@ -91,7 +89,26 @@ class TestEpisodeEvidence:
         assert len(entries) == 1
         assert entries[0]["kind"] == "code_fix"
         assert entries[0]["recorded"] == "a fix"
-        assert entries[0]["scope"] == ["app.py"]
+        assert entries[0]["scope"] == {"files": 1, "matching": ["app.py"]}
+
+    def test_a_git_episode_leads_with_its_subject_line_not_its_sha(self, repo):
+        sha = "a" * 40
+        _write(
+            repo,
+            _fix(sha, ("app.py", "other.py"), birth_commit=_head(repo), body="fix: x\n\nbecause y"),
+        )
+        entries, _ = episode_evidence(repo, paths=["app.py"])
+        assert entries[0]["subject"] == "fix: x"
+        assert entries[0]["commit"] == sha
+        assert entries[0]["date"] == "1970-01-01"
+        assert entries[0]["recorded"] == "because y"
+        assert "evidence" not in entries[0]
+        assert entries[0]["scope"] == {"files": 2, "matching": ["app.py"]}
+
+    def test_a_failed_git_call_is_not_served_as_currency(self, repo):
+        _write(repo, _fix("sha1", ("app.py",), birth_commit="f" * 40))
+        entries, _ = episode_evidence(repo, paths=["app.py"])
+        assert "still_true" not in entries[0]
 
     def test_a_path_with_no_episodes_says_nothing(self, repo):
         _write(repo, _fix("sha1", ("app.py",), birth_commit=_head(repo)))
@@ -142,10 +159,8 @@ class TestEpisodeEvidence:
         entries, pending = episode_evidence(repo, paths=["app.py"])
         collector = bank_overflow(pending, tool="get_why", repo_root=repo)
         recorded = entries[0]["recorded"]
-        # The cap plus the recovery marker, which is ~95 chars and is the
-        # point: what was cut is advertised rather than silently dropped.
-        assert recorded.startswith("x" * _MAX_EVIDENCE_BODY_CHARS)
-        assert len(recorded) < _MAX_EVIDENCE_BODY_CHARS + 150
+        # Only the recovery marker: the body is served on request.
+        assert recorded.startswith("[repowise#")
         assert "repowise expand" in recorded
         assert collector is not None
         payload: dict = {}
@@ -428,9 +443,15 @@ class TestScopeIsBounded:
             _fix("s1", tuple(f"pkg/f{i}.py" for i in range(40)), birth_commit=_head(repo)),
         )
         entries, _ = episode_evidence(repo, paths=["pkg/f0.py"])
-        scope = entries[0]["scope"]
-        assert len(scope) == _MAX_SCOPE_NODES + 1
-        assert scope[-1] == "… and 28 more"
+        assert entries[0]["scope"] == {"files": 40, "matching": ["pkg/f0.py"]}
+
+    def test_a_question_keeps_the_scope_files_it_names(self, repo):
+        _write(
+            repo,
+            _fix("s1", ("pkg/router.py", "pkg/other.py"), birth_commit=_head(repo), body="router"),
+        )
+        entries, _ = episode_evidence(repo, query="router")
+        assert entries[0]["scope"] == {"files": 2, "matching": ["pkg/router.py"]}
 
     def test_an_empty_scope_reads_as_the_whole_checkout(self, repo):
         with EpisodeStore(default_store_path(repo)) as store:
@@ -584,6 +605,5 @@ async def test_a_capped_body_is_banked_from_the_thread_that_attaches(mcp_repo):
     )
     result = await get_why("src/auth/service.py")
     recorded = result["episodes"][0]["recorded"]
-    assert recorded.startswith("y" * _MAX_EVIDENCE_BODY_CHARS)
-    assert "repowise#" in recorded
+    assert recorded.startswith("[repowise#")
     assert result["_meta"]["omitted"]["refs"]

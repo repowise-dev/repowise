@@ -8,6 +8,7 @@ envelope shape, and never touch disk or the network on the caller's hot path.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,8 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(telemetry, "_state_cache", None, raising=False)
     for var in ("DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED", "REPOWISE_TELEMETRY_DEBUG"):
         monkeypatch.delenv(var, raising=False)
+    # These tests exercise delivery itself, so they opt back in to it.
+    monkeypatch.setenv(telemetry.TESTS_OPT_IN_ENV, "1")
     telemetry._pending.clear()
     yield telemetry, state_path
     telemetry._pending.clear()
@@ -103,3 +106,89 @@ class TestDebug:
         telemetry.record_event("mcp_tool_call", {"tool": "get_answer"})
         assert "would send" in capsys.readouterr().err
         assert sent == []
+
+
+class TestUnderTest:
+    def test_pytest_suppresses_delivery(self, isolated, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv(telemetry.TESTS_OPT_IN_ENV)
+        sent = _capture(monkeypatch)
+        telemetry.record_event("mcp_tool_call", {"tool": "get_answer"})
+        assert sent == []
+
+    def test_env_alone_is_enough(self, isolated, monkeypatch: pytest.MonkeyPatch):
+        """A subprocess a test spawns has no pytest import, only the env."""
+        monkeypatch.delenv(telemetry.TESTS_OPT_IN_ENV)
+        monkeypatch.delitem(sys.modules, "pytest")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.setenv("PYTEST_VERSION", "8.4.2")
+        assert telemetry.under_test() is True
+
+    def test_debug_still_prints(
+        self, isolated, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ):
+        monkeypatch.delenv(telemetry.TESTS_OPT_IN_ENV)
+        monkeypatch.setenv("REPOWISE_TELEMETRY_DEBUG", "1")
+        telemetry.record_event("mcp_tool_call", {"tool": "get_answer"})
+        assert "would send" in capsys.readouterr().err
+
+
+_HOST_VARS = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_MANAGED_BY_NPM",
+    "CODEX_MANAGED_BY_BUN",
+    "CURSOR_TRACE_ID",
+    "CURSOR_AGENT",
+    "VSCODE_PID",
+    "VSCODE_IPC_HOOK_CLI",
+    "TERM_PROGRAM",
+)
+
+
+class TestDetectClient:
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch: pytest.MonkeyPatch):
+        from repowise.core.ci.base import CI_ENV_VARS
+
+        for var in (*_HOST_VARS, *CI_ENV_VARS):
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.mark.parametrize(
+        ("var", "value", "label"),
+        [
+            ("CLAUDECODE", "1", "claude_code"),
+            ("CODEX_MANAGED_BY_NPM", "1", "codex"),
+            ("CURSOR_TRACE_ID", "abc", "cursor"),
+            ("TERM_PROGRAM", "vscode", "vscode"),
+            ("VSCODE_PID", "123", "vscode"),
+            ("CI", "true", "ci"),
+        ],
+    )
+    def test_each_host(self, monkeypatch: pytest.MonkeyPatch, var, value, label):
+        monkeypatch.setenv(var, value)
+        assert telemetry.detect_client() == label
+        assert label in telemetry.CLIENT_LABELS
+
+    def test_plain_terminal(self):
+        assert telemetry.detect_client() == "terminal"
+
+    def test_agent_in_an_editor_terminal_is_the_agent(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TERM_PROGRAM", "vscode")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert telemetry.detect_client() == "claude_code"
+
+    def test_cursor_terminal_is_cursor_not_vscode(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TERM_PROGRAM", "vscode")
+        monkeypatch.setenv("CURSOR_TRACE_ID", "abc")
+        assert telemetry.detect_client() == "cursor"
+
+    def test_envelope_carries_it_as_a_property(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("CLAUDECODE", "1")
+        envelope = telemetry.build_envelope("mcp_tool_call", {"tool": "x"})
+        assert envelope["properties"]["client"] == "claude_code"
+        assert "client" not in envelope
+        # A caller that knows better (the MCP clientInfo) overrides it.
+        envelope = telemetry.build_envelope("mcp_tool_call", {"client": "codex"})
+        assert envelope["properties"]["client"] == "codex"

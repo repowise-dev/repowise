@@ -12,6 +12,8 @@ from repowise.core.exclusion import build_exclude_spec, is_excluded
 from .._types import DoctorCheck, _check
 from .context import CheckContext, StoreDrift, open_store
 
+_REPAIR = "repowise doctor --repair"
+
 
 async def _decision_vector_ids(session, repository_id: str) -> set[str]:
     """Vector-store ids for this repo's decision records.
@@ -233,6 +235,7 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
                     False,
                     f"cannot open .repowise/lancedb ({vector_store_error}); semantic "
                     "search is off until it opens, then run `repowise reindex`",
+                    check_id="vector-store",
                 )
             )
         vec_ok, vec_detail = _drift_detail(drift.missing_from_vector, drift.orphaned_vector)
@@ -241,15 +244,39 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
         # Name the command: `--resume` exists only on `init`.
         if stub_count:
             vec_detail += f" · {stub_count} stub(s) awaiting `repowise init --resume`"
-        rows.append(_check("SQL ↔ Vector Store", vec_ok, vec_detail))
-        fts_ok, fts_detail = _drift_detail(drift.missing_from_fts, drift.orphaned_fts)
-        rows.append(_check("SQL ↔ FTS Index", fts_ok, fts_detail))
-    except Exception as exc:
-        # Name the failure. "Could not check" is reported as OK, so a
-        # reconciliation that raises on every run would look exactly like one
-        # that had nothing to reconcile.
+        # --repair declines to re-embed a whole empty store; reindex does that.
+        vec_fix = "repowise reindex" if drift.vector_store_empty else _REPAIR
         rows.append(
-            _check("Store consistency", True, f"Could not check: {type(exc).__name__}: {exc}")
+            _check(
+                "SQL ↔ Vector Store",
+                vec_ok,
+                vec_detail,
+                check_id="vector-store-sync",
+                fix=None if vec_ok else vec_fix,
+            )
+        )
+        fts_ok, fts_detail = _drift_detail(drift.missing_from_fts, drift.orphaned_fts)
+        rows.append(
+            _check(
+                "SQL ↔ FTS Index",
+                fts_ok,
+                fts_detail,
+                check_id="fts-index-sync",
+                fix=None if fts_ok else _REPAIR,
+            )
+        )
+    except Exception as exc:
+        # Name the failure. "Could not check" is a warn, not a fail, so without
+        # the exception a reconciliation that raises on every run would read
+        # like one that had nothing to reconcile.
+        rows.append(
+            _check(
+                "Store consistency",
+                True,
+                f"Could not check: {type(exc).__name__}: {exc}",
+                check_id="store-consistency",
+                warn=True,
+            )
         )
     return rows
 
@@ -331,17 +358,30 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
             str(vector_count) if vector_count != -1 and vector_count is not None else "unknown"
         )
         detail = f"SQL={sql_pages}, Vector={vec_display}, Drift={drift_pct}"
-        row = _check("Coordinator drift", drift is None or drift < 0.05, detail)
+        row = _check(
+            "Coordinator drift",
+            drift is None or drift < 0.05,
+            detail,
+            check_id="coordinator-drift",
+        )
         ctx.coord_drift_color = drift_color
         ctx.coord_drift_pct = drift_pct
         return row
     except Exception as exc:
-        return _check("Coordinator drift", True, f"Could not check: {exc}")
+        return _check(
+            "Coordinator drift",
+            True,
+            f"Could not check: {exc}",
+            check_id="coordinator-drift",
+            warn=True,
+        )
 
 
 def store_checks(ctx: CheckContext) -> list[DoctorCheck]:
     """Checks 8-10, in order. Fills ``ctx.drift`` and the drift highlight."""
     checks: list[DoctorCheck] = []
+    if ctx.quick:
+        return checks
     if ctx.db_ok and ctx.page_count > 0:
         checks.extend(_consistency_rows(ctx))
     if ctx.db_ok:

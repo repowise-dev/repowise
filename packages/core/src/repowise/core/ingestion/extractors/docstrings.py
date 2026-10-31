@@ -488,6 +488,7 @@ _SYMBOL_DOC: dict[str, Callable[[Node, str], str | None]] = {
     "fsharp": _fsharp_symbol_doc,
     "rust": _rust_symbol_doc,
     "java": _javadoc,
+    "apex": _javadoc,  # ApexDoc
     **dict.fromkeys(_C_LIKE, _block_or_line_doc),
     "kotlin": _javadoc,
     "elixir": _elixir_symbol_doc,

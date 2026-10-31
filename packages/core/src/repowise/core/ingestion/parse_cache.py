@@ -119,6 +119,7 @@ class ParseCache:
         self._fingerprint = parser_fingerprint()
         self._entries: dict[tuple[str, str], bytes] = {}
         self._fresh: dict[tuple[str, str], bytes] = {}
+        self._by_path: dict[str, list[tuple[str, str]]] | None = None
         self.hits = 0
         self.misses = 0
 
@@ -183,8 +184,37 @@ class ParseCache:
         parsed.content_hash = content_hash
         return parsed
 
+    def known_paths(self) -> set[str]:
+        """Paths of every entry loaded from disk plus this run's puts."""
+        return {path for path, _hash in self._entries}
+
+    def previous_entry(self, path: str, *, exclude_hash: str) -> ParsedFile | None:
+        """The one earlier parse of *path* whose content hash is not *exclude_hash*.
+
+        A changed file misses on its new hash, but the entry the last run wrote
+        is still loaded, which gives an exact before/after of the same file.
+        ``None`` when there is no such entry or it is ambiguous (several old
+        versions), so a caller never compares against the wrong one.
+        """
+        if self._by_path is None:
+            self._by_path = {}
+            for key in self._entries:
+                self._by_path.setdefault(key[0], []).append(key)
+        keys = [key for key in self._by_path.get(path, ()) if key[1] != exclude_hash]
+        if len(keys) != 1:
+            return None
+        try:
+            # An entry of the cache file load_sealed_pickle verified on load.
+            parsed: Any = pickle.loads(self._entries[keys[0]])  # repowise-security-ignore: pickle_loads
+        except Exception as exc:
+            log.debug("parse_cache_entry_corrupt", path=path, error=str(exc))
+            return None
+        return parsed
+
     def put(self, parsed: ParsedFile, content_hash: str) -> None:
         """Snapshot *parsed* (call before any graph build mutates it)."""
+        if parsed.grammar_missing:
+            return  # re-parse next run, when the grammar may have loaded
         try:
             blob = pickle.dumps(parsed, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:

@@ -280,6 +280,21 @@ detail endpoint returns the object, and two conventions sit on top:
 | `{ok: true}` (and `{ok: true, deleted_pages: N}` for repo deletion) | mutations with nothing else to report, e.g. conversation delete, repository delete | Acknowledgement only |
 | `{event_id, status: "accepted"}` with `200` | all three webhooks | The stored event's id, not a job id |
 | `X-Repowise-Redirected-From: <requested id>` response header | `GET /api/pages/{page_id}` and `/api/pages/lookup` | A retired page id resolved to its successor; the header names the id that was asked for (`routers/pages.py`) |
+| `{detail: {status: "retired", reason, superseded_by, archive_id, archive_url, page_id}}` with `410` | The same page readers, with an explicit `repo_id`, when an archived identity has no static redirect | The live page is gone; `archive_url` reads that exact retirement, not a guessed live successor |
+
+Retired records have native, repository-bound readers:
+
+- `GET /api/repos/{repo_id}/pages/retired?limit=100&offset=0` lists distinct
+  retirement events with `archive_id`, `page_id`, `repository_id`, UTC
+  `retired_at`, `reason`, `superseded_by` and `title`, without full bodies.
+- `GET /api/repos/{repo_id}/pages/retired/{page_id}` returns the same metadata,
+  the complete original `page` record, and all original `versions`, newest
+  first. Optional `archive_id` selects an exact event when an ID was reused.
+
+These routes inherit the repository router's authentication and workspace
+database routing. Ordinary live pages, version queries, search and MCP retrieval
+exclude archives. Records older than 90 days are purged in the existing
+retired-page sweep; reading cannot restore a retired row as live.
 
 Enum vocabularies are shared deliberately and are the same four values wherever
 one appears: `open`, `acknowledged`, `resolved`, `false_positive` for health
@@ -414,7 +429,7 @@ empty. The route still declares only `application/json`.
 Two query parameters repeat across the `code-health` tag, and both change the
 numbers rather than the rows:
 
-- `scope=all` (default) or `production`. `production` drops test files, which
+- `scope=all` (default) or `production`. `production` drops test, tooling, vendored and generated files, which
   lowers every figure without a defect having been found.
 - `counts=everything` (default) or `code_shape`. `code_shape` removes the
   git-derived half of the score, so the figure describes code shape rather than

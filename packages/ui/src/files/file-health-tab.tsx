@@ -293,7 +293,7 @@ export function FileHealthTab({
                           onClick={() => setStatus(f.id, opt.value)}
                           className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                             status === opt.value
-                              ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                              ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                               : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
                           }`}
                         >

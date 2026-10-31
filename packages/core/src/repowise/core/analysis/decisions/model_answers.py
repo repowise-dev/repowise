@@ -10,7 +10,12 @@ from typing import Any
 
 import structlog
 
-from .records import DecisionSourceError, EmptyModelResponseError, ExtractedDecision
+from .records import (
+    DecisionSourceError,
+    EmptyModelResponseError,
+    ExtractedDecision,
+    TruncatedModelResponseError,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -160,3 +165,18 @@ def parse_decisions_json(content: str) -> list[ExtractedDecision]:
         for item in data
         if isinstance(item, dict) and item.get("title", "")
     ]
+
+
+def parse_decisions_reply(response: Any) -> list[ExtractedDecision]:
+    """Parse a batch reply, which must not have been cut off.
+
+    A reply that stopped at ``max_tokens`` raises
+    :class:`TruncatedModelResponseError`: its text would otherwise read as
+    ``[]`` and the batch as one with nothing in it.
+    """
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise TruncatedModelResponseError(
+            "the model's reply for this batch hit max_tokens "
+            f"({getattr(response, 'output_tokens', '?')} output tokens)"
+        )
+    return parse_decisions_json(response.content)

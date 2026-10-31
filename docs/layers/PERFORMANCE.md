@@ -27,13 +27,14 @@ A few shapes are deliberately quiet:
 - A loop that appends to one string several times is one `string_concat_in_loop`
   finding that lists every append line. TypeScript and JavaScript never get this
   finding, because JavaScript engines make repeated `+=` linear.
+- A `+=` onto the name the loop header binds each pass (`for p in ps: p += "/32"`)
+  is not flagged, because each pass grows a different string.
 - A TypeScript or JavaScript `includes` check against a short `const` table of
   literals that the file never changes is not flagged, because a table of fixed
   size costs the same at any scale.
-- A Python schema statement (`CREATE`, `DROP`, `ALTER`, `TRUNCATE`, `PRAGMA` and
-  peers) run in a loop is not an N+1: it runs once per table or setting the code
-  names, not once per row. A loop over a split of a string the module spells out
-  (`for stmt in SCHEMA.split(";")`) is a fixed loop, like one over a literal tuple.
+- A Python schema statement (`CREATE`, `ALTER`, `PRAGMA` and peers) in a loop, or a
+  loop over a split of a module string (`SCHEMA.split(";")`), runs a fixed number of
+  times and is not an N+1.
 - An awaited call on a line that an ESLint `no-await-in-loop` suppression covers
   is not reported: the comment states that the sequential await is intended.
 
@@ -57,7 +58,7 @@ declared type decides: an interface that extends a Spring Data repository, carri
 
 Performance analysis covers Python, TypeScript/JavaScript (including Vue and
 Svelte scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++,
-Dart and Pascal. A language without support emits no performance findings.
+Dart, Pascal and Apex. A language without support emits no performance findings.
 
 ## From findings to a plan
 

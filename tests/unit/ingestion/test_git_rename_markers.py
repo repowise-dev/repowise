@@ -35,11 +35,17 @@ from repowise.core.ingestion.git_indexer.records import _extract_rename_paths
     ],
 )
 def test_rename_marker_forms(stat_path: str, want_old: str, want_new: str) -> None:
-    known: set[str] = set()
+    known: set[str] = {want_new}
     old, new = _extract_rename_paths(stat_path, known)
     assert old == want_old
     assert new == want_new
     assert known == {want_old, want_new}
+
+
+def test_rename_of_another_file_leaves_known_paths_alone() -> None:
+    known: set[str] = {"a.py"}
+    assert _extract_rename_paths("b.py => c.py", known) == ("b.py", "c.py")
+    assert known == {"a.py"}
 
 
 def test_plain_path_returns_none() -> None:

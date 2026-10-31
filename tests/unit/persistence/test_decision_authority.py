@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import NO_DECISION_BLOCKER
 from repowise.core.persistence.crud import bulk_upsert_decisions, update_decision_status
 from repowise.core.persistence.crud.authority import (
     AcceptanceRefusedError,
@@ -27,6 +28,8 @@ from repowise.core.persistence.crud.authority import (
     list_candidates,
     merge_candidate,
     reaffirm_decision,
+    record_acceptance,
+    record_blockers,
     request_split,
     resolve_decision_id,
     return_to_review,
@@ -125,7 +128,7 @@ async def test_acceptance_requires_reason_scope_evidence_and_identity(async_sess
 
     with pytest.raises(AcceptanceRefusedError) as refusal:
         await accept_decision(async_session, rec, accepter="tester")
-    assert len(refusal.value.blockers) == 3
+    assert len(refusal.value.blockers) == 4
 
     with pytest.raises(AcceptanceRefusedError):
         await accept_decision(
@@ -139,9 +142,67 @@ async def test_acceptance_requires_reason_scope_evidence_and_identity(async_sess
         reason="a reason",
         scope=["src/a.py"],
         evidence=["deadbeef"],
+        decision="do the thing",
     )
     assert acceptance.currency == "active"
     assert rec.status == "active"
+
+
+async def test_a_mined_candidate_with_no_decision_text_is_refused(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Says nothing")
+    rec.decision = "   "
+    await async_session.flush()
+
+    assert record_blockers(rec) == [NO_DECISION_BLOCKER]
+    with pytest.raises(AcceptanceRefusedError) as refusal:
+        await accept_decision(async_session, rec, accepter="tester")
+    assert refusal.value.blockers == [NO_DECISION_BLOCKER]
+
+    await accept_decision(async_session, rec, accepter="tester", decision="Use Redis")
+    assert rec.decision == "Use Redis"
+    assert await is_accepted(async_session, rec.id)
+
+
+async def test_a_typed_record_needs_decision_text_but_no_evidence(async_session):
+    """A title names the choice without stating it; the entry is still its own evidence."""
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Typed")
+    rec.source = "cli"
+    rec.decision = ""
+    rec.evidence_commits_json = "[]"
+    rec.evidence_file = None
+    await async_session.flush()
+
+    with pytest.raises(AcceptanceRefusedError) as refusal:
+        await accept_decision(async_session, rec, accepter="tester")
+    assert refusal.value.blockers == [NO_DECISION_BLOCKER]
+
+    await accept_decision(async_session, rec, accepter="tester", decision="Use Redis")
+    assert await is_accepted(async_session, rec.id)
+
+
+async def test_a_decision_with_no_text_can_still_be_withdrawn_or_imported(async_session):
+    """Only a new grant asks for the text; an accepted record is never stranded."""
+    repo = await insert_repo(async_session)
+    kept, withdrawn = await _seed(async_session, repo.id, "Imported", "Withdrawn")
+    await accept_decision(async_session, withdrawn, accepter="tester")
+    for rec in (kept, withdrawn):
+        rec.decision = ""
+    await async_session.flush()
+
+    await record_acceptance(
+        async_session,
+        kept,
+        action="accepted",
+        currency="active",
+        artifact="decisions.yaml",
+        kind="import",
+    )
+    await dismiss_candidate(async_session, withdrawn, reason="gone", accepter="tester")
+
+    assert await is_accepted(async_session, kept.id)
+    assert (await latest_acceptance(async_session, withdrawn.id)).currency == "dismissed"
 
 
 async def test_the_database_refuses_an_acceptance_with_no_scope(async_session):
@@ -407,3 +468,95 @@ async def test_seq_retry_keeps_earlier_acceptances(async_session, monkeypatch):
     assert tripped, "the collision never fired, so the retry was not exercised"
     assert await latest_acceptance(async_session, first.id) is not None
     assert await latest_acceptance(async_session, second.id) is not None
+
+
+# ---------------------------------------------------------------------------
+# Review verbs an agent drives
+# ---------------------------------------------------------------------------
+
+
+async def test_a_candidate_cannot_be_reaffirmed(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Never accepted")
+
+    with pytest.raises(AcceptanceRefusedError, match="confirm"):
+        await reaffirm_decision(async_session, rec, accepter="tester")
+    assert not await is_accepted(async_session, rec.id)
+
+
+async def test_a_withdrawn_decision_is_not_reaffirmed_back(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Withdrawn")
+    await accept_decision(async_session, rec, accepter="tester")
+    await dismiss_candidate(async_session, rec, reason="gone", accepter="tester")
+
+    with pytest.raises(AcceptanceRefusedError, match="confirm"):
+        await reaffirm_decision(async_session, rec, accepter="tester")
+
+
+async def test_reaffirm_records_the_reason_and_evidence_given(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Re-read")
+    await accept_decision(async_session, rec, accepter="tester")
+
+    row = await reaffirm_decision(
+        async_session, rec, accepter="tester", reason="still holds", evidence=["abc1234"]
+    )
+
+    assert (row.action, row.reason, json.loads(row.evidence_json)) == (
+        "reaffirmed",
+        "still holds",
+        ["abc1234"],
+    )
+
+
+async def test_dismissing_a_candidate_signs_its_review_row_not_the_log(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Wrong idea")
+
+    meta = await dismiss_candidate(
+        async_session, rec, reason="not ours", accepter="claude_code", kind="agent",
+        accepter_session="s-1",
+    )
+
+    assert (meta.dismissed_by, meta.dismissed_by_kind, meta.dismissed_session) == (
+        "claude_code",
+        "agent",
+        "s-1",
+    )
+    # An acceptance row would make it a decision.
+    assert not await is_accepted(async_session, rec.id)
+
+
+async def test_a_deprecation_is_logged_as_one(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Retired")
+    await accept_decision(async_session, rec, accepter="tester")
+
+    await update_decision_status(async_session, rec.id, "deprecated", accepter="tester")
+
+    latest = await latest_acceptance(async_session, rec.id)
+    assert (latest.action, latest.currency) == ("deprecated", "dismissed")
+    assert rec.status == "deprecated"
+
+
+async def test_a_superseded_candidate_is_not_open_for_review(async_session):
+    """A later commit can retire a candidate nobody reviewed; the queue and
+    the lane counts must both drop it."""
+    from repowise.core.persistence.crud.authority import count_decisions_by_lane
+
+    repo = await insert_repo(async_session)
+    live, retired = await _seed(async_session, repo.id, "Still open", "Reverted")
+    retired.status = "superseded"
+    await async_session.flush()
+
+    open_ids = {r.id for r, _ in await list_candidates(async_session, repo.id)}
+    lanes = await count_decisions_by_lane(async_session, repo.id)
+
+    from repowise.core.persistence.crud import list_decisions
+
+    page = await list_decisions(async_session, repo.id, accepted=False)
+
+    assert open_ids == {live.id}
+    assert (lanes["candidates"], lanes["total"]) == (1, 1)
+    assert [r.id for r in page] == [live.id]

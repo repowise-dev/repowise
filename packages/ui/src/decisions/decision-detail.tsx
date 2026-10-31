@@ -23,9 +23,10 @@ import {
   GitCommitHorizontal,
 } from "lucide-react";
 import type { ChatContext } from "@repowise-dev/types/chat";
-import type {
-  DecisionRecord,
-  DecisionStatus,
+import {
+  decisionSourceLabel,
+  type DecisionRecord,
+  type DecisionStatus,
 } from "@repowise-dev/types/decisions";
 
 import { Markdown } from "../shared/markdown";
@@ -50,19 +51,6 @@ import type {
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
-
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Marker",
-  git_archaeology: "Git history",
-  readme_mining: "Docs",
-  cli: "Manual",
-  comment: "Comment",
-  pr: "Pull request",
-  adr: "ADR",
-  changelog: "Changelog",
-  session: "Session",
-  conventions: "Convention",
-};
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -312,7 +300,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             verification, so it restated the Source cell beside it as a
             percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
-          <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
+          <MetaItem label="Source" value={decisionSourceLabel(decision.source)} />
           <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
         </dl>
 
@@ -484,10 +472,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                // Accent, not a filled green: green/amber/red are reserved for
+                // Ink, not a filled green: green/amber/red are reserved for
                 // health readouts where they carry a band. This is the page's
-                // one primary action, which is what the accent is for.
-                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
+                // one primary action, and primary actions are ink.
+                className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
                 Confirm
               </button>

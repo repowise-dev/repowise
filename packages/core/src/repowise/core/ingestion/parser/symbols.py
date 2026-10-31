@@ -1,4 +1,8 @@
-"""Symbol extraction: one query match to one ``Symbol``, and the parent it belongs to."""
+"""Symbol extraction: one query match to one ``Symbol``, and the parent it belongs to.
+
+Exception: a Python assignment that rebinds a ``def``/``class`` of its name yields
+no symbol (see ``_drop_python_rebindings``).
+"""
 
 from __future__ import annotations
 
@@ -19,9 +23,12 @@ from ..extractors import (
     extract_symbol_docstring,
     node_text,
 )
+from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
+from ..lang_helpers.pascal import _inherit_pascal_declared_visibility, _pascal_visibility
+from ..lang_helpers.source_prep import cpp_class_head_macros
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Symbol
 from ..parser_helpers import (
@@ -41,12 +48,17 @@ from ..parser_helpers import (
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _ts_nested_object_method_owner,
+    cpp_template_type_name,
     follow_renamed_hosts,
     in_anonymous_class,
     is_anonymous_member,
     scope_segment,
 )
-from ..symbol_identity import disambiguate_colliding_ids, symbol_discriminator
+from ..symbol_identity import (
+    disambiguate_colliding_ids,
+    split_python_property_mutators,
+    symbol_discriminator,
+)
 from .symbol_rules import (
     _TS_JS_LANGUAGES,
     _attribute_decorators,
@@ -161,6 +173,8 @@ def _parent_type_name(ancestor: Node, src: str) -> str | None:
     )
     if name_node is None:
         return None
+    if name_node.type == "template_type":
+        return cpp_template_type_name(name_node, src)
     # For Rust impl blocks with generic types (e.g. impl<T> Foo<T>),
     # extract only the base type name, not the full generic signature.
     if name_node.type in ("generic_type", "scoped_type_identifier"):
@@ -219,6 +233,7 @@ def _extract_symbols(
     config: LanguageConfig,
     file_info: FileInfo,
     src: str,
+    original_source: bytes = b"",
 ) -> list[Symbol]:
     language = file_info.language
     symbols: list[Symbol] = []
@@ -243,7 +258,9 @@ def _extract_symbols(
     if language == "python":
         py_all_names = py_module_all_names(src)
     cpp_exports = (
-        collect_cpp_export_types(matches, src) if language == "cpp" else CppExportTypes()
+        collect_cpp_export_types(matches, src, cpp_class_head_macros(original_source))
+        if language == "cpp"
+        else CppExportTypes()
     )
 
     file = _SymbolPass(config, file_info, src, cpp_exports, ts_deferred_exports, py_all_names)
@@ -252,6 +269,9 @@ def _extract_symbols(
         if built is None:
             continue
         symbol, def_node = built
+        if language == "pascal":
+            # Per section, which the per-declaration visibility_fn cannot see.
+            symbol.visibility = _pascal_visibility(def_node)
         symbols.append(symbol)
         node_types.append(def_node.type)
 
@@ -267,6 +287,7 @@ def _extract_symbols(
             objc_container_kinds.append(container.type if container else None)
 
     if language == "pascal":
+        _inherit_pascal_declared_visibility(symbols, node_types)
         symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
 
     if language in _TS_JS_LANGUAGES:
@@ -528,6 +549,10 @@ def _resolve_parent_name(
     # Objective-C containers name themselves with a bare first identifier.
     if language == "objectivec":
         return _objc_container_parent(def_node, config.parent_class_types, src)
+
+    # COBOL: a level-88 condition name is a value of the item before it.
+    if language == "cobol":
+        return cobol_condition_parent(def_node)
     return None
 
 
@@ -585,6 +610,9 @@ def _finalize_symbols(
         # The grammar reads a C# 14 extension block as a constructor
         # named ``extension``; its members were added above instead.
         symbols = drop_extension_block_symbols(symbols, root, src)
+    if lang == "python":
+        symbols = _drop_python_rebindings(symbols)
+        split_python_property_mutators(symbols)
     # Anonymous members go last, once the overloads holding them carry
     # their discriminators.
     anonymous = [s for s in symbols if is_anonymous_member(s)]
@@ -592,6 +620,21 @@ def _finalize_symbols(
     follow_renamed_hosts(symbols)
     disambiguate_colliding_ids(anonymous, lang)
     return symbols
+
+
+_PYTHON_ASSIGNMENT_KINDS = frozenset({"variable", "constant"})
+
+
+def _drop_python_rebindings(symbols: list[Symbol]) -> list[Symbol]:
+    """Drop a module-level assignment that rebinds a ``def`` or ``class`` of its name.
+
+    ``Factory = _add_hash(Factory)`` declares nothing new, yet it shares the
+    class's id, so the graph node took the assignment's line and every call to
+    ``Factory`` landed there.
+    """
+    defined = {s.id for s in symbols if s.kind not in _PYTHON_ASSIGNMENT_KINDS}
+    return [s for s in symbols if s.kind not in _PYTHON_ASSIGNMENT_KINDS or s.id not in defined]
+
 
 def _python_name_alias_chain(def_node: Node, src: str) -> tuple[list[str], str | None]:
     """Every bare-identifier target of a Python assignment, and its terminal name.

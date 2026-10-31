@@ -152,13 +152,15 @@ checkout) or over the stored graph (:mod:`.db`). :func:`reach_states` is the
 typed answer, the one that may say "no test reaches this".
 """
 
-
 from ..test_selection import is_runnable_test
 from .db import (
     always_run_test_files,
+    any_reached,
     any_tests_reaching,
     cached_files_reached_by_tests,
     cached_hub_files,
+    cached_import_graphs,
+    cached_placement,
     cached_test_files,
     cached_test_masks,
     call_graph_from_db,
@@ -176,6 +178,7 @@ from .db import (
     tests_reaching_by_tier,
     tests_reaching_through_helpers,
     unscanned_test_files,
+    write_test_masks_snapshot,
 )
 from .forward import (
     CallGraphView,
@@ -220,10 +223,13 @@ __all__ = [
     "ReachedVia",
     "WalkMaps",
     "always_run_test_files",
+    "any_reached",
     "any_tests_reaching",
     "build_walk_maps",
     "cached_files_reached_by_tests",
     "cached_hub_files",
+    "cached_import_graphs",
+    "cached_placement",
     "cached_test_files",
     "cached_test_masks",
     "call_graph_from_db",
@@ -259,4 +265,5 @@ __all__ = [
     "tests_reaching_through_helpers",
     "type_only_files",
     "unscanned_test_files",
+    "write_test_masks_snapshot",
 ]

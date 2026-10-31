@@ -94,8 +94,9 @@ _KNOWN: dict[str, int] = {
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
     # It guards the shared helper and then calls it, so it asks the opposite
-    # question.
-    _PREFIX + "languages/receiver_types.py": 1,
+    # question. The second, in `_builtin_type_name`, splits a C# array's rank
+    # brackets off to keep them (`Item[,]` is not `Item[]`), not to drop them.
+    _PREFIX + "languages/receiver_types.py": 2,
     # Normalises the method name out of `#selector(Type.method)`. The last
     # segment here is a member, not a type.
     _PREFIX + "dynamic_hints/swift.py": 1,
@@ -120,6 +121,10 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/rust.py": 1,
     _PREFIX + "framework_edges/go.py": 1,
     _PREFIX + "framework_edges/flask.py": 1,
+    # Takes the head of an `import a.b` path (twice: the module's bound names and
+    # a test body rebinding a parameter): the name the import binds, a module
+    # name, not a type.
+    _PREFIX + "framework_edges/pytest_edges.py": 2,
     # Takes the qualifier HEAD of `OrderHandlers.GetOrder` to reach the
     # declaring type. It does want a type, but the shared helper returns the
     # trailing segment, which is the member — the opposite end, the same reason

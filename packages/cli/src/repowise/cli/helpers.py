@@ -82,6 +82,9 @@ from repowise.cli._helpers.db import (
     _missing_sqlite_file as _missing_sqlite_file,
 )
 from repowise.cli._helpers.db import (
+    adopt_moved_repo_best_effort as adopt_moved_repo_best_effort,
+)
+from repowise.cli._helpers.db import (
     db_configured as db_configured,
 )
 from repowise.cli._helpers.db import (
@@ -224,6 +227,9 @@ from repowise.cli._helpers.target import (
 )
 from repowise.cli._helpers.target import (
     WorkspaceNotFound as WorkspaceNotFound,
+)
+from repowise.cli._helpers.target import (
+    cross_repo_cut_inputs as cross_repo_cut_inputs,
 )
 from repowise.cli._helpers.target import (
     resolve_command_target as resolve_command_target,

@@ -128,7 +128,8 @@ def _rows(dead_ids: list[str], **overrides):
         "known_paths": ["src/old.py"],
         "dead_code": [
             {"id": i, "kind": "unused_export", "file_path": "src/dead.py",
-             "symbol_name": f"f{n}", "lines": 10, "safe_to_delete": True}
+             "symbol_name": f"f{n}", "lines": 10, "confidence": 0.9,
+             "safe_to_delete": True}
             for n, i in enumerate(dead_ids)
         ],
         "decisions": {"stale_decisions": [], "summary": {}},

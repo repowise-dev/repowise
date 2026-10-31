@@ -49,6 +49,25 @@ def model_command(scope: Mapping[str, Any] | None) -> str:
     """The command that has a model write *scope*'s documentation, for its mode."""
     return upgrade_command(scope) or MODEL_COMMAND
 
+
+def answers_upgrade_line(scope: Mapping[str, Any] | None) -> str | None:
+    """How an index with no model-written prose gets answers and docs; None once it has them.
+
+    The one wording the MCP server and the CLI share. The key is what lets
+    ``get_answer`` synthesize, and the server reads it at start, hence the restart.
+    """
+    fast = upgrade_command(scope)
+    if fast is None and not (
+        isinstance(scope, Mapping) and scope.get("content_provenance") == "template"
+    ):
+        return None
+    command = fast or MODEL_COMMAND
+    no_reindex = "" if fast else " (one command, no re-index)"
+    return (
+        f"answers and docs: set a provider key, run `{command}`{no_reindex}, "
+        "then restart the MCP server"
+    )
+
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
 # re-parses config.yaml. Keyed on mtime+size so an index rebuild invalidates it.
@@ -152,6 +171,41 @@ def _dropped_files(value: Any) -> dict[str, Any] | None:
     }
 
 
+def is_legacy_init_notice(message: str) -> bool:
+    """Return True if *message* is an informational notice from an older init run.
+
+    Before v0.56.0 (#3272), progress tips and file size-skips were emitted with
+    warning weight and persisted into ``state["degraded"]``. #3272 reclassified
+    them as notices so new init runs never persist them, but legacy indexes
+    and subsequent updates carried them forward (#4224).
+    """
+    stripped = message.strip()
+    return (
+        stripped.startswith("Graph build can take several minutes")
+        or stripped.startswith("Not indexed: ")
+        or stripped == "...and more source files skipped on size"
+    )
+
+
+def prune_legacy_degraded_notices(messages: list[str]) -> list[str]:
+    """Filter out legacy informational notices from a degraded messages list."""
+    return [msg for msg in messages if not is_legacy_init_notice(str(msg))]
+
+
+def clean_legacy_degraded_state(state: dict[str, Any]) -> None:
+    """Prune legacy informational init notices from ``state`` in place (#4224)."""
+    if "degraded" in state and isinstance(state["degraded"], list):
+        pruned = prune_legacy_degraded_notices(state["degraded"])
+        if pruned:
+            state["degraded"] = pruned
+        else:
+            state.pop("degraded", None)
+    if "index_scope" in state and isinstance(state["index_scope"], dict):
+        analysis = state["index_scope"].get("analysis")
+        if isinstance(analysis, dict) and isinstance(analysis.get("unavailable"), list):
+            analysis["unavailable"] = prune_legacy_degraded_notices(analysis["unavailable"])
+
+
 def resolve_index_scope(
     state: Mapping[str, Any] | None,
     config: Mapping[str, Any] | None = None,
@@ -192,6 +246,8 @@ def resolve_index_scope(
     degraded = state.get("degraded", [])
     if isinstance(unavailable, list) and isinstance(degraded, list):
         unavailable = [*unavailable, *degraded]
+    if isinstance(unavailable, list):
+        unavailable = prune_legacy_degraded_notices(unavailable)
     skipped = analysis.get("skipped", [])
     return {
         "version": INDEX_SCOPE_VERSION,

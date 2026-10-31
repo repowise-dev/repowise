@@ -25,6 +25,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
+from .aura_bundle_js import aura_bundle_js_symbols
 from .cpp_macros import cpp_macro_synthetic_symbols
 from .csharp_extension_blocks import csharp_extension_block_symbols
 from .csharp_mvvm import csharp_synthetic_symbols
@@ -59,6 +60,9 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     # A .razor/.cshtml file *is* the component: the name comes from the
     # filename (PascalCase by convention), same as Svelte/Vue.
     "razor": [sfc_component_symbols],
+    # Aura bundle JS is an object literal of handlers; path-gated to
+    # aura/<b>/<b>{Controller,Helper,Renderer}.js inside the provider.
+    "javascript": [aura_bundle_js_symbols],
 }
 
 

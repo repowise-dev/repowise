@@ -200,6 +200,23 @@ def test_title_skips_boilerplate_and_trailers():
     assert change_title(subject, "#123 Fix foo\n", True) == "#123 Fix foo"
 
 
+def test_title_takes_an_issue_keyed_line_and_skips_real_trailers():
+    subject = "Merge pull request #6480 from a/FINERACT-2455"
+    jira = "FINERACT-2455: WC - Support discount fee by transaction external id"
+    assert change_title(subject, jira, True) == jira
+    assert change_title(subject, f"{jira}\n\nSigned-off-by: A <a@x>", True) == jira
+    assert change_title(subject, "ABC-1: Fix it", True) == "ABC-1: Fix it"
+    # A one-paragraph body is the PR title, even in ``type: subject`` form.
+    assert change_title(subject, "fix: handle null", True) == "fix: handle null"
+    assert change_title(subject, "\r\n\r\nfix: handle null\r\n", True) == "fix: handle null"
+    assert change_title(subject, "Title\n\nSee merge request g/p!1", True) == "Title"
+    # Real trailers are still skipped, in the final paragraph or by known key.
+    body = "Signed-off-by: A <a@x>\nCo-authored-by: B <b@x>"
+    assert change_title(subject, body, True) == subject
+    assert change_title(subject, f"{body}\n\nReal title", True) == "Real title"
+    assert change_title(subject, f"{body}\n\nTicket: y", True) == subject
+
+
 def test_title_drops_only_its_own_ref_suffix():
     assert without_own_ref("feat(x): add y (#3792)", "3792") == "feat(x): add y"
     assert without_own_ref("Fix the parser (!41)", "41") == "Fix the parser"

@@ -110,7 +110,7 @@ def _fake_evidence(monkeypatch):
 
     calls: list[str] = []
 
-    async def _evidence(session, repo_id, root, row, *, refresh=False, key=None):
+    async def _evidence(session, repo_id, root, row, *, refresh=False, key=None, catalog=None):
         calls.append(row.change_id)
         return ChangeEvidence(
             change_id=row.change_id,

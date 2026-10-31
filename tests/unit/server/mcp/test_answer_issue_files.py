@@ -171,3 +171,30 @@ async def test_long_trace_queries_basenames_in_chunks(setup_mcp):
     lines = ["Traceback (most recent call last):", *deps, *user, real, "KeyError: 'sub'"]
     issue = await issue_files(await _resolve_repo_context(None), "\n".join(lines))
     assert issue.traced == ["src/auth/middleware.py"]
+
+
+async def test_a_copy_that_does_not_ship_is_not_a_defining_file():
+    from repowise.server.mcp_server.tool_search_symbols import _defining_files
+
+    class _Session:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def execute(self, _stmt):
+            rows = self.rows
+
+            class _Res:
+                def all(self):
+                    return rows
+
+            return _Res()
+
+    shared = [
+        ("get_context", "src/tools/context.py"),
+        ("get_context", "tests/test_instrument.py"),
+        ("get_context", "vendor/toolkit/context.py"),
+        ("get_context", "docs_src/tutorial/context.py"),
+    ]
+    assert await _defining_files(_Session(shared), "r", ["get_context"]) == ["src/tools/context.py"]
+    only_test = [("make_user", "tests/factories.py")]
+    assert await _defining_files(_Session(only_test), "r", ["make_user"]) == ["tests/factories.py"]

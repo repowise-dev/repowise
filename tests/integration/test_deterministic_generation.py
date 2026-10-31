@@ -116,18 +116,16 @@ class TestDeterministicGeneration:
         ids = [p.page_id for p in deterministic_pages]
         assert len(ids) == len(set(ids))
 
-    def test_every_page_carries_the_provenance_footer(self, deterministic_pages):
-        """The footer is what tells a reader the page is structural rather
-        than written, so no page may skip it.
+    def test_every_page_states_its_provenance(self, deterministic_pages):
+        """A reader can always tell a structural page from a written one.
 
-        Two footers now, and the difference is the point. A page whose only
-        renderer this is says so plainly; a keyless stub says a key would buy
-        it prose, which is true only of the page types that keep a model path.
+        A page whose only renderer is a template is marked by its provider; a
+        keyless stub also says in its footer that a key would buy it prose,
+        which is true only of the page types that keep a model path.
         """
         for p in deterministic_pages:
             assert (
-                "Generated from parsed code, the import graph and git history" in p.content
-                or "Built from the code's structure" in p.content
+                p.provider_name == "template" or "Built from the code's structure" in p.content
             ), p.page_id
 
     def test_covers_multiple_page_types(self, deterministic_pages):

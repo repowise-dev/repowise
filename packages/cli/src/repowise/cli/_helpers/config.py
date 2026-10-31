@@ -111,9 +111,8 @@ def _persist_provider_key(repo_path: Path, provider: str) -> None:
     hand-rolled write would leave a committable secret.
 
     Best-effort by design. It runs at the tail of a completed init, after the
-    index has been paid for, and it is the first thing on that path to write
-    outside ``.repowise/``, so a read-only checkout or an unwritable
-    ``.gitignore`` must cost the user a warning, not the run.
+    index has been paid for, so a read-only checkout or an unwritable
+    ``.repowise/.gitignore`` must cost the user a warning, not the run.
     """
     from repowise.cli import helpers as _facade  # patch point for tests
     from repowise.core.providers.llm.registry import PROVIDER_API_KEY_ENVS
@@ -301,7 +300,7 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
 #: One consent turns them all on; each has its own ``repowise hook <name>``
 #: toggle afterwards, so a surface that turns out to be wrong can be dropped
 #: without taking the others with it.
-HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest")
+HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest", "read_reread")
 
 
 def save_hook_surface_enabled(repo_path: Path, surface: str, *, enabled: bool) -> None:

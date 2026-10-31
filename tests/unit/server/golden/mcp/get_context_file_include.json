@@ -45,11 +45,6 @@
           "authority": "candidate"
         }
       ],
-      "freshness": {
-        "confidence_score": 0.85,
-        "freshness_status": "fresh",
-        "is_stale": false
-      },
       "callers": [
         {
           "file": "src/auth/middleware.py",
@@ -64,6 +59,7 @@
     }
   },
   "_meta": {
-    "index_age_days": 7
+    "index_age_days": 7,
+    "replaced_tokens": 385
   }
 }

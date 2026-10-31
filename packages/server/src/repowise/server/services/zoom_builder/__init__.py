@@ -16,22 +16,30 @@ unit-test without a session.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
 from repowise.server.services.c4_builder.architecture import build_architecture_view
 from repowise.server.services.c4_builder.models import ArchitectureView
 
 from .calls import load_projected_calls
+from .containers import build_containers
+from .externals import build_externals, resolve_imports
 from .metrics import rollup_health, rollup_metrics
-from .models import ZoomMap, ZoomNode, ZoomRelation
+from .models import ZoomContainer, ZoomExternal, ZoomMap, ZoomNode, ZoomRelation, evolve
 from .relations import aggregate_relations
 from .scoring import FileStat, compute_file_signals, score_tree
+from .technology import TECHNOLOGY_LIMIT, file_technologies, rollup_labels
 from .tree import GroupSpec, LayerSpec, LeafInfo, ModuleInfo, build_tree
 
 __all__ = [
     # ``ModuleInfo`` is part of the public surface because the hosted builder
     # calls ``assemble_zoom_map`` directly rather than porting it.
     "ModuleInfo",
+    "ZoomContainer",
+    "ZoomExternal",
     "ZoomMap",
     "ZoomNode",
     "ZoomRelation",
@@ -57,6 +65,7 @@ def assemble_zoom_map(
     health: dict[str, tuple[float, int]] | None = None,
     modules: dict[str, ModuleInfo] | None = None,
     call_edges: list[tuple[str, str, str]] | None = None,
+    checkout: str | None = None,
 ) -> ZoomMap:
     """Pure assembly: ``ArchitectureView`` -> ``ZoomMap``. No DB.
 
@@ -74,6 +83,11 @@ def assemble_zoom_map(
     pairs by :mod:`.calls`. The view cannot carry them -- it is loaded file-only,
     so both endpoints of a symbol edge are filtered out before it arrives -- so
     they come in beside it. Optional for the same reasons as the two above.
+
+    External systems, containers and technologies need nothing beyond the view
+    (its ``external_systems``, its ``external:*`` import edges and its file
+    paths), so a view without them yields empty lists. ``checkout`` is the
+    repository on disk, read only to name a container after its manifest.
     """
     health = health or {}
     # The view is loaded file-only, but the curated node_type can be
@@ -82,9 +96,9 @@ def assemble_zoom_map(
     file_nodes = [n for n in view.nodes if n.line_range is None and n.id == n.file_path]
 
     # Use the curated, cleaned entry-point list (Phase-1 ranking) rather than the
-    # raw ingestion ``is_entry_point`` flag. Candidacy now runs at ingestion,
-    # so the flag no longer tags configs (server.json) or leaf resolvers
-    # (dotnet/index.py); what the curated set still adds on top is the
+    # raw ingestion ``is_entry_point`` flag. Candidacy runs at ingestion, so
+    # the flag does not tag configs (server.json) or leaf resolvers
+    # (dotnet/index.py); what the curated set adds on top is the
     # adjacent-layer and support-path exclusions, which need a layer map, and
     # barrel demotion, which needs parsed files. Driving both the execution
     # bonus and the displayed leaf flag off it keeps the "how it runs" signal
@@ -135,6 +149,7 @@ def assemble_zoom_map(
         LayerSpec(
             id=layer.id,
             name=layer.name,
+            description=layer.description,
             display_order=layer.display_order,
             node_ids=list(layer.node_ids),
             sub_groups=[
@@ -150,6 +165,7 @@ def assemble_zoom_map(
     nodes = rollup_health(root_id, nodes)
     nodes = score_tree(root_id, nodes, signals)
     relations = aggregate_relations(nodes, edges)
+    nodes, boundary = _annotate_boundaries(view, root_id, nodes, edges, checkout)
 
     # Honest count of files actually placed in the tree (a file the view knows
     # about but that curation assigned to no layer is not in the tree, so
@@ -161,6 +177,7 @@ def assemble_zoom_map(
     root_id, nodes, relations, truncated = _prune(
         root_id, nodes, relations, max_depth=max_depth, focus=focus
     )
+    boundary = _prune_boundaries(boundary, nodes)
 
     present_depth = max((n.level for n in nodes.values()), default=0)
     return ZoomMap(
@@ -172,6 +189,73 @@ def assemble_zoom_map(
         max_depth=present_depth,
         truncated=truncated,
         unclaimed_files=unclaimed_files,
+        externals=boundary.externals,
+        external_relations=boundary.relations,
+        containers=boundary.containers,
+    )
+
+
+@dataclass(frozen=True)
+class _Boundaries:
+    externals: tuple[ZoomExternal, ...] = ()
+    relations: tuple[ZoomRelation, ...] = ()
+    containers: tuple[ZoomContainer, ...] = ()
+
+
+def _annotate_boundaries(
+    view: ArchitectureView,
+    root_id: str,
+    nodes: dict[str, ZoomNode],
+    edges: list[tuple[str, str, str]],
+    checkout: str | None,
+) -> tuple[dict[str, ZoomNode], _Boundaries]:
+    """Fill technologies and container ids on the nodes; build externals and containers."""
+    leaves = {n.path: n for n in nodes.values() if n.kind == "file"}
+    imports = resolve_imports(edges, leaves, view.external_systems)
+    externals, ext_relations = build_externals(nodes, imports)
+    file_techs = file_technologies(nodes, imports)
+    containers, owner = build_containers(
+        # Every indexed file, so a manifest no layer claims still marks its root.
+        (
+            n.id
+            for n in view.nodes
+            if n.line_range is None
+            and n.id == n.file_path
+            and n.language not in IMPORT_TARGET_LANGUAGES
+        ),
+        leaves,
+        labels=file_techs,
+        imports=imports,
+        edges=edges,
+        entry_points=view.entry_points,
+        project_name=view.project_name,
+        checkout=checkout,
+    )
+    file_containers = {leaves[path].id: (cid,) for path, cid in owner.items()}
+    techs = rollup_labels(root_id, nodes, file_techs, TECHNOLOGY_LIMIT)
+    spans = rollup_labels(root_id, nodes, file_containers)
+    annotated = {
+        nid: evolve(
+            n,
+            technologies=techs.get(nid, ()),
+            container_ids=spans.get(nid) or file_containers.get(nid, ()),
+        )
+        for nid, n in nodes.items()
+    }
+    return annotated, _Boundaries(externals, ext_relations, containers)
+
+
+def _prune_boundaries(boundary: _Boundaries, nodes: dict[str, ZoomNode]) -> _Boundaries:
+    """Keep the external links and the cards a pruned tree still reaches."""
+    relations = tuple(
+        r for r in boundary.relations if r.parent_id in nodes and r.source_id in nodes
+    )
+    reached = {r.target_id for r in relations}
+    spanned = {cid for n in nodes.values() for cid in n.container_ids}
+    return _Boundaries(
+        externals=tuple(e for e in boundary.externals if e.id in reached),
+        relations=relations,
+        containers=tuple(c for c in boundary.containers if c.id in spanned),
     )
 
 
@@ -228,14 +312,10 @@ def _prune(
 
 
 def _without_children(node: ZoomNode) -> ZoomNode:
-    from dataclasses import replace
-
     return replace(node, children=())
 
 
 def _as_root(node: ZoomNode) -> ZoomNode:
-    from dataclasses import replace
-
     return replace(node, parent_id=None)
 
 
@@ -248,8 +328,10 @@ async def build_zoom_map(
 ) -> ZoomMap:
     """Derive the zoom map for ``repo_id`` from the persisted graph."""
     from repowise.core.persistence import crud
+    from repowise.server.services.c4_builder import load_repo
 
     view = await build_architecture_view(session, repo_id, include_symbols=False)
+    repo = await load_repo(session, repo_id)
     modules = await _load_module_names(session, repo_id)
     # The view is file-only, so the whole symbol-level execution graph was
     # filtered out of it. Read it back and project it onto file pairs.
@@ -280,6 +362,7 @@ async def build_zoom_map(
         health=health,
         modules=modules,
         call_edges=call_edges,
+        checkout=repo.local_path if repo else None,
     )
 
 

@@ -101,21 +101,36 @@ async def _build(
 def env(monkeypatch) -> dict:
     """Stub machine-dependent rows and record console output in order."""
     st: dict = {"printed": [], "wedged": False, "refresh": False}
-    monkeypatch.setattr(core, "_autosync_hook_check", lambda _p: _check("<hook>", True, ""))
+    monkeypatch.setattr(
+        core, "_autosync_hook_check", lambda _p: _check("<hook>", True, "", check_id="hook")
+    )
     monkeypatch.setattr(core, "_attribution_notes_check", lambda _p: None)
     monkeypatch.setattr(core, "_events_config_check", lambda _p: None)
-    monkeypatch.setattr(providers, "_provider_checks", lambda _p: [_check("<provider>", True, "")])
-    monkeypatch.setattr(integrations, "_distill_checks", lambda _p: [_check("<distill>", True, "")])
+    monkeypatch.setattr(
+        providers,
+        "_provider_checks",
+        lambda _p: [_check("<provider>", True, "", check_id="provider")],
+    )
+    monkeypatch.setattr(
+        integrations,
+        "_distill_checks",
+        lambda _p: [_check("<distill>", True, "", check_id="distill")],
+    )
     monkeypatch.setattr(
         integrations,
         "_claude_registration_check",
-        lambda _p: (_check("<registration>", not st["wedged"], ""), st["wedged"]),
+        lambda _p: (
+            _check("<registration>", not st["wedged"], "", check_id="registration"),
+            st["wedged"],
+        ),
     )
-    monkeypatch.setattr(integrations, "_mcp_responds_check", lambda: _check("<mcp>", True, ""))
+    monkeypatch.setattr(
+        integrations, "_mcp_responds_check", lambda: _check("<mcp>", True, "", check_id="mcp")
+    )
     monkeypatch.setattr(
         integrations,
         "_agent_target_checks",
-        lambda _p: ([_check("<agent>", not st["refresh"], "")], st["refresh"]),
+        lambda _p: ([_check("<agent>", not st["refresh"], "", check_id="agent")], st["refresh"]),
     )
     monkeypatch.setattr(_render, "_advise_claude_md_stamp", lambda *_a: st["printed"].append("<stamp>"))
     monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: None)
@@ -172,12 +187,38 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert env["printed"] == []
 
 
+def test_quick_skips_the_store_reconciliation_and_the_mcp_launch(
+    env, monkeypatch, tmp_path
+) -> None:
+    from repowise.cli.commands.doctor_cmd._checks import stores
+
+    def fail(*_a, **_k):
+        raise AssertionError("--quick must not open the stores")
+
+    monkeypatch.setattr(stores, "_reconcile", fail)
+    monkeypatch.setattr(stores, "_coordinator_health", fail)
+    repo = asyncio.run(_build(tmp_path))
+    _ok, checks = repo_checks._run_repo_checks(repo, repair=False, fmt="json", quick=True)
+    slow = {"SQL ↔ Vector Store", "SQL ↔ FTS Index", "Coordinator drift", "<mcp>"}
+    assert [c.name for c in checks] == [n for n in HEALTHY_ORDER if n not in slow]
+
+
+def test_quick_and_repair_is_a_usage_error(tmp_path) -> None:
+    from click.testing import CliRunner
+
+    from repowise.cli.commands.doctor_cmd import doctor_command
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path), "--quick", "--repair"])
+    assert result.exit_code == 2
+    assert "--quick" in result.output
+
+
 def test_optional_rows_slot_in_after_the_hook(env, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "")
+        core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "", check_id="notes")
     )
     monkeypatch.setattr(
-        core, "_events_config_check", lambda _p: _check("<events>", False, "")
+        core, "_events_config_check", lambda _p: _check("<events>", False, "", check_id="events")
     )
     repo = asyncio.run(_build(tmp_path))
     names = [r[0] for r in _rows(repo)]
@@ -296,7 +337,13 @@ def test_table_healthy_prints_table_stamp_then_pass(env, tmp_path) -> None:
     repo = asyncio.run(_build(tmp_path))
     ok, _ = repo_checks._run_repo_checks(repo, repair=False)
     assert ok is True
-    assert _texts(env) == ["<table>", "<stamp>", "[bold green]All checks passed![/bold green]"]
+    # The fixture's store predates a capability, so the store-format row warns;
+    # a warn still passes and is counted on the summary line.
+    texts = _texts(env)
+    assert texts[:2] == ["<table>", "<stamp>"]
+    assert texts[2].startswith("[bold green]All checks passed[/bold green]")
+    assert "1 warning(s)" in texts[2]
+    assert len(texts) == 3
 
 
 def test_repair_with_nothing_to_do(env, tmp_path) -> None:

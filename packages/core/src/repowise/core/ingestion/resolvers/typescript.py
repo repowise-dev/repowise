@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .context import ResolverContext
+from .lwc import lwc_bundle_dir, resolve_lwc_module
 from .subpath_imports import resolve_subpath_import
 from .svelte_kit import resolve_lib_alias
 from .ts_workspace import resolve_via_workspaces
@@ -92,6 +93,12 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
                 if candidate in ctx.path_set:
                     return candidate
         return None
+
+    # LWC ``c/fooBar``, only from inside an ``lwc/<bundle>/`` folder.
+    if lwc_bundle_dir(importer_path) is not None:
+        lwc_resolved = resolve_lwc_module(module_path, importer_path, ctx)
+        if lwc_resolved is not None:
+            return lwc_resolved
 
     # Node.js subpath imports (``#lib/...`` via package.json "imports").
     subpath_resolved = resolve_subpath_import(module_path, importer_path, ctx)

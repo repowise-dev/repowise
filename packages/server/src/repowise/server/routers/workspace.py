@@ -7,16 +7,18 @@ startup from ``.repowise-workspace/`` JSON files) — no DB access needed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
-from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.workspace import reads
-from repowise.core.workspace.update import synced_at_iso
+from repowise.core.workspace.registry import repo_db_path
+from repowise.core.workspace.repo_stats import member_stats, query_repo_stats
+from repowise.core.workspace.store import read_member_stats, store_path
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -34,6 +36,7 @@ from repowise.server.schemas import (
     WorkspaceContractsResponse,
     WorkspaceContractSummary,
     WorkspaceCrossRepoSummary,
+    WorkspaceEstateResponse,
     WorkspaceExtractionDiagnostics,
     WorkspaceGraphEdge,
     WorkspaceGraphNode,
@@ -42,6 +45,7 @@ from repowise.server.schemas import (
     WorkspaceRepoRemovedResponse,
     WorkspaceResponse,
     WorkspaceSyncResponse,
+    WorkspaceSystemGraphMapResponse,
     WorkspaceSystemGraphResponse,
     WorkspaceTestImpactResponse,
 )
@@ -50,7 +54,7 @@ from repowise.server.schemas.actions import (
     WorkspaceCrossRepoAction,
     WorkspaceRepoActions,
 )
-from repowise.server.services.module_health import read_repo_health_score
+from repowise.server.schemas.workspace import WorkspaceLinksBetweenResponse
 
 router = APIRouter(
     prefix="/api/workspace",
@@ -68,115 +72,16 @@ def _require_workspace(ws_config: object) -> None:
         raise HTTPException(status_code=404, detail="Not running in workspace mode")
 
 
-# The raw-sqlite form of ``crud.indexed_file``: these readers open each repo's
-# store directly, without a session.
-_INDEXED_FILE_SQL = "node_type = 'file' AND language NOT IN ({})".format(
-    ", ".join(f"'{lang}'" for lang in IMPORT_TARGET_LANGUAGES)
-)
-
-
-def _query_top_language(db_path: Path) -> str:
-    """Return the most common language across graph_nodes in a repo's wiki.db."""
-    if not db_path.exists():
-        return "unknown"
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            row = conn.execute(
-                "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
-                f"WHERE {_INDEXED_FILE_SQL} AND language IS NOT NULL AND language != '' "
-                "GROUP BY language ORDER BY cnt DESC LIMIT 1"
-            ).fetchone()
-            return row[0] if row else "unknown"
-    except Exception:
-        return "unknown"
-
-
-def _query_repo_stats(db_path: Path) -> dict:
-    """Query basic stats from a repo's wiki.db using raw sqlite3.
-
-    Returns a dict with repo_id, file_count, symbol_count, page_count,
-    fresh_page_count, doc_coverage_pct, hotspot_count, health_score, status,
-    docs_enabled, docs_skip_reason, and (when the row is read) indexed_at.
-    All values default to sensible neutrals on error.
-
-    ``health_score`` is None when the repo carries no health metrics, and
-    stays None: no other figure here measures code health.
-    """
-    result: dict = {
-        "repo_id": None,
-        "file_count": 0,
-        "symbol_count": 0,
-        "page_count": 0,
-        "fresh_page_count": 0,
-        "doc_coverage_pct": 0.0,
-        "hotspot_count": 0,
-        "health_score": None,
-        "status": "needs_index",
-        "docs_enabled": False,
-        "docs_skip_reason": None,
+def _member_stats(ws_config, ws_root: Path, read=query_repo_stats) -> dict[str, dict]:
+    """``alias -> member stats`` for every configured repo: the workspace
+    store's row when it is current, else *read* of the repo's own ``wiki.db``.
+    Blocking (stats and SQLite), so callers run it in a worker thread."""
+    wanted = {r.alias: (ws_root / r.path).resolve() for r in ws_config.repos}
+    stored = read_member_stats(store_path(ws_root), wanted)
+    return {
+        alias: stored[alias] if alias in stored else read(repo_db_path(repo))
+        for alias, repo in wanted.items()
     }
-    # Surface docs lifecycle from state.json so the UI shows a coherent
-    # picture even when only indexing (no docs) ran.
-    try:
-        import json as _json
-
-        state_path = db_path.parent / "state.json"
-        if state_path.is_file():
-            state = _json.loads(state_path.read_text(encoding="utf-8"))
-            result["docs_enabled"] = resolve_docs_mode(state) != "none"
-            result["docs_skip_reason"] = state.get("docs_skip_reason")
-    except Exception:
-        pass
-    if not db_path.exists():
-        if not db_path.parent.parent.is_dir():
-            result["status"] = "missing_dir"
-        return result
-    result["status"] = "indexed"
-    try:
-        conn = sqlite3.connect(str(db_path))
-        c = conn.cursor()
-
-        # repo id, and the sync time every other surface reports
-        row = c.execute("SELECT id, updated_at FROM repositories LIMIT 1").fetchone()
-        if row:
-            result["repo_id"] = row[0]
-            result["indexed_at"] = synced_at_iso(row[1])
-
-        # The raw-sqlite form of crud.count_files.
-        row = c.execute(f"SELECT COUNT(*) FROM graph_nodes WHERE {_INDEXED_FILE_SQL}").fetchone()
-        result["file_count"] = row[0] if row else 0
-
-        # The raw-sqlite form of crud.count_symbols: one store per repo here.
-        row = c.execute("SELECT COUNT(*) FROM wiki_symbols").fetchone()
-        result["symbol_count"] = int(row[0]) if row else 0
-
-        # Pages, fresh pages, and mean page confidence * 100. The last is named
-        # doc_coverage_pct on the wire; it is not a share of files documented.
-        pages, fresh, confidence = c.execute(
-            "SELECT COUNT(*), SUM(freshness_status = 'fresh'), AVG(confidence) FROM wiki_pages"
-        ).fetchone()
-        result["page_count"] = pages
-        result["fresh_page_count"] = int(fresh or 0)
-        result["doc_coverage_pct"] = round(float(confidence or 0.0) * 100, 1)
-
-        # hotspot count — use the canonical is_hotspot flag, matching the rest
-        # of the codebase (module_health, extract-demo-data). The earlier
-        # churn_percentile >= 90 predicate never matched: churn_percentile is
-        # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
-        try:
-            row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
-            result["hotspot_count"] = row[0] if row else 0
-        except sqlite3.OperationalError:
-            pass  # table or column may not exist
-
-        conn.close()
-    except Exception:
-        _log.debug("Failed to query stats from %s", db_path, exc_info=True)
-
-    # Read once here rather than per-endpoint: both the workspace listing and
-    # the graph need the canonical score, and this used to be a second sweep.
-    result["health_score"] = read_repo_health_score(db_path)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -201,13 +106,13 @@ async def get_workspace(
     ws_root = getattr(request.app.state, "workspace_root", None)
     ws_root_path = Path(ws_root) if ws_root else None
 
+    all_stats = (
+        await asyncio.to_thread(_member_stats, ws_config, ws_root_path) if ws_root_path else {}
+    )
     repo_entries = []
     for r in ws_config.repos:
-        stats: dict = {}
-        if ws_root_path:
-            repo_path = (ws_root_path / r.path).resolve()
-            db_path = repo_path / ".repowise" / "wiki.db"
-            stats = _query_repo_stats(db_path)
+        stats = dict(all_stats.get(r.alias, {}))
+        stats.pop("top_language", None)
         # The member's own store first: a repo updated on its own leaves the
         # config's time behind.
         indexed_at = stats.pop("indexed_at", r.indexed_at)
@@ -405,8 +310,7 @@ async def get_co_change_structure(
             source_file=source_file,
             target_repo=target_repo,
             target_file=target_file,
-        )
-    )
+        )    )
 
 
 # ---------------------------------------------------------------------------
@@ -427,16 +331,14 @@ async def get_workspace_graph(
     ws_root_path = Path(ws_root) if ws_root else None
 
     # Build nodes from repo metadata
+    all_stats = (
+        await asyncio.to_thread(_member_stats, ws_config, ws_root_path, member_stats) if ws_root_path else {}
+    )
     repo_id_map: dict[str, str] = {}  # alias → repo_id
     nodes: list[WorkspaceGraphNode] = []
     for r in ws_config.repos:
-        stats: dict = {}
-        top_language = "unknown"
-        if ws_root_path:
-            repo_path = (ws_root_path / r.path).resolve()
-            db_path = repo_path / ".repowise" / "wiki.db"
-            stats = _query_repo_stats(db_path)
-            top_language = _query_top_language(db_path)
+        stats = all_stats.get(r.alias, {})
+        top_language = stats.get("top_language", "unknown")
         rid = stats.get("repo_id") or r.alias
         repo_id_map[r.alias] = rid
         nodes.append(
@@ -513,20 +415,35 @@ async def get_workspace_graph(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/system-graph", response_model=WorkspaceSystemGraphResponse)
+@router.get(
+    "/system-graph",
+    response_model=WorkspaceSystemGraphResponse | WorkspaceSystemGraphMapResponse,
+)
 async def get_system_graph(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
+    view: Literal["map"] | None = Query(
+        None,
+        description=(
+            "`map`: the map's lean view, without diagnostics or structural edge "
+            "refs and with `ref_count` on every edge"
+        ),
+    ),
 ):
     """Service-granular system graph: typed service nodes + directed edges.
 
     Read straight from the ``system_graph.json`` artifact built during workspace
     update. Edge direction is uniform — ``source`` depends on / calls ``target``.
     Returns an empty graph (not 404) when no graph has been built yet.
+    ``view=map`` returns :func:`lean_system_graph` of it instead.
     """
     _require_workspace(ws_config)
 
     graph = enricher.get_system_graph() if enricher is not None else None
+    if view == "map":
+        from repowise.core.workspace.system_map_view import lean_system_graph
+
+        return WorkspaceSystemGraphMapResponse(**lean_system_graph(graph or {}))
     if not graph:
         return WorkspaceSystemGraphResponse()
     return WorkspaceSystemGraphResponse(**graph)
@@ -596,6 +513,51 @@ async def get_blast_radius(
         graph, target, max_depth=max_depth, include_behavioral=include_behavioral
     )
     return WorkspaceBlastRadiusResponse(**result.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/system-graph/links
+# ---------------------------------------------------------------------------
+
+
+@router.get("/system-graph/links", response_model=WorkspaceLinksBetweenResponse)
+async def get_links_between(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    a: str = Query(..., description="A service node id ('repo' or 'repo::service/path')."),
+    b: str = Query(..., description="The other service node id."),
+    kind: str | None = Query(
+        None, description="One edge kind: http, grpc, event, db, package, co_change..."
+    ),
+    q: str | None = Query(
+        None,
+        description="Every whitespace-separated term must match the row's ids, files, symbols or packages.",
+    ),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Everything behind the edges between two services, both directions, paged.
+
+    Contract links, service links, package dependencies and co-changes, each
+    end resolved to its service the way the system graph was built, so a
+    pair's rows add up to its edges' weights. The graph, contracts and
+    cross-repo artifacts are read as one build; ``stale_graph`` flags a graph
+    whose repo heads differ from the contracts'. 404 when either id is not a
+    node of the graph (or no graph is built).
+    """
+    _require_workspace(ws_config)
+
+    from repowise.core.workspace.links_between import links_between
+
+    index = enricher.links_index() if enricher is not None else None
+    result = (
+        links_between(index, a=a, b=b, kind=kind, q=q, limit=limit, offset=offset)
+        if index is not None
+        else None
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Service not found in the system graph")
+    return WorkspaceLinksBetweenResponse(**result)
 
 
 # ---------------------------------------------------------------------------
@@ -671,12 +633,12 @@ async def get_workspace_actions(
     ws_root = getattr(request.app.state, "workspace_root", None)
     ws_root_path = Path(ws_root) if ws_root else None
 
+    all_stats = (
+        await asyncio.to_thread(_member_stats, ws_config, ws_root_path) if ws_root_path else {}
+    )
     repos: list[WorkspaceRepoActions] = []
     for r in ws_config.repos:
-        repo_id = None
-        if ws_root_path:
-            db_path = (ws_root_path / r.path).resolve() / ".repowise" / "wiki.db"
-            repo_id = _query_repo_stats(db_path).get("repo_id")
+        repo_id = all_stats.get(r.alias, {}).get("repo_id")
         if not repo_id:
             repos.append(
                 WorkspaceRepoActions(
@@ -686,7 +648,12 @@ async def get_workspace_actions(
             continue
         try:
             async with get_session(resolve_session_factory(request.app.state, repo_id)) as session:
-                view = await load_actions_view(session, repo_id)
+                view = await load_actions_view(
+                    session,
+                    repo_id,
+                    lookup=getattr(request.app.state, "cross_repo_enricher", None),
+                    alias=r.alias,
+                )
         except Exception as exc:  # one repository must not cost the page
             _log.warning("workspace actions: %s unavailable: %s", r.alias, exc)
             repos.append(
@@ -833,6 +800,33 @@ async def get_architecture(
         generated_at=raw.get("generated_at", ""),
     )
     return WorkspaceArchitectureResponse(**metrics.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/estate
+# ---------------------------------------------------------------------------
+
+
+@router.get("/estate", response_model=WorkspaceEstateResponse)
+async def get_estate(
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+) -> WorkspaceEstateResponse:
+    """The estate report ``repowise report estate --format json`` prints.
+
+    Built on request by the same core function the CLI calls, from the stored
+    workspace artifacts and each member's index; nothing is extracted again.
+    Opens every member index, so it costs about 0.1 to 0.3 s per repo once the
+    server is warm. Without a stored system graph the graph sections come back
+    inconclusive and say which command builds it.
+    """
+    _require_workspace(ws_config)
+
+    from repowise.core.report.estate import build_estate_document
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    _require_workspace(ws_root)
+    return WorkspaceEstateResponse(**await build_estate_document(Path(ws_root)))
 
 
 # ---------------------------------------------------------------------------

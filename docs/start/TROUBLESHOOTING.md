@@ -60,6 +60,50 @@ repowise init --max-file-pages 2000          # cap file pages, highest importanc
 The parse pool defaults to at most eight worker processes; each one holds its
 own parser, so lowering the count is the most direct memory lever.
 
+**Indexing one directory of a large repository.** When the path you index is a
+subdirectory of a larger git repository, git rows (per-file history, per-commit
+file detail) are recorded for that directory only, so the database stays
+proportional to the directory rather than to the whole repository. Co-change
+partners outside the directory are not recorded. Set `REPOWISE_GIT_SCOPE=repo`
+to record the whole repository instead. An index created before this change
+keeps its old rows until `repowise init --force` rebuilds it.
+
+**An update spends minutes after the files are already indexed.** After an
+update commits, repowise scans recent commits for what each did to code health.
+A commit that touches more than 300 files is skipped, so a bulk import cannot
+stall it; change the limit with `REPOWISE_COMMIT_HEALTH_MAX_FILES` (`0` removes
+it), or turn the scan off with `REPOWISE_COMMIT_HEALTH_COMMITS=0`. An update on
+a `--mode fast` index does not run the scan.
+
+**An update of a very large repository takes as long as the first index.**
+Every update currently walks and reads the repository and runs global analysis.
+Set `REPOWISE_INCREMENTAL_GRAPH=1` (experimental) to patch the graph for
+body-only edits in Java, Python, JavaScript, TypeScript, Go, C#, Kotlin, Rust,
+Ruby, PHP, Scala and Swift when the parsed dependency surface is unchanged.
+Changed imports/exports/signatures, added/removed/renamed files and unsupported
+languages fall back to the full rebuild. The patch re-resolves the changed
+files' imports, calls and heritage; global type-use, framework and dynamic-hint
+passes and centrality/community metrics still run repo-wide. Metrics therefore
+remain fresh, but these global passes still cost time on a large repository.
+A sealed `.repowise/graph_seed_edges.pkl` snapshot avoids re-reading seed edges
+from the database when it matches the repository ID, edge count and parser
+fingerprint. A missing or stale snapshot falls back safely; the first update
+after enabling the feature may need a full rebuild to create the snapshot.
+When the flag is unset, Repowise does not read, write, or invalidate the
+incremental graph seed or resolved-import caches. On an opted-in update,
+`state.json` records `graph_update` with the selected `patch`/`full` path,
+whether the feature was enabled, the fallback reason, and the patched file list.
+When phase timings are enabled, `rebuild.graph` is the overall graph stage;
+`rebuild.graph.patch` and `rebuild.graph.full` identify which graph-build path
+actually ran. The log states the fallback reason when an attempted patch is
+unsafe or its seed/resolution cache is unavailable.
+
+To compare both update paths end-to-end on a synthetic large repository, run
+`python scripts/benchmark_incremental_graph_update.py` from a Repowise checkout.
+It defaults to 5,000 files, makes isolated full/patch copies, checks persisted
+graph convergence, and writes phase timings to `bench/results/`. It uses no
+model provider or LLM and isolates temporary editor/MCP configuration.
+
 **Indexing cost more than expected.** `repowise init --dry-run` shows the
 estimate without writing a wiki, `--test-run` generates for the top 10 files
 only, and `--skip-tests --skip-infra` narrows scope. Lower `--concurrency` if

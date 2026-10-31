@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,23 @@ logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
 _PRUNE_CHUNK = 500
+
+
+async def delete_pages(
+    session: Any,
+    repo_id: str,
+    page_ids: list[str],
+    reason: str = "retired",
+    successors: Mapping[str, str] | None = None,
+) -> None:
+    """Retire live wiki identities without erasing their complete records.
+
+    All persistence sweeps share this boundary. The archive owner captures
+    records and transfers notes before removing live rows in this transaction.
+    """
+    from repowise.core.persistence.crud.page_archive import retire_pages
+
+    await retire_pages(session, repo_id, page_ids, reason, successors)
 
 
 async def _prune_stale_file_rows(
@@ -201,9 +218,15 @@ class _FileLiveness:
     so an update with no deletions never pays for it.
     """
 
-    def __init__(self, repo_path: Any) -> None:
+    def __init__(self, repo_path: Any, *, git_root_keyed: bool = False) -> None:
         self._root = Path(repo_path)
         self._tracked: frozenset[str] | None = None
+        # Rows written by the git indexer are keyed relative to the git root,
+        # which is not ``_root`` when the index covers a subdirectory. Every
+        # other table is keyed relative to ``_root``, so only a git-keyed
+        # instance resolves paths against the toplevel.
+        self._git_root_keyed = git_root_keyed
+        self._toplevel: Path | bool | None = False
         # The same path is asked about once per table it has rows in, and a
         # stat under an antivirus scanner is not free.
         self._memo: dict[str, bool] = {}
@@ -215,11 +238,21 @@ class _FileLiveness:
             self._memo[path] = answer
         return answer
 
+    def _git_toplevel(self) -> Path | None:
+        if self._toplevel is False:
+            from repowise.core.git_refs import toplevel
+
+            top = toplevel(str(self._root))
+            resolved = Path(top).resolve() if top else None
+            self._toplevel = resolved if resolved and resolved != self._root.resolve() else None
+        return self._toplevel  # type: ignore[return-value]
+
     def _is_live(self, path: str) -> bool:
-        if (self._root / path).exists():
+        root = (self._git_toplevel() or self._root) if self._git_root_keyed else self._root
+        if (root / path).exists():
             return True
         if self._tracked is None:
-            self._tracked = _git_tracked_paths(self._root)
+            self._tracked = _git_tracked_paths(root)
         return path in self._tracked
 
 
@@ -261,6 +294,7 @@ async def prune_deleted_file_rows(
     repo_path: Any,
     *,
     live_hint: set[str] | None = None,
+    pruned: set[str] | None = None,
 ) -> tuple[int, list[str]]:
     """Delete file-scoped rows for files that are gone, on an incremental update.
 
@@ -321,13 +355,14 @@ async def prune_deleted_file_rows(
 
     hint = live_hint or set()
     liveness = _FileLiveness(repo_path)
+    git_liveness = _FileLiveness(repo_path, git_root_keyed=True)
     refusals: list[str] = []
     deleted: set[str] = set()
 
-    def _dead(persisted: set[str], label: str) -> list[str]:
+    def _dead(persisted: set[str], label: str, live: _FileLiveness = liveness) -> list[str]:
         """Paths in *persisted* that no longer exist, or [] if the floor fired."""
         persisted = {p for p in persisted if not _is_synthetic_node(p)}
-        dead = [p for p in persisted if p not in hint and not liveness.is_live(p)]
+        dead = [p for p in persisted if p not in hint and not live.is_live(p)]
         if (
             len(dead) > _PRUNE_FLOOR_MIN_ROWS
             and persisted
@@ -342,14 +377,16 @@ async def prune_deleted_file_rows(
         deleted.update(dead)
         return dead
 
-    async def _prune_table(model: Any, column: Any, label: str) -> None:
+    async def _prune_table(
+        model: Any, column: Any, label: str, live: _FileLiveness = liveness
+    ) -> None:
         persisted = set(
             (await session.execute(select(column).where(model.repository_id == repo_id).distinct()))
             .scalars()
             .all()
         )
         persisted.discard(None)
-        dead = _dead(persisted, label)
+        dead = _dead(persisted, label, live)
         for i in range(0, len(dead), _PRUNE_CHUNK):
             await session.execute(
                 delete(model).where(
@@ -426,6 +463,8 @@ async def prune_deleted_file_rows(
     # git_metadata is keyed off the git indexer on a full run, but an
     # incremental run only indexes the changed files, so the same liveness
     # question is the only authority available here too.
-    await _prune_table(GitMetadata, GitMetadata.file_path, "git_metadata")
+    await _prune_table(GitMetadata, GitMetadata.file_path, "git_metadata", git_liveness)
 
+    if pruned is not None:
+        pruned.update(deleted)
     return len(deleted), refusals

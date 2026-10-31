@@ -303,7 +303,7 @@ The graph is used for:
 - **Change propagation**: when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
 - **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
-  the most central files; these get "spotlight" wiki pages and richer generation prompts
+  the most central files, which get richer generation prompts
 - **SCC detection**: circular dependency clusters require a special generation
   strategy (see [Section 5.3](#53-dependency-graph-construction))
 - **Co-change edges**: temporal coupling from git history. Files that frequently
@@ -392,7 +392,8 @@ priority order:
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
-   `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
+   `.repowise/config.yaml exclude_patterns` (also written by the Web UI and REST API
+   PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
 5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
    `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,
@@ -425,8 +426,8 @@ FileTraverser(
 |--------|------------------------------|
 | `repowise init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
 | `repowise update` | Read from `.repowise/config.yaml exclude_patterns` |
-| Web UI Excluded Paths section | Saved to `repo.settings["exclude_patterns"]` via REST API |
-| Server sync job | Read from `repo.settings.get("exclude_patterns", [])` |
+| Web UI Excluded Paths section | Saved to `.repowise/config.yaml exclude_patterns` via REST API PATCH |
+| Server sync job | Read from `.repowise/config.yaml exclude_patterns`; an older `repo.settings` copy applies only while the file lacks the key |
 
 The traverser also detects monorepo structure by looking for multiple
 `pyproject.toml`, `package.json`, `go.mod`, or `Cargo.toml` files at depth 1–2.
@@ -555,7 +556,8 @@ scores.
 After graph construction, the builder computes:
 
 - **PageRank**: nodes with high PageRank are central and well-connected.
-  Used to decide generation priority and which symbols get spotlight pages.
+  Used to decide generation priority. Spotlight pages rank each symbol by its
+  own production callers instead (`selection/scoring.py::score_symbol`).
 - **Strongly Connected Components (SCCs)**: groups of files with circular imports.
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
@@ -638,9 +640,9 @@ content to draw from.
 Level 0: External API contracts (OpenAPI, proto, GraphQL)
          → self-contained, no dependencies on other pages
 
-Level 1: Symbol spotlight pages (top 10% by PageRank)
+Level 1: Symbol spotlight pages (most-called public symbols, at most 8 per file)
          → short, fast, parallelizable
-         → high-PageRank symbols get richer documentation
+         → signature, docstring and resolved callers; no source copy
 
 Level 2: File pages
          → uses: source + symbol docs + import summaries (from RAG)
@@ -957,7 +959,7 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 **Finding types:**
 - `unreachable_file`: file with `in_degree == 0`, not an entry point, test, or config
 - `unused_export`: public symbol with no incoming edges (but file IS imported)
-- `unused_internal`: private symbol with no `calls` edges from same file
+- `unused_internal`: private symbol with no `calls` edges from same file; a COBOL paragraph is judged from the program's source text instead
 - `zombie_package`: monorepo package with no incoming `inter_package` edges
 
 **Confidence scoring (conservative: when in doubt, do NOT flag):**
@@ -1060,7 +1062,7 @@ are flagged as stale.
 repowise decision add        # interactive capture
 repowise decision list       # tabular list with filters
 repowise decision show <id>  # full detail
-repowise decision confirm    # proposed → active
+repowise decision confirm <id>  # candidate → accepted
 repowise decision dismiss    # dismiss proposed (sticky tombstone)
 repowise decision deprecate  # active → deprecated
 repowise decision health     # health summary
@@ -1279,7 +1281,7 @@ JobSystem
        │
        ├── Level 0: special handlers (OpenAPI, proto, GraphQL, Dockerfile...)
        │
-       ├── Level 1: symbol spotlight pages (top 10% PageRank)
+       ├── Level 1: symbol spotlight pages (most-called symbols)
        │              ┌────────────────────────────────────┐
        │              │ ContextAssembler                   │
        │              │  source + graph metadata           │
@@ -1434,9 +1436,9 @@ a different problem:
 
 3. **`extra_exclude_patterns` (runtime)**: patterns injected without touching any
    file on disk: from `--exclude/-x` CLI flags (dev workflow), from
-   `config.yaml exclude_patterns` (persisted per repo), or from
-   `repo.settings["exclude_patterns"]` (Web UI / REST API). This lets teams configure
-   exclusions through the UI without git access to the target repo.
+   `config.yaml exclude_patterns` (persisted per repo, and written by the Web UI /
+   REST API too). This lets teams configure exclusions through the UI, and the CLI
+   and the UI always show the same list.
 
 All three layers use `pathspec` with `gitwildmatch` semantics, the same library used
 for `.gitignore` parsing, so the full gitignore syntax works everywhere.

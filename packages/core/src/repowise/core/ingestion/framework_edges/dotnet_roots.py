@@ -7,11 +7,19 @@ Four kinds of file have no caller in source and are used all the same:
 * a marker a source generator reads from the compilation (Vogen's
   ``[EfCoreConverter<T>]`` class is the generator's input);
 * a class a host loads by reflection: a PowerShell ``[Cmdlet]``, a Roslyn
-  ``[Generator]``, or a BenchmarkDotNet class with a ``[Benchmark]`` method;
+  ``[Generator]``, a BenchmarkDotNet class with a ``[Benchmark]`` method, an
+  Azure Functions class with a ``[Function]`` or ``[FunctionName]`` method, or a
+  WCF service class implementing a ``[ServiceContract]`` interface (an IIS
+  ``.svc`` file or ``web.config`` names it, never a C# source);
 * a file-based app, started by ``dotnet run <file>``: it opens with ``#:``
-  directives (``#:sdk``, ``#:package``), as Polly's Cake script ``cake.cs`` does.
+  directives (``#:sdk``, ``#:package``), as Polly's Cake script ``cake.cs`` does;
+* a class classic ASP.NET (System.Web) runs with no ``Program.cs``: the one a
+  ``Global.asax``, page, control or handler names in its ``<%@ ... %>``
+  directive (``Inherits="Ns.MvcApplication"``, ``Class="Ns.Handler"``), and an
+  MVC or Web API controller in a file that imports ``System.Web.Mvc`` or
+  ``System.Web.Http``, which the routing finds by its ``Controller`` suffix.
 
-The first three mark a file a reachability root when every top-level type in
+The first three and the last mark a file a reachability root when every top-level type in
 it is one of these. A file that also declares an ordinary type is left to the
 usual checks, so a dead sibling still reports.
 """
@@ -20,6 +28,8 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
+
+from repowise.core.fs_walk import glob_via
 
 from ..decorator_names import decorator_base
 from ..type_names import bare_type_name
@@ -65,6 +75,23 @@ _REFLECTION_LOADED_ATTRIBUTES: dict[str, frozenset[str]] = {
 #: BenchmarkDotNet runs every class that has a method carrying one of these.
 _BENCHMARK_METHOD_ATTRIBUTES: dict[str, frozenset[str]] = {_LANGUAGE: frozenset({"Benchmark"})}
 
+#: The Azure Functions host runs every class with a method carrying one of
+#: these (``[Function]`` on the isolated worker, ``[FunctionName]`` in-process)
+#: when the method binds a trigger. The trigger parameter is what tells it from
+#: another library's ``[Function]``, such as linq2db's ``[Sql.Function]``.
+_FUNCTION_METHOD_ATTRIBUTES: dict[str, frozenset[str]] = {
+    _LANGUAGE: frozenset({"Function", "FunctionName"})
+}
+# ``[...Trigger]`` alone or after another attribute in one bracket.
+_TRIGGER_PARAMETER_RE = re.compile(r"[\[,]\s*(?:[\w.]+\.)?\w+Trigger(?:Attribute)?\b")
+
+#: A WCF host instantiates the class carrying this, or implementing an
+#: interface that carries it; a class that also derives from a client base is a
+#: proxy, not a service. Ceiling: contracts match by bare name, and a test fake
+#: implementing a contract is rooted too, which can only hide a finding.
+_SERVICE_CONTRACT_ATTRIBUTE = "ServiceContract"
+_WCF_CLIENT_BASES = frozenset({"ClientBase", "DuplexClientBase"})
+
 # A ``partial class Name;`` has no body, so the parser reports no symbol for
 # it and the marker has to be read from the text.
 _MARKER_ATTRIBUTE_RE = re.compile(r"\[\s*(?:[\w.]+\.)?(\w+)\s*<")
@@ -81,6 +108,16 @@ _APP_DIRECTIVE_RE = re.compile(
     r"\A(?:#![^\n]*\n)?\s*(?://[^\n]*\n\s*)*#:[a-z]+[ \t]", re.IGNORECASE
 )
 _DIRECTIVE_HEAD_CHARS = 512
+
+#: System.Web markup the runtime compiles, and the attribute in its ``<%@ %>``
+#: directive that names the class behind it.
+_MARKUP_FILES = ("*.asax", "*.aspx", "*.ascx", "*.ashx", "*.asmx", "*.master")
+_MARKUP_CLASS_RE = re.compile(
+    r"""<%@\s*\w+\b[^%]*?\b(?:Inherits|Class)\s*=\s*["']([\w.]+)["']""", re.IGNORECASE
+)
+#: Controllers the System.Web routing discovers by name.
+_CLASSIC_CONTROLLER_NAMESPACES = ("System.Web.Mvc", "System.Web.Http")
+_CONTROLLER_SUFFIX = "Controller"
 
 
 def _namespaces(symbols: list[Any]) -> dict[str, Any]:
@@ -107,26 +144,98 @@ def _attribute_name(decorator: str) -> str:
     return name.removesuffix("Attribute") or name
 
 
-def _has_benchmark_method(sym: Any, symbols: list[Any]) -> bool:
-    """Whether a method of *sym* carries ``[Benchmark]``.
+def _is_host_run(method: Any) -> bool:
+    """Whether a host runs *method*: ``[Benchmark]``, or a function bound to a trigger."""
+    names = {_attribute_name(d) for d in method.decorators}
+    if names & _BENCHMARK_METHOD_ATTRIBUTES[_LANGUAGE]:
+        return True
+    return bool(names & _FUNCTION_METHOD_ATTRIBUTES[_LANGUAGE]) and (
+        _TRIGGER_PARAMETER_RE.search(method.signature or "") is not None
+    )
+
+
+def _has_host_run_method(sym: Any, symbols: list[Any]) -> bool:
+    """Whether a method of *sym* is one a host runs.
 
     ``parent_name`` is the bare class name, so the method must also lie within
     the class's lines: two same-named classes in different namespaces of one
     file are told apart.
     """
-    markers = _BENCHMARK_METHOD_ATTRIBUTES[_LANGUAGE]
     return any(
         s.kind == "method"
         and s.parent_name == sym.name
         and sym.start_line <= s.start_line <= sym.end_line
-        and any(_attribute_name(d) in markers for d in s.decorators)
+        and _is_host_run(s)
         for s in symbols
     )
 
 
-def _is_consumed(sym: Any, modules: dict[str, Any], symbols: list[Any]) -> bool:
+def _service_contracts(parsed_files: dict[str, Any]) -> frozenset[str]:
+    """Names of the interfaces carrying ``[ServiceContract]`` anywhere in the repository."""
+    return frozenset(
+        s.name
+        for parsed in parsed_files.values()
+        if parsed.file_info.language == _LANGUAGE
+        for s in parsed.symbols
+        if s.kind == "interface"
+        and any(_attribute_name(d) == _SERVICE_CONTRACT_ATTRIBUTE for d in s.decorators)
+    )
+
+
+def _wcf_services(parsed: Any, contracts: frozenset[str]) -> set[str]:
+    """Service classes of *parsed* and the contracts they implement.
+
+    A contract counts with its implementation, so a file declaring both roots.
+    """
+    implemented: dict[str, set[str]] = {}
+    clients: set[str] = set()
+    for relation in getattr(parsed, "heritage", ()):
+        parent = bare_type_name(relation.parent_name)
+        if parent in contracts:
+            implemented.setdefault(relation.child_name, set()).add(parent)
+        elif parent in _WCF_CLIENT_BASES:
+            clients.add(relation.child_name)
+    services = set(implemented) - clients
+    return services.union(*(implemented[name] for name in services))
+
+
+def _markup_classes(ctx: ResolverContext) -> frozenset[str]:
+    """Fully qualified classes the repository's System.Web markup names."""
+    if ctx.repo_path is None:
+        return frozenset()
+    names: set[str] = set()
+    for markup in glob_via(
+        getattr(ctx, "walk_snapshot", None),
+        ctx.repo_path,
+        _MARKUP_FILES,
+        prune_nested_git=ctx.prune_nested_git,
+    ):
+        try:
+            text = markup.read_text(encoding="utf-8-sig", errors="ignore")
+        except OSError:
+            continue
+        names.update(_MARKUP_CLASS_RE.findall(text))
+    return frozenset(names)
+
+
+def _imports_classic_web(parsed: Any) -> bool:
+    return any(
+        imp.module_path == ns or imp.module_path.startswith(ns + ".")
+        for imp in parsed.imports
+        for ns in _CLASSIC_CONTROLLER_NAMESPACES
+    )
+
+
+def _is_consumed(
+    sym: Any,
+    modules: dict[str, Any],
+    symbols: list[Any],
+    services: set[str],
+    hosted: frozenset[str] = frozenset(),
+) -> bool:
     namespace = _namespace_of(sym, modules)
-    if f"{namespace}.{sym.name}" in _COMPILER_CONSUMED_TYPES[_LANGUAGE]:
+    qualified = f"{namespace}.{sym.name}" if namespace else sym.name
+    if qualified in _COMPILER_CONSUMED_TYPES[_LANGUAGE] or qualified in hosted:
         return True
     markers = _GENERATOR_MARKER_ATTRIBUTES[_LANGUAGE]
     if any(bare_type_name(d) in markers for d in sym.decorators):
@@ -134,7 +243,12 @@ def _is_consumed(sym: Any, modules: dict[str, Any], symbols: list[Any]) -> bool:
     loaded = _REFLECTION_LOADED_ATTRIBUTES[_LANGUAGE]
     if any(_attribute_name(d) in loaded for d in sym.decorators):
         return True
-    return _has_benchmark_method(sym, symbols)
+    if sym.name in services or (
+        sym.kind == "class"
+        and any(_attribute_name(d) == _SERVICE_CONTRACT_ATTRIBUTE for d in sym.decorators)
+    ):
+        return True
+    return _has_host_run_method(sym, symbols)
 
 
 def _is_generator_input(parsed: Any) -> bool:
@@ -150,7 +264,9 @@ def _is_file_based_app(parsed: Any) -> bool:
     return _APP_DIRECTIVE_RE.match(head) is not None
 
 
-def _is_consumed_file(parsed: Any) -> bool:
+def _is_consumed_file(
+    parsed: Any, contracts: frozenset[str], markup: frozenset[str] = frozenset()
+) -> bool:
     if _is_file_based_app(parsed):
         return True
     modules = _namespaces(parsed.symbols)
@@ -161,20 +277,37 @@ def _is_consumed_file(parsed: Any) -> bool:
     ]
     if not types:
         return _is_generator_input(parsed)
-    return all(_is_consumed(s, modules, parsed.symbols) for s in types)
+    services = _wcf_services(parsed, contracts) if contracts else set()
+    hosted = markup
+    if _imports_classic_web(parsed):
+        hosted = markup | {
+            s.name if not _namespace_of(s, modules) else f"{_namespace_of(s, modules)}.{s.name}"
+            for s in types
+            if s.kind == "class" and s.name.endswith(_CONTROLLER_SUFFIX)
+        }
+    return all(_is_consumed(s, modules, parsed.symbols, services, hosted) for s in types)
 
 
-def consumed_files(parsed_files: dict[str, Any]) -> list[str]:
-    """C# files the compiler or a tool uses with no reference in source."""
+def consumed_files(
+    parsed_files: dict[str, Any], markup: frozenset[str] = frozenset()
+) -> list[str]:
+    """C# files the compiler or a tool uses with no reference in source.
+
+    *markup* is the classes System.Web markup names (see ``_markup_classes``).
+    """
+    contracts = _service_contracts(parsed_files)
     return [
         path
         for path, parsed in parsed_files.items()
-        if parsed.file_info.language == _LANGUAGE and _is_consumed_file(parsed)
+        if parsed.file_info.language == _LANGUAGE
+        and _is_consumed_file(parsed, contracts, markup)
     ]
 
 
-def _mark_roots(graph: nx.DiGraph, parsed_files: dict[str, Any], path_set: set[str]) -> None:
-    for path in consumed_files(parsed_files):
+def _mark_roots(
+    graph: nx.DiGraph, parsed_files: dict[str, Any], path_set: set[str], ctx: ResolverContext
+) -> None:
+    for path in consumed_files(parsed_files, _markup_classes(ctx)):
         node = graph.nodes.get(path)
         if path in path_set and node is not None:
             node["is_reachability_root"] = True
@@ -193,7 +326,7 @@ class _DotNetRootsHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        _mark_roots(graph, parsed_files, path_set)
+        _mark_roots(graph, parsed_files, path_set, ctx)
         return 0
 
 

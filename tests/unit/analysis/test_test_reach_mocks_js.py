@@ -20,6 +20,24 @@ _VI = 'import { vi } from "vitest"\n'
         'import { jest } from "@jest/globals"\njest.mock("./a", () => ({ a: jest.fn() }))\n',
         # ``jest`` is also the runner's global, when the file binds no other.
         'jest.mock("./a", function () { return { a: jest.fn(), C: () => null } })\n',
+        # A double configured with closed arguments, one or several verbs deep.
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockReturnValue(1) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockReturnValueOnce(1).mockReturnValue(2) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockResolvedValue({ ok: true }) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockResolvedValueOnce([1]) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockRejectedValue("no") }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockRejectedValueOnce(null) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockImplementation(() => 2) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockImplementationOnce(() => ({ b: vi.fn() })) }))\n',
+        'jest.mock("./a", () => ({ a: jest.fn().mockReturnValue(1) }))\n',
+        'import { jest } from "@jest/globals"\n'
+        'jest.mock("./a", () => ({ a: jest.fn().mockResolvedValue({ ok: true }) }))\n',
+        # A name bound once by a closed ``vi.hoisted``.
+        _VI + 'const { f } = vi.hoisted(() => ({ f: vi.fn() }))\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f: g } = vi.hoisted(() => ({ f: vi.fn() }))\nvi.mock("./a", () => ({ a: g }))\n',
+        _VI + 'const f = vi.hoisted(() => vi.fn().mockReturnValue(1))\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = vi.hoisted(() => ({ f: vi.fn() }))\nf.mockReturnValue(1)\n'
+        'vi.mock("./a", () => ({ a: f }))\n',
     ],
 )
 def test_a_closed_factory_swaps_the_module(source: str) -> None:
@@ -40,8 +58,28 @@ def test_a_closed_factory_swaps_the_module(source: str) -> None:
         # The original, in any form.
         _VI + 'vi.mock("./a", async () => ({ ...(await vi.importActual("./a")), b: vi.fn() }))\n',
         'jest.mock("./a", () => { const real = jest.requireActual("./a"); return { ...real } })\n',
+        # A configured double abstains when an argument is not closed.
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockImplementation(realFn) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockReturnValue(real) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockReturnValue(real()) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockImplementation((x) => x) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockResolvedValue(await vi.importActual("./a")) }))\n',
+        # A configuring verb on anything but a proven bare double.
+        _VI + 'vi.mock("./a", () => ({ a: other.mockReturnValue(1) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: make().mockReturnValue(1) }))\n',
+        _VI + 'vi.mock("./a", () => ({ a: vi.mockReturnValue(1) }))\n',
+        'const vi = make()\nvi.mock("./a", () => ({ a: vi.fn().mockReturnValue(1) }))\n',
+        # A hoisted name that is not provably closed or not bound once.
+        _VI + 'const { f } = vi.hoisted(() => ({ f: real() }))\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = vi.hoisted((x) => ({ f: vi.fn() }))\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = other.hoisted(() => ({ f: vi.fn() }))\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = vi.hoisted(() => ({ f: vi.fn() }))\nf = real\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'let { f } = vi.hoisted(() => ({ f: vi.fn() }))\n({ f } = real)\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = vi.hoisted(() => ({ f: vi.fn() }))\nvar f = 1\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = vi.hoisted(() => ({ f: vi.fn() }))\nfunction t(f) {}\nvi.mock("./a", () => ({ f }))\n',
+        _VI + 'const { f } = vi.hoisted(() => ({ f: vi.fn() }))\nvi.mock("./a", () => ({ g: f, h }))\n',
+        _VI + 'const f = vi.hoisted(() => 1)\nconst f2 = f\nvi.mock("./a", () => ({ f: f2 }))\n',
         # Any other call, a free identifier, a dynamic import, a ``new``.
-        _VI + 'vi.mock("./a", () => ({ a: vi.fn().mockReturnValue(1) }))\n',
         _VI + 'const m = vi.fn()\nvi.mock("./a", () => ({ a: m }))\n',
         _VI + 'vi.mock("./a", () => ({ m }))\n',
         _VI + 'vi.mock("./a", () => import("./b"))\n',

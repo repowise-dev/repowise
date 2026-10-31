@@ -24,6 +24,7 @@ from typing import Any
 
 import networkx as nx
 
+from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.fsutils import strip_dir_prefix as relative_to
 
 # The diagram stays small enough to read without zooming.
@@ -39,6 +40,7 @@ _MIN_FLOW_STEPS = 4
 # Package entry files that re-export their siblings. Their import edges point
 # at every part and turn a diagram into a star, so the diagram leaves them out.
 _BARREL_STEMS = frozenset({"index", "__init__", "mod", "lib"})
+CONNECTIONS_HEADING = "How it connects"
 
 
 def module_base(files: Iterable[str]) -> str:
@@ -79,21 +81,23 @@ def _import_edges(graph: Any, members: set[str]) -> Iterable[tuple[str, str, dic
 def _flow_steps(
     flows: Sequence[Any], graph: Any, members: set[str], base: str
 ) -> list[dict[str, str]]:
-    """The traced flow that starts in this module and runs furthest in it, as steps."""
-    candidates: list[tuple[int, int, float, str, Any]] = []
-    for flow in flows:
-        trace = list(getattr(flow, "trace", []) or [])
-        inside = [n for n in trace if n.split("::")[0] in members]
-        starts_here = bool(trace) and trace[0].split("::")[0] in members
-        if not starts_here or len(inside) < _MIN_FLOW_STEPS_INSIDE or len(trace) < _MIN_FLOW_STEPS:
-            continue
-        # The flow that crosses the most parts shows how they work together.
-        crossed = len({_part_of(n.split("::")[0], base) for n in inside})
-        score = float(getattr(flow, "entry_point_score", 0.0))
-        candidates.append((-crossed, -len(inside), -score, trace[0], flow))
-    if not candidates:
+    """The most important traced flow that starts in this module and runs in it, as steps.
+
+    Importance is :func:`rank_by_importance`, the order every page picks its
+    flow by: the operation that drives the most code. Ranking by the parts a
+    flow crosses instead drew a niche command on the CLI page because its one
+    path happened to touch more directories than the main commands did.
+    """
+    best = next(
+        (
+            flow
+            for flow in rank_by_importance(flows)
+            if _runs_here(list(getattr(flow, "trace", []) or []), members)
+        ),
+        None,
+    )
+    if best is None:
         return []
-    best = min(candidates, key=lambda c: c[:4])[4]
     steps = []
     for node in best.trace[:_MAX_FLOW_STEPS]:
         file, _, symbol = node.partition("::")
@@ -109,6 +113,37 @@ def _flow_steps(
             }
         )
     return steps
+
+
+def _runs_here(trace: Sequence[str], members: set[str]) -> bool:
+    """Whether a trace starts in the module and enough of it stays there to draw."""
+    inside = sum(1 for n in trace if n.split("::")[0] in members)
+    return (
+        bool(trace)
+        and trace[0].split("::")[0] in members
+        and inside >= _MIN_FLOW_STEPS_INSIDE
+        and len(trace) >= _MIN_FLOW_STEPS
+    )
+
+
+def connections_markdown(facts: dict[str, Any]) -> str | None:
+    """The page's "How it connects" section, from the import graph rather than prose.
+
+    A model asked for this paragraph restated the opening and listed neighbour
+    names it read from these same two fields; rendering the fields directly
+    says the same thing exactly, and costs no tokens. ``None`` for a module
+    with no neighbours, so the section is left out rather than left empty.
+    """
+    lines = [
+        f"- {label}: " + ", ".join(_area_ref(row["area"]) for row in facts.get(key) or ())
+        for key, label in (("used_by", "Used by"), ("depends_on", "Depends on"))
+        if facts.get(key)
+    ]
+    return "\n".join(lines) or None
+
+
+def _area_ref(area: str) -> str:
+    return "the repository root" if area == "(root)" else f"`{area}`"
 
 
 def _ranked(counts: Counter[Any]) -> list[tuple[Any, int]]:

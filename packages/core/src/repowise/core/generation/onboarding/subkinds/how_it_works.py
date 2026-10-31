@@ -21,6 +21,8 @@ from typing import Literal
 
 import structlog
 
+from ....analysis.execution_flows import rank_by_importance
+from ....support_paths import is_example_path
 from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals, file_layer_map
@@ -119,9 +121,19 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
     pipeline_hits = dep_names & _PIPELINE_HINTS
 
     api_contract_count = sum(1 for pf in signals.parsed_files if pf.file_info.is_api_contract)
+    # Read from the code, so it holds where no dependency manifest was inventoried.
+    # A sample main under examples/ demonstrates the system rather than being it.
+    app_mains = [
+        p
+        for p in getattr(signals.repo_structure, "application_mains", None) or []
+        if not is_example_path(p)
+    ]
 
-    # Service tilt wins if we have either framework deps or API contract files.
-    if service_hits or api_contract_count > 0:
+    # Service tilt wins on framework deps, API contract files or an application main.
+    if service_hits or api_contract_count > 0 or app_mains:
+        if app_mains:
+            more = f" and {len(app_mains) - 1} more" if len(app_mains) > 1 else ""
+            evidence.append(f"application main: `{app_mains[0]}`{more}")
         if service_hits:
             evidence.append(f"service framework(s) detected: {', '.join(sorted(service_hits))}")
         if api_contract_count:
@@ -154,6 +166,38 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
     return "module", evidence
 
 
+def _ranked_candidate(
+    flow: object, trace: list, layers: dict[str, str], declared_entry_points: set[str]
+) -> tuple[int, int, int, int, float, str, FlowTrace]:
+    """One flow as a sort key plus the trace the template renders.
+
+    Keyed by reach, then a declared entry point, then breadth across layers or
+    top-level directories, trace length and score; the entry id breaks ties.
+    """
+    entry_point = str(getattr(flow, "entry_point_id", ""))
+    paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
+    lifecycle_regions = {
+        layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
+        for path in paths
+        if path
+    }
+    candidate = FlowTrace(
+        entry_point=entry_point,
+        hops=trace[:_TRACE_DISPLAY_HOPS],
+        score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
+        lifecycle_breadth=len(lifecycle_regions),
+    )
+    return (
+        int(getattr(flow, "reach", 0) or 0),
+        1 if entry_point.split("::", 1)[0] in declared_entry_points else 0,
+        candidate.lifecycle_breadth,
+        len(trace),
+        candidate.score,
+        candidate.entry_point,
+        candidate,
+    )
+
+
 def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     """Pull execution flows from the graph builder (best-effort)."""
     try:
@@ -168,7 +212,7 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     if not report or not hasattr(report, "flows"):
         return []
 
-    flows: list[tuple[int, int, int, float, str, FlowTrace]] = []
+    flows: list[tuple[int, int, int, int, float, str, FlowTrace]] = []
     layers = file_layer_map(signals)
     repo_structure = getattr(signals, "repo_structure", None)
     declared_entry_points = (
@@ -180,35 +224,14 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     # ``entry_point_score``. Read as ``entry_point`` / ``score`` the getattr
     # defaults applied instead of raising, so every page ever generated
     # carried an empty entry point and a zero score on every flow.
-    for flow in getattr(report, "flows", [])[:_FLOW_CANDIDATE_LIMIT]:
+    # Importance first (see ``rank_by_importance``): the walkthrough is about
+    # the operation that drives the most code, not the symbol that looks most
+    # like an entry point, which on a repository with a UI is a view helper.
+    for flow in rank_by_importance(getattr(report, "flows", []))[:_FLOW_CANDIDATE_LIMIT]:
         trace = list(getattr(flow, "trace", []) or [])
-        if len(trace) < _MIN_TRACE_HOPS:
-            continue
-        entry_point = str(getattr(flow, "entry_point_id", ""))
-        entry_path = entry_point.split("::", 1)[0]
-        paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
-        lifecycle_regions = {
-            layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
-            for path in paths
-            if path
-        }
-        candidate = FlowTrace(
-            entry_point=entry_point,
-            hops=trace[:_TRACE_DISPLAY_HOPS],
-            score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
-            lifecycle_breadth=len(lifecycle_regions),
-        )
-        flows.append(
-            (
-                1 if entry_path in declared_entry_points else 0,
-                candidate.lifecycle_breadth,
-                len(trace),
-                candidate.score,
-                candidate.entry_point,
-                candidate,
-            )
-        )
-    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]))
+        if len(trace) >= _MIN_TRACE_HOPS:
+            flows.append(_ranked_candidate(flow, trace, layers, declared_entry_points))
+    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], -item[4], item[5]))
     selected = [item[-1] for item in flows[:_TOP_FLOWS]]
     if selected:
         log.info(

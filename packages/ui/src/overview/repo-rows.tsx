@@ -1,9 +1,9 @@
 import * as React from "react";
 import type { RepoIndexStatus } from "@repowise-dev/types/repos";
-import { formatScore } from "@repowise-dev/types/health";
-import { formatNumber, formatRelativeTime } from "../lib/format";
-import { healthBand } from "../health/tokens";
+import { formatNumber } from "../lib/format";
+import { healthMark } from "../health/tokens";
 import { RepoAvatar } from "./repo-avatar";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface RepoRow {
   id: string;
@@ -101,8 +101,8 @@ function figuresFor(repo: RepoRow): string[] {
  * the ribbon above it.
  *
  * Health leads the right-hand column because it is the figure that decides
- * which repo you open. It is painted on the shared `healthBand`, so the number
- * that sends you into a repo means there what it meant here.
+ * which repo you open. It is a health mark on the shared three bands, so a
+ * repo reads the same word and colour here as on the system map.
  */
 export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
   const A = LinkComponent ?? "a";
@@ -113,7 +113,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
       {repos.map((repo) => {
         const figures = figuresFor(repo);
         const actions = actionsFor?.(repo);
-        const band = repo.health === null ? null : healthBand(repo.health);
+        const mark = repo.health === null ? null : healthMark(repo.health);
 
         return (
           <li key={repo.id} className="group">
@@ -152,7 +152,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                     {repo.updatedAt && (
                       <span className="text-[var(--color-text-tertiary)]">
                         {figures.length > 0 ? " · " : " "}
-                        Synced {formatRelativeTime(repo.updatedAt)}
+                        Synced <RelativeTime date={repo.updatedAt} />
                       </span>
                     )}
                   </p>
@@ -164,7 +164,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                   <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                     Health
                   </p>
-                  {repo.health === null || band === null ? (
+                  {repo.health === null || mark === null ? (
                     <p
                       className="mt-1 text-[15px] leading-none text-[var(--color-text-tertiary)]"
                       title="No health snapshot yet — this repository has not been analysed."
@@ -175,15 +175,15 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                     <>
                       <p
                         className="mt-1 text-[22px] font-semibold leading-none tabular-nums"
-                        style={{ color: band.color }}
+                        style={{ color: mark.color }}
                       >
-                        {formatScore(repo.health)}
+                        {mark.value}
                       </p>
                       <p
                         className="mt-1 text-[11px]"
-                        style={{ color: band.color }}
+                        style={{ color: mark.color }}
                       >
-                        {band.label}
+                        {mark.label}
                       </p>
                     </>
                   )}

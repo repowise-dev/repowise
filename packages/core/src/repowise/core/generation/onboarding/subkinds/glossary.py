@@ -11,12 +11,12 @@ model in its path at all: the spec is registered ``deterministic``, and two
 renders of an unchanged repository are byte-identical.
 
 The cost is honesty about coverage. A term the repository names without ever
-defining renders with an em dash rather than a plausible sentence, and a
-repository whose documents define nothing gets no page. Both are the correct
-answers to a question this page cannot answer from the code.
+defining is left off rather than given a plausible sentence, and a repository
+whose documents define too few terms gets no page. Both are the correct answers
+to a question this page cannot answer from the code.
 
-Gate: at least five terms survive corroboration. Below that the page is a
-handful of rows pretending to be a vocabulary.
+Gate: at least five defined terms survive corroboration. Below that the page
+is a handful of rows pretending to be a vocabulary.
 """
 
 from __future__ import annotations
@@ -105,27 +105,26 @@ def _build(signals: OnboardingSignals) -> GlossaryContext | None:
         # "nothing built". Repeating them here would say less.
         return None
 
-    # Every corroborated term, and no further test. A row whose definition
-    # column is an em dash still carries two facts a reader came for — the
-    # repository has a word for this, and here are the parts of the system
-    # that use it — and dropping those rows was measured to cost more than it
-    # saved: requiring a single word to arrive with a definition removed
-    # "Workspace", "Coupling", "CLI", "Distill", "Costs" and "Decisions" here
-    # and "Security" on django, to remove two weak rows. A lookup page is
-    # judged on coverage.
+    # Only terms the repository defines. A row whose definition column is an
+    # em dash told the reader the one thing a glossary exists to answer was
+    # missing: on this repository 4 of the 5 rows read that way, and the page
+    # admitted it ("1 of 5 terms carry a definition"). Undefined terms stay
+    # available to the pages that only need a name.
     #
     # Selected whole, then capped. The count before the cap is carried onto the
     # page: the footer explains that a mined term reaches it only with
     # structural corroboration, and that is a false account of any term dropped
     # for length instead.
     corroborated = select_terms(signals.house_terms, signals.module_corroboration)
-    selected = corroborated[:_MAX_TERMS]
+    defined_terms = [term for term in corroborated if term.definition]
+    selected = defined_terms[:_MAX_TERMS]
     if len(selected) < _GATE_MIN_TERMS:
         log.info(
             "onboarding.glossary_gate_skipped",
             repo_name=signals.repo_name,
             mined=len(signals.house_terms),
             corroborated=len(corroborated),
+            defined=len(defined_terms),
             required=_GATE_MIN_TERMS,
         )
         return None
@@ -138,7 +137,6 @@ def _build(signals: OnboardingSignals) -> GlossaryContext | None:
     for entry in entries:
         if entry.source_path not in sources:
             sources.append(entry.source_path)
-    defined = sum(1 for entry in entries if entry.definition)
 
     log.info(
         "onboarding.glossary_built",
@@ -146,7 +144,6 @@ def _build(signals: OnboardingSignals) -> GlossaryContext | None:
         mined=len(signals.house_terms),
         corroborated=len(corroborated),
         terms=len(entries),
-        defined=defined,
         documents=len(sources),
     )
     return GlossaryContext(
@@ -155,7 +152,7 @@ def _build(signals: OnboardingSignals) -> GlossaryContext | None:
         sources=sources,
         mined=len(signals.house_terms),
         corroborated=len(corroborated),
-        defined=defined,
+        defined=len(defined_terms),
     )
 
 

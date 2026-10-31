@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class WorkspaceRepoRemovedResponse(BaseModel):
@@ -107,6 +107,10 @@ class WorkspaceContractEntry(BaseModel):
     #: index or nothing is declared at ``line`` — the contract still matches, it
     #: just cannot be traversed into the call graph.
     symbol_id: str | None = None
+    #: What established the contract (``route_registration``, ``client_call``,
+    #: ``sql_string``...), one of the closed origins in
+    #: ``repowise.core.workspace.origins``. None on a row stored before origins.
+    origin: str | None = None
     #: Extractor-supplied detail (``extraction_layer``, ``framework``, ``method``,
     #: ``path``, ``table``, ``package``...). Keys vary by contract type.
     meta: dict = {}
@@ -116,6 +120,10 @@ class WorkspaceContractLinkEntry(BaseModel):
     contract_id: str
     contract_type: str
     match_type: str
+    #: The matching rule that made the link (``exact_id``, ``binding_routed``,
+    #: ``prefix_stripped``...), one of ``repowise.core.workspace.origins``.
+    #: ``match_type`` is derived from it.
+    strategy: str | None = None
     confidence: float
     provider_repo: str
     provider_file: str
@@ -164,9 +172,18 @@ class WorkspaceContractDetail(BaseModel):
     #: Links this contract participates in, on whichever side it plays.
     links: list[WorkspaceContractLinkEntry] = []
     #: Why this consumer matched no provider (``external_host``,
-    #: ``internal_only``, ``no_provider``), from the system graph's diagnostics.
+    #: ``internal_only``, ``no_provider``, ``ambiguous_provider``), from the
+    #: system graph's diagnostics.
     #: None for providers, for linked consumers, and when no graph is built.
     unmatched_reason: str | None = None
+
+
+class WorkspaceCoChangeEvidence(BaseModel):
+    """Bounded supporting evidence for one co-change pair (#483)."""
+
+    authors: list[str] = []
+    commit_pairs: list[dict] = []
+    max_gap_hours: float = 0.0
 
 
 class WorkspaceCoChangeEntry(BaseModel):
@@ -177,6 +194,71 @@ class WorkspaceCoChangeEntry(BaseModel):
     strength: float
     frequency: int
     last_date: str
+    evidence: WorkspaceCoChangeEvidence | None = None
+
+
+class WorkspacePackageDepEntry(BaseModel):
+    """One manifest dependency of one repo on another, as ``cross_repo_edges.json`` stores it."""
+
+    source_repo: str
+    source_manifest: str = ""
+    target_repo: str
+    target_package: str = ""
+    #: How the dependency resolved (``npm_package``, ``dotnet_project_ref``...).
+    kind: str = ""
+    target_manifest: str = ""
+    requested_version: str | None = None
+    scope: str = ""
+    resolution_basis: str = ""
+
+
+class WorkspaceServiceLinkEntry(BaseModel):
+    """One piece of evidence behind an edge between two services.
+
+    ``evidence`` says which of ``link``, ``package_dep`` or ``co_change`` is set.
+    """
+
+    #: The system-graph edge kind it folds into (``http``, ``event``, ``db``,
+    #: ``package``, ``co_change``...).
+    kind: str
+    #: ``a_to_b`` when service ``a`` is the consumer or dependent, ``b_to_a``
+    #: when ``b`` is, ``both`` for a co-change (it has no direction).
+    direction: Literal["a_to_b", "b_to_a", "both"]
+    evidence: Literal["contract", "package", "co_change"]
+    #: A contract link or service link (host-only, gateway route).
+    link: WorkspaceContractLinkEntry | None = None
+    #: What established each end's contract (``route_registration``,
+    #: ``client_call``...), one of ``repowise.core.workspace.origins``. None
+    #: when that end has no stored contract row or predates origins.
+    provider_origin: str | None = None
+    consumer_origin: str | None = None
+    package_dep: WorkspacePackageDepEntry | None = None
+    co_change: WorkspaceCoChangeEntry | None = None
+
+
+class WorkspaceServiceLinksTotal(BaseModel):
+    kind: str
+    direction: Literal["a_to_b", "b_to_a", "both"]
+    count: int
+
+
+class WorkspaceLinksBetweenResponse(BaseModel):
+    """Links between two services, read from ``system_graph.json``, ``contracts.json``
+    and ``cross_repo_edges.json``. The three are written together by one
+    workspace update; ``stale_graph`` is true when the graph and the contracts
+    record different repo heads, and rows may then be missing."""
+
+    a: str
+    b: str
+    stale_graph: bool = False
+    #: One page of rows, ordered by direction, kind, evidence, then ids and files.
+    links: list[WorkspaceServiceLinkEntry]
+    #: Rows matching every filter; the page is cut from these.
+    total: int
+    #: Rows per edge kind and direction, for every kind present, under ``q``
+    #: but not ``kind``. Kinds are not grouped here: a view that shows kind
+    #: families (runtime, data, build, history) sums them itself.
+    totals: list[WorkspaceServiceLinksTotal]
 
 
 class WorkspaceCoChangesResponse(BaseModel):
@@ -253,6 +335,15 @@ class WorkspaceSystemNode(BaseModel):
     is_orphan_provider: bool = False
     is_orphan_consumer: bool = False
     is_isolated: bool = False
+    #: Id of the service group this node belongs to; None when ungrouped.
+    group: str | None = None
+
+
+class WorkspaceServiceGroup(BaseModel):
+    id: str
+    label: str
+    source: str  # tag | name | linked
+    member_count: int = 0
 
 
 class WorkspaceSystemEdge(BaseModel):
@@ -265,6 +356,20 @@ class WorkspaceSystemEdge(BaseModel):
     weight: int = 1
     structural: bool = True
     contract_refs: list[str] = []
+    #: Strategy of the link that gave the edge its confidence (``manifest`` on
+    #: a package edge); None on a co-change edge.
+    strategy: str | None = None
+    #: runtime | data | build | history, from core's one kind-to-family table.
+    #: Filled from ``kind`` for an artifact written before edges carried it.
+    family: str | None = None
+
+    @model_validator(mode="after")
+    def _fill_family(self) -> WorkspaceSystemEdge:
+        if self.family is None:
+            from repowise.core.workspace.system_graph import edge_family
+
+            self.family = edge_family(self.kind)
+        return self
 
 
 class WorkspaceRepoDiagnostics(BaseModel):
@@ -276,6 +381,7 @@ class WorkspaceRepoDiagnostics(BaseModel):
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
+    topic_names_unresolved: int = 0
 
 
 class WorkspaceUnmatchedConsumer(BaseModel):
@@ -283,7 +389,7 @@ class WorkspaceUnmatchedConsumer(BaseModel):
     file_path: str
     contract_id: str
     contract_type: str
-    reason: str  # no_provider | internal_only | unlinked
+    reason: str  # no_provider | internal_only | unlinked | external_host | ambiguous_provider
 
 
 class WorkspaceOrphanProvider(BaseModel):
@@ -291,6 +397,8 @@ class WorkspaceOrphanProvider(BaseModel):
     file_path: str
     contract_id: str
     contract_type: str
+    #: Other files of the same repo and service declaring the same id.
+    other_files: list[str] = []
 
 
 class WorkspaceSymbolIdentity(BaseModel):
@@ -346,12 +454,29 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     unmatched_consumers: list[WorkspaceUnmatchedConsumer] = []
     unmatched_by_reason: dict[str, int] = {}
     orphan_providers: list[WorkspaceOrphanProvider] = []
+    #: Consumers served by their own repo + service, kept out of the unmatched list.
+    in_service_consumers: list[WorkspaceUnmatchedConsumer] = []
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
-    #: Share of located HTTP client calls that became a contract. ``None`` when
-    #: none were located — 0/0 is not 100%.
+    #: Share of client calls that became an HTTP contract, counting one miss per
+    #: file that calls out through code no dialect reads. ``None`` when nothing
+    #: was seen (0/0 is not 100%) or the artifact predates that count.
     http_consumer_coverage: float | None = None
+    #: HTTP consumers that linked to another service, and their share of the
+    #: same denominator. ``None`` on an artifact written before the count.
+    http_consumers_linked: int | None = None
+    http_link_coverage: float | None = None
+    #: Per repo, files with a network-call token and no consumer contract.
+    #: ``None`` on an artifact written before the count existed.
+    unrecognised_call_files: dict[str, int] | None = None
+    unrecognised_call_file_count: int | None = None
+    #: Broker calls located whose topic or queue name could not be settled.
+    topic_names_unresolved: int = 0
+    #: Per repo, files using a messaging SDK and no topic contract.
+    #: ``None`` on an artifact written before the count existed.
+    unrecognised_message_files: dict[str, int] | None = None
+    unrecognised_message_file_count: int | None = None
 
     symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
     schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()
@@ -360,12 +485,64 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WorkspaceEvidenceReason(BaseModel):
+    """One reason a graph's evidence is short of measured."""
+
+    code: str
+    #: The state this reason alone implies: ``partial`` or ``insufficient``.
+    state: str
+    message: str
+    subjects: list[str] = []
+
+
+class WorkspaceGraphEvidence(BaseModel):
+    """How much evidence the system graph rests on.
+
+    Mirrors ``repowise.core.workspace.graph_evidence.GraphEvidence``. When
+    ``determined`` is false, a score, cycle verdict or impact set over the
+    graph would be vacuous and is reported as not determined.
+    """
+
+    state: Literal["measured", "partial", "insufficient"]
+    determined: bool
+    summary: str = ""
+    reasons: list[WorkspaceEvidenceReason] = []
+    services: int = 0
+    runtime_edges: int = 0
+    build_edges: int = 0
+    providers: int = 0
+    consumers: int = 0
+
+
 class WorkspaceSystemGraphResponse(BaseModel):
     version: int = 1
     generated_at: str = ""
     nodes: list[WorkspaceSystemNode] = []
     edges: list[WorkspaceSystemEdge] = []
     diagnostics: WorkspaceExtractionDiagnostics = WorkspaceExtractionDiagnostics()
+    #: Service groups; empty when the estate is too small to group.
+    groups: list[WorkspaceServiceGroup] = []
+
+
+class WorkspaceSystemMapEdge(WorkspaceSystemEdge):
+    """An edge of the map's lean view. Mirrors ``core.workspace.system_map_view``."""
+
+    #: A co-change edge's file pairs; None on a structural edge, whose evidence
+    #: the contracts routes serve.
+    contract_refs: list[str] | None = None
+    #: Distinct refs the full edge keeps.
+    ref_count: int = 0
+
+
+class WorkspaceSystemGraphMapResponse(BaseModel):
+    """``GET /api/workspace/system-graph?view=map``: the graph without diagnostics."""
+
+    version: int = 1
+    generated_at: str = ""
+    nodes: list[WorkspaceSystemNode] = []
+    edges: list[WorkspaceSystemMapEdge] = []
+    #: Service groups; empty when the estate is too small to group.
+    groups: list[WorkspaceServiceGroup] = []
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +572,10 @@ class WorkspaceBlastRadiusResponse(BaseModel):
     max_distance: int = 0
     total_impacted: int = 0
     unresolved_targets: list[str] = []
+    #: Resolved targets no structural edge touches: an empty reach for one of
+    #: these means "not seen", not "nothing depends on it".
+    undetermined_targets: list[str] = []
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +655,10 @@ class WorkspaceDependencyCycle(BaseModel):
     nodes: list[str] = []
     edge_ids: list[str] = []
     length: int = 0
+    #: Edge kinds on each leg (``leg_kinds[i]`` joins ``nodes[i]`` to the next).
+    leg_kinds: list[list[str]] = []
+    #: Legs only an asynchronous (event) edge joins.
+    async_legs: int = 0
 
 
 class WorkspaceConformanceResponse(BaseModel):
@@ -489,7 +674,14 @@ class WorkspaceConformanceResponse(BaseModel):
     #: many exist. They differ when MAX_CYCLES truncated the list.
     cycle_count: int = 0
     total_cycles: int = 0
+    #: True when the enumeration budget stopped the count, so ``total_cycles``
+    #: is a lower bound ("at least N").
+    total_capped: bool = False
     violating_repos: list[str] = []
+    #: False when the graph had too little evidence for "no cycles" to mean
+    #: anything; ``None`` on a report written before evidence was recorded.
+    cycles_determined: bool | None = None
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 class WorkspaceNodeArchitectureRole(BaseModel):
@@ -502,22 +694,29 @@ class WorkspaceNodeArchitectureRole(BaseModel):
 
 
 class WorkspaceArchitectureResponse(BaseModel):
-    """Architecture-complexity metrics over the system graph (Phase 6)."""
+    """Architecture-complexity metrics over the system graph (Phase 6).
+
+    Every measured figure is ``None`` when there is no graph, or when its
+    ``evidence`` is insufficient: nothing seen is not a 10/10.
+    """
 
     node_count: int = 0
     structural_edge_count: int = 0
-    propagation_cost: float = 0.0
-    propagation_cost_pct: float = 0.0
-    core_size: int = 0
-    core_ratio: float = 0.0
+    propagation_cost: float | None = None
+    propagation_cost_pct: float | None = None
+    core_size: int | None = None
+    core_ratio: float | None = None
     core_members: list[str] = []
-    cycle_count: int = 0
+    cycle_count: int | None = None
+    #: True when the enumeration budget stopped the count ("at least N").
+    cycle_count_capped: bool = False
     conformance_violations: int = 0
-    architecture_type: str = "hierarchical"
-    score: float = 10.0
+    architecture_type: str = "undetermined"
+    score: float | None = None
     role_breakdown: dict[str, int] = {}
     roles: list[WorkspaceNodeArchitectureRole] = []
     generated_at: str = ""
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -595,3 +794,83 @@ class WorkspaceTestImpactResponse(BaseModel):
     #: Free-form counters and the state that produced an empty answer, so an
     #: empty response always names its reason.
     summary: dict = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Estate report: the ``repowise report estate`` document, as
+# repowise.core.report.estate.build_estate_document returns it.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceEstateCheckDocs(BaseModel):
+    url: str
+    short: str
+
+
+class WorkspaceEstateCheck(BaseModel):
+    """One evidence item: OpenSSF Scorecard check keys plus ``method`` and ``basis``.
+
+    ``score`` is 0-10, -1 when inconclusive, ``None`` on a descriptive item.
+    ``data`` holds the item's full figures; its keys depend on ``name``.
+    """
+
+    name: str
+    score: float | None = None
+    reason: str
+    details: list[str] = []
+    method: str
+    basis: Literal["measured", "inferred", "declared", "unresolved", "gated"]
+    data: dict[str, Any] | None = None
+    documentation: WorkspaceEstateCheckDocs | None = None
+
+
+class WorkspaceEstateSection(BaseModel):
+    id: str
+    title: str
+    summary: str
+    #: ``None`` for a workspace-scope section, else the member's alias.
+    repo: str | None = None
+    checks: list[WorkspaceEstateCheck] = []
+    #: The section raised; its one check says why and is inconclusive.
+    failed: bool = False
+
+
+class WorkspaceEstateSnapshot(BaseModel):
+    taken_at: str
+    stamp: str | None = None
+
+
+class WorkspaceEstateRepo(BaseModel):
+    alias: str | None = None
+    name: str
+    head_commit: str | None = None
+    last_snapshot: WorkspaceEstateSnapshot | None = None
+    #: ``False`` when the member has no index at all.
+    indexed: bool = True
+    #: Set when an index exists but was not read: ``behind`` (written by an
+    #: older repowise; run ``repowise update``) or ``unreadable``.
+    index_state: Literal["behind", "unreadable"] | None = None
+
+
+class WorkspaceEstateGenerator(BaseModel):
+    name: str
+    version: str
+    stamp: str
+
+
+class WorkspaceEstateScope(BaseModel):
+    kind: Literal["workspace"]
+    name: str
+
+
+class WorkspaceEstateResponse(BaseModel):
+    """``GET /api/workspace/estate``: the estate report document."""
+
+    schema_version: int
+    kind: Literal["estate"]
+    generated_at: str
+    generator: WorkspaceEstateGenerator
+    scope: WorkspaceEstateScope
+    notice: str
+    repos: list[WorkspaceEstateRepo] = []
+    sections: list[WorkspaceEstateSection] = []

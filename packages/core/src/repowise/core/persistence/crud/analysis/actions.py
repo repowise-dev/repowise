@@ -10,7 +10,8 @@ The reads here only narrow; the row-to-fact rule is the pure builder in
 Index and update store the rules' output as a read snapshot
 (:func:`write_actions_snapshot`), kept only until a store the facts come from
 is written (``persistence.read_snapshots``); a read that finds it ranks the
-stored actions and skips the facts and the rules.
+stored actions and skips the facts and the rules. A read that finds none
+builds it and stores it for the next one.
 """
 
 from __future__ import annotations
@@ -55,8 +56,12 @@ from repowise.core.analysis.actions.facts import MOCKED_ONLY_VIA, FileFacts
 from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
+from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.analysis.test_reachability import any_tests_reaching
+from repowise.core.analysis.test_reachability import (
+    any_tests_reaching,
+    write_test_masks_snapshot,
+)
 
 from ...models import (
     ActionState,
@@ -75,7 +80,13 @@ from ...models import (
     PerformanceOpportunity,
     SecurityFinding,
 )
-from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
+from ...read_snapshots import (
+    build_and_store,
+    mark_current,
+    read_snapshot,
+    refresh_snapshot,
+    snapshot_key,
+)
 from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
@@ -382,26 +393,53 @@ async def _drift(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     return build_drift(rows, known)
 
 
-async def _dead(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
-    rows = (
-        await session.execute(
-            select(
-                DeadCodeFinding.id,
-                DeadCodeFinding.file_path,
-                DeadCodeFinding.symbol_name,
-                DeadCodeFinding.lines,
-                DeadCodeFinding.kind,
-                DeadCodeFinding.safe_to_delete,
-                DeadCodeFinding.status,
-            ).where(
-                DeadCodeFinding.repository_id == repo_id,
-                DeadCodeFinding.status == "open",
-                DeadCodeFinding.safe_to_delete.is_(True),
-                DeadCodeFinding.kind.not_in(excluded_types() | REVIEW_ONLY_KINDS),
+async def _stored_safe_dead(session: AsyncSession, repo_id: str) -> list[Any]:
+    """Open findings stored deletion-ready: a superset, since the cut only withdraws."""
+    return list(
+        (
+            await session.execute(
+                select(
+                    DeadCodeFinding.id,
+                    DeadCodeFinding.file_path,
+                    DeadCodeFinding.symbol_name,
+                    DeadCodeFinding.lines,
+                    DeadCodeFinding.kind,
+                    DeadCodeFinding.confidence,
+                    DeadCodeFinding.safe_to_delete,
+                    DeadCodeFinding.status,
+                ).where(
+                    DeadCodeFinding.repository_id == repo_id,
+                    DeadCodeFinding.status == "open",
+                    DeadCodeFinding.safe_to_delete.is_(True),
+                    DeadCodeFinding.kind.not_in(excluded_types() | REVIEW_ONLY_KINDS),
+                )
             )
-        )
-    ).all()
-    return build_dead(rows, files)
+        ).all()
+    )
+
+
+async def _dead(
+    session: AsyncSession,
+    repo_id: str,
+    files: dict[str, FileFacts],
+    lookup: CrossRepoLookup | None,
+    alias: str | None,
+) -> dict:
+    served = serve_findings(await _stored_safe_dead(session, repo_id), lookup, alias)
+    return build_dead(served, files)
+
+
+async def _stored_dead_overstated(
+    session: AsyncSession, repo_id: str, lookup: CrossRepoLookup | None, alias: str | None
+) -> bool:
+    """Whether a finding stored deletion-ready reads not safe as served.
+
+    A snapshot may count it: the snapshot is written without the workspace's
+    cut, and one built before ``build_dead`` re-derived readiness took the
+    stored flag.
+    """
+    rows = await _stored_safe_dead(session, repo_id)
+    return not all(is_safe(f) for f in serve_findings(rows, lookup, alias))
 
 
 async def _decisions(session: AsyncSession, repo_id: str) -> dict[str, Any]:
@@ -461,7 +499,15 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
 _Reader = Callable[[], Awaitable[dict[str, Any]]]
 
 
-async def load_repo_facts(session: AsyncSession, repo_id: str) -> RepoFacts:
+async def load_repo_facts(
+    session: AsyncSession,
+    repo_id: str,
+    *,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
+) -> RepoFacts:
+    """Every store's facts; in a workspace, *lookup* and *alias* apply the
+    dead-code cross-repo cut (:func:`serve_findings`)."""
     anchor, head_sha = await _anchor(session, repo_id)
     since = (anchor - QUARTER) if anchor else None
     week = (anchor - WEEK) if anchor else None
@@ -486,7 +532,7 @@ async def load_repo_facts(session: AsyncSession, repo_id: str) -> RepoFacts:
     await read("fix_first", lambda: _fix_first(session, repo_id))
     await read("security", lambda: _secrets(session, repo_id, files))
     await read("doc_drift", lambda: _drift(session, repo_id))
-    await read("dead_code", lambda: _dead(session, repo_id, files))
+    await read("dead_code", lambda: _dead(session, repo_id, files, lookup, alias))
     await read("decisions", lambda: _decisions(session, repo_id))
     await read("coverage", lambda: _coverage(session, repo_id, head_sha))
     values["unavailable"] = unavailable
@@ -546,9 +592,14 @@ SNAPSHOT_KIND = "actions"
 _KEY = snapshot_key(SNAPSHOT_KIND, ACTIONS_MODEL_VERSION)
 
 
-async def _ruled(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+async def _ruled(
+    session: AsyncSession,
+    repo_id: str,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
+) -> dict[str, Any]:
     """The rules' output from the facts as stored now, and what could not be read."""
-    facts = await load_repo_facts(session, repo_id)
+    facts = await load_repo_facts(session, repo_id, lookup=lookup, alias=alias)
     return {**rule_actions(facts), "unavailable": dict(facts.unavailable)}
 
 
@@ -564,7 +615,8 @@ async def write_read_snapshots(
     session: AsyncSession, repo_id: str
 ) -> list[tuple[str, Exception]]:
     """Store the Fix first queue, then the actions view that quotes its head,
-    then the run's component snapshot (:mod:`repowise.core.events`).
+    then the test masks that view's build read, then the run's component
+    snapshot (:mod:`repowise.core.events`).
 
     For a writer whose stores are final for this run, on the session that
     wrote them or a later one. Best-effort, each in its own savepoint: a view
@@ -576,6 +628,7 @@ async def write_read_snapshots(
     for kind, write in (
         ("fix_first", write_fix_first_snapshot),
         (SNAPSHOT_KIND, write_actions_snapshot),
+        ("test_masks", write_test_masks_snapshot),
     ):
         try:
             async with session.begin_nested():
@@ -630,12 +683,21 @@ def _stored_view(
 
 
 async def load_actions_view(
-    session: AsyncSession, repo_id: str, *, now: datetime | None = None
+    session: AsyncSession,
+    repo_id: str,
+    *,
+    now: datetime | None = None,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
 ) -> dict[str, Any]:
     """The one entry point: the rules' output, the person's answers, and the ranked view.
 
     The rules' output is the stored snapshot while it is current, else built
-    from the facts here. Never writes.
+    from the facts here. While a finding stored deletion-ready reads not safe
+    as served (in a workspace, *lookup* and *alias* apply the cross-repo cut),
+    the view is built live instead. A missing snapshot is built and stored
+    for the next process (:func:`build_and_store`); in a workspace the build
+    carries the cut, so it is not stored.
     """
     try:
         async with session.begin_nested():
@@ -644,12 +706,27 @@ async def load_actions_view(
         states = {}
     when = now or datetime.now(UTC)
     stored = await read_snapshot(session, repo_id, SNAPSHOT_KIND, _KEY)
+    if stored is None and lookup is None and alias is None:
+        ruled = await build_and_store(
+            session, repo_id, SNAPSHOT_KIND, _KEY, lambda s: _ruled(s, repo_id)
+        )
+        return _view(ruled, states, when)
+    if stored is not None and await _stored_dead_overstated(session, repo_id, lookup, alias):
+        stored = None
     view = _stored_view(stored, states, when)
     if view is None:
-        view = _view(await _ruled(session, repo_id), states, when)
+        view = _view(await _ruled(session, repo_id, lookup, alias), states, when)
     return view
 
 
-async def load_action(session: AsyncSession, repo_id: str, action_id: str) -> Action | None:
+async def load_action(
+    session: AsyncSession,
+    repo_id: str,
+    action_id: str,
+    *,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
+) -> Action | None:
     """One action by id: the same facts the list reads, without ranking the view."""
-    return find_action(await load_repo_facts(session, repo_id), action_id)
+    facts = await load_repo_facts(session, repo_id, lookup=lookup, alias=alias)
+    return find_action(facts, action_id)

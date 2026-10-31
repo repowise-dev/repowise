@@ -45,6 +45,7 @@ LanguageTag = Literal[
     "cobol",
     "gdscript",
     "vbnet",
+    "apex",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -80,12 +81,24 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Salesforce Visualforce (.page/.component): markup that names its Apex controller.
+    "visualforce",
     # Lightweight: qmldir-declared module imports and quoted references.
     "qml",
     # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
     # [ext_resource path=...] and [autoload] are how a Godot project reaches
     # its scripts at all.
     "godot_resource",
+    # Salesforce Aura markup: no symbols, read for the names it wires.
+    "aura",
+    # Salesforce flows: one symbol per flow.
+    "salesforce_flow",
+    # Salesforce object and field metadata, and saved SOQL queries.
+    "salesforce_object",
+    "soql",
+    "jcl",
+    "bms",
+    "csd",
     "unknown",
 ]
 
@@ -108,6 +121,12 @@ EXTENSION_TO_LANGUAGE: dict[str, LanguageTag] = {
 SPECIAL_FILENAMES: dict[str, LanguageTag] = {
     fn: tag  # type: ignore[misc]
     for fn, tag in _REGISTRY.all_special_filenames().items()
+    if tag in _LANGUAGE_TAG_VALUES
+}
+
+NAME_SUFFIX_TO_LANGUAGE: dict[str, LanguageTag] = {
+    sfx: tag  # type: ignore[misc]
+    for sfx, tag in _REGISTRY.all_name_suffixes().items()
     if tag in _LANGUAGE_TAG_VALUES
 }
 
@@ -139,6 +158,9 @@ SymbolKind = Literal[
     "property",
 ]
 
+#: Kinds that name a stored value rather than behaviour or a type.
+VALUE_SYMBOL_KINDS: frozenset[str] = frozenset({"constant", "variable", "property"})
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------
@@ -165,6 +187,9 @@ class FileInfo:
     # Reached from outside the import graph (a runner or loader starts it), so
     # dead-code analysis never flags it. Read through ``is_reachability_root``.
     is_reachability_root: bool = False
+    # Starts a framework application (``SpringApplication.run``): ranked with
+    # the manifest entries, but not a public API the way those are.
+    is_application_main: bool = False
 
 
 @dataclass
@@ -190,6 +215,9 @@ class RepoStructure:
     total_files: int
     total_loc: int
     entry_points: list[str]
+    # The entry points that start a framework application, which make the repo
+    # a service and lead the orientation list.
+    application_mains: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -262,6 +290,8 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Java ``import static a.B.m``: the type ``B`` that declares the member.
+    member_of: str | None = None
     # Position of the local name (1-based line, byte column), set where a
     # binding can sit inside a function body (``require``, ``import()``), so
     # it is not read as a shadowing local.
@@ -325,6 +355,14 @@ class CallReceiver:
 #: site may produce.
 CallSiteEdgeType = Literal["calls", "references"]
 
+#: The ``receiver_name`` of a Kotlin call on a string literal (``"/".encodeUtf8()``):
+#: no name can be spelled this way, and receiver typing reads it as ``String``.
+STRING_LITERAL_RECEIVER = '""'
+
+#: The argument type of a C# unsuffixed integer constant, which converts to any
+#: numeric type its value fits, unlike an ``int`` value.
+CSHARP_INTEGER_CONSTANT = "int constant"
+
 
 @dataclass
 class CallSite:
@@ -348,17 +386,30 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
     # The grammar's bare-call pattern also matched this member call (Java
     # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
-    # when no receiver strategy answers, never beside one.
+    # when no receiver strategy answers, never beside one. With no receiver
+    # it means ``on_unnamed_object`` instead.
     bare_name_fallback: bool = False
     # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
     # later, beside its caller, so the caller neither waits for it nor repeats it.
     spawned: bool = False
+    # COBOL ``CALL`` / ``LINK`` / ``XCTL``: names a PROGRAM-ID, never a paragraph.
+    program_call: bool = False
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
-    # ``"null"``), else None; None overall when no argument is one.
+    # ``"null"``), a class literal (``"Class"``), a String concatenation or a
+    # lambda (``"->0:value"``), else None; None overall when no argument is one.
+    # C# writes a lambda's or a construction's shape here (``"=>2"``, ``"new Foo"``).
     argument_types: tuple[str | None, ...] | None = None
-    # Java: each argument that is a bare name (``start``), else None; None overall
+    # Java and C#: each argument that is a bare name (``start``), else None; None overall
     # when no argument is one. The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
+
+    @property
+    def on_unnamed_object(self) -> bool:
+        """A Java call on an object no pattern names (``a.b.m()``, ``arr[0].m()``).
+
+        Only repo-wide uniqueness binds it. A call with a receiver never is one.
+        """
+        return self.bare_name_fallback and not (self.receiver_name or self.receiver_call)
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
@@ -424,8 +475,8 @@ EdgeType = Literal[
     # parser could have seen, and letting it read as one would put an inferred
     # wiring hop into an execution flow as if it were source.
     "framework_binds",
-    # A data reference rather than a call: C# member access, file → file. It
-    # used to name two unrelated things — the Express route wiring emitted it
+    # A data reference rather than a call, file → file: C# member access and
+    # Salesforce schema references. It used to name two unrelated things — the Express route wiring emitted it
     # symbol → symbol — which is why one consumer set could not say which layer
     # it meant. That producer now emits `framework_binds`.
     "reads",
@@ -607,7 +658,8 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_imports",
         "dynamic_url_route",
         # C# member access (`var x = new T(); x.Prop`) resolves to the file
-        # declaring the type, so this is a real file-level reference.
+        # declaring the type, so this is a real file-level reference, as is a
+        # SOQL query or DML statement naming an object the repository defines.
         "reads",
     }
 )
@@ -717,6 +769,22 @@ class TypeReference:
     ] = "ctor_param"
 
 
+@dataclass(frozen=True)
+class SchemaReference:
+    """A Salesforce SObject, or a field path on one, named in a file.
+
+    ``path`` is empty for the object itself; otherwise the dotted field path
+    as written after it (``("Parent__r", "Name")`` for ``Parent__r.Name``),
+    resolved hop by hop through lookup metadata. Names keep their written case;
+    Salesforce compares them case-insensitively.
+    """
+
+    source_symbol_id: str  # the method, trigger or field that names it
+    object_name: str
+    line: int
+    path: tuple[str, ...] = ()
+
+
 @dataclass
 class ParsedFile:
     """Full result of parsing a single source file."""
@@ -725,6 +793,9 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # Go's package clause affects the names callers use after importing a
+    # directory, but it is not a Symbol. Store it for incremental surface checks.
+    module_name: str | None = None
     # ``{exported name: local name}`` where a TS/JS module publishes a symbol
     # it declares under a different name (``export { stringType as string }``).
     # Empty for every other language and for the far commoner clause that does
@@ -751,6 +822,11 @@ class ParsedFile:
     # symbol enclosing it, and a line — and it lets these ride the same
     # resolution tiers. They become ``references`` edges, not ``calls``.
     references: list[CallSite] = field(default_factory=list)
+    # Salesforce objects and fields this file names (see ``salesforce_schema``).
+    schema_refs: list[SchemaReference] = field(default_factory=list)
+    # Parsed without its language's grammar (not installed, or a download
+    # failed): a stand-in the parse cache must not keep once the grammar loads.
+    grammar_missing: bool = False
 
     @property
     def symbol_count(self) -> int:

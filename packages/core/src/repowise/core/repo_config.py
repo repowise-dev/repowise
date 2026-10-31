@@ -34,6 +34,7 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "wiki_style",
             "language",
             "max_file_pages",
+            "folder_coverage",
             "generation_context",
             "enable_onboarding",
         }
@@ -41,7 +42,9 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     # Agent-surface preferences. init records `hooks` and `editor_files` after
     # it fingerprints the config, so leaving them in "other" turned the first
     # update after every init into a full rebuild.
-    "state_only": frozenset({"distill", "editor_files", "events", "hooks", "mcp"}),
+    "state_only": frozenset(
+        {"distill", "editor_files", "editor_setup", "events", "hooks", "mcp"}
+    ),
 }
 
 
@@ -159,6 +162,76 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     resolver = sys.modules.get("repowise.core.providers.llm.resolve")
     if resolver is not None:
         resolver.forget_cached(target)
+
+
+#: Repo settings whose one home is ``.repowise/config.yaml``, so the CLI and the
+#: web UI read and write the same value. A server row's ``settings_json`` may
+#: still hold them from before: that stored value is a fallback while the file
+#: lacks the key, and moves into the file on the next save.
+FILE_SETTING_KEYS: tuple[str, ...] = ("exclude_patterns", "wiki_style")
+
+
+def _file_setting_default(key: str) -> Any:
+    """What an absent ``key`` means, so writing it would change nothing."""
+    if key == "wiki_style":
+        from repowise.core.generation.styles import DEFAULT_STYLE
+
+        return DEFAULT_STYLE
+    return []
+
+
+def resolve_file_settings(repo_path: Path | str, stored: dict[str, Any]) -> dict[str, Any]:
+    """The effective :data:`FILE_SETTING_KEYS` values: config.yaml's, else *stored*'s.
+
+    *stored* is the legacy server copy (``settings_json``). Keys neither source
+    sets are left out; a bare ``key:`` (null) in the file counts as unset.
+    Raises :class:`RepoConfigError` for a broken config file.
+    """
+    config = load_repo_config(repo_path)
+    resolved = {}
+    for key in FILE_SETTING_KEYS:
+        value = config.get(key)
+        if value is None:
+            value = stored.get(key)
+        if value is not None:
+            resolved[key] = value
+    return resolved
+
+
+def save_file_settings(
+    repo_path: Path | str, updates: dict[str, Any], stored: dict[str, Any]
+) -> dict[str, Any]:
+    """Write *updates* for :data:`FILE_SETTING_KEYS` into config.yaml.
+
+    Legacy *stored* values the file lacks move in with this save, so the server
+    copy can be dropped afterwards. A value equal to what the file already
+    means is not written, and the default removes the key: a save that changes
+    nothing leaves the bytes, and so the config fingerprint, alone. Other keys
+    are preserved. Returns the saved :data:`FILE_SETTING_KEYS` values.
+    """
+    config = load_repo_config(repo_path)
+    before = dict(config)
+    for key in FILE_SETTING_KEYS:
+        default = _file_setting_default(key)
+        if config.get(key) is None and stored.get(key) not in (None, default):
+            config[key] = stored[key]
+        if key in updates:
+            _set_file_setting(config, key, updates[key], default)
+    if config != before:
+        save_repo_config(repo_path, config)
+    return {key: config[key] for key in FILE_SETTING_KEYS if config.get(key) is not None}
+
+
+def _set_file_setting(config: dict[str, Any], key: str, value: Any, default: Any) -> None:
+    """Set *key* to *value* in *config*; the default (or ``None``) removes it."""
+    value = default if value is None else value
+    current = config.get(key)
+    if value == (default if current is None else current):
+        return
+    if value == default:
+        config.pop(key, None)
+    else:
+        config[key] = value
 
 
 def config_fingerprint(repo_path: Path | str) -> str:
@@ -377,13 +450,15 @@ def write_private_file(
     """Write a secret ``.repowise/<name>``: git-ignored first, owner-only after.
 
     Some repositories commit ``.repowise/`` for its shared config, so a secret
-    there needs its own ignore rule. Ignore rule first, secret second: if the
-    .gitignore write fails (a read-only checkout, a root-owned file) this
-    raises before the secret is on disk rather than after, which costs the
-    caller a saved secret instead of leaving a committable one behind.
+    there needs its own ignore rule. It goes in ``.repowise/.gitignore``, not
+    the repo root's: nothing outside ``.repowise/`` is touched, and the rule
+    travels with the directory when it is committed. Ignore rule first, secret
+    second: if that write fails this raises before the secret is on disk
+    rather than after, which costs the caller a saved secret instead of
+    leaving a committable one behind.
     """
     if ignore:
-        _ensure_gitignored(repo_path, f".repowise/{name}", comment)
+        _ensure_gitignored(repo_path, name, comment)
     path = get_repowise_dir(repo_path) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -439,24 +514,23 @@ def ensure_manifest_tracked(repo_path: Path | str) -> bool:
     return True
 
 
-def _ensure_gitignored(repo_path: Path | str, pattern: str, comment: str) -> None:
-    """Add *pattern* to the repo's ``.gitignore`` unless git already ignores it."""
-    gitignore = Path(repo_path) / ".gitignore"
-    if _git_ignores(repo_path, pattern):
-        return  # e.g. a ``.repowise/`` rule: a second line would only dirty the file
+def _ensure_gitignored(repo_path: Path | str, name: str, comment: str) -> None:
+    """Ignore ``.repowise/<name>`` from ``.repowise/.gitignore`` unless git already does."""
+    if _git_ignores(repo_path, f".repowise/{name}"):
+        return  # e.g. a root ``.repowise/`` rule: a second line would only add noise
 
-    if gitignore.exists():
-        content = gitignore.read_text(encoding="utf-8")
-        # Line membership, not substring, so the pattern buried in an unrelated
-        # comment doesn't suppress the real ignore rule.
-        if pattern in {line.strip() for line in content.splitlines()}:
-            return
-        if not content.endswith("\n"):
-            content += "\n"
-        content += f"\n# {comment}\n{pattern}\n"
-        gitignore.write_text(content, encoding="utf-8")
-    else:
-        gitignore.write_text(f"# {comment}\n{pattern}\n", encoding="utf-8")
+    gitignore = get_repowise_dir(repo_path) / ".gitignore"
+    rule = f"/{name}"
+    content = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    # Line membership, not substring, so the name buried in an unrelated
+    # comment doesn't suppress the real ignore rule.
+    if rule in {line.strip() for line in content.splitlines()}:
+        return
+    if content:
+        content = content.rstrip("\n") + "\n\n"
+    content += f"# {comment}\n{rule}\n"
+    gitignore.parent.mkdir(parents=True, exist_ok=True)
+    gitignore.write_text(content, encoding="utf-8")
 
 
 def _git_ignores(repo_path: Path | str, pattern: str) -> bool:

@@ -166,6 +166,47 @@ def test_accepts_prose_that_merely_mentions_provided_files() -> None:
     validate_generated_response(_response(content))
 
 
+# Plain English about a function's arguments, which the rule once rejected
+# and lost whole pages to (the first two are the sentences that did).
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "`normalize` trims the supplied input before it is matched.",
+        "`Request.prepare` encodes the supplied data into the request body.",
+        "The helper returns the given list sorted by priority.",
+        "`hash_files` reads the given files in path order.",
+        "The handler cancels its query when the given context is done.",
+        "The worker runs in the provided context until the deadline passes.",
+        "The sandbox executes the provided code in a fresh process.",
+        "The table shown above lists the defaults.",
+        "The formatter indents the provided snippet.",
+        "`parse_doc` splits the supplied documentation string into sections.",
+    ],
+)
+def test_supplied_context_accepts_plain_descriptions_of_arguments(sentence: str) -> None:
+    validate_generated_response(_response(f"# Overview\n\n{sentence}\n"))
+
+
+# Real leaks: the first five were published on generated pages.
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The supplied excerpts do not establish which symbol it invokes.",
+        "Their matching rules are not present in the supplied source facts.",
+        "Based on the provided documentation, the flag is global.",
+        "Based on the file names you provided, this is a web app.",
+        "The provided information only anchors them by layer.",
+        "Based on the provided code, the cache is never cleared.",
+        "The retry policy is not shown in the given context.",
+        "The configuration provided above sets the port.",
+        "The module includes the files you were shown.",
+    ],
+)
+def test_supplied_context_rejects_prompt_leaks(sentence: str) -> None:
+    with pytest.raises(InvalidGeneratedContentError, match="supplied_context"):
+        validate_generated_response(_response(f"# Overview\n\n{sentence}\n"))
+
+
 def test_artifact_checks_are_counted_so_a_clean_run_is_not_silence() -> None:
     """A run that checked nothing must not read like a run that found nothing."""
     reset_artifact_check_counts()

@@ -512,7 +512,9 @@ async def _hub_repo(session, *, tests=(), edges=()):
     nodes = {"tests/test_bystander.py": True, "tests/test_runner.py": True, "src/util.py": False}
     nodes |= dict.fromkeys(tests, True)
     for path, is_test in nodes.items():
-        session.add(GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test))
+        session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
     for name, start, end in (("walk", 1, 20), ("other", 30, 40), ("lonely", 50, 60)):
         session.add(
             GraphNode(
@@ -682,6 +684,41 @@ async def test_the_import_walk_from_memory_matches_the_walk_from_the_database(as
     }
 
 
+async def test_the_import_graphs_and_placement_are_read_once_per_index_state(
+    async_session, monkeypatch
+):
+    """Each selection asks for them; a process serving many reads them once."""
+    from repowise.core.analysis.test_reach import db
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"src/pkg/__init__.py": False, "src/pkg/a.py": False, "tests/test_a.py": True},
+        edges=[("tests/test_a.py", "src/pkg/a.py", "imports")],
+    )
+    reads: list[str] = []
+    real_graph, real_placed = db.load_import_graph, db.placed_test_files
+
+    async def graph(session, repo_id):
+        reads.append("graph")
+        return await real_graph(session, repo_id)
+
+    async def placed(session, repo_id):
+        reads.append("placed")
+        return await real_placed(session, repo_id)
+
+    monkeypatch.setattr(db, "load_import_graph", graph)
+    monkeypatch.setattr(db, "placed_test_files", placed)
+    first = await db.cached_import_graphs(async_session, repo.id)
+    assert await db.cached_import_graphs(async_session, repo.id) is first
+    assert first[1] == first[0].with_package_inits()
+    placement = await db.cached_placement(async_session, repo.id)
+    assert placement[0] == {"tests/test_a.py"}
+    assert await db.cached_placement(async_session, repo.id) == placement
+    assert reads == ["graph", "placed"]
+
+
 _KY_LIKE = {
     "src/core/Ky.ts": "export class Ky {\n  static create(input: string) { return new Ky(); }\n}\n",
     # Three calls deep before the test's own call: past the call walk's depth.
@@ -708,7 +745,11 @@ _KY_LIKE = {
 
 async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path, async_session):
     """A test importing a package's ``index.ts`` reaches the files it imports."""
-    from repowise.core.analysis.test_reachability import any_tests_reaching, clear_test_map_cache
+    from repowise.core.analysis.test_reachability import (
+        any_reached,
+        any_tests_reaching,
+        clear_test_map_cache,
+    )
     from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
     from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
     from tests.unit.analysis.test_public_api_flag import build_fixture
@@ -726,6 +767,9 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     # The helper hop stops at pool.ts (source imports it too), but the import
     # closure does not: a test importing pool.ts runs retry.ts, so it is not unreached.
     assert found["src/retry.ts"].reached.entries == {"test/x.test.ts": frozenset({"src/pool.ts"})}
+
+    rank_free = await any_reached(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
+    assert rank_free.keys() == found.keys()
 
 
 _SWAPPED = {
@@ -791,6 +835,66 @@ async def test_any_reach_reads_which_tests_replace_a_module_from_the_checkout(
     clear_test_map_cache()
     found = await any_tests_reaching(async_session, repo.id, ["app/util.py"])
     assert found["app/util.py"].state == "reached"
+
+
+async def test_stored_test_masks_spare_a_new_process_the_test_file_reads(
+    tmp_path, async_session, monkeypatch
+):
+    """Masks stored at index time serve a new process; a moved index state rebuilds them."""
+    import shutil
+
+    from sqlalchemy import text
+
+    import repowise.core.analysis.test_reach.db as tr
+    from repowise.core.analysis.test_reachability import (
+        cached_test_masks,
+        clear_test_map_cache,
+        write_test_masks_snapshot,
+    )
+    from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
+    from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
+    from tests.unit.analysis.test_public_api_flag import build_fixture
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    builder = build_fixture(root, _SWAPPED)
+    repo = await insert_repo(async_session, local_path=str(root))
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+    assert await write_test_masks_snapshot(async_session, repo.id)
+    await async_session.commit()
+    expected = {
+        "tests/test_core.py": frozenset({"app/util.py"}),
+        "web/a.test.ts": frozenset({"web/a.ts"}),
+    }
+
+    # A new process: nothing cached, and the checkout gone, so only the stored
+    # copy can answer.
+    clear_test_map_cache()
+    shutil.rmtree(root)
+    assert await cached_test_masks(async_session, repo.id) == expected
+
+    # A write that leaves the index state alone keeps the stored copy.
+    await async_session.execute(
+        text("UPDATE graph_nodes SET start_line = 7 WHERE repository_id = :r"), {"r": repo.id}
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    assert await cached_test_masks(async_session, repo.id) == expected
+
+    # A new index state misses it and builds from the checkout (gone: no masks).
+    await async_session.execute(
+        text("UPDATE repositories SET head_commit = 'moved' WHERE id = :r"), {"r": repo.id}
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    reads: list[int] = []
+    real = tr._read_texts
+    monkeypatch.setattr(tr, "_read_texts", lambda *a: reads.append(1) or real(*a))
+    assert await cached_test_masks(async_session, repo.id) == {}
+    assert reads == [1]
 
 
 async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):
@@ -981,7 +1085,9 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     asked = [*paths, "app/added.py", "app/types.py"]
     evidence = {
         "changed_tests": ["tests/test_lonely.py"],
-        "contents": {"app/types.py": "from typing import TypedDict\nclass R(TypedDict):\n    a: int\n"},
+        "contents": {
+            "app/types.py": "from typing import TypedDict\nclass R(TypedDict):\n    a: int\n"
+        },
     }
     in_memory = reach_states(maps, asked, **evidence)
     assert await reach_states_from_db(async_session, repo.id, asked, **evidence) == in_memory
@@ -993,7 +1099,9 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     # so only replacing tests reach either.
     swap = 'from unittest.mock import patch\n\n@patch("app.util")\ndef test_swapped(m): ...\n'
     texts = dict.fromkeys(["tests/test_core.py", "tests/test_pkg.py"], swap)
-    texts["test/x.test.ts"] = 'import {vi} from "vitest";\nvi.mock("../src/retry", () => ({retry: 1}));\n'
+    texts["test/x.test.ts"] = (
+        'import {vi} from "vitest";\nvi.mock("../src/retry", () => ({retry: 1}));\n'
+    )
     masks = replaced_files(texts, _PARITY)
     assert masks == {
         **{t: {"app/util.py"} for t in ("tests/test_core.py", "tests/test_pkg.py")},
@@ -1016,7 +1124,10 @@ async def test_stored_call_hubs_match_the_in_memory_ones(async_session):
     from repowise.core.analysis.test_reachability import clear_test_map_cache as clear
 
     tests = [f"tests/test_{i:02}.py" for i in range(10)]
-    edges = [("src/hub.py", "src/hub.py::run", "defines"), ("src/few.py", "src/few.py::f", "defines")]
+    edges = [
+        ("src/hub.py", "src/hub.py::run", "defines"),
+        ("src/few.py", "src/few.py::f", "defines"),
+    ]
     for t in tests:
         edges += [(t, f"{t}::t", "defines"), (f"{t}::t", "src/hub.py::run", "calls")]
     edges += [(f"{t}::t", "src/few.py::f", "calls", "global_unique") for t in tests]

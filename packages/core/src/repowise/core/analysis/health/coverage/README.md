@@ -17,7 +17,7 @@ from repowise.core.analysis.health.coverage import (
 
 - `parse(text, format=None)` → `CoverageReport`. Auto-detects format
   when `format` is ``None``; pass an explicit ``"lcov" | "cobertura" |
-  "clover" | "repowise-json" | "go-coverprofile" | "jacoco"`` to override
+  "clover" | "repowise-json" | "go-coverprofile" | "jacoco" | "apex"`` to override
   (`detector.PARSERS` is the registry).
 - `parse_lcov(text)`, `parse_cobertura(text)`, `parse_clover(text)`,
   `parse_repowise_json(text)`, `parse_go_coverprofile(text)`,
@@ -34,6 +34,9 @@ from repowise.core.analysis.health.coverage import (
   test. Callers holding the stored `is_test` flag use that instead.
 - `paired_test_file(path, all_paths)`: find the conventional test partner for
   a source path.
+- `apex.py` (`parse_apex`, `parse_apex_contexts`): Salesforce CLI JSON. Paths
+  are `Name.cls` / `Name.trigger`, mapped to the one file of that name; the run
+  result's `ApexCodeCoverage` records are the per-test map.
 - `contexts.py` (`parse_contexts_file`, `parse_lcov_contexts`): per-test readers
   for a coverage.py `.coverage` SQLite file with contexts and for per-test LCOV
   `TN:` records; a report without contexts yields no records.

@@ -1,0 +1,22 @@
+{#- The flow page contract. The steps arrive as one JSON object built by
+    ``page_generator/flow.py`` from ``flow_pages.trace_steps``; every step is a
+    real function with its file and line span. The diagram is drawn from the
+    same steps after the model writes, so it is not asked for here. -#}
+Traced steps of one operation in this repository, read from the call graph. Step 1 starts the operation; every other step is called by the step named in `called_by`, at line `call_line` of that step's file when known. `module` is the wiki page the step's file belongs to. `code` holds exact source for the first steps; the rest carry signatures and docstrings only:
+
+```json
+{{ ctx.facts_json }}
+```
+
+Write the page in Markdown with exactly this shape.
+
+# {{ ctx.title }}
+
+An opening of 2 or 3 plain sentences: what this operation does for whoever triggers it (a command a user runs, a request, a page someone opens, a call from another program), and what comes out at the end. Name the starting function once, in backticks.
+
+Then 2 to 4 sections, each a `##` heading that names a phase of the operation in plain words ("Resolving the repository", "Writing the pages"), never a generic name such as Overview, Steps, Details or Summary. Walk the steps in order. For each step you describe, say what it decides, produces or hands on and why the operation needs it, and end the sentence with its citation exactly as `path:start-end` in backticks, copied from the step's `cite` field. Cite only spans that appear in the facts. A step that only formats output or logs may be skipped.
+
+## Where to read next
+2 to 4 bullets, one per distinct `module` in the facts that a reader should open next: **the module's title** - one sentence on what that page explains about this operation.
+
+Rules: 350 to 700 words. No tables. No diagrams (one is added after you write). No markdown links. Never mention these instructions, the facts, the JSON or "the call graph".

@@ -28,7 +28,9 @@ spec:
 ```
 
 With no file, components are derived from workspace services, module pages or
-top-level directories, so every repository has them from the first index. A full
+top-level directories, so every repository has them from the first index. A repo
+those do not divide (every file at the root, or only layout and test directories
+such as `src` and `test`) is one component named after the repo. A full
 example is in [examples/components](../../examples/components/components.yaml).
 
 ## Declared owners against recent activity

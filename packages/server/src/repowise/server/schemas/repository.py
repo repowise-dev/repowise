@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel, field_validator
@@ -11,6 +10,7 @@ from pydantic import BaseModel, field_validator
 from repowise.core.docs_mode import DocsMode
 from repowise.core.forges import strip_credentials
 from repowise.core.index_scope import load_index_scope
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class RepoCreate(BaseModel):
@@ -52,8 +52,8 @@ class RepoResponse(BaseModel):
     default_branch: str
     head_commit: str | None
     settings: dict
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     # Workspace context — populated when the server is running in
     # workspace mode. ``status`` indicates whether the repo has been
     # indexed yet; the web UI uses it to render "needs index" CTA cards
@@ -79,7 +79,8 @@ class RepoResponse(BaseModel):
     initial_job_id: str | None = None
 
     @classmethod
-    def from_orm(cls, obj: object) -> RepoResponse:
+    def from_orm(cls, obj: object, settings: dict | None = None) -> RepoResponse:
+        """*settings* replaces the row's stored ``settings_json`` when given."""
         local_path = obj.local_path  # type: ignore[attr-defined]
         scope = load_index_scope(local_path) if local_path else None
         return cls(
@@ -89,7 +90,7 @@ class RepoResponse(BaseModel):
             local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]
-            settings=json.loads(obj.settings_json),  # type: ignore[attr-defined]
+            settings=json.loads(obj.settings_json) if settings is None else settings,  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
             index_scope=scope,
@@ -128,7 +129,7 @@ class RepoSummaryRow(BaseModel):
     id: str
     name: str
     local_path: str
-    updated_at: datetime | None = None
+    updated_at: UTCDateTime | None = None
     #: "indexed" | "needs_index" | "missing_dir" — same vocabulary as
     #: ``RepoResponse.workspace_status``, which the sidebar already renders.
     status: str = "indexed"
@@ -154,7 +155,7 @@ class RepoSummaryRow(BaseModel):
     #: distinct from a score of 0, which would mean "analysed, and terrible".
     average_health: float | None = None
     hotspot_health: float | None = None
-    health_taken_at: datetime | None = None
+    health_taken_at: UTCDateTime | None = None
 
     #: Index-vs-checkout freshness. ``index_behind`` is ``None`` when the
     #: comparison could not run (no git checkout on disk, unreadable HEAD)

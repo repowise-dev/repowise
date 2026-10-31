@@ -23,6 +23,8 @@ import textwrap
 import time
 from pathlib import Path
 
+import pytest
+
 from repowise.server import mcp_server
 from repowise.server.mcp_server import _TOOL_MODULES
 
@@ -107,6 +109,37 @@ def test_one_tool_does_not_drag_in_the_others():
     # well clear of both so a new shared helper cross-import does not read as a
     # laziness regression, while anything approaching the whole surface does.
     assert len(loaded) <= 8, f"one tool import loaded {len(loaded)} tool modules: {sorted(loaded)}"
+
+
+# Leaf modules a tool reads on its first call, and what each must not load. A
+# leaf import initialises its parent package first, so an eager re-export in a
+# package ``__init__`` makes the smallest helper pay for every sibling.
+_LIGHT_LEAVES = {
+    f"{_PKG}.tool_overview.actions": (
+        "sqlalchemy",
+        f"{_PKG}.tool_overview.tool",
+        f"{_PKG}.tool_overview.graph",
+        "repowise.core.analysis.actions.engine",
+    ),
+    f"{_PKG}.tool_answer.confidence": (f"{_PKG}.tool_answer.answer",),
+    "repowise.core.analysis.doc_drift.serialize": (
+        "structlog",
+        "repowise.core.analysis.doc_drift.analyzer",
+    ),
+}
+
+
+@pytest.mark.parametrize("leaf", sorted(_LIGHT_LEAVES))
+def test_light_leaves_do_not_load_their_heavy_siblings(leaf):
+    """A caller that needs one small helper pays for that helper only."""
+    seen = _probe(
+        f"""
+        import json, sys
+        import {leaf}
+        print(json.dumps([m for m in {_LIGHT_LEAVES[leaf]!r} if m in sys.modules]))
+        """
+    )
+    assert seen == []
 
 
 def test_tool_modules_map_covers_every_tool_module_on_disk():

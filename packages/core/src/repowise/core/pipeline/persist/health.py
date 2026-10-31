@@ -16,6 +16,24 @@ from .prune import path_liveness
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
+async def _analyzed_repo_path(session: Any, repo_id: str) -> Path | None:
+    """The working tree the health pass scored, read from the repository row.
+
+    The same source :func:`_analyzed_commit` takes HEAD from, so a commit stamp
+    and the tree it names cannot disagree. The pipeline result is not that
+    source: the resume checkpoint hands ``persist_analysis`` a view of the
+    reports only, which carries no path.
+    """
+    from repowise.core.persistence.models import Repository
+
+    try:
+        repo = await session.get(Repository, repo_id)
+        local_path = getattr(repo, "local_path", None) if repo else None
+        return Path(local_path) if local_path else None
+    except Exception:
+        return None
+
+
 async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
     """Live HEAD of the repo being indexed, for stamping health rows.
 
@@ -26,15 +44,10 @@ async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
     is honest, while a wrong sha would not be. Both index paths read it here;
     the pipeline result carries no sha, so the full path used to stamp ``NULL``.
     """
-    from repowise.core.persistence.models import Repository
     from repowise.core.workspace.update import get_head_commit
 
-    try:
-        repo = await session.get(Repository, repo_id)
-        local_path = getattr(repo, "local_path", None) if repo else None
-        return get_head_commit(Path(local_path)) if local_path else None
-    except Exception:
-        return None
+    local_path = await _analyzed_repo_path(session, repo_id)
+    return get_head_commit(local_path) if local_path is not None else None
 
 
 async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
@@ -99,6 +112,7 @@ async def save_full_health_report(
     *,
     analyzed_commit: str | None,
     repo_path: Any = None,
+    refresh_governance: bool = False,
 ) -> None:
     """Full-replace a repository's health rows and everything derived from them.
 
@@ -112,6 +126,11 @@ async def save_full_health_report(
     commit these scores were computed against; ``None`` reads as "not
     recorded", which is honest, while a wrong sha would not be. ``repo_path``
     lets a plan whose file is gone read as deleted.
+
+    ``refresh_governance`` rebuilds the governance findings, which the findings
+    replace below deletes, before the refactoring queue is folded, so the queue
+    is composed once. For a caller whose decisions are already stored (the
+    update's re-score); the index stores its decisions after this writer.
     """
     from repowise.core.persistence.crud import (
         PayoffContext,
@@ -183,10 +202,24 @@ async def save_full_health_report(
             plan_policy=getattr(hr, "performance_plan_policy", None),
             execution_roles=getattr(hr, "execution_roles", None),
         )
+        if refresh_governance:
+            await _refresh_governance_best_effort(session, repo_id)
         # Fold the plans just written into per-file opportunities. Last in the
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+
+
+async def _refresh_governance_best_effort(session: Any, repo_id: str) -> None:
+    """Governance refresh inside the health savepoint; a failure keeps the health rows.
+
+    The refresh runs in its own savepoint, so a failure rolls back only its
+    half-written replace.
+    """
+    try:
+        await _persist.refresh_governance_findings(session, repo_id, recompose_queue=False)
+    except Exception as exc:
+        logger.warning("governance_findings_skipped", error=str(exc))
 
 
 async def refresh_governance_findings(

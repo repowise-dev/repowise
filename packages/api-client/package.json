@@ -51,6 +51,7 @@
     "./risk": "./src/risk.ts",
     "./search": "./src/search.ts",
     "./security": "./src/security.ts",
+    "./setup": "./src/setup.ts",
     "./stats": "./src/stats.ts",
     "./symbols": "./src/symbols.ts",
     "./views": "./src/views.ts",

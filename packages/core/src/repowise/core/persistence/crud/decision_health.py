@@ -13,6 +13,7 @@ from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.test_paths import is_test_related_path
 
 from ..models import DecisionRecord, GitMetadata
+from .decision_staleness import is_stale
 
 
 async def get_decision_health_summary(
@@ -117,12 +118,13 @@ class _Lanes:
                 self.proposed.append(d)
             return
         if currency in HISTORY_CURRENCIES:
+            lane = _history_lane(d, currency)
             # ``stale`` counts apart: that key already means needs_review here.
-            self.counts["historical" if currency == "stale" else currency] += 1
-            self.retired.append((currency, d))
+            self.counts["historical" if lane == "stale" else lane] += 1
+            self.retired.append((lane, d))
             return
         self.counts["active"] += 1
-        if currency == "needs_review":
+        if is_stale(currency):
             self.counts["stale"] += 1
             self.stale.append(d)
         if currency == "uncheckable":
@@ -145,6 +147,15 @@ class _Lanes:
         # ``unscoped`` by confidence, the key ``proposed`` already uses.
         self.retired.sort(key=lambda pair: (status_rank(pair[0]), pair[1].id))
         self.unscoped.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
+
+
+def _history_lane(d: DecisionRecord, currency: str) -> str:
+    """The retired lane for a history *currency*.
+
+    A deprecation and a dismissal share the ``dismissed`` currency; the status
+    each one writes is what still tells them apart.
+    """
+    return "deprecated" if currency == "dismissed" and d.status == "deprecated" else currency
 
 
 async def _ungoverned_hotspots(

@@ -145,3 +145,191 @@ def test_benchmark_in_a_same_named_class_of_another_namespace_does_not_count(
         "        public void Sort() { }\n    }\n}\n"
     )
     assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+_ISOLATED_FUNCTION = (
+    "using Microsoft.Azure.Functions.Worker;\nnamespace App;\npublic class OrderFn\n{\n"
+    '    [Function("GetOrder")]\n'
+    '    public object Run([HttpTrigger(AuthorizationLevel.Function, "get")] object req) => null;\n'
+    "}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _ISOLATED_FUNCTION,
+        "using Microsoft.Azure.WebJobs;\nnamespace App;\npublic static class Cleanup\n{\n"
+        '    [FunctionName("Cleanup")]\n'
+        '    public static void Run([TimerTrigger("0 */5 * * * *")] object timer) { }\n}\n',
+        "namespace App;\npublic class Orchestrator\n{\n    [Function(nameof(Run))]\n"
+        "    public void Run([OrchestrationTrigger] object context) { }\n}\n",
+    ],
+    ids=["isolated-http", "in-process-timer", "durable-orchestrator"],
+)
+def test_azure_function_class_is_a_root(tmp_path: Path, text: str) -> None:
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+def test_function_attribute_without_a_trigger_is_not_a_root(tmp_path: Path) -> None:
+    """linq2db's ``[Sql.Function]`` maps a method to SQL; nothing hosts it."""
+    text = (
+        "using LinqToDB;\nnamespace App;\npublic static class SqlFns\n{\n"
+        '    [Sql.Function("LOWER")]\n    public static string Lower(string s) => s;\n}\n'
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+def test_azure_function_next_to_an_unused_class_keeps_the_file_judged(tmp_path: Path) -> None:
+    text = _ISOLATED_FUNCTION + "public class DeadSibling { }\n"
+    assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+_CONTRACT = (
+    "using System.ServiceModel;\nnamespace App;\n[ServiceContract]\n"
+    "public interface IOrderService { [OperationContract] string Place(string id); }\n"
+)
+_SERVICE = "public class OrderService : IOrderService { public string Place(string id) => id; }\n"
+
+
+def test_wcf_service_implementation_is_a_root(tmp_path: Path) -> None:
+    files = {"IOrderService.cs": _CONTRACT, "OrderService.cs": "namespace App;\n" + _SERVICE}
+    assert _roots(tmp_path, files) == {"OrderService.cs"}
+
+
+def test_wcf_contract_and_service_in_one_file_is_a_root(tmp_path: Path) -> None:
+    assert _roots(tmp_path, {"A.cs": _CONTRACT + _SERVICE}) == {"A.cs"}
+
+
+def test_wcf_client_proxy_is_not_a_root(tmp_path: Path) -> None:
+    proxy = (
+        "namespace App;\n"
+        "public class OrderServiceClient : ClientBase<IOrderService>, IOrderService\n"
+        "{ public string Place(string id) => Channel.Place(id); }\n"
+    )
+    assert _roots(tmp_path, {"IOrderService.cs": _CONTRACT, "Client.cs": proxy}) == set()
+
+
+def test_implementing_an_interface_without_service_contract_is_not_a_root(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "IOrderService.cs": (
+            "namespace App;\npublic interface IOrderService { string Place(string id); }\n"
+        ),
+        "OrderService.cs": "namespace App;\n" + _SERVICE,
+    }
+    assert _roots(tmp_path, files) == set()
+
+
+def test_trigger_after_another_attribute_in_one_bracket_counts(tmp_path: Path) -> None:
+    text = (
+        "namespace App;\npublic class Resize\n{\n    [Function(\"Resize\")]\n"
+        '    public void Run([Blob("out"), BlobTrigger("in/{name}")] string blob) { }\n}\n'
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+def test_class_carrying_service_contract_itself_is_a_root(tmp_path: Path) -> None:
+    text = (
+        "using System.ServiceModel;\nnamespace App;\n[ServiceContract]\n"
+        "public class Echo { [OperationContract] public string Say(string s) => s; }\n"
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+GLOBAL_ASAX = (
+    '<%@ Application Codebehind="Global.asax.cs" Inherits="Sample.MvcApplication" '
+    'Language="C#" %>\n'
+)
+GLOBAL_ASAX_CS = (
+    "using System.Web;\nusing System.Web.Mvc;\nusing System.Web.Routing;\n\n"
+    "namespace Sample\n{\n"
+    "    public class MvcApplication : HttpApplication\n    {\n"
+    "        protected void Application_Start() { }\n    }\n}\n"
+)
+HOME_CONTROLLER = (
+    "using System.Web.Mvc;\n\nnamespace Sample.Controllers\n{\n"
+    "    public class HomeController : Controller\n    {\n"
+    "        public ActionResult Index() { return View(); }\n    }\n}\n"
+)
+
+
+def test_class_a_global_asax_inherits_is_a_root(tmp_path: Path) -> None:
+    roots = _roots(tmp_path, {"Global.asax": GLOBAL_ASAX, "Global.asax.cs": GLOBAL_ASAX_CS})
+    assert "Global.asax.cs" in roots
+
+
+def test_single_quoted_inherits_is_a_root(tmp_path: Path) -> None:
+    markup = "<%@ Application Codebehind='Global.asax.cs' Inherits='Sample.MvcApplication' %>\n"
+    roots = _roots(tmp_path, {"Global.asax": markup, "Global.asax.cs": GLOBAL_ASAX_CS})
+    assert "Global.asax.cs" in roots
+
+
+def test_markup_names_the_class_by_namespace(tmp_path: Path) -> None:
+    # Same bare name in another namespace: only the one the markup names roots.
+    other = "namespace Other\n{\n    public class MvcApplication { }\n}\n"
+    roots = _roots(
+        tmp_path,
+        {"Global.asax": GLOBAL_ASAX, "Global.asax.cs": GLOBAL_ASAX_CS, "Other.cs": other},
+    )
+    assert "Global.asax.cs" in roots
+    assert "Other.cs" not in roots
+
+
+@pytest.mark.parametrize(
+    ("markup_name", "markup"),
+    [
+        ("Ping.ashx", '<%@ WebHandler Language="C#" Class="Sample.Ping" %>\n'),
+        ("Default.aspx", '<%@ Page Language="C#" Inherits="Sample.Ping" %>\n<html></html>\n'),
+    ],
+    ids=["webhandler-class", "page-inherits"],
+)
+def test_handler_and_page_markup_name_their_class(
+    tmp_path: Path, markup_name: str, markup: str
+) -> None:
+    code = "namespace Sample\n{\n    public class Ping { }\n}\n"
+    assert "Ping.cs" in _roots(tmp_path, {markup_name: markup, "Ping.cs": code})
+
+
+def test_classic_mvc_and_web_api_controllers_are_roots(tmp_path: Path) -> None:
+    api = (
+        "using System.Web.Http;\n\nnamespace Sample.Controllers\n{\n"
+        "    public class ValuesController : ApiController { }\n}\n"
+    )
+    roots = _roots(tmp_path, {"HomeController.cs": HOME_CONTROLLER, "ValuesController.cs": api})
+    assert {"HomeController.cs", "ValuesController.cs"} <= roots
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        # No System.Web import: an ordinary class that happens to end in Controller.
+        (
+            "LooseController.cs",
+            "namespace Sample\n{\n    public class LooseController { }\n}\n",
+        ),
+        # A System.Web.Mvc file whose class is not a controller.
+        (
+            "Helper.cs",
+            "using System.Web.Mvc;\n\nnamespace Sample\n{\n    public class Helper { }\n}\n",
+        ),
+        # A controller next to an unused class keeps the file judged.
+        (
+            "Mixed.cs",
+            "using System.Web.Mvc;\n\nnamespace Sample\n{\n"
+            "    public class MixedController : Controller { }\n"
+            "    public class DeadSibling { }\n}\n",
+        ),
+    ],
+    ids=["no-system-web-import", "not-a-controller", "dead-sibling"],
+)
+def test_what_is_not_a_classic_root(tmp_path: Path, name: str, text: str) -> None:
+    assert name not in _roots(tmp_path, {name: text})
+
+
+def test_a_directive_that_names_no_class_roots_nothing(tmp_path: Path) -> None:
+    # A directive with no Inherits or Class names nothing.
+    markup = '<%@ Application Language="C#" %>\n'
+    roots = _roots(tmp_path, {"Global.asax": markup, "Global.asax.cs": GLOBAL_ASAX_CS})
+    assert "Global.asax.cs" not in roots

@@ -160,7 +160,7 @@ async def test_a_server_older_than_the_checkout_says_restart_not_give_up():
 
     result = await shield(stale_server_tool)()
 
-    assert "older repowise code than this checkout" in result["error"]
+    assert "older repowise code than the install" in result["error"]
     assert "Restart the MCP server" in result["error"]
     assert "user" in result["remedy"]
     assert "guidance" not in result
@@ -335,3 +335,26 @@ async def test_gate_is_bounded(monkeypatch):
         return {"ok": True}
 
     assert await shield(tool)() == {"ok": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (LookupError("No repositories found. Run repowise init."), "no_index"),
+        (LookupError("Repository 'x' not found"), "not_found"),
+        (ValueError("Unknown repo 'x'. Available: []"), "not_found"),
+        (RuntimeError("boom"), "internal"),
+    ],
+)
+async def test_a_shielded_failure_notes_its_reason_code(exc, reason):
+    """The mcp_tool_call event says why, from a fixed code, never the message."""
+    from repowise.server.mcp_server._savings import interaction
+
+    async def get_answer() -> dict:
+        raise exc
+
+    with interaction.begin("get_answer") as live:
+        result = await shield(get_answer)()
+    assert result["error"]
+    assert live.error_reason == reason

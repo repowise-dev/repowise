@@ -6,6 +6,7 @@ each store into a :class:`SourceResult` and hands them to the fold.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy import case, func, select
@@ -24,6 +25,7 @@ from repowise.core.analysis.attention import (
     silo_source,
 )
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
+from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.persistence.crud.analysis.refactoring import shown_plan_predicate
@@ -326,44 +328,44 @@ async def _refactoring_items(session: AsyncSession, repo_id: str) -> tuple[list[
     return items, int(total), ""
 
 
-async def _dead_code_items(session: AsyncSession, repo_id: str) -> tuple[list[dict], int, str]:
+async def _dead_code_items(
+    session: AsyncSession,
+    repo_id: str,
+    *,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
+) -> tuple[list[dict], int, str]:
     """Safe-to-delete dead code, most confident first.
 
     Stays in the bottom band whatever its confidence. Confidence here measures
     how sure the graph is that nothing reaches the symbol, not how much it
     costs to leave it there, and a high-confidence unused export is still the
     least urgent thing this list can show.
+
+    Every stored-safe row is read, then served (:func:`serve_findings`): in a
+    workspace the cross-repo cut withdraws some, so the cap and the count
+    come after it.
     """
+    d = DeadCodeFinding
+    # Only the columns an item and the gate read: this runs on every Overview load.
     rows = (
-        (
-            await session.execute(
-                select(DeadCodeFinding)
-                .where(
-                    DeadCodeFinding.repository_id == repo_id,
-                    DeadCodeFinding.status == "open",
-                    DeadCodeFinding.safe_to_delete.is_(True),
-                DeadCodeFinding.kind.not_in(REVIEW_ONLY_KINDS),
-                    DeadCodeFinding.file_path.not_in(_test_paths(repo_id)),
-                )
-                .order_by(DeadCodeFinding.confidence.desc())
-                .limit(PER_SOURCE_CAP)
+        await session.execute(
+            select(
+                d.id, d.kind, d.file_path, d.symbol_name, d.symbol_kind, d.lines,
+                d.confidence, d.safe_to_delete,
             )
-        )
-        .scalars()
-        .all()
-    )
-    total = (
-        await session.scalar(
-            select(func.count(DeadCodeFinding.id)).where(
-                DeadCodeFinding.repository_id == repo_id,
-                DeadCodeFinding.status == "open",
-                DeadCodeFinding.safe_to_delete.is_(True),
-                DeadCodeFinding.kind.not_in(REVIEW_ONLY_KINDS),
-                DeadCodeFinding.file_path.not_in(_test_paths(repo_id)),
+            .where(
+                d.repository_id == repo_id,
+                d.status == "open",
+                d.safe_to_delete.is_(True),
+                d.kind.not_in(REVIEW_ONLY_KINDS),
+                d.file_path.not_in(_test_paths(repo_id)),
             )
+            .order_by(d.confidence.desc())
         )
-        or 0
-    )
+    ).all()
+    safe = [f for f in serve_findings(list(rows), lookup, alias) if is_safe(f)]
+    safe.sort(key=lambda f: -f.confidence)
     items = [
         {
             "id": f"dead-{row.id}",
@@ -376,9 +378,9 @@ async def _dead_code_items(session: AsyncSession, repo_id: str) -> tuple[list[di
             "subtype": row.kind,
             "weight": float(row.confidence or 0.0),
         }
-        for row in rows
+        for row in safe[:PER_SOURCE_CAP]
     ]
-    return items, int(total), ""
+    return items, len(safe), ""
 
 
 def _decision_source(decision_health: dict) -> SourceResult:
@@ -403,7 +405,6 @@ _FETCHERS: tuple[tuple[AttentionSource, _Fetcher], ...] = (
     ("security_finding", _security_items),
     ("refactoring", _refactoring_items),
     ("doc_drift", _drift_items),
-    ("dead_code", _dead_code_items),
 )
 
 
@@ -413,6 +414,8 @@ async def build_attention(
     *,
     decision_health: dict,
     knowledge_silos: list[dict],
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
 ) -> AttentionView:
     """Every attention source, merged and ranked worst-first.
 
@@ -422,7 +425,8 @@ async def build_attention(
     ``decision_health`` and ``knowledge_silos`` are passed in rather than
     fetched: the Overview route already has both in hand for other parts of its
     payload, and re-deriving them here would be two more scans of the widest
-    table in the schema.
+    table in the schema. *lookup* and *alias* apply the dead-code cross-repo
+    cut in a workspace.
 
     A source that raises is dropped with its count, not allowed to fail the
     page. Overview is an aggregate over a dozen stores and one absent table (an
@@ -430,7 +434,8 @@ async def build_attention(
     whole page.
     """
     sources: dict[AttentionSource, SourceResult] = {}
-    for key, fetch in _FETCHERS:
+    dead_code = functools.partial(_dead_code_items, lookup=lookup, alias=alias)
+    for key, fetch in (*_FETCHERS, ("dead_code", dead_code)):
         try:
             items, total, detail = await fetch(session, repo_id)
         except Exception:

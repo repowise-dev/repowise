@@ -87,9 +87,19 @@ _MIGRATIONS: tuple[tuple[str, Callable[[], None]], ...] = (
 
 
 def _expected_stamp() -> str:
+    """Version, migration names and the running install's location.
+
+    The location is there because hook commands pin the script path of the
+    install that wrote them: when another install runs (the old one moved or
+    removed), the migrations run once more and repoint a hook whose script is
+    gone.
+    """
+    import sys
+
     from repowise.cli import __version__
 
-    return f"{__version__} {','.join(name for name, _ in _MIGRATIONS)}"
+    names = ",".join(name for name, _ in _MIGRATIONS)
+    return f"{__version__} {names} {Path(sys.executable).parent.as_posix()}"
 
 
 def _read_stamp() -> str | None:

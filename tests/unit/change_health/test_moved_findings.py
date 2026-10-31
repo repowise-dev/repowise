@@ -109,6 +109,36 @@ def test_a_partial_split_reports_the_moved_findings_as_moved(make_repo):
     assert delta.moved_total >= 1
 
 
+def test_a_pure_move_claims_no_health_change_in_the_headline(make_repo):
+    from repowise.core.analysis.review_directive import review_directive
+
+    repo = make_repo()
+    steps = [python_complex(f"step{i}", 12 + i) for i in range(5)]
+    repo.commit("seed", {"flow.py": "".join(steps)})
+    repo.commit("move", {"flow.py": "".join(steps[2:]), "moved.py": "".join(steps[:2])})
+
+    headline = review_directive(compare(repo)).headline
+
+    assert "Code moved between files" in headline
+    assert "(structure only)" in headline
+    assert "Health of the changed code:" not in headline
+
+
+def test_a_change_without_a_move_keeps_its_health_delta(make_repo):
+    from repowise.core.analysis.review_directive import review_directive
+
+    repo = make_repo()
+    repo.commit("seed", {"flow.py": python_complex("step", 4) + python_complex("other", 4)})
+    repo.commit("grow", {"flow.py": python_complex("step", 16) + python_complex("other", 4)})
+
+    delta = compare(repo)
+    headline = review_directive(delta).headline
+
+    assert delta.moved_total == 0
+    assert "Health of the changed code: " in headline
+    assert "Code moved" not in headline
+
+
 def test_a_moved_function_that_grew_surfaces_as_worsened_with_its_origin(make_repo):
     repo = make_repo()
     repo.commit("seed", {"tool.py": python_complex("tangle", 14) + python_complex("knot", 5)})

@@ -113,6 +113,9 @@ async def _container_outline(
 
 
 def _unreadable_source_response(row: Any, symbol_id: str, repository: Any, t0: float) -> dict:
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("index_behind")
     return {
         "symbol_id": symbol_id,
         "file": row.file_path,
@@ -237,11 +240,8 @@ def _symbol_body_response(
         "kind": row.kind,
         "qualified_name": row.qualified_name,
         "signature": row.signature,
-        "language": row.language,
         "start_line": body.start,
         "end_line": body.end,
-        "symbol_start_line": check.start_line,
-        "symbol_end_line": check.end_line,
         "source": body.numbered,
         "truncated": body.truncated,
         "verified": check.verified,
@@ -253,6 +253,10 @@ def _symbol_body_response(
             targets=[row.file_path],
         ),
     }
+    if (body.start, body.end) != (check.start_line, check.end_line):
+        # The whole symbol's bounds, when the served slice is not all of it.
+        response["symbol_start_line"] = check.start_line
+        response["symbol_end_line"] = check.end_line
     if body.outline is not None:
         _note_outline(response, body.outline, row, check)
     elif not body.truncated and check.verified:
@@ -289,9 +293,9 @@ async def _serve_symbol(
     if text is None:
         return _unreadable_source_response(row, symbol_id, repository, t0)
 
-    from repowise.core.distill.budget import estimate_tokens
+    from repowise.server.mcp_server._savings.reads import read_tokens
 
-    full_tokens = estimate_tokens(text)
+    full_tokens = read_tokens(text)
 
     # Stored bounds are checked against the live file first: stale ones are
     # corrected and healed, unfindable ones served as approximate.

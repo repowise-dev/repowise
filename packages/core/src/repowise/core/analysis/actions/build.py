@@ -43,8 +43,10 @@ Row shapes (the field names are the SQL columns):
     ``file_path``, ``kind``, ``target``, ``raw``, ``line_number``, ``reason``,
     ``confidence``; ``known_paths`` is every path the repository's history held.
 ``dead_code``
-    ``id``, ``file_path``, ``symbol_name``, ``lines``, ``kind``,
-    ``safe_to_delete`` (the stored verdict), ``status`` (absent = open).
+    ``id``, ``file_path``, ``symbol_name``, ``lines``, ``kind``, ``confidence``,
+    ``safe_to_delete``, ``status`` (absent = open); in a workspace, rows from
+    ``serve_findings`` so the cross-repo cut applies. Readiness is re-derived
+    (``dead_code.serving.is_safe``), never the stored flag alone.
 ``decisions``
     One mapping: ``stale_decisions`` (rows with ``id``, ``title``) and
     ``summary`` (``proposed``, ``active`` counts).
@@ -68,6 +70,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
+from repowise.core.analysis.dead_code.serving import is_safe
 from repowise.core.analysis.finding_registry import excluded_types, is_served
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import lead_and_worth, split_by_origin
@@ -489,7 +492,7 @@ def build_dead(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             )
             for r in rows
             if _open(r)
-            and field(r, "safe_to_delete")
+            and is_safe(r)
             and is_served("dead_code", field(r, "kind"), field(r, "file_path"), skipped)
             and not _is_test(field(r, "file_path"), files)
         )

@@ -62,7 +62,8 @@ repowise serve
 This is the first thing to run after `init`. The API starts on port 7337 and
 the dashboard on port 3000, or the next free port. The dashboard needs
 Node.js 20+, and its first run downloads the UI (about 50 MB, cached in
-`~/.repowise/web/`). `--no-ui` starts the API alone, and the
+`~/.repowise/web/`). The dashboard opens in your browser once it is up;
+`--no-open` skips that. `--no-ui` starts the API alone, and the
 [Docker image](../../docker/README.md) avoids installing Node. View by view:
 [Dashboard](DASHBOARD.md).
 

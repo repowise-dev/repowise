@@ -21,6 +21,7 @@ from repowise.cli.agent_adapters.cursor import (
     install_cursor_rewrite_hook,
     uninstall_cursor_rewrite_hook,
 )
+from repowise.cli.mcp_config import hook_direct_command
 
 
 def _payload(command: str = "pytest -x", **overrides) -> dict:
@@ -145,7 +146,7 @@ class TestHooksJson:
         assert doc == {
             "hooks": {
                 "preToolUse": [
-                    {"command": "repowise-rewrite --agent cursor", "matcher": "Shell", "timeout": 5}
+                    {"command": hook_direct_command("repowise-rewrite", "--agent cursor"), "matcher": "Shell", "timeout": 5}
                 ]
             },
             "version": 1,

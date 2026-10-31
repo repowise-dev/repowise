@@ -24,6 +24,11 @@ These narrowings keep the finding to signatures someone can actually fix:
   is judged on the count alone.
 - A parameter a framework binds by annotation (``@PathVariable``) is the
   route's or the data format's, so only the remaining ones are counted.
+- A keyword-only parameter is left out too: every call site names it, so it
+  carries none of the argument-order hazard a long positional list does.
+- A Click or Typer command's parameters mirror its CLI options, and a Python
+  method overriding a base class in the same file keeps the base's
+  parameters; both count as a signature set elsewhere.
 
 A wide signature only counts as obsession in a file with enough substance to
 *have* a design (`_MIN_FILE_NLOC`). In a tiny module a long parameter list is
@@ -60,7 +65,7 @@ class PrimitiveObsessionDetector:
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
-                    severity=_severity(fn.param_count - fn.bound_param_count, threshold),
+                    severity=_severity(_counted(fn), threshold),
                     function_name=fn.name,
                     line_start=fn.start_line,
                     line_end=fn.end_line,
@@ -69,10 +74,12 @@ class PrimitiveObsessionDetector:
                         "typed_param_count": typed,
                         "primitive_param_count": primitive,
                         "bound_param_count": fn.bound_param_count,
+                        "keyword_only_param_count": fn.keyword_only_param_count,
                     },
                     reason=(
                         f"long parameter list: {fn.name} takes {fn.param_count} parameters"
                         + (f", {fn.bound_param_count} bound by the framework" if fn.bound_param_count else "")
+                        + (f", {fn.keyword_only_param_count} keyword-only" if fn.keyword_only_param_count else "")
                         + (f", {primitive} of {typed} typed ones scalars or strings" if typed else "")
                     ),
                 )
@@ -87,12 +94,17 @@ def _threshold(fn: FunctionComplexity) -> int | None:
     if fn.is_test_case or fn.signature_fixed:
         return None
     threshold = _PARAM_THRESHOLD + (_CTOR_GRACE if fn.is_constructor else 0)
-    if fn.param_count - fn.bound_param_count < threshold:
+    if _counted(fn) < threshold:
         return None
     typed = fn.typed_param_count
     if typed and fn.primitive_param_count * 2 <= typed:
         return None
     return threshold
+
+
+def _counted(fn: FunctionComplexity) -> int:
+    """Parameters a caller passes by position: framework-bound and keyword-only ones left out."""
+    return fn.param_count - fn.bound_param_count - fn.keyword_only_param_count
 
 
 def _severity(param_count: int, threshold: int) -> Severity:

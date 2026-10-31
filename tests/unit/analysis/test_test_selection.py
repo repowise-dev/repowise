@@ -820,6 +820,18 @@ def test_a_test_importing_a_deleted_file_is_never_counted_apart() -> None:
     assert "tests/test_x.py" in sel.test_files and not sel.import_closure
 
 
+def test_a_package_init_test_runs_and_names_why() -> None:
+    tiers = _tiers(inferred=[_inferred("pkg/core.py", "tests/test_leaf.py", "package-init")])
+    tiers["test_hops"] = {"tests/test_leaf.py": 3}
+    sel = _select(["pkg/core.py"], tiers)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_leaf.py",)
+    assert sel.basis == {"pkg/core.py": "package-init"}
+    assert "package-init: it imports a module under a package" in sel.why["tests/test_leaf.py"]
+    # Import-time reach only, so far away it is counted apart, never dropped.
+    assert sel.import_closure == {"tests/test_leaf.py": 3}
+
+
 def test_a_covered_test_is_never_counted_apart() -> None:
     covered = {"tests/test_x.py::t": {"test_file": "tests/test_x.py", "source_files": ["src/a.py"]}}
     tiers = _tiers(covered=covered, inferred=[_inferred("src/a.py", "tests/test_x.py", "import-graph")])
@@ -1065,3 +1077,10 @@ def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> 
     assert runner_args(upper, "pytest") == ["tests/test_b.py", "tests/TEST_C.PY"]
     assert runner_notes(sel, "files") == []
     assert runner_notes(_select(["uv.lock"], config=config), "pytest") == []
+
+
+def test_an_apex_test_class_is_test_code() -> None:
+    path = "force-app/main/default/classes/AccountServiceTest.cls"
+    assert is_runnable_test(path)
+    sel = _select([path], _tiers())
+    assert not any("is not code" in r for r in sel.reasons), sel.reasons

@@ -324,8 +324,93 @@ def _bound_in(part: Node) -> set[bytes]:
 def _loop_bound_names(loop: Node) -> set[bytes]:
     """The element or index names *loop*'s header binds; empty for a ``while`` loop."""
     parts = [loop, *(c for c in loop.children if c.type in _LOOP_CLAUSE_KINDS)]
-    unfielded = [c for c in loop.children if c.type == "variable_declaration"]
+    unfielded = [
+        c for c in loop.children if c.type in ("variable_declaration", "multi_variable_declaration")
+    ]
     return set().union(*(_bound_in(p) for p in parts), *(_identifiers(c) for c in unfielded))
+
+
+def _loop_element_names(loop: Node) -> set[bytes]:
+    """The names a for-each header rebinds each pass. A counted loop's init is
+    left out: ``for (String s = ""; ...; )`` carries ``s`` across passes."""
+    parts = [loop, *(c for c in loop.children if c.type == "range_clause")]
+    nodes = [part.child_by_field_name(field) for part in parts for field in _ELEMENT_FIELDS]
+    nodes += [
+        c
+        for i, c in enumerate(loop.children)
+        if c.type == "variable_declaration" and loop.field_name_for_child(i) is None
+    ]
+    return set().union(*(_identifiers(node) for node in nodes if node is not None))
+
+
+def _block_bound_names(block: Node) -> set[bytes]:
+    """The parameters a block loop's lambda binds; Kotlin's implicit ``it`` when it declares none."""
+    node = block
+    for _ in range(2):  # Kotlin: annotated_lambda -> lambda_literal -> lambda_parameters
+        params = next((c for c in node.named_children if c.type.endswith("parameters")), None)
+        if params is not None:
+            return _identifiers(params)
+        if not node.named_children:
+            break
+        node = node.named_children[0]
+    return {b"it"}
+
+
+def _leftmost_name(node: Node | None) -> bytes:
+    """The first identifier down the leftmost path: ``x`` of ``x.mu`` / ``(x.lock)``."""
+    for _ in range(8):
+        if node is None or node.type.endswith("identifier"):
+            break
+        node = next(iter(node.named_children), None)
+    return node.text or b"" if node is not None else b""
+
+
+def _lock_subject(lock: Node, receiver: str | None) -> bytes:
+    """The name a lock is taken on.
+
+    The receiver root of ``u.mu.Lock()`` / ``it.withLock {}``, else the leftmost
+    name of the first operand: ``synchronized (x)``, ``lock (item)``, Kotlin's
+    bare ``synchronized(x) {}``. ``None`` marks a statement-form lock.
+    """
+    if receiver:
+        return receiver.encode()
+    operand = next(iter(lock.named_children), None)
+    if receiver is not None:
+        # A bare call: the lock is its first argument (``call_suffix`` wraps it in Kotlin).
+        operand = next(
+            (
+                d
+                for c in lock.named_children
+                for d in (c, *c.named_children)
+                if d.type.endswith("arguments") or d.type == "argument_list"
+            ),
+            None,
+        )
+        operand = next(iter(operand.named_children), None) if operand is not None else None
+    return _leftmost_name(operand)
+
+
+def _locks_loop_element(
+    lock: Node,
+    receiver: str | None,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+    block_loops: bool,
+) -> bool:
+    """The lock belongs to the element the nearest loop yields (``for u in us: u.mu.Lock()``).
+
+    Each pass locks a different object, so there is no shared lock to hoist. A
+    lock reached through a local derived from the element is not matched (recall
+    ceiling).
+    """
+    loops = _enclosing_loops(lock, dialect, loop_kinds, fn_kinds, block_loops)
+    if not loops:
+        return False
+    subject = _lock_subject(lock, receiver)
+    block = dialect.block_loop_body(loops[0]) if block_loops else None
+    bound = _block_bound_names(block) if block is not None else _loop_bound_names(loops[0])
+    return bool(subject) and subject in bound
 
 
 def _loop_key_feeds(call: Node, loop: Node) -> bool:
@@ -393,6 +478,32 @@ def _concat_target(node: Node) -> str:
     """The string a ``+=`` statement grows: its left side."""
     left = node.child_by_field_name("left")
     return _subject_text(left if left is not None else next(iter(node.named_children), None))
+
+
+def _plain_target_name(node: Node) -> bytes | None:
+    """The bare name an assignment writes (Go wraps it in an ``expression_list``)."""
+    left = node.child_by_field_name("left")
+    if left is not None and left.type == "expression_list" and left.named_child_count == 1:
+        left = left.named_children[0]
+    return left.text if left is not None and left.type == "identifier" and left.text else None
+
+
+def _grows_loop_variable(node: Node, loop_kinds: frozenset[str], fn_kinds: frozenset[str]) -> bool:
+    """*node* is ``x += ...`` onto a name the nearest loop's header binds.
+
+    The header rebinds it each pass, so nothing accumulates across passes. Only
+    the nearest loop counts: an outer loop's element grown in an inner loop
+    still accumulates across the inner passes.
+    """
+    name = _plain_target_name(node)
+    if name is None:
+        return False
+    cur = node.parent
+    while cur is not None and cur.type not in fn_kinds:
+        if cur.type in loop_kinds and cur.is_named:
+            return name in _loop_element_names(cur)
+        cur = cur.parent
+    return False
 
 
 def _quotable(callee: str) -> bool:
@@ -611,6 +722,9 @@ class _PerfWalk:
         self.do_bound = _overrides(dialect, "concurrency_bound")
         self.do_loop_facts = self.do_chunked or self.do_magnitude or self.do_batch or self.do_bound
         self.do_in_place = _overrides(dialect, "runs_in_place")
+        self.do_runs_once = bool(dialect.statement_block_kinds) or _overrides(
+            dialect, "runs_once_in_loop"
+        )
         # Node kinds a loop, scope or call handler can apply to: one set test per node.
         self.loop_probe = self.loop_kinds | (self.call_kinds if self.do_block_loop else frozenset())
         self.scope_probe = self.scope_kinds | self.async_fn_kinds
@@ -811,7 +925,7 @@ class _PerfWalk:
         # A data-dependent loop inside another, iterating the same named
         # collection (all-pairs O(n^2)), is a fact the engine turns into
         # ``nested_loop_quadratic`` only for a hot function.
-        if cur.loop_depth >= 1 and self.do_nested_quadratic:
+        if cur.loop_depth >= 1 and self.do_nested_quadratic and not self._runs_once(node):
             nm = dialect.loop_iterable_name(node)
             if nm and nm in _enclosing_loop_iterables(
                 node, dialect, self.loop_kinds, self.fn_kinds, self.do_block_loop
@@ -895,8 +1009,11 @@ class _PerfWalk:
     def _on_sink(
         self, call: _Call, kind: str, chain: tuple[Node, bool], cur: _Frame, nxt: _Frame
     ) -> None:
-        """*chain* is ``(chain_top, chain_awaited)`` from :meth:`_sink_chain`."""
-        if cur.loop_depth >= 1:
+        """*chain* is ``(chain_top, chain_awaited)`` from :meth:`_sink_chain`.
+
+        A sink the loop ends after runs once per call, like one outside any loop.
+        """
+        if cur.loop_depth >= 1 and not self._runs_once(call.node):
             if not (chain[1] and call.line in self.awaits_allowed):
                 self._loop_sink_hits(call, kind, chain, cur, nxt)
         else:
@@ -958,32 +1075,50 @@ class _PerfWalk:
     def _on_helper_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
         """A non-sink call: a loop marker, or a reachability entry in a loop or under a lock."""
         if cur.loop_depth >= 1:
-            marker = (
-                self.dialect.loop_call_marker(
-                    call.root_name, call.method, call.node, self.list_names
-                )
-                if self.do_loop_call_marker
-                else None
-            )
-            if marker == "lock_in_loop" and _is_lock_acquire_spin(
-                call.node, nxt.func, self.dialect, self.loop_kinds, self.fn_kinds
-            ):
-                marker = None
-            if marker is not None:
-                self.hits.append(
-                    PerfHit(
-                        marker, call.line, nxt.func, "", func_start=nxt.start,
-                        loop=self.loop_facts(call.node, sink=False),
-                        # ``arr.includes(x)``: the list is the receiver.
-                        subject=call.root_name if marker == _MEMBERSHIP else "",
-                    )
-                )
-            elif call.method and not (call.awaited and call.line in self.awaits_allowed):
-                self._record_loop_call(call, cur, nxt)
+            self._on_loop_helper_call(call, cur, nxt)
         if self.do_lock_io and cur.lock_depth >= 1 and call.method:
             lock_targets = self._acc(nxt.start, nxt.func)[1]
             if call.method not in lock_targets:
                 lock_targets[call.method] = call.line
+
+    def _on_loop_helper_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
+        marker = self._loop_call_marker(call, nxt)
+        if marker is None:
+            if self._is_loop_target(call):
+                self._record_loop_call(call, cur, nxt)
+            return
+        if self._runs_once(call.node):
+            return
+        self.hits.append(
+            PerfHit(
+                marker, call.line, nxt.func, "", func_start=nxt.start,
+                loop=self.loop_facts(call.node, sink=False),
+                # ``arr.includes(x)``: the list is the receiver.
+                subject=call.root_name if marker == _MEMBERSHIP else "",
+            )
+        )
+
+    def _loop_call_marker(self, call: _Call, nxt: _Frame) -> str | None:
+        if not self.do_loop_call_marker:
+            return None
+        marker = self.dialect.loop_call_marker(
+            call.root_name, call.method, call.node, self.list_names
+        )
+        if marker == "lock_in_loop" and self._lock_not_hoistable(
+            call.node, call.root_name if self.dialect.callee_is_attribute(call.node) else "", nxt
+        ):
+            return None
+        return marker
+
+    def _runs_once(self, node: Node) -> bool:
+        """*node* runs at most once per entry to its loop: the loop ends after it."""
+        return self.do_runs_once and self.dialect.runs_once_in_loop(node, self.loop_kinds)
+
+    def _is_loop_target(self, call: _Call) -> bool:
+        """A loop-nested helper call that runs on each pass."""
+        if not call.method or (call.awaited and call.line in self.awaits_allowed):
+            return False
+        return not self._runs_once(call.node)
 
     def _record_loop_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
         """A loop-nested helper call, kept at the first line it is seen."""
@@ -1037,27 +1172,32 @@ class _PerfWalk:
         if cur.loop_depth < 1:
             return
         if self.do_string_concat and dialect.is_string_concat(node):
-            self.hits.append(
-                PerfHit(
-                    "string_concat_in_loop",
-                    node.start_point[0] + 1,
-                    nxt.func,
-                    "",
-                    func_start=nxt.start,
-                    loop=self.loop_facts(node, sink=False),
-                    subject=_concat_target(node),
-                )
-            )
+            self._on_string_concat(node, nxt)
         elif self.do_loop_stmt_marker:
             self._on_loop_statement(node, nxt)
 
+    def _on_string_concat(self, node: Node, nxt: _Frame) -> None:
+        if self._runs_once(node) or _grows_loop_variable(
+            node, self.loop_kinds, self.fn_kinds
+        ):
+            return
+        self.hits.append(
+            PerfHit(
+                "string_concat_in_loop",
+                node.start_point[0] + 1,
+                nxt.func,
+                "",
+                func_start=nxt.start,
+                loop=self.loop_facts(node, sink=False),
+                subject=_concat_target(node),
+            )
+        )
+
     def _on_loop_statement(self, node: Node, nxt: _Frame) -> None:
         sm = self.dialect.loop_stmt_marker(node, self.list_names)
-        if sm == "lock_in_loop" and _is_lock_acquire_spin(
-            node, nxt.func, self.dialect, self.loop_kinds, self.fn_kinds
-        ):
+        if sm == "lock_in_loop" and self._lock_not_hoistable(node, None, nxt):
             sm = None
-        if sm is None:
+        if sm is None or self._runs_once(node):
             return
         self.hits.append(
             PerfHit(
@@ -1074,6 +1214,15 @@ class _PerfWalk:
                     else ""
                 ),
             )
+        )
+
+    def _lock_not_hoistable(self, node: Node, receiver: str | None, nxt: _Frame) -> bool:
+        """A per-iteration lock with nothing to hoist: a lock-acquire spin, or the loop element's own lock."""
+        dialect = self.dialect
+        return _is_lock_acquire_spin(
+            node, nxt.func, dialect, self.loop_kinds, self.fn_kinds
+        ) or _locks_loop_element(
+            node, receiver, dialect, self.loop_kinds, self.fn_kinds, self.do_block_loop
         )
 
     def _is_lock_entry(self, node: Node) -> bool:

@@ -3,11 +3,11 @@ import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { formatNumber } from "../lib/format";
 import { fileEntityPath } from "../shared/entity";
 import { PageFrame } from "../shared/page-shell";
-import { AttentionSection } from "./attention-section";
+import { AttentionSection, type AttentionSectionCopy } from "./attention-section";
 import type { CommitRow } from "./activity-lists";
-import { ChangeLine } from "./change-line";
+import { ChangeLine, type ChangeLineCopy } from "./change-line";
 import { ExploreCards } from "./explore-cards";
-import { HealthLede } from "./health-lede";
+import { HealthLede, type HealthLedeCopy } from "./health-lede";
 import { HotspotTable } from "./hotspot-table";
 import {
   buildChangeStats,
@@ -16,6 +16,7 @@ import {
   buildReads,
   previousSnapshotAt,
   resolveOverviewRoutes,
+  type OverviewModelCopy,
   type OverviewRoutes,
 } from "./overview-model";
 import { ReadsColumn } from "./reads-column";
@@ -63,6 +64,12 @@ export interface OverviewBodyProps {
 export interface OverviewBodyCopy {
   exploreTitle: string;
   exploreMore: string;
+  /** Forwarded to the children; each falls back to its own English. */
+  healthLede?: Partial<HealthLedeCopy> | undefined;
+  changeLine?: Partial<ChangeLineCopy> | undefined;
+  /** Rows the model builds: reads, explore cards and further doors. */
+  model?: Partial<OverviewModelCopy> | undefined;
+  attention?: Partial<AttentionSectionCopy> | undefined;
 }
 
 export const OVERVIEW_BODY_COPY: OverviewBodyCopy = {
@@ -101,17 +108,17 @@ export function OverviewBody({
   const { base } = resolved;
   const { stats, health } = summary;
 
-  const reads = buildReads(summary, routes);
-  const cards = buildExploreCards(summary, routes);
+  const reads = buildReads(summary, routes, c.model);
+  const cards = buildExploreCards(summary, routes, c.model);
   const carded = new Set(cards.map((card) => card.key));
-  const moreDoors = buildExplore(summary, routes).filter((e) => !carded.has(e.key));
-  const changeStats = buildChangeStats(summary);
+  const moreDoors = buildExplore(summary, routes, c.model).filter((e) => !carded.has(e.key));
+  const changeStats = buildChangeStats(summary, c.model);
 
   return (
     <PageFrame>
       {slots.header}
 
-      <ChangeLine since={previousSnapshotAt(summary)} stats={changeStats} />
+      <ChangeLine since={previousSnapshotAt(summary)} stats={changeStats} copy={c.changeLine} />
 
       <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-12">
         <HealthLede
@@ -121,6 +128,7 @@ export function OverviewBody({
           fileCount={stats.file_count}
           href={`${base}/code-health`}
           LinkComponent={LinkComponent}
+          copy={c.healthLede}
         />
         <div className="flex flex-col gap-6">
           <ReadsColumn items={reads} LinkComponent={LinkComponent} />
@@ -140,7 +148,12 @@ export function OverviewBody({
       </OverviewSection>
 
       {slots.actions ?? (
-        <AttentionSection summary={summary} base={base} LinkComponent={LinkComponent} />
+        <AttentionSection
+          summary={summary}
+          base={base}
+          LinkComponent={LinkComponent}
+          copy={c.attention}
+        />
       )}
 
       {slots.wins}
@@ -172,7 +185,13 @@ export function OverviewBody({
       {/* The areas as the inventory behind "Do next", folded at the bottom
           because the list above already says what to do. */}
       {slots.actions && (
-        <AttentionSection summary={summary} base={base} inventory LinkComponent={LinkComponent} />
+        <AttentionSection
+          summary={summary}
+          base={base}
+          inventory
+          LinkComponent={LinkComponent}
+          copy={c.attention}
+        />
       )}
     </PageFrame>
   );

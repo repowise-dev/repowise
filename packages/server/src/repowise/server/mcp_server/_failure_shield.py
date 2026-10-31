@@ -23,7 +23,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import _code_drift, _state
 
 logger = logging.getLogger(__name__)
 
@@ -139,26 +139,33 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
     }
 
 
-def is_stale_server_import(exc: BaseException) -> bool:
-    """True when a lazy import of repowise's own code failed.
+def is_stale_server_error(exc: BaseException, *, rescan: bool = True) -> bool:
+    """True when the failure comes from old code loaded beside new code.
 
     A long-running server keeps the modules it loaded at start. When the
-    checkout moves under it, a module imported later comes from the new tree
+    install moves under it, a module imported later comes from the new code
     and can ask for a name the old in-memory module lacks (``ImportError``),
-    or the old code can ask for a module the new tree removed
-    (``ModuleNotFoundError``). Both resolve on restart. A third-party import
-    failure is a missing dependency instead, so it keeps the generic shape.
+    the old code can ask for a module the new code removed
+    (``ModuleNotFoundError``), or one side reads an attribute the other never
+    defined (``AttributeError``). A failed import of repowise's own code is
+    always this. Any other ``AttributeError``, ``NameError`` or ``ImportError``
+    counts only once the server has seen its code change on disk; otherwise
+    it is a bug or a missing dependency and keeps the generic shape.
+
+    *rescan* stats every loaded module file (tens of ms), so it is for worker
+    threads; on the event loop pass False and read the last poll's result.
     """
     name = getattr(exc, "name", None) or ""
-    return isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise."))
+    if isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise.")):
+        return True
+    if not isinstance(exc, _code_drift.MIXED_CODE_ERRORS):
+        return False
+    return _code_drift.check_now() if rescan else _code_drift.stale_line() is not None
 
 
 def stale_server_notice(exc: BaseException) -> str:
-    """Plain explanation and next step for :func:`is_stale_server_import`."""
-    return (
-        "The MCP server is running older repowise code than this checkout "
-        f"({exc}). Restart the MCP server (or the editor session) and retry."
-    )
+    """Plain explanation and next step for :func:`is_stale_server_error`."""
+    return f"{_code_drift.stale_line() or _code_drift.SERVER_STALE_LINE} ({exc})"
 
 
 def _shape_stale_server(exc: Exception) -> dict[str, Any]:
@@ -195,21 +202,43 @@ def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
-    """*long_running* is False for a process that imports fresh on every run (the CLI)."""
+def _exception_reason(exc: Exception) -> str:
+    """The coarse telemetry reason for a shielded exception: a fixed slug."""
     if isinstance(exc, LookupError):
-        if _NOT_INDEXED_MARKER in str(exc):
-            return _shape_not_indexed()
-        return _shape_unknown_repo(exc)
+        return "no_index" if _NOT_INDEXED_MARKER in str(exc) else "not_found"
     # Workspace mode raises ValueError("Unknown repo '<alias>'. Available:
     # [...]") from the registry — same expected condition, different type.
     if isinstance(exc, ValueError) and str(exc).startswith("Unknown repo"):
-        return _shape_unknown_repo(exc)
+        return "not_found"
     if _is_stale_index_error(exc):
-        return _shape_stale_index(exc)
-    if is_stale_server_import(exc):
-        return _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
-    return _shape_internal_error(tool, exc)
+        return "index_behind"
+    if is_stale_server_error(exc, rescan=False):
+        return "server_stale"
+    return "internal"
+
+
+_SHAPES: dict[str, Callable[[str, Exception, bool], dict[str, Any]]] = {
+    "no_index": lambda tool, exc, long_running: _shape_not_indexed(),
+    "not_found": lambda tool, exc, long_running: _shape_unknown_repo(exc),
+    "index_behind": lambda tool, exc, long_running: _shape_stale_index(exc),
+    "server_stale": lambda tool, exc, long_running: (
+        _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
+    ),
+    "internal": lambda tool, exc, long_running: _shape_internal_error(tool, exc),
+}
+
+
+def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
+    """*long_running* is False for a process that imports fresh on every run (the CLI).
+
+    Also notes the reason on the call in flight, so the ``mcp_tool_call`` event
+    can say why the call failed without reading the message.
+    """
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    reason = _exception_reason(exc)
+    note_error_reason(reason)
+    return _SHAPES[reason](tool, exc, long_running)
 
 
 async def _await_import_warmup(tool: str) -> None:
@@ -258,6 +287,9 @@ def shield(fn: Callable[..., Any]) -> Callable[..., Any]:
             return await fn(*args, **kwargs)
         except Exception as exc:
             logger.warning("mcp tool %s shielded exception: %s", tool, exc, exc_info=True)
+            if isinstance(exc, _code_drift.MIXED_CODE_ERRORS):
+                # Off the loop: the shaping below reads the result.
+                await asyncio.to_thread(_code_drift.check_now)
             return _shape_exception(tool, exc)
 
     with contextlib.suppress(ValueError, TypeError):  # pragma: no cover - exotic callables

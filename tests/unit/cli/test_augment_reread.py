@@ -17,6 +17,7 @@ import pytest
 from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 from repowise.cli.commands.augment_cmd import _handle_post_tool_use
 from repowise.cli.commands.augment_cmd.read_state import _load_session_state
+from repowise.core.distill.budget import estimate_read_tokens
 
 SESSION = "sess-reread"
 
@@ -323,7 +324,9 @@ class TestLedger:
             ).fetchall()
         finally:
             con.close()
-        assert rows == [("read_reread", "hook-read", "a.py", len(_BODY) // 4, pytest.approx(rows[0][4]))]
+        # Claude Code numbers every line of the Read the collapse replaced.
+        raw = estimate_read_tokens(_BODY, numbered=True)
+        assert rows == [("read_reread", "hook-read", "a.py", raw, pytest.approx(rows[0][4]))]
         assert rows[0][4] < rows[0][3], "a collapse that saved nothing is not a saving"
 
     def test_the_state_records_what_was_served(self, repo: Path) -> None:

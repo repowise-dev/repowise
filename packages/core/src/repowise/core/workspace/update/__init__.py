@@ -16,10 +16,12 @@ from .phases import (
     _refresh_contract_facts,
     _run_phases,
     _system_graph_phase,
+    analysis_config_changed,
     run_cross_repo_hooks,
 )
 from .repo import (
     RepoUpdateResult,
+    UpdateProducts,
     _has_persisted_repo_index,
     _incremental_repo_update,
     _merged_repo_excludes,
@@ -69,6 +71,8 @@ from .workspace_pass import (
 __all__ = [
     "IndexedCommit",
     "RepoUpdateResult",
+    "UpdateProducts",
+    "analysis_config_changed",
     "check_repo_staleness",
     "clear_stale_update_pending",
     "commit_exists",

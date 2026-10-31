@@ -36,6 +36,11 @@ class FakeSymbol:
     end_line: int = 10
     qualified_name: str = "main.my_func"
     signature: str = "def my_func():"
+    id: str = ""
+    docstring: str | None = "Do one thing. Then another."
+    language: str = "python"
+    parent_name: str | None = None
+    complexity_estimate: int = 1
 
 
 @dataclass
@@ -52,6 +57,9 @@ class FakeConfig:
     max_file_pages: int | None = None
     file_page_min_symbols: int = 1
     max_pages_pct: float = 0.10
+    # Folder floors (issue #633); duck-typed so the selector reads it via
+    # getattr and tests without it still exercise the unset path.
+    folder_coverage: tuple[tuple[str, float], ...] = ()
 
 
 def _make_graph_builder(files: list[FakeParsedFile]):
@@ -67,6 +75,7 @@ def _make_graph_builder(files: list[FakeParsedFile]):
     builder.pagerank.return_value = {f.file_info.path: 1.0 / max(len(files), 1) for f in files}
     builder.betweenness_centrality.return_value = {f.file_info.path: 0.0 for f in files}
     builder.strongly_connected_components.return_value = []
+    builder.symbol_uses.return_value = {}
     return builder
 
 
@@ -139,6 +148,32 @@ class TestBuildGenerationPlan:
         plans = build_generation_plan([pf1, pf2], builder, FakeConfig())
         assert any(p.page_type == "scc_page" and p.count == 1 for p in plans)
 
+    def test_folder_coverage_pin_raises_the_file_page_count(self):
+        """The plan shares select_pages, so folder pins must move the estimate
+        (additive floor, issue #633)."""
+        files = []
+        for i in range(20):
+            fi = FakeFileInfo(path=f"src/core/mod_{i}.py", language="python")
+            files.append(FakeParsedFile(file_info=fi, symbols=[FakeSymbol(name=f"f{i}")]))
+        builder = _make_graph_builder(files)
+
+        # A tight global cap so most files fall outside it; the folder floor
+        # must bring them back regardless of score.
+        unset = build_generation_plan(files, builder, FakeConfig(max_file_pages=5))
+        pinned = build_generation_plan(
+            files,
+            builder,
+            FakeConfig(max_file_pages=5, folder_coverage=(("src/core", 1.0),)),
+        )
+
+        unset_count = next(p.count for p in unset if p.page_type == "file_page")
+        pinned_count = next(p.count for p in pinned if p.page_type == "file_page")
+        assert unset_count == 5
+        assert pinned_count > unset_count
+        assert pinned_count == 20  # every code file under src/core gets a page
+        file_plan = next(p for p in pinned if p.page_type == "file_page")
+        assert file_plan.folder_coverage == [("src/core", 20, 20)]
+
 
 class TestEstimateCost:
     def test_mock_provider_zero_cost(self):
@@ -163,7 +198,7 @@ class TestEstimateCost:
         assert est.estimated_output_tokens > 0
 
     def test_structural_page_types_cost_nothing(self):
-        # The six types rendered from structure make no provider call, so
+        # The five types rendered from structure make no provider call, so
         # however many are produced they price to zero. Counted as pages,
         # billed as nothing.
         plans = [
@@ -172,10 +207,9 @@ class TestEstimateCost:
             PageTypePlan("api_contract", 20, 0),
             PageTypePlan("infra_page", 10, 7),
             PageTypePlan("scc_page", 5, 3),
-            PageTypePlan("layer_page", 8, 5),
         ]
         est = estimate_cost(plans, "anthropic", "claude-sonnet-4-6")
-        assert est.total_pages == 843
+        assert est.total_pages == 835
         assert est.estimated_cost_usd == 0.0
         assert est.estimated_input_tokens == 0
         assert est.estimated_output_tokens == 0

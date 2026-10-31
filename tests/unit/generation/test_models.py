@@ -156,7 +156,7 @@ def test_generation_config_defaults():
     assert config.cache_enabled is True
     assert config.staleness_threshold_days == 7
     assert config.expiry_threshold_days == 30
-    assert config.top_symbol_percentile == 0.10
+    assert config.top_symbol_percentile == 0.12
     assert config.reasoning == "auto"
 
 

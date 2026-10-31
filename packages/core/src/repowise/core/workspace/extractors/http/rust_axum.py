@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from repowise.core.ingestion.framework_routes import axum_routes
 
 from ..base import line_at
+from ..calls import code_matches, outside_comments
 from ..langs import RUST
 from .dialect import build_provider_contract
 
@@ -40,6 +41,7 @@ _RUST_ATTR_ROUTE_RE = re.compile(
 class RustAxumDialect:
     name = "rust-axum"
     extensions = RUST
+    requires = ("route", "#[")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
@@ -47,7 +49,7 @@ class RustAxumDialect:
 
         # One call site yields a match per verb, so collapse repeats of a verb.
         seen: set[tuple[int, str]] = set()
-        for route in axum_routes(content):
+        for route in outside_comments(ctx, axum_routes(content)):
             # `on(MethodFilter::GET, h)` names no literal verb.
             if route.verb == "ON" or (route.offset, route.verb) in seen:
                 continue
@@ -64,7 +66,7 @@ class RustAxumDialect:
                 out.append(c)
 
         # Actix-web / Rocket attribute macros.
-        for m in _RUST_ATTR_ROUTE_RE.finditer(content):
+        for m in code_matches(ctx, _RUST_ATTR_ROUTE_RE):
             c = build_provider_contract(
                 ctx,
                 method=m.group(1).upper(),

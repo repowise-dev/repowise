@@ -3,9 +3,10 @@
 import { AlertTriangle, CheckCircle, XCircle, ExternalLink, Settings, X } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { Progress } from "../ui/progress";
-import { formatNumber, formatRelativeTime } from "../lib/format";
+import { formatNumber } from "../lib/format";
 import type { Job } from "@repowise-dev/types/jobs";
 import { jobOutcome, providerIssue, type ProviderIssue } from "../jobs/job-outcome";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface ActiveJobBannerProps {
   /**
@@ -109,7 +110,7 @@ export function ActiveJobBanner({
               {job.config?.total_input_tokens != null && (
                 <> · {formatNumber(job.config.total_input_tokens as number)} tokens</>
               )}
-              {job.finished_at && <> · {formatRelativeTime(job.finished_at)}</>}
+              {job.finished_at && <> · <RelativeTime date={job.finished_at} /></>}
             </>
           )}
           {isWarning && (issue ? formatIssue(issue) : l.pagesFailed(job.failed_pages))}
@@ -159,7 +160,7 @@ function DismissButton({ label, onDismiss }: { label: string; onDismiss: () => v
       type="button"
       onClick={onDismiss}
       aria-label={label}
-      className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+      className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
     >
       <X className="h-3 w-3" />
     </button>

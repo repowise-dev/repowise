@@ -89,6 +89,19 @@ def test_a_mute_server_fails_without_hanging_doctor(monkeypatch: pytest.MonkeyPa
     assert "still running" in check.detail
 
 
+def test_a_mute_server_is_not_given_the_exit_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exit grace is for a server whose stdout closed early, not one still
+    mute at the deadline: waiting on that only delays the answer."""
+    import time
+
+    monkeypatch.setattr(mcp_smoke, "_SMOKE_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(mcp_smoke, "_EXIT_GRACE_S", 30.0)
+    started = time.monotonic()
+    check = mcp_smoke_check(sys.executable, ["-c", _MUTE_SERVER])
+    assert "still running" in check.detail
+    assert time.monotonic() - started < 15.0
+
+
 def test_an_error_response_fails() -> None:
     server = (
         "import sys, json;"

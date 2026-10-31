@@ -30,11 +30,12 @@ For a map of every layer and how they feed each other, read
 | [start/QUICKSTART.md](start/QUICKSTART.md) | Install, index, and connect your agent |
 | [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, and how to add one |
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and the opt-in extras |
+| [agent/CLAUDE_CODE_COMMANDS.md](agent/CLAUDE_CODE_COMMANDS.md) | The 18 `/repowise:*` slash commands in the Claude Code plugin |
 | [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 27 parsed to a full AST, 41 on the support ladder |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 28 parsed to a full AST, 42 on the support ladder |
 
 ### Find what to fix first
 
@@ -147,6 +148,7 @@ For a map of every layer and how they feed each other, read
 | [reference/CONFIG.md](reference/CONFIG.md) | `.repowise/config.yaml`, `health-rules.json`, and environment variables |
 | [reference/MCP_RESPONSE_FIELDS.md](reference/MCP_RESPONSE_FIELDS.md) | The field dictionary for every MCP response, including the `_meta` envelope |
 | [reference/HOOKS_REFERENCE.md](reference/HOOKS_REFERENCE.md) | The exact settings entries each hook install writes |
+| [reference/PLUGINS.md](reference/PLUGINS.md) | Build, test and publish a plugin: entry points, every registry and seam, and how one is chosen |
 | [reference/CHANGE_REVIEW_API.md](reference/CHANGE_REVIEW_API.md) | Reviewing a change from Python, with or without a checkout |
 | [reference/PACKAGE_USAGE.md](reference/PACKAGE_USAGE.md) | Where third-party packages are imported, the CycloneDX export, and reading Syft, SPDX or OSV files |
 | [reference/WORKSPACE_CONTRACTS.md](reference/WORKSPACE_CONTRACTS.md) | How a workspace names, reads and matches cross-repo contracts |

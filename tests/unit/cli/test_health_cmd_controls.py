@@ -44,6 +44,27 @@ def test_an_unknown_value_is_refused_rather_than_silently_defaulted() -> None:
     assert "code-shape" in result.output
 
 
+def test_production_scope_leaves_out_tooling_vendored_and_generated_files() -> None:
+    """``--scope production`` reads the file set ``production_average`` does."""
+
+    def row(path: str, score: float, origin: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            file_path=path, score=score, nloc=100, is_test=False, code_origin=origin
+        )
+
+    rows = [
+        row("src/a.py", 4.0, "production"),
+        row("scripts/release.py", 10.0, "tooling"),
+        row("vendor/lib.js", 10.0, "vendored"),
+        row("src/gen/api_pb2.py", 10.0, "generated"),
+    ]
+    report = SimpleNamespace(metrics=rows, findings=[], kpis={})
+    opts = SimpleNamespace(scope="production", counts=DEFAULT_COUNTS, keeps=lambda _p: True)
+    metrics, _, _ = health_module._scope_report(report, set(), opts)
+    assert [m.file_path for m in metrics] == ["src/a.py"]
+    assert report.kpis["average_health"] == report.kpis["production_average"] == 4.0
+
+
 def test_the_distribution_line_names_every_band() -> None:
     """Three segments on a five-band scale reads as a scale that has three."""
     import re
@@ -77,7 +98,7 @@ def test_the_trend_says_the_controls_do_not_reach_it() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend", "--counts", "code_shape"])
         render.assert_called_once()
@@ -95,7 +116,7 @@ def test_the_trend_stays_quiet_when_no_control_was_passed() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend"])
     assert "do not apply to it" not in result.output
@@ -168,7 +189,7 @@ def _mostly_unanalysed_output(*args: str) -> str:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", *args])
     assert result.exit_code == 0, result.output
@@ -179,10 +200,10 @@ def test_a_mostly_unanalysed_repo_gets_no_band_in_any_scope() -> None:
     """A narrowed recompute keeps the unanalysed files in the share."""
     for args in ((), ("--scope", "production")):
         out = _mostly_unanalysed_output(*args)
-        assert "Code health: 10.0/10 ·" in out, args
+        # Never a bare score: coverage sits on the headline itself.
+        assert "Code health: 10.0/10 across 4 of 435 code files ·" in out, args
         # No band anywhere on the line, the worst file's included.
         assert "Excellent" not in out, args
-        assert "analysed 4 of 435 code files" in out, args
 
 
 def test_the_headline_names_production_code_while_tests_are_in_it() -> None:
