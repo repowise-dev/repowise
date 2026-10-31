@@ -357,9 +357,8 @@ def mine_rationale(
     near_lines: dict[str, int] | None = None,
     max_files: int = _MAX_FILES,
     max_results: int = _MAX_RESULTS,
-    truncate_blocks: bool = True,
     rarity_corpus: Sequence[Container[str]] = (),
-    plain_reasons: bool = False,
+    for_why: bool = False,
 ) -> list[dict]:
     """Mine in-code rationale comments from ``file_paths``.
 
@@ -374,10 +373,11 @@ def mine_rationale(
             when larger than the scanned blocks. One file is a small sample:
             the file's own name, or a word one comment happens to use, weighs
             as the rarest term there.
-        plain_reasons: also serve a comment with no rationale marker that
-            states enough of the question, and one documenting a declaration
-            the question names (see :func:`_score_block`). For get_why, whose
-            question is a reason; get_answer's anchoring keeps the strict gate.
+        for_why: get_why's reading. Blocks come back whole, and a comment
+            with no rationale marker that states enough of the question, or
+            one documenting a declaration the question names, is served too
+            (see :func:`_score_block`): a get_why question asks for a reason.
+            get_answer's anchoring keeps the strict gate and the char cap.
 
     Returns a ranked list of ``{path, lines: [start, end], comment,
     matched_terms}`` — at most ``max_results``. Best-effort: never raises.
@@ -412,7 +412,7 @@ def mine_rationale(
 
     scored: list[tuple[float, bool, dict]] = []
     for path, start, end, comment, words, own in blocks:
-        result = _score_block(words, own, comment.lower(), idf, plain=plain_reasons)
+        result = _score_block(words, own, comment.lower(), idf, plain=for_why)
         if result is None:
             continue
         score, matched, plain = result
@@ -430,7 +430,7 @@ def mine_rationale(
                     "lines": [start, end],
                     # A plain admit is bounded whatever the caller asked: it is
                     # served on a share of the question, not as a stated reason.
-                    "comment": _truncate_block(comment) if truncate_blocks or plain else comment,
+                    "comment": comment if for_why and not plain else _truncate_block(comment),
                     "matched_terms": matched,
                 },
             )

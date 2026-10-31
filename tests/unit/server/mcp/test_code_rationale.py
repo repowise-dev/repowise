@@ -537,7 +537,7 @@ def test_mine_serves_a_plain_comment_stating_the_reason_for_get_why(tmp_path):
     """
     _write(tmp_path, "client.py", _REDIRECT_SOURCE)
     strict = mine_rationale(str(tmp_path), ["client.py"], _REDIRECT_QUESTION)
-    plain = mine_rationale(str(tmp_path), ["client.py"], _REDIRECT_QUESTION, plain_reasons=True)
+    plain = mine_rationale(str(tmp_path), ["client.py"], _REDIRECT_QUESTION, for_why=True)
     assert all(r["lines"][0] != 4 for r in strict)
     assert plain[0]["lines"] == [4, 5]
 
@@ -555,7 +555,7 @@ def test_mine_serves_one_plain_comment_at_most(tmp_path):
         "D = 4\n"
     )
     _write(tmp_path, "h.py", src)
-    out = mine_rationale(str(tmp_path), ["h.py"], _REDIRECT_QUESTION, plain_reasons=True)
+    out = mine_rationale(str(tmp_path), ["h.py"], _REDIRECT_QUESTION, for_why=True)
     assert len(out) == 1
 
 
@@ -570,6 +570,6 @@ def test_mine_anchors_a_comment_above_a_class_field_the_query_names(tmp_path):
     )
     _write(tmp_path, "base.ts", src)
     question = "why does the base declare _basePath with private instead of # private fields"
-    out = mine_rationale(str(tmp_path), ["base.ts"], question, plain_reasons=True)
+    out = mine_rationale(str(tmp_path), ["base.ts"], question, for_why=True)
     assert [r["lines"] for r in out] == [[2, 2]]
     assert mine_rationale(str(tmp_path), ["base.ts"], question) == []

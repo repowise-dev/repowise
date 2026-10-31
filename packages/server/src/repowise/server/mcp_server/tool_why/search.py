@@ -346,9 +346,8 @@ async def _why_no_match(
             targets,
             query,
             max_results=1000,
-            truncate_blocks=False,
             rarity_corpus=[word_set(_record_text(d)) for d in all_decisions],
-            plain_reasons=True,
+            for_why=True,
         )
         if rationale:
             result["code_rationale"] = rationale
