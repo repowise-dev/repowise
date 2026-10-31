@@ -50,7 +50,11 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
-from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, semantic_search_state
+from repowise.server.mcp_server._meta import (
+    EXHAUSTIVE_SWEEP_HINT,
+    KEYLESS_CONCEPT_SEARCH_NOTE,
+    semantic_search_state,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import (
     FILE_ROW_TYPES,

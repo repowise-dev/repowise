@@ -1004,6 +1004,13 @@ def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
 # The rule they encode: a dead end redirects into another call of OUR surface,
 # naming the tool and the argument to use. An external tool is named only for a
 # job we do not do, which is EXHAUSTIVE_SWEEP_HINT and nothing else.
+#: For a concept search with results on a keyless index (#5049).
+KEYLESS_CONCEPT_SEARCH_NOTE = (
+    "semantic search is off (no embedder configured), so results are keyword "
+    'matches only; mode="symbol" or mode="path" is more reliable'
+)
+
+
 NO_HITS_RECOVERY_HINT = (
     'Retry search_codebase with mode="symbol" for an identifier or mode="path" '
     "for a file name; if the question names a file, call get_context on it "
