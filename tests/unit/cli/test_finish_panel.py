@@ -201,7 +201,7 @@ def test_semantic_search_line_names_who_pays_for_the_embedder(command, tail, abs
 
 _FOUND = StoodOut(
     health_score=7.43,
-    health_mark="warning",
+    health_band="good",
     lowest_file="scheduler/planner.py",
     lowest_score=3.12,
     dead_unreachable=38,
@@ -227,7 +227,7 @@ def _panel(stood_out: StoodOut | None = None, model_upgrade=None, mode="built_fr
 def test_stood_out_names_the_four_findings():
     text = _panel(_FOUND)
     assert "What stood out" in text
-    assert "7.4/10 Warning  scheduler/planner.py is lowest at 3.1" in text
+    assert "7.4/10 Good  scheduler/planner.py is lowest at 3.1" in text
     assert "38 files nothing reaches, 12 findings safe to delete" in text
     assert "Hotspot       auth/session.py, changed in 48 commits" in text
     assert "14 candidates to review" in text
@@ -240,12 +240,18 @@ def test_stood_out_names_the_four_findings():
 
 @pytest.mark.parametrize(
     ("score", "word", "style"),
-    [(8.0, "Healthy", "green"), (7.99, "Warning", "yellow"), (3.99, "Alert", "red")],
+    [
+        (8.5, "Excellent", "green"),
+        (7.7, "Good", "green"),
+        (6.9, "Fair", "yellow"),
+        (5.4, "Needs work", "dark_orange"),
+        (3.99, "At risk", "red"),
+    ],
 )
-def test_health_word_and_colour_follow_the_three_bands(score, word, style):
-    from repowise.core.analysis.health.grading import mark_for
+def test_health_word_and_colour_follow_the_five_bands(score, word, style):
+    from repowise.core.analysis.health.grading import band_for
 
-    stood = StoodOut(health_score=score, health_mark=mark_for(score))
+    stood = StoodOut(health_score=score, health_band=band_for(score))
     console = Console(record=True, width=100, theme=THEME, color_system="truecolor")
     facts = FinishFacts(
         scope={}, files=1, symbols=1, languages="Python", graph_nodes=1, graph_edges=0,

@@ -101,7 +101,7 @@ function figuresFor(repo: RepoRow): string[] {
  * the ribbon above it.
  *
  * Health leads the right-hand column because it is the figure that decides
- * which repo you open. It is a health mark on the shared three bands, so a
+ * which repo you open. It is a health mark on the shared five bands, so a
  * repo reads the same word and colour here as on the system map.
  */
 export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {

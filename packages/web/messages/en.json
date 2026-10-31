@@ -2355,9 +2355,11 @@
       "gated": "Held back"
     },
     "band": {
-      "healthy": "Healthy",
-      "warning": "Warning",
-      "alert": "Alert"
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "needs_work": "Needs work",
+      "at_risk": "At risk"
     },
     "danglingReason": {
       "no_provider": "no provider in the workspace",

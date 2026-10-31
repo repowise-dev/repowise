@@ -25,7 +25,6 @@ from repowise.core.analysis.health.grading import (
     format_score,
     headline_band,
     headline_scope,
-    mark_for,
 )
 
 
@@ -198,9 +197,6 @@ def test_headline_scope_only_when_a_minority_was_analysed() -> None:
     assert headline_scope(0, 0) is None
 
 
-def test_mark_reads_the_canonical_three_bands() -> None:
-    # Mirror of ``healthMark`` in packages/ui: Healthy from 8, Warning from 4.
-    assert mark_for(8.0) == "healthy"
-    assert mark_for(7.99) == "warning"
-    assert mark_for(NEEDS_WORK_MIN) == "warning"
-    assert mark_for(3.99) == "alert"
+def test_a_repo_score_reads_the_same_five_bands_as_a_file() -> None:
+    # One scale on every surface: a 7.7 repo is Good, as a 7.7 file is.
+    assert headline_band(7.7, None) == band_for(7.7) == "good"

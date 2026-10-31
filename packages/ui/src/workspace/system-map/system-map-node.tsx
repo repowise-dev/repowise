@@ -3,7 +3,7 @@
 /**
  * A service on the Live System Map: a surface-plane object with a hairline
  * border, named in full, with where it lives, its repository's health mark in
- * the canonical three bands, and how many contracts it provides and consumes.
+ * the canonical five bands, and how many contracts it provides and consumes.
  *
  * The architecture role is a word, not a colour: the health mark already owns
  * green, amber and red on this object, and a second mark in the same

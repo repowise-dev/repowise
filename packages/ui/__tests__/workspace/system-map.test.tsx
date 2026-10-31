@@ -208,13 +208,14 @@ describe("SystemMapFindings", () => {
 });
 
 describe("SystemMapLegend", () => {
-  it("keys only the line styles drawn, plus the three health bands", () => {
+  it("keys only the line styles drawn, plus the five health bands", () => {
     render(<SystemMapLegend matchTypes={new Set(["exact", "inferred"])} />);
     expect(screen.getByText(/structural, exact match/i)).toBeInTheDocument();
     expect(screen.getByText(/co-change from git history/i)).toBeInTheDocument();
     expect(screen.queryByText(/candidate/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Healthy 8+")).toBeInTheDocument();
-    expect(screen.getByText("Alert below 4")).toBeInTheDocument();
+    expect(screen.getByText("Excellent 8.5+")).toBeInTheDocument();
+    expect(screen.getByText("Good 7.0 to 8.5")).toBeInTheDocument();
+    expect(screen.getByText("At risk under 4.0")).toBeInTheDocument();
     expect(screen.queryByText(/gateway route/i)).not.toBeInTheDocument();
   });
 

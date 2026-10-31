@@ -2355,9 +2355,11 @@
       "gated": "暂不提供"
     },
     "band": {
-      "healthy": "健康",
-      "warning": "警告",
-      "alert": "告警"
+      "excellent": "优秀",
+      "good": "良好",
+      "fair": "一般",
+      "needs_work": "需要改进",
+      "at_risk": "有风险"
     },
     "danglingReason": {
       "no_provider": "工作区内没有提供方",
