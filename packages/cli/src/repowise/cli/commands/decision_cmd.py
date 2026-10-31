@@ -789,12 +789,12 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     repo_path = _resolve_decision_repo(path, fmt)
     rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
-        notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
-        if fmt == "json":
-            emit_json({"query": decision_id, "decision": None})
-        # Non-zero for the same reason the lifecycle commands are: a caller
-        # scripting `show` cannot tell a missing id from an empty record.
-        raise click.exceptions.Exit(1)
+        emit_refusal(
+            "decision_not_found",
+            f"Decision not found: {decision_id}",
+            fmt,
+            query=decision_id,
+        )
 
     # Asked of git at read time: affordable for one record on demand, never on
     # the hook or update path. None means git could not decide.

@@ -145,7 +145,10 @@ def test_show_unknown_id_exits_nonzero_in_both_formats(seeded: Path) -> None:
     assert "Decision not found: 9999" in table.stdout
     as_json = _run("show", "9999", str(seeded), "--format", "json")
     assert as_json.exit_code == 1
-    assert json.loads(as_json.stdout) == {"query": "9999", "decision": None}
+    payload = json.loads(as_json.stdout)
+    assert payload["error"] == "decision_not_found"
+    assert payload["message"] == "Decision not found: 9999"
+    assert payload["query"] == "9999" 
 
 
 # -- list ---------------------------------------------------------------------
