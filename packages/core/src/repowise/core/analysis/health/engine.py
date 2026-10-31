@@ -108,10 +108,11 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v44: ternary dispatch chains in Java, C, C++, C#, Dart, Objective-C and PHP
-# keep each decision but do not add nesting for their else-arms, matching
-# Python and JS/TS. Re-score stored metrics and invalidate cached walks so
-# old false nested-complexity findings do not survive the new language maps.
+# v44: this release's maintainability, performance and coverage detectors stop
+# firing on several idiomatic patterns, ternary dispatch chains in Java, C, C++,
+# C#, Dart, Objective-C and PHP keep each decision without nesting their
+# else-arms, and refactoring gains and the headline split change. Re-score
+# stored metrics so old findings do not survive the new rules.
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
