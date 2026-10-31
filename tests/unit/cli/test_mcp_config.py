@@ -1275,7 +1275,7 @@ def test_register_with_claude_code_sibling_inits_dont_clobber(
     ops = workspace / "ops"
     ops.mkdir()
 
-    settings = tmp_path / "home" / ".claude" / "settings.json"
+    settings = tmp_path / "home" / ".claude.json"
     claude_config.register_with_claude_code(engine)
     claude_config.merge_mcp_entry(
         settings, claude_config.generate_mcp_config(workspace)["mcpServers"]

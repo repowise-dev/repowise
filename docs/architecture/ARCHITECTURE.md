@@ -1122,7 +1122,7 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 ### Auto-generated Config
 
 `repowise init` registers the MCP server directly where it can: Claude Code
-(`~/.claude/settings.json`), Claude Desktop (if installed), VS Code
+(`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
 which client was wired up and how Cursor or Codex connect (`repowise mcp .`).

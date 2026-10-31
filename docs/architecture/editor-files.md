@@ -357,8 +357,8 @@ prompt-gated in an interactive run. Only `.repowise/mcp.json` and the root
 *Machine-wide*, outside the repo, one shared copy for every repo you index, all
 written by `register_editor_clients()` in `editor_setup.py`:
 
-- the `repowise` MCP entry in `~/.claude/settings.json` and in Claude Desktop's
-  config
+- the `repowise` MCP entry in `~/.claude.json` (Claude Code's user scope) and in
+  Claude Desktop's config
 - the Claude Code PostToolUse and SessionStart hooks
 - `env.ENABLE_TOOL_SEARCH` in `~/.claude/settings.json` (skipped for repos on
   the lean MCP tool profile, and never overwritten if you already set it)
