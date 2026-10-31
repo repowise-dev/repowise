@@ -15,7 +15,10 @@ from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.generation.selection.selector import eligible_file_page_paths
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
-from repowise.core.pipeline.phases.generation import _selected_file_pages_written
+from repowise.core.pipeline.phases.generation import (
+    _fill_file_page_scope,
+    _selected_file_pages_written,
+)
 from repowise.core.providers.llm.mock import MockProvider
 
 from .conftest import _make_file_info, _make_symbol
@@ -78,9 +81,21 @@ async def test_generation_plan_and_scope_count_the_same_file_pages() -> None:
 
 
 def test_a_selected_file_without_a_page_is_still_a_gap() -> None:
-    selection = SimpleNamespace(file_page_paths=["a.py", "b.py", "c.py"])
+    selection = SimpleNamespace(
+        file_page_paths=["a.py", "b.py", "c.py"],
+        eligible_file_pages=3,
+        effective_file_page_cap=None,
+    )
     pages = [SimpleNamespace(page_type="file_page", target_path="a.py")]
+    scope: dict = {}
 
-    assert _selected_file_pages_written(selection, pages, None) == 1
-    # A resumed run keeps the page an earlier run wrote.
-    assert _selected_file_pages_written(selection, pages, {"file_page:b.py"}) == 2
+    # A resumed run keeps the page an earlier run wrote; c.py has none.
+    _fill_file_page_scope(scope, selection, pages, {"file_page:b.py"})
+
+    assert scope == {"eligible": 3, "effective_cap": None, "generated": 2, "omitted": 1}
+
+
+def test_no_selection_leaves_the_scope_to_the_caller() -> None:
+    scope: dict = {}
+    _fill_file_page_scope(scope, None, [], None)
+    assert scope == {}
