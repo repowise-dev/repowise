@@ -216,6 +216,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
                   map={zoomMap}
                   levelId={chain[chain.length - 1]?.id ?? zoomMap.root_id}
                   relationVerbs={relationVerbs}
+                  showTestLinks={showTestLinks}
                 />
               }
             />
