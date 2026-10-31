@@ -147,54 +147,66 @@ def _answer_files(payload: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(files))
 
 
-async def attach_pointers(payload: dict[str, Any], repo: str | None) -> None:
-    """Add line ranges to the answer's quoted code and ``next_actions`` for unserved helpers."""
-    answer = payload.get("answer")
-    if repo == "all" or payload.get("error") or not isinstance(answer, str) or "`" not in answer:
-        return
-    files = _answer_files(payload)
-    if not files:
-        return
-    try:
-        from repowise.core.persistence.database import get_session
-        from repowise.core.persistence.models import WikiSymbol
-        from repowise.server.mcp_server._helpers import (
-            _get_repo,
-            _resolve_repo_context,
-            read_repo_file_text,
-        )
-
-        ctx = await _resolve_repo_context(repo)
-        root = getattr(ctx, "path", None)
-        cache: dict[str, list[str] | None] = {}
-
-        def read(path: str) -> list[str] | None:
-            if path not in cache:
-                text = read_repo_file_text(root, path, allow_extracted=False) if root else None
-                cache[path] = text.splitlines() if text is not None else None
-            return cache[path]
-
-        if "```" in answer:
-            payload["answer"] = anchor_code_blocks(answer, files, read)
-        async with get_session(ctx.session_factory) as session:
-            repo_id = (await _get_repo(session)).id
-            res = await session.execute(
-                select(WikiSymbol).where(
-                    WikiSymbol.repository_id == repo_id,
-                    WikiSymbol.file_path.in_(files),
-                    WikiSymbol.name.in_({name for _, name in _named(answer)}),
-                    WikiSymbol.kind.in_(_CALLABLE_KINDS),
-                )
-            )
-            rows = list(res.scalars().all())
-    except Exception:
-        _log.debug("get_answer: locate pointers skipped", exc_info=True)
-        return
-    # A cut body still needs its call: only whole bodies count as served.
-    served = {
+def _served(payload: dict[str, Any]) -> set[tuple[str, str]]:
+    """``(path, name)`` of each body served whole; a cut body still needs its call."""
+    return {
         (b.get("path"), b.get("name"))
         for b in payload.get("symbol_bodies") or []
         if isinstance(b, dict) and not b.get("truncated") and "continuation" not in b
     }
-    if calls := helper_calls(answer, rows, served):
+
+
+def _file_reader(root: Any) -> Reader:
+    """A cached live-file line reader for the checkout at *root*."""
+    from repowise.server.mcp_server._helpers import read_repo_file_text
+
+    cache: dict[str, list[str] | None] = {}
+
+    def read(path: str) -> list[str] | None:
+        if path not in cache:
+            text = read_repo_file_text(root, path, allow_extracted=False) if root else None
+            cache[path] = text.splitlines() if text is not None else None
+        return cache[path]
+
+    return read
+
+
+async def _callable_rows(ctx: Any, files: list[str], names: set[str]) -> list:
+    """The indexed functions and methods called *names* in *files*."""
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server._helpers import _get_repo
+
+    async with get_session(ctx.session_factory) as session:
+        repo_id = (await _get_repo(session)).id
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.file_path.in_(files),
+                WikiSymbol.name.in_(names),
+                WikiSymbol.kind.in_(_CALLABLE_KINDS),
+            )
+        )
+        return list(res.scalars().all())
+
+
+async def attach_pointers(payload: dict[str, Any], repo: str | None) -> None:
+    """Add line ranges to the answer's quoted code and ``next_actions`` for unserved helpers."""
+    answer = payload.get("answer")
+    files = _answer_files(payload)
+    if repo == "all" or payload.get("error") or not isinstance(answer, str) or not files:
+        return
+    if "`" not in answer:  # no quoted code and no named code
+        return
+    try:
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+
+        ctx = await _resolve_repo_context(repo)
+        if "```" in answer:
+            payload["answer"] = anchor_code_blocks(answer, files, _file_reader(getattr(ctx, "path", None)))
+        rows = await _callable_rows(ctx, files, {name for _, name in _named(answer)})
+    except Exception:  # pointers are a convenience; never fail the answer over one
+        _log.debug("get_answer: locate pointers skipped", exc_info=True)
+        return
+    if calls := helper_calls(answer, rows, _served(payload)):
         payload["next_actions"] = calls
