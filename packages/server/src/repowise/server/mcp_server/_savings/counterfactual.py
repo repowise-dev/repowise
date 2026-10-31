@@ -414,6 +414,22 @@ def _assessed_targets(targets: Any) -> int:
     )
 
 
+def _risk_related_files(directive: Any) -> set[str]:
+    """Files a PR directive names as breaking or as missed co-change partners.
+
+    Unioned: a file that both breaks and is a missed partner is still one file
+    the agent would open.
+    """
+    if not isinstance(directive, dict):
+        return set()
+    files: set[str] = set()
+    for key in RISK_RELATED_FILE_KEYS:
+        related = directive.get(key)
+        if isinstance(related, list):
+            files.update(f for f in related if isinstance(f, str))
+    return files
+
+
 def _estimate_get_risk(result: dict[str, Any]) -> int:
     """Per assessed target + per PR blast-radius file, floored at ``RISK_FLOOR``.
 
@@ -427,16 +443,7 @@ def _estimate_get_risk(result: dict[str, Any]) -> int:
         return 0
     targets = result.get("targets")
     total = _assessed_targets(targets) * RISK_PER_TARGET
-    directive = result.get("directive")
-    if isinstance(directive, dict):
-        # Union the two lists: a file that both breaks and is a missed
-        # co-change partner is still just one file the agent would open.
-        related_files: set[str] = set()
-        for key in RISK_RELATED_FILE_KEYS:
-            related = directive.get(key)
-            if isinstance(related, list):
-                related_files.update(f for f in related if isinstance(f, str))
-        total += len(related_files) * RISK_PER_RELATED_FILE
+    total += len(_risk_related_files(result.get("directive"))) * RISK_PER_RELATED_FILE
     if isinstance(targets, dict) and targets and not total:
         # Every named target was unresolved: the reply served no history.
         return 0
