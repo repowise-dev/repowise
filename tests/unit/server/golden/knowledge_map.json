@@ -94,25 +94,25 @@
         "email": "alice@example.com",
         "name": "Alice",
         "files_owned": 2,
-        "percentage": 25.0
+        "percentage": 10.0
       },
       {
         "email": "bob@example.com",
         "name": "Bob",
         "files_owned": 2,
-        "percentage": 25.0
+        "percentage": 10.0
       },
       {
         "email": "carol@example.com",
         "name": "Carol",
         "files_owned": 1,
-        "percentage": 12.5
+        "percentage": 5.0
       },
       {
         "email": "dan@example.com",
         "name": "Dan",
         "files_owned": 1,
-        "percentage": 12.5
+        "percentage": 5.0
       }
     ],
     "knowledge_silos": [
@@ -201,25 +201,25 @@
         "email": "alice@example.com",
         "name": "Alice",
         "files_owned": 2,
-        "percentage": 25.0
+        "percentage": 10.0
       },
       {
         "email": "bob@example.com",
         "name": "Bob",
         "files_owned": 2,
-        "percentage": 25.0
+        "percentage": 10.0
       },
       {
         "email": "carol@example.com",
         "name": "Carol",
         "files_owned": 1,
-        "percentage": 12.5
+        "percentage": 5.0
       },
       {
         "email": "dan@example.com",
         "name": "Dan",
         "files_owned": 1,
-        "percentage": 12.5
+        "percentage": 5.0
       }
     ],
     "knowledge_silos": [

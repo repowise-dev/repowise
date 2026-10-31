@@ -28,11 +28,11 @@
     }
   },
   "health": {
-    "average_health": 4.5,
+    "average_health": 4.52,
     "unanalysed_file_count": 1,
-    "analysed_share": 0.5,
+    "analysed_share": 0.75,
     "band": "needs_work",
-    "hotspot_health": 4.5,
+    "hotspot_health": 4.51,
     "worst_performer_path": "src/core.py",
     "worst_performer_score": 4.5,
     "open_findings": 5,
@@ -360,14 +360,14 @@
   },
   "onboarding_targets": [
     {
-      "path": "src/util.py",
-      "pagerank": 0.25,
+      "path": "web/app.ts",
+      "pagerank": 0.5,
       "doc_words": 0
     },
     {
-      "path": "web/app.ts",
-      "pagerank": 0.5,
-      "doc_words": 2
+      "path": "src/util.py",
+      "pagerank": 0.25,
+      "doc_words": 0
     },
     {
       "path": "src/core.py",

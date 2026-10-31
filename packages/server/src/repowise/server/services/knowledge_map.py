@@ -14,7 +14,7 @@ from repowise.core.analysis.knowledge_map import (
     rank_silos,
 )
 from repowise.core.persistence.crud import code_file_rows
-from repowise.core.persistence.models import GitMetadata, GraphNode, Page
+from repowise.core.persistence.models import GitMetadata, GraphNode, HealthFileMetric, Page
 
 
 async def compute_knowledge_silos(session: AsyncSession, repo_id: str) -> list[dict[str, Any]]:
@@ -53,13 +53,36 @@ async def compute_onboarding_targets(
     feeds the first-index experience. Overview used to reach it through
     :func:`compute_knowledge_map` and pay for the owner aggregation as well.
     """
+    # Candidates are production code files only, filtered here rather than in
+    # the fold so the rows never leave the database:
+    #   * ``node_type == "file"`` drops ``external:*`` imports and symbol nodes;
+    #   * ``code_origin == "production"`` (as the health index classed it) drops
+    #     vendored, generated, build and docs-example files;
+    #   * ``code_file_rows`` drops ``history_only`` rows, so a Dockerfile or a
+    #     README, central in the graph and undocumented by nature, cannot lead.
+    # The same predicate the cross-repo report's start list uses.
+    #
     # `pagerank > 0` in SQL too, though the fold repeats it: the filter
     # discards most rows and there is no reason to ship them.
     node_result = await session.execute(
-        select(GraphNode.node_id, GraphNode.pagerank).where(
+        select(GraphNode.node_id, GraphNode.pagerank)
+        .join(
+            HealthFileMetric,
+            (HealthFileMetric.repository_id == GraphNode.repository_id)
+            & (HealthFileMetric.file_path == GraphNode.node_id),
+        )
+        .join(
+            GitMetadata,
+            (GitMetadata.repository_id == GraphNode.repository_id)
+            & (GitMetadata.file_path == GraphNode.node_id),
+        )
+        .where(
+            code_file_rows(repo_id),
             GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
             GraphNode.is_test == False,  # noqa: E712
             GraphNode.pagerank > 0.0,
+            HealthFileMetric.code_origin == "production",
         )
     )
     all_nodes = node_result.all()
@@ -72,11 +95,17 @@ async def compute_onboarding_targets(
     # Length is only the shortlisting key. It ranks the same way a word count
     # does for prose, and the exact counts are read back below for the handful
     # of rows that survive, so the figure this returns is still a word count.
+    #
+    # Written pages only: a page the template provider rendered from the code
+    # alone documents nothing the file does not already say, so it counts as no
+    # documentation rather than making a stub read as documented.
+    written = (
+        Page.repository_id == repo_id,
+        Page.page_type == "file_page",
+        Page.provider_name != "template",
+    )
     size_result = await session.execute(
-        select(Page.target_path, func.length(Page.content)).where(
-            Page.repository_id == repo_id,
-            Page.page_type == "file_page",
-        )
+        select(Page.target_path, func.length(Page.content)).where(*written)
     )
     doc_chars: dict[str, int] = {path: int(n or 0) for path, n in size_result}
     shortlist = onboarding_targets(all_nodes, doc_chars)
@@ -88,9 +117,7 @@ async def compute_onboarding_targets(
     if documented:
         word_rows = await session.execute(
             select(Page.target_path, Page.content).where(
-                Page.repository_id == repo_id,
-                Page.page_type == "file_page",
-                Page.target_path.in_(documented),
+                *written, Page.target_path.in_(documented)
             )
         )
         exact_words = {path: len((content or "").split()) for path, content in word_rows}
