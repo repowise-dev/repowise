@@ -388,3 +388,20 @@ def test_bfs_still_reaches_a_test_file_that_is_an_endpoint():
         "tests/test_a.py": ["m.py"],
     }
     assert _bfs_path(adj, "a.py", "tests/test_a.py", 4) == ["a.py", "m.py", "tests/test_a.py"]
+
+
+async def test_a_name_only_a_test_defines_still_anchors_its_file(session, repo_id):
+    """With no shipped definition, the test that defines the name is the place
+    the question asks about, as a test endpoint already is in the walk."""
+    helper = "tests/integration/test_instrument.py"
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, helper))
+    session.add(_symbol(repo_id, "run_probe", helper))
+    session.add(_edge(repo_id, _ANSWER, helper, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}]
+    _combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does run_probe reach the answer module", {"run_probe"}
+    )
+    assert paths == [[_ANSWER, helper]] or paths == [[helper, _ANSWER]]
