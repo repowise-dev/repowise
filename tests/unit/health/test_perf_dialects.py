@@ -919,6 +919,90 @@ def test_python_path_receivers_stay_filesystem_sinks(src):
     assert ("io_in_loop", "filesystem") in _hits("python", src)
 
 
+@pytest.mark.parametrize(
+    "src",
+    [
+        # A tuple target binds the path position of ``enumerate`` / ``zip``.
+        "def f(d):\n    for i, p in enumerate(d.glob('*.txt')):\n        p.read_text()\n",
+        "def f(d):\n    for i, p in sorted(enumerate(d.iterdir())):\n        p.read_text()\n",
+        "def f(d, ns):\n    for n, p in zip(ns, d.glob('*')):\n        p.read_bytes()\n",
+        "def f(d, ns):\n    for (p, n) in zip(d.glob('*'), ns):\n        p.read_bytes()\n",
+        "def f(d, ns):\n    for n in ns:\n        [p.read_text() for i, p in enumerate(d.glob(n))]\n",
+        "def f(d, ns, rest):\n    for p, n in zip(d.glob('*'), *rest):\n        p.read_text()\n",
+        # A helper that calls helpers, within the hop limit.
+        "from pathlib import Path\ndef h3(n):\n    return Path('a') / n\n"
+        "def h2(n):\n    return h3(n)\ndef h1(n):\n    return h2(n)\n"
+        "def f(ns):\n    for n in ns:\n        h1(n).read_text()\n",
+        "from pathlib import Path\nif USE_ALT:\n    DATA = Path('data')\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        # An item of a collection of paths.
+        "class C:\n    def f(self, n):\n        while n:\n            self.paths[n].read_text()\n",
+        "def f(files, ns):\n    for n in ns:\n        files[n].write_text('x')\n",
+        # A same-file helper whose every return is a path.
+        "from pathlib import Path\ndef helper(n):\n    return Path('data') / n\n"
+        "def f(ns):\n    for name in ns:\n        helper(name).read_text()\n",
+        # A module-level binding, followed like a local one.
+        "from pathlib import Path\nDATA = Path('data')\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        "from pathlib import Path\nDATA = Path('data')\n"
+        "import sys\nfor n in sys.argv:\n    DATA.read_text()\n",
+        "from pathlib import Path\nSRCS = [Path('a'), Path('b')]\n"
+        "def f(ns):\n    for n in ns:\n        for s in SRCS:\n            s.read_text()\n",
+    ],
+)
+def test_python_followed_path_receivers_are_filesystem_sinks(src):
+    assert ("io_in_loop", "filesystem") in _hits("python", src)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # The index of ``enumerate`` and the other iterable of ``zip`` are not paths.
+        "def f(d):\n    for i, p in enumerate(d.glob('*')):\n        i.read_text()\n",
+        "def f(d, ns):\n    for n, p in zip(ns, d.glob('*')):\n        n.read_text()\n",
+        "def f(d):\n    for i, *p in enumerate(d.glob('*')):\n        p.read_text()\n",
+        "def f(pairs):\n    for i, p in pairs:\n        p.read_text()\n",
+        # A slice of paths is a list; an item of an unknown collection is unknown.
+        "def f(paths, ns):\n    for n in ns:\n        paths[1:].read_text()\n",
+        "def f(xs, ns):\n    for n in ns:\n        xs[n].read_text()\n",
+        # A helper with one return that is not a path, a bare return, or a generator.
+        "from pathlib import Path\ndef helper(n):\n    if n:\n        return Path('a') / n\n    return n\n"
+        "def f(ns):\n    for n in ns:\n        helper(n).read_text()\n",
+        "from pathlib import Path\ndef helper(n):\n    if n:\n        return Path('a') / n\n    return\n"
+        "def f(ns):\n    for n in ns:\n        helper(n).read_text()\n",
+        "from pathlib import Path\ndef helper(n):\n    yield Path('a') / n\n"
+        "def f(ns):\n    for n in ns:\n        helper(n).read_text()\n",
+        "def f(ns):\n    for n in ns:\n        helper(n).read_text()\n",
+        # A ``*others`` before the path shifts the zip position.
+        "def f(d, ns, others):\n    for n, o, p in zip(ns, *others, d.glob('*')):\n        p.read_text()\n",
+        # Helpers chained past the hop limit, and a helper that only calls itself.
+        "from pathlib import Path\ndef h4(n):\n    return Path('a') / n\n"
+        "def h3(n):\n    return h4(n)\ndef h2(n):\n    return h3(n)\ndef h1(n):\n    return h2(n)\n"
+        "def f(ns):\n    for n in ns:\n        h1(n).read_text()\n",
+        "def h(n):\n    return h(n)\ndef f(ns):\n    for n in ns:\n        h(n).read_text()\n",
+        # A module-level name rebound under an ``if``, ``try`` or ``with`` is no sure path.
+        "from pathlib import Path\nDATA = Path('data')\nif USE_STREAM:\n    DATA = open_stream()\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        "from pathlib import Path\ntry:\n    DATA = Path('data')\nexcept OSError:\n    DATA = None\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        "from pathlib import Path\nDATA = Path('data')\nwith open_stream() as DATA:\n    pass\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        "from pathlib import Path\nDATA = Path('data')\nDATA += 'x'\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        # A module-level name the function shadows, rebinds, or that is no path.
+        "from pathlib import Path\nDATA = Path('data')\n"
+        "def f(DATA, ns):\n    for n in ns:\n        DATA.read_text()\n",
+        "from pathlib import Path\nDATA = Path('data')\n"
+        "def f(ns):\n    DATA = open_stream()\n    for n in ns:\n        DATA.read_text()\n",
+        "from pathlib import Path\nDATA = Path('a')\nDATA = Path('b')\n"
+        "def f(ns):\n    for n in ns:\n        DATA.read_text()\n",
+        "STREAM = open_stream()\ndef f(ns):\n    for n in ns:\n        STREAM.read_text()\n",
+    ],
+)
+def test_python_unfollowed_receivers_stay_silent(src):
+    assert not any(detail == "filesystem" for _, detail in _hits("python", src))
+
+
 def test_python_awaited_path_read_is_a_serial_filesystem_await():
     src = (
         "import anyio\nasync def f(ns):\n    for n in ns:\n"
