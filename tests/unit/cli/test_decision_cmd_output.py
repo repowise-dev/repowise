@@ -262,6 +262,55 @@ def test_add_prompts_without_files_says_how_to_finish(repo: Path) -> None:
     assert "--scope <path>" in result.output
 
 
+def test_add_json_warns_about_a_missing_affects_path_and_rationale(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Warned",
+        "--decision",
+        "Use X",
+        "--affects",
+        "missing/path.py",
+    )
+    warnings = payload["decision"]["warnings"]
+    assert "affects path not found: missing/path.py" in warnings
+    assert "no rationale given" in warnings
+
+
+def test_add_json_with_a_valid_path_and_rationale_has_no_warnings(repo: Path) -> None:
+    (repo / "src").mkdir()
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Clean",
+        "--decision",
+        "Use X",
+        "--affects",
+        "src",
+        "--rationale",
+        "because Y",
+    )
+    assert "warnings" not in payload["decision"]
+
+
+def test_add_human_output_prints_the_same_warnings(repo: Path) -> None:
+    result = _run(
+        "add",
+        str(repo),
+        "--title",
+        "Human",
+        "--decision",
+        "Use X",
+        "--affects",
+        "missing/path.py",
+    )
+    assert result.exit_code == 0, result.output
+    assert "affects path not found: missing/path.py" in result.output
+    assert "no rationale given" in result.output
+
+
 # -- multi-id runs and deprecate ------------------------------------------------
 
 
