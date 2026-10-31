@@ -121,6 +121,7 @@ def test_monorepo_yields_multiple_service_nodes():
 
 def test_contract_type_to_edge_kind():
     assert edge_kind_for_contract_type("http") == "http"
+    assert edge_kind_for_contract_type("soap") == "http"
     assert edge_kind_for_contract_type("grpc") == "grpc"
     assert edge_kind_for_contract_type("socket") == "socket"
     assert edge_kind_for_contract_type("topic") == "event"

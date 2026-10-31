@@ -90,7 +90,7 @@ class ManualContractLink:
 
     from_repo: str
     to_repo: str
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "soap"
     contract_id: str  # normalized contract ID
     from_role: str = "consumer"  # the from_repo's role
 
@@ -145,6 +145,7 @@ class ContractConfig:
     detect_socket: bool = field(default=True, metadata=_EXTRACTION)
     detect_topics: bool = field(default=True, metadata=_EXTRACTION)
     detect_data: bool = field(default=True, metadata=_EXTRACTION)
+    detect_soap: bool = field(default=True, metadata=_EXTRACTION)
     #: A library's public API as a contract (``contract_type="code"``).
     detect_code_api: bool = field(default=True, metadata=_EXTRACTION)
     manual_links: list[ManualContractLink] = field(default_factory=list, metadata=_MATCHING)
@@ -174,6 +175,7 @@ class ContractConfig:
             "detect_socket": self.detect_socket,
             "detect_topics": self.detect_topics,
             "detect_data": self.detect_data,
+            "detect_soap": self.detect_soap,
             "detect_code_api": self.detect_code_api,
         }
         if self.manual_links:
@@ -195,6 +197,7 @@ class ContractConfig:
             detect_socket=bool(data.get("detect_socket", True)),
             detect_topics=bool(data.get("detect_topics", True)),
             detect_data=bool(data.get("detect_data", True)),
+            detect_soap=bool(data.get("detect_soap", True)),
             detect_code_api=bool(data.get("detect_code_api", True)),
             manual_links=manual,
             service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
