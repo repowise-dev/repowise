@@ -34,7 +34,6 @@ from . import levels as _levels
 from .helpers import (
     _CODE_LANGUAGES,
     _is_infra_file,
-    _select_clone_representatives,
     build_dead_code_map,
     build_decision_maps,
     overview_summary,
@@ -319,17 +318,22 @@ class _GenerationRun:
             and p.file_info.language in _CODE_LANGUAGES
         ]
 
+        from ..selection.selector import near_clone_paths
+
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
         parsed_files_for_selection = self.parsed_files
-        if getattr(self.config, "dedupe_near_clones", True):
-            drop_paths = _select_clone_representatives(code_files, self.pagerank)
-            if drop_paths:
-                log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
-                code_files = [p for p in code_files if p.file_info.path not in drop_paths]
-                parsed_files_for_selection = [
-                    p for p in self.parsed_files if p.file_info.path not in drop_paths
-                ]
+        drop_paths = near_clone_paths(
+            code_files,
+            self.pagerank,
+            enabled=getattr(self.config, "dedupe_near_clones", True),
+        )
+        if drop_paths:
+            log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
+            code_files = [p for p in code_files if p.file_info.path not in drop_paths]
+            parsed_files_for_selection = [
+                p for p in self.parsed_files if p.file_info.path not in drop_paths
+            ]
 
         try:
             community_info_map = self.graph_builder.community_info() or {}
@@ -362,6 +366,7 @@ class _GenerationRun:
         )
 
         self.selection = selection
+        self.gen.selection = selection
         self.sel_file_paths = set(selection.file_page_paths)
         self.sel_api_paths = set(selection.api_contract_paths)
         self.sel_infra_paths = set(selection.infra_paths)

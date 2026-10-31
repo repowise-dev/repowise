@@ -203,6 +203,9 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         # The JobSystem checkpoint this run created, so a caller reads this
         # run's failures rather than guessing from the jobs directory.
         self.last_job_id: str | None = None
+        # This run's page selection, so a caller can report the file pages it
+        # meant to write next to the ones it wrote.
+        self.selection: Any = None
         # Per-template structural fingerprints, lazily computed; every input
         # they fold is fixed for the generator's lifetime. Keyed by template
         # name because each structural page type folds its own template source.
@@ -319,6 +322,7 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         reset_house_terms()
         self.embed_failed_pages = 0
         self.last_job_id = None
+        self.selection = None
 
         return await run_generate_all(
             self,

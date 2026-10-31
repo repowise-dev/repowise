@@ -12,6 +12,7 @@ from typing import Any
 
 from repowise.core.generation import GENERATION_LEVELS
 from repowise.core.generation.selection import SelectionInputs, select_pages
+from repowise.core.generation.selection.selector import near_clone_paths
 
 from .types import PageTypePlan
 
@@ -59,9 +60,14 @@ def build_generation_plan(
     except Exception:
         community_info_map = {}
 
+    # The near-clones generation drops never get a page, so the plan leaves
+    # them out the same way.
+    drop = near_clone_paths(
+        files, pagerank, enabled=getattr(config, "dedupe_near_clones", True)
+    )
     selection = select_pages(
         SelectionInputs(
-            parsed_files=files,
+            parsed_files=[p for p in files if p.file_info.path not in drop],
             pagerank=pagerank,
             betweenness=betweenness,
             community=community,

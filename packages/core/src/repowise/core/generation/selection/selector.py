@@ -304,6 +304,21 @@ def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
     )
 
 
+def near_clone_paths(
+    parsed_files: Iterable[Any], pagerank: dict[str, float], *, enabled: bool = True
+) -> set[str]:
+    """Code files selection leaves out as near-clones of a sibling it keeps.
+
+    Generation, its plan and the file-page scope all ask this one question, so
+    they agree on which files are meant to have a page.
+    """
+    if not enabled:
+        return set()
+    from ..page_generator.helpers import _select_clone_representatives
+
+    return _select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
+
+
 def eligible_file_page_paths(
     parsed_files: list[Any],
     pagerank: dict[str, float],
@@ -312,13 +327,7 @@ def eligible_file_page_paths(
     dedupe_near_clones: bool = True,
 ) -> set[str]:
     """The files selection would consider for a page: every gate but the cap."""
-    from ..page_generator.helpers import _select_clone_representatives
-
-    drop = (
-        _select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
-        if dedupe_near_clones
-        else set()
-    )
+    drop = near_clone_paths(parsed_files, pagerank, enabled=dedupe_near_clones)
     return {
         p.file_info.path
         for p in parsed_files
