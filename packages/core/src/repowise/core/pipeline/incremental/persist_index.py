@@ -337,6 +337,20 @@ async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
         await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "git_archaeology")
 
 
+def _left_index(ctx: IncrementalPersist) -> set[str]:
+    """Documents the change detector dropped as no longer indexable, though on disk.
+
+    Only those: any other deleted path that still exists keeps its rows, as the
+    disk-and-git liveness rule intends.
+    """
+    traversed = set(getattr(ctx.graph_builder, "traversed_file_paths", None) or ())
+    return {
+        fd.path
+        for fd in ctx.file_diffs or []
+        if fd.status == "deleted" and getattr(fd, "unindexable", False)
+    } - traversed
+
+
 async def prune_deleted(ctx: IncrementalPersist) -> None:
     # Last in the session on purpose: everything above upserts, and the git
     # step indexes the changed *paths*, deleted ones included, so the prune
@@ -353,6 +367,7 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
         ),
         health_report=ctx.partial_health_report,
         pruned=ctx.pruned_paths,
+        left_index=_left_index(ctx),
         skip=ctx.skip,
         log=ctx.log,
         degraded=ctx.degraded,

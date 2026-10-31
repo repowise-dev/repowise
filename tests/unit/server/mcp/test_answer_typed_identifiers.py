@@ -95,3 +95,30 @@ def test_hyphenated_and_suffixed_domain_words_still_count():
     assert _detect_question_domain("how is the api-key stored") == "backend"
     assert _detect_question_domain("how does the viewer scroll") == "ui"
     assert _detect_question_domain("how is client-side state kept") == "ui"
+
+
+def test_a_question_framing_verb_does_not_rank_a_class_name_that_holds_it():
+    """"where is X implemented": ``JwtAlgorithmNotImplemented`` is not the answer."""
+    from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
+
+    hits = [
+        {
+            "target_path": "src/utils/jwt/types.ts",
+            "title": "types.ts",
+            "summary": "Type definitions for JWT utilities.",
+            "_symbol_names": ["JwtAlgorithmNotImplemented"],
+            "score": 3.9,
+        },
+        {
+            "target_path": "src/middleware/jwt/jwt.ts",
+            "title": "jwt.ts",
+            "summary": "JWT Auth Middleware for Hono.",
+            "_symbol_names": ["jwt"],
+            "score": 3.86,
+        },
+        {"target_path": "src/context.ts", "title": "context.ts", "summary": "", "score": 3.0},
+    ]
+    ranked = rerank_by_context_coverage(
+        hits, "where is the JWT middleware implemented?", score_key="score", floor=0.5
+    )
+    assert ranked[0]["target_path"] == "src/middleware/jwt/jwt.ts"

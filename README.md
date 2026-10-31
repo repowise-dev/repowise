@@ -75,10 +75,13 @@ repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key,
 repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
+`serve` opens the dashboard in your browser. After a first index it starts with a short
+guided tour, and Setup is where you connect agents, turn on sync and add coverage or a model.
+
 Restart Claude Code or run `/mcp`, then ask *"What breaks if I change
 `src/auth.py`?"* or *"Use Repowise `get_overview` to summarize this repository."*
-`init` wires Claude Code for this repo and points the global repowise MCP entry
-here. [Full setup for every agent →](docs/start/QUICKSTART.md)
+`init` wires Claude Code for this repo and adds the global repowise MCP entry
+when there is none; it never moves one that serves another repo. [Full setup for every agent →](docs/start/QUICKSTART.md)
 
 ---
 

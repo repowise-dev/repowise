@@ -138,7 +138,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--no-claude-md` | Skip `CLAUDE.md`; saves `editor_files.claude_md: false`. | generated |
 | `--agents` / `--no-agents` | Managed Codex `AGENTS.md`. Persists. | config, else on |
 | `--codex` / `--no-codex` | Project-local Codex MCP and hooks. Required for non-interactive runs. | prompt if Codex CLI is logged in |
-| `--distill-hook` / `--no-distill-hook` | Distill hooks (Claude Code PreToolUse) compacting what the agent sees; notes, [DISTILL.md](../agent/DISTILL.md). | off; interactive prompt (default No) |
+| `--distill-hook` / `--no-distill-hook` | Distill hooks (Claude Code PreToolUse) compacting what the agent sees; notes, [DISTILL.md](../agent/DISTILL.md). | on; interactive prompt (default Yes) |
 | `--hook` / `--no-hook` | Post-commit `repowise update` hook; see notes. | on |
 | `--editor-setup` / `--no-editor-setup` | Editor wiring; see notes. | on |
 | `--save-key` / `--no-save-key` | Save the run's key to `.repowise/.env` (git-ignored, owner-only); see notes. | on |
@@ -163,8 +163,10 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 - **`--force`.** Re-indexes from scratch in the invoked mode, skipping worktree seeding. Never calls a model (`--force --no-prose` re-renders free); `repowise update --full` does.
 - **`--distill-hook`.** One consent, four behaviours: noisy commands (tests, builds, git, searches) run through
   `repowise distill`; whole-file Reads return a skeleton (`hooks.read_skeleton`); many-file greps a per-file digest
-  (`hooks.search_digest`); re-reads of unchanged, unedited files a pointer (`hooks.read_reread`). `--no-distill-hook`
-  also gates the repo off in config, keeping a global hook inert.
+  (`hooks.search_digest`); re-reads of unchanged, unedited files a pointer (`hooks.read_reread`). Asked
+  interactively; `--yes` and non-interactive runs install it, printing the undo. A repo that already opted out (or
+  switched one surface off) keeps that. `--no-distill-hook` also gates the repo off in config, keeping a global hook
+  inert.
 - **`--hook`.** Asked interactively; `--yes` and non-interactive runs install it, printing the undo (`repowise hook uninstall`).
 - **Workspace.** `--distill-hook` and `--hook` apply to every selected repo.
 - **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP entry, Claude Code
@@ -179,14 +181,14 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Adds a `.gitignore` line, so use `--no-save-key` for `--no-editor-setup`'s nothing-in-the-repo guarantee.
 - **`--yes`.** Model docs only with a configured provider (key in env or `.repowise/.env`), else from code; logged-in
   Claude Code, Codex or OpenCode needs `--provider`; `--no-prose` guarantees no model calls.
-  - Accepts the cost prompt; advanced defaults (standard mode at any size, comprehensive style); connects detected agents; repoints the global MCP entry here, printing old and new.
+  - Accepts the cost prompt; advanced defaults (standard mode at any size, comprehensive style); connects detected agents; adds the global MCP entry when absent or when its repo is gone, never moving one that serves another repo.
   - Installs the post-commit hook, not distill. With `--no-prose`, replaces model-written docs unasked.
 - **`--repos`.** Alias, directory name, or relative path (for duplicates). First listed is a new workspace's primary; existing ones keep theirs. Unknown names stop the run, listing options.
 
 **Plan screen.** TTY runs without `--provider`, `--no-prose`, `--mode fast`, `--resume` or `--yes` show scan, ETA, plan,
 and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then defaults. Keys:
 
-- Enter: free run (docs from code). `m`: pick a model. `s`: leave the global MCP entry. `q`: quit.
+- Enter: free run (docs from code). `m`: pick a model. `s`: skip the global MCP entry. `q`: quit.
 - `e`: edit plan (advanced options, agent checklist, post-commit hook, `.git/info/exclude` for machine-specific files, off).
 - `r`: folder of repos (listed): pick repos and primary.
 
@@ -1070,7 +1072,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all`. | `all` |
-| `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
+| `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `pr_review`, `session`, `all`. | `all` |
 | `--proposed` | `--status proposed`. | off |
 | `--stale-only` | Only accepted decisions at `needs_review`, the set `decision health` counts as stale. | off |
 | `--limit` | Max rows listed. | `100` |
@@ -2304,4 +2306,4 @@ repowise augment --client codex          # payload on stdin
 
 ### `repowise-augment` / `repowise-rewrite`
 
-Console scripts installed with the CLI, not subcommands, not run by hand: `repowise-augment` is the import-isolated augment hook entry; `repowise-rewrite` backs `repowise hook rewrite install`.
+Console scripts installed with the CLI, not subcommands, not run by hand: `repowise-augment` is the import-isolated augment hook entry; `repowise-rewrite` backs `repowise hook rewrite install`. Per-user hook config names them by the installing environment's absolute path, with PATH as the fallback.

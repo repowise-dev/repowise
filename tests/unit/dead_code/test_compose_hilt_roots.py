@@ -48,6 +48,48 @@ _FILES = {
         "    @Binds\n    fun bindsListener(x: Int): Int = x\n"
         "}\n"
     ),
+    # Metro: the generated graph constructs a contributed binding and loads a
+    # contributed binding container; consumers depend on the interface.
+    "data/src/main/kotlin/org/sample/data/CategoryRepository.kt": (
+        "package org.sample.data\n\n"
+        "interface CategoryRepository {\n    fun all(): List<String>\n}\n"
+    ),
+    "data/src/main/kotlin/org/sample/data/CategoryRepositoryImpl.kt": (
+        "package org.sample.data\n\n"
+        "import dev.zacsweers.metro.AppScope\n"
+        "import dev.zacsweers.metro.ContributesBinding\n"
+        "import dev.zacsweers.metro.Inject\n\n"
+        "@Inject\n@ContributesBinding(AppScope::class)\n"
+        "class CategoryRepositoryImpl(private val db: String) : CategoryRepository {\n"
+        "    override fun all(): List<String> = listOf(db)\n"
+        "}\n"
+    ),
+    "data/src/main/kotlin/org/sample/data/DatabaseBindings.kt": (
+        "package org.sample.data\n\n"
+        "import dev.zacsweers.metro.AppScope\n"
+        "import dev.zacsweers.metro.BindingContainer\n"
+        "import dev.zacsweers.metro.ContributesTo\n"
+        "import dev.zacsweers.metro.Provides\n\n"
+        "@ContributesTo(AppScope::class)\n@BindingContainer\n"
+        "object DatabaseBindings {\n"
+        '    @Provides\n    fun provideDb(): String = "db"\n'
+        "}\n"
+    ),
+    # A class-level ``@Inject`` alone only says how to construct the class;
+    # something still has to ask for it.
+    "data/src/main/kotlin/org/sample/data/GetCategoryByName.kt": (
+        "package org.sample.data\n\n"
+        "import dev.zacsweers.metro.Inject\n\n"
+        "@Inject\nclass GetCategoryByName(private val repo: CategoryRepository)\n"
+    ),
+    "app/src/main/kotlin/org/sample/app/Screen.kt": (
+        "package org.sample.app\n\n"
+        "import org.sample.data.CategoryRepository\n\n"
+        "class Screen(private val repo: CategoryRepository) {\n"
+        "    fun render(): Int = repo.all().size\n"
+        "}\n\n"
+        "fun main() {\n    println(Screen::class)\n}\n"
+    ),
 }
 
 
@@ -144,6 +186,29 @@ def test_qualified_use_matches_by_fully_qualified_name():
         assert not _is_framework_registered(["@org.sample.other.ThemeShots"], visible), path
     # In the other class's package, the bare name means the non-preview one.
     assert not _is_framework_registered(["@ThemeShots"], meta.visible_in("app/OtherPackage.kt"))
+
+
+def test_metro_bindings_are_built_by_the_graph(tmp_path: Path):
+    report = _report(tmp_path)
+    unreachable = _of(report, DeadCodeKind.UNREACHABLE_FILE)
+    assert unreachable.isdisjoint({"CategoryRepositoryImpl.kt", "DatabaseBindings.kt"})
+    flagged = _of(report, DeadCodeKind.UNUSED_EXPORT) | _of(report, DeadCodeKind.UNUSED_INTERNAL)
+    assert flagged.isdisjoint({"CategoryRepositoryImpl", "DatabaseBindings", "provideDb"})
+    # ``@Inject`` alone is not a root: nothing asks for this class.
+    assert "GetCategoryByName" in flagged
+
+
+def test_metro_and_anvil_annotations_are_framework_registered():
+    for annotation in (
+        "@ContributesBinding(AppScope::class)",
+        "@ContributesTo(AppScope::class)",
+        "@ContributesIntoSet(AppScope::class)",
+        "@ContributesIntoMap(AppScope::class)",
+        "@ContributesMultibinding(AppScope::class)",
+        "@BindingContainer",
+    ):
+        assert _is_framework_registered([annotation]), annotation
+    assert not _is_framework_registered(["@Inject"])
 
 
 # Glide's annotation processor generates ``GeneratedAppGlideModule``, which

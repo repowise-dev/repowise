@@ -139,7 +139,7 @@ def _rebuild_graph_and_git(
             git_summary_sink=git_summary_sink,
             log=console.print,
             timings=timings,
-            # Experimental: re-resolve only the changed files when that is
+            # Re-resolve only the changed files when that is
             # provably equivalent to a rebuild (see pipeline.incremental.surface).
             patch_graph=incremental_graph_enabled(),
         )

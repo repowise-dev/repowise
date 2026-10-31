@@ -18,7 +18,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 
@@ -46,6 +46,7 @@ from ._incremental import (
     idle_refresh_paths,
     prior_defect_stage,
 )
+from .blame_graph import BlameGraph
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_file
@@ -61,6 +62,9 @@ from .records import (
     capture_repo_totals,
 )
 from .tiers import GitIndexTier
+
+if TYPE_CHECKING:
+    from concurrent.futures import Future
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
 # When git cat-file streams are GC'd after the subprocess pipe is closed,
@@ -204,6 +208,7 @@ class _IndexSetup:
     fallback_files: set[str] = field(default_factory=set)
     fallback_note_agents: dict[str, Any] = field(default_factory=dict)
     as_of_ts: Any = None
+    blame_graph: BlameGraph = field(default_factory=BlameGraph)
 
 
 class _ChangedScope(NamedTuple):
@@ -347,7 +352,7 @@ class GitIndexer:
         loop = asyncio.get_event_loop()
 
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
-        get_thread_repo, close_thread_repos = self._thread_repo_pool()
+        get_thread_repo, close_thread_repos = self._thread_repo_pool(setup.blame_graph.env)
         inputs = _FilePassInputs(
             commit_index=commit_index,
             fallback_files=fallback_files,
@@ -412,6 +417,7 @@ class GitIndexer:
             with timed(timings, "git.release"):
                 executor.shutdown(wait=False, cancel_futures=True)
                 close_thread_repos()
+                setup.blame_graph.close()
 
         results = _successful_rows(metadata_list, "Failed to index file")
 
@@ -496,6 +502,8 @@ class GitIndexer:
             self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
         )
 
+        # Written beside the commit walk: it reads only the object store.
+        graph_job = self._start_blame_graph(repo, timings)
         commit_sink: list[dict] = []
         prov_clf = self._provenance_classifier()
         # Agent-trace records, read once and shared with both commit-index walks
@@ -531,7 +539,29 @@ class GitIndexer:
             fallback_files=fallback_files,
             fallback_note_agents=fallback_note_agents,
             as_of_ts=as_of_ts,
+            blame_graph=graph_job.result() if graph_job else BlameGraph(),
         )
+
+    def _start_blame_graph(self, repo: Any, timings: Any | None) -> Future[BlameGraph] | None:
+        """Write the per-file pass's :class:`BlameGraph` on a thread, when that pass blames."""
+        if not self.tier.includes_blame:
+            return None
+        target = BlameGraph.target(repo)
+        if target is None:
+            return None
+        from concurrent.futures import ThreadPoolExecutor
+
+        from repowise.core.pipeline.phase_timing import timed
+
+        def _write() -> BlameGraph:
+            with timed(timings, "git.blame_graph"):
+                return BlameGraph.write(*target)
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="git-graph")
+        try:
+            return pool.submit(_write)
+        finally:
+            pool.shutdown(wait=False)
 
     def _full_commit_index(
         self,
@@ -1332,8 +1362,13 @@ class GitIndexer:
             with contextlib.suppress(Exception):
                 repo.close()
 
-    def _thread_repo_pool(self) -> tuple[Callable[[], Any], Callable[[], None]]:
+    def _thread_repo_pool(
+        self, git_env: dict[str, str] | None = None
+    ) -> tuple[Callable[[], Any], Callable[[], None]]:
         """Return ``(get_thread_repo, close_all)`` for per-thread Repo reuse.
+
+        *git_env* is set on every git call each repo makes (a
+        :class:`BlameGraph`'s object directory).
 
         gitpython ``Repo`` handles can't be shared across threads on Windows,
         but constructing one per *file* costs ~40 ms each. This pool hands
@@ -1354,6 +1389,8 @@ class GitIndexer:
                 from repowise.core.git_repo import Repo
 
                 repo = Repo(self.repo_path, search_parent_directories=True)
+                if git_env:
+                    repo.git.update_environment(**git_env)
                 tls.repo = repo
                 with lock:
                     created.append(repo)

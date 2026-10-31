@@ -1,7 +1,7 @@
 "use client";
 
 import { HealthTabs, type HealthTabKey, type HealthTabsProps } from "./health-tabs";
-import { formatDate, parseDate } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface HealthPageChromeProps {
   repoId: string;
@@ -23,18 +23,21 @@ export interface HealthPageChromeProps {
   renderLink?: HealthTabsProps["renderLink"];
 }
 
-function formatIndexedAt(iso: string | null): string {
-  if (!iso) return "never";
-  const d = parseDate(iso);
-  const diff = Date.now() - d.getTime();
-  const minutes = Math.round(diff / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return formatDate(d);
+/** "Indexed 2d ago · abc1234 · 3 snapshots" under the page title. */
+function IndexedMeta({ meta }: { meta: NonNullable<HealthPageChromeProps["meta"]> }) {
+  return (
+    <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+      Indexed{" "}
+      {meta.last_indexed_at ? <RelativeTime date={meta.last_indexed_at} /> : "never"}
+      {meta.head_commit ? (
+        <>
+          {" "}
+          · <span className="font-mono">{meta.head_commit.slice(0, 7)}</span>
+        </>
+      ) : null}
+      {meta.snapshot_count > 0 ? <> · {meta.snapshot_count} snapshots</> : null}
+    </p>
+  );
 }
 
 export function HealthPageChrome({
@@ -59,18 +62,7 @@ export function HealthPageChrome({
           {subtitle ? (
             <p className="text-sm text-[var(--color-text-secondary)]">{subtitle}</p>
           ) : null}
-          {meta ? (
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              Indexed {formatIndexedAt(meta.last_indexed_at)}
-              {meta.head_commit ? (
-                <>
-                  {" "}
-                  · <span className="font-mono">{meta.head_commit.slice(0, 7)}</span>
-                </>
-              ) : null}
-              {meta.snapshot_count > 0 ? <> · {meta.snapshot_count} snapshots</> : null}
-            </p>
-          ) : null}
+          {meta ? <IndexedMeta meta={meta} /> : null}
         </div>
         {actions ? <div className="flex items-center gap-2 shrink-0">{actions}</div> : null}
       </div>

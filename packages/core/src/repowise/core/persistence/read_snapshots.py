@@ -5,16 +5,19 @@ first queue, the next-actions view) is written once, by the writer that last
 touched its stores, under a key naming the code that built it (repowise
 version and the view's model version).
 
-Freshness is kept on the write side: any session that writes a store a view
-could read deletes every stored view in the same transaction
-(:func:`_invalidate`), so a stored row is current by construction and a
-missing one is built live. A kind in :data:`SELF_KEYED_KINDS` is the
-exception: its key carries the index state it was built from, so its reader
-checks freshness and the purge leaves it. The rule fails closed: a table it does not know
-is an input (:data:`UNRELATED_TABLES` lists the ones that are not), a write
-in a savepoint that rolled back still invalidates, and a write to one
-repository drops every repository's rows in a shared store. Readers never
-write. The builders read only the stores; settings that shape them
+Freshness is kept on the write side: a session that writes a store a view
+reads deletes that view in the same transaction (:func:`_invalidate`), so a
+stored row is current by construction and a missing one is built live. A kind
+in :data:`SELF_KEYED_KINDS` is the exception: its key carries the index state
+it was built from, so its reader checks freshness and the purge leaves it.
+The rule fails closed: a table it does not know is an input to every view
+(:data:`UNRELATED_TABLES` lists the ones no view reads, :data:`NOT_READ_BY`
+the ones a single kind does not), a write in a savepoint that rolled back
+still invalidates, and a write to one repository drops every repository's
+rows in a shared store. A reader writes only through
+:func:`build_and_store`, which claims the missing row before it builds, so
+an input write landing during the build drops the claim and the result is
+not stored. The builders read only the stores; settings that shape them
 (``.repowise/health-rules.json``, the exclude spec, scope) reach a view
 through the store writes they cause.
 
@@ -33,12 +36,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from functools import cache
 from typing import Any
 
-from sqlalchemy import delete, event, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, event, insert, select, update
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session
 
 from repowise.core import __version__
@@ -90,8 +95,36 @@ UNRELATED_TABLES = frozenset(
 #: valid. ``test_masks`` is ``analysis.test_reach.db.MASKS_SNAPSHOT_KIND``.
 SELF_KEYED_KINDS = frozenset({"test_masks"})
 
-#: ``session.info`` flag: this transaction wrote a store a view reads.
-_STALE = "read_snapshots_stale"
+#: What a recorded decision or a drained commit-health row writes.
+_DECISION_AND_COMMIT_HEALTH = frozenset(
+    {
+        "decision_acceptances",
+        "decision_aliases",
+        "decision_candidate_meta",
+        "decision_edges",
+        "decision_evidence",
+        "decision_node_links",
+        "decision_records",
+        "git_commit_health_findings",
+    }
+)
+
+#: Per kind, tables beyond :data:`UNRELATED_TABLES` its builder never reads, so
+#: a write to them keeps it. A kind not listed reads every other table. The
+#: Fix first queue reads findings, metrics, plans, blame and the graph; its
+#: plans' decision notes are written to ``refactoring_suggestions`` at index
+#: time. ``actions`` stays unlisted: it reads decisions and commit-health
+#: findings, and quotes the stored ``fix_first`` row, so any write that drops
+#: that row drops it too. Kind names are the ``SNAPSHOT_KIND`` / ``COUNTS_KIND``
+#: of ``persistence.crud.analysis.fix_first``.
+NOT_READ_BY: dict[str, frozenset[str]] = {
+    "fix_first": _DECISION_AND_COMMIT_HEALTH,
+    "fix_first_counts": _DECISION_AND_COMMIT_HEALTH,
+}
+
+#: ``session.info`` entry: the input tables this transaction wrote, ``""`` for
+#: a write whose table could not be named.
+_WRITTEN = "read_snapshots_written"
 
 # Fail-safe: any text statement that is not a plain read counts as a write,
 # and one whose target cannot be named counts as a write to an input.
@@ -123,20 +156,25 @@ def _written_table(statement: Any) -> str | None:
 def _note_statement(state: Any) -> None:
     table = _written_table(state.statement)
     if table is not None and table not in UNRELATED_TABLES:
-        state.session.info[_STALE] = True
+        state.session.info.setdefault(_WRITTEN, set()).add(table)
 
 
-def _pending_input(session: Session) -> bool:
-    return any(
-        getattr(obj, "__tablename__", "") not in UNRELATED_TABLES
+def _pending_inputs(session: Session) -> set[str]:
+    tables = {
+        getattr(obj, "__tablename__", "")
         for obj in (*session.new, *session.dirty, *session.deleted)
-    )
+    }
+    return tables - UNRELATED_TABLES
 
 
 @event.listens_for(Session, "before_flush")
 def _note_flush(session: Session, _context: Any, _instances: Any) -> None:
-    if _pending_input(session):
-        session.info[_STALE] = True
+    if pending := _pending_inputs(session):
+        session.info.setdefault(_WRITTEN, set()).update(pending)
+
+
+def _inputs_written(session: Session) -> set[str]:
+    return set(session.info.get(_WRITTEN, ())) | _pending_inputs(session)
 
 
 # ``commit`` runs this before its own final flush, so objects still pending
@@ -146,26 +184,30 @@ def _invalidate(session: Session) -> None:
     """Drop the stored views in the transaction that changed their inputs."""
     if session.in_nested_transaction():
         return  # a savepoint release is not the commit; the outer one decides
-    if not stale(session):
+    written = _inputs_written(session)
+    if not written:
         return
+    kept = SELF_KEYED_KINDS | {kind for kind, skip in NOT_READ_BY.items() if written <= skip}
     try:
         with session.begin_nested():
-            session.execute(delete(ReadSnapshot).where(ReadSnapshot.kind.not_in(SELF_KEYED_KINDS)))
+            session.execute(delete(ReadSnapshot).where(ReadSnapshot.kind.not_in(kept)))
     except Exception as exc:  # a store from before the table holds no views
         logger.debug("read snapshots not cleared: %s", exc)
     # Popped after the delete: the savepoint's autoflush can set it again.
-    session.info.pop(_STALE, None)
+    session.info.pop(_WRITTEN, None)
 
 
-def stale(session: Session) -> bool:
-    """Whether this transaction wrote, or is about to write, a view's input."""
-    return bool(session.info.get(_STALE)) or _pending_input(session)
+def stale(session: Session, kind: str | None = None) -> bool:
+    """Whether this transaction wrote, or is about to write, an input of *kind*
+    (of any view when ``None``)."""
+    written = _inputs_written(session)
+    return bool(written - NOT_READ_BY.get(kind or "", frozenset()))
 
 
 async def mark_current(session: AsyncSession) -> None:
     """The views just written reflect every write this transaction made."""
     await session.flush()
-    session.info.pop(_STALE, None)
+    session.info.pop(_WRITTEN, None)
 
 
 def snapshot_key(*parts: Any) -> str:
@@ -222,7 +264,7 @@ async def refresh_snapshot(
     reader answers by building live.
     """
     row = await session.get(ReadSnapshot, (repo_id, kind))
-    if row is not None and row.key == key and not force and not stale(session.sync_session):
+    if row is not None and row.key == key and not force and not stale(session.sync_session, kind):
         return False
     text = json.dumps(await build(), ensure_ascii=False)
     if row is None:
@@ -231,6 +273,102 @@ async def refresh_snapshot(
         row.key, row.payload_json = key, text
     await session.flush()
     return True
+
+
+#: Key prefix of a row a reader holds while it builds; never a real key, so
+#: other readers see a miss.
+_CLAIM_PREFIX = "claim:"
+
+
+def _write_back_engine(session: AsyncSession) -> AsyncEngine | None:
+    """A no-wait engine on the session's store, or ``None`` where a reader
+    does not store what it built.
+
+    Ceiling: SQLite files only. An in-memory store cannot be reopened, and on
+    Postgres the claim could wait on a writer's row locks.
+    """
+    bind = session.bind
+    if not isinstance(bind, AsyncEngine) or bind.dialect.name != "sqlite":
+        return None
+    if bind.url.database in (None, "", ":memory:"):
+        return None
+    from .database import create_engine  # database imports this module
+
+    return create_engine(bind.url.render_as_string(hide_password=False), busy_timeout_ms=0)
+
+
+async def _claim(engine: AsyncEngine, repo_id: str, kind: str, claim: str) -> bool:
+    """Replace the ``kind`` row with a claim, committed before the build reads."""
+    where = (ReadSnapshot.repository_id == repo_id, ReadSnapshot.kind == kind)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(delete(ReadSnapshot).where(*where))
+            await conn.execute(
+                insert(ReadSnapshot).values(
+                    repository_id=repo_id, kind=kind, key=claim, payload_json="null"
+                )
+            )
+        return True
+    except SQLAlchemyError as exc:  # locked, read-only, or a store without the table
+        logger.debug("read snapshot %s not claimed: %s", kind, exc)
+        return False
+
+
+async def _fill(
+    engine: AsyncEngine, repo_id: str, kind: str, claim: str, key: str, value: Any
+) -> bool:
+    """Store ``value`` only while the claim still stands: an input write
+    since the claim deleted it, and a later reader's claim replaced it."""
+    try:
+        payload = json.dumps(value, ensure_ascii=False)
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                update(ReadSnapshot)
+                .where(
+                    ReadSnapshot.repository_id == repo_id,
+                    ReadSnapshot.kind == kind,
+                    ReadSnapshot.key == claim,
+                )
+                .values(key=key, payload_json=payload)
+            )
+        return result.rowcount == 1
+    except (SQLAlchemyError, TypeError, ValueError) as exc:  # the build is served anyway
+        logger.debug("read snapshot %s not stored: %s", kind, exc)
+        return False
+
+
+async def build_and_store(
+    session: AsyncSession,
+    repo_id: str,
+    kind: str,
+    key: str,
+    build: Callable[[AsyncSession], Awaitable[Any]],
+) -> Any:
+    """``await build(...)`` (JSON-ready), stored as the ``kind`` row under
+    ``key`` for the next process, for a reader that found the row missing.
+
+    The claim commits first and the build then runs on a fresh session, whose
+    reads all follow the claim: an input write that lands before the store
+    has deleted the claim, so a stale build is never stored. A store that is
+    locked or read-only skips the write and still returns the build; so does
+    a store this cannot reopen, and a session holding its own input writes,
+    which build on ``session``.
+    """
+    if stale(session.sync_session, kind):
+        return await build(session)
+    engine = _write_back_engine(session)
+    if engine is None:
+        return await build(session)
+    try:
+        claim = f"{_CLAIM_PREFIX}{uuid.uuid4().hex}"
+        if not await _claim(engine, repo_id, kind, claim):
+            return await build(session)
+        async with AsyncSession(session.bind, expire_on_commit=False) as fresh:
+            value = await build(fresh)
+        await _fill(engine, repo_id, kind, claim, key, value)
+        return value
+    finally:
+        await engine.dispose()
 
 
 @cache
@@ -254,8 +392,10 @@ def decode_or_none(tp: type, value: Any) -> Any | None:
 
 
 __all__ = [
+    "NOT_READ_BY",
     "SELF_KEYED_KINDS",
     "UNRELATED_TABLES",
+    "build_and_store",
     "decode_or_none",
     "mark_current",
     "read_snapshot",

@@ -13,6 +13,7 @@ from typing import Any, NamedTuple
 from .context import RepoContext, build_context
 from .facts import RepoFacts
 from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome, shared_priority
+from .model import NEXT_ACTIONS_HEAD as NEXT_ACTIONS_HEAD  # its old home
 from .rules import code, hygiene, signal
 from .summary import summarize
 
@@ -40,9 +41,6 @@ KEEP_PER_HORIZON = 20
 #: In the head of each tier, no rule takes more than this many places before
 #: every other rule with something to say has had one.
 PER_RULE_HEAD = 2
-
-#: The places every surface shows first: the overview's next actions.
-NEXT_ACTIONS_HEAD = 3
 
 
 @dataclass(frozen=True, slots=True)

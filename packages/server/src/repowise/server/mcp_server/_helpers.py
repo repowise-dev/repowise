@@ -126,8 +126,11 @@ def embed_timeout_s() -> float:
 # ---------------------------------------------------------------------------
 
 
+_warned_ambiguous: set[str] = set()
+
+
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository — by path, by ID, or return the first one."""
+    """Resolve a repository by path, ID or name; with none, the served directory's."""
     if repo:
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
@@ -149,13 +152,30 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         if obj:
             return obj
         raise LookupError(f"Repository not found: {repo}")
+    return await _default_repo(session)
 
-    # Default: return the first (and often only) repository
-    result = await session.execute(select(Repository).limit(1))
-    obj = result.scalar_one_or_none()
-    if obj is None:
+
+async def _default_repo(session: AsyncSession) -> Repository:
+    """The served directory's row, else the only (or first) row."""
+    served = _state._repo_path
+    if served:
+        for key in dict.fromkeys((served, str(Path(served).resolve()))):
+            obj = await get_repository_by_path(session, key)
+            if obj:
+                return obj
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if not rows:
         raise LookupError("No repositories found. Run 'repowise init' first.")
-    return obj
+    if len(rows) > 1 and served and served not in _warned_ambiguous:
+        # A store split when an older version indexed a moved or copied repo.
+        _warned_ambiguous.add(served)
+        _log.warning(
+            "The index holds several repositories and none at %s; serving %s. "
+            "Pass `repo` to pick another.",
+            served,
+            rows[0].local_path,
+        )
+    return rows[0]
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +684,9 @@ def _compute_alignment(
 # ---------------------------------------------------------------------------
 
 
-def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | None:
+def read_repo_file_text(
+    repo_root: Path | str | None, file_path: str, *, allow_extracted: bool = True
+) -> str | None:
     """Read a repo-relative file's live text, or None when it cannot be served.
 
     Refuses any path that resolves outside *repo_root*: several tools serve
@@ -673,19 +695,23 @@ def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | N
     card describing a latin-1 file should degrade to mojibake in one field,
     rather than failing the whole call.
 
-    Several tool modules still carry their own near-identical copy of this,
-    each with one extra behaviour bolted on (a size ceiling, lines instead of
-    text). Those are left alone here rather than churned, but new callers
-    belong on this one, and a copy that needs a variation should wrap it.
+    Source-coordinate readers must set ``allow_extracted=False``. Async callers
+    allowing extraction must offload this synchronous reader.
+
+    Classification, containment and conversion belong to the core source reader;
+    this optional serving boundary translates extraction failures to unavailable.
     """
     if repo_root is None:
         return None
+    from repowise.core.ingestion.document_extractors import DocumentExtractionError
+    from repowise.core.ingestion.source_reader import read_source
+
     try:
-        root = Path(str(repo_root))
-        abs_path = (root / file_path).resolve()
-        abs_path.relative_to(root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
+        source = read_source(Path(str(repo_root)), file_path, allow_extracted=allow_extracted)
+        if source is None:
+            return None
+        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, ValueError, DocumentExtractionError):
         return None
 
 

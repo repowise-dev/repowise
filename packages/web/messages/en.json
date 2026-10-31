@@ -622,7 +622,10 @@
       "title": "Knowledge Graph",
       "description": "Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs.",
       "loading": "Building the knowledge graph…",
-      "error": "Could not load the knowledge graph for this repository."
+      "error": "Could not load the knowledge graph for this repository.",
+      "errorHint": "The server did not return a map. Check that the repository is indexed and the API is running, then try again.",
+      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds.",
+      "showTestLinks": "Show test links"
     },
     "refactoring": {
       "title": "Refactoring",
@@ -921,10 +924,9 @@
         "andMore": "{list} and {count} more"
       },
       "ribbon": {
-        "files": "Files",
-        "filesSub": "across {count, plural, one {# repository} other {# repositories}}",
-        "symbols": "Symbols",
-        "symbolsSub": "functions, classes and methods",
+        "lowestHealth": "Lowest health",
+        "lowestHealthSub": "{name} · {healthy} of {scored} scored {scored, plural, one {repository} other {repositories}} Good or better",
+        "lowestHealthNone": "no health snapshot yet",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
         "docFreshnessSub": "{fresh} of {pages} pages fresh",
@@ -1321,7 +1323,8 @@
       "stubTitle": "Built from the index. A model has not written this page yet.",
       "startHere": "Start here",
       "onboarding": "Onboarding",
-      "modulesWithNoLayer": "Modules with no layer ({count})",
+      "walkthroughs": "Walkthroughs ({count})",
+      "otherModules": "Other modules ({count})",
       "codeReference": "Code reference",
       "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}"
     },
@@ -1377,16 +1380,49 @@
     "breadcrumb": {
       "label": "Zoom location"
     },
+    "sheet": {
+      "label": "Selected item details"
+    },
     "hint": {
       "scroll": "Scroll to zoom",
       "drag": "Drag to pan",
       "doubleClick": "Double-click a card to dive in",
       "dismiss": "Dismiss hint"
     },
+    "controls": {
+      "label": "Map controls",
+      "zoomIn": "Zoom in (+)",
+      "zoomOut": "Zoom out (-)",
+      "fit": "Fit the whole system (0)",
+      "up": "Up one level (Esc)"
+    },
     "search": {
-      "placeholder": "Search files…",
+      "placeholder": "Search layers, folders, files…",
       "aria": "Search the system map",
-      "clear": "Clear search"
+      "clear": "Clear search",
+      "shortcut": "Press / to search",
+      "results": "Search results",
+      "usedMostBy": "Used most by {name}",
+      "repositoryRoot": "Repository root",
+      "kind": {
+        "system": "System",
+        "layer": "Layer",
+        "group": "Group",
+        "folder": "Folder",
+        "file": "File",
+        "container": "Container",
+        "external": "External"
+      }
+    },
+    "canvas": {
+      "aria": "Zoomable system map. Drag to pan, scroll to zoom, double-click a card to dive into it. Keys: plus and minus zoom, 0 fits the whole system, Enter selects the centre card or dives into the selected one, arrow keys pan or move between sibling cards, Escape closes the selection or goes up a level. Press slash to search, external systems included.",
+      "minimap": "Overview map. Click or drag to move the view.",
+      "relationCount": "{count, plural, one {# relation} other {# relations}}",
+      "capOnMap": "Showing the {shown} strongest on the map",
+      "externalUsage": "{imports, plural, one {# import} other {# imports}} from here · {files, plural, one {# file} other {# files}} in the repo",
+      "containerSpan": "Spans {count} containers",
+      "externalMostFrom": "Imported most by",
+      "externalDive": "Double-click to go to {name}"
     },
     "export": {
       "downloaded": "Downloaded {filename}",
@@ -1399,14 +1435,26 @@
       "building": "Building…"
     },
     "mapKey": {
+      "button": "Map key and relation filter",
+      "buttonFiltered": "Map key and relation filter, filter on",
       "showingFiltered": "Showing <verbs>{list}</verbs> only. Arrow weight is how many file pairs the relation covers.",
       "hoverHint": "Hover a card to see what it depends on. Arrow weight is how many file pairs the dependency covers.",
       "unclaimed": "{shown} of {total} files are not on the map; they belong to no layer.",
       "clear": "Clear",
-      "topRightDot": "Top-right dot",
-      "entryDotHelp": "Entry point, hotspot, dead code or on an execution flow. Hover for which.",
-      "footerDot": "Footer dot",
-      "healthBand": "Code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that."
+      "roleIcons": "Role icons",
+      "hotspot": "Hotspot",
+      "entryPoint": "Entry point",
+      "deadCode": "Dead code",
+      "roleIconsHelp": "A card's footer counts the files with each role; a file shows the icon beside its name. Hover a card to see if it is on an execution flow.",
+      "cornerScore": "Top-right number",
+      "healthBand": "The top-right number is code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that.",
+      "containers": "Containers.",
+      "containersHint": "Pick one to dim every card outside it.",
+      "dashedCard": "Dashed card",
+      "externalsHelp": "External system the code reaches. Hover one to see which parts use it.",
+      "linksShown": "Links shown:",
+      "linksShownSome": "strongest {shown, number} of {total, number} · hover a card for all of its links.",
+      "linksShownAll": "all {total, number} · hover a card to lift its links."
     },
     "detail": {
       "close": "Close details",
@@ -1421,8 +1469,32 @@
       "capSuffix": "{cap} on the map.",
       "language": "Language",
       "zoomIn": "Zoom in",
-      "readModule": "Read the module page",
-      "openFile": "Open file page"
+      "openDocs": "Read docs",
+      "openFile": "Open file",
+      "ask": "Ask about this",
+      "askQuestion": "Explain what {name} does in this system and how it connects to the rest, naming the files it rests on.",
+      "copyLink": "Copy link",
+      "linkCopied": "Link copied"
+    },
+    "c4": {
+      "technologies": "Technologies",
+      "container": "Container",
+      "containers": "Spans {count} containers",
+      "externals": "External systems",
+      "imports": "{count, plural, one {# import} other {# imports}}",
+      "kind": {
+        "extension": "Extension",
+        "web_app": "Web app",
+        "api": "API",
+        "cli": "CLI",
+        "worker": "Worker",
+        "library": "Library"
+      },
+      "external": {
+        "db": "Database",
+        "network": "Network",
+        "service": "Service"
+      }
     }
   },
   "architecture": {
@@ -2286,9 +2358,11 @@
       "gated": "Held back"
     },
     "band": {
-      "healthy": "Healthy",
-      "warning": "Warning",
-      "alert": "Alert"
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "needs_work": "Needs work",
+      "at_risk": "At risk"
     },
     "danglingReason": {
       "no_provider": "no provider in the workspace",

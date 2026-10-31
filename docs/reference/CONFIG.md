@@ -283,6 +283,9 @@ overrides a key for one session.
   any span and a second Read returns the whole file.
 - `plus` mode keeps imports, constants, class fields, decorators and comments,
   eliding only function and method bodies.
+- A file whose skeleton is over the 10,000-character hook output cap is served
+  as an outline: one line per symbol, long signatures cut, the same range
+  markers. Only a file whose outline is still over the cap is passed through.
 - Savings show in `repowise saved` under `read_skeleton`. Needs Claude Code
   2.1.218+; older clients get the one-line pointer at
   `get_context(include=["skeleton"])`.

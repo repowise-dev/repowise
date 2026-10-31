@@ -191,6 +191,14 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
+    # Pascal types a field, parameter or local (``FToast: TToast``); a typed
+    # receiver whose class lacks the method answers with the ancestor that
+    # declares it, and a field may be declared by an ancestor too.
+    "pascal": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER,
+        inherited_typed_receiver=True,
+        inherited_fields=True,
+    ),
     # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).
     "apex": _LanguageCallStrategies(
         free=("_resolve_apex_namespace_type",),

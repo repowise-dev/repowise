@@ -116,11 +116,13 @@ def _import_lines(lines: list[str], start: re.Pattern[str] = _IMPORT_START) -> s
 
 def _read_lines(root: Path, rel: str) -> list[str] | None:
     try:
-        if (root / rel).stat().st_size > _MAX_FILE_BYTES:
+        abs_path = (root / rel).resolve()
+        abs_path.relative_to(root.resolve())
+        if abs_path.stat().st_size > _MAX_FILE_BYTES:
             return None
-    except OSError:
+    except (OSError, ValueError):
         return None
-    text = read_repo_file_text(root, rel)
+    text = read_repo_file_text(root, rel, allow_extracted=False)
     if text is None:
         return None
     # Only a newline ends a line: splitlines() also splits on form feeds and
@@ -551,7 +553,9 @@ def _jvm_package_files(
 
 def _live_definition(root: Path, node: GraphNode, name: str, language: str) -> tuple[int, int]:
     """*node*'s bounds re-parsed from its edited file; ``(0, 0)`` when it is not found."""
-    text = read_repo_file_text(root, node.file_path)
+    text = read_repo_file_text(root, node.file_path, allow_extracted=False)
+    if text is None:
+        return (0, 0)
     row = WikiSymbol(
         file_path=node.file_path,
         symbol_id=node.node_id,

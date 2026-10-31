@@ -153,3 +153,97 @@ def test_a_name_written_as_an_owner_anchors_its_definition() -> None:
     )
     two = {"Client": [client, other]}
     assert run(_trusted_over_topic(two, {"Client", "Client.get"}, _UntrustingGuard())) == {}
+
+
+# --- narrowing a shared name to the definitions the question names -----------
+
+_PAGES = "src/adapter/cloudflare-pages/handler.ts"
+_WORKERS = "src/adapter/cloudflare-workers/serve-static.ts"
+_DENO = "src/adapter/deno/serve-static.ts"
+_DENO_PKG = "adapters/deno/src/serve-static.ts"
+
+
+def _defs(*paths):
+    return [
+        SimpleNamespace(
+            name="serveStatic", file_path=p, kind="function", parent_name=None,
+            qualified_name="serveStatic",
+        )
+        for p in paths
+    ]
+
+
+async def _choose(question, cands, question_ids=frozenset({"serveStatic"})):
+    from repowise.server.mcp_server.tool_answer.symbols import _choose_anchor_symbols
+
+    async def _verified(c):
+        return {"path": c.file_path}
+
+    homonyms = {"union": {}, "qualified_miss": []}
+    chosen = await _choose_anchor_symbols(
+        {"serveStatic": cands}, set(question_ids), _verified, homonyms, question=question
+    )
+    return [c.file_path for c in chosen], {
+        name: [d["path"] for d in defs] for name, defs in homonyms["union"].items()
+    }
+
+
+async def test_a_question_naming_one_file_anchors_its_definition() -> None:
+    chosen, union = await _choose(
+        "serveStatic in the cloudflare pages handler", _defs(_PAGES, _WORKERS, _DENO)
+    )
+    assert chosen == [_PAGES]
+    assert union == {}
+
+
+async def test_a_question_naming_several_files_unions_only_those() -> None:
+    chosen, union = await _choose(
+        "how does serveStatic work on deno", _defs(_PAGES, _WORKERS, _DENO, _DENO_PKG)
+    )
+    assert chosen == []
+    assert union == {"serveStatic": [_DENO, _DENO_PKG]}
+
+
+async def test_a_question_naming_no_file_unions_every_definition() -> None:
+    chosen, union = await _choose("how does serveStatic work", _defs(_PAGES, _WORKERS, _DENO))
+    assert chosen == []
+    assert union == {"serveStatic": [_PAGES, _WORKERS, _DENO]}
+
+
+async def test_a_qualifier_that_matches_nothing_is_still_a_miss() -> None:
+    from repowise.server.mcp_server.tool_answer.symbols import _choose_anchor_symbols
+
+    async def _verified(c):
+        return {"path": c.file_path}
+
+    homonyms = {"union": {}, "qualified_miss": []}
+    chosen = await _choose_anchor_symbols(
+        {"serveStatic": _defs(_PAGES, _DENO)},
+        {"Router.serveStatic", "serveStatic"},
+        _verified,
+        homonyms,
+        question="Router.serveStatic on deno",
+    )
+    assert chosen == []
+    assert homonyms["qualified_miss"] == ["serveStatic"]
+
+
+def test_the_path_sharing_the_most_question_words_is_the_one_named() -> None:
+    from repowise.server.mcp_server._query_terms import paths_the_question_names
+
+    paths = [_PAGES, _WORKERS]
+    question = "the cloudflare pages handler"
+    assert paths_the_question_names("serveStatic", paths, question, best_only=True) == [_PAGES]
+    assert paths_the_question_names("serveStatic", paths, question) == paths
+    assert paths_the_question_names("serveStatic", paths, "how does it work") == []
+
+
+def test_a_question_partly_naming_a_second_definition_does_not_settle_the_split() -> None:
+    """Grading stays strict: a question word that also names the other file
+    leaves the answer to tell both definitions apart."""
+    split = {"serveStatic": [_PAGES, _WORKERS]}
+    answer = f"In `{_PAGES}`, `serveStatic` serves assets for advanced mode."
+    grade = _grade(
+        "serveStatic in the cloudflare pages handler", answer, split=split, citations=(_PAGES,)
+    )
+    assert grade.split_names == split

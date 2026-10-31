@@ -72,7 +72,11 @@ from repowise.core.workspace.update import stamp_workspace_entry
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._workspace_config import WorkspacePick, build_workspace_config
 from ._workspace_plan import WorkspaceAnswers, WorkspacePlan, run_workspace_plan_screen
 from ._workspace_repos import repos_primary_line, select_workspace_repos
@@ -1177,6 +1181,9 @@ def _offer_workspace_hooks(
         distill_hook,
         yes=yes,
         no_editor_setup=not editor_setup,
+    )
+    warn_unresolved_hooks(
+        console, [r.path for r in selected], no_editor_setup=not editor_setup
     )
 
 

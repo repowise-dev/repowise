@@ -11,6 +11,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from repowise.core.analysis.change_health.child import ChildProcessDeltaService
 from repowise.core.analysis.change_health.service import (
     ChangeHealthDeltaService,
     DeltaRequest,
@@ -97,7 +98,7 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
     # Built outside the lock: the fingerprint reads config off disk.
     from repowise.core.repo_config import health_rules_fingerprint
 
-    service = ChangeHealthDeltaService(
+    service = ChildProcessDeltaService(
         repo_path=repo_path, rules_fingerprint=health_rules_fingerprint(repo_path)
     )
     with _DELTA_SERVICES_LOCK:

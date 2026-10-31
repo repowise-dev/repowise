@@ -11,8 +11,11 @@ from repowise.server.mcp_server.tool_answer.confidence import (
     _grade_answer,
     stated_value_line,
 )
-from repowise.server.mcp_server.tool_answer.payload import _high_confidence_note
-from repowise.server.mcp_server.tool_answer.symbols import _names_nothing_in_code
+from repowise.server.mcp_server.tool_answer.payload import (
+    _held_at_medium_note,
+    _high_confidence_note,
+)
+from repowise.server.mcp_server.tool_answer.symbols import _names_nothing_in_code, _TopicGuard
 
 _TS = "core/ingestion/extractors/imports/ts_js.py"
 _TS_HITS = [
@@ -268,7 +271,7 @@ class _Guard:
     def __init__(self, written: set[str], unscanned: set[str] = frozenset()):
         self.names, self.unscanned = written, unscanned
 
-    async def written(self, token: str) -> bool | None:
+    async def written(self, token: str, scope: str | None = None) -> bool | None:
         return None if token in self.unscanned else token in self.names
 
 
@@ -284,3 +287,348 @@ def test_only_code_shaped_names_no_line_writes_are_absent() -> None:
     assert not absent("SSG")  # an acronym is prose often enough
     assert not absent("Client.get")
     assert not absent("BigRepoThing")  # the scan stopped short: unknown, not absent
+
+
+# --- markdown markup does not hide a hedge -----------------------------------
+
+_TREE_Q = "How does the FileTree component in packages/ui render nested folders?"
+_TREE_HITS = [
+    {"target_path": "packages/ui/src/graph/code-graph-tree.tsx", "score": 2.3,
+     "summary": "Outline tree of directories and files.",
+     "symbols": [{"name": "CodeGraphTree", "kind": "function"}]},
+    {"target_path": "packages/ui/src/zoom/types.ts", "score": 1.6},
+]
+
+
+def test_an_emphasised_admission_is_still_a_hedge() -> None:
+    answer = (
+        "## What the excerpts show\n\nThe retrieved material does **not include the "
+        "`FileTree` component** or its source body. The closest symbol is `CodeGraphTree`."
+    )
+    grade = _grade(_TREE_Q, answer, _TREE_HITS, dominance="ratio", ids={"FileTree"},
+                   unindexed_names={"FileTree"})
+    assert grade.hedged
+    assert grade.confidence == "low"
+
+
+def test_markup_inside_an_identifier_is_not_stripped() -> None:
+    # Only edge underscores go, so a snake_case name cannot turn into a phrase.
+    assert not _answer_is_hedged("`does_not_include_tests` filters the walk.", "What filters it?")
+
+
+# --- a scoped question's name nothing under the scope writes ------------------
+
+
+def _scanned_guard(rows: list[str], *, complete: bool = True) -> _TopicGuard:
+    guard = _TopicGuard(None, [], "", set())
+    guard._scans["FileTree"] = ([{"path": p, "line": 1, "text": "FileTree"} for p in rows], complete)
+    return guard
+
+
+def test_a_name_written_only_outside_the_scope_is_absent_in_it() -> None:
+    guard = _scanned_guard(["packages/server/symbols.py"])
+    assert asyncio.run(_names_nothing_in_code("FileTree", guard, "packages/ui/src"))
+    assert not asyncio.run(_names_nothing_in_code("FileTree", guard))
+
+
+def test_a_name_written_under_the_scope_is_not_absent() -> None:
+    inside = _scanned_guard(["packages/ui/src/tree/FileTree.tsx"])
+    assert not asyncio.run(_names_nothing_in_code("FileTree", inside, "packages/ui/src"))
+    # A sibling directory sharing the prefix is outside the scope.
+    sibling = _scanned_guard(["packages/ui/src-old/FileTree.tsx"])
+    assert asyncio.run(_names_nothing_in_code("FileTree", sibling, "packages/ui/src"))
+    # A scan that stopped short proves nothing.
+    partial = _scanned_guard(["packages/server/symbols.py"], complete=False)
+    assert not asyncio.run(_names_nothing_in_code("FileTree", partial, "packages/ui/src"))
+
+
+# --- agreement alone needs a strong top score ---------------------------------
+
+_CORS_Q = "How does the cors middleware handle a preflight OPTIONS request?"
+_CORS_A = "The `cors` middleware sets `Access-Control-Allow-Methods` and returns 204."
+
+
+def _cors_hits(top: float) -> list[dict]:
+    return [
+        {"target_path": "src/middleware/cors/index.ts", "score": top,
+         "summary": "cors middleware: preflight OPTIONS request handling.",
+         "symbols": [{"name": "cors", "kind": "function", "_matched": True}]},
+        {"target_path": "src/client/types.ts", "score": top - 0.03},
+    ]
+
+
+def test_agreement_on_a_weak_top_score_holds_at_medium_with_a_note() -> None:
+    grade = _grade(_CORS_Q, _CORS_A, _cors_hits(3.27), dominance="agreement")
+    assert grade.confidence == "medium"
+    assert grade.weak_agreement
+    assert "3.27" in _held_at_medium_note(grade)
+
+
+def test_agreement_on_a_strong_top_score_stays_high() -> None:
+    grade = _grade(_CORS_Q, _CORS_A, _cors_hits(4.2), dominance="agreement")
+    assert grade.confidence == "high"
+    assert grade.high_reason == "agreement"
+    assert not grade.weak_agreement
+
+
+def test_the_agreement_floor_leaves_other_dominance_alone() -> None:
+    grade = _grade(_CORS_Q, _CORS_A, _cors_hits(3.27), dominance="gap")
+    assert grade.confidence == "high"
+    assert not grade.weak_agreement
+
+
+def test_a_specific_gate_keeps_its_finding_under_weak_agreement() -> None:
+    hits = _cors_hits(3.27)
+    grade = _grade(_CORS_Q, _CORS_A, hits, dominance="agreement", ids={"cors"},
+                   split_names={"cors": ["src/middleware/cors/index.ts", "src/adapter/cors.ts"]})
+    assert grade.confidence == "medium"
+    assert grade.split_names
+    assert not grade.weak_agreement
+
+
+def test_a_file_cut_at_the_line_cap_leaves_the_word_scan_complete(tmp_path) -> None:
+    from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE, word_scan
+
+    (tmp_path / "many.py").write_text("RowTree = 1\n" * (MAX_LINES_PER_FILE + 3), encoding="utf-8")
+    rows, complete = word_scan(tmp_path, "RowTree")
+    assert complete
+    assert {r["path"] for r in rows} == {"many.py"}
+
+
+def test_the_anchor_marks_a_name_absent_under_the_question_scope(tmp_path) -> None:
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    class _NoRows:
+        async def execute(self, *a, **k):
+            class _R:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return []
+
+            return _R()
+
+    (tmp_path / "server").mkdir()
+    (tmp_path / "ui").mkdir()
+    (tmp_path / "server" / "notes.py").write_text("register(RowTree)\n", encoding="utf-8")
+    (tmp_path / "ui" / "tree.ts").write_text("export const outline = 1\n", encoding="utf-8")
+    q = "How does the RowTree component render nested folders?"
+    hits = [{"target_path": "ui/tree.ts", "score": 2.0}]
+
+    def absent(scope):
+        _, homonyms = asyncio.run(_anchor_symbol_hits(
+            _NoRows(), "r", {"RowTree"}, list(hits), repo_root=tmp_path, question=q, scope=scope
+        ))
+        return homonyms["absent"]
+
+    assert absent("ui") == ["RowTree"]
+    assert absent(None) == []  # written elsewhere in the repository
+
+
+def test_the_absent_name_note_names_the_missing_code() -> None:
+    from repowise.server.mcp_server.tool_answer.payload import _noted_unfounded_claim
+
+    grade = _grade(_TREE_Q, "Folders nest through `CodeGraphTree`.", _TREE_HITS,
+                   dominance="ratio", ids={"FileTree"}, unindexed_names={"FileTree"},
+                   absent_names=("FileTree",))
+    payload: dict = {}
+    assert _noted_unfounded_claim(payload, grade, [])
+    assert payload["note"].startswith("Nothing in the code searched defines or writes FileTree")
+
+
+# --- a verified value line earns high under the score floor -------------------
+
+_RATIO = {"name": "_DOMINANCE_RATIO", "kind": "constant", "signature": "_DOMINANCE_RATIO = 1.2",
+          "start_line": 119, "_verified": True, "_matched": True}
+_RATIO_A = "`_DOMINANCE_RATIO` is set to 1.2 in config.py: `_DOMINANCE_RATIO = 1.2`."
+
+
+def _ratio_hits(top: float, sym: dict | None = None) -> list[dict]:
+    return [
+        {"target_path": _CFG, "score": top, "symbols": [sym or _RATIO]},
+        {"target_path": "tool_answer/_meta.py", "score": top / 1.5},
+    ]
+
+
+def test_a_stated_value_line_earns_high_under_the_score_floor() -> None:
+    grade = _grade("What is _DOMINANCE_RATIO?", _RATIO_A, _ratio_hits(1.3),
+                   dominance="ratio", ids={"_DOMINANCE_RATIO"})
+    assert (grade.confidence, grade.high_reason) == ("high", "value_line")
+    assert "verified line" in _high_confidence_note(grade, "")
+
+
+def test_a_dominant_answer_under_the_floor_without_a_value_line_is_noted() -> None:
+    from repowise.server.mcp_server.tool_answer.payload import _closing_note
+
+    answer = "`_DOMINANCE_RATIO` sets how far the top hit must lead."
+    grade = _grade("What is _DOMINANCE_RATIO?", answer, _ratio_hits(1.3),
+                   dominance="ratio", ids={"_DOMINANCE_RATIO"})
+    assert grade.confidence == "medium"
+    assert grade.under_floor
+    assert "1.30" in _closing_note(grade, [])
+
+
+def _pad_hits(excerpt: str) -> list[dict]:
+    # A Go const block stores the bare name as the signature.
+    pad = {"name": "minUsagePadding", "kind": "variable", "signature": "minUsagePadding",
+           "source_excerpt": excerpt, "_verified": True, "_matched": True}
+    return [{"target_path": "command.go", "score": 1.3, "symbols": [pad]},
+            {"target_path": "completions.go", "score": 0.9}]
+
+
+def test_a_bare_name_signature_reads_the_value_from_its_live_line() -> None:
+    answer = "In command.go, `minUsagePadding` is a constant set to 25."
+    grade = _grade("What is minUsagePadding?", answer, _pad_hits("const minUsagePadding = 25"),
+                   dominance="ratio", ids={"minUsagePadding"})
+    assert (grade.confidence, grade.high_reason) == ("high", "value_line")
+
+
+def test_a_live_line_assigning_another_name_reads_no_value() -> None:
+    answer = "In command.go, `minUsagePadding` is a constant set to 25."
+    grade = _grade("What is minUsagePadding?", answer, _pad_hits("// see padding = 25 below"),
+                   dominance="ratio", ids={"minUsagePadding"})
+    assert grade.confidence == "medium"
+
+
+def _ranked_low_hits(matched: bool) -> list[dict]:
+    const = {"name": "_GATED_RETURN_HITS", "kind": "constant", "start_line": 222,
+             "signature": "_GATED_RETURN_HITS = 3", "_verified": True, "_matched": matched}
+    return [
+        {"target_path": "core/health/perf/gated.py", "score": 1.81,
+         "symbols": [{"name": "LOCK_IO_KIND", "kind": "constant", "_verified": True}]},
+        {"target_path": "core/crud/shown.py", "score": 1.8},
+        {"target_path": "core/health/sink_reach.py", "score": 1.79},
+        {"target_path": _CFG, "score": 1.77, "symbols": [const]},
+    ]
+
+
+_GATED_A = f"`_GATED_RETURN_HITS` is defined in {_CFG} as `_GATED_RETURN_HITS = 3`."
+
+
+def test_an_exactly_named_constant_earns_high_wherever_it_ranked() -> None:
+    grade = _grade("What is _GATED_RETURN_HITS?", _GATED_A, _ranked_low_hits(True),
+                   dominance=None, ids={"_GATED_RETURN_HITS"}, lead_off_top=_CFG)
+    # Leading with the value line's file, and that file hydrating the name,
+    # are the evidence: neither the named-file nor the identifier gate demotes.
+    assert (grade.confidence, grade.high_reason) == ("high", "value_line")
+    assert grade.lead_off_top is None
+    assert not grade.unhydrated_names
+
+
+def test_a_constant_ranked_low_without_its_exact_name_earns_nothing() -> None:
+    grade = _grade("What is _GATED_RETURN_HITS?", _GATED_A, _ranked_low_hits(False),
+                   dominance=None, ids={"_GATED_RETURN_HITS"}, lead_off_top=_CFG)
+    assert grade.confidence == "medium"
+
+
+def test_an_unhydrated_question_name_is_held_with_a_note() -> None:
+    hits = [{"target_path": "cache.py", "score": 10.5, "summary": "The answer cache.",
+             "symbols": [{"name": "_cache_entry_expired", "kind": "function"}]},
+            {"target_path": "synthesis.py", "score": 9.4}]
+    grade = _grade("How does get_answer cache answers?", "Rows expire after a TTL.", hits,
+                   ids={"get_answer"})
+    assert grade.confidence == "medium"
+    assert grade.unhydrated_names == ("get_answer",)
+    assert "get_answer" in _held_at_medium_note(grade)
+
+
+# --- the absent-name scan reads only code ------------------------------------
+
+
+def _writes(tmp_path, rel: str, text: str) -> bool:
+    from repowise.server.mcp_server.tool_answer.symbols import _writes_as_code
+
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return _writes_as_code(tmp_path, [{"path": rel, "line": 1}], "RowTree")
+
+
+def test_a_docstring_or_comment_does_not_write_a_name(tmp_path) -> None:
+    assert not _writes(tmp_path, "a.py", 'def f():\n    """Shapes such as\n    RowTree.\n    """\n')
+    assert not _writes(tmp_path, "b.py", '"""RowTree is an example."""\n')
+    assert not _writes(tmp_path, "c.py", "# RowTree is an example\n")
+    assert not _writes(tmp_path, "d.ts", "/** RowTree */\nconst x = 1\n")
+    assert _writes(tmp_path, "e.py", "tree = RowTree()\n")
+    assert _writes(tmp_path, "f.py", 'KEYS = ("RowTree",)\n')  # a production key is real
+
+
+def test_a_hash_or_star_line_is_code_outside_hash_comment_languages(tmp_path) -> None:
+    assert _writes(tmp_path, "a.h", "#define RowTree 3\n")
+    assert _writes(tmp_path, "b.rs", "#[derive(RowTree)]\n")
+    assert _writes(tmp_path, "c.ts", "#RowTree = 0;\n")
+    assert _writes(tmp_path, "d.c", "*ptr = RowTree;\n")
+    assert not _writes(tmp_path, "e.rb", "# RowTree is an example\n")
+
+
+def test_a_test_writes_a_name_only_outside_its_strings(tmp_path) -> None:
+    assert not _writes(tmp_path, "tests/test_a.py", 'q = "How does RowTree render?"\n')
+    assert not _writes(tmp_path, "tests/test_c.py", "q = 'How does RowTree render?'\n")
+    assert _writes(tmp_path, "tests/test_b.py", "from ui import RowTree\n")
+    # A Rust lifetime is not a quote.
+    assert _writes(tmp_path, "tests/tree_test.rs", "fn f<'a>(t: &'a RowTree<'a>) {}\n")
+
+
+def test_a_negated_literal_is_not_a_stated_value() -> None:
+    debug = {"name": "DEBUG_MODE", "kind": "constant", "signature": "DEBUG_MODE = False",
+             "_verified": True, "_matched": True}
+    hits = [{"target_path": "settings.py", "score": 1.2, "symbols": [debug]},
+            {"target_path": "app.py", "score": 0.8}]
+    said = _grade("What is DEBUG_MODE?", "`DEBUG_MODE` is False.", hits, dominance="ratio",
+                  ids={"DEBUG_MODE"})
+    denied = _grade("What is DEBUG_MODE?", "`DEBUG_MODE` is not False; it is on.", hits,
+                    dominance="ratio", ids={"DEBUG_MODE"})
+    assert (said.confidence, denied.confidence) == ("high", "medium")
+
+
+def test_an_arrow_or_a_commented_line_assigns_nothing() -> None:
+    answer = "In command.go, `minUsagePadding` is 25."
+    for excerpt in ("minUsagePadding: () => 25", "// minUsagePadding = 25"):
+        grade = _grade("What is minUsagePadding?", answer, _pad_hits(excerpt),
+                       dominance="ratio", ids={"minUsagePadding"})
+        assert grade.confidence == "medium", excerpt
+
+
+def test_a_value_line_does_not_spare_a_dominant_high_the_gates_that_measure_dominance() -> None:
+    # Dominance vouched for this high, so the gates checking the top hits still apply.
+    grade = _grade("What is _GATED_RETURN_HITS?", _GATED_A, _ranked_low_hits(True),
+                   dominance="gap", ids={"_GATED_RETURN_HITS"})
+    assert grade.confidence == "medium"
+    assert grade.unhydrated_names == ("_GATED_RETURN_HITS",)
+
+
+def test_an_unreadable_file_counts_and_a_write_past_the_scan_cap_is_found(tmp_path) -> None:
+    from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE
+    from repowise.server.mcp_server.tool_answer.symbols import _writes_as_code
+
+    assert _writes_as_code(tmp_path, [{"path": "gone.py", "line": 1}], "RowTree")
+    comments = "# RowTree\n" * MAX_LINES_PER_FILE
+    (tmp_path / "many.py").write_text(comments + "tree = RowTree()\n", encoding="utf-8")
+    (tmp_path / "notes.py").write_text(comments * 2, encoding="utf-8")
+    rows = [{"path": p, "line": n} for p in ("many.py", "notes.py")
+            for n in range(1, MAX_LINES_PER_FILE + 1)]
+    assert _writes_as_code(tmp_path, rows, "RowTree")
+    assert not _writes_as_code(tmp_path, [r for r in rows if r["path"] == "notes.py"], "RowTree")
+
+
+def test_a_name_only_a_comment_writes_is_absent(tmp_path) -> None:
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    class _NoRows:
+        async def execute(self, *a, **k):
+            class _R:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return []
+
+            return _R()
+
+    (tmp_path / "notes.py").write_text("# RowTree is an example\n", encoding="utf-8")
+    _, homonyms = asyncio.run(_anchor_symbol_hits(
+        _NoRows(), "r", {"RowTree"}, [{"target_path": "notes.py", "score": 2.0}],
+        repo_root=tmp_path, question="How does the RowTree component render?",
+    ))
+    assert homonyms["absent"] == ["RowTree"]

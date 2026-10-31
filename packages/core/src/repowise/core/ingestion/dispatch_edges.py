@@ -40,7 +40,7 @@ log = structlog.get_logger(__name__)
 # class-scoped boilerplate macro is extracted as a method every subtype
 # "overrides".
 DISPATCH_LANGUAGES: frozenset[str] = frozenset(
-    {"java", "csharp", "kotlin", "swift", "python"}
+    {"java", "csharp", "kotlin", "swift", "python", "pascal"}
 )
 
 _HERITAGE_EDGE_TYPES = frozenset({"extends", "implements"})
@@ -72,7 +72,7 @@ _CONSTRUCTOR_NAMES = frozenset({"__init__", "__new__", "constructor"})
 # `_name` / `private` are conventions the runtime does not enforce. Found by
 # the C# precision audit, where four of six wrong edges were a `private` test
 # helper that happened to share a name with a `virtual` base.
-_PRIVATE_IS_NOT_DISPATCHED = frozenset({"java", "csharp", "kotlin", "swift", "cpp"})
+_PRIVATE_IS_NOT_DISPATCHED = frozenset({"java", "csharp", "kotlin", "swift", "cpp", "pascal"})
 
 
 def _methods_by_name(graph, type_id: str) -> dict[str, list[str]]:

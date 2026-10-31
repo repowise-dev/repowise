@@ -10,8 +10,11 @@ from pathlib import Path
 from repowise.cli.agent_adapters.claude_code import SHELL_TOOL_MATCHER
 from repowise.cli.mcp_config import (
     generate_mcp_config,
+    hook_pinned_paths,
+    hook_shell_command,
     load_existing_config,
     merge_mcp_entry,
+    read_hooks_block,
     resolve_repowise_command,
 )
 
@@ -63,44 +66,113 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     return workspace_root if workspace_root is not None else repo_path
 
 
-def register_with_claude_desktop(repo_path: Path) -> Path | None:
+def planned_global_entry(
+    stored: dict | None,
+    repo_path: Path,
+    *,
+    follows_launch_dir: bool,
+    retarget: bool = False,
+) -> dict | None:
+    """The ``repowise`` entry to write into a per-user config, or None to keep *stored*.
+
+    A per-user config holds one entry for every repo on the machine, so
+    registering from a second repo never moves it. It is written when absent,
+    when it already serves this repo (the pinned command is refreshed, so a
+    moved venv self-heals), when the repo it names is gone (a moved repo), or
+    on *retarget* (``agents add``). An entry for another repo that still
+    exists keeps its target; only a pinned command that is gone is refreshed.
+
+    *follows_launch_dir* writes a new entry with no repo path, so the server
+    serves the repo the client starts it in. Claude Code starts stdio servers
+    in the project directory; Claude Desktop has no project, so it gets a path.
+    """
+    target = _resolve_mcp_target(repo_path)
+    command = resolve_repowise_command()
+    fresh = _user_entry(None if follows_launch_dir else target, command)
+    if stored is None or retarget:
+        return fresh
+    # A kept entry only ever gets its command refreshed: its args (extra flags
+    # such as --tools) are the user's.
+    refreshed = {**stored, "command": command}
+    current = _entry_repo_target(stored)
+    if current is None:
+        # Ours with no path follows the launch dir already; a hand-shaped
+        # entry (another launcher) is the user's and stays.
+        return refreshed if follows_launch_dir and _is_launch_dir_entry(stored) else None
+    if _same_target(current, target):
+        return refreshed
+    if not Path(current).is_dir():
+        return fresh
+    return refreshed if _pinned_command_missing(stored) else None
+
+
+def _user_entry(target: Path | None, command: str) -> dict:
+    """A per-user entry: pinned *command*, and *target* unless it follows the launch dir."""
+    return generate_mcp_config(target, command=command)["mcpServers"]["repowise"]
+
+
+def _same_target(stored: str, target: Path) -> bool:
+    from repowise.cli._helpers.paths import _same_path
+
+    return _same_path(Path(stored), target)
+
+
+def _is_launch_dir_entry(entry: dict) -> bool:
+    """``repowise mcp`` with flags only: the shape that serves the launch dir."""
+    args = entry.get("args")
+    return isinstance(args, list) and args[:1] == ["mcp"] and _entry_repo_target(entry) is None
+
+
+def _pinned_command_missing(entry: dict) -> bool:
+    command = entry.get("command")
+    pinned = isinstance(command, str) and ("/" in command or "\\" in command)
+    return pinned and not Path(str(command)).exists()
+
+
+def _register_global(
+    config_path: Path, repo_path: Path, *, follows_launch_dir: bool, retarget: bool
+) -> Path | None:
+    entry = planned_global_entry(
+        _stored_repowise_entry(config_path),
+        repo_path,
+        follows_launch_dir=follows_launch_dir,
+        retarget=retarget,
+    )
+    if entry is None:
+        return None
+    return config_path if merge_mcp_entry(config_path, {"repowise": entry}) else None
+
+
+def register_with_claude_desktop(repo_path: Path, *, retarget: bool = False) -> Path | None:
     """Add repowise MCP server to Claude Desktop's config.
 
-    When ``repo_path`` is inside a workspace, the registration targets the
-    workspace root so the MCP server starts in workspace mode.
+    Desktop has no project scope, so its one entry names a repo (the
+    workspace root inside a workspace). See :func:`planned_global_entry` for
+    when an existing entry is kept.
 
-    Returns the config path if successful, None if Claude Desktop is not
-    present or the platform is unsupported.
+    Returns the config path when it was written, None when Claude Desktop is
+    not present, the platform is unsupported, the entry was kept, or the
+    write failed.
     """
     config_path = _claude_desktop_config_path()
-    if config_path is None:
+    if config_path is None or not config_path.parent.exists():
         return None
-    if not config_path.parent.exists():
-        # Claude Desktop not installed
-        return None
-    target = _resolve_mcp_target(repo_path)
-    # Per-user config: pin the absolute path of the running install so a
-    # PATH shadow install (conda, old pip, pipx) can't hijack the server.
-    # Refreshed on every re-registration, so a moved venv self-heals on the
-    # next `repowise init`/`update`.
-    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
-    return config_path if merge_mcp_entry(config_path, entry) else None
+    return _register_global(config_path, repo_path, follows_launch_dir=False, retarget=retarget)
 
 
-def register_with_claude_code(repo_path: Path) -> Path | None:
+def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Path | None:
     """Add repowise MCP server to global Claude Code settings (~/.claude/settings.json).
 
-    When ``repo_path`` is inside a workspace, the registration targets the
-    workspace root so the MCP server starts in workspace mode and subsequent
-    inits against sibling repos do not overwrite the entry.
+    A new entry names no repo: Claude Code starts it in the project it opens,
+    so one entry serves every repo. See :func:`planned_global_entry` for when
+    an existing entry is kept.
 
-    Returns the settings path if successful, None on failure.
+    Returns the settings path when it was written, None when the entry was
+    kept or the write failed.
     """
-    settings_path = _claude_code_settings_path()
-    target = _resolve_mcp_target(repo_path)
-    # Per-user config: absolute command, see register_with_claude_desktop.
-    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
-    return settings_path if merge_mcp_entry(settings_path, entry) else None
+    return _register_global(
+        _claude_code_settings_path(), repo_path, follows_launch_dir=True, retarget=retarget
+    )
 
 
 def _stored_repowise_entry(config_path: Path | None) -> dict | None:
@@ -121,11 +193,16 @@ def _stored_repowise_entry(config_path: Path | None) -> dict | None:
 
 
 def _entry_repo_target(entry: dict) -> str | None:
-    """The repo path an existing MCP entry points at (``mcp <path> …``)."""
+    """The repo path an existing MCP entry points at (``mcp <path> …``).
+
+    None for any other shape. An entry whose slot after ``mcp`` is a flag or
+    missing serves whichever repo the client launches it in.
+    """
     args = entry.get("args")
-    if not isinstance(args, list) or len(args) < 2:
+    if not isinstance(args, list) or args[:1] != ["mcp"] or len(args) < 2:
         return None
-    return str(args[1])
+    target = args[1]
+    return target if isinstance(target, str) and not target.startswith("-") else None
 
 
 def enable_tool_search_in_claude_code() -> Path | None:
@@ -239,6 +316,116 @@ _CAPTURE_HOOK_COMMAND = (
     'printf "%s" "$input" | repowise-augment; fi;; esac'
 )
 
+_AUGMENT = "repowise-augment"
+_REWRITE = "repowise-rewrite"
+
+
+def _augment_hook_command() -> str:
+    """:data:`_AUGMENT_HOOK_COMMAND`, pinned to the running install when it can be."""
+    return hook_shell_command(_AUGMENT)
+
+
+def _capture_hook_command() -> str:
+    """:data:`_CAPTURE_HOOK_COMMAND`, pinned to the running install when it can be."""
+    run = hook_shell_command(_AUGMENT, 'printf "%s" "$input" | {}')
+    return f'input=$(cat); case "$input" in *"git commit"*) {run};; esac'
+
+
+def _rewrite_hook_command() -> str:
+    return hook_shell_command(_REWRITE)
+
+
+#: Unguarded commands older releases wrote. Each moves to the current form.
+_BARE_COMMANDS = ("repowise augment", _AUGMENT, _REWRITE)
+
+
+def _current_command(cmd: str) -> str | None:
+    """The command this release writes in place of *cmd*, or None if *cmd* is not ours.
+
+    Only the plain augment, capture and rewrite commands qualify: the coverage
+    and health-gate commands carry a flag and are written elsewhere.
+    """
+    if cmd in ("repowise augment", _AUGMENT) or cmd.endswith(f"exec {_AUGMENT}; fi"):
+        return None if " --" in cmd else _augment_hook_command()
+    if cmd == _REWRITE or cmd.endswith(f"exec {_REWRITE}; fi"):
+        return _rewrite_hook_command()
+    if cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
+        return _capture_hook_command()
+    return None
+
+
+def _needs_repin(cmd: str, want: str, *, repin: bool) -> bool:
+    """Whether to replace *cmd* with *want*.
+
+    ``repin`` (init, ``agents refresh``) points the hook at the running
+    install, as the MCP registration is. The self-heal passes False and only
+    moves a command that is unpinned or whose pinned script is gone, so two
+    installs on one machine do not take turns rewriting the file.
+    """
+    if want == cmd:
+        return False
+    if cmd in _BARE_COMMANDS:
+        return True
+    if not hook_pinned_paths(want):
+        return False  # nothing better to offer than what is there
+    paths = hook_pinned_paths(cmd)
+    return repin or not paths or not any(Path(p).is_file() for p in paths)
+
+
+def _all_hooks(hooks: object) -> list[dict]:
+    """Every hook dict under every event of a settings ``hooks`` block."""
+    if not isinstance(hooks, dict):
+        return []
+    entries = [e for group in hooks.values() if isinstance(group, list) for e in group]
+    return [h for entry in entries for h in _hooks_of(entry) if isinstance(h, dict)]
+
+
+def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
+    """Bring every repowise augment, capture and rewrite command up to date."""
+    changed = False
+    for hook in _all_hooks(hooks):
+        cmd = _hook_command(hook)
+        want = _current_command(cmd)
+        if want is not None and _needs_repin(cmd, want, repin=repin):
+            hook["command"] = want
+            changed = True
+    return changed
+
+
+#: Where :func:`claude_code_hook_commands` says a user-level hook lives. Only
+#: these commands carry a pinned path that ``repowise agents refresh`` rewrites.
+CLAUDE_SETTINGS_LABEL = "~/.claude/settings.json"
+_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure")
+
+
+def claude_code_hook_commands(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(where, command)`` for each repowise hook Claude Code runs here.
+
+    User settings, every enabled repowise plugin and, with *repo_path*, the
+    repo's ``settings.local.json``. Only hooks repowise writes count, never a
+    user's own wrapper.
+    """
+    rows = [
+        (CLAUDE_SETTINGS_LABEL, _hook_command(h))
+        for h in _all_hooks(read_hooks_block(_claude_code_settings_path()))
+        if _current_command(_hook_command(h)) is not None
+    ]
+    for event in _PLUGIN_EVENTS:
+        for _, entries in _plugin_hook_entries(event):
+            rows += [
+                ("the repowise Claude Code plugin", _hook_command(h))
+                for h in _all_hooks({event: entries})
+                if _is_repowise_hook(h) or _is_rewrite_hook(h)
+            ]
+    if repo_path is not None:
+        local = _all_hooks(read_hooks_block(claude_code_local_settings_path(repo_path)))
+        rows += [
+            (f"{Path(repo_path).name}/.claude/settings.local.json", _hook_command(h))
+            for h in local
+            if _is_coverage_hook(h) or _is_health_gate_hook(h)
+        ]
+    return rows
+
 
 def _capture_entry() -> dict:
     return {
@@ -246,7 +433,7 @@ def _capture_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _CAPTURE_HOOK_COMMAND,
+                "command": _capture_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking for a decision to record...",
             }
@@ -288,15 +475,44 @@ def _plugin_ships_capture_hook() -> bool:
     twice on every shell call. Unreadable plugin state reads as "no": being
     wrong that way costs one extra shell start, never a missing prompt.
     """
+    return any(
+        _is_capture_entry(e) for _, entries in _plugin_hook_entries("PostToolUse") for e in entries
+    )
+
+
+def _plugin_hook_entries(event: str) -> list[tuple[Path, list]]:
+    """``(hooks.json, entries)`` for each enabled repowise plugin's *event* hooks.
+
+    Unreadable plugin state is skipped, so it reads as "the plugin does not
+    ship it" and the settings entry stays the one that runs.
+    """
+    found: list[tuple[Path, list]] = []
     for path in _repowise_plugin_paths():
+        hooks_file = path / "hooks" / "hooks.json"
         try:
-            hooks = json.loads((path / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-            entries = hooks["hooks"]["PostToolUse"]
+            entries = json.loads(hooks_file.read_text(encoding="utf-8"))["hooks"][event]
         except (OSError, ValueError, KeyError, TypeError):
             continue
-        if isinstance(entries, list) and any(_is_capture_entry(e) for e in entries):
-            return True
-    return False
+        if isinstance(entries, list):
+            found.append((hooks_file, entries))
+    return found
+
+
+def _plugin_rewrite_hook() -> tuple[Path, str] | None:
+    """``(hooks.json, matcher)`` of a plugin that ships the current rewrite hook.
+
+    A plugin build with an older matcher does not count, so the settings entry
+    (which install keeps current) stays the one that runs.
+    """
+    for hooks_file, entries in _plugin_hook_entries("PreToolUse"):
+        if _rewrite_matcher(entries) == _REWRITE_MATCHER:
+            return hooks_file, _REWRITE_MATCHER
+    return None
+
+
+def claude_code_plugin_ships_rewrite_hook() -> bool:
+    """True when an enabled repowise plugin runs the rewrite hook itself."""
+    return _plugin_rewrite_hook() is not None
 
 
 def set_claude_code_capture_hook(enabled: bool) -> Path | None:
@@ -343,6 +559,16 @@ def set_claude_code_capture_hook(enabled: bool) -> Path | None:
     return settings_path if _write_settings(settings_path, existing) else None
 
 
+def _without_commands(entry: dict) -> object:
+    """*entry* with each command replaced by the form this release writes for it."""
+    copy = json.loads(json.dumps(entry))
+    for hook in _hooks_of(copy):
+        cmd = _hook_command(hook)
+        if cmd:
+            hook["command"] = _current_command(cmd) or cmd
+    return copy
+
+
 def _sync_capture_entry(entries: list, want: bool) -> bool:
     """Leave exactly the current capture entry in *entries* when *want*, else none.
 
@@ -350,7 +576,10 @@ def _sync_capture_entry(entries: list, want: bool) -> bool:
     replaced rather than kept. Returns whether *entries* changed.
     """
     ours = [e for e in entries if _is_capture_entry(e)]
-    if ours == ([_capture_entry()] if want else []):
+    # Commands compare by kind: _refresh_hook_commands owns which path they pin.
+    if [_without_commands(e) for e in ours] == (
+        [_without_commands(_capture_entry())] if want else []
+    ):
         return False
     entries[:] = [e for e in entries if not _is_capture_entry(e)]
     if want:
@@ -382,7 +611,7 @@ def _session_start_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Loading repowise context...",
             }
@@ -413,7 +642,7 @@ def _failure_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -605,7 +834,7 @@ def install_claude_code_hooks() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -646,6 +875,7 @@ def install_claude_code_hooks() -> Path | None:
         # The capture prompt ships on, so its shell entry is part of the
         # install, unless the plugin already runs the same one.
         _sync_capture_entry(post_hooks, not _plugin_ships_capture_hook())
+        _refresh_hook_commands(hooks, repin=True)
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -654,6 +884,12 @@ def install_claude_code_hooks() -> Path | None:
 
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
+
+#: The plugin's form of the rewrite hook. A plugin ships without the CLI, so it
+#: gets the same silent-when-absent guard as :data:`_AUGMENT_HOOK_COMMAND`.
+_PLUGIN_REWRITE_HOOK_COMMAND = (
+    "if command -v repowise-rewrite >/dev/null 2>&1; then exec repowise-rewrite; fi"
+)
 
 # Current rewrite PreToolUse matcher, derived from the adapter's own tool-name
 # set so the installed matcher and the gate that reads the payload cannot
@@ -665,18 +901,25 @@ _LEGACY_REWRITE_MATCHERS = ("Bash",)
 
 
 def install_claude_code_rewrite_hook() -> Path | None:
-    """Register the opt-in distill PreToolUse rewrite hook (shell matcher).
+    """Register the distill PreToolUse rewrite hook (shell matcher).
 
     Idempotent; preserves user hooks and the augment PostToolUse entry.
-    Returns the settings path on success, None on failure.
+    Returns the settings path on success, None on failure. Where an enabled
+    repowise plugin already ships the hook, ours is left out (and removed) so
+    each shell call is rewritten and counted once, and the plugin's
+    ``hooks.json`` is returned.
     """
+    plugin = _plugin_rewrite_hook()
+    if plugin is not None:
+        uninstall_claude_code_rewrite_hook()
+        return plugin[0]
     settings_path = _claude_code_settings_path()
     pre_hook_entry = {
         "matcher": _REWRITE_MATCHER,
         "hooks": [
             {
                 "type": "command",
-                "command": _REWRITE_HOOK_COMMAND,
+                "command": _rewrite_hook_command(),
                 "timeout": 5,
                 "statusMessage": "Distilling command output...",
             }
@@ -696,6 +939,7 @@ def install_claude_code_rewrite_hook() -> Path | None:
         if not _has_rewrite_hook(pre_hooks):
             pre_hooks.append(pre_hook_entry)
             changed = True
+        changed = _refresh_hook_commands({"PreToolUse": pre_hooks}, repin=True) or changed
         if changed:
             settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -1053,8 +1297,17 @@ def claude_code_rewrite_hook_matcher() -> str | None:
 
     ``""`` is a real answer: an entry with no matcher at all. Presence and
     matcher say different things — an entry pointing at a tool name Claude
-    Code no longer uses is registered and will never fire.
+    Code no longer uses is registered and will never fire. An enabled
+    repowise plugin that ships the hook counts as installed.
     """
+    matcher = _settings_rewrite_matcher()
+    if matcher is not None:
+        return matcher
+    plugin = _plugin_rewrite_hook()
+    return plugin[1] if plugin is not None else None
+
+
+def _settings_rewrite_matcher() -> str | None:
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
         return None
@@ -1176,7 +1429,7 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
             # migrate to the guarded command, so an install predating the guard
             # stops emitting "command not found" without needing a re-init.
             if cmd in ("repowise augment", "repowise-augment"):
-                hook["command"] = _AUGMENT_HOOK_COMMAND
+                hook["command"] = _augment_hook_command()
                 changed = True
         if not isinstance(entry, dict):
             continue
@@ -1232,6 +1485,9 @@ def migrate_claude_code_hooks() -> bool:
         # older release wrote, unless the plugin already runs it.
         if _sync_capture_entry(post, not _plugin_ships_capture_hook()):
             changed = True
+
+    if _refresh_hook_commands(hooks, repin=False):
+        changed = True
 
     if not changed:
         return False

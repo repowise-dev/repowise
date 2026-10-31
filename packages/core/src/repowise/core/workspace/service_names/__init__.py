@@ -47,6 +47,7 @@ from . import (
     spring,
     spring_base_path,
     spring_gateway,
+    terraform,
     yarp,
     yarp_forwarder,
 )
@@ -65,6 +66,7 @@ SOURCES: tuple[ServiceNameSource, ...] = (
     spring.SOURCE,
     spring_base_path.SOURCE,
     spring_gateway.SOURCE,
+    terraform.SOURCE,
     yarp.SOURCE,
     yarp_forwarder.SOURCE,
 )

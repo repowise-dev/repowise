@@ -38,9 +38,12 @@ const ONBOARDING_DIR_KEY = "@onboarding";
 const LAYER_DIR_PREFIX = "@layer:";
 const layerDirKey = (layerId: string) => `${LAYER_DIR_PREFIX}${layerId}`;
 // And for the row holding the modules no layer claimed. Deliberately not a
-// layerDirKey: this row is not a layer, and the key is what keeps it out of
-// the default-expanded set (which only ever gets stamped layers' keys).
-const UNLAYERED_MODULES_KEY = "@group:unlayered-modules";
+// layerDirKey: this row is not a layer, and it opens shut by default.
+const OTHER_MODULES_KEY = "@group:other-modules";
+// The end-to-end walkthroughs get a row of their own, outside Start here: a
+// repo can carry many, and listed there they outnumber the few pages a
+// newcomer should open first.
+const WALKTHROUGHS_KEY = "@group:walkthroughs";
 // Tree expansion survives reloads (per-browser, not per-repo — paths rarely
 // collide across repos and the fallback is just the default expansion).
 //
@@ -79,7 +82,8 @@ export interface DocsTreeCopy {
   stubTitle: string;
   startHere: string;
   onboarding: string;
-  modulesWithNoLayer: (count: number) => string;
+  walkthroughs: (count: number) => string;
+  otherModules: (count: number) => string;
   codeReference: string;
   codeReferenceMeta: (counts: { files: number; symbols: number; other: number }) => string;
 }
@@ -108,7 +112,8 @@ export const DEFAULT_DOCS_TREE_COPY: DocsTreeCopy = {
   stubTitle: "Built from the index. A model has not written this page yet.",
   startHere: "Start here",
   onboarding: "Onboarding",
-  modulesWithNoLayer: (n) => `Modules with no layer (${formatNumber(n)})`,
+  walkthroughs: (n) => `Walkthroughs (${formatNumber(n)})`,
+  otherModules: (n) => `Other modules (${formatNumber(n)})`,
   codeReference: "Code reference",
   codeReferenceMeta: ({ files, symbols, other }) =>
     [
@@ -492,13 +497,16 @@ const isOutlineGroupRow = (path: string): boolean =>
   path === START_HERE_KEY ||
   path.startsWith(LAYER_DIR_PREFIX) ||
   path.startsWith(TYPE_GROUP_PREFIX) ||
-  path === UNLAYERED_MODULES_KEY;
+  path === WALKTHROUGHS_KEY ||
+  path === OTHER_MODULES_KEY;
 
 // The single bottom folder holding every deterministic page. Namespaced like
 // the other synthetic keys so it can never collide with a real page id.
 const AUTO_ROOT_KEY = "@group:auto-documented";
 // The pinned reading path at the top of the outline.
 const START_HERE_KEY = "@group:start-here";
+// Top-rung groups that open shut. Everything else on that rung opens.
+const SHUT_BY_DEFAULT = new Set([AUTO_ROOT_KEY, WALKTHROUGHS_KEY, OTHER_MODULES_KEY]);
 
 function compareSiblings(a: DocPageSummary, b: DocPageSummary): number {
   return (
@@ -579,15 +587,16 @@ function buildReferenceFolder(pages: DocPageSummary[], copy: DocsTreeCopy): Tree
   };
 }
 
+const pagesOfType = (pages: DocPageSummary[], type: string): DocPageSummary[] =>
+  pages.filter((p) => p.page_type === type).sort(compareSiblings);
+
 /**
- * The pages a newcomer reads first, in reading order: the overview, the
- * onboarding chapters by their stored order, then any flow walkthroughs.
+ * The pages a newcomer reads first, in reading order: the overview, then the
+ * onboarding chapters by their stored order. Walkthroughs get their own row.
  */
 function pickStartHerePages(spinePages: DocPageSummary[]): DocPageSummary[] {
   const overview = spinePages.find((p) => p.page_type === "repo_overview");
-  const ofType = (type: string) =>
-    spinePages.filter((p) => p.page_type === type).sort(compareSiblings);
-  return [...(overview ? [overview] : []), ...ofType("onboarding"), ...ofType("flow_page")];
+  return [...(overview ? [overview] : []), ...pagesOfType(spinePages, "onboarding")];
 }
 
 function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[] {
@@ -643,9 +652,13 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
   }
 
   const top: TreeNode[] = [];
+  // Claimed before any row is built, so a chapter that parents a walkthrough
+  // never nests it under itself and it is drawn once, in its own group.
+  const flows = pagesOfType(spinePages, "flow_page");
+  for (const page of flows) reached.add(page.id);
   // The reading path is pinned first. The overview is its own row there (its
-  // children are the rest of the outline, drawn below); the chapters and
-  // flows keep any pages they parent.
+  // children are the rest of the outline, drawn below); the chapters keep any
+  // pages they parent.
   const startPages = pickStartHerePages(spinePages);
   if (startPages.length > 0) {
     // Claimed up front, so a chapter never nests another Start here page under
@@ -657,6 +670,16 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
       return { name: treeLabel(page, undefined), path: page.id, isDir: false, page, children: [] };
     });
     top.push({ name: copy.startHere, path: START_HERE_KEY, isDir: true, children: startRows });
+  }
+  // Walkthroughs read right after orientation and before the chapters they
+  // cross, so their row sits here, shut by default.
+  if (flows.length > 0) {
+    top.push({
+      name: copy.walkthroughs(flows.length),
+      path: WALKTHROUGHS_KEY,
+      isDir: true,
+      children: flows.map((page) => toNode(page, root ?? undefined)),
+    });
   }
   if (root) {
     // A root that is not the overview has no row in the reading path.
@@ -705,8 +728,8 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
     // were one more of them.
     if (unlayeredModules.length > 0) {
       top.push({
-        name: copy.modulesWithNoLayer(unlayeredModules.length),
-        path: UNLAYERED_MODULES_KEY,
+        name: copy.otherModules(unlayeredModules.length),
+        path: OTHER_MODULES_KEY,
         isDir: true,
         children: unlayeredModules.map((child) => toNode(child, root)),
       });
@@ -1206,11 +1229,12 @@ export function DocsTree({
     // screen — and the rung limit protects against it without hiding the
     // outline to do so.
     //
-    // Two exclusions, both rows that are a bucket rather than a section: the
-    // file corpus, which runs to thousands of rows, and the no-layer leftovers.
+    // Three exclusions, rows a reader opens on purpose instead of scanning: the
+    // file corpus, which runs to thousands of rows, the walkthroughs, and the
+    // modules no layer claimed.
     for (const node of tree) {
       if (!node.isDir) continue;
-      if (node.path === AUTO_ROOT_KEY || node.path === UNLAYERED_MODULES_KEY) continue;
+      if (SHUT_BY_DEFAULT.has(node.path)) continue;
       dirs.add(node.path);
     }
     if (typeof window !== "undefined") {

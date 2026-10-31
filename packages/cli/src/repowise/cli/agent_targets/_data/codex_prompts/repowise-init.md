@@ -138,13 +138,15 @@ Recovery:
 
 Every path reaches this step. It is about the repo, not the provider.
 
-By default `init` points the global repowise MCP entry (in
-`~/.claude/settings.json` and Claude Desktop's config) at this repo and writes
-project files into it (`.mcp.json`, `.claude/CLAUDE.md`, `AGENTS.md`,
-`.vscode/mcp.json`). There is **one** global `repowise` entry, so this repo
-replaces whatever repo it points at now. With `--yes`, init moves it and prints
-the old and new target. That is the right default for the repo someone
-actually works in, and the wrong one for a checkout that is about to disappear.
+By default `init` writes project files into this repo (`.mcp.json`,
+`.claude/CLAUDE.md`, `AGENTS.md`, `.vscode/mcp.json`) and adds the global
+repowise MCP entry (in `~/.claude/settings.json` and Claude Desktop's config)
+when there is none. The Claude Code entry serves whichever repo Claude Code is
+started in. Claude Desktop has no project scope, so its one entry names the
+repo it serves. init never moves an entry that serves another repo; it only
+re-points one whose repo no longer exists. That is the right default for the
+repo someone actually works in, and the wrong one for a checkout that is about
+to disappear.
 
 Add `--no-editor-setup` when either of these holds:
 

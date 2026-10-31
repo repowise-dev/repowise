@@ -684,6 +684,32 @@ async def test_get_change_risk_drops_request_echoes_and_empty_fields(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_the_default_reply_declares_its_savings_from_the_scored_file_count(
+    tmp_path, monkeypatch
+) -> None:
+    """The file count moved behind include=["diagnostics"], which left the
+    savings estimator crediting the flat floor on every default call."""
+    from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/a.py": "a = 1\n", "src/b.py": "b = 1\n"}, "chore: seed")
+    _commit(repo, {"src/a.py": "a = 2\n", "src/b.py": "b = 2\n"}, "feat: both")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert "features" not in result
+    assert result["_meta"]["replaced_tokens"] == change_risk_replaced_tokens(2)
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_keeps_working_tree_without_a_revspec(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -952,6 +978,109 @@ async def test_a_scored_range_is_reused_until_its_inputs_move(tmp_path, monkeypa
     _commit(repo, {"src/app.py": "def f():\n    return 3\n"}, "feat: three")
     await module.get_change_risk("HEAD~1..HEAD", baseline=0)
     assert len(scores) == 4
+
+
+def _counted_change_risk(monkeypatch, repo: Path) -> tuple[object, list, list]:
+    """The tool module, with each scoring and each branch scan counted."""
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    scores: list[str | None] = []
+    scans: list[str] = []
+    real_score, real_scan = module.score_live_change, module._scan_from_trunk
+
+    def _score(path, revspec=None, **kwargs):
+        scores.append(revspec)
+        return real_score(path, revspec, **kwargs)
+
+    def _scan(path, files, current):
+        scans.append(current)
+        return real_scan(path, files, current)
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "score_live_change", _score)
+    monkeypatch.setattr(module, "_scan_from_trunk", _scan)
+    return module, scores, scans
+
+
+async def test_moved_branch_tips_rebuild_only_when_the_overlap_answer_changes(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n", "docs/notes.md": "a\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "value = 2\n"}, "feat: two")
+    side = tmp_path / "side"
+    _git(["worktree", "add", "-q", "-b", "side", str(side), "HEAD~1"], repo)
+    module, scores, scans = _counted_change_risk(monkeypatch, repo)
+
+    first = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 1 and "branch_overlap" not in first
+    # A ref the scan never reads leaves the payload as it was, with no rescan.
+    _git(["tag", "v1"], repo)
+    again = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert again["_meta"]["cached"] is True and (len(scores), len(scans)) == (1, 1)
+
+    # The branch's first commit of its own puts it in the scan's count: rebuilt.
+    _commit(side, {"docs/notes.md": "b\n"}, "docs: one")
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 2
+    # Another commit to a file this change does not edit: rescanned, same answer, served.
+    _commit(side, {"docs/notes.md": "c\n"}, "docs: two")
+    served = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert served["_meta"]["cached"] is True and len(scores) == 2 and len(scans) == 3
+
+    # A commit to the same file changes the answer, so it is never served stale.
+    _commit(side, {"src/app.py": "value = 3\n"}, "feat: side")
+    rebuilt = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 3 and "cached" not in rebuilt["_meta"]
+    assert [b["branch"] for b in rebuilt["branch_overlap"]["branches"]] == ["side"]
+    # The rebuild reused the scan the check already ran.
+    assert len(scans) == 4
+
+
+async def test_a_failed_branch_rescan_never_vouches_for_a_stored_payload(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "value = 2\n"}, "feat: two")
+    module, scores, _ = _counted_change_risk(monkeypatch, repo)
+
+    def _fails(_path, _files, _current):
+        raise OSError("git went away")
+
+    monkeypatch.setattr(module, "_scan_from_trunk", _fails)
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    _git(["branch", "side"], repo)
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 2
+
+
+async def test_checkout_edits_rebuild_a_committed_range_but_repowise_writes_do_not(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "value = 2\n"}, "feat: two")
+    (repo / ".repowise").mkdir()
+    module, scores, _ = _counted_change_risk(monkeypatch, repo)
+
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    (repo / ".repowise" / "omissions.db").write_text("x", encoding="utf-8")
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 1
+    # The tests block reads conftests from the checkout, so a new one is a new answer.
+    (repo / "tests").mkdir()
+    (repo / "tests" / "conftest.py").write_text("import pytest\n", encoding="utf-8")
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 2
 
 
 async def test_uncommitted_work_is_never_served_from_the_cache(tmp_path, monkeypatch) -> None:

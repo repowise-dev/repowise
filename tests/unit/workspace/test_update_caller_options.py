@@ -179,3 +179,25 @@ def test_defaults_keep_the_full_index_fallback(tmp_path, stub_full_pipeline):  #
     assert result.skipped_reason is None
     assert result.full_index_reason is None
     assert result.health_rescored is False
+
+
+def test_update_drops_the_graph_seed_before_rewriting_the_graph(
+    tmp_path,
+    monkeypatch,
+    forbid_full_pipeline,  # noqa: F811
+):
+    import repowise.core.pipeline.incremental.graph_seed as graph_seed
+
+    async def _skipped_save(_repo_path, _builder):
+        return None
+
+    # A save that writes nothing must not leave the old snapshot behind.
+    monkeypatch.setattr(graph_seed, "save_seed_edge_cache", _skipped_save)
+    repo = _indexed_repo_with_new_commit(tmp_path)
+    seed = repo / ".repowise" / "graph_seed_edges.pkl"
+    seed.write_bytes(b"snapshot of the graph before this update")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.updated is True and result.error is None
+    assert not seed.exists()

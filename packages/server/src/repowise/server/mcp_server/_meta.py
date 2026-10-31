@@ -760,6 +760,10 @@ _DEBUG_FRESHNESS_KEYS = (
 )
 #: Accounting a reader gets from ``_meta.omitted`` and ``<x>_total`` instead.
 _DEBUG_ACCOUNTING_KEYS = ("completeness", "response_budget", "floor", "reductions", "state")
+#: Stamped by middleware layers for debug output; ``timed`` and the savings
+#: layer drop them on a lean call too, and listing them here keeps the lean
+#: shape the one place that says what a lean reply leaves out.
+_DEBUG_LAYER_KEYS = ("timing_ms", "replaced_tokens", "tokens_saved")
 #: A ``false`` under these names says nothing happened, so it is not sent.
 _STATUS_FLAGS = ("degraded", "truncated", "capped", "partial")
 #: Siblings of a capped ``<x>`` that ``<x>_total`` already says.
@@ -793,7 +797,7 @@ def lean_response(result: Any) -> Any:
 
 
 def _lean_meta(meta: dict[str, Any]) -> None:
-    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, "embedder"):
+    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, *_DEBUG_LAYER_KEYS, "embedder"):
         meta.pop(key, None)
     existing = meta.pop("degraded", None)
     reasons = [existing] if isinstance(existing, str) else list(existing or [])

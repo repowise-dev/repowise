@@ -180,3 +180,13 @@ def test_a_file_only_the_graph_walk_added_is_not_a_candidate_file():
         _hit("anchored.py"),
     ]
     assert serialize_candidate_files(hits) == ["lead.py", "named.py", "anchored.py"]
+
+
+def test_a_file_scoring_far_below_the_top_hit_is_not_a_candidate_file():
+    hits = [
+        {**_hit("lead.py"), "score": 6.0},
+        {**_hit("close.py"), "score": 2.4},
+        {**_hit("tail.py"), "score": 0.9},
+        {**_hit("unscored.py")},
+    ]
+    assert serialize_candidate_files(hits) == ["lead.py", "close.py"]

@@ -1366,6 +1366,103 @@ def test_bodyless_methods_are_not_units(language):
     assert classes["A"].method_count == a_methods
 
 
+_PREPROC_BOTH_ARMS = b"""int f(int a, int b) {
+#if defined(USE_FAST)
+  if (a) return 1;
+  if (b) return 2;
+#else
+  if (a) return 3;
+  if (b) return 4;
+#endif
+  return 0;
+}
+"""
+
+_PREPROC_NO_ALTERNATIVE = b"""int g(int a, int b) {
+#ifdef DEBUG
+  if (a) return 1;
+  if (b) return 2;
+#endif
+  return 0;
+}
+"""
+
+_PREPROC_ELIF_CHAIN = b"""int h(int a, int b, int c) {
+#if A
+  if (a) return 1;
+#elif B
+  if (a) return 2;
+  if (b) return 3;
+#else
+  if (a) return 4;
+  if (b) return 5;
+  if (c) return 6;
+#endif
+  return 0;
+}
+"""
+
+_PREPROC_NESTED = b"""int k(int a, int b, int c) {
+#if A
+  if (a) return 1;
+#else
+#ifdef B
+  if (a) return 2;
+  if (b) return 3;
+#else
+  if (a) return 4;
+  if (b) return 5;
+  if (c) return 6;
+#endif
+#endif
+  return 0;
+}
+"""
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_preproc_arms_take_the_largest_not_the_sum(language):
+    """The arms of an #if / #else are alternative builds: CCN and cognitive take
+    the largest arm. Each build alone is CCN 3 / cognitive 2; summing gave 5 / 4."""
+    _require_language(language)
+    fn = _find(walk_file("f.c", language, _PREPROC_BOTH_ARMS).functions, "f")
+    assert fn is not None
+    assert fn.ccn == 3
+    assert fn.cognitive == 2
+    # NLOC keeps counting every arm: the lines exist in the file.
+    assert fn.nloc == 10
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_preproc_without_alternative_keeps_its_branches(language):
+    _require_language(language)
+    fn = _find(walk_file("g.c", language, _PREPROC_NO_ALTERNATIVE).functions, "g")
+    assert fn is not None
+    assert fn.ccn == 3
+    assert fn.cognitive == 2
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_preproc_elif_chain_takes_the_largest_arm(language):
+    """#if (1 branch) / #elif (2) / #else (3): the largest arm is the #else, CCN 4."""
+    _require_language(language)
+    fn = _find(walk_file("h.c", language, _PREPROC_ELIF_CHAIN).functions, "h")
+    assert fn is not None
+    assert fn.ccn == 4
+    assert fn.cognitive == 3
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_nested_preproc_blocks_take_the_largest_arm(language):
+    """The outer #else holds a nested #ifdef / #else whose larger arm has 3 branches,
+    so the outer largest arm is 3 (not 1 + 2 + 3): CCN 4."""
+    _require_language(language)
+    fn = _find(walk_file("k.c", language, _PREPROC_NESTED).functions, "k")
+    assert fn is not None
+    assert fn.ccn == 4
+    assert fn.cognitive == 3
+
+
 # ---------------------------------------------------------------------------
 # A function whose body is one expression scores like its block twin (#4792)
 # ---------------------------------------------------------------------------

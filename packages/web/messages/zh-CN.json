@@ -622,7 +622,10 @@
       "title": "知识图谱",
       "description": "像看地图一样探索你的代码库：滚动缩放、拖拽平移，双击任意卡片可深入其分层、目录与文件，并按代码实际的运行方式排序。",
       "loading": "正在构建知识图谱…",
-      "error": "无法加载这个代码仓库的知识图谱。"
+      "error": "无法加载这个代码仓库的知识图谱。",
+      "errorHint": "服务器没有返回地图。请确认仓库已建立索引且 API 正在运行，然后重试。",
+      "loadingHint": "正在排布每个分层、目录和文件。大型仓库需要几秒钟。",
+      "showTestLinks": "显示测试关联"
     },
     "refactoring": {
       "title": "重构",
@@ -921,10 +924,9 @@
         "andMore": "{list} 等另外 {count} 个"
       },
       "ribbon": {
-        "files": "文件",
-        "filesSub": "横跨 {count} 个仓库",
-        "symbols": "符号",
-        "symbolsSub": "函数、类与方法",
+        "lowestHealth": "最低健康度",
+        "lowestHealthSub": "{name} · {scored} 个已评分仓库中 {healthy} 个为良好或更好",
+        "lowestHealthNone": "尚无健康度快照",
         "docFreshness": "文档新鲜度",
         "docFreshnessNoPages": "尚未生成文档",
         "docFreshnessSub": "{fresh} / {pages} 页为最新",
@@ -1321,7 +1323,8 @@
       "stubTitle": "由索引构建，模型尚未撰写此页面。",
       "startHere": "从这里开始",
       "onboarding": "入门",
-      "modulesWithNoLayer": "未归入分层的模块（{count}）",
+      "walkthroughs": "流程讲解（{count}）",
+      "otherModules": "其他模块（{count}）",
       "codeReference": "代码参考",
       "codeReferenceMeta": "{files} 个文件 · {symbols} 个符号{other, plural, =0 {} other { · 其他 # 个}}"
     },
@@ -1377,16 +1380,49 @@
     "breadcrumb": {
       "label": "缩放位置"
     },
+    "sheet": {
+      "label": "所选项详情"
+    },
     "hint": {
       "scroll": "滚动缩放",
       "drag": "拖拽平移",
       "doubleClick": "双击卡片进入下一层",
       "dismiss": "关闭提示"
     },
+    "controls": {
+      "label": "地图控件",
+      "zoomIn": "放大 (+)",
+      "zoomOut": "缩小 (-)",
+      "fit": "显示整个系统 (0)",
+      "up": "返回上一层 (Esc)"
+    },
     "search": {
-      "placeholder": "搜索文件…",
+      "placeholder": "搜索层、文件夹、文件…",
       "aria": "搜索系统地图",
-      "clear": "清除搜索"
+      "clear": "清除搜索",
+      "shortcut": "按 / 搜索",
+      "results": "搜索结果",
+      "usedMostBy": "使用最多的是 {name}",
+      "repositoryRoot": "仓库根目录",
+      "kind": {
+        "system": "系统",
+        "layer": "层",
+        "group": "分组",
+        "folder": "文件夹",
+        "file": "文件",
+        "container": "容器",
+        "external": "外部系统"
+      }
+    },
+    "canvas": {
+      "aria": "可缩放的系统地图。拖拽平移，滚动缩放，双击卡片进入下一层。按键：加号和减号缩放，0 显示整个系统，Enter 选中中心卡片或进入已选卡片，方向键平移或在同级卡片间移动，Escape 关闭选择或返回上一层。按斜杠键搜索，包括外部系统。",
+      "minimap": "概览地图。点击或拖拽以移动视图。",
+      "relationCount": "{count} 个关系",
+      "capOnMap": "图上显示最强的 {shown} 个",
+      "externalUsage": "此处导入 {imports} 次 · 仓库中 {files} 个文件使用",
+      "containerSpan": "跨 {count} 个容器",
+      "externalMostFrom": "导入最多的部分",
+      "externalDive": "双击前往 {name}"
     },
     "export": {
       "downloaded": "已下载 {filename}",
@@ -1399,14 +1435,26 @@
       "building": "构建中…"
     },
     "mapKey": {
+      "button": "图例与关系筛选",
+      "buttonFiltered": "图例与关系筛选，已启用筛选",
       "showingFiltered": "仅显示 <verbs>{list}</verbs>。箭头粗细表示该关系覆盖的文件对数量。",
       "hoverHint": "把鼠标悬停在卡片上可以看到它依赖什么。箭头粗细表示该依赖覆盖的文件对数量。",
       "unclaimed": "有 {shown} / {total} 个文件不在图上；它们不属于任何分层。",
       "clear": "清除",
-      "topRightDot": "右上角圆点",
-      "entryDotHelp": "入口点、热点、死代码，或位于某条执行流上。悬停可查看具体是哪一种。",
-      "footerDot": "页脚圆点",
-      "healthBand": "代码健康度：{good} 自 {goodMin} 起，{fair} 自 {fairMin} 起，{needsWork} 自 {needsWorkMin} 起，{atRisk} 低于该值。"
+      "roleIcons": "角色图标",
+      "hotspot": "热点",
+      "entryPoint": "入口点",
+      "deadCode": "死代码",
+      "roleIconsHelp": "卡片页脚统计具有各角色的文件数；文件会在名称旁显示对应图标。悬停卡片可查看它是否位于执行流上。",
+      "cornerScore": "右上角数字",
+      "healthBand": "右上角数字是代码健康度：{good} 自 {goodMin} 起，{fair} 自 {fairMin} 起，{needsWork} 自 {needsWorkMin} 起，{atRisk} 低于该值。",
+      "containers": "容器。",
+      "containersHint": "选择一个容器，其外的卡片都会变暗。",
+      "dashedCard": "虚线卡片",
+      "externalsHelp": "代码访问的外部系统。悬停可查看哪些部分在使用它。",
+      "linksShown": "显示的关联：",
+      "linksShownSome": "{total, number} 条中最强的 {shown, number} 条 · 悬停卡片可查看它的全部关联。",
+      "linksShownAll": "全部 {total, number} 条 · 悬停卡片可突出它的关联。"
     },
     "detail": {
       "close": "关闭详情",
@@ -1421,8 +1469,32 @@
       "capSuffix": "{cap} 已显示在图上。",
       "language": "语言",
       "zoomIn": "放大查看",
-      "readModule": "阅读模块页面",
-      "openFile": "打开文件页面"
+      "openDocs": "阅读文档",
+      "openFile": "打开文件",
+      "ask": "询问此项",
+      "askQuestion": "请解释 {name} 在这个系统中的作用以及它与其他部分的联系，并指出它所依赖的文件。",
+      "copyLink": "复制链接",
+      "linkCopied": "链接已复制"
+    },
+    "c4": {
+      "technologies": "技术",
+      "container": "容器",
+      "containers": "跨 {count} 个容器",
+      "externals": "外部系统",
+      "imports": "{count} 次导入",
+      "kind": {
+        "extension": "扩展",
+        "web_app": "Web 应用",
+        "api": "API",
+        "cli": "CLI",
+        "worker": "后台任务",
+        "library": "库"
+      },
+      "external": {
+        "db": "数据库",
+        "network": "网络",
+        "service": "服务"
+      }
     }
   },
   "architecture": {
@@ -2286,9 +2358,11 @@
       "gated": "暂不提供"
     },
     "band": {
-      "healthy": "健康",
-      "warning": "警告",
-      "alert": "告警"
+      "excellent": "优秀",
+      "good": "良好",
+      "fair": "一般",
+      "needs_work": "需要改进",
+      "at_risk": "有风险"
     },
     "danglingReason": {
       "no_provider": "工作区内没有提供方",

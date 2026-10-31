@@ -91,10 +91,28 @@ export function relativeTimeParts(date: string | Date): { unit: RelativeTimeUnit
   return { unit: "y", value: Math.floor(months / 12) };
 }
 
+/** Wording per bucket, `{value}` standing for the count. Plain strings, so a
+ *  server component can hand localised wording to a client one. */
+export type RelativeTimeWords = Record<RelativeTimeUnit, string>;
+
+export const RELATIVE_TIME_WORDS: RelativeTimeWords = {
+  now: "just now",
+  s: "{value}s ago",
+  m: "{value}m ago",
+  h: "{value}h ago",
+  d: "{value}d ago",
+  w: "{value}w ago",
+  mo: "{value}mo ago",
+  y: "{value}y ago",
+};
+
 /** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
-export function formatRelativeTime(date: string | Date): string {
+export function formatRelativeTime(
+  date: string | Date,
+  words: Partial<RelativeTimeWords> = RELATIVE_TIME_WORDS,
+): string {
   const { unit, value } = relativeTimeParts(date);
-  return unit === "now" ? "just now" : `${value}${unit} ago`;
+  return (words[unit] ?? RELATIVE_TIME_WORDS[unit]).replace("{value}", String(value));
 }
 
 /** Relative time that tolerates null/invalid input, returning `fallback`
