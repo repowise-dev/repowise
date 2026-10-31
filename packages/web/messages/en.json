@@ -274,6 +274,28 @@
       "description": "The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
     },
     "commits": {
+      "periodLede": {
+        "better": "Health moved the right way: {resolved, plural, one {# finding} other {# findings}} resolved or improved, {worse, number} added or worsened.",
+        "worse": "Health slipped: {worse, plural, one {# finding} other {# findings}} added or worsened, {resolved, number} resolved or improved.",
+        "flatNone": "No analysed commit changed a health finding.",
+        "flat": "Health held even: {resolved, plural, one {# finding} other {# findings}} resolved or improved and as many added or worsened.",
+        "mix": "{topShare}% were {top}.",
+        "mixTwo": "{topShare}% were {top}, then {second} at {secondShare}%.",
+        "notable": "Biggest single cleanup: {subject}, {resolved, plural, one {# finding} other {# findings}} resolved.",
+        "coverage": "Health counts cover the {analysed, number} of {total, number} commits the current analyzer has read; the rest fill in as updates run.",
+        "unit": "{n, plural, one {commit} other {commits}}",
+        "empty": "No commits in this window.",
+        "categories": {
+          "feature": "features",
+          "fix": "fixes",
+          "refactor": "refactors",
+          "docs": "docs changes",
+          "test": "test changes",
+          "deps": "dependency updates",
+          "chore": "chores",
+          "other": "other work"
+        }
+      },
       "emptyTitle": "No scored commits yet",
       "emptyAction": "Go to overview",
       "title": "Commits",
@@ -312,6 +334,9 @@
         "catchingUp": "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis."
       },
       "wins": {
+        "summaryResolved": "{n} resolved",
+        "summaryHealthier": "{n} healthier",
+        "summaryRefactored": "{n} refactored",
         "title": "Recent wins",
         "wholeRepo": "whole repository",
         "findingsLabel": "Findings resolved",

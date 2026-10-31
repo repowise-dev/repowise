@@ -274,6 +274,8 @@ async def test_commit_health_summary_counts_improvements_first(client: AsyncClie
     assert (summary["improved"], summary["worsened"], summary["neutral"]) == (1, 1, 1)
     assert (summary["total"], summary["unscanned"]) == (4, 1)
     assert summary["net_findings"] == 3 - 3
+    # Every commit in the window lands in exactly one work category.
+    assert sum(summary["categories"].values()) == summary["total"]
 
 
 @pytest.mark.asyncio

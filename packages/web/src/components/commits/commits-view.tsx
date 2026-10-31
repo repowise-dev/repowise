@@ -46,9 +46,10 @@ function impactCounts(summary: PeriodHealthSummaryResponse | null) {
 /**
  * The commit view: what the work did to code health first.
  *
- * The period headline (improvements first) beside the window's wins, then
- * every commit led by its better/worse chip under the history filters, then
- * the diff-shape charts as context. The history filters live in the URL and
+ * The window's lede (volume, the dominant kind of work, which way health
+ * moved, the notable change) beside its wins, then how the kind of work
+ * changed over time, then every commit led by its better/worse chip under the
+ * history filters, then the agent trend and diff-shape charts as context. The history filters live in the URL and
  * are read here, so the headline, the wins and the list's first page come
  * from one fetch wave for the same filters.
  */
@@ -105,6 +106,12 @@ export async function CommitsView({
     <>
       <CommitsPeriod repoId={repoId} filters={filters} summary={summary} wins={wins} />
 
+      {evolution && evolution.total_commits > 0 && (
+        <OverviewSection title={t("evolutionTitle")} description={t("evolutionDescription")}>
+          <CodeEvolutionChart evolution={evolution} />
+        </OverviewSection>
+      )}
+
       <OverviewSection
         title={t("listTitle")}
         description={t("listDescription")}
@@ -132,12 +139,6 @@ export async function CommitsView({
           }
         />
       </OverviewSection>
-
-      {evolution && evolution.total_commits > 0 && (
-        <OverviewSection title={t("evolutionTitle")} description={t("evolutionDescription")}>
-          <CodeEvolutionChart evolution={evolution} />
-        </OverviewSection>
-      )}
 
       {trend && <AgentTrendStrip trend={trend} />}
 

@@ -274,6 +274,28 @@
       "description": "这些是这个代码库在其他地方看不到的信息：它有多大、从何时开始、工作发生在什么时间，以及它保持的纪录。"
     },
     "commits": {
+      "periodLede": {
+        "better": "健康状况向好：解决或改善了 {resolved} 个发现，新增或恶化 {worse} 个。",
+        "worse": "健康状况下滑：新增或恶化 {worse} 个发现，解决或改善了 {resolved} 个。",
+        "flatNone": "已分析的提交没有改变任何健康发现。",
+        "flat": "健康状况持平：解决或改善了 {resolved} 个发现，新增或恶化的数量相同。",
+        "mix": "{topShare}% 是{top}。",
+        "mixTwo": "{topShare}% 是{top}，其次是{second}，占 {secondShare}%。",
+        "notable": "最大的一次清理：{subject}，解决了 {resolved} 个发现。",
+        "coverage": "健康统计覆盖当前分析器已读取的 {analysed} / {total} 个提交，其余会随更新补齐。",
+        "unit": "个提交",
+        "empty": "此时间段内没有提交。",
+        "categories": {
+          "feature": "功能",
+          "fix": "修复",
+          "refactor": "重构",
+          "docs": "文档改动",
+          "test": "测试改动",
+          "deps": "依赖更新",
+          "chore": "杂项",
+          "other": "其他工作"
+        }
+      },
       "emptyTitle": "尚无已评分的提交",
       "emptyAction": "前往概览",
       "title": "提交",
@@ -312,6 +334,9 @@
         "catchingUp": "此时间范围内的大多数提交尚未被当前分析器分析。最近的提交会随着更新优先分析；下面各行显示较早提交在之前分析中的方向。"
       },
       "wins": {
+        "summaryResolved": "已解决 {n}",
+        "summaryHealthier": "更健康 {n}",
+        "summaryRefactored": "已重构 {n}",
         "title": "近期成果",
         "wholeRepo": "整个仓库",
         "findingsLabel": "已解决的问题",
