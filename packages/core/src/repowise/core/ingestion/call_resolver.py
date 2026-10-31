@@ -2537,20 +2537,31 @@ def _written_bare(lines: list[str], caller: Symbol, call: CallSite) -> bool:
     """Does *call*'s line call its name with no receiver or qualifier before it?
 
     The caller's own declaration names it too and is not a call: the first
-    line from the caller's start that names it holds the declaration.
+    line from the caller's start that names it before ``(``, ``:`` or ``=``
+    holds the declaration, so ``const f: T = (`` is one as well as ``f(``.
     """
     if not 0 < call.line <= len(lines):
         return False
     pattern = _name_pattern(call.target_name, call=True)
+    declared = _declaration_pattern(call.target_name)
     text = lines[call.line - 1]
     found = list(pattern.finditer(text))
-    declaration_line = next(
-        (i + 1 for i in range(caller.start_line - 1, call.line) if pattern.search(lines[i])),
+    declaration = next(
+        (
+            (i + 1, hit.start())
+            for i in range(caller.start_line - 1, call.line)
+            if (hit := declared.search(lines[i]))
+        ),
         None,
     )
-    if declaration_line == call.line:
-        found = found[1:]
+    if declaration is not None and declaration[0] == call.line:
+        found = [m for m in found if m.start() != declaration[1]]
     return any(_unqualified(text[: m.start()]) for m in found)
+
+
+def _declaration_pattern(name: str) -> re.Pattern[str]:
+    """*name* as a word before its parameters, a type annotation or an assignment."""
+    return re.compile(rf"\b{re.escape(name)}\b\s*(?:<[^<>()]*>\s*)?[(:=]")
 
 
 # An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,
