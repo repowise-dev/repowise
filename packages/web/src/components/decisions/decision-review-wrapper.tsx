@@ -8,7 +8,10 @@ import {
   DecisionReviewLanes,
   type DecisionLane,
 } from "@repowise-dev/ui/decisions/decision-review-lanes";
-import type { DecisionRecord } from "@repowise-dev/types/decisions";
+import type {
+  DecisionLaneCounts,
+  DecisionRecord,
+} from "@repowise-dev/types/decisions";
 import {
   getDecisionLaneCounts,
   listDecisions,
@@ -57,20 +60,8 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
     getDecisionLaneCounts(repoId),
   );
 
-  // The section opens on the work: candidates while any wait, then accepted
-  // decisions whose files moved, and the rules only when neither has rows.
-  // Decided from the counts, so it waits for them, unless they failed.
-  const lane: DecisionLane | null =
-    picked ??
-    (counts
-      ? counts.candidates > 0
-        ? "candidates"
-        : counts.needs_review > 0
-          ? "needs_review"
-          : "active"
-      : countsError
-        ? "candidates"
-        : null);
+  // Until the reader picks one, the section opens on the work.
+  const lane: DecisionLane | null = picked ?? openingLane(counts, countsError);
 
   // Pinned once chosen: a review that empties Candidates refreshes the counts,
   // and a lane still derived from them would move the reader to another tab
@@ -218,6 +209,21 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       )}
     </div>
   );
+}
+
+/**
+ * The lane the section opens on: candidates while any wait, then accepted
+ * decisions whose files moved, and the rules only when neither has rows.
+ * Null while the counts it is decided from are still loading.
+ */
+function openingLane(
+  counts: DecisionLaneCounts | undefined,
+  countsError: unknown,
+): DecisionLane | null {
+  if (!counts) return countsError ? "candidates" : null;
+  if (counts.candidates > 0) return "candidates";
+  if (counts.needs_review > 0) return "needs_review";
+  return "active";
 }
 
 function PageButton({

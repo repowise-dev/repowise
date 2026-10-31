@@ -18,6 +18,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 )
 from repowise.core.analysis.decisions.review_queue import ReviewSignals, review_queue_order
 from repowise.core.persistence import crud, decision_graph
+from repowise.core.persistence.crud.decision_health import decision_hotspot_files
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._local_git import local_repo_path
@@ -105,6 +106,31 @@ def _page_of_lane(decisions: list, currencies: dict, lane: str, page: slice) -> 
     if lane == "candidates":
         return in_lane
     return in_lane[page]
+
+
+def _scan_window(
+    lane: str | None, review: bool, limit: int, offset: int
+) -> tuple[int | None, int]:
+    """The ``(limit, offset)`` to read before the lane is filtered and paged.
+
+    The review order reads hotspot and contract signals SQL does not hold, so
+    it ranks the whole lane and pages after: ranking one page would put the
+    most urgent record of page two below the least urgent of page one. A
+    currency-derived lane over-fetches the accepted set for the same reason.
+    """
+    if review:
+        return None, 0
+    if lane is not None and lane != "candidates":
+        return max(_LANE_SCAN_CAP, offset + limit), 0
+    return limit, offset
+
+
+async def _review_page(session, repo_id: str, decisions: list, currencies: dict, lane, page: slice):
+    """*page* of *lane* in review order, with the hotspot files of every row read."""
+    if lane is not None:
+        decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
+    hot = await decision_hotspot_files(session, repo_id, decisions)
+    return review_queue_order(decisions, lambda d: _review_signals(d, hot))[page], hot
 
 
 def _review_signals(record, hot: dict[str, list[str]]) -> ReviewSignals:
@@ -199,17 +225,8 @@ async def list_decisions(
     # Acceptance is a SQL predicate, but every lane except ``candidates`` also
     # filters on a derived currency, so those over-fetch the accepted set (small,
     # since each acceptance is a human action) and are paged after derivation.
-    derived = lane is not None and lane != "candidates"
-    # The review order reads hotspot and contract signals SQL does not hold, so
-    # it ranks the whole lane and pages after. Ranking one page would put the
-    # most urgent record of page two below the least urgent of page one.
     review = sort == "review"
-    if review:
-        scan_limit, scan_offset = None, 0
-    elif derived:
-        scan_limit, scan_offset = max(_LANE_SCAN_CAP, offset + limit), 0
-    else:
-        scan_limit, scan_offset = limit, offset
+    scan_limit, scan_offset = _scan_window(lane, review, limit, offset)
     decisions = await crud.list_decisions(
         session,
         repo_id,
@@ -227,16 +244,13 @@ async def list_decisions(
         sort="priority" if review else sort,
     )
     currencies = await crud.decision_currencies(session, repo_id, decisions)
+    page = slice(offset, offset + limit)
     if review:
-        if lane is not None:
-            decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
-        hot = await crud.decision_hotspot_files(session, repo_id, decisions)
-        decisions = review_queue_order(decisions, lambda d: _review_signals(d, hot))
-        decisions = decisions[offset : offset + limit]
+        decisions, hot = await _review_page(session, repo_id, decisions, currencies, lane, page)
     else:
         if lane is not None:
-            decisions = _page_of_lane(decisions, currencies, lane, slice(offset, offset + limit))
-        hot = await crud.decision_hotspot_files(session, repo_id, decisions)
+            decisions = _page_of_lane(decisions, currencies, lane, page)
+        hot = await decision_hotspot_files(session, repo_id, decisions)
     signatures = await crud.decision_signatures(session, repo_id, decisions)
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
     for item in items:

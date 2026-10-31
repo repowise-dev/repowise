@@ -178,7 +178,7 @@ async def decision_hotspot_files(
         result = await session.execute(
             select(GitMetadata.file_path).where(
                 GitMetadata.repository_id == repository_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
+                GitMetadata.is_hotspot.is_(True),
                 GitMetadata.file_path.in_(wanted[start : start + _PATH_CHUNK]),
             )
         )
