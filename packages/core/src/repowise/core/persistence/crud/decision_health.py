@@ -170,8 +170,16 @@ async def decision_hotspot_files(
     Test files are left out, as in ``_ungoverned_hotspots``: churn in a test is
     not a reason to review a design choice sooner. A decision naming no hotspot
     is absent from the result.
+
+    Only records whose scope binds to its paths are read. A commit footprint
+    lists what one commit touched as provenance, so a footprint record sharing
+    a commit with a hotspot does not name that hotspot.
     """
-    named = {d.id: json.loads(d.affected_files_json or "[]") for d in decisions}
+    named = {
+        d.id: json.loads(d.affected_files_json or "[]")
+        for d in decisions
+        if binds_to_paths(d.scope_basis)
+    }
     wanted = sorted({f for files in named.values() for f in files if not is_test_related_path(f)})
     hot: set[str] = set()
     for start in range(0, len(wanted), _PATH_CHUNK):

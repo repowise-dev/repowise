@@ -392,6 +392,27 @@ async def test_the_review_order_ranks_the_whole_lane_before_paging(
 
 
 @pytest.mark.asyncio
+async def test_a_commit_footprint_does_not_count_as_naming_a_hotspot(
+    client: AsyncClient, app
+) -> None:
+    """A footprint lists what one commit touched; it is provenance, not scope."""
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    await _mark_hotspot(sf, repo["id"], "src/hot.py")
+    did = await _seed(sf, repo["id"], title="Footprint only", scope=["src/hot.py"])
+    async with get_session(sf) as session:
+        from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
+
+        rec = await crud.get_decision(session, did)
+        rec.scope_basis = SCOPE_BASIS_FOOTPRINT
+        await session.flush()
+
+    rows = await _lane(client, repo["id"], "candidates")
+
+    assert rows[0]["hotspot_files"] == []
+
+
+@pytest.mark.asyncio
 async def test_the_review_order_leads_a_derived_lane_with_its_most_drifted(
     client: AsyncClient, app
 ) -> None:
