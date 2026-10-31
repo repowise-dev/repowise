@@ -120,7 +120,7 @@ def matching_keys(consumer: Contract, provider_index: dict[str, list[Contract]])
 # transport is configured outside the code (RabbitMQ, SQS, Redis, Kafka, NATS), so
 # either meets any broker but those. Every other pair must be the same broker: a
 # Kafka topic and a RabbitMQ queue that share a name are two things.
-_OWN_KIND_ONLY = frozenset({"bullmq"})
+_OWN_KIND_ONLY = frozenset({"bullmq", "cloud_stream"})
 _ANY_TRANSPORT = frozenset({"laravel", "nestjs", "dapr"})
 
 
