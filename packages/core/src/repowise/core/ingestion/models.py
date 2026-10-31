@@ -786,6 +786,15 @@ class SchemaReference:
     object_name: str
     line: int
     path: tuple[str, ...] = ()
+    # Child relationship names walked from ``object_name`` before ``path``: the
+    # ``Contacts`` of ``SELECT (SELECT LastName FROM Contacts) FROM Account``.
+    # Each names the child object only through lookup metadata, so it resolves
+    # at graph time. Empty for a reference that names its object directly.
+    via: tuple[str, ...] = ()
+    # Set only on a lookup field's own reference to its target object: the
+    # ``relationshipName`` the field declares on that target (``Contacts`` for
+    # ``Contact.AccountId``), which is what ``via`` is matched against.
+    relationship_name: str | None = None
 
 
 @dataclass
