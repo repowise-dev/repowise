@@ -262,6 +262,215 @@ def test_add_prompts_without_files_says_how_to_finish(repo: Path) -> None:
     assert "--scope <path>" in result.output
 
 
+def test_add_warns_on_nonexistent_affects_path(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost/missing.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ghost/missing.py"]
+
+
+def test_add_warns_on_missing_rationale(repo: Path) -> None:
+    (repo / "existing.py").write_text("x = 1\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--affects",
+        "existing.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["no rationale given"]
+
+
+def test_add_warns_on_both_bad_path_and_missing_rationale(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--affects",
+        "ghost/missing.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == [
+        "affects path not found: ghost/missing.py",
+        "no rationale given",
+    ]
+
+
+def test_add_valid_path_with_rationale_has_no_warnings(repo: Path) -> None:
+    (repo / "src").mkdir()
+    (repo / "src" / "real.py").write_text("x = 1\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "Because it is good",
+        "--affects",
+        "src/real.py",
+        "--affects",
+        "src",
+    )
+    decision = payload["decision"]
+    assert "warnings" not in decision
+
+
+def test_add_human_output_prints_warnings(repo: Path) -> None:
+    result = _run(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--affects",
+        "ghost/missing.py",
+    )
+    assert result.exit_code == 0
+    assert "Decision recorded" in result.output
+    assert "affects path not found: ghost/missing.py" in result.output
+    assert "no rationale given" in result.output
+
+
+def test_add_agreement_does_not_warn_about_missing_files(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "Working agreement rationale",
+        "--kind",
+        "agreement",
+    )
+    decision = payload["decision"]
+    assert "warnings" not in decision
+
+
+def test_add_warns_on_multiple_nonexistent_affects_paths(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost/a.py",
+        "--affects",
+        "ghost/b.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == [
+        "affects path not found: ghost/a.py",
+        "affects path not found: ghost/b.py",
+    ]
+
+
+def test_add_warns_on_duplicate_invalid_affects_paths_without_repetition(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost.py",
+        "--affects",
+        "ghost.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ghost.py"]
+
+
+def test_add_warns_on_path_outside_repository(repo: Path, tmp_path: Path) -> None:
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("outside = True\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Outside",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "../outside.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ../outside.py"]
+
+
+def test_readd_keeping_stored_rationale_has_no_missing_rationale_warning(repo: Path) -> None:
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    # First add with rationale
+    _json(
+        "add",
+        str(repo),
+        "--title",
+        "Readd",
+        "--decision",
+        "D1",
+        "--rationale",
+        "Stored rationale",
+        "--affects",
+        "src/a.py",
+    )
+    # Re-add without --rationale flag; keeps stored rationale and does not warn
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Readd",
+        "--decision",
+        "D2",
+        "--affects",
+        "src/a.py",
+    )
+    decision = payload["decision"]
+    assert decision["existed"] is True
+    assert "rationale" in decision["kept"]
+    assert "warnings" not in decision
+
+
+def test_add_prompt_without_rationale_prints_warning(repo: Path) -> None:
+    # Prompted without files and without rationale; stores as candidate with warning
+    answers = "architectural\nCandidate title\n\nChose\n\n\n\n\n\n"
+    result = _run("add", str(repo), input=answers)
+    assert result.exit_code == 0, result.output
+    assert "Decision recorded" in result.output
+    assert "Stored as a candidate" in result.output
+    assert "no rationale given" in result.output
+
+
 # -- multi-id runs and deprecate ------------------------------------------------
 
 
