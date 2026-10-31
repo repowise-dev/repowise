@@ -185,3 +185,44 @@ async def test_branch_file_count_matches_what_the_analysis_reads(client, tmp_pat
         )
         assert resp.json()["changed_files_total"] == count, name
     assert counts == {"feat/x": 1, "feat/y": 2}
+
+
+async def test_branch_listing_is_reused_until_head_moves(client, tmp_path, monkeypatch):
+    from repowise.core import git_refs
+
+    repo_dir = _git_repo(tmp_path)
+    repo = await create_test_repo(client, tmp_path)
+    reads = 0
+    real = git_refs.list_branches
+
+    def counted(path):
+        nonlocal reads
+        reads += 1
+        return real(path)
+
+    monkeypatch.setattr(git_refs, "list_branches", counted)
+    url = f"/api/repos/{repo['id']}/blast-radius/changes"
+    first = (await client.get(url)).json()
+    again = (await client.get(url)).json()
+    assert again == first
+    assert reads == 1
+
+    # A commit moves HEAD, so the branches are read again.
+    _git(repo_dir, "commit", "-q", "-am", "main moves")
+    await client.get(url)
+    assert reads == 2
+
+
+async def test_ahead_counts_hold_across_chunks(client, tmp_path, monkeypatch):
+    """Refs are asked about a few at a time, so a repository with hundreds stays under the command-line cap."""
+    from repowise.core.analysis import change_candidates
+
+    repo_dir = _git_repo(tmp_path)
+    _git(repo_dir, "branch", "feat/y", "feat/x")
+    monkeypatch.setattr(change_candidates, "_AHEAD_CHUNK", 1)
+    repo = await create_test_repo(client, tmp_path)
+
+    body = (await client.get(f"/api/repos/{repo['id']}/blast-radius/changes")).json()
+
+    ahead = {c["label"]: c["ahead"] for c in body["changes"] if c["kind"] == "branch"}
+    assert ahead == {"feat/x": 1, "feat/y": 1}

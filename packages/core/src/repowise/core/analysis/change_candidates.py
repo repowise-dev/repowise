@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -139,46 +144,139 @@ def _wip_candidate(repo_path: str, current: str | None) -> ChangeCandidate | Non
     )
 
 
+#: Refs asked for their ahead count per ``for-each-ref`` call. Every ref is an
+#: argument, and Windows caps a command line near 32K characters, so asking for
+#: a repository's hundreds of refs at once failed and fell back to one
+#: ``rev-list`` per branch.
+_AHEAD_CHUNK = 40
+
+
+def _ahead_counts(
+    repo_path: str, base: str, refs: list[git_refs.BranchRef], want: int
+) -> list[tuple[git_refs.BranchRef, int]]:
+    """The first *want* of *refs* (newest first) with commits *base* lacks, with the count."""
+    kept: list[tuple[git_refs.BranchRef, int]] = []
+    for start in range(0, len(refs), _AHEAD_CHUNK):
+        chunk = refs[start : start + _AHEAD_CHUNK]
+        counts = git_refs.ahead_behind_many(repo_path, base, [r.ref for r in chunk])
+        for ref in chunk:
+            pair = counts.get(ref.name) or git_refs.ahead_behind(repo_path, base, ref.name)
+            if pair[0] > 0:
+                kept.append((ref, pair[0]))
+            if len(kept) >= want:
+                return kept
+    return kept
+
+
 def _branches_ahead(
-    repo_path: str, base: str, max_branches: int
+    repo_path: str, base: str, branches: list[git_refs.BranchRef], max_branches: int
 ) -> list[tuple[git_refs.BranchRef, int]]:
     """Branches with commits *base* lacks, newest first, each with its ahead count."""
     base_sha = git_refs.resolve(repo_path, base)
     trunk = base.removeprefix("origin/")
+    local_tips = {r.name: r.sha for r in branches if not r.is_remote}
     refs = [
         r
-        for r in git_refs.list_branches(repo_path)
-        if r.sha != base_sha and r.name not in (base, trunk, f"origin/{trunk}")
-    ]
-    counts = git_refs.ahead_behind_many(repo_path, base, [r.ref for r in refs])
-    local_tips = {r.name: r.sha for r in refs if not r.is_remote}
-    kept: list[tuple[git_refs.BranchRef, int]] = []
-    for ref in refs:
+        for r in branches
+        if r.sha != base_sha
+        and r.name not in (base, trunk, f"origin/{trunk}")
         # origin/x at the same tip as a local x is the same work twice.
-        if ref.is_remote and local_tips.get(ref.name.split("/", 1)[-1]) == ref.sha:
-            continue
-        ahead = counts[ref.name][0] if ref.name in counts else git_refs.ahead_behind(repo_path, base, ref.name)[0]
-        if ahead > 0:
-            kept.append((ref, ahead))
-        if len(kept) >= max_branches:
-            break
-    return kept
+        and not (r.is_remote and local_tips.get(r.name.split("/", 1)[-1]) == r.sha)
+    ]
+    return _ahead_counts(repo_path, base, refs, max_branches)
 
 
-def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate | None, list[ChangeCandidate]]:
-    """Uncommitted work and the branches ahead of the default branch."""
-    current = git_refs.current_branch(repo_path)
-    wip = _wip_candidate(repo_path, current)
-    base = git_refs.default_base(repo_path)
-    if base == "HEAD":
-        return wip, []
-    kept = _branches_ahead(repo_path, base, max_branches)
-    remote_names = {r.name.split("/", 1)[-1] for r in git_refs.list_branches(repo_path) if r.is_remote}
+#: A branch's files keyed by the two commits they are read between, so a
+#: branch whose tip and base have not moved is never diffed twice. Keyed by
+#: content, so it never goes stale; bounded, so it never grows without end.
+_DIFFS: OrderedDict[tuple[str, str, str], list[str]] = OrderedDict()
+_DIFFS_SIZE = 256
+_DIFFS_LOCK = threading.Lock()
+
+
+def _diff_files(repo_path: str, base: str, base_sha: str, head: str, head_sha: str) -> list[str]:
+    """:func:`git_refs.changed_files`, kept per (checkout, base commit, head commit)."""
+    key = (repo_path, base_sha, head_sha)
+    keep = bool(base_sha and head_sha)
+    with _DIFFS_LOCK:
+        if keep and key in _DIFFS:
+            _DIFFS.move_to_end(key)
+            return _DIFFS[key]
+    files = git_refs.changed_files(repo_path, base, head)
+    if keep:
+        with _DIFFS_LOCK:
+            _DIFFS[key] = files
+            while len(_DIFFS) > _DIFFS_SIZE:
+                _DIFFS.popitem(last=False)
+    return files
+
+
+def _branch_diffs(
+    repo_path: str, base: str, kept: list[tuple[git_refs.BranchRef, int]]
+) -> dict[str, list[str]]:
+    """Each kept branch's files; the diffs run side by side, each its own git process."""
+    base_sha = git_refs.resolve(repo_path, base)
+    refs = [r for r, _ in kept]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        files = list(pool.map(lambda r: _diff_files(repo_path, base, base_sha, r.name, r.sha), refs))
+    return {r.name: f for r, f in zip(refs, files, strict=True)}
+
+
+#: Listed branches per checkout, reused for a short while: reading a large
+#: repository's refs and diffing each branch is most of a listing's time, and
+#: a reader flips between changes far more often than branches move. Keyed by
+#: what moves when a branch does (HEAD, packed refs, the last fetch), with a
+#: short lifetime for the moves that leave those alone, such as a commit made
+#: on another worktree's branch.
+_BRANCH_TTL_SECONDS = 30.0
+_BRANCHES: dict[str, tuple[tuple[Any, ...], float, list[ChangeCandidate]]] = {}
+
+
+def _refs_state(repo_path: str) -> tuple[Any, ...]:
+    """HEAD's commit and the mtimes of the files a fetch or a ref pack rewrites."""
+    common = git_refs.common_dir(repo_path)
+
+    def mtime(name: str) -> float:
+        try:
+            return (Path(common) / name).stat().st_mtime if common else 0.0
+        except OSError:
+            return 0.0
+
+    return (git_refs.resolve(repo_path, "HEAD"), mtime("packed-refs"), mtime("FETCH_HEAD"))
+
+
+def _cached_branches(
+    repo_path: str, base: str, current: str | None, max_branches: int
+) -> list[ChangeCandidate]:
+    """:func:`_list_branches`, reused while the refs state holds and the entry is young."""
+    state = (_refs_state(repo_path), base, current, max_branches)
+    hit = _BRANCHES.get(repo_path)
+    if hit and hit[0] == state and time.monotonic() - hit[1] < _BRANCH_TTL_SECONDS:
+        return hit[2]
+    branches = _list_branches(repo_path, base, current, max_branches)
+    _BRANCHES[repo_path] = (state, time.monotonic(), branches)
+    return branches
+
+
+def clear_branch_cache() -> None:
+    """Forget every kept listing and diff, for a test that moves refs under one checkout."""
+    _BRANCHES.clear()
+    with _DIFFS_LOCK:
+        _DIFFS.clear()
+
+
+def _list_branches(
+    repo_path: str, base: str, current: str | None, max_branches: int
+) -> list[ChangeCandidate]:
+    """The branches ahead of *base*, as candidates, from one read of the refs."""
+    all_refs = git_refs.list_branches(repo_path)
+    kept = _branches_ahead(repo_path, base, all_refs, max_branches)
+    remote_names = {r.name.split("/", 1)[-1] for r in all_refs if r.is_remote}
     # The same three-dot diff the analysis reads, so the count in the list is
-    # the count the verdict reports. One diff per kept branch, capped above.
-    files = {r.name: git_refs.changed_files(repo_path, base, r.name) for r, _ in kept}
+    # the count the verdict reports.
+    files = _branch_diffs(repo_path, base, kept)
     subjects = _branch_subjects(repo_path, [r.ref for r, _ in kept])
-    branches = [
+    return [
         ChangeCandidate(
             id=f"branch:{ref.name}",
             kind="branch",
@@ -195,7 +293,18 @@ def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate 
         )
         for ref, ahead in kept
     ]
-    return wip, branches
+
+
+def _git_candidates(
+    repo_path: str, max_branches: int
+) -> tuple[ChangeCandidate | None, list[ChangeCandidate]]:
+    """Uncommitted work (read fresh every time) and the branches ahead of the default branch."""
+    current = git_refs.current_branch(repo_path)
+    wip = _wip_candidate(repo_path, current)
+    base = git_refs.default_base(repo_path)
+    if base == "HEAD":
+        return wip, []
+    return wip, _cached_branches(repo_path, base, current, max_branches)
 
 
 async def _commit_candidates(session: AsyncSession, repo_id: str, limit: int) -> list[ChangeCandidate]:
@@ -259,10 +368,22 @@ class UnknownChangeError(ValueError):
 
 def _branch_files(repo_path: str, name: str) -> list[str]:
     """What a branch changed since it forked from the default branch."""
-    # Only a branch git lists, so the name is never parsed as an option or a range.
-    if name not in {b.name for b in git_refs.list_branches(repo_path)}:
+    # Only an exact branch ref, so the name is never parsed as an option or a range.
+    head_sha = _branch_tip(repo_path, name)
+    if not head_sha:
         raise UnknownChangeError(f"unknown branch {name!r}")
-    return _relative(repo_path, git_refs.changed_files(repo_path, git_refs.default_base(repo_path), name))
+    base = git_refs.default_base(repo_path)
+    files = _diff_files(repo_path, base, git_refs.resolve(repo_path, base), name, head_sha)
+    return _relative(repo_path, files)
+
+
+def _branch_tip(repo_path: str, name: str) -> str:
+    """The commit a local or remote-tracking branch *name* points at, ``""`` for none."""
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        sha = git_refs.ref_sha(repo_path, prefix + name)
+        if sha:
+            return sha
+    return ""
 
 
 async def resolve_change_files(
