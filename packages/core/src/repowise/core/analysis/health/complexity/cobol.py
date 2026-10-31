@@ -16,8 +16,10 @@ KEY`` / ``ON SIZE ERROR`` / ``ON EXCEPTION`` / ``ON OVERFLOW`` handler are +1
 CCN and a flat +1 cognitive; ``AND`` / ``OR`` are +1 each; ``EVALUATE`` and
 ``SEARCH`` open a level and ``WHEN`` / ``WHEN OTHER`` open another, like a
 switch and its cases. ``GO TO`` and ``ALTER`` are breaks in flow: a flat +1
-cognitive. A handler's statements stay at its statement's depth (the ceiling
-of not scoping them to their ``END-READ``). NLOC counts the non-blank lines of
+cognitive. A handler's body opens a level, as a ``WHEN`` arm does: its
+``NOT ...`` side replaces it, and the verb's ``END-READ`` (``END-WRITE``,
+``END-COMPUTE``, ``END-CALL``, ...) or the sentence period closes it; a
+``SEARCH``'s ``AT END`` stays an arm of the ``SEARCH``. NLOC counts the non-blank lines of
 the code view (comments and sequence areas blank) from the first statement to
 the last, so a masked ``EXEC`` block counts every line it spans.
 
@@ -65,9 +67,35 @@ _CLOSERS = {
     "END_EVALUATE": "evaluate_header",
     "END_SEARCH": "search_statement",
     "END_PERFORM": "perform_statement_loop",
+    # The verbs that take an AT END / INVALID KEY / ON SIZE ERROR / ON EXCEPTION /
+    # ON OVERFLOW handler; their terminator closes the handler's body.
+    **{
+        f"END_{verb}": "handler"
+        for verb in (
+            "READ",
+            "WRITE",
+            "REWRITE",
+            "DELETE",
+            "START",
+            "RETURN",
+            "COMPUTE",
+            "ADD",
+            "SUBTRACT",
+            "MULTIPLY",
+            "DIVIDE",
+            "CALL",
+            "STRING",
+            "UNSTRING",
+            "ACCEPT",
+            "DISPLAY",
+            "RECEIVE",
+        )
+    },
 }
 _ARMS = frozenset({"when", "when_other"})
 _HANDLERS = frozenset({"at_end", "invalid_key", "on_size_error", "on_exception", "on_overflow"})
+# ``NOT AT END`` and the rest: the other side of a handler, which they replace.
+_NOT_HANDLERS = frozenset({f"not_{kind}" for kind in _HANDLERS})
 _JUMPS = frozenset({"goto_statement", "alter_statement"})
 _BOOLEANS = frozenset({"AND", "OR"})
 _WHEN = re.compile(rb"\bWHEN\b", re.IGNORECASE)
@@ -334,7 +362,19 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
             charge(1)
             cognitive += 1 + len(stack)
             max_nesting = max(max_nesting, len(stack) + 1)
-        elif kind in _HANDLERS or kind == "else_if_header":
+        elif kind in _HANDLERS or kind in _NOT_HANDLERS:
+            if kind in _HANDLERS:
+                charge(1)
+                cognitive += 1
+            # ``SEARCH ... AT END`` is an arm of the SEARCH, like its WHENs.
+            if not (stack and stack[-1] == "search_statement"):
+                # The body opens a level; a NOT side replaces its handler, as
+                # the next WHEN replaces an arm.
+                if kind in _NOT_HANDLERS and stack and stack[-1] == "handler":
+                    stack.pop()
+                stack.append("handler")
+                max_nesting = max(max_nesting, len(stack))
+        elif kind == "else_if_header":
             charge(1)
             cognitive += 1
         elif kind in _JUMPS:
