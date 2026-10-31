@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
-import { CheckoutFacts } from "@repowise-dev/ui/decisions";
+import { CheckoutFactsDisclosure } from "@repowise-dev/ui/decisions";
 import {
   getDecisionCounts,
   getDecisionLaneCounts,
@@ -204,17 +204,16 @@ export default async function DecisionsPage({ params }: Props) {
         <AddDecisionButton repoId={repoId} />
       </div>
 
+      {/* Closed by default, with every fact's heading on the toggle: the
+          review queue below is what this page is visited for. */}
       {facts && (
-        <OverviewSection
+        <CheckoutFactsDisclosure
           title={t("checkoutTitle")}
           description={t("checkoutDescription")}
-        >
-          <CheckoutFacts
-            facts={facts.episodes}
-            available={facts.available}
-            total={facts.total}
-          />
-        </OverviewSection>
+          facts={facts.episodes}
+          available={facts.available}
+          total={facts.total}
+        />
       )}
 
       {!empty && (

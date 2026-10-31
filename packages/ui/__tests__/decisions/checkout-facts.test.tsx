@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { CheckoutFacts } from "../../src/decisions/checkout-facts.js";
+import { fireEvent, render, screen } from "@testing-library/react";
+import {
+  CheckoutFacts,
+  CheckoutFactsDisclosure,
+} from "../../src/decisions/checkout-facts.js";
 import type { EpisodeSummary } from "@repowise-dev/types/episodes";
 
 function makeFact(overrides: Partial<EpisodeSummary> = {}): EpisodeSummary {
@@ -179,5 +182,36 @@ describe("CheckoutFacts", () => {
       expect(container.textContent).not.toMatch(/no data|not found|missing/i);
       unmount();
     }
+  });
+});
+
+describe("CheckoutFactsDisclosure", () => {
+  it("starts closed, with every heading on the toggle", () => {
+    render(
+      <CheckoutFactsDisclosure
+        title="About this checkout"
+        facts={[
+          makeFact(),
+          makeFact({ id: "e2", kind: "nested_repos", evidence: "walk stopped" }),
+        ]}
+        available
+      />,
+    );
+
+    const toggle = screen.getByRole("button", { name: /About this checkout/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent(
+      "This tree is not formatter-clean · The walk stops at nested repositories",
+    );
+    expect(screen.queryByText("walk stopped")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText("walk stopped")).toBeInTheDocument();
+  });
+
+  it("says so on the toggle when there is nothing unusual", () => {
+    render(<CheckoutFactsDisclosure title="About this checkout" facts={[]} available />);
+
+    expect(screen.getByRole("button", { name: /Nothing unusual/ })).toBeInTheDocument();
   });
 });

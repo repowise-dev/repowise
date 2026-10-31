@@ -246,7 +246,7 @@ describe("a candidate is a review request, not an instruction", () => {
 describe("currency marks the exception, not the default", () => {
   // Scoped to the row list: every lane name is also a tab label, so an
   // unscoped query would find the tab and pass whatever the row rendered.
-  const rows = () => within(screen.getByRole("list"));
+  const rows = () => within(screen.getByRole("table"));
 
   it("says nothing extra about a decision that still describes its code", () => {
     renderLanes("active", { decisions: [record({ currency: "active" })] });
@@ -271,7 +271,7 @@ describe("currency marks the exception, not the default", () => {
 });
 
 describe("who signed is marked where it is not a person", () => {
-  const rows = () => within(screen.getByRole("list"));
+  const rows = () => within(screen.getByRole("table"));
 
   it("says nothing about the case the surface was built for", () => {
     renderLanes("active", {
@@ -377,6 +377,67 @@ describe("the source filter is a second axis, not a second lane control", () => 
 
     expect(screen.getByText(/clear the source filter/)).toBeInTheDocument();
     expect(screen.queryByText(/No candidates are waiting/)).not.toBeInTheDocument();
+  });
+});
+
+describe("the queue is a table with a drawer", () => {
+  it("draws the hotspot column only when the host sent the field", () => {
+    const first = renderLanes("candidates");
+    expect(screen.queryByRole("columnheader", { name: "Hotspots" })).toBeNull();
+    first.unmount();
+
+    renderLanes("candidates", {
+      decisions: [record({ hotspot_files: ["src/auth/service.py"] })],
+    });
+    expect(screen.getByRole("columnheader", { name: "Hotspots" })).toBeInTheDocument();
+  });
+
+  it("states the review order only when the host fetched in it", () => {
+    const first = renderLanes("candidates");
+    expect(screen.queryByText(/Most in need of a look first/)).toBeNull();
+    first.unmount();
+
+    renderLanes("candidates", { order: "review" });
+    expect(screen.getByText(/Most in need of a look first/)).toBeInTheDocument();
+  });
+
+  it("opens the record in a drawer and marks its hotspots", () => {
+    renderLanes("candidates", {
+      decisions: [record({ hotspot_files: ["src/auth/service.py"] })],
+      onAccept: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+
+    const drawer = screen.getByRole("dialog");
+    expect(within(drawer).getByText("hotspot")).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("link", { name: /Open and edit the full record/ }),
+    ).toHaveAttribute("href", "/repos/r1/decisions/d1");
+  });
+
+  it("moves the drawer to the next record after a verb", () => {
+    const onAccept = vi.fn();
+    renderLanes("candidates", {
+      decisions: [record({ id: "d1" }), record({ id: "d2", title: "Second record" })],
+      onAccept,
+    });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Accept" }));
+
+    expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }));
+    expect(
+      within(screen.getByRole("dialog")).getByRole("heading", { name: "Second record" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not open the drawer when a row verb is pressed", () => {
+    renderLanes("candidates", { onDismiss: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 

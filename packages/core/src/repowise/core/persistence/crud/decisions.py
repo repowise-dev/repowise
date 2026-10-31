@@ -29,7 +29,10 @@ from .decision_evidence import (  # noqa: F401
     list_decision_evidence,
     record_completeness,
 )
-from .decision_health import get_decision_health_summary  # noqa: F401
+from .decision_health import (  # noqa: F401
+    decision_hotspot_files,
+    get_decision_health_summary,
+)
 from .decision_identity import (  # noqa: F401
     _extraction_kind,
     _extraction_status,

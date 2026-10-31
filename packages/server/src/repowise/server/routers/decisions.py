@@ -16,6 +16,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     HISTORY_CURRENCIES,
     is_governing,
 )
+from repowise.core.analysis.decisions.review_queue import ReviewSignals, review_queue_order
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
@@ -106,6 +107,17 @@ def _page_of_lane(decisions: list, currencies: dict, lane: str, page: slice) -> 
     return in_lane[page]
 
 
+def _review_signals(record, hot: dict[str, list[str]]) -> ReviewSignals:
+    """What the review order reads about *record*."""
+    return ReviewSignals(
+        acceptable=not crud.record_blockers(record),
+        hot_files=len(hot.get(record.id, ())),
+        staleness=record.staleness_score or 0.0,
+        confidence=record.confidence or 0.0,
+        created_at=record.created_at,
+    )
+
+
 async def _attach_evidence(session: AsyncSession, items: list[DecisionRecordResponse]) -> None:
     """Give each row its evidence count and its top-ranked quote as a preview."""
     if not items:
@@ -163,8 +175,12 @@ async def list_decisions(
     offset: int = Query(0, ge=0),
     sort: str = Query(
         "priority",
-        pattern="^(priority|recent)$",
-        description="priority: confirmed rules first, then likeliest proposals. recent: newest first.",
+        pattern="^(priority|recent|review)$",
+        description=(
+            "priority: confirmed rules first, then likeliest proposals. recent: newest "
+            "first. review: what most needs a person first (acceptable, hotspot files, "
+            "scope changed), ranked over the whole lane before paging."
+        ),
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[DecisionRecordResponse]:
@@ -184,6 +200,16 @@ async def list_decisions(
     # filters on a derived currency, so those over-fetch the accepted set (small,
     # since each acceptance is a human action) and are paged after derivation.
     derived = lane is not None and lane != "candidates"
+    # The review order reads hotspot and contract signals SQL does not hold, so
+    # it ranks the whole lane and pages after. Ranking one page would put the
+    # most urgent record of page two below the least urgent of page one.
+    review = sort == "review"
+    if review:
+        scan_limit, scan_offset = None, 0
+    elif derived:
+        scan_limit, scan_offset = max(_LANE_SCAN_CAP, offset + limit), 0
+    else:
+        scan_limit, scan_offset = limit, offset
     decisions = await crud.list_decisions(
         session,
         repo_id,
@@ -196,17 +222,26 @@ async def list_decisions(
         # History has to reach a decision that was accepted and then dismissed,
         # which carries a tombstone status the default listing hides.
         include_dismissed=lane == "history",
-        limit=max(_LANE_SCAN_CAP, offset + limit) if derived else limit,
-        offset=0 if derived else offset,
-        sort=sort,
+        limit=scan_limit,
+        offset=scan_offset,
+        sort="priority" if review else sort,
     )
     currencies = await crud.decision_currencies(session, repo_id, decisions)
-    if lane is not None:
-        decisions = _page_of_lane(decisions, currencies, lane, slice(offset, offset + limit))
+    if review:
+        if lane is not None:
+            decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
+        hot = await crud.decision_hotspot_files(session, repo_id, decisions)
+        decisions = review_queue_order(decisions, lambda d: _review_signals(d, hot))
+        decisions = decisions[offset : offset + limit]
+    else:
+        if lane is not None:
+            decisions = _page_of_lane(decisions, currencies, lane, slice(offset, offset + limit))
+        hot = await crud.decision_hotspot_files(session, repo_id, decisions)
     signatures = await crud.decision_signatures(session, repo_id, decisions)
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
     for item in items:
         item.currency = currencies.get(item.id)
+        item.hotspot_files = hot.get(item.id, [])
         _attach_signature(item, signatures.get(item.id))
     await _attach_evidence(session, items)
     return items
