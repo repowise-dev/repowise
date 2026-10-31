@@ -472,7 +472,7 @@ async def _retry_past_cap(call, response, max_tokens: int, *, remaining_s: float
     return response, max_tokens
 
 
-async def _first_call(provider, prompts, configured, max_tokens, timeout_s, started):
+async def _first_call(provider, prompts, configured, timeout_s, started):
     """The first synthesis call: ``(call, response, failure, timed_out)``.
 
     ``call`` is bound to the reasoning mode the reply came from, so a retry past
@@ -482,7 +482,7 @@ async def _first_call(provider, prompts, configured, max_tokens, timeout_s, star
     """
     reasoning = await _synthesis_reasoning(provider, configured)
     call = functools.partial(_generate_within, provider, *prompts, reasoning=reasoning)
-    response, failure, timed_out = await call(max_tokens=max_tokens, timeout_s=timeout_s)
+    response, failure, timed_out = await call(max_tokens=_SYNTHESIS_MAX_TOKENS, timeout_s=timeout_s)
     refused = failure is not None and not timed_out and reasoning != configured
     if not refused or isinstance(failure, RateLimitError):
         return call, response, failure, timed_out
@@ -492,7 +492,7 @@ async def _first_call(provider, prompts, configured, max_tokens, timeout_s, star
     if remaining_s <= 0:
         return call, response, failure, timed_out
     call = functools.partial(call, reasoning=configured)
-    return (call, *await call(max_tokens=max_tokens, timeout_s=remaining_s))
+    return (call, *await call(max_tokens=_SYNTHESIS_MAX_TOKENS, timeout_s=remaining_s))
 
 
 async def synthesize(
@@ -527,7 +527,7 @@ async def synthesize(
     max_tokens = _SYNTHESIS_MAX_TOKENS
     started = time.monotonic()
     call, response, failure, timed_out = await _first_call(
-        provider, (system_prompt, user_prompt), reasoning, max_tokens, timeout_s, started
+        provider, (system_prompt, user_prompt), reasoning, timeout_s, started
     )
     if failure is None:
         # Metered before the empty-completion branch: a reasoning model that
