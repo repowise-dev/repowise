@@ -925,7 +925,7 @@
       },
       "ribbon": {
         "lowestHealth": "最低健康度",
-        "lowestHealthSub": "{name} · {scored} 个已评分仓库中 {healthy} 个健康",
+        "lowestHealthSub": "{name} · {scored} 个已评分仓库中 {healthy} 个为良好或更好",
         "lowestHealthNone": "尚无健康度快照",
         "docFreshness": "文档新鲜度",
         "docFreshnessNoPages": "尚未生成文档",

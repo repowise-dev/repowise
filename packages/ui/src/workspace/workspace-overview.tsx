@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 
-import { healthMark, healthMarkTextColor, type HealthMark } from "../health/tokens";
+import { GOOD_MIN } from "@repowise-dev/types/health";
+
+import { healthMark, scoreTextColor, type HealthMark } from "../health/tokens";
 import { formatNumber } from "../lib/format";
 import type { RibbonStat } from "../stats/stat-ribbon";
 import { ContractTypeBadge } from "./contract-type-badge";
@@ -50,14 +52,14 @@ export interface LowestRepoHealth {
   /** 0-10. */
   score: number;
   mark: HealthMark;
-  /** Scored repositories in the healthy band, out of `scored`. */
+  /** Scored repositories at Good or better, out of `scored`. */
   healthy: number;
   scored: number;
 }
 
 /**
- * The weakest scored repository, and how many scored ones sit in the healthy
- * band. Null when no repository has a score yet: an unmeasured workspace is
+ * The weakest scored repository, and how many scored ones sit at Good or
+ * better. Null when no repository has a score yet: an unmeasured workspace is
  * not one whose lowest health is zero.
  *
  * `health` is 0-10, as `RepoRows` reads it, so the cell and the row it names
@@ -73,7 +75,7 @@ export function lowestRepoHealth(
     name: low.name,
     score: low.health,
     mark: healthMark(low.health),
-    healthy: scored.filter((r) => healthMark(r.health).band === "healthy").length,
+    healthy: scored.filter((r) => r.health >= GOOD_MIN).length,
     scored: scored.length,
   };
 }
@@ -86,7 +88,7 @@ export function lowestHealthStat(
   low: LowestRepoHealth | null,
   copy: {
     label: string;
-    /** Sub-line under the figure, e.g. "backend · 2 of 3 scored repositories healthy". */
+    /** Sub-line under the figure, e.g. "backend · 2 of 3 scored repositories Good or better". */
     sub: (low: LowestRepoHealth) => string;
     /** Sub-line when nothing is scored. */
     none: string;
@@ -95,7 +97,7 @@ export function lowestHealthStat(
   return {
     label: copy.label,
     value: low ? low.mark.value : "—",
-    valueColor: low ? healthMarkTextColor(low.score) : undefined,
+    valueColor: low ? scoreTextColor(low.score) : undefined,
     sub: low ? copy.sub(low) : copy.none,
   };
 }

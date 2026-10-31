@@ -7,7 +7,7 @@ import {
   lowestHealthStat,
   lowestRepoHealth,
 } from "../../src/workspace/workspace-overview.js";
-import { healthMarkTextColor } from "../../src/health/tokens.js";
+import { scoreTextColor } from "../../src/health/tokens.js";
 
 const copy = {
   label: "Lowest health",
@@ -24,7 +24,7 @@ describe("lowestRepoHealth", () => {
       { name: "docs", health: null },
       { name: "repowise", health: 8.1 },
     ]);
-    expect(low).toMatchObject({ name: "backend", score: 7.7, healthy: 2, scored: 3 });
+    expect(low).toMatchObject({ name: "backend", score: 7.7, healthy: 3, scored: 3 });
   });
 
   it("keeps a measured zero as the lowest, and reads no scores as none", () => {
@@ -40,8 +40,8 @@ describe("lowestHealthStat", () => {
     expect(stat).toMatchObject({
       label: "Lowest health",
       value: "7.7",
-      valueColor: healthMarkTextColor(7.7),
-      sub: "backend · 0 of 1 healthy",
+      valueColor: scoreTextColor(7.7),
+      sub: "backend · 1 of 1 healthy",
     });
   });
 
