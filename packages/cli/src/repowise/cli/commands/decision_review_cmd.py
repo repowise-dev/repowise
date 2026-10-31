@@ -655,17 +655,33 @@ def _render_status(report: dict) -> None:
         console.print(f"  [yellow]{warning}[/yellow]")
 
     sources = Table(title="\nSources", box=None, pad_edge=False, show_edge=False)
-    for column in ("Source", "Status", "Records", "Accepted", "Last seen", "Why"):
+    for column in (
+        "Source",
+        "Status",
+        "Records",
+        "Accepted",
+        "Last seen",
+        "Last run",
+        "Last failure",
+        "Why",
+    ):
         sources.add_column(column)
     for source in report["sources"]:
         style = _STATUS_STYLE.get(source["status"], "")
         last = source.get("last_captured")
+        last_run = source.get("last_run")
+        run_cell = str(last_run)[:19] if last_run else "-"
+        if source.get("last_run_status") == "failed":
+            run_cell = f"[red]{run_cell} (failed)[/red]"
+        failure = source.get("last_failure")
         sources.add_row(
             source["key"],
             f"[{style}]{source['status']}[/{style}]" if style else source["status"],
             str(source["records"]),
             str(source["accepted"]),
             str(last)[:10] if last else "-",
+            run_cell,
+            f"[red]{str(failure)[:60]}[/red]" if failure else "-",
             f"[dim]{source['reason']}[/dim]",
         )
     console.print(sources)

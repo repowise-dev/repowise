@@ -70,6 +70,7 @@ def _run_and_docs(*, git_changed: bool = False, provider: object | None = object
         git_meta_map={"old.py": _meta("aaaa1111"), "new.py": _meta("bbbb2222")},
         graph_builder=SimpleNamespace(graph=lambda: None),
         degraded=[],
+        state={},
     )
     docs = SimpleNamespace(
         provider=provider,
@@ -139,3 +140,70 @@ def test_a_source_failure_is_reported_on_the_run(stubbed, monkeypatch):
     _mine(run, docs)
 
     assert run.degraded == ["Decision mining (pr): RuntimeError: outage"]
+
+
+def test_a_failed_source_keeps_its_range_and_a_succeeding_one_advances(stubbed, monkeypatch):
+    bases: list[str] = []
+
+    def _commits(_repo_path, base, _head):
+        bases.append(base)
+        return {"bbbb2222"}
+
+    monkeypatch.setattr(evolution, "commits_in_range", _commits)
+
+    async def _partial(self, *, enabled_sources):
+        if "pr" in enabled_sources:
+            return DecisionExtractionReport(
+                total_found=0,
+                decisions=[],
+                by_source={},
+                failures={"pr": "RuntimeError: outage"},
+            )
+        return DecisionExtractionReport(total_found=0, decisions=[], by_source={})
+
+    monkeypatch.setattr(_StubExtractor, "extract_all", _partial)
+    run, docs = _run_and_docs()
+    run.state = {
+        "decision_mining": {
+            "pr": {"last_success_commit": "base"},
+            "git_archaeology": {"last_success_commit": "base"},
+        }
+    }
+
+    _mine(run, docs)
+
+    assert bases == ["base"]
+    ledger = run.state["decision_mining"]
+    assert ledger["pr"]["last_success_commit"] == "base"
+    assert ledger["pr"]["last_status"] == "failed"
+    assert ledger["pr"]["last_failure"] == "RuntimeError: outage"
+    assert ledger["git_archaeology"]["last_success_commit"] == "head"
+    assert ledger["git_archaeology"]["last_status"] == "ok"
+
+    # The next run starts pr at the commit it last succeeded on, and the
+    # source that already advanced at the new base.
+    bases.clear()
+    run.base_ref = "head"
+    run.head = "next"
+    _mine(run, docs)
+
+    assert bases == ["base", "head"]
+
+
+def test_an_empty_range_does_not_advance_a_source(stubbed, monkeypatch):
+    """An empty answer can be a git failure; advancing would lose the retry."""
+    monkeypatch.setattr(evolution, "commits_in_range", lambda *_a: set())
+    run, docs = _run_and_docs()
+    run.state = {
+        "decision_mining": {
+            "pr": {"last_success_commit": "base"},
+            "git_archaeology": {"last_success_commit": "base"},
+        }
+    }
+
+    _mine(run, docs)
+
+    assert stubbed == []
+    assert run.state["decision_mining"]["pr"]["last_success_commit"] == "base"
+    assert run.state["decision_mining"]["git_archaeology"]["last_success_commit"] == "base"
+
