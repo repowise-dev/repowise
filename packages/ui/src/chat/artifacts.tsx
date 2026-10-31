@@ -22,6 +22,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type {
+  ChangeFileScoreRow,
   ChangeFindingRow,
   ContextArtifactData,
   DeadCodeArtifactData,
@@ -328,6 +329,20 @@ function ChangeFindingCard({ finding }: { finding: ChangeFindingRow }) {
   );
 }
 
+// A deleted file keeps its base score and has no head side; a file that
+// arrived with the change has no base side. Both read as words, not blanks.
+function fileScoreLabel(row: ChangeFileScoreRow): string {
+  if (row.head_score === null || row.head_score === undefined) {
+    return row.moved_to?.length
+      ? `deleted → ${row.moved_to.join(", ")}`
+      : "deleted";
+  }
+  if (row.base_score === null || row.base_score === undefined) {
+    return `new, ${row.head_score}`;
+  }
+  return `${row.base_score} → ${row.head_score}`;
+}
+
 function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
   const directive = data.directive;
   const delta = data.health_delta;
@@ -348,6 +363,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
       ? (data.impacted_tests.reasons?.[0] ?? data.impacted_tests.summary ?? "")
       : null;
   const fragile = data.fix_history?.files ?? [];
+  const scored = delta?.files ?? [];
   const partial = delta ? delta.status !== "available" : false;
 
   return (
@@ -402,6 +418,12 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
           <ContextItem
             label="Compared"
             value={`${delta.scope.analyzed}/${delta.scope.changed} files`}
+          />
+        )}
+        {delta?.score_change && (
+          <ContextItem
+            label="Health"
+            value={`${delta.score_change.base} to ${delta.score_change.head}`}
           />
         )}
         {fragile.length > 0 && (
@@ -478,12 +500,36 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
                 </ul>
               </div>
             )}
+            {scored.length > 0 && (
+              <div>
+                <SectionTitle icon={FileCode}>Files by score change</SectionTitle>
+                <ul className="space-y-0.5 text-xs text-[var(--color-text-secondary)]">
+                  {scored.map((row) => (
+                    <li key={row.path} className="flex justify-between gap-2">
+                      <span className="truncate font-mono" title={row.path}>
+                        {row.path}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
+                        {fileScoreLabel(row)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {delta && (
               <div className="space-y-1">
                 <StatRow
                   label="Introduced / worsened / resolved"
                   value={`${delta.introduced} / ${delta.worsened} / ${delta.resolved}`}
                 />
+                {typeof delta.files_total === "number" &&
+                  delta.files_total > scored.length && (
+                    <StatRow
+                      label="Files scored"
+                      value={`${scored.length} of ${delta.files_total}`}
+                    />
+                  )}
                 {delta.findings_total > delta.findings_emitted && (
                   <StatRow
                     label="Findings shown"
