@@ -99,3 +99,18 @@ def test_a_plain_word_counts_only_when_written_as_a_call():
     assert helper_calls("It calls `scheme()`.", rows, served=set()) == [
         "get_symbol('httpx/_client.py::URL::scheme')"
     ]
+
+
+def test_a_short_or_repeated_block_is_not_anchored():
+    reader = _reader({"src/compose.ts": SOURCE})
+    short = "```ts\n}\n```\n(src/compose.ts)"
+    assert anchor_code_blocks(short, ["src/compose.ts"], reader) == short
+    twice = SOURCE + SOURCE
+    answer = "```ts\nif (i <= index) {\n```\n(src/compose.ts)"
+    assert anchor_code_blocks(answer, ["src/compose.ts"], _reader({"src/compose.ts": twice})) == answer
+
+
+def test_names_inside_quoted_code_are_not_helpers():
+    rows = [_row("render_row", None)]
+    answer = "It builds rows:\n\n```js\nconst s = `render_row()`\n```\n"
+    assert helper_calls(answer, rows, served=set()) == []

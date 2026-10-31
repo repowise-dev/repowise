@@ -17,8 +17,8 @@ from sqlalchemy import select
 
 _log = logging.getLogger("repowise.mcp.answer.pointers")
 
-#: A fenced code block; group 1 is its body.
-_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)\n[ \t]*```", re.S)
+#: A fenced code block, fences on their own lines; group 1 is its body (None when empty).
+_FENCE_RE = re.compile(r"^[ \t]*```[^\n`]*\n(?:(.*?)\n)?[ \t]*```[ \t]*$", re.S | re.M)
 #: The citation right after a block: ``(src/x.ts)`` or ``(`src/x.ts`, ...)``.
 _CITE_RE = re.compile(r"\s*\(\s*`?(?P<path>[\w./-]+\.\w{1,8})(?=[`),;\s])")
 #: A backticked code name: ``fetch()``, ``Client.send``, ``Hono::#handleError``,
@@ -31,21 +31,30 @@ _PLAIN_WORD = re.compile(r"[a-z]+")
 _ELISION = frozenset({"...", "…", "// ...", "# ..."})
 #: Source lines a quoted block may skip between two of its lines.
 _MAX_GAP = 12
+#: A block shorter than this (``}``, ``return x``) could stand anywhere.
+_MIN_BLOCK_CHARS = 16
+#: How far after a block a citation in another form (``see src/x.ts``) is looked for.
+_CITE_WINDOW = 120
 _MAX_HELPER_CALLS = 3
 _CALLABLE_KINDS = ("function", "method")
 
 Reader = Callable[[str], "list[str] | None"]
 
 
-def _block_span(code: str, source: list[str]) -> tuple[int, int] | None:
-    """The 1-based ``(first, last)`` source lines a quoted block reproduces, in order."""
-    want = [s for ln in code.splitlines() if (s := ln.strip()) and s not in _ELISION]
-    if not want:
+def _block_span(code: str | None, source: list[str]) -> tuple[int, int] | None:
+    """The 1-based ``(first, last)`` source lines a quoted block reproduces, in order.
+
+    None unless the block is long enough to be specific and appears exactly once.
+    """
+    want = [s for ln in (code or "").splitlines() if (s := ln.strip()) and s not in _ELISION]
+    if sum(map(len, want)) < _MIN_BLOCK_CHARS:
         return None
-    for start, line in enumerate(source):
-        if line.strip() == want[0] and (end := _follows(want[1:], source, start)) is not None:
-            return start + 1, end + 1
-    return None
+    spans = [
+        (start + 1, end + 1)
+        for start, line in enumerate(source)
+        if line.strip() == want[0] and (end := _follows(want[1:], source, start)) is not None
+    ]
+    return spans[0] if len(spans) == 1 else None
 
 
 def _follows(rest: list[str], source: list[str], at: int) -> int | None:
@@ -75,6 +84,8 @@ def anchor_code_blocks(answer: str, citations: list[str], read: Reader) -> str:
                 out.append(f"{answer[pos : cite.end('path')]}:{span[0]}-{span[1]}")
                 pos = cite.end("path")
             continue
+        if any(p in answer[pos : pos + _CITE_WINDOW] for p in citations):
+            continue  # cited in a form the pattern does not read; leave it
         found = [(p, s) for p in citations if (ls := read(p)) and (s := _block_span(m[1], ls))]
         if len(found) == 1:
             path, (first, last) = found[0]
@@ -84,9 +95,9 @@ def anchor_code_blocks(answer: str, citations: list[str], read: Reader) -> str:
 
 
 def _named(answer: str) -> list[tuple[str | None, str]]:
-    """``(qualifier, name)`` per backticked code name, in first-mention order."""
+    """``(qualifier, name)`` per backticked code name in the prose, in first-mention order."""
     seen: dict[tuple[str | None, str], None] = {}
-    for token, call in _NAME_RE.findall(answer):
+    for token, call in _NAME_RE.findall(_FENCE_RE.sub("", answer)):
         parts = re.split(r"\.|::", token)
         if len(parts) == 1 and not call and _PLAIN_WORD.fullmatch(token):
             continue
@@ -179,10 +190,11 @@ async def attach_pointers(payload: dict[str, Any], repo: str | None) -> None:
     except Exception:
         _log.debug("get_answer: locate pointers skipped", exc_info=True)
         return
+    # A cut body still needs its call: only whole bodies count as served.
     served = {
         (b.get("path"), b.get("name"))
         for b in payload.get("symbol_bodies") or []
-        if isinstance(b, dict)
+        if isinstance(b, dict) and not b.get("truncated") and "continuation" not in b
     }
     if calls := helper_calls(answer, rows, served):
         payload["next_actions"] = calls
