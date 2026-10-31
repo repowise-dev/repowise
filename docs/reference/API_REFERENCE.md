@@ -103,6 +103,11 @@ disable the model calls themselves.
   indexed data synchronously, with no LLM call (`routers/claude_md.py`).
 - `POST /api/repos/{repo_id}/blast-radius` is a deterministic graph analysis
   (`packages/core/src/repowise/core/analysis/pr_blast.py`).
+  `POST /api/repos/{repo_id}/blast-radius/change` runs the same analysis on one
+  change picked from `GET /api/repos/{repo_id}/blast-radius/changes`
+  (uncommitted work, branches ahead of the default branch, recent indexed
+  commits; `core/analysis/change_candidates.py`). A server without a checkout
+  offers the commits only.
 - Every status update, deletion, settings write, and read-only report.
 
 ### 1.4 One data-leaving call
@@ -549,7 +554,7 @@ one per router area; this table maps an area to the tag to open there.
 | Merged changes (Change Records) reconstructed from git | `changes` | `routers/changes.py` |
 | Typed events from consecutive index runs (CloudEvents, pull) | `events` | `routers/events.py` |
 | Structural coupling report | `coupling` | `routers/coupling.py` |
-| Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
+| Blast radius for a change, and the changes to pick from | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |
 | Mined session episodes | `episodes` | `routers/episodes.py` |
 | Action prompts and recorded state | `actions` | `routers/actions.py` |

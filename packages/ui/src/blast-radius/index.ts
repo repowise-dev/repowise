@@ -11,3 +11,7 @@ export * from "./blast-radius-summary";
 export * from "./blast-radius-results";
 export * from "./impact-adapter";
 export * from "./impact-view";
+export * from "./blast-map-model";
+export * from "./blast-radius-map";
+export * from "./blast-radius-verdict";
+export * from "./change-picker";

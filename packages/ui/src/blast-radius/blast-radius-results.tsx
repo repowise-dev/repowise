@@ -17,6 +17,11 @@ interface BlastRadiusResultsProps {
   /** Rich reviewer panel (e.g. `ReviewerSuggestions` fed by the
    *  reviewer-suggestions endpoint). Replaces the thin email table. */
   reviewersSlot?: ReactNode | undefined;
+  /**
+   * Only the detail tables, under a Details heading: for a host that already
+   * shows the verdict and the map above them.
+   */
+  detailsOnly?: boolean;
 }
 
 /**
@@ -28,6 +33,7 @@ export function BlastRadiusResults({
   result,
   changedFiles = [],
   reviewersSlot,
+  detailsOnly = false,
 }: BlastRadiusResultsProps) {
   const testImpact = result.test_impact;
   const recommendations = testImpact?.recommendations ?? [];
@@ -52,9 +58,15 @@ export function BlastRadiusResults({
 
   return (
     <div className="space-y-6">
-      <BlastRadiusHeader result={result} changedFiles={changedFiles} />
+      {detailsOnly ? (
+        <p className="border-t border-[var(--color-border-default)] pt-5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          Details
+        </p>
+      ) : (
+        <BlastRadiusHeader result={result} changedFiles={changedFiles} />
+      )}
 
-      {noDownstream ? (
+      {detailsOnly ? null : noDownstream ? (
         <EmptyState
           tone="positive"
           title="No downstream impact"
@@ -74,7 +86,7 @@ export function BlastRadiusResults({
       <CollapsibleSection
           title="Direct risks"
           hint={result.direct_risks.length || undefined}
-          defaultOpen={result.direct_risks.length > 0}
+          defaultOpen={!detailsOnly && result.direct_risks.length > 0}
         >
           {result.direct_risks.length > 0 ? (
             <DirectRisksTable rows={result.direct_risks} />
@@ -140,7 +152,7 @@ export function BlastRadiusResults({
       <CollapsibleSection
         title="Tests to run"
         hint={testImpact?.recommendations_total || undefined}
-        defaultOpen={recommendations.length > 0 || testAnalysisLimited}
+        defaultOpen={!detailsOnly && (recommendations.length > 0 || testAnalysisLimited)}
       >
         {recommendations.length > 0 ? (
           <div className="space-y-1">

@@ -26,7 +26,7 @@ from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.co_change import parse_partners
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.persistence.models import GitMetadata, GraphNode, Repository
+from repowise.core.persistence.models import GitMetadata, GraphNode, HealthFileMetric, Repository
 
 
 def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
@@ -137,6 +137,8 @@ class PRBlastRadiusAnalyzer:
         changed_files: list[str],
         max_depth: int = 3,
         exclude_spec: Any = None,
+        *,
+        with_graph: bool = False,
     ) -> dict:
         """Return full blast-radius analysis for the given changed files.
 
@@ -146,6 +148,11 @@ class PRBlastRadiusAnalyzer:
             Relative file paths that are modified in the PR.
         max_depth:
             Maximum BFS depth for transitive ancestor lookup.
+        with_graph:
+            Also name, for each transitive file, the file it was reached
+            through (``via``), and add ``affected_signals``: per affected
+            file, its hotspot verdict, health score and module. Off by
+            default, so the MCP reply that reuses this analysis keeps its size.
         """
         if exclude_spec is None:
             repo_path = (
@@ -165,7 +172,7 @@ class PRBlastRadiusAnalyzer:
 
         # 2. Transitive affected files
         transitive_affected = await self._transitive_affected(
-            changed_files, max_depth, exclude_spec
+            changed_files, max_depth, exclude_spec, with_via=with_graph
         )
         # Sorted, because this list is cut before it is shown. ``test_gaps``
         # preserves this order and ``get_risk``'s PR directive renders three of
@@ -192,7 +199,7 @@ class PRBlastRadiusAnalyzer:
         #    exact alias supplied by the shared public semantics contract.
         structural_impact_score = self._compute_overall_risk(direct_risks, transitive_affected)
 
-        return {
+        result = {
             "direct_risks": direct_risks,
             "transitive_affected": transitive_affected,
             "cochange_warnings": cochange_warnings,
@@ -201,6 +208,9 @@ class PRBlastRadiusAnalyzer:
             "test_impact": test_impact,
             **structural_impact_contract(structural_impact_score),
         }
+        if with_graph:
+            result["affected_signals"] = await self._affected_signals(all_affected_paths)
+        return result
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -276,7 +286,12 @@ class PRBlastRadiusAnalyzer:
         return centrality * (1.0 + temporal_hotspot_score)
 
     async def _transitive_affected(
-        self, changed_files: list[str], max_depth: int, exclude_spec: Any = None
+        self,
+        changed_files: list[str],
+        max_depth: int,
+        exclude_spec: Any = None,
+        *,
+        with_via: bool = False,
     ) -> list[dict]:
         """BFS over reverse graph edges (source_node_id -> target_node_id direction).
 
@@ -298,6 +313,8 @@ class PRBlastRadiusAnalyzer:
         :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
+        # path -> the first (sorted) frontier file it imports, for a drawing.
+        via: dict[str, str] = {}
         # Sorted, not just deduped. This walk's output is cut twice downstream
         # — ``may_break`` takes 15 of it, and that is the first field
         # ``get_risk``'s PR directive tells an agent to read — so the order
@@ -317,7 +334,7 @@ class PRBlastRadiusAnalyzer:
             params.update({f"e{i}": v for i, v in enumerate(sorted(FILE_DEPENDENCY_EDGE_TYPES))})
             rows = await self._session.execute(
                 text(
-                    f"SELECT DISTINCT e.source_node_id FROM graph_edges e "
+                    f"SELECT DISTINCT e.source_node_id, e.target_node_id FROM graph_edges e "
                     f"JOIN graph_nodes source ON source.repository_id = e.repository_id "
                     f"AND source.node_id = e.source_node_id AND source.node_type = 'file' "
                     f"JOIN graph_nodes target ON target.repository_id = e.repository_id "
@@ -328,16 +345,17 @@ class PRBlastRadiusAnalyzer:
                 ),
                 params,
             )
-            next_frontier = []
-            for (src,) in rows:
-                if (
-                    src not in visited
-                    and src not in set(changed_files)
-                    and not is_excluded(src, exclude_spec)
-                ):
-                    visited[src] = depth
-                    next_frontier.append(src)
-            frontier = next_frontier
+            changed = set(changed_files)
+            reached: dict[str, str] = {}
+            for src, target in rows:
+                if src in visited or src in changed or is_excluded(src, exclude_spec):
+                    continue
+                if src not in reached or target < reached[src]:
+                    reached[src] = target
+            for src in sorted(reached):
+                visited[src] = depth
+                via[src] = reached[src]
+            frontier = sorted(reached)
 
         # Depth first, then path: a sort on depth alone is stable, so files
         # sharing a depth kept the row order the query happened to return.
@@ -351,8 +369,50 @@ class PRBlastRadiusAnalyzer:
                 "evidence_kind": "structural",
                 "claim": "structural_reach",
                 "runtime_breakage_claim": False,
+                **({"via": via[p]} if with_via else {}),
             }
             for p, d in sorted(visited.items(), key=lambda item: (item[1], item[0]))
+        ]
+
+    async def _affected_signals(self, paths: list[str]) -> list[dict]:
+        """Per affected file: hotspot verdict, health score and module.
+
+        ``health_score`` and ``module`` stay ``None`` for a file health never
+        scored; ``is_hotspot`` is ``None`` for a file with no git history row.
+        A missing signal is never read as healthy or cold.
+        """
+        if not paths:
+            return []
+        hotspot: dict[str, bool] = {}
+        health: dict[str, tuple[float | None, str | None]] = {}
+        # Chunked: a branch can reach thousands of files and SQLite caps bound
+        # parameters per statement.
+        for i in range(0, len(paths), 500):
+            chunk = paths[i : i + 500]
+            for path, is_hot in await self._session.execute(
+                select(GitMetadata.file_path, GitMetadata.is_hotspot).where(
+                    GitMetadata.repository_id == self._repo_id,
+                    GitMetadata.file_path.in_(chunk),
+                )
+            ):
+                hotspot[path] = bool(is_hot)
+            for path, score, module in await self._session.execute(
+                select(
+                    HealthFileMetric.file_path, HealthFileMetric.score, HealthFileMetric.module
+                ).where(
+                    HealthFileMetric.repository_id == self._repo_id,
+                    HealthFileMetric.file_path.in_(chunk),
+                )
+            ):
+                health[path] = (score, module)
+        return [
+            {
+                "path": p,
+                "is_hotspot": hotspot.get(p),
+                "health_score": health.get(p, (None, None))[0],
+                "module": health.get(p, (None, None))[1],
+            }
+            for p in paths
         ]
 
     async def _cochange_warnings(
