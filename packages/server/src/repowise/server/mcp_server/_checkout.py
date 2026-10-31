@@ -103,26 +103,27 @@ async def own_index_context(alias: str, root: Path) -> Any:
 # Ceiling: a call running longer than this loses its engine; a lease count
 # would remove the bound.
 _RETIRE_AFTER_S = 600.0
-_retiring: set[asyncio.Task[None]] = set()
+_retiring: dict[asyncio.Task[None], Any] = {}
 
 
 def _retire(registry: Any) -> None:
     async def _close_later() -> None:
-        try:
-            await asyncio.sleep(_RETIRE_AFTER_S)
-        finally:
-            await registry.close()
+        await asyncio.sleep(_RETIRE_AFTER_S)
+        await registry.close()
 
     task = asyncio.create_task(_close_later())
-    _retiring.add(task)
-    task.add_done_callback(_retiring.discard)
+    _retiring[task] = registry
+    task.add_done_callback(lambda done: _retiring.pop(done, None))
 
 
 async def close_own_index_contexts() -> None:
-    for task in list(_retiring):
-        task.cancel()  # its finally closes the registry now
+    # A cancelled task may never have started, so its registry closes here.
+    for task, registry in list(_retiring.items()):
+        task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        await registry.close()
+    _retiring.clear()
     while _own:
         await _own.popitem()[1].close()
 
