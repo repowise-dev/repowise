@@ -265,9 +265,15 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
 _SNAP_MAX_CHARS = 10
 
 
-def _scan_boundary(content: str, cut: int, step: int, bound: int) -> int | None:
-    stop = max(bound, cut - _SNAP_MAX_CHARS) if step < 0 else min(bound, cut + _SNAP_MAX_CHARS)
-    for pos in range(cut + step, stop + step, step):
+def _scan_boundary(
+    content: str, cut: int, step: int, bound: int, max_chars: int = _SNAP_MAX_CHARS
+) -> int | None:
+    for i in range(1, max_chars + 1):
+        pos = cut + step * i
+        if (step < 0 and pos < bound) or (step > 0 and pos > bound):
+            break
+        if pos < 0 or pos >= len(content):
+            break
         if content[pos].isspace():
             return pos
     return None
@@ -276,18 +282,19 @@ def _scan_boundary(content: str, cut: int, step: int, bound: int) -> int | None:
 def _snap_cut(
     content: str,
     cut: int,
+    max_chars: int = _SNAP_MAX_CHARS,
     min_pos: int = 0,
     max_pos: int | None = None,
 ) -> int:
-    """Move *cut* to the nearest whitespace within 10 characters if inside a word."""
+    """Move *cut* to the nearest whitespace within max_chars characters if inside a word."""
     limit = len(content) if max_pos is None else max_pos
     if cut <= 0 or cut >= len(content):
         return cut
     if content[cut - 1].isspace() or content[cut].isspace():
         return cut
 
-    left = _scan_boundary(content, cut, -1, min_pos)
-    right = _scan_boundary(content, cut, 1, limit)
+    left = _scan_boundary(content, cut, -1, min_pos, max_chars)
+    right = _scan_boundary(content, cut, 1, limit, max_chars)
     candidates = [p for p in (left, right) if p is not None]
     if not candidates:
         return cut
