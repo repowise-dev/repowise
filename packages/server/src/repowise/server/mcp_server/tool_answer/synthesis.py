@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import posixpath
+import re
 import time
 from pathlib import Path
 from typing import NamedTuple
@@ -472,13 +473,20 @@ async def _retry_past_cap(call, response, max_tokens: int, *, remaining_s: float
     return response, max_tokens
 
 
+# A provider's refusal of the mode itself, as opposed to an outage or a filter:
+# "Thinking level is not supported" (Gemini), "reasoning=... is not supported"
+# (pre-call check), an unsupported ``reasoning_effort`` (OpenAI-style APIs).
+_REFUSED_MODE = re.compile(r"thinking|reasoning|effort", re.IGNORECASE)
+
+
 async def _first_call(provider, prompts, configured, timeout_s, started):
     """The first synthesis call: ``(call, response, failure, timed_out)``.
 
     ``call`` is bound to the reasoning mode the reply came from, so a retry past
     the token cap asks the same way. When the provider refuses the ``low`` mode
     synthesis chose (Gemini 2.5 models reject thinking levels), the call is made
-    once more with the configured mode, and ``low`` is not tried again.
+    once more with the configured mode, and ``low`` is not tried again. Any
+    other failure under ``low`` also gets that one call, but keeps ``low``.
     """
     reasoning = await _synthesis_reasoning(provider, configured)
     call = functools.partial(_generate_within, provider, *prompts, reasoning=reasoning)
@@ -486,8 +494,9 @@ async def _first_call(provider, prompts, configured, timeout_s, started):
     refused = failure is not None and not timed_out and reasoning != configured
     if not refused or isinstance(failure, RateLimitError):
         return call, response, failure, timed_out
-    _log.info("get_answer synthesis: %s refused reasoning=low (%s)", _model_key(provider), failure)
-    _LOW_EFFORT_OK[_model_key(provider)] = False
+    if _REFUSED_MODE.search(str(failure)):
+        _log.info("get_answer synthesis: %s refused reasoning=low (%s)", _model_key(provider), failure)
+        _LOW_EFFORT_OK[_model_key(provider)] = False
     remaining_s = timeout_s - (time.monotonic() - started)
     if remaining_s <= 0:
         return call, response, failure, timed_out

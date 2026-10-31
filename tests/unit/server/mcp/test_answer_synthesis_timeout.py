@@ -698,6 +698,26 @@ async def test_a_refused_low_is_asked_again_with_the_configured_mode():
     assert len(provider.calls) == 3
 
 
+async def test_an_outage_under_low_is_asked_again_but_keeps_low():
+    """A 500 or a dropped connection says nothing about the mode."""
+    from repowise.core.providers.llm.base import ProviderError
+
+    class _FailsOnce(_LowCapable):
+        provider_name = "gemini"
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise ProviderError("gemini", "ServerError: 503 UNAVAILABLE")
+            return SimpleNamespace(content="the answer")
+
+    provider = _FailsOnce(duration=0, budget=30.0)
+    text, note, _ = await synthesize(provider, "sys", "user")
+    assert (text, note) == ("the answer", None)
+    await synthesize(provider, "sys", "user")
+    assert [c["reasoning"] for c in provider.calls] == ["low", "auto", "low"]
+
+
 async def test_a_rate_limit_is_not_read_as_a_refused_mode():
     from repowise.core.providers.llm.base import RateLimitError
 
