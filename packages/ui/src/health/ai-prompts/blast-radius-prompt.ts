@@ -27,6 +27,12 @@ export interface BlastPromptInput {
   /** Files history changes alongside these that the change does not touch. */
   missingPartners: { path: string; partnerOf: string }[];
   owners: { name: string; email: string; files: number }[];
+  /** A health check run on the change, when the reader ran one. */
+  healthCheck?: {
+    revspec: string;
+    verdict: string;
+    findings: { group: string; severity: string; path: string; line: number | null; message: string }[];
+  } | undefined;
 }
 
 export interface BuildBlastPromptOptions {
@@ -139,6 +145,25 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     ? ["## Owners of the affected files", "", bulletList(i.owners.slice(0, 3).map((o) => `${o.name} <${o.email}>, ${o.files} file${pluralS(o.files)}`)), ""]
     : [];
 
+  const checkCommand = i.healthCheck
+    ? ["repowise health check", i.healthCheck.revspec === "working tree" ? "" : i.healthCheck.revspec].join(" ").trim()
+    : "";
+  const check = i.healthCheck
+    ? [
+        `## Health check: ${i.healthCheck.verdict} (\`${checkCommand}\`)`,
+        "",
+        i.healthCheck.findings.length
+          ? capped(
+              i.healthCheck.findings,
+              10,
+              (f) => `${f.group} ${f.severity}: \`${f.path}${f.line ? `:${f.line}` : ""}\` ${f.message}`,
+              (n) => `${n} more`,
+            )
+          : "- No finding introduced, worsened or fixed.",
+        "",
+      ]
+    : [];
+
   return joinSections([
     lead,
     "",
@@ -157,6 +182,7 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     "",
     ...partners,
     ...owners,
+    ...check,
     "## What I want back",
     "",
     "1. Risks: concrete defects or regressions this diff can cause in the files that import it, each with file:line and why.",

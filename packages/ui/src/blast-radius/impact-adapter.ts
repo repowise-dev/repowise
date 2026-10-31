@@ -4,6 +4,7 @@ import type {
   BlastRadiusResponse,
   ChangeBlastRadiusResponse,
   ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
 } from "@repowise-dev/types/blast-radius";
 
 /** A hotspot suggestion chip — only the path is rendered. */
@@ -44,6 +45,12 @@ export interface ImpactAdapter {
   listChanges?(): Promise<ChangeCandidatesResponse>;
   /** Analyze one change from {@link listChanges} by its id. */
   analyzeChange?(input: { changeId: string; maxDepth: number }): Promise<ChangeBlastRadiusResponse>;
+
+  /**
+   * Run `repowise health check` on a listed change. Needs a checkout, so a
+   * host without one leaves it out and the view shows no health check.
+   */
+  checkHealth?(changeId: string): Promise<ChangeHealthCheckResponse>;
 
   /** Where a file on the map or in the verdict links to; omit for plain text. */
   fileHref?(path: string): string;

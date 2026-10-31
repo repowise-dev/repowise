@@ -27,6 +27,7 @@ import { BlastRadiusResults } from "./blast-radius-results";
 import { BlastRadiusMap } from "./blast-radius-map";
 import { BlastRadiusVerdict } from "./blast-radius-verdict";
 import { ChangePicker } from "./change-picker";
+import { HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
 import type { ImpactAdapter } from "./impact-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 import { disambiguateBasenames } from "../lib/format";
@@ -183,6 +184,22 @@ export function ImpactView({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const request = useRef(0);
+  // Health checks by change id: run on demand, kept for the page's life.
+  const [checks, setChecks] = useState<Record<string, HealthCheckState>>({});
+  const runCheck = useCallback(async (changeId: string) => {
+    const check = adapterRef.current.checkHealth;
+    if (!check) return;
+    setChecks((prev) => ({ ...prev, [changeId]: { status: "running" } }));
+    try {
+      const result = await check(changeId);
+      setChecks((prev) => ({ ...prev, [changeId]: { status: "done", result } }));
+    } catch (err) {
+      setChecks((prev) => ({
+        ...prev,
+        [changeId]: { status: "error", message: toFriendlyMessage(err, "The health check could not run.") },
+      }));
+    }
+  }, []);
   // Read through a ref: a host that rebuilds its adapter each render must not
   // re-run the analysis each render.
   const adapterRef = useRef(adapter);
@@ -248,6 +265,7 @@ export function ImpactView({
   ) : (
     "This set of files"
   );
+  const checkedChange = selectedChange ? checks[selectedChange.id] : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
 
   return (
@@ -335,6 +353,7 @@ export function ImpactView({
               changedTotal={analysis.changedTotal}
               subject={subject}
               change={selectedChange}
+              healthCheck={checkedChange?.status === "done" ? checkedChange.result : undefined}
               fileHref={fileHref}
             />
             {/* The depth control stays when nothing is reached: a deeper look may find some. */}
@@ -364,6 +383,14 @@ export function ImpactView({
                   </p>
                 )}
               </div>
+            {selectedChange && adapter.checkHealth && changes?.working_tree_supported && (
+              <HealthCheckPanel
+                key={selectedChange.id}
+                state={checks[selectedChange.id]}
+                onRun={() => void runCheck(selectedChange.id)}
+                fileHref={fileHref}
+              />
+            )}
             <BlastRadiusResults
               result={analysis.result}
               changedFiles={analysis.changedFiles}
