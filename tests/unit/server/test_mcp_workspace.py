@@ -46,12 +46,17 @@ async def _settle_background_tasks() -> None:
     A tool cancels its helper tasks when the call returns. SQLAlchemy closes
     the connection of a task cancelled mid-query in a task of its own. When
     the engine is disposed while that close is still running, both wait on
-    aiosqlite forever and the test's teardown hangs.
+    aiosqlite forever and the test's teardown hangs. A cancelled task starts
+    that close only as it unwinds, so this waits until no task is left.
     """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10
     current = asyncio.current_task()
-    pending = [task for task in asyncio.all_tasks() if task is not current]
-    if pending:
-        await asyncio.wait(pending, timeout=10)
+    while pending := [task for task in asyncio.all_tasks() if task is not current]:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        await asyncio.wait(pending, timeout=remaining)
 
 
 async def _make_repo_context(
