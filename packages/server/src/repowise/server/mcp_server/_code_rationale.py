@@ -127,7 +127,6 @@ _STOPWORDS: frozenset[str] = frozenset(
 # return a wall of text.
 _MAX_FILES = 6
 _MAX_FILE_LINES = 8000
-_MAX_BLOCK_LINES = 12
 _MAX_BLOCK_CHARS = 800
 _MAX_RESULTS = 6
 # Keep a block only if it scores at least this fraction of the best block's
@@ -390,10 +389,8 @@ def mine_rationale(
         near = near_lines.get(path)
         if near is not None and abs(start - near) <= _NEAR_LINE_WINDOW:
             score += _NEAR_LINE_BONUS
-        # Coalesced runs longer than the cap are split at the head: the
-        # lead lines carry the rationale; tail is usually elaboration.
-        if end - start + 1 > _MAX_BLOCK_LINES:
-            end = start + _MAX_BLOCK_LINES - 1
+        # ``lines`` is the whole block the comment was read from, so the range
+        # holds every line the (char-capped) excerpt quotes.
         scored.append(
             (
                 score,

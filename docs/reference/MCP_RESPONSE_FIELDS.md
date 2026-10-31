@@ -163,9 +163,11 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `degraded` | Synthesis could not run (no provider, or the call failed) |
 | `grounding` | No-synthesis answers: `exact_symbol` or `extracted` |
 | `note`, `next_action_hint` | How the answer was built; on weak retrieval, which `best_guesses` row to start from |
+| `next_actions` | Up to 3 `get_symbol('<id>')` calls for functions the answer names whose bodies it does not serve |
 
 Notes:
 
+- **`answer`:** a quoted code block found in a cited file carries that file's line range in its citation (`(src/compose.ts:50-60)`).
 - **`confidence`:** `high` is content-grounded on a top hit covering the question, or states the value on the verified definition line of a constant the question names, wherever that line ranked. A why-answer whose mechanism is absent from the source drops to `medium`.
 - **`retrieval_quality`:** `weak` when the top hit leaves out most of the question.
 - **`candidate_files`:** served at every confidence; absent when retrieval resolved no file.

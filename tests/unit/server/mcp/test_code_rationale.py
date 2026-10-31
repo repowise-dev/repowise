@@ -90,6 +90,18 @@ def test_mine_ranks_marker_plus_query_overlap_first(tmp_path):
     assert "window" in top["matched_terms"]
 
 
+def test_mine_reports_the_whole_block_a_long_docstring_spans(tmp_path):
+    body = "\n".join(f"* reason {n} for the parser." for n in range(14))
+    source = f'"""\nWe ship our own parser because the stdlib one is lax.\n\n{body}\n\nPreviously we relied on another package.\n"""\n\nX = 1\n'
+    _write(tmp_path, "parse.py", source)
+    out = mine_rationale(str(tmp_path), ["parse.py"], "why ship our own parser instead of stdlib")
+    assert out
+    start, end = out[0]["lines"]
+    shown = source.splitlines()[start - 1 : end]
+    assert any("Previously we relied" in line for line in shown)
+    assert "Previously we relied" in out[0]["comment"]
+
+
 def test_mine_path_mode_returns_marker_comments_without_query(tmp_path):
     _write(tmp_path, "mod.py", PY_SOURCE)
     out = mine_rationale(str(tmp_path), ["mod.py"], None)

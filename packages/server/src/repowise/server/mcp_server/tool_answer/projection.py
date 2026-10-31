@@ -16,6 +16,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_MAX,
     _LARGE_FILE_BYTES,
 )
+from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
 from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
 
@@ -988,6 +989,7 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
         )
         await _refresh_freshness(payload, repo)
+        await attach_pointers(payload, repo)
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
