@@ -324,6 +324,31 @@ def decision_add(
     _report_added(repo_path, stored, fmt, warnings=warnings)
 
 
+def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
+    """Return True if raw_path resolves to an existing file or directory under repo_root."""
+    clean = raw_path.strip()
+    if not clean:
+        return True
+    try:
+        target = (repo_root / clean).resolve()
+        return target.is_relative_to(repo_root) and target.exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _collect_path_warnings(repo_path: Path, paths: list[str]) -> list[str]:
+    """Return advisory warnings for any affected paths not found under repo_path."""
+    resolved_root = repo_path.resolve()
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for p in paths:
+        if not p.strip() or _is_path_under_repo(resolved_root, p) or p in seen:
+            continue
+        seen.add(p)
+        warnings.append(f"affects path not found: {p}")
+    return warnings
+
+
 def _collect_add_warnings(
     repo_path: Path, fields: _DecisionFields, kind: str
 ) -> list[str]:
@@ -336,21 +361,7 @@ def _collect_add_warnings(
     """
     warnings: list[str] = []
     if kind != AGREEMENT_KIND:
-        resolved_root = repo_path.resolve()
-        for p in fields.affected_files:
-            clean = p.strip()
-            if not clean:
-                continue
-            try:
-                target = (repo_path / clean).resolve()
-                exists_under_repo = target.is_relative_to(resolved_root) and target.exists()
-            except (OSError, RuntimeError, ValueError):
-                exists_under_repo = False
-
-            if not exists_under_repo:
-                msg = f"affects path not found: {p}"
-                if msg not in warnings:
-                    warnings.append(msg)
+        warnings.extend(_collect_path_warnings(repo_path, fields.affected_files))
     if not (fields.rationale and fields.rationale.strip()):
         warnings.append("no rationale given")
     return warnings
