@@ -26,8 +26,9 @@ from .interaction import Interaction
 
 logger = logging.getLogger(__name__)
 
-#: The estimator every repowise savings figure is reported on: floor(chars / 4).
-_ESTIMATOR = "chars_per_token_floor_v1"
+#: Token scale floor(chars / 4), same as v1. v2 marks the revised counterfactual
+#: table (docs/architecture/savings-accounting.md, "MCP counterfactuals").
+_ESTIMATOR = "chars_per_token_floor_v2"
 _TOKEN_UNIT = "estimated_tokens"
 
 

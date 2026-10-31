@@ -8,7 +8,10 @@ its dict alone it returns 0, and the recorder writes no row (undersell by
 omission). High-value tools that hold an exact artifact (``get_symbol`` has the
 whole source file in hand) instead *declare* their counterfactual via
 :func:`repowise.server.mcp_server._savings.wrapper.declare_replaced`; the
-wrapper prefers a declared value over anything computed here.
+wrapper prefers a declared value over anything computed here. Tools whose
+answer replaces reading files declare through the ``*_replaced_tokens``
+functions below with a live reader (:mod:`.reads`), so the formula has one
+owner and the dict-only estimator is its fallback.
 
 Floors mirror :data:`repowise.core.distill.missed.RATIO_FLOOR` philosophy:
 estimates undersell rather than oversell, so the savings number on the Costs
@@ -51,58 +54,69 @@ CONTEXT_MODULE_MAX = 20_000
 #: is more again. Floored at well under half that measured grep alone.
 CONTEXT_SYMBOL_FLOOR = 1_200
 
-#: A ``get_context`` *file* card with no skeleton stands in for the agent
-#: Reading that file. Skeleton-by-default was removed on 2026-08-11
-#: (``tool_context/targets.py:87``) because the symbol-list card is cheaper,
-#: and nothing replaced the credit — so the commonest call this tool serves has
-#: been earning nothing at all. The card carries no size for the file it
-#: describes and this module does no disk reads, so the credit is a flat floor
-#: taken from the corpus rather than from the dict: across 4,115 source files
-#: in this repository the p25 is 620 estimated tokens and the median is 1,296.
-#: 600 is under the p25 — three quarters of real files cost more to Read than
-#: this claims, which is the undersell this module is for.
+#: A ``get_context`` *file* card stands in for the agent Reading that file.
+#: The tool declares what that Read costs (:func:`context_replaced_tokens` with
+#: a live reader); this floor is only the fallback when the file cannot be
+#: read. Across 4,115 source files in this repository the p25 is 620 estimated
+#: tokens and the median is 1,296, so 600 sits under the p25.
 CONTEXT_FILE_FLOOR = 600
 
+#: Sizes one Read of a repo-relative path, or None when it cannot. Tools pass
+#: :func:`.reads.file_read_tokens` bound to their checkout; the dict-only
+#: estimators below pass none and fall back to the flat floors.
+ReadCost = Callable[[str], int | None]
 
-def _estimate_get_context(result: dict[str, Any]) -> int:
-    """Raw exploration the card replaced, summed over every target.
 
-    File targets: ``get_context`` auto-upgrades them to a body-elided
-    *skeleton* carrying ``skeleton.full_tokens`` — the exact size of the file
-    the agent would have Read instead; summing those is a precise, dict-only
-    counterfactual. Module and symbol targets carry no skeleton, so they used
-    to contribute nothing; they now earn a conservative floor (see the module
-    /symbol constants above) for the directory globbing / symbol lookup they
-    each replace. Small-file file cards (no skeleton) still contribute nothing
-    — a short file is about as cheap to Read directly.
+def _read_cost(read_cost: ReadCost | None, path: Any, fallback: int) -> int:
+    """One Read of *path* through *read_cost*, else *fallback*."""
+    if read_cost is not None and isinstance(path, str) and path:
+        tokens = read_cost(path)
+        if isinstance(tokens, int) and tokens > 0:
+            return tokens
+    return fallback
+
+
+def _context_target_tokens(key: Any, target: dict[str, Any], read_cost: ReadCost | None) -> int:
+    """What one card replaced: a Read of its file, a module skim, or a symbol lookup."""
+    skeleton = target.get("skeleton")
+    if isinstance(skeleton, dict):
+        full = skeleton.get("full_tokens")
+        if isinstance(full, int) and full > 0:
+            # A ``file.py::Symbol`` target renders the file that defines it.
+            return _read_cost(read_cost, skeleton.get("of_file") or key, full)
+    target_type = target.get("type")
+    if target_type == "module":
+        docs = target.get("docs")
+        files = docs.get("files") if isinstance(docs, dict) else None
+        if isinstance(files, list) and files:
+            return min(CONTEXT_MODULE_MAX, len(files) * CONTEXT_MODULE_FILE_FLOOR)
+        return 0
+    if target_type == "symbol":
+        return CONTEXT_SYMBOL_FLOOR
+    if target_type == "file":
+        return _read_cost(read_cost, key, CONTEXT_FILE_FLOOR)
+    return 0
+
+
+def context_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None = None) -> int:
+    """Raw exploration a ``get_context`` reply replaced, summed over every target.
+
+    A file card, with or without a skeleton, replaces one Read of that file.
+    Module and symbol cards earn the floors above for the directory globbing
+    and symbol lookup they replace.
     """
     targets = result.get("targets")
     if not isinstance(targets, dict):
         return 0
-    total = 0
-    for target in targets.values():
-        if not isinstance(target, dict) or target.get("error"):
-            continue
-        skeleton = target.get("skeleton")
-        if isinstance(skeleton, dict):
-            full = skeleton.get("full_tokens")
-            if isinstance(full, int) and full > 0:
-                total += full
-                # The skeleton already accounts for this file's full Read cost.
-                continue
-        target_type = target.get("type")
-        if target_type == "module":
-            docs = target.get("docs")
-            files = docs.get("files") if isinstance(docs, dict) else None
-            if isinstance(files, list) and files:
-                total += min(CONTEXT_MODULE_MAX, len(files) * CONTEXT_MODULE_FILE_FLOOR)
-        elif target_type == "symbol":
-            total += CONTEXT_SYMBOL_FLOOR
-        elif target_type == "file":
-            # Reached only when the caller did not ask for a skeleton, which is
-            # the default since 2026-08-11. See CONTEXT_FILE_FLOOR.
-            total += CONTEXT_FILE_FLOOR
-    return total
+    return sum(
+        _context_target_tokens(key, target, read_cost)
+        for key, target in targets.items()
+        if isinstance(target, dict) and not target.get("error")
+    )
+
+
+def _estimate_get_context(result: dict[str, Any]) -> int:
+    return context_replaced_tokens(result)
 
 
 def _estimate_search_codebase(result: dict[str, Any]) -> int:
@@ -126,10 +140,14 @@ def _estimate_search_codebase(result: dict[str, Any]) -> int:
 
 
 #: get_answer subsumes a search_codebase call plus opening the cited files.
-#: Same undersell philosophy as SEARCH_FLOOR_PER_HIT — the dict carries paths,
-#: never sizes.
+#: The tool declares the real Read cost of each cited file
+#: (:func:`answer_replaced_tokens` with a live reader); the per-file floor is
+#: only the fallback when a file cannot be read.
 ANSWER_SEARCH_FLOOR = 400
 ANSWER_READ_FLOOR_PER_FILE = 400
+#: Confidence tiers at which a synthesised answer stands in for reading its
+#: citations. A low one tells the agent to verify, so those reads still happen.
+_ANSWERED_CONFIDENCE = frozenset({"high", "medium"})
 
 #: Modest fixed counterfactuals for the analysis tools. Each replaces an
 #: exploration the agent cannot cheaply reproduce (git log/blame spelunking,
@@ -140,12 +158,17 @@ ANSWER_READ_FLOOR_PER_FILE = 400
 #: Floored conservatively between a single-file health call and a full overview.
 DEAD_CODE_FLOOR = 800
 RISK_FLOOR = 2_000
-#: ``get_why`` replaces git archaeology on the code it is asked about. A single
-#: ``git log -p -5`` on one file measures 4,834-7,108 estimated tokens across
-#: three of this repository's hot files, and that is the cheapest form of the
-#: question -- ``git blame --line-porcelain`` on the same files runs to
-#: 416,000-562,000. Floored under half of the cheapest one.
+#: ``get_why`` replaces searching the decision records and commit history for
+#: the question (the per-call floor) plus git archaeology on each file whose
+#: history it serves (the per-file term). ``git log -p -5`` on one file has a
+#: median of 2,054 estimated tokens across 23 httpx source files and 3,089
+#: across 16 sampled files of this repository, and it is the cheapest form of
+#: the question: ``git blame --line-porcelain`` on a hot file runs to 416,000+.
+#: The per-file term sits under both medians; the cap stops a many-target call
+#: claiming more than anyone would dig through.
 WHY_FLOOR = 3_000
+WHY_PER_FILE = 2_000
+WHY_MAX = 15_000
 #: ``get_health`` replaces reading a file and judging its complexity by eye.
 #: The per-file term is roughly the measured 1,296-token median source file;
 #: the base covers locating the right files to look at in the first place.
@@ -160,13 +183,13 @@ OVERVIEW_FLOOR = 6_000
 
 #: ``get_change_risk`` reasons about a whole diff's defect risk — standing in
 #: for the agent reading the diff and its coverage/co-change context by hand.
-#: The flat floor was the most plainly wrong constant here: it credited 500
-#: tokens against live delivered sizes of 4,439-4,671, so the tool recorded
-#: itself as a net cost on every call. Reading the diff is what it replaces,
-#: and ``git show`` with patch measures a 6,094-token median on this
-#: repository's commits, so the per-file term is a quarter of that median
-#: divided across a typical diff. The cap keeps a 200-file refactor from
-#: claiming a number nobody would have read.
+#: Reading the diff is what it replaces, and ``git show`` with patch measures a
+#: 6,094-token median on this repository's commits, so the per-file term is a
+#: quarter of that median divided across a typical diff. The cap keeps a
+#: 200-file refactor from claiming a number nobody would have read. The tool
+#: declares this from the changed-file count it scored
+#: (:func:`change_risk_replaced_tokens`), because the count is not on its
+#: default response; the floor is for replies that score nothing.
 CHANGE_RISK_FLOOR = 500
 CHANGE_RISK_PER_FILE = 1_500
 CHANGE_RISK_MAX = 12_000
@@ -204,39 +227,98 @@ FLOWS_PER_NODE = 80
 FLOWS_MAX = 6000
 
 
-def _estimate_get_answer(result: dict[str, Any]) -> int:
-    """Search call + cited-file reads the answer obviated.
-
-    Counts only answered calls (non-empty ``answer``): a gated/low response
-    explicitly tells the agent to go read, so the reads still happen and
-    claiming them as saved would repeat the E11 miscalibration.
-    """
-    if not str(result.get("answer") or "").strip():
-        return 0
-    paths = {
+def _answer_paths(result: dict[str, Any]) -> set[str]:
+    """Every file the reply points at: citations, top fallbacks, ranked guesses."""
+    guesses = [g.get("file") for g in result.get("best_guesses") or [] if isinstance(g, dict)]
+    return {
         p
-        for p in [*(result.get("citations") or []), *(result.get("fallback_targets") or [])[:3]]
+        for p in [
+            *(result.get("citations") or []),
+            *(result.get("fallback_targets") or [])[:3],
+            *guesses,
+        ]
         if isinstance(p, str) and p
     }
-    if not paths:
+
+
+def _whole_body_paths(result: dict[str, Any]) -> set[str]:
+    """Files a verified, uncut symbol body was served from."""
+    rows = [r for r in result.get("symbol_bodies") or [] if isinstance(r, dict)]
+    return {
+        row["path"]
+        for row in rows
+        if isinstance(row.get("path"), str) and row.get("verified") is True and _uncut(row)
+    }
+
+
+def _uncut(row: dict[str, Any]) -> bool:
+    return not row.get("truncated") and "continuation" not in row
+
+
+def answer_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None = None) -> int:
+    """Search plus the reads a ``get_answer`` reply stood in for.
+
+    A synthesised answer at high or medium confidence replaces the search and
+    a Read of every file it cites. Any other reply (low confidence, or no
+    provider) only replaces what it actually served: a Read of each file whose
+    whole body it inlined, as ``get_symbol`` credits, and the search step for
+    every other file it points at, as ``search_codebase`` credits.
+    """
+    if result.get("error"):
         return 0
-    return ANSWER_SEARCH_FLOOR + len(paths) * ANSWER_READ_FLOOR_PER_FILE
+    paths = _answer_paths(result)
+    answered = (
+        not result.get("degraded")
+        and str(result.get("answer") or "").strip()
+        and result.get("confidence") in _ANSWERED_CONFIDENCE
+    )
+    if answered:
+        if not paths:
+            return 0
+        reads = sum(_read_cost(read_cost, p, ANSWER_READ_FLOOR_PER_FILE) for p in paths)
+        return ANSWER_SEARCH_FLOOR + reads
+    bodies = _whole_body_paths(result)
+    reads = sum(_read_cost(read_cost, p, ANSWER_READ_FLOOR_PER_FILE) for p in bodies)
+    return reads + len(paths - bodies) * SEARCH_FLOOR_PER_HIT
+
+
+def _estimate_get_answer(result: dict[str, Any]) -> int:
+    return answer_replaced_tokens(result)
+
+
+def change_risk_replaced_tokens(changed_files: int) -> int:
+    """Floor plus a per-changed-file term — the diff the agent did not read."""
+    if changed_files <= 0:
+        return CHANGE_RISK_FLOOR
+    return min(CHANGE_RISK_MAX, CHANGE_RISK_FLOOR + changed_files * CHANGE_RISK_PER_FILE)
 
 
 def _estimate_get_change_risk(result: dict[str, Any]) -> int:
-    """Floor plus a per-changed-file term — the diff the agent did not read.
-
-    ``features.nf`` is the changed-file count the scorer already computed
-    (``core/analysis/change_risk/service.py:316``), so this stays dict-only.
-    Falls back to the flat floor when the payload carries no count.
-    """
+    """The declared value's fallback: ``features.nf`` when diagnostics carry it."""
     if result.get("error"):
         return 0
     features = result.get("features")
     files = features.get("nf") if isinstance(features, dict) else None
-    if not isinstance(files, int) or files <= 0:
-        return CHANGE_RISK_FLOOR
-    return min(CHANGE_RISK_MAX, CHANGE_RISK_FLOOR + files * CHANGE_RISK_PER_FILE)
+    return change_risk_replaced_tokens(files if isinstance(files, int) else 0)
+
+
+def _why_files(result: dict[str, Any]) -> set[str]:
+    """Files whose history a ``get_why`` reply serves: its path and target cards."""
+    files = {
+        key
+        for key, card in (result.get("target_context") or {}).items()
+        if isinstance(key, str) and isinstance(card, dict) and card
+    }
+    if result.get("mode") == "path" and isinstance(result.get("path"), str):
+        files.add(result["path"])
+    return files
+
+
+def _estimate_get_why(result: dict[str, Any]) -> int:
+    """Per-call floor plus a per-file term for each file whose history it serves."""
+    if result.get("error"):
+        return 0
+    return min(WHY_MAX, WHY_FLOOR + len(_why_files(result)) * WHY_PER_FILE)
 
 
 def _estimate_get_health(result: dict[str, Any]) -> int:
@@ -397,7 +479,7 @@ _ESTIMATORS: dict[str, Callable[[dict[str, Any]], int]] = {
     "search_codebase": _estimate_search_codebase,
     "get_answer": _estimate_get_answer,
     "get_risk": _estimate_get_risk,
-    "get_why": _fixed_floor(WHY_FLOOR),
+    "get_why": _estimate_get_why,
     "get_health": _estimate_get_health,
     "get_overview": _fixed_floor(OVERVIEW_FLOOR),
     "get_dead_code": _fixed_floor(DEAD_CODE_FLOOR),

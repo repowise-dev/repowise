@@ -684,6 +684,32 @@ async def test_get_change_risk_drops_request_echoes_and_empty_fields(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_the_default_reply_declares_its_savings_from_the_scored_file_count(
+    tmp_path, monkeypatch
+) -> None:
+    """The file count moved behind include=["diagnostics"], which left the
+    savings estimator crediting the flat floor on every default call."""
+    from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/a.py": "a = 1\n", "src/b.py": "b = 1\n"}, "chore: seed")
+    _commit(repo, {"src/a.py": "a = 2\n", "src/b.py": "b = 2\n"}, "feat: both")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert "features" not in result
+    assert result["_meta"]["replaced_tokens"] == change_risk_replaced_tokens(2)
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_keeps_working_tree_without_a_revspec(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

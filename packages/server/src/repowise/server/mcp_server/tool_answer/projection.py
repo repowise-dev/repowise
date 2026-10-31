@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -986,9 +987,27 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
+        await _declare_replaced_reads(payload, root, repo)
         return payload
 
     return _wrapped
+
+
+async def _declare_replaced_reads(
+    payload: dict[str, Any], root: Path | None, repo: str | None
+) -> None:
+    """Credit what this reply served with the real Read cost of its files."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import answer_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    if payload.get("error"):
+        return
+    root = root or await _resolve_root(repo)
+    read_cost = (lambda p: file_read_tokens(root, p)) if root is not None else None
+    declare_replaced(
+        payload, await asyncio.to_thread(answer_replaced_tokens, payload, read_cost)
+    )
 
 
 __all__ = ["project_answer_payload", "projected_answer"]

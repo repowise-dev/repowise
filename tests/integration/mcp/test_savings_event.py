@@ -60,7 +60,7 @@ async def test_one_invocation_produces_exactly_one_event(repo: Path) -> None:
     assert event["operation"] == "get_context"
     assert event["result_state"] == "success"
     assert event["is_usable"] == 1
-    assert event["estimator"] == "chars_per_token_floor_v1"
+    assert event["estimator"] == "chars_per_token_floor_v2"
     assert event["token_unit"] == "estimated_tokens"
     assert event["schema_version"] == 1
 

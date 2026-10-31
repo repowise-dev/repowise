@@ -633,6 +633,11 @@ def test_the_saving_is_billed_to_the_ledger_repowise_saved_reads(repo: Path) -> 
     filter_name, source, raw, distilled = rows[0]
     assert (filter_name, source) == ("read_skeleton", "hook-read")
     assert 0 < distilled < raw
+    # The Read it replaced carried Claude Code's line-number gutter.
+    from repowise.core.distill.budget import estimate_read_tokens
+
+    text = (repo / "pkg" / "big.py").read_text(encoding="utf-8")
+    assert raw == estimate_read_tokens(text, numbered=True)
 
 
 # ---------------------------------------------------------------------------

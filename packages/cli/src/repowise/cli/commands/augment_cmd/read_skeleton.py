@@ -166,12 +166,17 @@ def skeleton_replacement(
         if fitted is None:
             return None
         result, text = fitted
+
+    from repowise.core.distill.budget import estimate_read_tokens, rangeless_read
+
+    # Claude Code numbers every line of a Read, the skeleton's included, and
+    # the unbounded Read this replaces returns the file's first 2,000 lines.
     return Offer(
         key=rel,
         text=text,
-        raw_tokens=result.full_tokens,
+        raw_tokens=estimate_read_tokens(rangeless_read(source), numbered=True),
         # The header is part of what the agent is billed for.
-        new_tokens=max(1, len(text) // 4),
+        new_tokens=max(1, estimate_read_tokens(text, numbered=True)),
         category="skeleton_served",
         filter_name=_SAVINGS_FILTER,
     )

@@ -24,6 +24,8 @@ from repowise.server.mcp_server._helpers import (
     attach_ignored_arguments,
 )
 from repowise.server.mcp_server._meta import full_meta
+from repowise.server.mcp_server._savings import declare_replaced
+from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
 
 from . import cache as _cache
 from .branches import (
@@ -275,7 +277,7 @@ async def _attach_branch_blocks(
 
 
 #: ``_meta`` keys a cached payload keeps; the rest is rebuilt on every serve.
-_CARRIED_META = frozenset({"omitted", "recovery_unavailable"})
+_CARRIED_META = frozenset({"omitted", "recovery_unavailable", "replaced_tokens"})
 
 
 @mcp.tool(
@@ -437,6 +439,9 @@ async def get_change_risk(
         targets=sorted(changed) or None,
         extra={"source": "live_git", **_debug_timings(timings)},
     )
+    # The changed-file count is not on the default response, so the savings
+    # counterfactual is declared here, where the score still holds it.
+    declare_replaced(payload, change_risk_replaced_tokens(result.features.nf))
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     if scored_entry is not None:
