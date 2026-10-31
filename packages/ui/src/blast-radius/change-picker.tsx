@@ -46,12 +46,11 @@ export function changeName(c: ChangeCandidate): string {
   return c.kind === "commit" ? (c.title ?? c.label) : c.label;
 }
 
-/** Recent, pushed work up front; a branch idle for a week or never pushed is usually scratch. */
+/** Recent work up front; a branch idle for a week is usually done or abandoned. */
 function isRecent(c: ChangeCandidate, now: number): boolean {
-  if (c.kind !== "branch") return true;
-  if (c.is_current) return true;
+  if (c.kind !== "branch" || c.is_current) return true;
   const at = c.committed_at ? Date.parse(c.committed_at) : NaN;
-  return c.pushed !== false && !Number.isNaN(at) && now - at < RECENT_MS;
+  return !Number.isNaN(at) && now - at < RECENT_MS;
 }
 
 function ChangeRow({ c, active, onSelect }: { c: ChangeCandidate; active: boolean; onSelect: () => void }) {
@@ -115,7 +114,7 @@ function ChangeList({
           onClick={() => setAll(true)}
           className="px-2 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
         >
-          Show {hidden} more (older or not pushed)
+          Show {hidden} older
         </button>
       )}
     </>
