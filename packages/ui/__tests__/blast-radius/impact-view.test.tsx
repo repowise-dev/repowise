@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { ReactElement } from "react";
-import { ImpactView } from "../../src/blast-radius/impact-view.js";
+import { ImpactView, changeIdFromLink, changeLinkParam } from "../../src/blast-radius/impact-view.js";
 import type { ImpactAdapter } from "../../src/blast-radius/impact-adapter.js";
 import type {
   BlastRadiusResponse,
@@ -174,5 +174,33 @@ describe("ImpactView with a change list", () => {
     expect(screen.getByText(/Uncommitted changes/, { selector: "p span" })).toBeInTheDocument();
     release();
     expect(await screen.findByText(/1 file changed/)).toBeInTheDocument();
+  });
+});
+
+describe("shareable change links", () => {
+  it("round-trips wip, a branch and a full sha", () => {
+    const sha = "c".repeat(40);
+    for (const id of ["working-tree", "branch:feat/x", `commit:${sha}`]) {
+      expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
+    }
+    expect(changeLinkParam("working-tree")).toBe("wip");
+    expect(changeLinkParam("branch:feat/x")).toBe("feat/x");
+  });
+
+  it("opens the linked change instead of the default, and reports picks", async () => {
+    const analyzeChange = vi.fn(async () => changeResult(["src/core.ts"]));
+    const onChangePicked = vi.fn();
+    renderView(
+      <ImpactView
+        adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })}
+        initialChange="feat/x"
+        onChangePicked={onChangePicked}
+      />,
+    );
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "branch:feat/x", maxDepth: 3 }));
+    expect(analyzeChange).not.toHaveBeenCalledWith({ changeId: "working-tree", maxDepth: 3 });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Uncommitted changes/ }));
+    expect(onChangePicked).toHaveBeenCalledWith("wip");
   });
 });
