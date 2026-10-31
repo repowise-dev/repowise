@@ -193,9 +193,11 @@ _WILDCARD_IMPORTED_NAMES = ["*"]
 # ``property`` is the only kind that means "data member" and nothing else; every
 # other language spells its fields ``variable``, indistinguishable by kind.
 _NON_CALLABLE_KINDS = frozenset({"property"})
-# Languages whose ``variable`` is always a property (`val`/`var`/`let`): a data
-# member. Calling one invokes the value it holds, which is not this symbol.
-_PROPERTY_VARIABLE_LANGUAGES = frozenset({"kotlin", "swift"})
+# Languages whose ``variable`` is always a property (`val`/`var`/`let`, or
+# C#'s field/property, which the extractor also maps to ``variable``): a data
+# member. Calling one invokes the value it holds, which is not this symbol
+# (unless the declaration itself holds a function, per ``_holds_function``).
+_PROPERTY_VARIABLE_LANGUAGES = frozenset({"kotlin", "swift", "csharp"})
 
 
 # Kotlin's call operator: ``f(x)`` on a value is ``f.invoke(x)`` when its type
@@ -687,7 +689,12 @@ class CallResolver(
             self._non_callable_ids.discard(index_id)
 
     def _holds_function(self, path: str, sym: Symbol) -> bool:
-        """Is property *sym* declared with a function value (`val f: () -> Unit`)?"""
+        """Is property *sym* declared with a function value (`val f: () -> Unit`)?
+
+        A C# field only counts when its declaration itself names or builds a
+        delegate (`Func<int> f;`, `Action a = ...;`, `f = () => ...`), the same
+        ceiling Kotlin and Swift read with their own shapes.
+        """
         if sym.kind != "variable" or sym.language not in _PROPERTY_VARIABLE_LANGUAGES:
             return False
         lines = self._lines_of(path)[sym.start_line - 1 : max(sym.end_line, sym.start_line)]
