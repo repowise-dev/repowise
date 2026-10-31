@@ -121,68 +121,73 @@ def _branch_subjects(repo_path: str, refs: list[str]) -> dict[str, tuple[str, st
     return subjects
 
 
-def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate | None, list[ChangeCandidate]]:
-    """Uncommitted work and the branches ahead of the default branch."""
-    wip_paths = _working_tree_paths(repo_path)
-    current = git_refs.current_branch(repo_path)
-    wip = (
-        ChangeCandidate(
-            id=WORKING_TREE_ID,
-            kind="working_tree",
-            label="Uncommitted changes",
-            title=f"On {current}" if current else None,
-            files_changed=len(wip_paths),
-            is_current=True,
-        )
-        if wip_paths
-        else None
+def _wip_candidate(repo_path: str, current: str | None) -> ChangeCandidate | None:
+    """Uncommitted work in the checkout, or ``None`` when it is clean."""
+    paths = _working_tree_paths(repo_path)
+    if not paths:
+        return None
+    return ChangeCandidate(
+        id=WORKING_TREE_ID,
+        kind="working_tree",
+        label="Uncommitted changes",
+        title=f"On {current}" if current else None,
+        files_changed=len(paths),
+        is_current=True,
     )
 
-    base = git_refs.default_base(repo_path)
-    if base == "HEAD":
-        return wip, []
+
+def _branches_ahead(
+    repo_path: str, base: str, max_branches: int
+) -> list[tuple[git_refs.BranchRef, int]]:
+    """Branches with commits *base* lacks, newest first, each with its ahead count."""
     base_sha = git_refs.resolve(repo_path, base)
-    base_name = base.removeprefix("origin/")
+    trunk = base.removeprefix("origin/")
     refs = [
         r
         for r in git_refs.list_branches(repo_path)
-        if r.sha != base_sha and r.name not in (base, base_name, f"origin/{base_name}")
+        if r.sha != base_sha and r.name not in (base, trunk, f"origin/{trunk}")
     ]
     counts = git_refs.ahead_behind_many(repo_path, base, [r.ref for r in refs])
-    kept: list[git_refs.BranchRef] = []
     local_tips = {r.name: r.sha for r in refs if not r.is_remote}
+    kept: list[tuple[git_refs.BranchRef, int]] = []
     for ref in refs:
-        ahead = counts[ref.name][0] if ref.name in counts else git_refs.ahead_behind(repo_path, base, ref.name)[0]
-        if ahead <= 0:
-            continue
         # origin/x at the same tip as a local x is the same work twice.
         if ref.is_remote and local_tips.get(ref.name.split("/", 1)[-1]) == ref.sha:
             continue
-        kept.append(ref)
+        ahead = counts[ref.name][0] if ref.name in counts else git_refs.ahead_behind(repo_path, base, ref.name)[0]
+        if ahead > 0:
+            kept.append((ref, ahead))
         if len(kept) >= max_branches:
             break
+    return kept
 
-    files = git_refs.files_by_ref(repo_path, base, [r.name for r in kept])
-    subjects = _branch_subjects(repo_path, [r.ref for r in kept])
-    branches = []
-    for ref in kept:
-        subject, author = subjects.get(ref.name, ("", ""))
-        ahead = counts[ref.name][0] if ref.name in counts else git_refs.ahead_behind(repo_path, base, ref.name)[0]
-        branches.append(
-            ChangeCandidate(
-                id=f"branch:{ref.name}",
-                kind="branch",
-                label=ref.name,
-                title=subject or None,
-                author=author or None,
-                committed_at=ref.committed_at or None,
-                head_sha=ref.sha,
-                base=base,
-                ahead=ahead,
-                files_changed=len(files[ref.name]) if ref.name in files else None,
-                is_current=ref.name == current,
-            )
+
+def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate | None, list[ChangeCandidate]]:
+    """Uncommitted work and the branches ahead of the default branch."""
+    current = git_refs.current_branch(repo_path)
+    wip = _wip_candidate(repo_path, current)
+    base = git_refs.default_base(repo_path)
+    if base == "HEAD":
+        return wip, []
+    kept = _branches_ahead(repo_path, base, max_branches)
+    files = git_refs.files_by_ref(repo_path, base, [r.name for r, _ in kept])
+    subjects = _branch_subjects(repo_path, [r.ref for r, _ in kept])
+    branches = [
+        ChangeCandidate(
+            id=f"branch:{ref.name}",
+            kind="branch",
+            label=ref.name,
+            title=subjects.get(ref.name, ("", ""))[0] or None,
+            author=subjects.get(ref.name, ("", ""))[1] or None,
+            committed_at=ref.committed_at or None,
+            head_sha=ref.sha,
+            base=base,
+            ahead=ahead,
+            files_changed=len(files[ref.name]) if ref.name in files else None,
+            is_current=ref.name == current,
         )
+        for ref, ahead in kept
+    ]
     return wip, branches
 
 
