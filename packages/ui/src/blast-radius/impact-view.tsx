@@ -46,6 +46,23 @@ interface Analysis {
 
 const DEPTHS = [1, 2, 3, 4, 5];
 
+const SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * A change's id in a shareable link: `wip`, a branch name, or a full sha.
+ * Stable across reloads and machines, unlike a list position.
+ */
+export function changeLinkParam(changeId: string): string {
+  if (changeId === "working-tree") return "wip";
+  return changeId.replace(/^(branch|commit):/, "");
+}
+
+/** The change id a link's `change` value names. */
+export function changeIdFromLink(param: string): string {
+  if (param === "wip") return "working-tree";
+  return SHA.test(param) ? `commit:${param}` : `branch:${param}`;
+}
+
 /** The hand-picked-files form: search, paste, hotspot chips. */
 function FilesForm({
   adapter,
@@ -106,6 +123,8 @@ function FilesForm({
 export function ImpactView({
   adapter,
   initialFiles,
+  initialChange,
+  onChangePicked,
 }: {
   adapter: ImpactAdapter;
   /**
@@ -113,6 +132,10 @@ export function ImpactView({
    * the symbol drawer's CTA both link here with the path already chosen.
    */
   initialFiles?: string[];
+  /** A shared link's change (`wip`, a branch, a full sha); files win when both are given. */
+  initialChange?: string | undefined;
+  /** Called with the link value when the reader picks a change, so the host can put it in the URL. */
+  onChangePicked?: ((linkParam: string) => void) | undefined;
 }) {
   const listsChanges = Boolean(adapter.listChanges && adapter.analyzeChange);
   const { data: changes, error: changesError, isLoading: changesLoading } = useSWR(
@@ -123,9 +146,11 @@ export function ImpactView({
 
   const seed = (initialFiles ?? []).filter(Boolean);
   const seedKey = seed.join("\n");
-  const [selection, setSelection] = useState<Selection | null>(
-    seed.length > 0 ? { kind: "files", files: seed } : null,
-  );
+  const [selection, setSelection] = useState<Selection | null>(() => {
+    if (seed.length > 0) return { kind: "files", files: seed };
+    if (initialChange && listsChanges) return { kind: "change", id: changeIdFromLink(initialChange) };
+    return null;
+  });
   const [filesOpen, setFilesOpen] = useState(!listsChanges || seed.length > 0);
   const [maxDepth, setMaxDepth] = useState(3);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -221,7 +246,10 @@ export function ImpactView({
               <ChangePicker
                 data={changes}
                 selectedId={selection?.kind === "change" ? selection.id : null}
-                onSelect={(id) => setSelection({ kind: "change", id })}
+                onSelect={(id) => {
+                  setSelection({ kind: "change", id });
+                  onChangePicked?.(changeLinkParam(id));
+                }}
               />
             )}
           </>

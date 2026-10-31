@@ -10,7 +10,7 @@
 
 import { useMemo } from "react";
 import useSWR from "swr";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ImpactView, type ImpactAdapter } from "@repowise-dev/ui/blast-radius";
 import { ReviewerSuggestions } from "@repowise-dev/ui/git/reviewer-suggestions";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
@@ -68,5 +68,23 @@ export function ImpactTab({ repoId }: { repoId: string }) {
     renderReviewers: (files) => <ReviewersPanel repoId={repoId} files={files} />,
   }), [repoId]);
 
-  return <ImpactView adapter={adapter} {...(seeded.length > 0 ? { initialFiles: seeded } : {})} />;
+  // `?change=` (wip, a branch, a full sha) makes a review shareable: picking a
+  // change writes it, opening the link opens that change.
+  const router = useRouter();
+  const pathname = usePathname();
+  const onChangePicked = (change: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("file");
+    next.set("change", change);
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  };
+
+  return (
+    <ImpactView
+      adapter={adapter}
+      {...(seeded.length > 0 ? { initialFiles: seeded } : {})}
+      initialChange={searchParams.get("change") ?? undefined}
+      onChangePicked={onChangePicked}
+    />
+  );
 }
