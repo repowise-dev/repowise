@@ -567,6 +567,8 @@ async def _gated_reply(
                 fallback_targets=fallback_targets,
                 repository=ask.repository,
                 t0=ask.t0,
+                split_at=(retrieved.homonyms.get("split_at") or {}).get(extraction["name"]),
+                repo_root=_repo_root(ask.ctx),
             )
     return None
 

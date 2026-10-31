@@ -296,6 +296,7 @@ async def _anchor_symbol_hits(
     indexed_names: set[str] = set()
     rows = list(res.scalars().all())
     homonyms["split"] = _split_definitions(rows)
+    homonyms["split_at"] = _split_lines(rows, homonyms["split"])
     for row in rows:
         indexed_names.add(row.name)
         # A pathless row names nothing the reply can point at: drop it from
@@ -348,6 +349,16 @@ def _split_definitions(rows: list) -> dict[str, list[str]]:
     return {
         name: sorted(paths) for name, paths in files.items() if 1 < len(paths) <= _SPLIT_MAX_FILES
     }
+
+
+def _split_lines(rows: list, split: dict[str, list[str]]) -> dict[str, dict[str, int]]:
+    """Each split name's first indexed line in each of its defining files."""
+    at: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if row.file_path in split.get(row.name, ()) and row.start_line:
+            lines = at.setdefault(row.name, {})
+            lines[row.file_path] = min(lines.get(row.file_path, row.start_line), row.start_line)
+    return at
 
 
 class _TopicGuard:
