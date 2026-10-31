@@ -1418,7 +1418,7 @@ def _unpaged_file_paths(run: UpdateRun) -> list[str]:
     """
     from .persistence import file_paths_without_page
 
-    if _file_page_cap_reached(run):
+    if _file_page_cap_reached(run) or not _may_lack_file_pages(run):
         return []
     missing = file_paths_without_page(
         run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
@@ -1428,6 +1428,23 @@ def _unpaged_file_paths(run: UpdateRun) -> list[str]:
     if missing:
         console.print(f"Files with no page yet: [cyan]{len(missing)}[/cyan]")
     return missing
+
+
+def _may_lack_file_pages(run: UpdateRun) -> bool:
+    """Whether any eligible file can be without a page, so the lookup is worth its store read.
+
+    Either the stored scope counts some as omitted (or has no count yet), or
+    this run adds a path the plan does not render. Otherwise every eligible
+    file had a page at the last stamp. A file that turns eligible without a
+    diff is counted by the stamp after this run and filled by the next one.
+    """
+    omitted = _stored_file_pages(run).get("omitted")
+    if omitted is None or omitted:
+        return True
+    rendered = set(run.affected.regenerate)
+    return any(
+        fd.status in ("added", "renamed") and fd.path not in rendered for fd in run.file_diffs
+    )
 
 
 def _add_stale_pages(
