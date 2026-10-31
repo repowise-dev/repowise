@@ -261,6 +261,9 @@ class Symbol:
     # parameter kept (``Byte?``, ``T``), which tells same-named extensions apart.
     extension_receiver: str | None = None
     written_receiver: str | None = None
+    # Kotlin member extension declared in a companion object. Its host class is
+    # still recorded in parent_name, but its visibility follows companion scope.
+    kotlin_companion_member: bool = False
     # Keyword modifiers the declaration writes, lowercased (``override``,
     # ``static``, ``abstract``...), for languages whose ``LanguageConfig``
     # names its modifier nodes. Access keywords land here too; ``visibility``

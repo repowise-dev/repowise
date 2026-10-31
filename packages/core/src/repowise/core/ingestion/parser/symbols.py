@@ -103,6 +103,20 @@ def _normalize_newlines(text: str | None) -> str | None:
     return text.replace("\r\n", "\n")
 
 
+def _kotlin_companion_member(def_node: Node, language: str) -> bool:
+    """Whether a Kotlin declaration is nested in a companion object."""
+    if language != "kotlin":
+        return False
+    ancestor = def_node.parent
+    while ancestor is not None:
+        if ancestor.type == "companion_object":
+            return True
+        if ancestor.type in {"class_declaration", "object_declaration"}:
+            return False
+        ancestor = ancestor.parent
+    return False
+
+
 def _match_identity(
     capture_dict: dict,
     config: LanguageConfig,
@@ -402,6 +416,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
             _csharp_type_parameter_count(def_node) if language == "csharp" else None
         ),
         **_kotlin_receiver_fields(def_node, params_nodes, language, name),
+        kotlin_companion_member=_kotlin_companion_member(def_node, language),
         modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
     )
     return symbol, def_node
