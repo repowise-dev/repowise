@@ -122,6 +122,10 @@ _IMPORT_SOURCE = re.compile(
 )
 
 
+#: How far from an import site its statement's head and module line are looked for.
+_IMPORT_SCAN_LINES = 200
+
+
 def _import_source(lines: list[str], n: int) -> str | None:
     """The module the multi-line import statement holding line *n* names.
 
@@ -130,18 +134,31 @@ def _import_source(lines: list[str], n: int) -> str | None:
     """
     if _IMPORT_SOURCE.search(lines[n - 1]):
         return None
-    head = next((i for i in range(n - 1, max(-1, n - 200), -1) if _IMPORT_START.match(lines[i])), None)
-    if head is None:
-        return None
-    depth, i = 0, head
-    while i < len(lines):
+    floor = max(-1, n - _IMPORT_SCAN_LINES)
+    head = next((i for i in range(n - 1, floor, -1) if _IMPORT_START.match(lines[i])), None)
+    return None if head is None else _statement_module(lines, head, n)
+
+
+def _statement_module(lines: list[str], head: int, n: int) -> str | None:
+    """The module named by the statement opening at index *head* and holding line *n*."""
+    depth = 0
+    for i in range(head, min(len(lines), n + _IMPORT_SCAN_LINES)):
+        if i > head and i >= n and _IMPORT_START.match(lines[i]):
+            return None  # the next statement: an unbalanced bracket never closed this one
         if m := _IMPORT_SOURCE.search(lines[i]):
             return next(g for g in m.groups() if g)
         depth += sum(lines[i].count(c) for c in "({[") - sum(lines[i].count(c) for c in ")}]")
-        i += 1
-        if depth <= 0 and i > n - 1:
-            break
+        if depth <= 0 and i >= n - 1:
+            return None
     return None
+
+
+def _site(rel: str, n: int, kind: str, lines: list[str]) -> dict[str, Any]:
+    """One edit site; a wrapped import line also names the module it imports from."""
+    site: dict[str, Any] = {"path": rel, "line": n, "kind": kind, "text": lines[n - 1].strip()[:MAX_TEXT_CHARS]}
+    if kind == "import" and (source := _import_source(lines, n)):
+        site["from"] = source
+    return site
 
 
 def _read_lines(root: Path, rel: str) -> list[str] | None:
@@ -444,10 +461,7 @@ def _scan(
                 kind = "call"
             else:
                 kind = "reference"
-            site = {"path": rel, "line": n, "kind": kind, "text": text.strip()[:MAX_TEXT_CHARS]}
-            if kind == "import" and (source := _import_source(lines, n)):
-                site["from"] = source
-            sites.append(site)
+            sites.append(_site(rel, n, kind, lines))
     return sites, unreadable, stale, renamed, is_default, python_aliases, packages
 
 

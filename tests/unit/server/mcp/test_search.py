@@ -908,6 +908,8 @@ class TestPathSearch:
         files = {r["path"] for r in result["results"]}
         assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
         assert all(r["next"] == "get_context" for r in result["results"])
+        globbed = await search_codebase("filters_toml *.toml", mode="path")
+        assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
 
     @pytest.mark.asyncio
     async def test_auto_routes_path_shaped_query(self, setup_mcp):

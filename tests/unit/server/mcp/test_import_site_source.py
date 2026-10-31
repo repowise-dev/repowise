@@ -32,3 +32,8 @@ def test_wrapped_python_import_names_its_module():
 def test_a_line_that_already_names_the_module_gets_nothing():
     assert _import_source(TS, 1) is None
     assert _import_source(PY, 5) is None
+
+
+def test_an_unclosed_bracket_does_not_borrow_the_next_statements_module():
+    lines = ["import {", "  a, // (", "}", "import { b } from './b'"]
+    assert _import_source(lines, 2) is None

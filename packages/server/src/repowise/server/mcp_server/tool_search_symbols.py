@@ -470,10 +470,16 @@ def _word_path_score(path: str, words: list[str]) -> float | None:
     return 5.0 + 5.0 * in_base / len(words) - len(low) * 0.001
 
 
+_INNER_GLOB = re.compile(r"\w[*?]+\w")
+
+
 def _word_path_hits(query: str, paths: Sequence[str]) -> dict[str, float]:
     """Paths a spaced or compound query names word by word (``poll backoff``
     -> ``command-poll-backoff.ts``), best ``_MAX_CANDIDATES`` by score. A glob
-    marker is dropped (``filters_toml *.toml`` -> filters, toml)."""
+    at a word's edge is dropped (``filters_toml *.toml`` -> filters, toml); one
+    inside a word (``tool_*_overview``) is left to substring matching."""
+    if _INNER_GLOB.search(query):
+        return {}
     words = _identifier_words(query)
     if not words:
         return {}
@@ -579,7 +585,10 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
 async def _indexed_files(
     session: Any, repo_id: str, qnorms: list[str], words: list[str]
 ) -> list[str]:
-    """Indexed file paths holding one of *qnorms*, or every one of *words*."""
+    """Live indexed file paths holding one of *qnorms*, or every one of *words*.
+
+    Shortest first, so the candidate cap keeps the paths that rank best.
+    """
 
     def holds(part: str) -> Any:
         return GraphNode.node_id.ilike(f"%{escape_like(part)}%", escape=LIKE_ESCAPE)
@@ -592,6 +601,9 @@ async def _indexed_files(
             GraphNode.node_type == "file",
             or_(*map(holds, qnorms), *every_word),
         )
+        .order_by(func.length(GraphNode.node_id), GraphNode.node_id)
         .limit(_MAX_CANDIDATES)
     )
-    return [node_id for (node_id,) in res.all() if node_id]
+    paths = [node_id for (node_id,) in res.all() if node_id]
+    deleted = await deleted_file_paths(session, repo_id, set(paths))
+    return [p for p in paths if p not in deleted]
