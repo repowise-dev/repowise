@@ -26,6 +26,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates
 from repowise.server.mcp_server._query_shape import (
@@ -183,8 +184,11 @@ async def _concept_search(
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
     _pkg._lead_candidates(response, issue, limit)
-    if grep_hint and not output:
-        response["grep_hint"] = grep_hint
+    if not output:
+        if grep_hint:
+            response["grep_hint"] = grep_hint
+        else:
+            response["hint"] = _NO_HITS_RECOVERY_HINT
     return response, ctx
 
 
@@ -277,8 +281,11 @@ async def search_codebase(
         # kind is filtered per repo before each repo's limit cut, so the fused
         # list is already kind-pure and full.
         federated = await _federated_search(query, limit, page_type, kind, fed)
-        if grep_hint and not federated.get("results"):
-            federated["grep_hint"] = grep_hint
+        if not federated.get("results"):
+            if grep_hint:
+                federated["grep_hint"] = grep_hint
+            else:
+                federated["hint"] = _NO_HITS_RECOVERY_HINT
         attach_ignored_arguments(federated, ignored)
         return _flag_degraded_legs(_drop_echoed_candidates(federated))
 

@@ -1132,6 +1132,35 @@ class TestIdentifierGrepHint:
         assert "grep_hint" not in result
 
 
+class TestEmptyConceptRecoveryHint:
+    @pytest.mark.asyncio
+    async def test_empty_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+        assert "grep_hint" not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+
+    @pytest.mark.asyncio
+    async def test_concept_query_with_hits_has_no_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication flow for the service", mode="concept")
+        if result["results"]:
+            assert "hint" not in result
+
+
 class TestExactMatchSignal:
     """An identifier query says whether any hit is an EXACT symbol match, so
     the agent doesn't anchor on a fuzzy neighbour that ranks first (finding 1)."""
