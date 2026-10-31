@@ -137,9 +137,15 @@ def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, polic
                 # transient failure permanent, so leave the pointer alone.
                 continue
             git_meta = _git_meta_for_range(run, base, new_commits)
+            if git_meta is None:
+                # A retried range needs rows the store no longer has. Say so and
+                # keep the pointer, so the next run retries instead of silently
+                # looping forever with no trace in the status report.
+                _degrade_missing_history(run, state, group, base)
+                continue
             if not git_meta:
-                # Commits exist but none touch a file this index knows. Leaving
-                # the pointer alone retries once the metadata is available.
+                # The range was readable but holds no commit either miner reads.
+                _record_successes(state, group, run.head)
                 continue
             extractor = DecisionExtractor(
                 repo_path=run.repo_path,
@@ -178,13 +184,25 @@ def _record_successes(state: dict | None, sources: set[str], commit: str | None)
         mining_state.record_success(state, source, commit)
 
 
-def _git_meta_for_range(run: UpdateRun, base: str, commits: set[str]) -> dict:
-    """The range's commits restricted to the indexed files, for a retried range.
+def _degrade_missing_history(
+    run: UpdateRun, state: dict | None, sources: set[str], base: str
+) -> None:
+    """Report a retry whose stored git rows could not be read, and keep retrying."""
+    head = run.head or "HEAD"
+    for source in sorted(sources):
+        error = f"no indexed git metadata for {base[:8]}..{head[:8]}"
+        run.degraded.append(f"Decision mining ({source}): {error}")
+        mining_state.record_failure(state, source, run.head, error)
+
+
+def _git_meta_for_range(run: UpdateRun, base: str, commits: set[str]) -> dict | None:
+    """The range's commits restricted to the indexed files, or ``None`` without rows.
 
     An update re-indexes git metadata for changed files only. A per-source
     retry reaches commits from an earlier update, whose files are usually
-    unchanged now, so their rows come from the store. The normal range uses
-    this run's map directly.
+    unchanged now, so their rows come from the store. ``None`` means those rows
+    could not be assembled; ``{}`` means they were read and hold no commit in
+    the range. The normal range uses this run's map directly.
     """
     from repowise.core.analysis.decisions.commit_mining import restrict_to_commits
 
@@ -200,13 +218,15 @@ def _git_meta_for_range(run: UpdateRun, base: str, commits: set[str]) -> dict:
             for path in files
         }
     )
-    if touched:
-        from .deterministic import with_stored_git_meta
+    if not touched:
+        # A non-empty commit range whose files git cannot name: retry later.
+        return None
+    from .deterministic import with_stored_git_meta
 
-        with_stored = with_stored_git_meta(run.repo_path, run.git_meta_map, touched)
-        if with_stored is not None:
-            return restrict_to_commits(with_stored, commits)
-    return restrict_to_commits(run.git_meta_map, commits)
+    with_stored = with_stored_git_meta(run.repo_path, run.git_meta_map, touched)
+    if with_stored is None:
+        return None
+    return restrict_to_commits(with_stored, commits)
 
 
 def _rescan_inline_markers(

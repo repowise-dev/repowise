@@ -207,3 +207,46 @@ def test_an_empty_range_does_not_advance_a_source(stubbed, monkeypatch):
     assert run.state["decision_mining"]["pr"]["last_success_commit"] == "base"
     assert run.state["decision_mining"]["git_archaeology"]["last_success_commit"] == "base"
 
+
+def test_a_retry_without_stored_git_metadata_is_degraded(stubbed, monkeypatch):
+    """Unreadable rows for a retried range are named, not silently re-queued."""
+    from repowise.cli.commands.update_cmd import deterministic
+    from repowise.core import git_refs
+
+    monkeypatch.setattr(evolution, "commits_in_range", lambda *_a: {"bbbb2222"})
+    monkeypatch.setattr(git_refs, "commit_file_sets", lambda *_a: [frozenset({"old.py"})])
+    monkeypatch.setattr(deterministic, "with_stored_git_meta", lambda *_a: None)
+    run, docs = _run_and_docs()
+    run.state = {"decision_mining": {"pr": {"last_success_commit": "older"}}}
+
+    _mine(run, docs)
+
+    assert run.degraded == ["Decision mining (pr): no indexed git metadata for older..head"]
+    ledger = run.state["decision_mining"]["pr"]
+    assert ledger["last_success_commit"] == "older"
+    assert ledger["last_status"] == "failed"
+    assert ledger["last_failure"] == "no indexed git metadata for older..head"
+
+
+def test_a_retry_with_nothing_to_mine_advances_the_source(stubbed, monkeypatch):
+    """Readable rows with no commit in range are a completed run, not a failure."""
+    from repowise.cli.commands.update_cmd import deterministic
+    from repowise.core import git_refs
+
+    monkeypatch.setattr(evolution, "commits_in_range", lambda *_a: {"bbbb2222"})
+    monkeypatch.setattr(git_refs, "commit_file_sets", lambda *_a: [frozenset({"old.py"})])
+    monkeypatch.setattr(
+        deterministic,
+        "with_stored_git_meta",
+        lambda *_a: {"old.py": _meta("aaaa1111")},
+    )
+    run, docs = _run_and_docs()
+    run.state = {"decision_mining": {"pr": {"last_success_commit": "older"}}}
+
+    _mine(run, docs)
+
+    ledger = run.state["decision_mining"]["pr"]
+    assert ledger["last_success_commit"] == "head"
+    assert ledger["last_status"] == "ok"
+    assert "Decision mining (pr)" not in " ".join(run.degraded)
+
