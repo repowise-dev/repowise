@@ -304,6 +304,7 @@ async def get_change_risk(
     baseline: int = 200,
     include: list[str] | None = None,
     finding_id: str | None = None,
+    *,
     per_commit: bool = False,
 ) -> dict:
     """Review a commit, ``base..head`` range, or uncommitted work.
