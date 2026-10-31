@@ -940,6 +940,13 @@ async def _run_ingestion(
 
     _wire_tsconfig(graph_builder, repo_path, parsed_files, walk, progress)
     await _build_graph(graph_builder, len(file_infos), progress)
+    # Persist resolver side data only for users who opt into graph patching.
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+    if incremental_graph_enabled():
+        from repowise.core.pipeline.incremental.resolution_cache import save_resolutions
+
+        save_resolutions(repo_path / ".repowise", parsed_files)
     # Stack detection and framework edges fail separately: the stack also
     # feeds the persisted tech list and the editor files.
     tech_items = _detect_tech_items(

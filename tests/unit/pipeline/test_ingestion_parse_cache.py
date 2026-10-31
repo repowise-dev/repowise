@@ -62,3 +62,34 @@ async def test_run_ingestion_warm_cache_equivalent(tmp_path):
         assert wp == fp, wp.file_info.path
     assert warm_sources == fresh_sources
     assert nx.utils.graphs_equal(warm_graph, fresh_graph)
+
+
+async def test_resolution_snapshot_is_opt_in_for_init_ingestion(tmp_path, monkeypatch):
+    _write_fixture(tmp_path)
+    monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+
+    await _ingest(tmp_path)
+
+    assert not (tmp_path / ".repowise" / "resolved_imports.pkl").exists()
+
+    monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "1")
+    await _ingest(tmp_path)
+    assert (tmp_path / ".repowise" / "resolved_imports.pkl").is_file()
+
+
+async def test_resolved_import_side_cache_is_opt_in(tmp_path, monkeypatch):
+    _write_fixture(tmp_path)
+    monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+
+    await _ingest(tmp_path)
+
+    assert not (tmp_path / ".repowise" / "resolved_imports.pkl").exists()
+
+
+async def test_resolved_import_side_cache_is_written_when_opted_in(tmp_path, monkeypatch):
+    _write_fixture(tmp_path)
+    monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "1")
+
+    await _ingest(tmp_path)
+
+    assert (tmp_path / ".repowise" / "resolved_imports.pkl").is_file()

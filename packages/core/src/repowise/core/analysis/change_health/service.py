@@ -80,6 +80,9 @@ _CACHE_SUBDIR = "change_health"
 #: Comparisons kept in the process cache.
 _CACHE_CAPACITY = 32
 
+#: Base-side analyses kept per service: one per base and file set under review.
+_BASE_CACHE_CAPACITY = 8
+
 #: How long a caller waits on an identical in-flight comparison before doing
 #: the work itself. Short enough not to hold a pool thread for minutes.
 _WAIT_TIMEOUT_SECONDS = 30
@@ -151,6 +154,9 @@ class ChangeHealthDeltaService:
         self._cache: OrderedDict[str, ChangeHealthDelta] = OrderedDict()
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
+        self._base_cache: OrderedDict[tuple, tuple[dict[str, bytes], RevisionAnalysis]] = (
+            OrderedDict()
+        )
 
     @property
     def fingerprint(self) -> AnalysisFingerprint:
@@ -355,7 +361,6 @@ class ChangeHealthDeltaService:
             if pair.working_tree
             else self.source.read(pair.head_sha, head_paths)
         )
-        base_sources = self.source.read(pair.base_sha, base_paths)
         rename = pair.rename_map()
         analyzer = self._analyzer_for([*head_paths, *base_paths])
         caches = AnalysisCaches.open(self.cache_dir) if self.cache_dir is not None else None
@@ -364,15 +369,51 @@ class ChangeHealthDeltaService:
         head_run = analyzer.analyze(
             head_sources, subject_paths=set(head_paths), dependents=index, **cached
         )
-        base_run = analyzer.analyze(
-            base_sources,
-            subject_paths=set(base_paths),
-            dependents=index if index is not None else _on_base(head_run, rename),
-            **cached,
+        base_sources, base_run = self._base_side(
+            pair.base_sha,
+            base_paths,
+            analyzer,
+            index if index is not None else _on_base(head_run, rename),
+            cached,
         )
         if caches is not None:
             caches.save()
         return _Sides(head_paths, head_sources, base_sources, head_run, base_run, rename)
+
+    def _base_side(
+        self,
+        base_sha: str,
+        base_paths: list[str],
+        analyzer: RevisionHealthAnalyzer,
+        dependents: dict[str, int],
+        cached: dict,
+    ) -> tuple[dict[str, bytes], RevisionAnalysis]:
+        """The base side's bytes and analysis, reused while the head side moves.
+
+        A commit's bytes never change, so the same files at the same base sha,
+        scored against the same dependents by the same analyzer, analyse the
+        same: re-reviewing uncommitted work or a branch after an edit pays for
+        the head side only. Both values are read, never changed, downstream.
+        """
+        # A per-request analyzer (path-scoped rule overrides) is not kept.
+        shared = analyzer is self.analyzer
+        key = (base_sha, tuple(sorted(base_paths)), _dependents_digest(dependents))
+        if shared:
+            with self._lock:
+                hit = self._base_cache.get(key)
+                if hit is not None:
+                    self._base_cache.move_to_end(key)
+                    return hit
+        sources = self.source.read(base_sha, base_paths)
+        run = analyzer.analyze(
+            sources, subject_paths=set(base_paths), dependents=dependents, **cached
+        )
+        if shared:
+            with self._lock:
+                self._base_cache[key] = (sources, run)
+                while len(self._base_cache) > _BASE_CACHE_CAPACITY:
+                    self._base_cache.popitem(last=False)
+        return sources, run
 
     def _analyzer_for(self, paths: list[str]) -> RevisionHealthAnalyzer:
         if self._custom_analyzer:

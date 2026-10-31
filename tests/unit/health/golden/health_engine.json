@@ -5601,6 +5601,17 @@
         "effort_bucket": "M",
         "confidence": "medium",
         "source_biomarker": "io_in_loop"
+      },
+      {
+        "refactoring_type": "extract_method",
+        "file_path": "pascal/complex.pas",
+        "target_symbol": "ManyBranches",
+        "line_start": 7,
+        "line_end": 46,
+        "impact_delta": 0.281,
+        "effort_bucket": "S",
+        "confidence": "high",
+        "source_biomarker": "complex_method"
       }
     ]
   }

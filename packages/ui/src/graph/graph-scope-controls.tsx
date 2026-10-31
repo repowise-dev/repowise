@@ -18,40 +18,50 @@ import type { CommunitySummaryItem } from "@repowise-dev/types/graph";
  */
 export type GraphScope = "communities" | "files" | "tree";
 
-const SCOPES: { id: GraphScope; label: string; hint: string }[] = [
-  {
-    id: "communities",
-    label: "Communities",
-    hint: "One circle per detected community",
-  },
-  {
-    id: "files",
+export interface GraphScopeSwitcherCopy {
+  label: string;
+  scopes: Record<GraphScope, { label: string; hint: string }>;
+}
+
+export const GRAPH_SCOPE_SWITCHER_COPY: GraphScopeSwitcherCopy = {
+  label: "Graph scope",
+  scopes: {
+    communities: {
+      label: "Communities",
+      hint: "One circle per detected community",
+    },
     // Not "Full". It draws the most-connected slice of the repo, and the
     // caption under the tabs says exactly how big that slice is.
-    label: "Files",
-    hint: "Individual files and how they depend on each other",
-  },
-  {
-    id: "tree",
+    files: {
+      label: "Files",
+      hint: "Individual files and how they depend on each other",
+    },
     // The same file graph, read as an outline rather than as a canvas. It is
     // the same axis as the two above — how the file graph is presented — so it
     // lives in the same control, not in a tab of its own.
-    label: "Tree",
-    hint: "The same files as an outline, with what each one imports",
+    tree: {
+      label: "Tree",
+      hint: "The same files as an outline, with what each one imports",
+    },
   },
-];
+};
+
+const SCOPES: GraphScope[] = ["communities", "files", "tree"];
 
 export function GraphScopeSwitcher({
   scope,
   onScopeChange,
   className,
+  copy,
 }: {
   scope: GraphScope;
   onScopeChange: (scope: GraphScope) => void;
   className?: string;
+  copy?: Partial<GraphScopeSwitcherCopy> | undefined;
 }) {
+  const c = { ...GRAPH_SCOPE_SWITCHER_COPY, ...copy };
   const onKeyDown = (e: ReactKeyboardEvent) => {
-    const i = SCOPES.findIndex((s) => s.id === scope);
+    const i = SCOPES.indexOf(scope);
     if (i < 0) return;
     let next = i;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (i + 1) % SCOPES.length;
@@ -60,27 +70,28 @@ export function GraphScopeSwitcher({
     else return;
     e.preventDefault();
     const target = SCOPES[next];
-    if (target) onScopeChange(target.id);
+    if (target) onScopeChange(target);
   };
 
   return (
     <div
       role="radiogroup"
-      aria-label="Graph scope"
+      aria-label={c.label}
       onKeyDown={onKeyDown}
       className={`inline-flex rounded-md border border-[var(--color-border-default)] p-0.5 ${className ?? ""}`}
     >
-      {SCOPES.map((s) => {
-        const active = scope === s.id;
+      {SCOPES.map((id) => {
+        const s = c.scopes[id];
+        const active = scope === id;
         return (
           <button
-            key={s.id}
+            key={id}
             type="button"
             role="radio"
             aria-checked={active}
             tabIndex={active ? 0 : -1}
             title={s.hint}
-            onClick={() => onScopeChange(s.id)}
+            onClick={() => onScopeChange(id)}
             className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
               active
                 ? "bg-[var(--color-bg-elevated)] font-semibold text-[var(--color-text-primary)]"
@@ -153,6 +164,25 @@ export function ModuleFilterSelect({
 }
 
 
+export interface GraphNarrowingSelectCopy {
+  showing: string;
+  allFiles: string;
+  community: string;
+  module: string;
+  smallerModules: string;
+  /** Option text for a community with no loaded label. */
+  communityFallback: (id: number) => string;
+}
+
+export const GRAPH_NARROWING_SELECT_COPY: GraphNarrowingSelectCopy = {
+  showing: "Showing",
+  allFiles: "All files",
+  community: "Community",
+  module: "Module",
+  smallerModules: "Smaller modules",
+  communityFallback: (id) => `Community ${id}`,
+};
+
 /**
  * The one narrowing control: "Showing all files / community X / module Y".
  *
@@ -173,6 +203,7 @@ export function GraphNarrowingSelect({
   activeCommunityLabel,
   onChange,
   className,
+  copy,
 }: {
   modules: ModuleGroup[];
   /** Communities offered as narrowing targets. Empty hides that group. */
@@ -183,7 +214,9 @@ export function GraphNarrowingSelect({
   /** Exactly one of the two is ever non-null. */
   onChange: (next: { module: string | null; community: number | null }) => void;
   className?: string | undefined;
+  copy?: Partial<GraphNarrowingSelectCopy> | undefined;
 }) {
+  const c = { ...GRAPH_NARROWING_SELECT_COPY, ...copy };
   const hasCommunities = (communities?.length ?? 0) > 0;
   if (modules.length < 2 && !hasCommunities && activeCommunity === null && !activeModule) return null;
 
@@ -222,7 +255,7 @@ export function GraphNarrowingSelect({
       className={`inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] ${className ?? ""}`}
     >
       <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
-        Showing
+        {c.showing}
       </span>
       <select
         value={value}
@@ -234,13 +267,13 @@ export function GraphNarrowingSelect({
         }}
         className="max-w-[15rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
-        <option value="">All files</option>
+        <option value="">{c.allFiles}</option>
         {staleModule && <option value={`m:${staleModule}`}>{staleModule} · 0</option>}
         {(hasCommunities || staleCommunity !== null) && (
-          <optgroup label="Community">
+          <optgroup label={c.community}>
             {staleCommunity !== null && (
               <option value={`c:${staleCommunity}`}>
-                {activeCommunityLabel ?? `Community ${staleCommunity}`}
+                {activeCommunityLabel ?? c.communityFallback(staleCommunity)}
               </option>
             )}
             {communities?.map((c) => (
@@ -251,7 +284,7 @@ export function GraphNarrowingSelect({
           </optgroup>
         )}
         {modules.length > 0 && (
-          <optgroup label="Module">
+          <optgroup label={c.module}>
             {prominent.map((g) => (
               <option key={g.id} value={`m:${g.id}`}>
                 {g.id} · {formatNumber(g.fileCount)}
@@ -260,7 +293,7 @@ export function GraphNarrowingSelect({
           </optgroup>
         )}
         {rest.length > 0 && (
-          <optgroup label="Smaller modules">
+          <optgroup label={c.smallerModules}>
             {rest.map((g) => (
               <option key={g.id} value={`m:${g.id}`}>
                 {g.id} · {formatNumber(g.fileCount)}

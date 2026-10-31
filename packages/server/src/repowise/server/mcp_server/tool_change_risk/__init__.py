@@ -65,7 +65,7 @@ from repowise.server.mcp_server._change_health import (
     patch_coverage_action as _patch_coverage_action,
 )
 from repowise.server.mcp_server._failure_shield import (
-    is_stale_server_import,
+    is_stale_server_error,
     stale_server_notice,
 )
 from repowise.server.mcp_server._helpers import (

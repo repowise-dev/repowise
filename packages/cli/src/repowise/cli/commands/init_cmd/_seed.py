@@ -8,7 +8,7 @@ from typing import Any
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console
-from repowise.cli.ui import OK
+from repowise.cli.ui import OK, WARN
 
 from ._options import InitOptions
 
@@ -56,6 +56,35 @@ def _seed_base(opts: InitOptions, repo_path: Path) -> Path | None:
         )
         seed_base = None
     return seed_base
+
+
+def _keep_run_choices(opts: InitOptions, repo_paths: list[Path]) -> None:
+    """Record this init's choices in the seeded copies before update reads them.
+
+    The copy carries the base's state and config. Without this, --no-prose on a
+    base whose pages a model wrote leaves a model wiki behind, and the next
+    update (or the post-commit hook) sends every file changed since the seed to
+    the model. --no-editor-setup lives in config the same way, and update
+    writes .claude/CLAUDE.md unless config says no. ``--mode fast`` keeps the
+    documentation it finds, as a fresh fast init does.
+    """
+    from repowise.cli.editor_setup import is_editor_setup_disabled, write_editor_project_files
+    from repowise.cli.helpers import load_state, save_state
+    from repowise.core.docs_mode import docs_mode_state_fields
+
+    from ._prepare import editor_options
+
+    no_prose = opts.index_only and opts.run_mode != "fast"
+    no_editor_setup = not opts.editor_setup
+    for path in repo_paths:
+        if no_prose:
+            state = load_state(path)
+            state.update(docs_mode_state_fields("deterministic"))
+            save_state(path, state)
+        if is_editor_setup_disabled(no_editor_setup):
+            write_editor_project_files(
+                console, path, options=editor_options(opts), no_editor_setup=no_editor_setup
+            )
 
 
 def _run_seeded_update(opts: InitOptions, repo_path: Path, scan: Any) -> None:
@@ -118,6 +147,7 @@ def delegate_to_seeded_update(opts: InitOptions, repo_path: Path, scan: Any) -> 
         dry_run=opts.dry_run,
     )
     if not seeded:
+        console.print(f"[{WARN}]Falling back to full init.[/]")
         return False
     if opts.dry_run:
         console.print("[dim]Dry run: Would seed worktree index and delegate to update.[/dim]")
@@ -126,5 +156,6 @@ def delegate_to_seeded_update(opts: InitOptions, repo_path: Path, scan: Any) -> 
         f"[{OK}]Index copied from {seed_base}.[/] Running [bold]repowise update[/bold] "
         "to catch it up."
     )
+    _keep_run_choices(opts, [r.path for r in scan.repos])
     _run_seeded_update(opts, repo_path, scan)
     return True

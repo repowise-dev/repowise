@@ -65,6 +65,7 @@
       "testManyAsserts",
       "testFewAsserts"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -789,6 +790,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -892,6 +894,7 @@
       "shallow",
       "manyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],

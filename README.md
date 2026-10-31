@@ -71,7 +71,7 @@ the index, and asks you before anything costs money. To do it by hand:
 uv tool install repowise          # or: pipx install repowise / pip install repowise
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
-                                  # (add model-written docs any time with: repowise generate)
+                                  # answers and docs: run repowise generate (one command, no re-index)
 repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
@@ -709,7 +709,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 
 ```bash
 repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
-repowise generate [PATH]  # write wiki pages with a model, on demand
+repowise generate [PATH]  # answers and docs with a model, on an existing index (no re-index)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)
 repowise watch            # re-index on file change

@@ -1364,3 +1364,172 @@ def test_bodyless_methods_are_not_units(language):
     assert {f.name for f in fcx.functions} == units
     classes = {c.name: c for c in fcx.classes}
     assert classes["A"].method_count == a_methods
+
+
+# ---------------------------------------------------------------------------
+# A function whose body is one expression scores like its block twin (#4792)
+# ---------------------------------------------------------------------------
+
+
+def _fns(language: str, path: str, source: bytes) -> dict:
+    """The functions of *source* by name; skips when the grammar is missing."""
+    _require_language(language)
+    fcx = walk_file(path, language, source)
+    if not fcx.functions:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return {f.name: f for f in fcx.functions}
+
+
+def _shape(fn):
+    """What a function's complexity reads as, ignoring its name and position."""
+    return (
+        fn.ccn,
+        fn.max_nesting,
+        fn.cognitive,
+        fn.bumps,
+        [(c.operator_count, c.enclosing_construct) for c in fn.complex_conditions],
+    )
+
+
+def test_typescript_arrow_ternary_body_scores_like_its_block_twin():
+    fns = _fns(
+        "typescript",
+        "a.ts",
+        b"export const f = (a, b) => a && b ? 1 : 2;\n"
+        b"function g(a, b) { return a && b ? 1 : 2; }\n",
+    )
+    assert fns["f"].ccn == 3
+    assert [(c.operator_count, c.enclosing_construct) for c in fns["f"].complex_conditions] == [
+        (1, "ternary")
+    ]
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_typescript_arrow_boolean_body_counts_its_operator():
+    fns = _fns(
+        "typescript",
+        "a.ts",
+        b"export const f = (a, b) => a && b;\nfunction g(a, b) { return a && b; }\n",
+    )
+    assert fns["f"].ccn == 2
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_javascript_arrow_nested_ternary_body_nests():
+    fns = _fns(
+        "javascript",
+        "a.js",
+        b"const f = (a, b) => a ? (b ? 1 : 2) : 3;\n"
+        b"const g = (a, b) => { return a ? (b ? 1 : 2) : 3; };\n",
+    )
+    assert fns["f"].ccn == 3
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_javascript_parenthesized_arrow_body_is_unchanged():
+    """A wrapper node already holds the expression, so it was counted."""
+    fns = _fns(
+        "javascript",
+        "a.js",
+        b"const f = (a) => (a ? 1 : 2);\nconst g = (a) => { return a ? 1 : 2; };\n",
+    )
+    assert fns["f"].ccn == 2
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_scala_if_body_is_a_decision_point():
+    fns = _fns(
+        "scala",
+        "a.scala",
+        b"object O {\n"
+        b"  def f(a: Boolean): Int = if (a) 1 else 2\n"
+        b"  def g(a: Boolean): Int = { if (a) 1 else 2 }\n"
+        b"}\n",
+    )
+    assert fns["f"].ccn == 2
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_scala_compound_if_body_reaches_complex_conditional():
+    fns = _fns(
+        "scala",
+        "a.scala",
+        b"object O {\n"
+        b"  def f(a: Boolean, b: Boolean, c: Boolean): Int = if (a && b && c) 1 else 2\n"
+        b"  def g(a: Boolean, b: Boolean, c: Boolean): Int = { if (a && b && c) 1 else 2 }\n"
+        b"}\n",
+    )
+    assert fns["f"].ccn == 4
+    assert [c.operator_count for c in fns["f"].complex_conditions] == [2]
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_scala_match_body_scores_like_its_block_twin():
+    fns = _fns(
+        "scala",
+        "a.scala",
+        b"object O {\n"
+        b'  def f(x: Int): String = x match { case 1 => "a"; case 2 => "b"; case _ => "c" }\n'
+        b'  def g(x: Int): String = { x match { case 1 => "a"; case 2 => "b"; case _ => "c" } }\n'
+        b"}\n",
+    )
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_python_lambda_ternary_body_scores_like_its_def_twin():
+    fns = _fns(
+        "python",
+        "a.py",
+        b"g = lambda a, b: 1 if a and b else 2\n"
+        b"def h(a, b):\n    return 1 if a and b else 2\n",
+    )
+    lam = next(f for n, f in fns.items() if n.startswith("<anonymous"))
+    assert lam.ccn == 3
+    assert _shape(lam) == _shape(fns["h"])
+
+
+def test_python_lambda_without_a_decision_stays_ccn_1():
+    fns = _fns("python", "a.py", b"f = lambda x: x + 1\n")
+    assert next(iter(fns.values())).ccn == 1
+
+
+@pytest.mark.parametrize(
+    ("language", "path", "source"),
+    [
+        (
+            "csharp",
+            "a.cs",
+            b"class C {\n  int F(bool a, bool b) => a && b ? 1 : 2;\n"
+            b"  int G(bool a, bool b) { return a && b ? 1 : 2; }\n}\n",
+        ),
+        (
+            "kotlin",
+            "a.kt",
+            b"fun f(a: Boolean, b: Boolean): Int = if (a && b) 1 else 2\n"
+            b"fun g(a: Boolean, b: Boolean): Int { return if (a && b) 1 else 2 }\n",
+        ),
+    ],
+)
+def test_wrapper_node_expression_bodies_are_unchanged(language, path, source):
+    """C# ``=>`` members and Kotlin ``= expr`` functions already scored right:
+    a wrapper node holds the expression, so they match their block twin."""
+    fns = _fns(language, path, source)
+    key_f, key_g = ("F", "G") if language == "csharp" else ("f", "g")
+    assert fns[key_f].ccn == 3
+    assert _shape(fns[key_f]) == _shape(fns[key_g])
+
+
+def test_walk_accepts_a_stand_in_body_without_a_node_type():
+    """The dispatch pass walks a bare ``children`` holder, not a tree node."""
+    from repowise.core.analysis.health.complexity.cyclomatic import (
+        _is_decision_body,
+        _walk_function_body,
+    )
+    from repowise.core.analysis.health.complexity.dispatch import _Siblings
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+
+    lmap = get_language_map("python")
+    assert lmap is not None
+    stand_in = _Siblings([])
+    assert _is_decision_body(stand_in, lmap) is False  # type: ignore[arg-type]
+    assert _walk_function_body(stand_in, lmap)[0] == 1  # type: ignore[arg-type]

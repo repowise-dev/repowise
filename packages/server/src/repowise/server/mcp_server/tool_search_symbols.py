@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import case, func, or_, select
 
+from repowise.core.persistence.crud.tombstoned_pages import deleted_file_paths
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
 from repowise.core.stack_trace import (
@@ -225,20 +226,6 @@ def _symbol_result(row: WikiSymbol, score: float) -> dict:
     }
 
 
-async def _tombstoned_paths(session, repo_id: str, paths: set[str]) -> set[str]:
-    """File paths whose page is tombstoned (deleted/renamed since indexing)."""
-    if not paths:
-        return set()
-    res = await session.execute(
-        select(Page.target_path).where(
-            Page.repository_id == repo_id,
-            Page.target_path.in_(paths),
-            Page.freshness_status == "tombstone",
-        )
-    )
-    return {row[0] for row in res.all()}
-
-
 async def indexed_names(contexts: list, query: str) -> set[str]:
     """The indexed symbol names ``query`` could name, each also lowered: the
     ``names`` container ``_embedded_identifiers`` validates against."""
@@ -403,12 +390,12 @@ async def search_symbols_single(
         )
         gmap = {g.node_id: g for g in gres.scalars().all()}
 
-        tombstoned = await _tombstoned_paths(session, repository.id, {r.file_path for r in rows})
+        deleted = await deleted_file_paths(session, repository.id, {r.file_path for r in rows})
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, WikiSymbol]] = []
     for row in rows:
-        if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
+        if is_excluded(row.file_path, spec) or row.file_path in deleted:
             continue
         g = gmap.get(row.symbol_id)
         # The union here, unlike the ranking penalty above: ``kind`` splits the

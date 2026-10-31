@@ -87,6 +87,9 @@ def test_status_names_why_a_source_made_no_call(status_repo: Path) -> None:
     # Manual entry is an authority route, not capture, so it has nothing to
     # switch off and says so rather than reading as collateral damage.
     assert by_key["cli"]["status"] == "always_on"
+    # Agent entry is the same kind of route, so it is a registered row too.
+    assert by_key["agent"]["status"] == "always_on"
+    assert by_key["agent"]["reason"] == "Agent entry is always available."
 
 
 def test_status_counts_what_each_source_captured(status_repo: Path) -> None:

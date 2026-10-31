@@ -296,6 +296,7 @@ class HarvestedComment:
     end_line: int
     text: str
     strength: int  # number of distinct rationale markers present
+    causal: bool = False  # carries a strong CAUSAL_MARKERS reason
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +570,7 @@ def harvest_file_rationale(
     max_per_file: int = 3,
     include_docstrings: bool = False,
     require_causal: bool = True,
+    require_marker: bool = True,
 ) -> list[HarvestedComment]:
     """Mine the rationale-bearing comments from one file's text.
 
@@ -586,7 +588,8 @@ def harvest_file_rationale(
 
     ``require_causal=True`` demands a strong :data:`CAUSAL_MARKERS` reason
     rather than any intent label. The MCP recall miner sets it ``False`` to
-    surface any marker-bearing comment.
+    surface any marker-bearing comment. ``require_marker=False`` keeps a
+    comment with no marker at all, for a caller that ranks by the question.
     """
     ext = ext.lower()
     if ext not in CODE_EXTENSIONS:
@@ -605,7 +608,7 @@ def harvest_file_rationale(
         body = _clean(b.text)
         if _too_thin(body):
             continue
-        if not marker_test(body):
+        if require_marker and not marker_test(body):
             continue
         # License / SPDX / shebang preamble is the dominant false positive.
         if is_license_or_boilerplate(body):
@@ -622,6 +625,7 @@ def harvest_file_rationale(
                 end_line=end,
                 text=_truncate(body),
                 strength=marker_strength(body),
+                causal=has_causal_marker(body),
             )
         )
 

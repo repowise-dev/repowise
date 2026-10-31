@@ -100,6 +100,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -113,6 +114,7 @@
     "exports": [
       "TestFoo"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -566,6 +568,7 @@
       "Splintered",
       "Util"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -861,6 +864,7 @@
       "implicit_rescue",
       "modifier_loops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1279,6 +1283,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1303,6 +1308,7 @@
       "locked_write",
       "helper_calls"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

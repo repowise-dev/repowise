@@ -42,6 +42,14 @@ def _is_valid_credential_value(val: str) -> bool:
     return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
 
 
+# Names matching keyword patterns that are public manifest attributes or
+# non-secret metadata rather than credentials.
+_KEYWORD_EXCLUDED_NAMES: frozenset[str] = frozenset(
+    {
+        "publickeytoken",
+    }
+)
+
 # A snake_case or kebab-case name (``x-api-key``, ``repowise-security-ignore``)
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
@@ -98,6 +106,8 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return mixed >= 3 or (mixed >= 2 and len(val) >= 12)
     if kind not in _KEYWORD_KINDS:
         return True
+    if name.lower() in _KEYWORD_EXCLUDED_NAMES:
+        return False
     value = val.strip()
     if kind == "hardcoded_secret" and (
         _KEY_NAME_VALUE.fullmatch(value)

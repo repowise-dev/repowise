@@ -28,7 +28,7 @@ from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
-from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import _code_drift, _state
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
     SERVER_FAULT,
@@ -300,6 +300,13 @@ async def _poll_release_check() -> None:
         await asyncio.sleep(_RELEASE_RECHECK_S)
 
 
+async def _watch_server_currency() -> None:
+    """Both lifespan watches on this server's own code: a newer release, and
+    the install changing under the running process."""
+    # return_exceptions: one watch failing must not leave the other uncancelled.
+    await asyncio.gather(_poll_release_check(), _code_drift.watch(), return_exceptions=True)
+
+
 async def _cancel_task(task: asyncio.Task) -> None:
     """Cancel a lifespan background task and swallow its unwind."""
     task.cancel()
@@ -514,7 +521,7 @@ async def _lifespan(server: FastMCP):
     # call can otherwise land mid-import and wedge the loop.
     _state._lancedb_ready = asyncio.Event()
     _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
-    _release_task = asyncio.create_task(_poll_release_check(), name="release-check")
+    _release_task = asyncio.create_task(_watch_server_currency(), name="server-currency")
 
     # --- Workspace detection ------------------------------------------------
     if _state._force_single_repo:
@@ -722,9 +729,10 @@ class _RepowiseMCP(FastMCP):
         if principal is None:
             return tools
         from repowise.server.auth import get_authorizer
+        from repowise.server.mcp_server._http_auth import tool_allowed
 
         authorizer = get_authorizer()
-        return [t for t in tools if authorizer.can_use_tool(principal, t.name)]
+        return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
         principal = self._request_principal()

@@ -37,6 +37,11 @@ from repowise.core.index_scope import (
     stamp_index_scope,
 )
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+from repowise.core.pipeline.index_persistence import (
+    IndexWrite,
+    apply_index_persistence,
+    publish_index_persistence,
+)
 from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
@@ -157,7 +162,7 @@ async def persist_result(
         timed,
         tombstone_absent_file_pages,
     )
-    from repowise.core.pipeline.persist import persist_symbol_analysis
+    from repowise.core.pipeline.persist import persist_symbol_analysis, sweep_store_hygiene
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -227,8 +232,22 @@ async def persist_result(
                 getattr(result, "authoritative_page_types", None),
                 getattr(result, "preserved_page_ids", None),
             )
+            swept_page_ids += await sweep_store_hygiene(
+                session, repo.id, getattr(result, "parsed_files", None)
+            )
+            await apply_index_persistence(
+                session,
+                repo.id,
+                IndexWrite(
+                    "full",
+                    result.parsed_files,
+                ),
+            )
         else:
-            swept_page_ids = await persist_pipeline_result(result, session, repo.id)
+            swept_page_ids = await persist_pipeline_result(
+                result, session, repo.id, scan_commit_health=False
+            )
+        persisted_repo_id = repo.id
 
         # Tombstone pages whose file is simply gone. The other tombstone path
         # reads a diff, and an init compares nothing, so until here a page
@@ -289,6 +308,15 @@ async def persist_result(
             await fts.index_pages(result.generated_pages)
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
+    # After commit, so the scan never holds the write lock; the rest drains in the background.
+    if not index_done:
+        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
+
+        with timed(timings, "persist.commit_health"):
+            await refresh_commit_health_after_update(
+                sf, persisted_repo_id, str(repo_path), background=True
+            )
+
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.
     if index_done:
@@ -311,6 +339,7 @@ async def persist_result(
     # stopped short of them reported a different span per run mode.
     if progress is not None:
         progress.on_phase_done("persist")
+    await publish_index_persistence(persisted_repo_id, repo_path)
 
 
 # ---------------------------------------------------------------------------

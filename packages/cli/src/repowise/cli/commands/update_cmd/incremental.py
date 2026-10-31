@@ -123,6 +123,7 @@ def _rebuild_graph_and_git(
     file_count, git_meta_map)``.
     """
     from repowise.core.pipeline.incremental import rebuild_graph_and_git
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
 
     return run_async(
         rebuild_graph_and_git(
@@ -138,6 +139,9 @@ def _rebuild_graph_and_git(
             git_summary_sink=git_summary_sink,
             log=console.print,
             timings=timings,
+            # Experimental: re-resolve only the changed files when that is
+            # provably equivalent to a rebuild (see pipeline.incremental.surface).
+            patch_graph=incremental_graph_enabled(),
         )
     )
 

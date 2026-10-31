@@ -107,9 +107,11 @@ def tool_middleware(fn: Any) -> Any:
     6. ``timed`` — stamps ``_meta.timing_ms`` for any tool that did not.
        On a lean envelope it removes the field instead (see ``_meta.full_meta``).
     7. ``budget`` — accounts for those final middleware fields and rechecks.
-    8. ``record`` — writes the one savings event for the call.
+    8. ``lean`` — drops what an agent cannot act on (``_meta.lean_response``).
+       Outside telemetry, which still reads the flags it removes.
+    9. ``record`` — writes the one savings event for the call.
 
-    Layer 8 is outside everything for a reason. The ledger row used to be
+    Layer 9 is outside everything for a reason. The ledger row used to be
     written at layer 5, after which ``timed`` stamped ``_meta`` and layer 7 ran
     the budgeter twice more, free to shed content and re-stamp sizes. The
     recorded delivered size was therefore one the agent never received. Each
@@ -129,7 +131,11 @@ def tool_middleware(fn: Any) -> Any:
         resolve_response_budget_repo_root,
     )
     from repowise.server.mcp_server._failure_shield import shield
-    from repowise.server.mcp_server._meta import finalize_trust_envelope, full_meta
+    from repowise.server.mcp_server._meta import (
+        finalize_trust_envelope,
+        full_meta,
+        lean_response,
+    )
     from repowise.server.mcp_server._rounding import quantize
     from repowise.server.mcp_server._savings import event as savings_event
     from repowise.server.mcp_server._savings import instrument
@@ -204,6 +210,14 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
+    def lean(inner: Any) -> Any:
+        @wraps(inner)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            result = await inner(*args, **kwargs)
+            return result if full_meta(fn.__name__) else lean_response(result)
+
+        return wrapped
+
     def record(inner: Any) -> Any:
         """Open the interaction, then write its one event once nothing can change."""
 
@@ -216,7 +230,7 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
-    return record(budget(timed(instrument(budget(quantize(trust(shield(fn))))))))
+    return record(lean(budget(timed(instrument(budget(quantize(trust(shield(fn)))))))))
 
 
 #: Restores FastMCP's indented text block, for a client that turns out to need it.
@@ -284,9 +298,11 @@ def ensure_full_surface() -> Any:
     if _surface_applied:
         return _mcp
 
-    for module in dict.fromkeys(_TOOL_MODULES.values()):
+    for name, module in _TOOL_MODULES.items():
         try:
-            importlib.import_module(f"{__name__}.{module}")
+            # Read the name, not just the module: a tool package re-exports its
+            # tool lazily, and that read is what imports and registers it.
+            getattr(importlib.import_module(f"{__name__}.{module}"), name)
         except ImportError as exc:
             # One tool's optional dependency must not take the whole surface
             # down: a host respawns a server that dies at import, forever.
@@ -350,7 +366,6 @@ _STATE_NAMES = frozenset(
         "_embedder_status",
         "_release_check",
         "_release_announced",
-        "_keyless_note_announced",
     }
 )
 

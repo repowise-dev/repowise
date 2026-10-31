@@ -19,11 +19,14 @@ from repowise.cli.ui.glyphs import GLYPHS, glyph
 
 DONE = "done"
 PENDING = "pending"
+STARTED = "started"
 
-#: state -> (glyph name, style). The running state is the live owl row.
+#: state -> (glyph name, style). The running state is the live owl row; a
+#: console with no live display gets the started line instead.
 STATE_MARKS: dict[str, tuple[str, str]] = {
     DONE: ("ok", OK),
     PENDING: ("pending", DIM),
+    STARTED: ("bullet", DIM),
 }
 
 #: A step running longer than this gets the long-step line.
@@ -110,6 +113,14 @@ class FinishedStep:
     total: float | None = None
     unit: str = ""
     elapsed: float | None = None
+
+
+def start_line(label: str) -> str:
+    """The line a step prints as it begins when no live row can show it (a pipe, a log)."""
+    name, depth = split_label(label)
+    mark, style = STATE_MARKS[STARTED]
+    indent = "  " * (depth + 1)
+    return f"{indent}[{style}]{glyph(mark)} {escape(name)}{glyph('ellipsis')}[/]"
 
 
 def done_line(step: FinishedStep) -> str:

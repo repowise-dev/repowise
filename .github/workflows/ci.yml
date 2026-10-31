@@ -231,6 +231,52 @@ jobs:
           coverage-min-coverable-lines: 10
 
   # ---------------------------------------------------------------------------
+  # MCP response gate: indexes the sample repo and checks each default tool's
+  # response size ceiling, lean field contract and answer grades. Path-gated
+  # to the MCP tools, the answer pipeline and retrieval; on push it runs with
+  # the integration tests below.
+  # ---------------------------------------------------------------------------
+  mcp-gate:
+    name: MCP response gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether the MCP surface changed
+        id: changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            mcp:
+              - 'packages/server/src/repowise/server/mcp_server/**'
+              - 'packages/core/src/repowise/core/persistence/search.py'
+              - 'packages/core/src/repowise/core/persistence/vector_store/**'
+              - 'packages/core/src/repowise/core/fts_query.py'
+              - 'tests/integration/mcp/test_response_gate.py'
+              - 'tests/fixtures/mcp/response_budgets.json'
+              - 'tests/fixtures/sample_repo/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.changed.outputs.mcp == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        if: steps.changed.outputs.mcp == 'true'
+        run: uv sync --all-packages
+
+      - name: Run the MCP response gate
+        if: steps.changed.outputs.mcp == 'true'
+        env:
+          DO_NOT_TRACK: "1"
+        run: uv run pytest tests/integration/mcp/test_response_gate.py -v --tb=short --durations=5
+
+  # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------
   test-integration:

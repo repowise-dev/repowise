@@ -728,7 +728,7 @@ dependency surface their syntax supports.
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
-| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths; same-named platform units reach every variant; project files as entry points |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
@@ -1080,7 +1080,12 @@ credential's own endpoint is not read.
   `v-for="x in xs"` are not resolved, and the unused-export pass is off for
   both, since props are set by the parent as markup attributes.
 - **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
-  vs `implements` split follows the `I`-prefix naming convention.
+  vs `implements` split is positional: the first parent in `class(...)` is the
+  base class, the rest are interfaces. Form files (`.dfm`, `.fmx`, `.lfm`) are
+  not read, so an event handler bound only in a form has no caller, and a
+  build that picks units outside the project files (a script passing `-U`)
+  is seen only as a same-named variant no project claims. tree-sitter-pascal
+  has no rule for non-ASCII identifiers.
 - **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
   without column handling.
 - **Razor has no import edges**, because every directive is blanked by the

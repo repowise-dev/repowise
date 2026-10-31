@@ -47,8 +47,20 @@ def persist_index(run: InitRun) -> None:
         persist_callback = recorder.rebind(steps)
         # Indeterminate, announced so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
+        from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+        cache_incremental_graph = incremental_graph_enabled()
+        if cache_incremental_graph:
+            from repowise.core.pipeline.incremental.graph_seed import invalidate_seed_edge_cache
+
+            invalidate_seed_edge_cache(run.repo_path)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
+        # Seed the opt-in incremental graph update from a sealed sequential cache.
+        if cache_incremental_graph and run.result.graph_builder is not None:
+            from repowise.core.pipeline.incremental.graph_seed import save_seed_edge_cache
+
+            run_async(save_seed_edge_cache(run.repo_path, run.result.graph_builder))
         # Persistence has its own callback; fold its warnings into the run record.
         run.run_warnings.extend(persist_callback.warnings)
         # Read last: every stage writes into the one table.
@@ -255,6 +267,19 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+    graph_cache_enabled = incremental_graph_enabled()
+    base_state["graph_update"] = {
+        "enabled": graph_cache_enabled,
+        "mode": "full",
+        "reason": (
+            "initial full graph build; incremental cache primed"
+            if graph_cache_enabled
+            else "feature disabled"
+        ),
+        "files": [],
+    }
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
     # Never inherit the previous run's degradation report.
@@ -471,7 +496,7 @@ def _gaps(run: InitRun) -> list[str]:
 
     result = run.result
     return run.gaps + run_gaps(
-        failed_pages=len(getattr(result, "failed_page_ids", None) or []),
+        failed_page_ids=list(getattr(result, "failed_page_ids", None) or []),
         embed_error=embed_failure_message(
             run.scope_embedder, getattr(result, "embed_failed_pages", 0)
         ),

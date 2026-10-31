@@ -21,7 +21,7 @@ import math
 import os
 from typing import ClassVar
 
-from repowise.core.providers.embedding.base import resolve_embedding_timeout
+from repowise.core.providers.embedding.base import client_for_kind, resolve_embedding_timeout
 
 
 class EdenAIEmbedder:
@@ -109,10 +109,9 @@ class EdenAIEmbedder:
 
         Args:
             texts: Non-empty list of strings to embed.
-            kind: Accepted for Embedder-protocol parity; unused. None of the
-                models in ``_DIMS`` are configured with a directional prefix.
+            kind: Not used as a prefix: none of the models in ``_DIMS`` are
+                configured with one. A ``"query"`` call skips SDK retries.
         """
-        del kind
         if not texts:
             return []
 
@@ -130,7 +129,8 @@ class EdenAIEmbedder:
                     base_url=base_url,
                     timeout=timeout,
                 )
-            response = self._client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
+            client = client_for_kind(self._client, kind)
+            response = client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
             widths = {len(v) for v in raw_vectors}
             if widths and widths != {expected_dimensions}:

@@ -6,8 +6,6 @@ Every smell test has a paired negative asserting silence.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from repowise.core.analysis.health.biomarkers.base import FileContext
 from repowise.core.analysis.health.biomarkers.registry import detect_all
 from repowise.core.analysis.health.models import Severity
@@ -23,12 +21,8 @@ from repowise.core.analysis.health.sql_complexity import (
 )
 
 
-def _fi(name: str = "schema.sql") -> SimpleNamespace:
-    return SimpleNamespace(abs_path=f"/repo/{name}", path=name, language="sql")
-
-
 def _walk(sql: str):
-    return walk_sql_file(_fi(), sql.encode("utf-8"))
+    return walk_sql_file(sql.encode("utf-8"), None)
 
 
 def _smell_kinds(sql: str) -> list[str]:

@@ -24,7 +24,12 @@ from __future__ import annotations
 import multiprocessing
 import os
 import threading
+import time
+from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from itertools import islice
+from typing import Any
 
 import networkx as nx
 import structlog
@@ -58,17 +63,23 @@ _MP_SPAWN = multiprocessing.get_context("spawn")
 # every host with at least this many cores instead of varying per machine.
 _MAX_POOL_WORKERS = 8
 
-# Wall-clock budget for the entire parallel attempt: pool construction, the
-# spawn of every worker, and the map. Exceeding it means the pool is not
-# making progress, and the sequential path is taken instead.
+# Longest the parallel attempt may go without finishing a chunk: pool
+# construction plus the spawn of every worker count against the first one.
+# Exceeding it means the pool is not making progress, and the sequential path
+# is taken instead.
 #
 # A hang here is not an exception, so the ``except`` below can never see it.
 # The budget is what turns "no progress" into a fallback, which is the promise
 # the module docstring already makes and previously only kept for failures
-# that raised. Sized well above a healthy run (pool startup is seconds, and
-# the sequential path this protects is itself a ~1 minute job) so a merely
-# slow host is never cut off mid-computation.
+# that raised. Measured per chunk rather than for the whole run, so a sampled
+# scoring of a very large graph that is slow but advancing is never cut off
+# and redone sequentially. Sized well above a healthy chunk (pool startup is
+# seconds) so a merely slow host is never cut off mid-computation.
 _POOL_TIMEOUT_SECONDS = 600.0
+
+# Most chunks submitted ahead of the one being folded. Results are folded in
+# chunk order; the window bounds how many finished ones wait in memory.
+_IN_FLIGHT_PER_WORKER = 2
 
 # Parallelize only when the estimated Brandes cost (~nodes x edges) is large
 # enough to amortize process startup (~2-3s for pool spawn + imports).
@@ -148,6 +159,25 @@ def pool_worker_count(max_workers: int | None = None) -> int:
     return min(max_workers or os.cpu_count() or 1, _MAX_POOL_WORKERS)
 
 
+def _add_partial(totals: list[float], partial: dict[int, float]) -> None:
+    for v, b in partial.items():
+        totals[v] += b
+
+
+def int_graph(g: nx.DiGraph) -> tuple[list, list[tuple[int, int]]]:
+    """Number *g*'s nodes in sorted order; return them and the edges in ``g.edges()`` order.
+
+    Sorted, not graph order: the node numbering fixes the order the partial
+    sums are accumulated in, and float addition is not associative. Graph
+    insertion order varies between runs, so an unsorted numbering shifts
+    scores in the last ULP, which is enough to flip every downstream
+    tie-break that ranks on betweenness.
+    """
+    nodes = sorted(g)
+    index = {node: i for i, node in enumerate(nodes)}
+    return nodes, [(index[u], index[v]) for u, v in g.edges()]
+
+
 def _run_pool(
     *,
     n: int,
@@ -155,8 +185,16 @@ def _run_pool(
     directed: bool,
     chunks: list[list[int]],
     workers: int,
+    task: Callable[[list[int]], Any] = _partial_betweenness,
+    fold: Callable[[list[float], Any], None] = _add_partial,
+    on_progress: Callable[[], None] = lambda: None,
 ) -> list[float]:
-    """Build the pool, run every chunk through it, and sum the partials."""
+    """Build the pool, run every chunk through *task*, and *fold* the results in chunk order.
+
+    Chunk order keeps float summation deterministic for a given chunking. At
+    most ``_IN_FLIGHT_PER_WORKER`` chunks per worker are outstanding, so
+    finished results never pile up in memory ahead of the fold.
+    """
     totals = [0.0] * n
     with ProcessPoolExecutor(
         max_workers=workers,
@@ -164,11 +202,23 @@ def _run_pool(
         initializer=_init_worker,
         initargs=(n, edges, directed),
     ) as pool:
-        # ``map`` preserves chunk order, keeping float summation
-        # deterministic for a given worker count.
-        for partial in pool.map(_partial_betweenness, chunks):
-            for v, b in partial.items():
-                totals[v] += b
+        queued = iter(chunks)
+        pending = deque(
+            pool.submit(task, chunk) for chunk in islice(queued, workers * _IN_FLIGHT_PER_WORKER)
+        )
+        try:
+            while pending:
+                result = pending.popleft().result()
+                following = next(queued, None)
+                if following is not None:
+                    pending.append(pool.submit(task, following))
+                fold(totals, result)
+                on_progress()
+        except BaseException:
+            # Otherwise shutdown waits for every queued chunk before the fallback.
+            for future in pending:
+                future.cancel()
+            raise
     return totals
 
 
@@ -180,30 +230,48 @@ def _run_pool_within_budget(
     chunks: list[list[int]],
     workers: int,
     timeout: float,
+    task: Callable[[list[int]], Any] = _partial_betweenness,
+    fold: Callable[[list[float], Any], None] = _add_partial,
 ) -> list[float] | None:
-    """Run the pool under a wall-clock budget. ``None`` means give up on it.
+    """Run the pool, giving up once no chunk has finished for *timeout* seconds.
 
-    The work runs on a daemon thread so that a spawn wedged inside a blocking
-    pipe write cannot outlive the interpreter. There is no way to interrupt a
-    thread parked in ``CreateProcess`` or ``reduction.dump`` from Python, so a
-    timed-out attempt is abandoned rather than cancelled: the caller falls back
-    to the sequential path and the stuck thread, plus any workers it managed to
-    bring up, are left for process exit to reap. Leaking that is the lesser
-    outcome against an update that never returns and holds its lock forever.
+    ``None`` means give up on it. The work runs on a daemon thread so that a
+    spawn wedged inside a blocking pipe write cannot outlive the interpreter.
+    There is no way to interrupt a thread parked in ``CreateProcess`` or
+    ``reduction.dump`` from Python, so a timed-out attempt is abandoned rather
+    than cancelled: the caller falls back to the sequential path and the stuck
+    thread, plus any workers it managed to bring up, are left for process exit
+    to reap. Leaking that is the lesser outcome against an update that never
+    returns and holds its lock forever.
     """
     outcome: dict[str, object] = {}
+    last_progress = [time.monotonic()]
+
+    def _progress() -> None:
+        last_progress[0] = time.monotonic()
 
     def _work() -> None:
         try:
             outcome["totals"] = _run_pool(
-                n=n, edges=edges, directed=directed, chunks=chunks, workers=workers
+                n=n,
+                edges=edges,
+                directed=directed,
+                chunks=chunks,
+                workers=workers,
+                task=task,
+                fold=fold,
+                on_progress=_progress,
             )
         except BaseException as exc:  # reported to the caller below
             outcome["error"] = exc
 
     worker = threading.Thread(target=_work, name="betweenness-pool", daemon=True)
     worker.start()
-    worker.join(timeout)
+    while worker.is_alive():
+        idle_left = last_progress[0] + timeout - time.monotonic()
+        if idle_left <= 0:
+            break
+        worker.join(idle_left)
 
     if worker.is_alive():
         log.warning(
@@ -253,14 +321,7 @@ def betweenness_centrality_fast(
         log.warning("betweenness_parallel_unavailable", reason="networkx internals moved")
         return nx.betweenness_centrality(g, normalized=normalized)
 
-    # Sorted, not graph order: the node numbering fixes the order the partial
-    # sums are accumulated in, and float addition is not associative. Graph
-    # insertion order varies between runs, so an unsorted numbering shifts
-    # scores in the last ULP, which is enough to flip every downstream
-    # tie-break that ranks on betweenness.
-    nodes = sorted(g)
-    index = {node: i for i, node in enumerate(nodes)}
-    edges = [(index[u], index[v]) for u, v in g.edges()]
+    nodes, edges = int_graph(g)
 
     # ~3 chunks per worker for load balancing without excessive IPC.
     chunk_count = max(1, workers * 3)

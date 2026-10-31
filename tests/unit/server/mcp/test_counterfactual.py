@@ -77,18 +77,50 @@ def test_malformed_skeleton_does_not_raise() -> None:
 def test_get_answer_counts_search_plus_cited_reads() -> None:
     result = {
         "answer": "The default is 2 (pkg/a.py).",
+        "confidence": "high",
         "citations": ["pkg/a.py"],
         "fallback_targets": ["pkg/a.py", "pkg/b.py"],
     }
-    expected = cf.ANSWER_SEARCH_FLOOR + 2 * cf.ANSWER_READ_FLOOR_PER_FILE
+    # Only the cited file: a fallback the answer did not cite was not replaced.
+    expected = cf.ANSWER_SEARCH_FLOOR + cf.ANSWER_READ_FLOOR_PER_FILE
     assert cf.replaced_tokens_for("get_answer", result) == expected
 
 
-def test_get_answer_empty_answer_claims_nothing() -> None:
-    # Gated/low responses tell the agent to go read — those reads still
-    # happen, so claiming them as saved repeats the E11 miscalibration.
-    result = {"answer": "", "best_guesses": [{"file": "pkg/a.py"}]}
-    assert cf.replaced_tokens_for("get_answer", result) == 0
+def test_get_answer_credits_the_real_read_of_each_cited_file() -> None:
+    result = {"answer": "x", "confidence": "medium", "citations": ["a.py", "b.py"]}
+    sizes = {"a.py": 3000, "b.py": None}
+    # b.py cannot be read, so it falls back to the per-file floor.
+    assert cf.answer_replaced_tokens(result, sizes.get) == (
+        cf.ANSWER_SEARCH_FLOOR + 3000 + cf.ANSWER_READ_FLOOR_PER_FILE
+    )
+
+
+def test_a_low_or_keyless_answer_credits_only_what_it_served() -> None:
+    """A reply that tells the agent to go read does not replace those reads.
+    It replaces the search for each file it points at, and a Read of each file
+    whose whole body it inlined, as get_symbol credits."""
+    result = {
+        "answer": "No synthesis.",
+        "degraded": "no-llm-provider",
+        "confidence": "medium",
+        "citations": ["a.py", "b.py", "c.py"],
+        "best_guesses": [{"file": "d.py"}],
+        "symbol_bodies": [
+            {"path": "a.py", "verified": True},
+            {"path": "b.py", "verified": True, "continuation": "repowise#1"},
+        ],
+    }
+    sizes = {"a.py": 5000, "b.py": 7000}
+    assert cf.answer_replaced_tokens(result, sizes.get) == 5000 + 3 * cf.SEARCH_FLOOR_PER_HIT
+    low = {"answer": "maybe", "confidence": "low", "citations": ["a.py"]}
+    assert cf.answer_replaced_tokens(low, sizes.get) == cf.SEARCH_FLOOR_PER_HIT
+
+
+def test_get_answer_with_nothing_to_point_at_claims_nothing() -> None:
+    assert cf.replaced_tokens_for("get_answer", {"answer": "", "confidence": "low"}) == 0
+    assert cf.replaced_tokens_for("get_answer", {"answer": "x", "confidence": "high"}) == 0
+    errored = {"error": "boom", "citations": ["a.py"], "confidence": "high", "answer": "x"}
+    assert cf.replaced_tokens_for("get_answer", errored) == 0
 
 
 def test_fixed_floor_tools_credit_successful_calls_only() -> None:
@@ -280,6 +312,41 @@ def test_a_skeleton_still_wins_over_the_file_floor() -> None:
     assert cf.replaced_tokens_for("get_context", result) == 4321
 
 
+def test_a_file_card_credits_one_read_of_its_file_when_it_can_be_read() -> None:
+    result = {
+        "targets": {
+            "a.py": {"type": "file"},
+            "b.py": {"type": "file", "skeleton": {"full_tokens": 4321}},
+            "c.py::C": {"type": "symbol", "skeleton": {"full_tokens": 99, "of_file": "c.py"}},
+            "a.py::A": {"type": "symbol", "skeleton": {"full_tokens": 99, "of_file": "a.py"}},
+            "empty.py": {"type": "file"},
+            "gone.py": {"type": "file"},
+        }
+    }
+    sizes = {"a.py": 9000, "b.py": 4500, "c.py": 2000, "empty.py": 0}
+    # a.py is read once however many cards cover it; an empty file costs nothing.
+    assert cf.context_replaced_tokens(result, sizes.get) == (
+        9000 + 4500 + 2000 + cf.CONTEXT_FILE_FLOOR
+    )
+
+
+def test_get_why_credits_each_file_whose_history_it_serves() -> None:
+    path_mode = {"mode": "path", "path": "a.py", "origin_story": {}}
+    assert cf.replaced_tokens_for("get_why", path_mode) == cf.WHY_FLOOR + cf.WHY_PER_FILE
+    anchored = {"mode": "search", "target_context": {"a.py": {"origin": {}}, "b.py": {}}}
+    # An empty card served no history.
+    assert cf.replaced_tokens_for("get_why", anchored) == cf.WHY_FLOOR + cf.WHY_PER_FILE
+    many = {"mode": "path", "target_context": {f"f{i}.py": {"origin": 1} for i in range(40)}}
+    assert cf.replaced_tokens_for("get_why", many) == cf.WHY_MAX
+    assert cf.replaced_tokens_for("get_why", {"mode": "path", "error": "nope"}) == 0
+
+
+def test_change_risk_declares_from_the_scored_file_count() -> None:
+    assert cf.change_risk_replaced_tokens(0) == cf.CHANGE_RISK_FLOOR
+    assert cf.change_risk_replaced_tokens(2) == cf.CHANGE_RISK_FLOOR + 2 * cf.CHANGE_RISK_PER_FILE
+    assert cf.change_risk_replaced_tokens(10_000) == cf.CHANGE_RISK_MAX
+
+
 def test_a_failed_file_target_earns_nothing() -> None:
     result = {"targets": {"a.py": {"target": "a.py", "type": "file", "error": "nope"}}, "_meta": {}}
     assert cf.replaced_tokens_for("get_context", result) == 0
@@ -344,6 +411,7 @@ def test_the_raised_floors_stay_under_the_artifact_they_stand_for() -> None:
     """
     assert cf.OVERVIEW_FLOOR < 15_941, "get_overview must undersell one README"
     assert cf.WHY_FLOOR < 4_834, "get_why must undersell one git log -p"
+    assert cf.WHY_PER_FILE < 2_054, "a file's history must undersell its git log -p median"
     assert cf.RISK_PER_TARGET < 1_296 + 1_584, "a target is a read plus a grep"
     assert cf.HEALTH_PER_FILE < 1_296, "a judged file must undersell reading it"
     assert cf.CONTEXT_FILE_FLOOR < 620, "the file floor must sit under the p25"

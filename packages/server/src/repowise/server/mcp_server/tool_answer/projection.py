@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -817,20 +818,12 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     try:
         from repowise.core.persistence.database import get_session
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
-        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
-        from repowise.server.mcp_server._scope import unrelated_scope_hint
 
         served = _served_paths(payload)
         ctx = await _resolve_repo_context(repo)
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            scope_hint = await unrelated_scope_hint(
-                session,
-                repository.id,
-                [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{index_state_key(repository)}",
-            )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:
         return
@@ -842,12 +835,11 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         "index_behind",
         "stale_warning",
         "working_tree_dirty",
+        # Retired; a cached payload may still carry it.
         "scope_hint",
     ):
         meta.pop(key, None)
     meta.update(freshness)
-    if scope_hint:
-        meta["scope_hint"] = scope_hint
     # An error reply carries confidence "low" too, and its fault is not the
     # index, so the pointer would only misdirect there.
     try:
@@ -995,9 +987,29 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
+        await _declare_replaced_reads(payload, root, repo)
         return payload
 
     return _wrapped
+
+
+async def _declare_replaced_reads(
+    payload: dict[str, Any], root: Path | None, repo: str | None
+) -> None:
+    """Credit what this reply served with the real Read cost of its files. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import answer_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    if payload.get("error"):
+        return
+    try:
+        root = root or await _resolve_root(repo)
+        read_cost = (lambda p: file_read_tokens(root, p)) if root is not None else None
+        tokens = await asyncio.to_thread(answer_replaced_tokens, payload, read_cost)
+    except Exception:  # savings accounting never breaks a tool call
+        return
+    declare_replaced(payload, tokens)
 
 
 __all__ = ["project_answer_payload", "projected_answer"]

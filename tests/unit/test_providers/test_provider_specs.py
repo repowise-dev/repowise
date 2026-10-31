@@ -99,7 +99,6 @@ _ALLOWED: dict[str, frozenset[str]] = {
     # prompt, and its reasoning budget. Ollama's readiness is a TCP probe.
     "cli/src/repowise/cli/_helpers/providers.py": frozenset({"openai"}),
     "cli/src/repowise/cli/ui/provider_selection.py": frozenset({"openai", "ollama"}),
-    "server/src/repowise/server/mcp_server/tool_answer/synthesis.py": frozenset({"openai"}),
     # Embedder surfaces: these literals name embedders, which share spellings.
     "core/src/repowise/core/providers/embedding/registry.py": _EMBEDDERS,
     "core/src/repowise/core/providers/embedding/resolve.py": _EMBEDDERS,

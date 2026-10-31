@@ -13,20 +13,29 @@ Both are named seams (``authenticator``, ``authorizer``) with ``local`` as the
 default. A plugin registers its own implementation from the ``repowise.plugins``
 entry point and selects it with ``default=True`` or
 ``REPOWISE_SEAM_AUTHENTICATOR`` / ``REPOWISE_SEAM_AUTHORIZER``.
+
+An authorizer whose methods accept an ``action`` keyword is asked on every
+call, for every principal, with :class:`Action` ``READ`` or ``WRITE``. One that
+does not is called as before: only for principals that carry a ``repo_scope``,
+and without the action. :func:`authorize_repo` and :func:`authorize_tool` are
+the one place that difference is handled.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from fastapi import HTTPException, Request
 
@@ -40,14 +49,27 @@ TOKENS_FILE_ENV = "REPOWISE_TOKENS_FILE"
 PER_CALL_TOOL_SCOPE = "tools:per-call"
 
 
+class Action(StrEnum):
+    """What a call does to the repository or tool it reaches."""
+
+    READ = "read"
+    WRITE = "write"
+
+
 @dataclass(frozen=True)
 class Principal:
-    """An authenticated caller. ``None`` scopes mean unrestricted."""
+    """An authenticated caller. ``None`` scopes mean unrestricted.
+
+    ``claims`` is the authenticator's own data about the caller (roles, groups,
+    tenant), for its authorizer to read. repowise never interprets it, and it
+    survives the MCP HTTP token round trip, so it must be JSON-serializable.
+    """
 
     id: str
     kind: str  # "local" | "shared-key" | "token" | "webhook", or a plugin's own
     repo_scope: frozenset[str] | None = None
     tool_scope: frozenset[str] | None = None
+    claims: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
 
 #: A loopback caller on a server with no credential configured.
@@ -84,13 +106,30 @@ class Authenticator(Protocol):
 
 @runtime_checkable
 class Authorizer(Protocol):
-    """Decides what an authenticated principal may reach."""
+    """Decides what an authenticated principal may reach.
+
+    Both methods may also take an ``action: Action`` keyword (``READ`` or
+    ``WRITE``). An implementation that declares it is called with it on every
+    call, for every principal; one that does not keeps the original contract
+    (see the module docstring). The protocol lists the original signatures so
+    both kinds satisfy it.
+    """
 
     def can_access_repo(self, principal: Principal, identifiers: Iterable[str | None]) -> bool:
-        """True when any of ``identifiers`` (id, name, alias of one repo) is in scope."""
+        """True when ``principal`` may reach the repo ``identifiers`` name.
+
+        ``identifiers`` are the forms one repo is known by: its id, stored name
+        or workspace alias, any of which may be None. An action-aware
+        implementation can also get an empty ``identifiers``: a call that names
+        no single repo (a server-wide route such as registering a repo), to
+        decide from the action alone.
+        """
         ...
 
-    def can_use_tool(self, principal: Principal, tool: str) -> bool: ...
+    def can_use_tool(self, principal: Principal, tool: str) -> bool:
+        """True when ``principal`` may run ``tool``. The action is ``WRITE`` for
+        a tool declared ``safety="mutating"``."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +327,96 @@ class ScopeAuthorizer:
 
     def can_use_tool(self, principal: Principal, tool: str) -> bool:
         return principal.tool_scope is None or tool in principal.tool_scope
+
+
+# ---------------------------------------------------------------------------
+# Calling an authorizer
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=64)
+def _takes_action(fn: Callable[..., Any]) -> bool:
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "action" or p.kind is p.VAR_KEYWORD for p in params)
+
+
+def _accepts_action(method: Callable[..., Any]) -> bool:
+    # Keyed on the underlying function, so a bound method per call still hits.
+    fn = getattr(method, "__func__", method)
+    try:
+        return _takes_action(fn)
+    except TypeError:  # an unhashable callable: inspect it uncached
+        return _takes_action.__wrapped__(fn)
+
+
+def is_action_aware(authorizer: Authorizer | None = None) -> bool:
+    """True when either authorizer method takes an ``action``, so a caller
+    that must work the action out (a tool lookup) only does it when it counts."""
+    authorizer = authorizer or get_authorizer()
+    return _accepts_action(authorizer.can_access_repo) or _accepts_action(authorizer.can_use_tool)
+
+
+def checks_repo_access(principal: Principal, authorizer: Authorizer | None = None) -> bool:
+    """True when repo checks run for ``principal``: it carries a repo scope, or
+    the authorizer takes an action and so decides for every principal."""
+    if principal.repo_scope is not None:
+        return True
+    return _accepts_action((authorizer or get_authorizer()).can_access_repo)
+
+
+def authorize_repo(
+    principal: Principal,
+    identifiers: Iterable[str | None],
+    action: Action = Action.READ,
+    authorizer: Authorizer | None = None,
+) -> bool:
+    """``can_access_repo``, passing ``action`` only to an authorizer that takes it."""
+    # The protocol lists the original signature; ``action`` is checked for here.
+    method: Callable[..., bool] = (authorizer or get_authorizer()).can_access_repo
+    if _accepts_action(method):
+        return method(principal, identifiers, action=action)
+    return method(principal, identifiers)
+
+
+def authorize_tool(
+    principal: Principal,
+    tool: str,
+    action: Action = Action.READ,
+    authorizer: Authorizer | None = None,
+) -> bool:
+    """``can_use_tool``, passing ``action`` only to an authorizer that takes it."""
+    # The protocol lists the original signature; ``action`` is checked for here.
+    method: Callable[..., bool] = (authorizer or get_authorizer()).can_use_tool
+    if _accepts_action(method):
+        return method(principal, tool, action=action)
+    return method(principal, tool)
+
+
+def action_for_safety(safety: str) -> Action:
+    """The action a tool's declared safety kind stands for."""
+    return Action.WRITE if safety == "mutating" else Action.READ
+
+
+_Endpoint = TypeVar("_Endpoint", bound=Callable[..., Any])
+#: Set on a route endpoint by :func:`read_route`.
+ROUTE_ACTION_ATTR = "__repowise_action__"
+
+
+def read_route(endpoint: _Endpoint) -> _Endpoint:
+    """Mark a POST route that only reads, so authorizers see ``Action.READ``.
+
+    Without it a route's action follows its method: GET, HEAD and OPTIONS read,
+    anything else writes. Put it under the router decorator::
+
+        @router.post("/{repo_id}/preflight")
+        @read_route
+        async def preflight(...): ...
+    """
+    setattr(endpoint, ROUTE_ACTION_ATTR, Action.READ)
+    return endpoint
 
 
 authenticators: SeamRegistry[Authenticator] = SeamRegistry("authenticator")

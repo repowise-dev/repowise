@@ -79,13 +79,24 @@ class BodyTally:
 
 def is_exit_macro(node: Node, exit_macros: tuple[frozenset[str], frozenset[str]]) -> bool:
     """A macro whose name is in *exit_macros*, matched by its last segment:
-    ``bail`` in ``anyhow::bail!``."""
+    ``bail`` in ``anyhow::bail!``.
+
+    The name is the ``macro`` field (Rust), a call's ``entity`` (Pascal
+    ``Exit(X)``) or a statement's only child (Pascal ``Exit;``), and it is
+    also matched in lower case for a case-insensitive language, whose names
+    are listed that way.
+    """
     kinds, names = exit_macros
     if node.type not in kinds:
         return False
-    macro = node.child_by_field_name("macro")
+    macro = node.child_by_field_name("macro") or node.child_by_field_name("entity")
+    if macro is None and node.named_child_count == 1:
+        macro = node.named_children[0]
     name = macro.child_by_field_name("name") or macro if macro is not None else None
-    return name is not None and bool(name.text) and name.text.decode("utf-8", "replace") in names
+    if name is None or not name.text:
+        return False
+    text = name.text.decode("utf-8", "replace")
+    return text in names or text.lower() in names
 
 
 def is_exit(node: Node, kinds: FactKinds) -> bool:

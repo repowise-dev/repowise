@@ -164,7 +164,8 @@ async def upsert_decision(
         that the title query cannot see. ``identity_quote`` is not among the
         fields, because it is pinned at first capture.
         """
-        rec.status = status
+        # A restated proposal must not demote an accepted or retired record.
+        rec.status = _merge_status(rec.status, status)
         if kind is not None:
             rec.kind = _extraction_kind(kind)
         rec.context = context

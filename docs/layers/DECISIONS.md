@@ -20,7 +20,9 @@ with no network.
 ```bash
 repowise init                        # capture runs as part of indexing
 repowise decision candidates         # what is awaiting review
-repowise decision confirm a1b2c3d4   # accept one; this is what makes it govern
+repowise decision confirm a1b2c3d4 --agent claude_code --evidence <commit|file>
+                                     # a coding agent accepts one; this makes it govern
+repowise decision confirm a1b2c3d4   # the same, signed by you as a person
 repowise decision list               # everything, decisions and candidates
 repowise decision health             # stale, unscoped, ungoverned hotspots
 repowise decision export             # write accepted ones to .repowise/decisions.yaml
@@ -84,6 +86,15 @@ and is counted as deprecated by `decision health`.
 | Session discovery | `session_discovery` | One broad model pass over new transcript prose per update | Yes | No |
 | Conventions | `conventions` | Import edges: a wrapper most files reach a library through | No | No |
 | Manual entry | `cli` | `repowise decision add`, the dashboard form | No | Always |
+| Agent entry | `agent` | `repowise decision add --agent <slug>` | No | Always |
+
+Adding a title that already exists updates that record. A field the new call
+leaves out keeps its stored value, `--evidence-commit` adds to the stored
+commits, and the JSON output reports `existed` and the `kept` fields.
+
+`repowise update` mines commit messages and pull request bodies only for the
+commits it brought in (`last sync..HEAD`); `repowise init` reads the whole
+history window.
 
 A committed ADR whose status says `accepted` or `approved` and that names what
 it governs accepts its own decision, with the file recorded as the accepter. It
@@ -154,8 +165,10 @@ missing a reason, scope or evidence has Accept disabled with the gap named.
 ## How to add one
 
 ```bash
-repowise decision add                                        # guided prompts
-repowise decision add --title T --decision D [--affects PATH ...]   # no prompts
+# a coding agent records a choice it reasoned out
+repowise decision add --agent claude_code --title T --decision D --rationale R --affects PATH --evidence-commit SHA
+repowise decision add                                        # a person: guided prompts
+repowise decision add --title T --decision D [--affects PATH ...]   # a person: no prompts
 ```
 
 | Flag | Meaning |
@@ -166,7 +179,7 @@ repowise decision add --title T --decision D [--affects PATH ...]   # no prompts
 | `--affects`, `--tag` | A file or module it governs; a tag. Repeatable |
 | `--evidence-commit` | A commit the decision was made in. Repeatable |
 | `--kind` | `architectural` (default) or `agreement` |
-| `--agent`, `--session` | Record it as this agent's (source `agent`), with its session id. Needs the flags |
+| `--agent`, `--session` | Sign the record as this coding agent (source `agent`), with its session id. Needs `--title` and `--decision` |
 | `--format json` | Machine-readable output with the full id |
 
 What gets stored depends on how you add it:
@@ -176,7 +189,9 @@ What gets stored depends on how you add it:
   checked against the code.
 - Flags (`--title` and `--decision`) store a candidate (`proposed`). A person
   answering the prompts has reviewed the decision; a script or agent inferring
-  one has not. Promote it with `repowise decision confirm ID`.
+  one has not. An agent promotes it with
+  `repowise decision confirm ID --agent SLUG --evidence <commit|file>`; a person
+  runs `repowise decision confirm ID`.
 - After a commit whose message states a choice, a hook asks the agent once a
   session to record it with `decision add`. On by default;
   `repowise decision config capture-prompt --off` turns it off.

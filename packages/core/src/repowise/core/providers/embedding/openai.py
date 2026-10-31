@@ -38,7 +38,11 @@ import math
 import os
 from typing import Any, ClassVar
 
-from repowise.core.providers.embedding.base import resolve_embed_prefix, resolve_embedding_timeout
+from repowise.core.providers.embedding.base import (
+    client_for_kind,
+    resolve_embed_prefix,
+    resolve_embedding_timeout,
+)
 
 
 class OpenAIEmbedder:
@@ -207,7 +211,8 @@ class OpenAIEmbedder:
             create_kwargs: dict[str, Any] = {"model": model, "input": texts}
             if request_dimensions is not None:
                 create_kwargs["dimensions"] = request_dimensions
-            response = self._client.embeddings.create(**create_kwargs)  # type: ignore[union-attr]
+            client = client_for_kind(self._client, kind)
+            response = client.embeddings.create(**create_kwargs)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
             widths = {len(v) for v in raw_vectors}
             if widths and widths != {expected_dimensions}:

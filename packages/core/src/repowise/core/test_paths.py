@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -190,6 +190,8 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # and Vitest write the ``.snap`` output a snapshot test compares against; the
 # ``.test.`` infix used to catch those files by accident, and stopped once
 # filename rules became source rules.
+# jscodeshift keeps codemod input and expected output in ``__testfixtures__``
+# beside the transform, so those files are test support wherever they sit too.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -197,7 +199,7 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata"}
 )
 
 # Helper directories named for tests, matched on the segment's words run
@@ -529,6 +531,32 @@ def _classify(
     package_root: PackageRootProbe | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
+
+    With no repo context the answer depends only on the path, the language and
+    the process-wide naming spec, so it is memoized: health detectors ask about
+    the same few thousand paths tens of thousands of times a pass.
+    """
+    if roots is None and dotnet_projects is None and phpunit_roots is None and package_root is None:
+        return _classify_without_context(path, language)
+    return _classify_with_context(path, language, roots, dotnet_projects, phpunit_roots, package_root)
+
+
+# Bounded so a long-lived server sees a fixed ceiling (~65k short keys); a
+# larger repo only re-classifies the overflow.
+@lru_cache(maxsize=65536)
+def _classify_without_context(path: str, language: str | None) -> str:
+    return _classify_with_context(path, language)
+
+
+def _classify_with_context(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
+) -> str:
+    """The classification itself; see :func:`_classify`.
 
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.

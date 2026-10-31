@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import logging
 import re
+from collections.abc import Container
 
+from repowise.core.ingestion.models import VALUE_SYMBOL_KINDS
 from repowise.core.test_paths import is_test_path, is_test_related_path
 
 # Patchable names are read off the package at call time so patches reach them.
@@ -18,6 +20,7 @@ from repowise.server.mcp_server._query_shape import (
     _MIN_RELEVANCE_SCORE,
     _is_why_shaped,
 )
+from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 
 _log = logging.getLogger("repowise.mcp.search")
 
@@ -66,7 +69,9 @@ def _downweight_test_pages(output: list[dict], query: str) -> None:
             item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
 
 
-def _sort_demoting_noise(output: list[dict], query: str) -> None:
+def _sort_demoting_noise(
+    output: list[dict], query: str, minor: Container[str] = frozenset()
+) -> None:
     """Sort by relevance, ranking retrieval noise below every real page.
 
     Two classes crowd the top ranks on a plain implementation query and are
@@ -78,6 +83,9 @@ def _sort_demoting_noise(output: list[dict], query: str) -> None:
       get_why's territory, so a why-shaped query ranks them naturally instead.
     - test file pages — a test is rarely a better first Read than the code it
       exercises. A query explicitly about tests ranks them naturally instead.
+    - *minor* spotlight page ids (:func:`_minor_spotlights`) — a page about one
+      constant or one-line symbol that only full-text search matched shares the
+      query's words, not its subject.
     """
     why = _is_why_shaped(query)
     test_focused = _is_test_query(query)
@@ -86,9 +94,32 @@ def _sort_demoting_noise(output: list[dict], query: str) -> None:
         pt = item.get("page_type")
         is_decision = (not why) and pt == "decision_record"
         is_test = (not test_focused) and _is_test_page(item)
-        return (1 if (is_decision or is_test) else 0, -(item.get("relevance_score") or 0.0))
+        is_minor = item.get("page_id") in minor
+        noise = is_decision or is_test or is_minor
+        return (1 if noise else 0, -(item.get("relevance_score") or 0.0))
 
     output.sort(key=key)
+
+
+async def _minor_spotlights(session, output: list[dict], query: str, repo_id: str) -> set[str]:
+    """Page ids of full-text-only spotlights on a value or one-line symbol the query does not name."""
+    words = set(re.findall(r"[\w$]+", query.lower()))
+    pending: dict[tuple[str, str], str] = {}
+    for item in output:
+        if item.get("page_type") != "symbol_spotlight" or item.get("sources") != ["fts"]:
+            continue
+        path, _, name = item["page_id"].partition(":")[2].partition("::")
+        if name and name.lower() not in words:
+            pending[(path, name)] = item["page_id"]
+    owners = await spotlight_owners(session, repo_id, set(pending))
+    return {pending[key] for key, sym in owners.items() if _is_minor_symbol(sym)}
+
+
+def _is_minor_symbol(sym) -> bool:
+    """A stored value, or a body on one line."""
+    if sym.kind in VALUE_SYMBOL_KINDS:
+        return True
+    return sym.start_line is not None and sym.end_line is not None and sym.end_line <= sym.start_line
 
 
 def _norm_decision_title(title: str) -> str:

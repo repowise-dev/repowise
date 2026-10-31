@@ -67,6 +67,44 @@ class ZoomNode:
     is_dead: bool = False
     is_test: bool = False
     on_flow: bool = False         # reachable from an entry point along import edges
+    # Up to three technologies (code languages and imported frameworks) the
+    # subtree is written in, most files first. Empty on file leaves, which carry
+    # ``language`` instead.
+    technologies: tuple[str, ...] = ()
+    # The containers (deployables) this subtree's files belong to, most files
+    # first. One id means the node lies wholly inside that container.
+    container_ids: tuple[str, ...] = ()
+
+
+def evolve(node: ZoomNode, **changes: object) -> ZoomNode:
+    """``dataclasses.replace`` for a ZoomNode, without re-running ``__init__``.
+
+    Every pass over the tree (metrics, health, scoring, annotation) copies all
+    of its nodes, 7k on a large repository, and ``replace`` re-runs a 23-field
+    frozen ``__init__`` per copy. ZoomNode has no ``__post_init__`` and no
+    derived field, so copying the instance dict is the same copy, about four
+    times faster. An unknown field name is a bug here, as it is for ``replace``.
+    """
+    unknown = changes.keys() - node.__dict__.keys()
+    if unknown:
+        raise TypeError(f"ZoomNode has no field(s) {sorted(unknown)}")
+    new = object.__new__(ZoomNode)
+    new.__dict__.update(node.__dict__, **changes)
+    return new
+
+
+def ancestry(node_id: str, nodes: dict[str, ZoomNode]) -> list[str]:
+    """Root-to-node id path of ``node_id`` in the tree ``nodes``."""
+    out: list[str] = []
+    cur: str | None = node_id
+    while cur is not None:
+        out.append(cur)
+        nxt = nodes.get(cur)
+        if nxt is None:  # defensive: never happens from the builder
+            break
+        cur = nxt.parent_id
+    out.reverse()
+    return out
 
 
 @dataclass(frozen=True)
@@ -87,6 +125,38 @@ class ZoomRelation:
 
 
 @dataclass(frozen=True)
+class ZoomExternal:
+    """A third-party system the code reaches: a database, an API, a service.
+
+    Drawn beside the tree, not inside it; ``ZoomMap.external_relations`` link
+    tree nodes to it at every zoom level.
+    """
+
+    id: str                       # "ext:<package name>"
+    name: str                     # the declared package name
+    display_name: str
+    kind: str                     # io_kind when typed (db | network), else category
+    category: str                 # service | framework | library | tool
+    io_kind: str | None
+    ecosystem: str                # pypi | npm | cargo | ...
+    # Repository-wide, not narrowed by focus or max_depth.
+    file_count: int = 0           # distinct production files importing it
+    edge_count: int = 0           # import edges reaching it
+
+
+@dataclass(frozen=True)
+class ZoomContainer:
+    """A deployable unit (C4 container): a package-manifest root."""
+
+    id: str                       # "pkg:<root path>" ("pkg:." for the repo root)
+    name: str                     # manifest package name, else the root path
+    path: str                     # repo-relative root; "" for the repo root
+    kind: str                     # extension | web_app | api | cli | worker | library
+    technologies: tuple[str, ...] = ()
+    file_count: int = 0           # its files on the whole tree, not narrowed by focus
+
+
+@dataclass(frozen=True)
 class ZoomMap:
     """The complete zoom map for one repository at a given depth/focus."""
 
@@ -101,3 +171,8 @@ class ZoomMap:
     # in no tree at all. ``total_files`` stays the count actually placed; this is
     # the rest of the denominator, so a map can say what it is not showing.
     unclaimed_files: int = 0
+    externals: tuple[ZoomExternal, ...] = ()
+    # Same shape as ``relations`` except ``target_id`` is a ``ZoomExternal`` id:
+    # ``source_id`` is a child of ``parent_id`` whose subtree imports it.
+    external_relations: tuple[ZoomRelation, ...] = ()
+    containers: tuple[ZoomContainer, ...] = ()

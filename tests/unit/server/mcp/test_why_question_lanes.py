@@ -90,6 +90,16 @@ def test_repo_rationale_serves_nothing_off_topic_or_markerless(tmp_path):
     assert repo_rationale(repo, "why a helper for formatting tenant names") == []
 
 
+def test_plain_repo_rationale_serves_a_markerless_comment_that_answers(tmp_path):
+    repo = _repo(tmp_path, {"svc/client.py": _RETRY_SOURCE}, ["init"])
+
+    out = repo_rationale(repo, "why a helper for formatting tenant names", plain=True)
+
+    assert [r["lines"][0] for r in out] == [6]
+    # Still floor-gated: nothing carries this question.
+    assert repo_rationale(repo, "why is the cache keyed on the snapshot id", plain=True) == []
+
+
 def test_repo_rationale_outside_a_git_repo_is_empty(tmp_path):
     (tmp_path / "a.py").write_text(_RETRY_SOURCE, encoding="utf-8")
     assert repo_rationale(tmp_path, "why retry on 429 rather than the shared client") == []
@@ -154,6 +164,20 @@ async def test_rationale_is_served_labelled_when_no_decision_matches(setup_mcp, 
     assert result["answer_basis"] == "rationale"
     assert "try_instead" not in result
     assert "not as the recorded reason" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_store_with_no_ruling_serves_a_plain_comment_that_answers(setup_mcp, tmp_path):
+    """Nobody accepted the fixture's records, so the code's comments are the reasons."""
+    from repowise.server.mcp_server import get_why
+
+    _repo(tmp_path, {"svc/client.py": _RETRY_SOURCE}, ["init"])
+
+    result = await get_why("why a helper for formatting tenant names")
+
+    assert [r["lines"][0] for r in result["code_rationale"]] == [6]
+    assert result["answer_basis"] == "rationale"
+    assert "try_instead" not in result
 
 
 @pytest.mark.asyncio

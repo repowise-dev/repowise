@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.change_risk.render import LIMITS, size_text
+from repowise.core.analysis.change_risk.render import size_text
 from repowise.core.analysis.review_directive import review_order
+from repowise.core.owned_paths import OWNED_PATTERNS
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
@@ -106,8 +107,12 @@ def _shape_payload(result: Any, include_set: set[str], revspec: str | None) -> t
         payload["fix_history"].pop("density", None)
     else:
         diagnostics = {}
-    # Fields that only repeat the request or say nothing: an empty exclude list,
-    # a working-tree flag after an explicit revspec, a false ``is_fix``.
+    # Fields that only repeat the request or say nothing: an exclude list of
+    # repowise's own output alone, a working-tree flag after an explicit
+    # revspec, a false ``is_fix``.
+    payload["exclude_patterns"] = [
+        p for p in payload["exclude_patterns"] if p not in OWNED_PATTERNS
+    ]
     if not payload["exclude_patterns"]:
         del payload["exclude_patterns"]
     if revspec is not None:
@@ -195,9 +200,9 @@ def _compact_patch_coverage(block: dict) -> dict:
 
 
 def _diff_shape_sentence(payload: dict, diagnostics: dict) -> str:
-    """One line for what the diff-shape rank says, and what it does not."""
+    """One line for what the diff-shape rank says; its limits are in the tool docstring."""
     tail = " Mechanics: get_change_risk(include=['diagnostics'])." if diagnostics else ""
-    return f"{size_text(payload.get('risk_percentile'))}. {LIMITS}{tail}"
+    return f"{size_text(payload.get('risk_percentile'))}.{tail}"
 
 
 def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:

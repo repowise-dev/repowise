@@ -73,8 +73,9 @@ _MAX_GLOBAL_RULES = 2
 #: displaces an accepted decision that is injected today, which is the one
 #: thing restoring candidates must not do; a separate cap makes the trade
 #: explicit and bounded instead. Tighter than the accepted block by design:
-#: nobody has agreed to any of these.
-_CANDIDATE_TOKEN_CAP = 120
+#: nobody has agreed to any of these. The header is charged to this cap, so
+#: the 19 tokens its accept command costs are added back for the lines.
+_CANDIDATE_TOKEN_CAP = 139
 #: Never more than this many candidates, whatever the token budget allows.
 _MAX_CANDIDATE_ITEMS = 2
 #: And at most one of those slots may go to an unlinked repo-wide rule. A
@@ -591,7 +592,8 @@ _ACCEPTED_HEADER = (
 #: from PRs, commits, comments and agents as well as sessions.
 _CANDIDATE_HEADER = (
     "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
-    "do not treat them as rules. Review and accept or dismiss: repowise decision candidates"
+    "do not treat them as rules. Review: repowise decision candidates; accept one as yourself: "
+    "repowise decision confirm <id> --agent <your slug> --evidence <commit|file>"
 )
 
 

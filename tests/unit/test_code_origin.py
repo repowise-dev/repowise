@@ -47,6 +47,17 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", "test"),
+        ("__testfixtures__/default-import.output.tsx", "test"),
+        ("src/transforms/__testfixtures__/nested/input.js", "test"),
+        ("src\\transforms\\__testfixtures__\\input.js", "test"),
+        ("src/testfixtures/transform.ts", "production"),
+        ("src/__testfixtures__extra/transform.ts", "production"),
+        ("src/transforms/__testfixtures__.ts", "production"),
+        ("src/__fixtures__/input.ts", "test"),
+        ("src/__mocks__/api.ts", "test"),
+        ("src/__snapshots__/component.snap", "test"),
+        ("src/fixtures/transform.ts", "production"),
         # a `tests/` folder inside a JS-family `src` tree is a product feature
         ("packages/web/src/app/repos/[id]/tests/page.tsx", "production"),
         ("packages/web/src/components/tests/tests-view.tsx", "production"),
@@ -220,6 +231,13 @@ def test_generated_banner_negatives() -> None:
     assert code_origin("pkg/x.py", 'MSG = "auto-generated client"\n') == "production"
     # A banner below the second line is not a header.
     assert not is_generated_header("a = 1\nb = 2\n# DO NOT EDIT\n")
+
+
+def test_binary_content_falls_back_to_the_path() -> None:
+    # A zipped Office file has no newlines in its head, like a minified bundle.
+    pptx = b"PK\x03\x04\x14\x00\x00\x00\x00\x00ppt/slides/slide1.xml<p:sld>" + b"a" * 5000
+    assert code_origin("design/deck.pptx", pptx) == "production"
+    assert code_origin("docs/deck.pptx", pptx) == "docs_example"
 
 
 @pytest.mark.parametrize("period", [".", ""])

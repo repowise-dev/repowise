@@ -162,6 +162,7 @@
     "exports": [
       "AssertionsSpec"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -722,6 +723,7 @@
       "Registry",
       "Shape"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -915,6 +917,7 @@
     "exports": [
       "Nested"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1238,6 +1241,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1263,6 +1267,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1288,6 +1293,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1313,6 +1319,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1338,6 +1345,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1351,6 +1359,7 @@
     "exports": [
       "PerfIoInLoop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

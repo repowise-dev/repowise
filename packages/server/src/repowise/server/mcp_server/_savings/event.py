@@ -26,8 +26,9 @@ from .interaction import Interaction
 
 logger = logging.getLogger(__name__)
 
-#: The estimator every repowise savings figure is reported on: floor(chars / 4).
-_ESTIMATOR = "chars_per_token_floor_v1"
+#: Token scale floor(chars / 4), same as v1. v2 marks the revised counterfactual
+#: table (docs/architecture/savings-accounting.md, "MCP counterfactuals").
+_ESTIMATOR = "chars_per_token_floor_v2"
 _TOKEN_UNIT = "estimated_tokens"
 
 
@@ -59,11 +60,17 @@ def _outcome(result: Any) -> tuple[str, bool]:
         return "success", True
     if result.get("error"):
         return "error", False
-    meta = result.get("_meta")
-    state = meta.get("state") if isinstance(meta, dict) else None
-    if isinstance(state, dict) and (state.get("partial") or state.get("truncated")):
+    meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else {}
+    state = meta.get("state") if isinstance(meta.get("state"), dict) else {}
+    # The lean wire shape has no ``state`` roll-up, so read what it rolls up too.
+    flags = {**result, **meta, **state}
+    if any(value and _marks_partial(key) for key, value in flags.items()):
         return "partial", True
     return "success", True
+
+
+def _marks_partial(key: str) -> bool:
+    return key in ("omitted", "partial") or key.endswith("_partial") or "truncated" in key
 
 
 def raw_response_tokens(result: Any) -> int | None:

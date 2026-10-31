@@ -189,3 +189,36 @@ def test_a_bad_repository_argument_does_not_raise(repo: Path) -> None:
     """ "Never raises" has to hold for the argument too, not just the write."""
     assert recorder.record_event(object(), _event()) is False  # type: ignore[arg-type]
     assert recorder.record_opportunity(object(), {}) is False  # type: ignore[arg-type]
+
+
+def test_relocating_the_ledger_refiles_every_row_under_the_new_root(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    OmissionStore(recorder.sidecar_path(old)).close()
+    assert recorder.record_event(old, _event(1)) is True
+    assert recorder.record_opportunity(
+        old,
+        {
+            "observation_id": "obs_1",
+            "occurred_at": "2026-09-18T00:00:01Z",
+            "integration": "unknown",
+            "kind": "hook_surface_disabled:read",
+            "estimated_potential_input_tokens": 10,
+        },
+    )
+    new = tmp_path / "new"
+    old.rename(new)
+
+    assert recorder.relocate_ledger(new) == 2
+    with OmissionStore(recorder.sidecar_path(new)) as store:
+        ids = {
+            row[0]
+            for table in ("savings_events", "savings_opportunities")
+            for row in store._conn.execute(f"SELECT repository_id FROM {table}")
+        }
+    assert ids == {str(new)}
+    assert recorder.relocate_ledger(new) == 0
+
+
+def test_relocating_without_a_ledger_creates_none(tmp_path: Path) -> None:
+    assert recorder.relocate_ledger(tmp_path) == 0
+    assert not recorder.sidecar_path(tmp_path).exists()

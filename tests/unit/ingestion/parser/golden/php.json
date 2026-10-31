@@ -100,6 +100,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -113,6 +114,7 @@
     "exports": [
       "AssertionsTest"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -729,6 +731,7 @@
       "WorkerInterface",
       "Priority"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -825,6 +828,7 @@
       "greet",
       "sum"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1048,6 +1052,7 @@
       "try_catch_finally",
       "loops_galore"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

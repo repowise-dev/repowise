@@ -99,6 +99,15 @@ def tracked_paths(repo_path: str) -> frozenset[str]:
     return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
 
 
+def deleted_paths(repo_path: str) -> frozenset[str] | None:
+    """Tracked paths missing from the working tree, or ``None`` when git cannot answer."""
+    try:
+        listing = _git(["ls-files", "--deleted", "-z"], cwd=repo_path)
+    except _GIT_FAILURES:
+        return None
+    return frozenset(p for p in listing.split("\0") if p)
+
+
 def tracked_paths_at(repo_path: str, rev: str) -> frozenset[str]:
     """Every path git tracked at *rev*, repo-relative POSIX, or empty when git cannot answer."""
     listing = _read(repo_path, ["ls-tree", "-r", "-z", "--name-only", f"{rev}^{{tree}}"])

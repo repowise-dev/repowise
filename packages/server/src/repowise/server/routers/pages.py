@@ -7,6 +7,8 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
@@ -18,6 +20,7 @@ from repowise.core.generation.page_redirects import (
     resolve_superseded,
 )
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.tombstoned_pages import retired_page_successor
 from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, scoped_repo_id, verify_api_key
 from repowise.server.schemas import (
@@ -82,7 +85,12 @@ async def _get_page_or_successor(session: AsyncSession, page_id: str, response: 
     """
     page = await crud.get_page(session, page_id)
     if page is not None:
-        return page
+        successor = await retired_page_successor(session, page)
+        if successor is None:
+            return page
+        logger.info("page_redirect_served", page_id=page_id, successor_id=successor.id)
+        response.headers[REDIRECTED_FROM_HEADER] = page_id
+        return successor
 
     try:
         successor_id = resolve_superseded(page_id)
@@ -151,9 +159,7 @@ async def list_pages(
             status_code=400,
             detail=f"Unknown fields '{fields}'. Valid: full, summary.",
         )
-    pages = await crud.list_pages(
-        session,
-        repo_id,
+    listing = crud.PageListing(
         page_type=page_type,
         has_prose=has_prose,
         limit=limit,
@@ -164,7 +170,9 @@ async def list_pages(
     # response_model is off on this route: the two shapes are serialized by the
     # models themselves, so FastAPI can't coerce a summary back into a full row.
     if fields == "summary":
-        return [PageSummaryResponse.from_orm(p) for p in pages]
+        rows = await crud.list_page_summaries(session, repo_id, listing)
+        return [PageSummaryResponse.from_row(r) for r in rows]
+    pages = await crud.list_pages(session, repo_id, **vars(listing))
     return [PageResponse.from_orm(p) for p in pages]
 
 
@@ -195,6 +203,8 @@ async def get_page_by_query(
     carries ``X-Repowise-Redirected-From``.
     """
     page = await _get_page_or_successor(session, page_id, response)
+    if page is None:
+        await _raise_retired_miss(session, page_id, repo_id)
     if page is None or _outside_scope(request, page.repository_id):
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)
@@ -203,6 +213,26 @@ async def get_page_by_query(
 def _outside_scope(request: Request, repository_id: str) -> bool:
     scoped = scoped_repo_id(request)
     return scoped is not None and repository_id != scoped
+
+
+async def _raise_retired_miss(session: AsyncSession, page_id: str, repo_id: str | None) -> None:
+    """An exact repository-bound old link names its archive instead of a mute 404."""
+    if repo_id is None:
+        return
+    archived = await crud.get_retired_page(session, repo_id, page_id)
+    if archived is None:
+        return
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "status": "retired",
+            "page_id": page_id,
+            "reason": archived.reason,
+            "superseded_by": archived.superseded_by,
+            "archive_id": archived.id,
+            "archive_url": f"/api/repos/{repo_id}/pages/retired/{quote(page_id, safe='')}?archive_id={archived.id}",
+        },
+    )
 
 
 @router.get("/lookup/versions", response_model=list[PageVersionResponse])
@@ -314,6 +344,7 @@ async def regenerate_page_by_query(
 async def get_page(
     page_id: str,
     response: Response,
+    repo_id: str | None = Query(None, description="Repository owning a retired page identity"),
     session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Get a single wiki page by ID in path (e.g. ``file_page:src/main.py``).
@@ -325,5 +356,6 @@ async def get_page(
     """
     page = await _get_page_or_successor(session, page_id, response)
     if page is None:
+        await _raise_retired_miss(session, page_id, repo_id)
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)

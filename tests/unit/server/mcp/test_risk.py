@@ -780,6 +780,7 @@ def test_health_filename_heuristic_supports_suffix_test_conventions(source, test
 async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
     """Health and risk agree that suffixed test names are not exact pairs."""
     from repowise.core.analysis.health.engine import _has_paired_test_file
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
     from repowise.core.persistence.models import GraphNode
     from repowise.server.mcp_server.tool_risk.assessment import _check_test_gap
 
@@ -809,6 +810,8 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
         )
     )
     await session.flush()
+    # The test-file set is kept per index state; a node added outside an index run is not one.
+    clear_test_map_cache()
     assert await _check_test_gap(session, repo_id, "src/my_module.py") is False
 
 

@@ -675,7 +675,10 @@ async def test_canonical_emitter_reference_inventory(
                     )
                     assert resolved["resolved"] is True
                     if ref.entity_family == "evidence":
-                        assert ref.expected_object in resolved["evidence_refs"]
+                        assert any(
+                            _served_form_of(ref.expected_object, full)
+                            for full in resolved["evidence_refs"]
+                        )
                     else:
                         decision = next(
                             row for row in resolved["decisions"] if row["id"] == ref.value
@@ -838,7 +841,8 @@ async def test_decision_and_evidence_ids_round_trip_through_get_why(
 
     evidence_result = await get_why(reference=evidence)
     assert evidence_result["resolved"] is True
-    assert evidence_result["evidence_refs"] == [evidence]
+    [full] = evidence_result["evidence_refs"]
+    assert _served_form_of(evidence, full)
 
     archaeology = await get_why("src/legacy/old_auth.py")
     rationale = archaeology["code_rationale"][0]
@@ -849,7 +853,16 @@ async def test_decision_and_evidence_ids_round_trip_through_get_why(
         _why_evidence._reference_cache.clear()
     rationale_result = await get_why(reference=rationale_ref)
     assert rationale_result["resolved"] is True
-    assert rationale_result["evidence_refs"] == [rationale_ref]
+    [full] = rationale_result["evidence_refs"]
+    assert _served_form_of(rationale_ref, full)
+
+
+def _served_form_of(served: dict[str, Any], full: dict[str, Any]) -> bool:
+    """Whether *served* is the lean form get_why emits of the resolved *full* ref."""
+    return all(
+        full.get(k) == v or (k == "commit" and str(full.get(k, "")).startswith(v))
+        for k, v in served.items()
+    )
 
 
 @pytest.mark.asyncio

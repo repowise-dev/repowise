@@ -18,13 +18,16 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.core.support_paths import is_doc_or_config_path
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server._line_hits import production_lines
+from repowise.server.mcp_server._helpers import read_repo_file_text
+from repowise.server.mcp_server._line_hits import production_only, word_scan
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
     _identifier_shaped,
     _looks_like_code_name,
+    _unmistakably_code,
 )
 from repowise.server.mcp_server._query_terms import split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
@@ -208,6 +211,31 @@ def _question_spells(name: str, question_stems: set[str], question_parts: set[st
     return all(p in question_parts for p in _name_parts(name) if len(p) < 3)
 
 
+def def_verifier(session_factory: Any, repo_root: Path | None) -> Callable[[Any], Awaitable[dict]]:
+    """A def's dict with bounds checked against the live file, ``_approx`` when not.
+
+    Anchored and union bodies are served at high trust, so a drifted row would
+    ground them in the wrong lines. One live read per file, cached.
+    """
+    text_cache: dict[str, str | None] = {}
+
+    async def verified(row) -> dict:
+        d = _symbol_def_dict(row)
+        if row.file_path not in text_cache:
+            text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
+        text = text_cache[row.file_path]
+        if text is None:
+            d["_approx"] = True
+            return d
+        check = await verify_and_heal(session_factory, row, text)
+        d["start_line"], d["end_line"] = check.start_line, check.end_line
+        if not check.verified:
+            d["_approx"] = True
+        return d
+
+    return verified
+
+
 def _symbol_def_dict(sym) -> dict:
     """Plain-dict view of a WikiSymbol def (decouples answer.py from the ORM)."""
     return {
@@ -229,6 +257,7 @@ async def _anchor_symbol_hits(
     repo_root: Path | None = None,
     session_factory: Any = None,
     question: str = "",
+    scope: str | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
@@ -248,7 +277,10 @@ async def _anchor_symbol_hits(
 
     Returns ``(hits, homonyms)``; ``hits`` is re-sorted by score (mutated in
     place). ``homonyms = {"union": {name: [def_dict, ...]}, "qualified_miss":
-    [name, ...]}``.
+    [name, ...], "unindexed": [name, ...], "absent": [name, ...], "split":
+    {name: [path, ...]}}``: the question names no symbol carries, those of them
+    no code writes either, and the names production code defines in more than
+    one file.
     """
     homonyms: dict[str, Any] = {"union": {}, "qualified_miss": []}
     if not question_ids:
@@ -262,7 +294,9 @@ async def _anchor_symbol_hits(
     )
     by_name: dict[str, list] = {}
     indexed_names: set[str] = set()
-    for row in res.scalars().all():
+    rows = list(res.scalars().all())
+    homonyms["split"] = _split_definitions(rows)
+    for row in rows:
         indexed_names.add(row.name)
         # A pathless row names nothing the reply can point at: drop it from
         # every route below.
@@ -271,31 +305,17 @@ async def _anchor_symbol_hits(
         by_name.setdefault(row.name, []).append(row)
     by_name = {name: _without_constructors(cands) for name, cands in by_name.items()}
 
-    # Verify bounds before slicing: union and anchored bodies are served at
-    # high trust, so a drifted row would ground them in the wrong lines.
-    # One live read per file, cached.
-    _text_cache: dict[str, str | None] = {}
-
-    async def _verified_dict(row) -> dict:
-        d = _symbol_def_dict(row)
-        if row.file_path not in _text_cache:
-            _text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
-        text = _text_cache[row.file_path]
-        if text is None:
-            d["_approx"] = True
-            return d
-        check = await verify_and_heal(session_factory, row, text)
-        d["start_line"], d["end_line"] = check.start_line, check.end_line
-        if not check.verified:
-            d["_approx"] = True
-        return d
+    _verified_dict = def_verifier(session_factory, repo_root)
 
     literal: dict[str, list] = {}
     prose = bool(question) and not is_symbol_lookup_question(question, question_ids)
-    if prose and repo_root is not None:
+    homonyms["unindexed"] = sorted(question_ids - indexed_names)
+    if repo_root is not None:
         guard = _TopicGuard(repo_root, hits, question, qids_lower)
-        by_name = await _trusted_over_topic(by_name, question_ids, guard)
-        literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
+        if prose:
+            by_name = await _trusted_over_topic(by_name, question_ids, guard)
+            literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
+        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard, scope)
 
     chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
     if not chosen and not literal:
@@ -305,6 +325,27 @@ async def _anchor_symbol_hits(
         await _anchor_chosen_symbols(hits, rows, _verified_dict, named_by=token)
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits, homonyms
+
+
+# A name defined in more files than this is generic (``get``, ``run``): no answer
+# could name every definition, so the split check leaves it alone.
+_SPLIT_MAX_FILES = 4
+
+
+def _split_definitions(rows: list) -> dict[str, list[str]]:
+    """Names defined in two to ``_SPLIT_MAX_FILES`` production files, with those files.
+
+    Any kind counts: a constant defined twice is as ambiguous as a function.
+    Test and doc copies do not, and overloads in one file are one place.
+    """
+    files: dict[str, set[str]] = {}
+    for row in rows:
+        path = row.file_path
+        if path and not is_test_related_path(path, getattr(row, "language", None)):
+            files.setdefault(row.name, set()).add(path)
+    return {
+        name: sorted(paths) for name, paths in files.items() if 1 < len(paths) <= _SPLIT_MAX_FILES
+    }
 
 
 class _TopicGuard:
@@ -327,13 +368,28 @@ class _TopicGuard:
         named = set().union(*(_text_stems(q) for q in qids_lower))
         self.topic_stems = _text_stems(question) - named
         self.about_tests = _is_test_query(question)
-        self._lines: dict[str, list[dict]] = {}
+        self._scans: dict[str, tuple[list[dict], bool]] = {}
+
+    async def _scan(self, token: str) -> tuple[list[dict], bool]:
+        """Every line writing *token*, scanned at most once per question."""
+        if token not in self._scans:
+            self._scans[token] = await asyncio.to_thread(word_scan, self.root, token)
+        return self._scans[token]
 
     async def lines(self, token: str) -> list[dict]:
-        """Production lines writing *token*, scanned at most once per question."""
-        if token not in self._lines:
-            self._lines[token] = await asyncio.to_thread(production_lines, self.root, token)
-        return self._lines[token]
+        """Production lines writing *token*."""
+        rows, _complete = await self._scan(token)
+        return production_only(rows)
+
+    async def written(self, token: str, scope: str | None = None) -> bool | None:
+        """Whether any file (under *scope*, if given) writes *token* as code;
+        None when the scan stopped short. See :func:`_writes_as_code`."""
+        rows, complete = await self._scan(token)
+        if scope:
+            rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
+        if rows and await asyncio.to_thread(_writes_as_code, self.root, rows, token):
+            return True
+        return False if complete else None
 
     async def trusts(self, token: str, row) -> bool:
         # A plain capitalised word (``Gson``, ``Client``) is also prose, often the
@@ -351,19 +407,113 @@ class _TopicGuard:
         return bool(self.topic_stems & _text_stems(owner))
 
 
+# A source line that is all comment, or opens a docstring. A bare ``*`` is left
+# out (``*ptr = x``; block comment bodies are masked), and ``#`` counts only
+# where it starts a comment: it is code in ``#define``, ``#[derive]``, ``#field``.
+_COMMENT_OR_DOC_START_RE = re.compile(r"""(?://|/\*|[rRbBuUfF]{0,2}(?:\"\"\"|'''))""")
+_HASH_COMMENT_SUFFIXES = frozenset({".py", ".pyi", ".rb", ".sh", ".bash", ".pl", ".r", ".ex", ".exs"})
+# A quoted string on one line, for test lines (see _writes_as_code). Single
+# quotes only where they delimit strings: elsewhere they are chars or lifetimes.
+_DOUBLE_QUOTED_RE = re.compile(r""""(?:\\.|[^"\\])*"|`[^`]*`""")
+_SINGLE_QUOTED_RE = re.compile(r"""'(?:\\.|[^'\\])*'""")
+_SINGLE_QUOTE_STRING_SUFFIXES = _HASH_COMMENT_SUFFIXES | {
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".php"
+}
+
+
+def _writes_as_code(root: Path | None, rows: list[dict], token: str) -> bool:
+    """Does any scanned row's file write *token* as code, not in a comment or docstring?
+
+    A test line counts only when the name sits outside its strings: a question
+    or fixture text naming the name is not code that has it. Doc and config
+    files count as before, and so does a file that cannot be read, since it
+    proves nothing. Ceilings: a trailing comment after code still counts, and
+    a multi-line non-doc string (SQL in triple quotes) reads as a docstring.
+    """
+    word = re.compile(rf"(?<![\w$]){re.escape(token)}(?![\w$])")
+    paths = dict.fromkeys(r["path"] for r in rows)
+    return any(_file_writes_as_code(root, path, word) for path in paths)
+
+
+def _file_writes_as_code(root: Path | None, path: str, word: re.Pattern) -> bool:
+    """:func:`_writes_as_code` for one file, over every line of it: the scan
+    cuts a file at a per-file line cap, and a write may sit past the cut."""
+    text = None if is_doc_or_config_path(path) else read_repo_file_text(root, path)
+    if text is None:
+        return True
+    lines = text.splitlines()
+    masked = _string_masked_lines(tuple(lines), backticks=False).all
+    suffix = Path(path).suffix.lower()
+    hash_comments = suffix in _HASH_COMMENT_SUFFIXES
+    test = is_test_related_path(path)
+    for n, line in enumerate(lines, 1):
+        if n in masked or not word.search(line) or _is_comment_line(line.lstrip(), hash_comments):
+            continue
+        if not test or word.search(_unquoted(line, suffix)):
+            return True
+    return False
+
+
+def _is_comment_line(stripped: str, hash_comments: bool) -> bool:
+    if _COMMENT_OR_DOC_START_RE.match(stripped):
+        return True
+    return hash_comments and stripped.startswith("#")
+
+
+def _unquoted(line: str, suffix: str) -> str:
+    """*line* with its one-line strings blanked."""
+    line = _DOUBLE_QUOTED_RE.sub(" ", line)
+    if suffix in _SINGLE_QUOTE_STRING_SUFFIXES:
+        line = _SINGLE_QUOTED_RE.sub(" ", line)
+    return line
+
+
+async def _absent_names(
+    unindexed: list[str], guard: _TopicGuard, scope: str | None = None
+) -> list[str]:
+    """The unindexed names :func:`_names_nothing_in_code` holds absent.
+
+    Best effort: a failed scan proves nothing, and must not cost the anchoring.
+    """
+    try:
+        candidates = [t for t in unindexed if "." not in t and _unmistakably_code(t)]
+        return [
+            t
+            for t in candidates[:_LITERAL_SCAN_MAX_TOKENS]
+            if await _names_nothing_in_code(t, guard, scope)
+        ]
+    except Exception:
+        return []
+
+
+async def _names_nothing_in_code(token: str, guard: _TopicGuard, scope: str | None = None) -> bool:
+    """An unindexed, code-shaped name that no file writes, by a scan that read them all.
+
+    Mixed case, an underscore or a digit (``FileTree``, ``retry_policy``); an
+    all-caps acronym (``SSG``) is prose often enough to be left alone. With a
+    *scope*, only files under it count: the question asks about that code.
+    """
+    if "." in token or not _unmistakably_code(token):
+        return False
+    return await guard.written(token, scope) is False
+
+
 async def _trusted_over_topic(
     by_name: dict[str, list], question_ids: set[str], guard: _TopicGuard
 ) -> dict[str, list]:
     """*by_name* without the defs an exact name may not anchor (see :class:`_TopicGuard`).
 
-    A def whose parent the question names is the one it means, so it stays.
+    A def whose parent the question names is the one it means, so it stays, and
+    so does a name the question writes as the owner of a member (``Client.get``).
     """
     kept: dict[str, list] = {}
     for name, cands in by_name.items():
+        # Only a sole definition: with several, the owner alone does not say which.
+        owner = len(cands) == 1 and any(q.startswith(f"{name}.") for q in question_ids)
         trusted = [
             c
             for c in cands
-            if _question_names_parent(c, question_ids) or await guard.trusts(name, c)
+            if owner or _question_names_parent(c, question_ids) or await guard.trusts(name, c)
         ]
         if trusted:
             kept[name] = trusted
@@ -593,23 +743,29 @@ def drop_ruled_out_files(hits: list[dict], question: str) -> list[dict]:
 _NAMED_FILE_SLOT = 3
 
 
-def place_named_files(hits: list[dict], paths: list[str]) -> list[dict]:
+def place_named_files(
+    hits: list[dict], paths: list[str], found: dict[str, dict] | None = None
+) -> list[dict]:
     """``hits`` with each of ``paths`` outside the top three moved (or, when no
-    hit carries it, inserted as its file page) to just below them, in order,
-    scored level with the hit above."""
+    hit carries it, inserted as its ``found`` hit or else its file page) to just
+    below them, in order, scored level with the hit above."""
     out = list(hits)
     slot = _NAMED_FILE_SLOT
     for path in paths:
         idx = next((i for i, h in enumerate(out) if h.get("target_path") == path), None)
         if idx is not None and idx < slot:
             continue
-        hit = out.pop(idx) if idx is not None else _file_page_hit(path, 0.0)
+        hit = out.pop(idx) if idx is not None else _new_hit(path, found)
         pos = min(slot, len(out))
         if pos:
             hit["score"] = out[pos - 1].get("score", 0.0)
         out.insert(pos, hit)
         slot = pos + 1
     return out
+
+
+def _new_hit(path: str, found: dict[str, dict] | None) -> dict:
+    return (found or {}).get(path) or _file_page_hit(path, 0.0)
 
 
 def _file_page_hit(path: str, score: float) -> dict:

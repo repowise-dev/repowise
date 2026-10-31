@@ -186,6 +186,22 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     return result
 
 
+# A record of ``git log -p --format=%x00%H`` opens with a NUL at the start of a
+# line, then a full commit id (sha1 or sha256). Patch text can hold a NUL too:
+# git calls a file binary only from a NUL in its first 8000 bytes. A patch line
+# always opens with its ``+``/``-``/space prefix, so a NUL there never starts one.
+_COMMIT_START = re.compile(r"(?<![^\n])\x00(?=[0-9a-f]{40}(?:[0-9a-f]{24})?(?:\n|$))")
+
+
+def split_commit_patches(raw: str) -> list[tuple[str, str]]:
+    """``(sha, patch)`` per commit of ``git log -p --format=%x00%H`` output."""
+    return [
+        (sha, patch)
+        for record in _COMMIT_START.split(raw)[1:]
+        for sha, _, patch in [record.partition("\n")]
+    ]
+
+
 def line_ranges(lines: Iterable[int]) -> tuple[tuple[int, int], ...]:
     """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
     spans: list[tuple[int, int]] = []

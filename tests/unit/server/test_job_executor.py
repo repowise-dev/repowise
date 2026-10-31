@@ -13,13 +13,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import text
 
+from repowise.core.ingestion import GraphBuilder
 from repowise.core.persistence.crud import (
     get_generation_job,
     update_job_status,
     upsert_generation_job,
     upsert_repository,
 )
+from repowise.core.pipeline.index_persistence import index_persistence
 from repowise.server.job_executor import (
     JobProgressCallback,
     _build_generation_config,
@@ -61,6 +64,50 @@ async def _seed_repo_and_job(
         )
         await session.commit()
         return job.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["apply", "publish"])
+async def test_execute_job_index_transaction(
+    session_factory, test_engine, tmp_path, monkeypatch, failure
+):
+    monkeypatch.setattr(index_persistence, "_impls", {})
+    async with test_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE plugin_records (name TEXT)"))
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    publish = AsyncMock(side_effect=RuntimeError("publish failed"))
+
+    async def apply(session, repo_id, write):
+        assert await session.scalar(text("SELECT COUNT(*) FROM git_metadata")) == 1
+        await session.execute(text("INSERT INTO plugin_records VALUES ('job')"))
+        if failure == "apply":
+            raise RuntimeError("apply failed")
+
+    index_persistence.register("test", SimpleNamespace(apply=apply, publish=publish))
+    result = _fake_result()
+    result.file_infos = []
+    result.graph_builder = GraphBuilder(tmp_path)
+    result.git_metadata_list = [{"file_path": "new.py"}]
+    result.dead_code_report = result.decision_report = result.execution_flow_report = None
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=result)),
+        patch("repowise.server.provider_config.get_chat_provider_instance", return_value=None),
+    ):
+        await execute_job(job_id, app_state)
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert await session.scalar(text("SELECT COUNT(*) FROM git_metadata")) == (
+            0 if failure == "apply" else 1
+        )
+        assert await session.scalar(text("SELECT COUNT(*) FROM plugin_records")) == (
+            0 if failure == "apply" else 1
+        )
+    if failure == "apply":
+        publish.assert_not_awaited()
+    else:
+        publish.assert_awaited_once_with(job.repository_id, tmp_path)
+    assert (job.status, job.error_message) == ("failed", f"{failure} failed")
 
 
 @pytest.mark.asyncio
@@ -445,6 +492,64 @@ async def test_incremental_page_regen_sets_file_pages_only(tmp_path):
     # PageGenerator(llm_client, assembler, generation_config, ...)
     generation_config = page_generator_cls.call_args.args[2]
     assert generation_config.file_pages_only is True
+
+
+@pytest.mark.asyncio
+async def test_incremental_page_regen_renders_a_new_cycle_page(tmp_path):
+    """A sync renders structure pages the file-scoped pass cannot reach.
+
+    The same ids ``repowise update`` renders: here a cycle the store has no
+    page for, rendered from the whole parse with the ladder scoped to its id.
+    """
+    from repowise.core.generation.models import compute_page_id, scc_page_slug
+
+    repo_path = tmp_path
+    (repo_path / ".repowise").mkdir()
+    (repo_path / ".repowise" / "state.json").write_text(
+        '{"last_sync_commit": "base-sha"}', encoding="utf-8"
+    )
+    cycle = frozenset({"src/a.py", "src/b.py"})
+    result = SimpleNamespace(
+        file_count=10,
+        parsed_files=[],
+        source_map={},
+        graph_builder=SimpleNamespace(
+            graph=lambda: object(),
+            pagerank=lambda: {},
+            strongly_connected_components=lambda: [cycle],
+        ),
+        repo_structure=object(),
+        repo_name="test-repo",
+        git_meta_map={},
+    )
+    detector = MagicMock()
+    detector.get_changed_files.return_value = [object()]
+    detector.get_affected_pages.return_value = SimpleNamespace(regenerate=["src/a.py"])
+    generator = MagicMock()
+    generator.generate_all = AsyncMock(return_value=[])
+    page_generator_cls = MagicMock(return_value=generator)
+
+    with (
+        patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="head-sha\n")),
+        patch("repowise.core.ingestion.ChangeDetector", return_value=detector),
+        patch(
+            "repowise.core.ingestion.change_detector.compute_adaptive_budget",
+            return_value=5,
+        ),
+        patch("repowise.core.generation.PageGenerator", page_generator_cls),
+        patch("repowise.core.generation.ContextAssembler"),
+        patch("repowise.core.reasoning.resolve_reasoning", return_value="low"),
+        patch("repowise.core.repo_config.load_repo_config", return_value={}),
+    ):
+        await _incremental_page_regen(
+            Path(repo_path), result, llm_client=object(), job_config={}, progress=None
+        )
+
+    cycle_id = compute_page_id("scc_page", scc_page_slug(sorted(cycle)))
+    file_pass, structure_pass = generator.generate_all.await_args_list
+    assert "only_page_ids" not in file_pass.kwargs
+    assert structure_pass.kwargs["only_page_ids"] == {cycle_id}
+    assert page_generator_cls.call_args_list[1].args[2].file_pages_only is False
 
 
 # ---------------------------------------------------------------------------
@@ -1000,3 +1105,32 @@ async def test_sync_job_without_a_health_report_keeps_the_stored_stamp(session_f
 
     state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["health_analyzer_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_structure_lookup_degrades_only_on_a_store_failure(session_factory):
+    """An unreachable store means nothing to heal this sync; a bug still raises."""
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.server.job_incremental import _stale_structure_ids
+
+    with patch(
+        "repowise.core.persistence.get_stale_update_targets",
+        AsyncMock(side_effect=OperationalError("select", {}, Exception("locked"))),
+    ):
+        assert await _stale_structure_ids(session_factory, "repo-id") == set()
+
+    with (
+        patch(
+            "repowise.core.persistence.get_stale_update_targets",
+            AsyncMock(side_effect=KeyError("bug")),
+        ),
+        pytest.raises(KeyError),
+    ):
+        await _stale_structure_ids(session_factory, "repo-id")
+
+    with patch(
+        "repowise.core.persistence.get_stale_update_targets",
+        AsyncMock(return_value=([], {"scc_page:scc-1"})),
+    ):
+        assert await _stale_structure_ids(session_factory, "repo-id") == {"scc_page:scc-1"}

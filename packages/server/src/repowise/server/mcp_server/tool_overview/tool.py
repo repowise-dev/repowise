@@ -27,7 +27,7 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
     resolve_enum_argument,
 )
-from repowise.server.mcp_server._meta import MCP_CONTRACT_VERSION
+from repowise.server.mcp_server._meta import MCP_CONTRACT_VERSION, prose_upgrade_meta, served_root
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import (
     build_meta_with_full_scope as _build_meta_with_full_scope,
@@ -167,6 +167,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 "contract_version": MCP_CONTRACT_VERSION,
                 **_build_meta(repository=repository),
             }
+        # The orientation call is where a no-prose index says how to upgrade.
+        result["_meta"].update(prose_upgrade_meta(served_root(repository, ctx.path)))
         collector.attach(result)
         attach_ignored_arguments(result, ignored)
         return result
@@ -244,6 +246,10 @@ async def _repo_overview(
         "reading_order_hint": _READING_ORDER_HINT if requested["reading_order"] else None,
     }
     result.update((key, block) for key, block in optional.items() if block)
+    # A block with nothing in it is not sent; its absence says the same.
+    for key in ("code_health", "key_modules", "entry_points", "git_health"):
+        if not result[key]:
+            del result[key]
 
     # The guided tour is persisted on the overview page's metadata at generation.
     if overview_page:

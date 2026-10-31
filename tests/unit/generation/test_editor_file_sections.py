@@ -225,3 +225,10 @@ def test_the_short_confirm_command_supplies_evidence(gen):
     # refused with "no evidence reference"; the copied command must carry it.
     lean = gen.render(_full_data())
     assert "`repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`" in lean
+
+
+def test_the_record_command_carries_its_commit(gen):
+    # An agent's own record is accepted only with an evidence reference, so the
+    # copied add command names the commit and the same agent can then accept it.
+    lean = gen.render(_full_data())
+    assert "--affects <path> --evidence-commit <sha>`" in lean

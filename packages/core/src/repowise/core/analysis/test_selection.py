@@ -458,6 +458,8 @@ def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
 
 
 NO_TESTS_NEEDED = "no-tests-needed"
+#: Why an untracked code file with no content needs no tests.
+EMPTY_NEW_FILE = "a new file with no content holds no code"
 PACKAGE_INIT_REASON = "every import of the package runs it, and those are not all tracked"
 
 
@@ -969,10 +971,20 @@ def _notes(
             "The per-test map was measured at another commit, so covering tests "
             "are matched by file, not by changed line."
         )
-    if skipped:
-        out.append(f"{len(skipped)} changed file(s) are documentation: no tests needed.")
+    out.extend(_skipped_notes(inp, skipped))
     # How each conftest on a route was decided (``conftest_routes``).
     out.extend(inp.tiers.get("conftest_notes") or ())
+    return out
+
+
+def _skipped_notes(inp: SelectionInput, skipped: list[str]) -> list[str]:
+    """Why the files needing no tests need none: documentation, or new and empty."""
+    empty = [p for p in skipped if p in inp.scopes and inp.scopes[p].why == EMPTY_NEW_FILE]
+    out = []
+    if docs := len(skipped) - len(empty):
+        out.append(f"{docs} changed file(s) are documentation: no tests needed.")
+    if empty:
+        out.append(f"{len(empty)} changed file(s) are new and empty: no tests needed.")
     return out
 
 

@@ -69,6 +69,9 @@ class CrossRepoPackageDep:
     requested_version: str | None = None
     scope: str = ""
     resolution_basis: str = ""
+    #: Provider files the source repo's imports reach (see :mod:`.package_reach`);
+    #: None when not computed, which reads as the whole package.
+    reached_files: list[str] | None = None
 
 
 @dataclass

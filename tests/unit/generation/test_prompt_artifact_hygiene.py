@@ -69,7 +69,7 @@ def test_corrective_retry_directive_avoids_banned_vocabulary() -> None:
     for rule in GENERATION_ARTIFACT_RULES:
         reason = (
             "provider returned text addressed to the prompter, not the reader — "
-            f"{rule.name}: {rule.explanation}"
+            f"{rule.retry_hint}"
         )
         hits = _offenders(CORRECTIVE_RETRY_DIRECTIVE.format(reason=reason))
         assert not hits, (

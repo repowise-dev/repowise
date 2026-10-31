@@ -158,7 +158,17 @@ def _tree_stamp(root: str) -> str | None:
     """What the checkout's dirty paths are and when each last changed; ``None`` when git fails."""
     try:
         out = subprocess.run(
-            ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+            # .repowise is excluded: the server writes there on every call.
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "-z",
+                "--untracked-files=all",
+                "--",
+                ":(top)",
+                ":(exclude).repowise",
+            ],
             cwd=root,
             capture_output=True,
             stdin=subprocess.DEVNULL,
@@ -169,6 +179,9 @@ def _tree_stamp(root: str) -> str | None:
         return None
     digest = hashlib.sha256(out)
     for entry in out.split(b"\0"):
+        # The trailing empty entry would stat the root, whose mtime moves on any write in it.
+        if not entry:
+            continue
         try:
             stat = (Path(root) / entry[3:].decode("utf-8", "replace")).stat()
         except (OSError, ValueError):

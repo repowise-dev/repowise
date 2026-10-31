@@ -521,10 +521,18 @@ def _scan_spring_autoconfig(
 #: ``metadata_builder_contributor`` in ``application.yml``, an H2 ``CREATE
 #: ALIAS ... FOR "pkg.Cls.method"`` in an init ``.sql``, a MyBatis
 #: ``typeHandler=`` in a mapper ``.xml``, a P6Spy ``logMessageFormat=`` in a
-#: ``.properties``. Main resources only: a class named by test resources alone
-#: is not live code.
-_RESOURCE_CLASS_FILES: tuple[str, ...] = tuple(
-    f"src/main/resources/*{suffix}" for suffix in (".xml", ".yml", ".yaml", ".properties", ".sql")
+#: ``.properties``, a ``<servlet-class>`` or ``<filter-class>`` in a WAR's
+#: ``WEB-INF/web.xml`` (the Maven ``src/main/webapp`` layout and the Ant
+#: ``WebContent`` and ``web`` ones). Main resources only: a class named by test
+#: resources alone is not live code.
+_RESOURCE_CLASS_FILES: tuple[str, ...] = (
+    *(
+        f"src/main/resources/*{suffix}"
+        for suffix in (".xml", ".yml", ".yaml", ".properties", ".sql")
+    ),
+    "src/main/webapp/WEB-INF/web.xml",
+    "WebContent/WEB-INF/web.xml",
+    "web/WEB-INF/web.xml",
 )
 #: A dotted name ending in a capitalised segment: ``com.acme.db.JsonTypeHandler``,
 #: also out of ``com.acme.db.JsonTypeHandler.parse``. Only a name that resolves

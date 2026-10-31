@@ -19,6 +19,7 @@ with a ``Dockerfile``), so two unknown files never pair by accident.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import PurePosixPath
 
 from ....ingestion.models import EXTENSION_TO_LANGUAGE
@@ -36,6 +37,8 @@ _FAMILY: dict[str, str] = {
 }
 
 
+# Pure in *path* (the extension table is fixed at import); bounded for servers.
+@lru_cache(maxsize=65536)
 def language_family(path: str) -> str:
     """The language family *path* belongs to, read off its extension."""
     name = PurePosixPath(path.replace("\\", "/")).name.lower()

@@ -61,6 +61,10 @@ repos and the primary repo (the default for MCP queries), and `m` adds a model.
 It then indexes each repo, runs the cross-repo analysis, and registers the MCP
 server with your editors.
 
+Run `repowise init` inside one repo whose folder holds other git repos and it
+indexes that repo alone, with a note naming `repowise init "<parent folder>"`
+for the workspace. `--no-workspace` hides the note.
+
 To skip the screen, `--repos api,web` indexes only those repos (by alias,
 directory name, or relative path). In a new workspace the first one listed is
 primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
@@ -616,6 +620,8 @@ Add these to your `.gitignore`:
 ```
 
 The workspace config and data are local: they can reference absolute paths and contain generated analysis that should be rebuilt per-machine.
+
+When the workspace folder is a git repo or sits inside one, `repowise init .` adds `.repowise-workspace.yaml` and `.repowise-workspace/` (anchored to the folder) to that repo's `.git/info/exclude`, so `git status` stays clean without a shared `.gitignore` change. A path your `.gitignore` already covers is left alone. To share conformance rules with CI, commit the config once with `git add -f .repowise-workspace.yaml`; git then tracks it despite the exclude line.
 
 ---
 

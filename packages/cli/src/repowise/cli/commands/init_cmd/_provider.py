@@ -14,7 +14,7 @@ from repowise.cli.ui import MODEL, OK, VALUE, WARN
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mascot import owl_status
 from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, model_name, written_by
-from repowise.core.index_scope import MODEL_COMMAND
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 
 from ._options import InitRun
 
@@ -92,7 +92,9 @@ def note_subscription_cli(run: InitRun) -> None:
     offered = {n: auth for n, auth in logged_in_agent_providers().items() if auth.offer}
     if not offered:
         return
-    note = subscription_note(tuple(offered), next(iter(offered.values())))
+    # An Index only run has no pages for generate to write yet.
+    command = FAST_TO_FULL_COMMAND if run.opts.run_mode == "fast" else MODEL_COMMAND
+    note = subscription_note(tuple(offered), command, next(iter(offered.values())))
     if note:
         console.print(f"  [dim]{note}[/dim]")
 

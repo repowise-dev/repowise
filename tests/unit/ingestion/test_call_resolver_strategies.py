@@ -1648,9 +1648,22 @@ class TestJavaUnnamedObjectCall:
     ) -> None:
         assert self._targets(tmp_path, f"{receiver}.m(1);") == []
 
-    def test_a_repo_wide_unique_name_still_binds(self, tmp_path: Path) -> None:
-        other = "package p;\npublic class Other {\n    public void only() {}\n}\n"
-        assert self._targets(tmp_path, "a.b.only();", other) == ["p/Other.java::Other::only"]
+    @pytest.mark.parametrize("name", ["only", "get", "isBlank"])
+    def test_a_repo_wide_unique_name_still_binds(self, tmp_path: Path, name: str) -> None:
+        other = f"package p;\npublic class Other {{\n    public void {name}() {{}}\n}}\n"
+        assert self._targets(tmp_path, f"a.b.{name}();", other) == [f"p/Other.java::Other::{name}"]
+
+    @pytest.mark.parametrize("body", ["a.b.contains(x);", "Map.class.isAssignableFrom(x);"])
+    def test_a_unique_repo_method_named_like_a_jdk_one_does_not_bind(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """``a.b.contains(x)`` is a collection's ``contains`` far more often than the repo's one."""
+        name = body.split(".")[-1].split("(")[0]
+        other = (
+            f"package p;\npublic class Other {{\n"
+            f"    public boolean {name}(Object o) {{ return true; }}\n}}\n"
+        )
+        assert self._targets(tmp_path, body, other) == []
 
     @pytest.mark.parametrize("body", ["m(1); a.b.m(2);", "a.b.m(2); m(1);"], ids=["bare-first", "bare-last"])
     def test_a_bare_call_beside_it_keeps_every_tier(self, tmp_path: Path, body: str) -> None:
@@ -2281,7 +2294,7 @@ class TestModuleAliasReachesTopLevelOnly:
                 ),
             },
         )
-        _link_imports(parsed, {"Caller.cs": {"S": "Shapes.cs"}})
+        _link_imports(parsed, {"Caller.cs": {"N.Shape": "Shapes.cs"}})
         import_targets = {"Caller.cs": {"Shapes.cs"}, "Shapes.cs": set()}
         assert (
             "Caller.cs::Caller::Run",
@@ -2995,3 +3008,198 @@ class TestJsBareCallSkipsClassMembers:
             0.95,
             "self_scope",
         ) in _edges(parsed, tmp_path)
+
+
+class TestJavaStaticImport:
+    def test_a_static_import_binds_the_member_of_the_named_type(self, tmp_path: Path) -> None:
+        """``import static a.Ex.afterCommit`` means ``Ex.afterCommit``, not a nested type's one."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static void afterCommit(Runnable r) { r.run(); }\n"
+                    "  private static class Sync {\n"
+                    "    private void afterCommit(Runnable r) { }\n  }\n}\n",
+                ),
+                "b/User.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.afterCommit;\npublic class User {\n"
+                    "  void go(Runnable r) { afterCommit(r); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/User.java": {"a.Ex.afterCommit": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/User.java": {"a/Ex.java"}})
+            if src == "b/User.java::User::go"
+        }
+        assert callees == {"a/Ex.java::Ex::afterCommit"}
+
+    def test_a_static_import_of_a_nested_type_member_binds_that_type(self, tmp_path: Path) -> None:
+        """``import static a.Ex.Sync.flush`` names the nested type's member, not the outer one's."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Sync {\n"
+                    "    public static void flush() { }\n  }\n"
+                    "  public static void flush() { }\n}\n",
+                ),
+                "b/User.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.Sync.flush;\npublic class User {\n"
+                    "  void go() { flush(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/User.java": {"a.Ex.Sync.flush": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/User.java": {"a/Ex.java"}})
+            if src == "b/User.java::User::go"
+        }
+        assert callees == {"a/Ex.java::Sync::flush"}
+
+
+class TestPythonLocalShadowsModuleClass:
+    """A Python local of a module-level class's name hides that class.
+
+    Regression test for #4843: the binding scan only recorded lowercase
+    names, so `C = make()` inside a function never shadowed `class C`.
+    """
+
+    _EDGE = ("m.py::f", "m.py::C", 0.95, "same_file")
+
+    def _edges_for(self, tmp_path: Path, body: str) -> list[tuple[str, str, float, str]]:
+        parsed = _parse_all(
+            tmp_path,
+            {"m.py": ("python", "class C:\n    pass\n\n" + body)},
+        )
+        return _edges(parsed, tmp_path)
+
+    def test_plain_assignment_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(
+            tmp_path, "def f():\n    C = make()\n    C()\n"
+        )
+
+    def test_for_target_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(
+            tmp_path, "def f():\n    for C in xs:\n        C()\n"
+        )
+
+    def test_with_as_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(
+            tmp_path, "def f():\n    with open('x') as C:\n        C()\n"
+        )
+
+    def test_parameter_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(tmp_path, "def f(C):\n    C()\n")
+
+    def test_binding_in_another_function_does_not_shadow(
+        self, tmp_path: Path
+    ) -> None:
+        assert self._EDGE in self._edges_for(
+            tmp_path, "def g():\n    C = make()\n\ndef f():\n    C()\n"
+        )
+
+    def test_no_local_binding_keeps_the_edge(self, tmp_path: Path) -> None:
+        assert self._EDGE in self._edges_for(tmp_path, "def f():\n    C()\n")
+
+
+_PY_GO_RS = [
+    (
+        "python",
+        "py",
+        "def walk(n):\n    return 0\n\n\nclass C:\n    def walk(self, n):\n        return walk(n)\n",
+        "C::walk",
+        "walk",
+    ),
+    (
+        "go",
+        "go",
+        "package m\n\nfunc walk(n int) int { return 0 }\n\ntype S struct{}\n\n"
+        "func (s *S) walk(n int) int { return walk(n) }\n",
+        "S::walk",
+        "walk",
+    ),
+    (
+        "rust",
+        "rs",
+        "fn walk(n: i32) -> i32 { 0 }\n\nstruct T;\n\n"
+        "impl T {\n    fn walk(&self, n: i32) -> i32 { walk(n) }\n}\n",
+        "T::walk",
+        "walk",
+    ),
+]
+
+
+class TestBareCallSkipsMembersPyGoRs:
+    """A Python/Go/Rust bare ``foo()`` never names a class method either.
+
+    Python needs ``self.``, Go needs a receiver, Rust needs ``Self::`` or
+    ``self.``, so like JS/TS these languages consult the top-level table in
+    Tier 1 instead of the flat last-wins table, where a same-named method
+    declared after the top-level function would shadow it (or, as here,
+    swallow the call into the caller itself).
+    """
+
+    @pytest.mark.parametrize(("lang", "ext", "content", "caller", "callee"), _PY_GO_RS)
+    def test_a_bare_call_in_a_method_reaches_the_top_level_function(
+        self, tmp_path: Path, lang: str, ext: str, content: str, caller: str, callee: str
+    ) -> None:
+        file = f"m.{ext}"
+        parsed = _parse_all(tmp_path, {file: (lang, content)})
+        assert (f"{file}::{caller}", f"{file}::{callee}", 0.95, "same_file") in _edges(
+            parsed, tmp_path
+        )
+
+    def test_a_self_call_still_reaches_the_method(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "m.py": (
+                    "python",
+                    "class C:\n"
+                    "    def walk(self, n):\n"
+                    "        return 1\n"
+                    "    def run(self, n):\n"
+                    "        return self.walk(n)\n",
+                ),
+            },
+        )
+        assert ("m.py::C::run", "m.py::C::walk", 0.95, "self_scope") in _edges(
+            parsed, tmp_path
+        )
+
+    @pytest.mark.parametrize(("lang", "ext"), [("python", "py"), ("go", "go"), ("rust", "rs")])
+    def test_a_method_calling_a_different_name_is_unchanged(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        bodies = {
+            "python": (
+                "def other(n):\n    return 0\n\n\nclass C:\n"
+                "    def walk(self, n):\n        return other(n)\n",
+                "m.py::C::walk",
+                "m.py::other",
+            ),
+            "go": (
+                "package m\n\nfunc other(n int) int { return 0 }\n\ntype S struct{}\n\n"
+                "func (s *S) walk(n int) int { return other(n) }\n",
+                "m.go::S::walk",
+                "m.go::other",
+            ),
+            "rust": (
+                "fn other(n: i32) -> i32 { 0 }\n\nstruct T;\n\n"
+                "impl T {\n    fn walk(&self, n: i32) -> i32 { other(n) }\n}\n",
+                "m.rs::T::walk",
+                "m.rs::other",
+            ),
+        }
+        content, caller, callee = bodies[lang]
+        parsed = _parse_all(tmp_path, {f"m.{ext}": (lang, content)})
+        assert (caller, callee, 0.95, "same_file") in _edges(parsed, tmp_path)

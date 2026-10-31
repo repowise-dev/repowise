@@ -34,6 +34,7 @@ from .git import *  # noqa: F403
 from .graph import *  # noqa: F403
 from .history import *  # noqa: F403
 from .knowledge_graph import *  # noqa: F403
+from .page_archive import *  # noqa: F403
 from .pages import *  # noqa: F403
 from .repository import *  # noqa: F403
 

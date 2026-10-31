@@ -158,6 +158,7 @@
       "test_split_runs",
       "do_work"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -534,6 +535,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -606,6 +608,7 @@
     "exports": [
       "many_branches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -709,6 +712,7 @@
       "six_ops",
       "two_ops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -788,6 +792,7 @@
       "python_match",
       "python_if_elif"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -867,6 +872,7 @@
       "deeply_nested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1211,6 +1217,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1236,6 +1243,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1261,6 +1269,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1286,6 +1295,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1311,6 +1321,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1336,6 +1347,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1361,6 +1373,7 @@
       "sink_outside_loop",
       "open_in_loop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1908,6 +1921,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1933,6 +1947,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1958,6 +1973,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1974,6 +1990,7 @@
       "parse",
       "parse"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

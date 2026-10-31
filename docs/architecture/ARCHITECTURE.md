@@ -303,7 +303,7 @@ The graph is used for:
 - **Change propagation**: when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
 - **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
-  the most central files; these get "spotlight" wiki pages and richer generation prompts
+  the most central files, which get richer generation prompts
 - **SCC detection**: circular dependency clusters require a special generation
   strategy (see [Section 5.3](#53-dependency-graph-construction))
 - **Co-change edges**: temporal coupling from git history. Files that frequently
@@ -556,7 +556,8 @@ scores.
 After graph construction, the builder computes:
 
 - **PageRank**: nodes with high PageRank are central and well-connected.
-  Used to decide generation priority and which symbols get spotlight pages.
+  Used to decide generation priority. Spotlight pages rank each symbol by its
+  own production callers instead (`selection/scoring.py::score_symbol`).
 - **Strongly Connected Components (SCCs)**: groups of files with circular imports.
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
@@ -639,9 +640,9 @@ content to draw from.
 Level 0: External API contracts (OpenAPI, proto, GraphQL)
          → self-contained, no dependencies on other pages
 
-Level 1: Symbol spotlight pages (top 10% by PageRank)
+Level 1: Symbol spotlight pages (most-called public symbols, at most 8 per file)
          → short, fast, parallelizable
-         → high-PageRank symbols get richer documentation
+         → signature, docstring and resolved callers; no source copy
 
 Level 2: File pages
          → uses: source + symbol docs + import summaries (from RAG)
@@ -1280,7 +1281,7 @@ JobSystem
        │
        ├── Level 0: special handlers (OpenAPI, proto, GraphQL, Dockerfile...)
        │
-       ├── Level 1: symbol spotlight pages (top 10% PageRank)
+       ├── Level 1: symbol spotlight pages (most-called symbols)
        │              ┌────────────────────────────────────┐
        │              │ ContextAssembler                   │
        │              │  source + graph metadata           │

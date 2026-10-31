@@ -271,6 +271,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -296,6 +297,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -321,6 +323,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -346,6 +349,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -371,6 +375,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -382,6 +387,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -606,6 +612,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -621,7 +628,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -637,7 +647,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -653,7 +666,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -669,7 +685,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -685,7 +704,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -701,7 +723,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -717,7 +742,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -733,7 +761,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -749,7 +780,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -765,7 +799,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -781,7 +818,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -797,7 +837,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -813,7 +856,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -829,7 +875,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -845,7 +894,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -861,7 +913,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -877,7 +932,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -893,7 +951,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          null,
+          "int constant"
+        ],
         "argument_names": [
           "x",
           null
@@ -1291,6 +1352,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1413,6 +1475,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],

@@ -8,9 +8,10 @@ from bisect import bisect_left
 from collections import defaultdict
 from typing import Any, NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from repowise.core.ids import ExternalSystemId, file_path_of, render
 from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
@@ -61,9 +62,8 @@ _ENTRY_POINT_NAMES = frozenset(
     }
 )
 
-# "contains" used to sit here too. It is a knowledge-graph *export* label
-# derived from defines/has_method, never a persisted edge_type, so it matched
-# nothing.
+# Not "contains": that is a knowledge-graph *export* label derived from
+# defines/has_method, never a persisted edge_type, so it would match nothing.
 _SYMBOL_EDGE_TYPES = CONTAINMENT_EDGE_TYPES
 
 _EXT_MAP = {
@@ -410,10 +410,20 @@ async def _migrate_kg_file_to_db(
             await session.rollback()
 
 
+class _GitFacts(NamedTuple):
+    """The git metadata columns an ArchNode reads, one row per file."""
+
+    file_path: str
+    is_hotspot: bool
+    primary_owner_name: str | None
+    primary_owner_commit_pct: float | None
+    bus_factor: int
+
+
 class _NodeFacts(NamedTuple):
     """Per-node enrichment the ArchNode rows are built from."""
 
-    git_by_path: dict[str, GitMetadata]
+    git_by_path: dict[str, _GitFacts]
     dead_files: set[str]
     page_map: dict[str, str]
     curated_meta: dict[str, tuple[str, str, list[str]]]
@@ -439,42 +449,83 @@ def _empty_view(project_name: str) -> ArchitectureView:
     )
 
 
-def _view_edges(
-    all_edges: list[GraphEdge], node_id_set: set[str], include_symbols: bool
-) -> list[GraphEdge]:
-    """The edges this view returns.
+def _in_view(endpoint: Any, include_symbols: bool) -> Any:
+    """``endpoint`` is a node of the view: any node with symbols, else a file node."""
+    node = aliased(GraphNode)
+    where = [node.repository_id == GraphEdge.repository_id, node.node_id == endpoint]
+    if not include_symbols:
+        where.append(node.node_type == "file")
+    return exists().where(*where)
+
+
+async def _view_edges(
+    session: AsyncSession, repo_id: str, include_symbols: bool
+) -> list[tuple[str, str, str, float]]:
+    """``(source, target, edge_type, confidence)`` of the edges this view returns.
+
+    Both endpoints are in the view, and containment edges only come with symbols.
 
     Degree is counted from the same list the arrows are drawn from: counting
     every row instead made a file's out-degree include the ``defines`` edge to
     each symbol it declares, none of which are shown when symbols are excluded.
+
+    Filtered in SQL and read as plain rows of the four columns used: the edge
+    table holds every symbol edge too (300k rows on a 7k-file repository), and
+    loading all of it as ORM objects to keep a fraction cost seconds. Rows are
+    plain tuples (attribute access on a SQLAlchemy row measured about 3x slower
+    than unpacking at 70k edges), ordered by the edge's unique key so the view
+    and the exports built from it read the same on every run and database; the
+    key's index serves the order, so it adds no sort.
+
+    The endpoint tests are correlated ``EXISTS`` probes of the node key, not
+    ``IN (subquery)``: with two ``IN`` lists SQLite may drive the read from
+    their cross product (a minute on an 8k-file repository) where a probe per
+    edge is bounded by the edge count.
     """
-    return [
-        e
-        for e in all_edges
-        if (include_symbols or e.edge_type not in _SYMBOL_EDGE_TYPES)
-        and e.source_node_id in node_id_set
-        and e.target_node_id in node_id_set
-    ]
+    query = select(
+        GraphEdge.source_node_id,
+        GraphEdge.target_node_id,
+        GraphEdge.edge_type,
+        GraphEdge.confidence,
+    ).where(
+        GraphEdge.repository_id == repo_id,
+        _in_view(GraphEdge.source_node_id, include_symbols),
+        _in_view(GraphEdge.target_node_id, include_symbols),
+    )
+    if not include_symbols:
+        query = query.where(GraphEdge.edge_type.not_in(_SYMBOL_EDGE_TYPES))
+    query = query.order_by(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type)
+    return [tuple(row) for row in await session.execute(query)]
 
 
-def _degrees(view_edges: list[GraphEdge]) -> tuple[dict[str, int], dict[str, int]]:
+def _degrees(
+    view_edges: list[tuple[str, str, str, float]],
+) -> tuple[dict[str, int], dict[str, int]]:
     """``(in_degree, out_degree)`` per node over *view_edges*."""
     in_degree: dict[str, int] = defaultdict(int)
     out_degree: dict[str, int] = defaultdict(int)
-    for e in view_edges:
-        out_degree[e.source_node_id] += 1
-        in_degree[e.target_node_id] += 1
+    for source, target, _, _ in view_edges:
+        out_degree[source] += 1
+        in_degree[target] += 1
     return in_degree, out_degree
 
 
 async def _load_enrichment(
     session: AsyncSession, repo_id: str
-) -> tuple[dict[str, GitMetadata], set[str], dict[str, str]]:
+) -> tuple[dict[str, _GitFacts], set[str], dict[str, str]]:
     """Git metadata by path, unreachable files, and wiki page summaries by target."""
+    # Only the columns ``_git_fields`` reads: a full row carries the authors,
+    # commits and co-change JSON blobs, which made this read 5x slower.
     git_result = await session.execute(
-        select(GitMetadata).where(GitMetadata.repository_id == repo_id)
+        select(
+            GitMetadata.file_path,
+            GitMetadata.is_hotspot,
+            GitMetadata.primary_owner_name,
+            GitMetadata.primary_owner_commit_pct,
+            GitMetadata.bus_factor,
+        ).where(GitMetadata.repository_id == repo_id)
     )
-    git_by_path: dict[str, GitMetadata] = {gm.file_path: gm for gm in git_result.scalars()}
+    git_by_path = {row[0]: _GitFacts(*row) for row in git_result}
 
     dead_result = await session.execute(
         select(DeadCodeFinding.file_path).where(
@@ -580,7 +631,7 @@ def _node_location(
     return name, n.file_path, line_range, summary or ""
 
 
-def _git_fields(gm: GitMetadata | None) -> dict[str, Any]:
+def _git_fields(gm: _GitFacts | None) -> dict[str, Any]:
     """The ArchNode fields read from a file's git metadata."""
     if not gm:
         return {
@@ -632,17 +683,17 @@ def _arch_node(i: int, n: GraphNode, facts: _NodeFacts) -> ArchNode:
     )
 
 
-def _arch_edges(view_edges: list[GraphEdge]) -> list[ArchEdge]:
+def _arch_edges(view_edges: list[tuple[str, str, str, float]]) -> list[ArchEdge]:
     return [
         ArchEdge(
-            source=e.source_node_id,
-            target=e.target_node_id,
-            edge_type=e.edge_type,
+            source=source,
+            target=target,
+            edge_type=edge_type,
             direction="forward",
-            weight=e.confidence,
-            confidence=e.confidence,
+            weight=confidence,
+            confidence=confidence,
         )
-        for e in view_edges
+        for source, target, edge_type, confidence in view_edges
     ]
 
 
@@ -727,8 +778,7 @@ async def build_architecture_view(
     node_id_set = {n.node_id for n in all_nodes}
     file_nodes = [n for n in all_nodes if n.node_type == "file"]
 
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
-    view_edges = _view_edges(list(edge_result.scalars()), node_id_set, include_symbols)
+    view_edges = await _view_edges(session, repo_id, include_symbols)
     in_degree, out_degree = _degrees(view_edges)
 
     externals = await _external_views(session, repo_id)

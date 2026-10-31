@@ -55,6 +55,7 @@ from ._prepare import (
 )
 from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
+from ._sibling_hint import suggest_workspace
 from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
@@ -554,6 +555,8 @@ def _run_init(opts: InitOptions) -> None:
     # redirect to it so the user doesn't have to specify the exact path.
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
+    if not opts.no_workspace:
+        suggest_workspace(repo_path)
 
     with init_in_progress(repo_path):
         _run_single_repo(opts, repo_path, start)

@@ -198,10 +198,7 @@ def model_upgrade_lines(upgrade: ModelUpgrade | None) -> list[RenderableType]:
     return [
         Text(""),
         line(f"[bold {MODEL}]Add a model when you want more[/]"),
-        line(
-            "Docs that explain how and why, chat in the dashboard, "
-            "written answers for your agent."
-        ),
+        line("Answers for your agent and docs that explain how and why: one command, no re-index."),
         line(how),
         dim_line("Or press m next time on the plan screen."),
     ]

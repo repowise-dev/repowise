@@ -259,6 +259,9 @@ async def test_corrective_retry_names_the_broken_rule_and_keeps_the_request(samp
     # The offending words must not be handed back: quoting them re-plants the
     # vocabulary the retry exists to remove.
     assert "supplied material" not in retry_prompt
+    # Naming the rule alone let the model rephrase the same sentence into it
+    # again; the re-ask also says what to write instead.
+    assert "say it about the code" in retry_prompt
     # A byte-identical system prompt is what keeps the retry eligible for the
     # provider's prefix cache.
     assert provider.calls[1]["system_prompt"] == provider.calls[0]["system_prompt"]

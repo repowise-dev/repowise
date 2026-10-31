@@ -71,6 +71,23 @@ async def test_directory_card_is_no_larger_than_a_file_card(setup_mcp):
     assert len(json.dumps(targets["src/"])) <= len(json.dumps(targets["src/auth/service.py"]))
 
 
+@pytest.mark.asyncio
+async def test_directory_without_page_basis_fields_when_asked_and_neither_when_not(setup_mcp):
+    """A directory without a module page returns health_basis and full_doc_basis when asked, neither when not."""
+    from repowise.server.mcp_server import get_context
+
+    # 1. When requested: both basis fields are present
+    asked = (await get_context(["src/"], include=["health", "full_doc"]))["targets"]["src/"]
+    assert asked["index_status"] == "directory_without_module_page"
+    assert asked["health_basis"] == 'get_health(targets=["module:src/"])'
+    assert asked["full_doc_basis"] == "no_module_page"
+
+    # 2. When not requested: neither basis field is present
+    not_asked = (await get_context(["src/"]))["targets"]["src/"]
+    assert "health_basis" not in not_asked
+    assert "full_doc_basis" not in not_asked
+
+
 def test_last_change_author_is_the_one_committing_at_that_moment():
     from repowise.server.mcp_server.tool_context.sections import _author_at
 

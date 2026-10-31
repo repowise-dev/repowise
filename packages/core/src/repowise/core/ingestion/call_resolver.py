@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
@@ -85,7 +86,7 @@ from .call_receiver_typing import (
     ReceiverTypingMixin,
     _store_capped,
 )
-from .decorator_names import is_property_accessor
+from .decorator_names import is_property_accessor, property_mutator_role
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
@@ -114,6 +115,7 @@ from .return_types import (
 from .symbol_identity import id_segment_name, outer_scope, same_parameters
 from .type_names import (
     bare_type_name,
+    builtin_type_spelling,
     csharp_extension_receiver,
     is_resolvable_type_name,
     strip_type_arguments,
@@ -124,7 +126,7 @@ log = structlog.get_logger(__name__)
 # Languages with an implicit method receiver, where a bare ``foo()`` binds to
 # the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
 # bare call there is a free function and this tier would resolve it wrongly.
-_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
+_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex", "pascal"})
 
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
@@ -132,6 +134,16 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "ap
 _BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
     {"javascript", "typescript", "svelte", "vue", "astro"}
 )
+
+# Python, Go and Rust share the shape: a bare ``foo()`` inside a method never
+# means a member either (Python needs ``self.``, Go needs a receiver, Rust
+# needs ``Self::`` or ``self.``), so a top-level symbol of the name beats a
+# same-named member. Unlike the JS/TS set, this is top-level-*first*, not
+# top-level-only: a name with no top-level hit still falls back to the flat
+# table, because a class-scoped binding (notably a Python class-body alias,
+# which the symbol query excludes from top-level indexing) is the only
+# candidate there, and dropping it would lose the edge entirely.
+_BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES = frozenset({"python", "go", "rust"})
 
 # Languages where a call the caller's own class cannot answer is looked for on
 # its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
@@ -142,7 +154,14 @@ _BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
 # C# is present: the tier answers with a name's overload set, and
 # ``resolve_file`` narrows it to the member the argument count names.
 _INHERITED_LANGUAGES = frozenset(
-    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex"}
+    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex", "pascal"}
+)
+
+# ``TFooHelper = class helper(TBaseHelper) for TFoo``: the helper and the type it extends.
+_PASCAL_HELPER = re.compile(
+    r"\b([A-Za-z_]\w*)\s*=\s*(?:class|record)\s+helper\b(?:\s*\([^)]*\))?\s+for\s+"
+    r"([A-Za-z_][\w.]*)",
+    re.IGNORECASE,
 )
 
 # VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
@@ -219,7 +238,7 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
+    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "typescript"}
 )
 
 # Chain languages that type the inner call by the identity of the type it
@@ -293,6 +312,16 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
         decl_file == def_file
         or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
     )
+
+
+def _generator_template(path: str, parsed_files: Mapping[str, object]) -> bool:
+    """Is *path* a ``name.in.cc`` a generator writes ``name.cc`` from, with that file present?
+
+    The template is never compiled: the generated file holds the definitions.
+    """
+    file = PurePosixPath(path)
+    stem = PurePosixPath(file.stem)
+    return stem.suffix == ".in" and str(file.with_name(stem.stem + file.suffix)) in parsed_files
 
 
 class CallResolver(
@@ -371,6 +400,8 @@ class CallResolver(
         # that read ``_global_methods``, and would let an extension answer a
         # site the instance method the language dispatches to should own.
         self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
+        # {path: {folded helper name: extended type}} for Pascal helpers.
+        self._pascal_helpers: dict[str, dict[str, str]] = {}
         self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
         self._merged_import_extensions: dict[str, dict[tuple[str, str], str]] = {}
 
@@ -552,6 +583,10 @@ class CallResolver(
         aliases: list[tuple[str, str, str | None]] = []
 
         for sym in parsed.symbols:
+            # A property's setter or deleter runs on assignment or ``del``,
+            # never on a call: its name answers with the getter.
+            if property_mutator_role(sym.decorators) is not None:
+                continue
             # An overload set is indexed once, under its representative.
             index_id = representatives.get(sym.id, sym.id)
             decl_key = (sym.parent_name, sym.name)
@@ -581,11 +616,12 @@ class CallResolver(
                 file_methods[key] = index_id
                 self._global_methods[key].append((path, index_id))
 
-            extended = (
-                self._csharp_extended_type(sym)
-                if sym.parent_name
-                else self._kotlin_extended_type(sym)
-            )
+            if sym.language == "pascal":
+                extended = self._pascal_extended_type(path, sym)
+            elif sym.parent_name:
+                extended = self._csharp_extended_type(sym)
+            else:
+                extended = self._kotlin_extended_type(sym)
             if extended is not None:
                 extensions[(extended, sym.name)].add((path, index_id))
 
@@ -620,6 +656,24 @@ class CallResolver(
         if extended is None or not is_resolvable_type_name(extended, "csharp"):
             return None
         return extended if extended in self._csharp_type_names else None
+
+    def _pascal_extended_type(self, path: str, sym: Symbol) -> str | None:
+        """The type a Pascal ``class``/``record helper for T`` method extends.
+
+        A helper's methods answer for calls on any ``T`` value, a builtin
+        ``string`` included, which is spelled as the builtin table spells it.
+        """
+        if not sym.parent_name or sym.kind not in _FUNCTION_KINDS:
+            return None
+        helpers = self._pascal_helpers.get(path)
+        if helpers is None:
+            helpers = {
+                match.group(1).lower(): builtin_type_spelling(match.group(2), "pascal")
+                or match.group(2)
+                for match in _PASCAL_HELPER.finditer(self._text_of(path))
+            }
+            self._pascal_helpers[path] = helpers
+        return helpers.get(sym.parent_name.lower())
 
     def _kotlin_extended_type(self, sym: Symbol) -> str | None:
         """The type a top-level Kotlin extension function extends, a library one included.
@@ -769,7 +823,8 @@ class CallResolver(
         list in its own source file or in a file including it, directly or
         not, come first when there are any: a file including the header
         directly may define a same-named function of another namespace.
-        Platform variants defining one signature in two files stay unlinked.
+        Platform variants defining one signature in two files stay unlinked. A
+        generator's template (``lexer.in.cc``) beside its output is no candidate.
         """
         # A same-file definition shares the prototype's id: already defined.
         if any(sym.id == decl.id for _f, _i, sym in rows):
@@ -780,6 +835,7 @@ class CallResolver(
             if index_id != decl_index
             and (def_file == decl_file or index_id not in self._tu_local_ids)
         ]
+        rows = [row for row in rows if not _generator_template(row[0], self._parsed_files)]
         candidates = self._signature_candidates(decl_file, decl, rows)
         defined = self._defining_set(decl_file, decl.parent_name, candidates)
         if defined is None:
@@ -1093,7 +1149,7 @@ class CallResolver(
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
         if hit is not None and self._cpp_names_no_repo_member(file_path, call, hit.callee_id):
-            return None
+            return self._cpp_free_rival(file_path, call, caller_id)
         alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
         if _is_kotlin_alias(alias):
             return self._through_kotlin_alias(alias, call, caller_id)
@@ -1662,6 +1718,10 @@ class CallResolver(
         # (``import java.io.IOException``) binds the name just as surely.
         if not declared or target_name in self._library_imported_names(file_path):
             return None
+        if self._language_of(file_path) == "csharp" and self._csharp_constructed_type_is_ambiguous(
+            file_path, call
+        ):
+            return None
         return (
             self._named_import_call(file_path, call, caller_id, binding)
             or self._merged_import_call(file_path, call, caller_id)
@@ -1697,11 +1757,17 @@ class CallResolver(
         # ``_file_symbols`` is flat and holds class members, but a JS/TS bare
         # call can only name a top-level binding: a same-named method must not
         # shadow an import (or hide a top-level function declared before it).
-        table = (
-            self._file_top_level
-            if self._language_of(file_path) in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES
-            else self._file_symbols
-        )
+        # Python, Go and Rust share the member rule but keep the flat table as
+        # a fallback for names no top-level symbol claims (class-scoped
+        # bindings live there alone).
+        language = self._language_of(file_path)
+        if language in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES or (
+            language in _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES
+            and call.target_name in self._file_top_level.get(file_path, {})
+        ):
+            table = self._file_top_level
+        else:
+            table = self._file_symbols
         callee_id = table.get(file_path, {}).get(call.target_name)
         if callee_id is None:
             return False, None
@@ -1818,6 +1884,9 @@ class CallResolver(
         lookup_name = binding.exported_name or name
         if lookup_name in barrel:
             source_file = barrel[lookup_name]
+        if binding.member_of:
+            # A static import names the member's type; a nested type's same-named member is another.
+            return self._published_by(source_file, binding.member_of, lookup_name)
         return self._published(source_file, lookup_name)
 
     def _link_imported_aliases(self) -> None:

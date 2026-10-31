@@ -60,7 +60,7 @@ async def test_one_invocation_produces_exactly_one_event(repo: Path) -> None:
     assert event["operation"] == "get_context"
     assert event["result_state"] == "success"
     assert event["is_usable"] == 1
-    assert event["estimator"] == "chars_per_token_floor_v1"
+    assert event["estimator"] == "chars_per_token_floor_v2"
     assert event["token_unit"] == "estimated_tokens"
     assert event["schema_version"] == 1
 
@@ -356,7 +356,7 @@ async def test_a_budget_truncated_response_is_partial_not_a_plain_success(
         }
 
     out = await tool_middleware(get_context)(["a.py"])
-    assert out["_meta"]["state"]["truncated"], "expected the budgeter to have shed content"
+    assert out["_meta"]["omitted"], "expected the budgeter to have shed content"
 
     event = _events(repo)[0]
     assert event["result_state"] == "partial"
