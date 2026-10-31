@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
+from repowise.core.workspace.extractors.http.paths import LOCALHOST_HOSTS
 from repowise.core.workspace.origins import (
     ORIGIN_CONFIDENCE,
     ContractOrigin,
@@ -107,11 +108,6 @@ _STATIC_ASSET_SUFFIXES = (
     ".wasm",
 )
 
-# Hosts that name the local machine, not a specific service. A consumer URL
-# pointing here carries no service identity, so it is resolved by path uniqueness
-# rather than excluded as third-party.
-_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
-
 # Internal-DNS suffixes whose leading label names a service (k8s / mesh / LAN).
 # Only for these do we map ``<label>.<suffix>`` to a repo alias; a public host
 # like ``backend.stripe.com`` must never be mistaken for the ``backend`` repo.
@@ -155,7 +151,8 @@ def _resolve_consumer_target(
     if host:
         if host in service_bases:
             return service_bases[host], False, ServiceName(host, HOST, service_bases[host], VIA_SERVICE_BASES, "")
-        if host in _LOCALHOST_HOSTS:
+        if host in LOCALHOST_HOSTS:
+            # No service identity: resolved by path uniqueness, not excluded as third-party.
             return None, False, None
         internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
         label = host.split(".")[0] if internal_dns else host

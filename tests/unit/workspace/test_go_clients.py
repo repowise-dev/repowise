@@ -13,7 +13,9 @@ from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
 from repowise.core.workspace.extractors.http.go_clients import GoClientsDialect, net_http_calls
-from repowise.core.workspace.matching import match_contracts
+from repowise.core.workspace.extractors.http.paths import is_unusable_consumer_path
+from repowise.core.workspace.matching import annotate_consumer_targets, match_contracts
+from repowise.core.workspace.origins import LinkStrategy
 
 PACKAGE_VERBS = """package main
 
@@ -299,3 +301,181 @@ class TestGoClientsCrossRepoLink:
         assert len(links) == 1
         assert links[0].provider_repo == "api"
         assert links[0].consumer_repo == "worker"
+
+
+# ---------------------------------------------------------------------------
+# A call to a service's root path (issue #4565)
+# ---------------------------------------------------------------------------
+
+ROOT_LITERAL_HOST = """package main
+
+func chat(body io.Reader) {
+	url := "http://shoppingassistantservice:80"
+	req, err := http.NewRequest(http.MethodPost, url, body)
+}
+"""
+
+ROOT_LOCALHOST = """package main
+
+func chat(body io.Reader) {
+	req, err := http.NewRequest(http.MethodPost, "http://localhost:8080/", body)
+}
+"""
+
+# Online Boutique: the struct field is filled from the environment in one file
+# (the receiver there is `svc`) and read in another (the receiver is `fe`).
+MAIN_GO = """package main
+
+func main() {
+	svc := new(frontendServer)
+	mustMapEnv(&svc.productCatalogSvcAddr, "PRODUCT_CATALOG_SERVICE_ADDR")
+	mustMapEnv(&svc.shoppingAssistantSvcAddr, "SHOPPING_ASSISTANT_SERVICE_ADDR")
+}
+"""
+
+HANDLERS_GO = """package main
+
+func (fe *frontendServer) chatBotHandler(w http.ResponseWriter, r *http.Request) {
+	url := "http://" + fe.shoppingAssistantSvcAddr
+	req, err := http.NewRequest(http.MethodPost, url, r.Body)
+}
+"""
+
+FIELD_PLUS_PATH = """package main
+
+func (fe *frontendServer) chat(r *http.Request) {
+	url := "http://" + fe.shoppingAssistantSvcAddr + "/chat"
+	req, err := http.NewRequest(http.MethodPost, url, r.Body)
+}
+"""
+
+UNBOUND_VARIABLE_ROOT = """package main
+
+func chat(base string, body io.Reader) {
+	req, err := http.NewRequest(http.MethodPost, base + "/", body)
+}
+"""
+
+FIELD_WITH_PORT = """package main
+
+func (fe *frontendServer) chat(r *http.Request) {
+	url := "http://" + fe.shoppingAssistantSvcAddr + ":8080"
+	req, err := http.NewRequest(http.MethodPost, url, r.Body)
+}
+"""
+
+OTHER_BINDING_GO = """package main
+
+func main() {
+	svc := new(otherServer)
+	mustMapEnv(&svc.shoppingAssistantSvcAddr, "ASSISTANT_ADDR")
+}
+"""
+
+COMMENTED_BINDING_GO = """package main
+
+func main() {
+	// mustMapEnv(&svc.shoppingAssistantSvcAddr, "SHOPPING_ASSISTANT_SERVICE_ADDR")
+}
+"""
+
+ASSISTANT_PROVIDER = """from fastapi import FastAPI
+
+app = FastAPI()
+
+
+@app.post("/")
+def chat():
+    return {}
+"""
+
+ENV_KEY = "SHOPPING_ASSISTANT_SERVICE_ADDR"
+
+
+def _scan(files: dict[str, str], repo: str = "frontend") -> list:
+    """Every consumer contract a repo's Go files yield, bindings collected repo-wide."""
+    extractor = HttpExtractor()
+    extractor.provider_dialects = ()
+    extractor.consumer_dialects = (GoClientsDialect(),)
+    return extractor.extract(
+        Path("."), repo, files=[(name, ".go", text) for name, text in files.items()]
+    )
+
+
+class TestGoRootCallKeptByItsTarget:
+    def test_literal_host_root_call_is_kept(self) -> None:
+        (c,) = _extract(ROOT_LITERAL_HOST)
+        assert c.contract_id == "http::POST::/"
+        assert c.meta["host"] == "shoppingassistantservice"
+
+    def test_root_call_to_localhost_is_refused(self) -> None:
+        # The local machine names no service, so `/` would match any of them.
+        assert _extract(ROOT_LOCALHOST) == []
+
+    def test_env_bound_field_yields_a_base_token(self) -> None:
+        (c,) = _scan({"main.go": MAIN_GO, "handlers.go": HANDLERS_GO})
+        assert c.contract_id == "http::POST::/"
+        assert c.meta["base_stripped"] is True
+        assert c.meta["base_token"] == ENV_KEY
+
+    def test_env_bound_field_keeps_the_path_after_it(self) -> None:
+        (c,) = _scan({"main.go": MAIN_GO, "handlers.go": FIELD_PLUS_PATH})
+        assert c.contract_id == "http::POST::/chat"
+        assert c.meta["base_token"] == ENV_KEY
+
+    def test_binding_in_the_calling_file_is_enough_for_a_single_file_scan(self) -> None:
+        (c,) = _extract(MAIN_GO + HANDLERS_GO.replace("package main\n", ""))
+        assert c.meta["base_token"] == ENV_KEY
+
+    def test_unbound_variable_root_is_refused(self) -> None:
+        # `base` is a local, not an env key a binding names: it places nothing.
+        assert _extract(UNBOUND_VARIABLE_ROOT) == []
+        assert _scan({"main.go": MAIN_GO, "chat.go": UNBOUND_VARIABLE_ROOT}) == []
+
+    def test_field_with_no_binding_is_refused(self) -> None:
+        assert _scan({"handlers.go": HANDLERS_GO}) == []
+
+    def test_field_bound_to_two_env_keys_is_refused(self) -> None:
+        files = {"main.go": MAIN_GO, "other.go": OTHER_BINDING_GO, "handlers.go": HANDLERS_GO}
+        assert _scan(files) == []
+
+    def test_commented_out_binding_does_not_count(self) -> None:
+        assert _scan({"main.go": COMMENTED_BINDING_GO, "handlers.go": HANDLERS_GO}) == []
+
+    def test_text_after_the_field_that_is_not_a_path_is_refused(self) -> None:
+        # `fe.addr + ":8080"` is not a base followed by `/`; no path is invented.
+        assert _scan({"main.go": MAIN_GO, "handlers.go": FIELD_WITH_PORT}) == []
+
+    def test_root_rule_is_scoped_to_the_consumer_builder(self) -> None:
+        # Socket and every other caller still read `/` as unusable.
+        assert is_unusable_consumer_path("/") is True
+        assert is_unusable_consumer_path("/{param}") is True
+
+
+def _link_strategies(contracts: list, service_bases: dict[str, str] | None = None) -> list:
+    annotate_consumer_targets(contracts, service_bases)
+    return [(ln.provider_repo, ln.strategy) for ln in match_contracts(contracts)]
+
+
+class TestGoRootCallMatching:
+    @staticmethod
+    def _provider(repo: str = "shoppingassistantservice") -> list:
+        extractor = HttpExtractor()
+        extractor.provider_dialects = (FastApiDialect(),)
+        extractor.consumer_dialects = ()
+        return extractor.extract(Path("."), repo, files=[("main.py", ".py", ASSISTANT_PROVIDER)])
+
+    def test_literal_host_links_as_service_mapped(self) -> None:
+        consumers = _scan({"handlers.go": ROOT_LITERAL_HOST})
+        got = _link_strategies(self._provider() + consumers)
+        assert got == [("shoppingassistantservice", LinkStrategy.SERVICE_MAPPED)]
+
+    def test_env_key_links_as_service_mapped(self) -> None:
+        consumers = _scan({"main.go": MAIN_GO, "handlers.go": HANDLERS_GO})
+        got = _link_strategies(self._provider("assistant") + consumers, {ENV_KEY: "assistant"})
+        assert got == [("assistant", LinkStrategy.SERVICE_MAPPED)]
+
+    def test_root_call_whose_target_is_not_resolved_links_nowhere(self) -> None:
+        # Kept for its base token, but nothing maps it: `/` alone places no call.
+        consumers = _scan({"main.go": MAIN_GO, "handlers.go": HANDLERS_GO})
+        assert _link_strategies(self._provider("assistant") + consumers) == []

@@ -15,7 +15,7 @@ it moves under ``ingestion`` the day one does.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -110,6 +110,7 @@ def consumer_contracts(
     constants: dict[str, str] | None = None,
     path_only: bool = False,
     rooted_only: bool = False,
+    bound_bases: Collection[str] = (),
 ) -> list[Contract]:
     """Consumer contracts for *matches*, resolving each URL through *syntax*.
 
@@ -119,6 +120,10 @@ def consumer_contracts(
     *rooted_only* drops a URL that is neither absolute nor rooted. A client
     with a configured base composes ``"some/path"`` onto it, so the path the
     request reaches has a prefix this layer cannot see.
+
+    *bound_bases* are the base-placeholder names the dialect read from a
+    binding; a call to the service root (``/``) is kept only through one of
+    them or a literal host (see :func:`.dialect.build_consumer_contract`).
 
     A call in a comment (a usage example in a doc comment) is skipped here,
     once for every recogniser.
@@ -142,6 +147,7 @@ def consumer_contracts(
             client=m.client,
             line=line_at(ctx.content, m.offset),
             origin=m.origin,
+            bound_bases=bound_bases,
         )
         if c is not None:
             out.append(c)
