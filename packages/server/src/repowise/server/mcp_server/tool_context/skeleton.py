@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -12,6 +13,9 @@ from repowise.server.mcp_server._budget import DEFAULT_RESPONSE_CHARS
 
 #: Same threshold get_symbol uses to outline a container instead of inlining it.
 _FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
+
+#: The elision marker ``build_skeleton`` writes for a folded run of lines.
+_FOLD_RE = re.compile(r"^[ \t]*\.\.\. \d+ lines \((\d+)-(\d+)\)$", re.M)
 
 
 def _document_outline(source: str, file_path: str) -> dict[str, Any] | None:
@@ -188,10 +192,13 @@ async def _resolve_skeleton(
             "No usable symbol bounds for this file — returned source as-is."
         )
     elif result.pct_of_full > 40.0 and not focused:
-        # A skeleton this close to the source makes a Read nearly as cheap;
-        # a focused skeleton is not the case (it is the symbol plus a file map).
+        # A focused skeleton is not "mostly full": it is the symbol plus a file map.
         result_data["skeleton"]["mostly_full"] = True
         result_data["skeleton"]["note"] = (
-            f"Skeleton is {round(result.pct_of_full, 1)}% of the full file — "
-            "a direct Read costs little more."
+            f"Skeleton is {round(result.pct_of_full, 1)}% of the full file."
+        )
+    if fold := _FOLD_RE.search(result.text):
+        result_data["skeleton"]["fold_hint"] = (
+            f"get_symbol('{file_target}:{fold[1]}-{fold[2]}') returns the "
+            f"'({fold[1]}-{fold[2]})' fold; every fold reads the same way."
         )

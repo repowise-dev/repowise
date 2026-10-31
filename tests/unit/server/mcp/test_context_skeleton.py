@@ -43,6 +43,23 @@ async def test_skeleton_block_for_file_target(setup_mcp, tmp_path, monkeypatch):
     assert "... " in sk["text"]  # at least one elision marker
 
 
+@pytest.mark.asyncio
+async def test_skeleton_names_the_get_symbol_call_for_a_fold(setup_mcp, tmp_path, monkeypatch):
+    import re
+
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton"])
+    sk = result["targets"]["src/auth/service.py"]["skeleton"]
+    first = re.search(r"\.\.\. \d+ lines \((\d+)-(\d+)\)", sk["text"])
+    assert first
+    assert f"get_symbol('src/auth/service.py:{first[1]}-{first[2]}')" in sk["fold_hint"]
+    assert "Read" not in sk.get("note", "")
+
+
 def _write_drifted_source(tmp_path, rel="src/auth/service.py"):
     """Same file as ``_write_source`` but shifted down 5 lines.
 

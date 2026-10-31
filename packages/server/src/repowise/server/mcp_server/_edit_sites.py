@@ -114,6 +114,36 @@ def _import_lines(lines: list[str], start: re.Pattern[str] = _IMPORT_START) -> s
     return out
 
 
+# The module a statement imports from: a quoted path, a Python ``from``
+# module, or a bare ``import`` / ``use`` target.
+_IMPORT_SOURCE = re.compile(
+    r"""\bfrom\s+["'`]([^"'`\n]+)["'`]|\brequire\s*\(\s*["'`]([^"'`\n]+)["'`]"""
+    r"""|^\s*from\s+([\w.]+)\s+import\b|^\s*import\s+["'`]([^"'`\n]+)["'`]"""
+)
+
+
+def _import_source(lines: list[str], n: int) -> str | None:
+    """The module the multi-line import statement holding line *n* names.
+
+    ``None`` when line *n* names it already (the reader sees it) or the
+    statement names no module.
+    """
+    if _IMPORT_SOURCE.search(lines[n - 1]):
+        return None
+    head = next((i for i in range(n - 1, max(-1, n - 200), -1) if _IMPORT_START.match(lines[i])), None)
+    if head is None:
+        return None
+    depth, i = 0, head
+    while i < len(lines):
+        if m := _IMPORT_SOURCE.search(lines[i]):
+            return next(g for g in m.groups() if g)
+        depth += sum(lines[i].count(c) for c in "({[") - sum(lines[i].count(c) for c in ")}]")
+        i += 1
+        if depth <= 0 and i > n - 1:
+            break
+    return None
+
+
 def _read_lines(root: Path, rel: str) -> list[str] | None:
     try:
         abs_path = (root / rel).resolve()
@@ -414,7 +444,10 @@ def _scan(
                 kind = "call"
             else:
                 kind = "reference"
-            sites.append({"path": rel, "line": n, "kind": kind, "text": text.strip()[:MAX_TEXT_CHARS]})
+            site = {"path": rel, "line": n, "kind": kind, "text": text.strip()[:MAX_TEXT_CHARS]}
+            if kind == "import" and (source := _import_source(lines, n)):
+                site["from"] = source
+            sites.append(site)
     return sites, unreadable, stale, renamed, is_default, python_aliases, packages
 
 

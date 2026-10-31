@@ -23,7 +23,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from repowise.core.code_origin import prefer_production
 from repowise.core.persistence.crud.tombstoned_pages import deleted_file_paths
@@ -442,6 +442,9 @@ def _path_score(target_path: str, qnorm: str) -> float:
         score += 40.0
     if qnorm in tp:
         score += 20.0
+    # A whole directory name ("filters_toml", "src/utils") lists that folder.
+    if f"/{qnorm.strip('/')}/" in f"/{tp}":
+        score += 10.0
     # Prefer the shallower / shorter path among equal matches.
     score -= len(tp) * 0.001
     return score
@@ -469,10 +472,8 @@ def _word_path_score(path: str, words: list[str]) -> float | None:
 
 def _word_path_hits(query: str, paths: Sequence[str]) -> dict[str, float]:
     """Paths a spaced or compound query names word by word (``poll backoff``
-    -> ``command-poll-backoff.ts``), best ``_MAX_CANDIDATES`` by score. Glob
-    queries are left to substring matching."""
-    if "*" in query or "?" in query:
-        return {}
+    -> ``command-poll-backoff.ts``), best ``_MAX_CANDIDATES`` by score. A glob
+    marker is dropped (``filters_toml *.toml`` -> filters, toml)."""
     words = _identifier_words(query)
     if not words:
         return {}
@@ -522,8 +523,13 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
         ]
         if not qnorms:
             return []
+        # Config, data and test files are indexed without a file page, so the
+        # page table alone never lists them.
+        pageless = await _indexed_files(
+            session, repository.id, qnorms, [] if tokens else _identifier_words(query)
+        )
         # A query carrying no path also matches paths by their words.
-        word_hits = {} if tokens else _word_path_hits(query, index.paths)
+        word_hits = {} if tokens else _word_path_hits(query, [*index.paths, *pageless])
         res = await session.execute(
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
@@ -538,6 +544,13 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
             )
         )
         rows = res.all()
+        paged = {target_path for _, _, target_path, _ in rows}
+        rows += [
+            (None, None, path, None)
+            for path in pageless
+            if path not in paged
+            and (path in word_hits or any(q in path.lower() for q in qnorms))
+        ]
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, Any]] = []
@@ -554,11 +567,31 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     return [
         {
             "type": "file",
-            "page_id": page_id,
-            "title": title,
+            **({"page_id": page_id, "title": title} if page_id else {}),
             "file": target_path,
             "score": round(score, 4),
             "next": "get_context",
         }
         for score, (page_id, title, target_path) in scored[:limit]
     ]
+
+
+async def _indexed_files(
+    session: Any, repo_id: str, qnorms: list[str], words: list[str]
+) -> list[str]:
+    """Indexed file paths holding one of *qnorms*, or every one of *words*."""
+
+    def holds(part: str) -> Any:
+        return GraphNode.node_id.ilike(f"%{escape_like(part)}%", escape=LIKE_ESCAPE)
+
+    every_word = [and_(*map(holds, words))] if words else []
+    res = await session.execute(
+        select(GraphNode.node_id)
+        .where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            or_(*map(holds, qnorms), *every_word),
+        )
+        .limit(_MAX_CANDIDATES)
+    )
+    return [node_id for (node_id,) in res.all() if node_id]

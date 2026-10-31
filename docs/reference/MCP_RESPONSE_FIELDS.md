@@ -225,7 +225,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 
 ### references
 
-Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
+Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. An `import` line inside a wrapped import statement adds `from`, the module that statement names. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
 
 - `reexport`: a barrel that hands the symbol on without naming it (`export * from`, `from module import *`)
 - `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
@@ -285,7 +285,7 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 
 ### Skeleton
 
-Cut from stored symbol bounds, no parsing at query time: every signature, the imports, and the bodies of top symbols by centrality, hotspot and query match. Elisions carry 1-indexed line ranges.
+Cut from stored symbol bounds, no parsing at query time: every signature, the imports, and the bodies of top symbols by centrality, hotspot and query match. Elisions carry 1-indexed line ranges, and `fold_hint` gives the `get_symbol('<path>:<start>-<end>')` call that reads one.
 
 A file with no symbol bounds is served whole (`mode: "raw"`). A Markdown or reStructuredText document over the skeleton budget is served as its headings with line numbers (`mode: "outline"`). `_meta.complete` counts only files whose whole source survived the response budget.
 
@@ -333,7 +333,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | Row | Fields |
 |-----|--------|
 | Symbol | `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"` |
-| File | `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"` |
+| File | `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`; an indexed file with no page (config, data, tests) has no `page_id` or `title` |
 | Concept | `page_type`, `path` if the page names a file, `symbol_id` on a symbol page, `relevance_score`, `snippet`, `sources` |
 
 Row notes:

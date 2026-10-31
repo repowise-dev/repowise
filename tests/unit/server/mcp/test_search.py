@@ -889,6 +889,27 @@ class TestPathSearch:
         assert top["next"] == "get_context"
 
     @pytest.mark.asyncio
+    async def test_a_directory_name_lists_indexed_files_without_a_page(
+        self, session, populated_db, setup_mcp
+    ):
+        from repowise.core.persistence.models import GraphNode
+        from repowise.server.mcp_server import search_codebase
+
+        for path in ("src/filters_toml/infra.toml", "src/filters_toml/README.md"):
+            session.add(
+                GraphNode(
+                    id=f"ft-{path}", repository_id=populated_db, node_id=path,
+                    node_type="file", name=path, file_path=path, language="toml",
+                )
+            )
+        await session.commit()
+
+        result = await search_codebase("filters_toml", mode="path")
+        files = {r["path"] for r in result["results"]}
+        assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
+        assert all(r["next"] == "get_context" for r in result["results"])
+
+    @pytest.mark.asyncio
     async def test_auto_routes_path_shaped_query(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
