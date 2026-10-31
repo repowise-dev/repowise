@@ -1,5 +1,10 @@
 import type { ReactNode } from "react";
-import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusResponse,
+  ChangeBlastRadiusResponse,
+  ChangeCandidatesResponse,
+} from "@repowise-dev/types/blast-radius";
 
 /** A hotspot suggestion chip — only the path is rendered. */
 export interface ImpactHotspot {
@@ -22,11 +27,26 @@ export interface ImpactAdapter {
   listHotspots(limit: number): Promise<ImpactHotspot[]>;
   /** Typeahead source for the file picker — resolves a query to candidate paths. */
   searchFiles(query: string): Promise<string[]>;
-  /** Run the blast-radius analysis for the proposed change. */
+  /**
+   * Run the blast-radius analysis for a hand-picked set of files. A server
+   * that returns `affected_signals` gets health and hotspot marks on the map.
+   */
   analyze(input: {
     changedFiles: string[];
     maxDepth: number;
-  }): Promise<BlastRadiusResponse>;
+  }): Promise<BlastRadiusResponse & { affected_signals?: AffectedSignal[] }>;
+
+  /**
+   * Changes to pick from: work in progress, branches, recent commits. With
+   * this and {@link analyzeChange}, the view leads with the list and opens the
+   * most relevant change; without them it falls back to picking files.
+   */
+  listChanges?(): Promise<ChangeCandidatesResponse>;
+  /** Analyze one change from {@link listChanges} by its id. */
+  analyzeChange?(input: { changeId: string; maxDepth: number }): Promise<ChangeBlastRadiusResponse>;
+
+  /** Where a file on the map or in the verdict links to; omit for plain text. */
+  fileHref?(path: string): string;
 
   /**
    * Rich reviewer panel for the analyzed changeset. Kept as a slot so each app

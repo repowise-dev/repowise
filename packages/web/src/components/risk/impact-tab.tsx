@@ -8,11 +8,17 @@
  * app-specific pieces so web and hosted render the same view.
  */
 
+import { useMemo } from "react";
 import useSWR from "swr";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ImpactView, type ImpactAdapter } from "@repowise-dev/ui/blast-radius";
 import { ReviewerSuggestions } from "@repowise-dev/ui/git/reviewer-suggestions";
-import { analyzeBlastRadius } from "@/lib/api/blast-radius";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import {
+  analyzeBlastRadius,
+  analyzeChangeBlastRadius,
+  listBlastRadiusChanges,
+} from "@/lib/api/blast-radius";
 import { getHotspots, getReviewerSuggestions } from "@/lib/api/git";
 import { searchNodes } from "@/lib/api/graph";
 
@@ -46,7 +52,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
   const searchParams = useSearchParams();
   const seeded = searchParams.getAll("file").filter(Boolean);
 
-  const adapter: ImpactAdapter = {
+  const adapter: ImpactAdapter = useMemo(() => ({
     cacheKey: repoId,
     listHotspots: (limit) => getHotspots(repoId, limit),
     searchFiles: async (q) => {
@@ -54,9 +60,31 @@ export function ImpactTab({ repoId }: { repoId: string }) {
       return results.map((r) => r.node_id);
     },
     analyze: ({ changedFiles, maxDepth }) =>
-      analyzeBlastRadius(repoId, { changed_files: changedFiles, max_depth: maxDepth }),
+      analyzeBlastRadius(repoId, { changed_files: changedFiles, max_depth: maxDepth, with_graph: true }),
+    listChanges: () => listBlastRadiusChanges(repoId),
+    analyzeChange: ({ changeId, maxDepth }) =>
+      analyzeChangeBlastRadius(repoId, { change_id: changeId, max_depth: maxDepth }),
+    fileHref: (path) => fileEntityPath(`/repos/${repoId}`, path),
     renderReviewers: (files) => <ReviewersPanel repoId={repoId} files={files} />,
+  }), [repoId]);
+
+  // `?change=` (wip, a branch, a full sha) makes a review shareable: picking a
+  // change writes it, opening the link opens that change.
+  const router = useRouter();
+  const pathname = usePathname();
+  const onChangePicked = (change: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("file");
+    next.set("change", change);
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
   };
 
-  return <ImpactView adapter={adapter} {...(seeded.length > 0 ? { initialFiles: seeded } : {})} />;
+  return (
+    <ImpactView
+      adapter={adapter}
+      {...(seeded.length > 0 ? { initialFiles: seeded } : {})}
+      initialChange={searchParams.get("change") ?? undefined}
+      onChangePicked={onChangePicked}
+    />
+  );
 }

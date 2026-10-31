@@ -103,6 +103,14 @@ export interface ActiveProviderSelection {
   embedder?: string | null;
 }
 
+/** What the index knows about one affected file. ``None`` means unknown, never healthy. */
+export interface AffectedSignal {
+  path: string;
+  is_hotspot?: boolean | null;
+  health_score?: number | null;
+  module?: string | null;
+}
+
 export interface AgentPromptResponse {
   flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
   text: string;
@@ -406,9 +414,11 @@ export interface ArtifactUpdateRequest {
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
+  with_graph?: boolean;
 }
 
 export interface BlastRadiusResponse {
+  affected_signals?: AffectedSignal[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -527,6 +537,51 @@ export interface CardRef {
 export interface ChangeAuthor {
   name: string;
   email: string;
+}
+
+export interface ChangeBlastRadiusRequest {
+  change_id: string;
+  max_depth?: number;
+}
+
+export interface ChangeBlastRadiusResponse {
+  affected_signals?: AffectedSignal[] | null;
+  direct_risks: DirectRiskEntry[];
+  transitive_affected: TransitiveEntry[];
+  cochange_warnings: CochangeWarning[];
+  recommended_reviewers: ReviewerEntry[];
+  test_gaps: string[];
+  test_impact: TestImpactResponse;
+  structural_impact_score: number;
+  structural_impact_band: "localized" | "moderate" | "broad";
+  structural_impact_scale: RiskScalarSemantics;
+  overall_risk_score: number;
+  overall_risk_score_compatibility: RiskCompatibilityField;
+  change_id: string;
+  changed_files: string[];
+  changed_files_total: number;
+}
+
+export interface ChangeCandidateModel {
+  id: string;
+  kind: "working_tree" | "branch" | "commit";
+  label: string;
+  title?: string | null;
+  author?: string | null;
+  committed_at?: string | null;
+  head_sha?: string | null;
+  base?: string | null;
+  ahead?: number | null;
+  files_changed?: number | null;
+  is_current?: boolean;
+  pushed?: boolean | null;
+}
+
+/** The changes a reviewer can pick, and the one to open first. */
+export interface ChangeCandidatesResponse {
+  changes: ChangeCandidateModel[];
+  default_id?: string | null;
+  working_tree_supported: boolean;
 }
 
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
@@ -3902,6 +3957,7 @@ export interface ReviewerEntry {
   email: string;
   files: number;
   ownership_pct: number;
+  name?: string | null;
 }
 
 export interface ReviewerSuggestion {
@@ -4466,6 +4522,7 @@ export interface TestRecommendation {
 export interface TransitiveEntry {
   path: string;
   depth: number;
+  via?: string | null;
 }
 
 /**

@@ -30,6 +30,8 @@ export interface DirectRiskEntry {
 export interface TransitiveEntry {
   path: string;
   depth: number;
+  /** The file one hop nearer the change that this one imports. Only on a change analysis. */
+  via?: string | null;
 }
 
 export interface CochangeWarning {
@@ -41,6 +43,8 @@ export interface CochangeWarning {
 
 export interface ReviewerEntry {
   email: string;
+  /** Display name from git history; only on a change analysis. */
+  name?: string | null;
   files: number;
   /** 0–1 fraction. UI multiplies by 100 for display. */
   ownership_pct: number;
@@ -140,6 +144,8 @@ export interface TestImpactResponse {
 }
 
 export interface BlastRadiusResponse {
+  /** Per affected file; only when the request asked `with_graph`. */
+  affected_signals?: AffectedSignal[];
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -159,4 +165,56 @@ export interface BlastRadiusResponse {
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
+  /** Also return `via` on transitive rows and `affected_signals`, for drawing. */
+  with_graph?: boolean;
+}
+
+/** What the index knows about one affected file. `null` means unknown, never healthy. */
+export interface AffectedSignal {
+  path: string;
+  is_hotspot: boolean | null;
+  health_score: number | null;
+  module: string | null;
+}
+
+export type ChangeCandidateKind = "working_tree" | "branch" | "commit";
+
+/** One change a reviewer can pick. `id` is what the analysis call takes back. */
+export interface ChangeCandidate {
+  id: string;
+  kind: ChangeCandidateKind;
+  label: string;
+  title: string | null;
+  author: string | null;
+  committed_at: string | null;
+  head_sha: string | null;
+  /** The branch it is compared against, for a branch. */
+  base: string | null;
+  /** Commits only on this branch, for a branch. */
+  ahead: number | null;
+  files_changed: number | null;
+  /** The checked-out branch, or uncommitted work in the checkout. */
+  is_current: boolean;
+  /** For a branch: whether it exists on the remote; local-only is often scratch work. */
+  pushed?: boolean | null;
+}
+
+export interface ChangeCandidatesResponse {
+  changes: ChangeCandidate[];
+  default_id: string | null;
+  /** False where the server has no checkout: only indexed commits are offered. */
+  working_tree_supported: boolean;
+}
+
+export interface ChangeBlastRadiusRequest {
+  change_id: string;
+  max_depth?: number;
+}
+
+export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
+  change_id: string;
+  /** The paths analyzed, after the server's cap. */
+  changed_files: string[];
+  /** Every path the change touches, before the cap. */
+  changed_files_total: number;
 }

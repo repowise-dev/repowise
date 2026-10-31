@@ -2,9 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { ReactElement } from "react";
-import { ImpactView } from "../../src/blast-radius/impact-view.js";
+import { ImpactView, changeIdFromLink, changeLinkParam } from "../../src/blast-radius/impact-view.js";
 import type { ImpactAdapter } from "../../src/blast-radius/impact-adapter.js";
-import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type {
+  BlastRadiusResponse,
+  ChangeBlastRadiusResponse,
+  ChangeCandidatesResponse,
+} from "@repowise-dev/types/blast-radius";
 
 const RESULT: BlastRadiusResponse = {
   structural_impact_score: 0.42,
@@ -52,56 +56,155 @@ function renderView(node: ReactElement) {
   );
 }
 
-describe("ImpactView", () => {
-  it("renders hotspot chips from the adapter", async () => {
-    renderView(<ImpactView adapter={makeAdapter()} />);
-    expect(
-      await screen.findByRole("button", { name: "Add src/hot.ts to changed files" }),
-    ).toBeInTheDocument();
-  });
+const CHANGES: ChangeCandidatesResponse = {
+  working_tree_supported: true,
+  default_id: "working-tree",
+  changes: [
+    {
+      id: "working-tree",
+      kind: "working_tree",
+      label: "Uncommitted changes",
+      title: "On main",
+      author: null,
+      committed_at: null,
+      head_sha: null,
+      base: null,
+      ahead: null,
+      files_changed: 2,
+      is_current: true,
+    },
+    {
+      id: "branch:feat/x",
+      kind: "branch",
+      label: "feat/x",
+      title: "feat: x",
+      author: "Dev",
+      committed_at: null,
+      head_sha: "a".repeat(40),
+      base: "origin/main",
+      ahead: 1,
+      files_changed: 1,
+      is_current: false,
+    },
+  ],
+};
 
-  it("requires at least one path before analyzing", async () => {
-    const adapter = makeAdapter();
-    renderView(<ImpactView adapter={adapter} />);
+function changeResult(files: string[]): ChangeBlastRadiusResponse {
+  return {
+    ...RESULT,
+    change_id: "x",
+    changed_files: files,
+    changed_files_total: files.length,
+    transitive_affected: [{ path: "src/app.ts", depth: 1, via: files[0] ?? null }],
+    affected_signals: [{ path: "src/app.ts", is_hotspot: true, health_score: 3.2, module: "src" }],
+  };
+}
 
-    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
-
-    expect(await screen.findByText("Add at least one file path.")).toBeInTheDocument();
-    expect(adapter.analyze).not.toHaveBeenCalled();
-  });
-
-  it("analyzes the selected hotspot and renders the reviewer slot", async () => {
+describe("ImpactView without a change list", () => {
+  it("leads with picking files and analyzes the chosen hotspot", async () => {
     const adapter = makeAdapter({
       renderReviewers: (files) => <div>reviewers for {files.length} paths</div>,
     });
     renderView(<ImpactView adapter={adapter} />);
 
-    // Seed a changed file from the hotspot chip, then analyze.
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Add src/hot.ts to changed files" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add hotspot src/hot.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Analyze these files" }));
 
     await waitFor(() =>
-      expect(adapter.analyze).toHaveBeenCalledWith({
-        changedFiles: ["src/hot.ts"],
-        maxDepth: 3,
-      }),
+      expect(adapter.analyze).toHaveBeenCalledWith({ changedFiles: ["src/hot.ts"], maxDepth: 3 }),
     );
     expect(await screen.findByText("reviewers for 1 paths")).toBeInTheDocument();
   });
 
-  it("degrades gracefully when no reviewer slot is supplied", async () => {
+  it("cannot analyze an empty selection", async () => {
     const adapter = makeAdapter();
     renderView(<ImpactView adapter={adapter} />);
+    expect(screen.getByRole("button", { name: "Analyze these files" })).toBeDisabled();
+  });
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Add src/hot.ts to changed files" }),
+  it("analyzes seeded files on arrival", async () => {
+    const adapter = makeAdapter();
+    renderView(<ImpactView adapter={adapter} initialFiles={["src/a.ts"]} />);
+    await waitFor(() =>
+      expect(adapter.analyze).toHaveBeenCalledWith({ changedFiles: ["src/a.ts"], maxDepth: 3 }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(await screen.findByText(/This set of files/)).toBeInTheDocument();
+  });
+});
 
-    // Results still render (risk gauge) without a reviewer panel.
-    await waitFor(() => expect(adapter.analyze).toHaveBeenCalled());
-    expect(screen.queryByText(/reviewers for/)).not.toBeInTheDocument();
+describe("ImpactView with a change list", () => {
+  it("opens the default change and switches with one click", async () => {
+    const analyzeChange = vi.fn(async ({ changeId }: { changeId: string }) =>
+      changeResult(changeId === "working-tree" ? ["src/a.ts", "src/b.ts"] : ["src/core.ts"]),
+    );
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => CHANGES),
+      analyzeChange,
+      fileHref: (p) => `/files/${p}`,
+    });
+    renderView(<ImpactView adapter={adapter} />);
+
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "working-tree", maxDepth: 3 }));
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "2 changed")).toBeInTheDocument();
+    // The picked change's importer is a weak-health hotspot: it leads the actions.
+    expect(screen.getAllByRole("link", { name: /src\/app\.ts/ })[0]).toHaveAttribute("href", "/files/src/app.ts");
+
+    fireEvent.click(screen.getByRole("button", { name: /feat\/x/ }));
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "branch:feat/x", maxDepth: 3 }));
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "1 changed")).toBeInTheDocument();
+    expect(adapter.analyze).not.toHaveBeenCalled();
+  });
+
+  it("names a change only once its own numbers arrive", async () => {
+    let release: () => void = () => {};
+    const analyzeChange = vi.fn(({ changeId }: { changeId: string }) =>
+      changeId === "working-tree"
+        ? Promise.resolve(changeResult(["src/a.ts", "src/b.ts"]))
+        : new Promise<ChangeBlastRadiusResponse>((resolve) => {
+            release = () => resolve(changeResult(["src/core.ts"]));
+          }),
+    );
+    renderView(
+      <ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />,
+    );
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "2 changed")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /feat\/x/ }));
+    // Still the previous result, so still the previous name.
+    expect(screen.getByText(/Uncommitted changes/, { selector: "p span" })).toBeInTheDocument();
+    release();
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "1 changed")).toBeInTheDocument();
+  });
+});
+
+describe("shareable change links", () => {
+  it("round-trips wip, a branch and a full sha", () => {
+    const sha = "c".repeat(40);
+    for (const id of ["working-tree", "branch:feat/x", `commit:${sha}`]) {
+      expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
+    }
+    expect(changeLinkParam("working-tree")).toBe("wip");
+    expect(changeLinkParam("branch:feat/x")).toBe("feat/x");
+    // A branch named like the working tree or a sha keeps its prefix.
+    expect(changeLinkParam("branch:wip")).toBe("branch:wip");
+    expect(changeIdFromLink(changeLinkParam("branch:wip"))).toBe("branch:wip");
+    expect(changeIdFromLink(changeLinkParam(`branch:${sha}`))).toBe(`branch:${sha}`);
+  });
+
+  it("opens the linked change instead of the default, and reports picks", async () => {
+    const analyzeChange = vi.fn(async () => changeResult(["src/core.ts"]));
+    const onChangePicked = vi.fn();
+    renderView(
+      <ImpactView
+        adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })}
+        initialChange="feat/x"
+        onChangePicked={onChangePicked}
+      />,
+    );
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "branch:feat/x", maxDepth: 3 }));
+    expect(analyzeChange).not.toHaveBeenCalledWith({ changeId: "working-tree", maxDepth: 3 });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Uncommitted changes/ }));
+    expect(onChangePicked).toHaveBeenCalledWith("wip");
   });
 });
