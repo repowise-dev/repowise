@@ -798,9 +798,9 @@ def _member_reasons(
     """Why a member's set may miss calls through receivers of unknown type.
 
     The scan reads importers only. A file that never imports the definition
-    can still reach the member through a parameter or attribute, so any file
-    of its language family outside the scan that accesses ``.name`` or
-    ``->name`` may hold another site.
+    can still reach the member through a parameter, an attribute, an
+    inherited bare call or a destructuring, so any file of its language
+    family outside the scan that names it as a word may hold another site.
     """
     if node.kind not in _MEMBER_KINDS and node.node_id.count("::") <= 1:
         return []
@@ -810,14 +810,14 @@ def _member_reasons(
     held = _files_holding(root, name) if exts else None
     if held is None:
         return ["member: calls through untyped receivers are not scanned"]
-    access = re.compile(rf"(?:\.|->)\s*{re.escape(name)}(?![\w$])")
+    word = _word(name)
     for rel in sorted(held):
         if rel in scanned or PurePosixPath(rel).suffix not in exts:
             continue
         lines = _read_lines(root, rel)
-        if lines is None or any(access.search(t) for t in lines):
+        if lines is None or any(word.search(t) for t in lines):
             # The first such file is enough to say why, and keeps the reason short.
-            return [f"member: .{name} on untyped receiver in {rel}"]
+            return [f"member: {name} on untyped receiver in {rel}"]
     return []
 
 

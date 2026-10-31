@@ -1050,6 +1050,6 @@ async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, re
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
     assert out["complete"] is False
-    assert "member: .fetch_rows on untyped receiver in app/other.py" in (
+    assert "member: fetch_rows on untyped receiver in app/other.py" in (
         out["reasons"]
     )
