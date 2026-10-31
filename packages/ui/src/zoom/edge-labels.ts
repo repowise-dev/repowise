@@ -11,7 +11,9 @@
  * the label may straddle their padding but never their text; covering card
  * text or another label is not allowed, so a label with no such spot is
  * dropped rather than stacked: an unreadable pile, or a caption over a card's
- * name, says less than a missing caption the hover card still gives.
+ * name, says less than a missing caption the hover card still gives. The
+ * at-rest arrows (nothing focused) are stricter still: a label only where it
+ * clears every card, since a level at rest should read calm.
  *
  * The renderer only paints labels on a settled frame (never mid-pan or
  * mid-zoom), and `edgeLabelLayout` keeps the last layout keyed by what it was
@@ -164,9 +166,9 @@ function textArea(c: Rect): Rect {
 }
 
 /**
- * First spot clear of both placed labels and cards; failing that, the first
- * clear of labels and of card text (straddling a card's edge in a narrow gap);
- * null when every spot collides with a label or card text or leaves the area.
+ * First spot clear of both placed labels and cards; failing that (unless
+ * `strict`), the first clear of labels and of card text (straddling a card's
+ * edge in a narrow gap); null when every spot collides or leaves the area.
  */
 function placeOne(
   route: EdgeRoute,
@@ -174,32 +176,36 @@ function placeOne(
   placed: readonly Rect[],
   cards: readonly Rect[],
   area: Rect,
+  strict: boolean,
 ): Rect | null {
   const cands = candidates(route, w);
   const span = bounds(cands);
   const near = cards.filter((c) => overlaps(c, span));
   const blockers = [...placed, ...near];
   const text = [...placed, ...near.map(textArea)];
-  return cands.find((r) => clear(r, area, blockers)) ?? cands.find((r) => clear(r, area, text)) ?? null;
+  const clean = cands.find((r) => clear(r, area, blockers));
+  if (clean || strict) return clean ?? null;
+  return cands.find((r) => clear(r, area, text)) ?? null;
 }
 
 /**
  * Greedy, strongest-first placement of one pill per pair inside `area` (the
  * visible part of the parent the arrows are clipped to), steering clear of
- * the drawn `cards` where it can. Pure: `measure` returns a string's width in
- * px at the label font.
+ * the drawn `cards` where it can (and always, when `strict`). Pure: `measure`
+ * returns a string's width in px at the label font.
  */
 export function layoutEdgeLabels(
   pairs: readonly PairLabel[],
   measure: (s: string) => number,
   area: Rect,
   cards: readonly Rect[] = [],
+  strict = false,
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
   const taken: Rect[] = [];
   for (const pair of pairs) {
     const w = Math.ceil(measure(pair.text)) + LABEL_PAD_X * 2;
-    const rect = placeOne(pair.route, w, taken, cards, area);
+    const rect = placeOne(pair.route, w, taken, cards, area, strict);
     if (!rect) continue;
     placed.push({ text: pair.text, rect });
     taken.push(rect);
@@ -209,7 +215,7 @@ export function layoutEdgeLabels(
 
 /**
  * Single-slot memo: the last layout and the identities it was computed from
- * (scene, camera, viewport, focus, parent, verb filter). The renderer keeps
+ * (scene, camera, viewport, focus, parent, verb filter, ...). The renderer keeps
  * each of those objects stable until it changes, so an identity match means
  * the arrows are exactly the ones already laid out.
  */
@@ -232,9 +238,10 @@ export function edgeLabelLayout(
   measure: (s: string) => number,
   area: Rect,
   cards: () => readonly Rect[] = () => [],
+  strict = false,
 ): PlacedLabel[] {
   if (memo && sameKey(memo.key, key)) return memo.labels;
-  const labels = layoutEdgeLabels(pairLabels(edges), measure, area, cards());
+  const labels = layoutEdgeLabels(pairLabels(edges), measure, area, cards(), strict);
   // Copied: the caller may reuse its key array frame to frame.
   memo = { key: key.slice(), labels };
   return labels;
@@ -249,6 +256,7 @@ export function drawEdgeLabels(
   palette: ZoomPalette,
   alpha: number,
   cards: () => readonly Rect[],
+  strict = false,
 ): void {
   if (alpha <= 0.02 || edges.length === 0) return;
   const labels = edgeLabelLayout(
@@ -257,6 +265,7 @@ export function drawEdgeLabels(
     (s) => cardTextCache.width(ctx, LABEL_FONT, s),
     area,
     cards,
+    strict,
   );
   if (labels.length === 0) return;
   ctx.save();

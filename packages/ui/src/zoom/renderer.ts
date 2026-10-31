@@ -118,6 +118,8 @@ export class ZoomRenderer {
   /** The last drawn frame, for hit-testing; rewritten in place each frame. */
   private readonly lastStats: DrawStats = createDrawStats();
   private hasDrawn = false;
+  /** The `DrawOptions.levelId` of the last drawn frame. */
+  private drawnLevel: string | null = null;
   private readonly pixelRatio: PixelRatioWatch;
 
   constructor(opts: ZoomRendererOptions) {
@@ -352,9 +354,16 @@ export class ZoomRenderer {
     this.pixelRatio.destroy();
   }
 
+  /** The level whose at-rest links draw: the focus as of the last frame. */
+  private levelId(scene: ZoomScene): string {
+    return this.focus.chain[this.focus.chain.length - 1]?.id ?? scene.rootId;
+  }
+
   private emitFocus(scene: ZoomScene): void {
     const moved = this.focus.update(scene, this.cam, this.vp);
-    if (moved & RAILS_MOVED) this.invalidate();
+    // The frame just drawn showed the old level's at-rest links: repaint once.
+    const levelMoved = (moved & FOCUS_MOVED) !== 0 && this.levelId(scene) !== this.drawnLevel;
+    if (moved & RAILS_MOVED || levelMoved) this.invalidate();
     if (moved & FOCUS_MOVED) this.onFocus?.(this.focus.chain);
   }
 
@@ -406,6 +415,7 @@ export class ZoomRenderer {
     const start = now();
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     this.hasDrawn = true;
+    this.drawnLevel = this.levelId(this.scene);
     drawScene(this.ctx, this.scene, this.cam, this.vp, this.palette, {
       selectedId: this.selectedId,
       hoveredId: this.hoveredId,
@@ -415,6 +425,7 @@ export class ZoomRenderer {
       relationVerbs: this.relationVerbs,
       highlightIds: this.highlightIds,
       lanes: this.focus.lanes,
+      levelId: this.drawnLevel,
     }, this.lastStats);
     if (this.onStats) {
       this.onStats({

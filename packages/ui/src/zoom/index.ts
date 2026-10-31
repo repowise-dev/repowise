@@ -36,6 +36,8 @@ export {
 export type { RelationDirections, RelationSummary, VerbCount } from "./relation-summary";
 
 export { hasRole, healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
+export { REST_EDGE_MAX, restLinkSummary } from "./rest-links";
+export type { RestLinkQuery, RestLinkSummary } from "./rest-links";
 
 export {
   CONTAINER_KIND_LABEL,

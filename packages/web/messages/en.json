@@ -1447,7 +1447,10 @@
       "containers": "Containers.",
       "containersHint": "Pick one to dim every card outside it.",
       "dashedCard": "Dashed card",
-      "externalsHelp": "External system the code reaches. Hover one to see which parts use it."
+      "externalsHelp": "External system the code reaches. Hover one to see which parts use it.",
+      "linksShown": "Links shown:",
+      "linksShownSome": "strongest {shown, number} of {total, number} · hover a card for all of its links.",
+      "linksShownAll": "all {total, number} · hover a card to lift its links."
     },
     "detail": {
       "close": "Close details",

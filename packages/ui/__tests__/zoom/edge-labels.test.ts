@@ -105,6 +105,15 @@ describe("layoutEdgeLabels", () => {
     expect(placed!.rect.x + placed!.rect.w).toBeLessThanOrEqual(330 + 12);
   });
 
+  it("drops an at-rest (strict) label rather than straddle two cards", () => {
+    const pairs = pairLabels([edge("a", "b", "calls", 3, straight(290, 400, 330, 400))]);
+    const left = { x: 0, y: 300, w: 290, h: 200 };
+    const right = { x: 330, y: 300, w: 290, h: 200 };
+    expect(layoutEdgeLabels(pairs, measure, VP, [left, right], true)).toEqual([]);
+    // With room clear of every card, a strict label still places.
+    expect(layoutEdgeLabels(pairs, measure, VP, [], true)).toHaveLength(1);
+  });
+
   it("drops a label that would only fit over card text", () => {
     const pairs = pairLabels([edge("a", "b", "calls", 3, straight(100, 400, 500, 400))]);
     expect(layoutEdgeLabels(pairs, measure, VP, [{ ...VP }])).toEqual([]);

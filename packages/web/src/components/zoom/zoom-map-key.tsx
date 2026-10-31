@@ -18,6 +18,7 @@
  * people not to touch it.
  */
 
+import type { ReactNode } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { FilterChip } from "@repowise-dev/ui/health";
 import { Popover, PopoverContent, PopoverTrigger } from "@repowise-dev/ui/ui/popover";
@@ -52,13 +53,15 @@ interface ZoomMapKeyProps {
   onContainerChange: (id: string | null) => void;
   /** The map draws dashed external-system cards, so the key says what they are. */
   hasExternals: boolean;
+  /** The at-rest links line (`ZoomLinksLegend`), under the marks. */
+  linksLegend?: ReactNode;
 }
 
 function Dot({ className }: { className: string }) {
   return <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${className}`} />;
 }
 
-export function ZoomMapKey({ about, ...body }: ZoomMapKeyProps) {
+export function ZoomMapKey({ about, linksLegend, ...body }: ZoomMapKeyProps) {
   const t = useTranslations("zoom");
   const filtered = body.selected !== null || body.container !== null;
 
@@ -83,6 +86,7 @@ export function ZoomMapKey({ about, ...body }: ZoomMapKeyProps) {
       <PopoverContent side="top" align="start" className="w-[22rem] max-w-[calc(100vw-2rem)] space-y-3">
         <p className="text-[13px] leading-relaxed text-[var(--color-text-primary)]">{about}</p>
         <MapKeyBody {...body} />
+        {linksLegend}
         <ContainerFilter
           containers={body.containers}
           container={body.container}
@@ -143,7 +147,7 @@ function MapKeyBody({
   selected,
   onSelectedChange,
   hasExternals,
-}: Omit<ZoomMapKeyProps, "about" | "containers" | "container" | "onContainerChange">) {
+}: Omit<ZoomMapKeyProps, "about" | "linksLegend" | "containers" | "container" | "onContainerChange">) {
   const t = useTranslations("zoom");
   const filtered = selected !== null;
   return (

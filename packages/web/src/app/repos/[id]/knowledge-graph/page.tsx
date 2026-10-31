@@ -36,6 +36,7 @@ import { ZoomBreadcrumb } from "@/components/zoom/zoom-breadcrumb";
 import { ZoomSearch } from "@/components/zoom/zoom-search";
 import { ZoomDetailPanel } from "@/components/zoom/zoom-detail-panel";
 import { ZoomMapKey } from "@/components/zoom/zoom-map-key";
+import { ZoomLinksLegend } from "@/components/zoom/zoom-links-legend";
 import { ZoomHint } from "@/components/zoom/zoom-hint";
 import { ZoomExportButton } from "@/components/zoom/zoom-export-button";
 import { ZoomControls } from "@/components/zoom/zoom-controls";
@@ -195,6 +196,13 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
               container={container}
               onContainerChange={setContainer}
               hasExternals={hasExternals}
+              linksLegend={
+                <ZoomLinksLegend
+                  map={zoomMap}
+                  levelId={chain[chain.length - 1]?.id ?? zoomMap.root_id}
+                  relationVerbs={relationVerbs}
+                />
+              }
             />
             <ZoomHint />
           </ZoomControls>

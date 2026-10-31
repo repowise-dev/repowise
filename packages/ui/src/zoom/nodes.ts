@@ -201,13 +201,14 @@ export function drawEdge(
   palette: ZoomPalette,
   alpha: number,
   withArrow: boolean,
+  lineWidth = EDGE_LINE_PX * couplingWidth(coupling),
 ): void {
   if (alpha <= 0.02) return;
   const { start, c1, c2, end, endAngle } = route;
   const color = coupling === "tight" ? palette.edgeStrong : palette.edge;
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = color;
-  ctx.lineWidth = EDGE_LINE_PX * couplingWidth(coupling);
+  ctx.lineWidth = lineWidth;
   // Stop the curve just shy of the head so the stroke and the fill do not overlap.
   const headBack = withArrow ? ARROW_SIZE_PX : 0;
   const ex = end.x - Math.cos(endAngle) * headBack;

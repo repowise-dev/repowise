@@ -13,7 +13,7 @@ import { type Camera, type Rect, type Viewport, worldRectToScreen } from "./came
 import { ALPHA_EPSILON, MIN_DRAW_PX } from "./constants";
 import { cardPreview } from "./card-preview";
 import { isOnScreen } from "./cull";
-import { drawEdges } from "./draw-edges";
+import { drawEdges, type EdgeQuery, focusedIn } from "./draw-edges";
 import { drawGrid } from "./draw-grid";
 import { drawEdgeLabels } from "./edge-labels";
 import type { RoutedEdge } from "./edges";
@@ -67,6 +67,18 @@ export interface DrawOptions {
    * focus chain an outer rail drops what an inner one shows (see `focusLanes`).
    */
   lanes?: ReadonlyMap<string, ExternalLane> | null;
+  /**
+   * The node the camera looks into (the deepest of the focus chain): its
+   * children draw their strongest relations at rest, before anything is
+   * hovered. None when null.
+   */
+  levelId?: string | null;
+  /**
+   * Keep links touching the test suite in the at-rest set (they are always
+   * drawn for a focused card). Off by default: tests calling the code they
+   * test would crowd out the production dependencies.
+   */
+  showTestLinks?: boolean;
 }
 
 /** Alpha of a card outside `DrawOptions.highlightIds`. */
@@ -110,6 +122,9 @@ class DrawPass {
   /** The node under the cursor, else the selected one: whose relations lift. */
   private focusId: string | null = null;
   private edgesOn = false;
+  /** The parent whose children draw their at-rest links this frame, if any. */
+  private levelId: string | null = null;
+  private readonly edgeQuery: EdgeQuery = { focusId: null, atRest: false, relationVerbs: null, showTestLinks: false };
   private motion = false;
   private highlight: ReadonlySet<string> | null = null;
 
@@ -145,6 +160,8 @@ class DrawPass {
     // Hover wins over the selection for immediate feedback.
     this.focusId = opts.hoveredId ?? opts.selectedId;
     this.edgesOn = !opts.lowDetail && this.focusId !== null;
+    // No arrows of any kind mid-pan, the same as focused ones.
+    this.levelId = opts.lowDetail ? null : (opts.levelId ?? null);
     this.motion = opts.motion ?? false;
     this.highlight = opts.highlightIds ?? null;
   }
@@ -157,6 +174,7 @@ class DrawPass {
     this.stats = undefined as unknown as DrawStats;
     this.paper = null;
     this.highlight = null;
+    this.edgeQuery.relationVerbs = null;
     this.card.preview = null;
     this.labelKids = NO_KIDS;
     this.labelLane = undefined;
@@ -229,10 +247,16 @@ class DrawPass {
   }
 
   private arrows(node: ZoomNode, kids: readonly ZoomNode[], alpha: number): readonly RoutedEdge[] {
-    const focusId = this.focusId;
-    if (!this.edgesOn || focusId === null || !this.scene.relationsByParent.has(node.id)) return NO_ARROWS;
+    const focusId = this.edgesOn ? this.focusId : null;
+    const atRest = node.id === this.levelId;
+    if ((focusId === null && !atRest) || !this.scene.relationsByParent.has(node.id)) return NO_ARROWS;
+    const q = this.edgeQuery;
+    q.focusId = focusId;
+    q.atRest = atRest;
+    q.relationVerbs = this.opts.relationVerbs ?? null;
+    q.showTestLinks = this.opts.showTestLinks ?? false;
     const { ctx, scene, cam, vp, palette } = this;
-    return drawEdges(ctx, scene, node, kids, cam, vp, palette, alpha, focusId, this.opts.relationVerbs ?? null);
+    return drawEdges(ctx, scene, node, kids, cam, vp, palette, alpha, q);
   }
 
   /**
@@ -251,7 +275,9 @@ class DrawPass {
   ): void {
     const key = this.labelKey;
     key.length = 0;
-    key.push(this.scene, this.cam, this.vp, this.focusId, node.id, this.opts.relationVerbs ?? null);
+    // At-rest labels (no card of this level focused) take only clean spots.
+    const strict = !focusedIn(this.scene, node, this.focusId);
+    key.push(this.scene, this.cam, this.vp, this.focusId, node.id, this.opts.relationVerbs ?? null, strict, this.opts.showTestLinks ?? false);
     this.labelKids = kids;
     this.labelLane = lane;
     this.labelScreen = screen;
@@ -260,7 +286,7 @@ class DrawPass {
     area.y = Math.max(0, screen.y);
     area.w = Math.min(this.vp.w, screen.x + screen.w) - area.x;
     area.h = Math.min(this.vp.h, screen.y + screen.h) - area.y;
-    drawEdgeLabels(this.ctx, key, arrows, area, this.palette, alpha, this.labelCards);
+    drawEdgeLabels(this.ctx, key, arrows, area, this.palette, alpha, this.labelCards, strict);
   }
 
   /** Screen rects of the cards a label should avoid; runs only when the layout does. */

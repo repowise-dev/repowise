@@ -55,13 +55,30 @@ function setup(onFocus?: () => void) {
     for (const f of run) f();
     return { drew: draws - before, shadows: (counts.get("set:shadowBlur") ?? 0) > 0 };
   };
-  return { renderer, tick, hovers };
+  return { renderer, tick, hovers, counts };
 }
 
 describe("ZoomRenderer loop", () => {
   it("goes idle after the first paint", () => {
     const { tick } = setup();
     expect(tick()).toEqual({ drew: 1, shadows: true });
+    expect(frames).toHaveLength(0);
+  });
+
+  it("draws the focused level's strongest links at rest", () => {
+    const { tick, counts } = setup();
+    tick();
+    // Root is the level on the first paint: its layers' links draw unhovered.
+    expect(counts.get("bezierCurveTo") ?? 0).toBeGreaterThan(0);
+  });
+
+  it("repaints once when a frame lands on a new level, then goes idle", () => {
+    const { renderer, tick } = setup();
+    tick();
+    // Frame layer l:0 so the focus moves into it on the next drawn frame.
+    renderer.frameNode("l:0", { reducedMotion: true });
+    expect(tick().drew).toBe(1);
+    expect(tick().drew).toBe(1);
     expect(frames).toHaveLength(0);
   });
 
