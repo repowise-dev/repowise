@@ -178,3 +178,16 @@ export function withExternals(map: ZoomMap): ZoomMap {
   }
   return { ...map, externals, external_relations };
 }
+
+export const TEST_LAYER = "l:10";
+
+/**
+ * `map` with every file under its last layer flagged `is_test`, which makes
+ * that layer the test layer the layout sets aside (see `testLayerIds`).
+ */
+export function withTestLayer(map: ZoomMap): ZoomMap {
+  return {
+    ...map,
+    nodes: map.nodes.map((n) => (n.kind === "file" && n.id.startsWith("f:10:") ? { ...n, is_test: true } : n)),
+  };
+}

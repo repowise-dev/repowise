@@ -103,6 +103,13 @@ async def _resolve_skeleton(
     abs_path = (repo_path / file_target).resolve()
     try:
         abs_path.relative_to(repo_path.resolve())
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
+        if is_extracted_document(repo_path / file_target):
+            result_data["skeleton"] = {
+                "error": "Source skeletons are not available for extracted documents."
+            }
+            return
         source = abs_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         result_data["skeleton"] = {

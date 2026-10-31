@@ -507,6 +507,13 @@ def _detect_workspace(repo_path: str | None):
         return None, None, None
 
 
+def _warm_savings_pricing(repo_path: str | None) -> None:
+    """Price the first calls' savings: starts a daemon thread, never awaited."""
+    from repowise.core.savings.pricing import warm_pricing_snapshot
+
+    warm_pricing_snapshot(repo_path)
+
+
 @asynccontextmanager
 async def _lifespan(server: FastMCP):
     """Initialize DB engine, session factory, and FTS synchronously on startup.
@@ -678,6 +685,7 @@ async def _lifespan(server: FastMCP):
     # the server starts accepting connections without blocking on disk I/O.
     _state._vector_store_ready = asyncio.Event()
     _bg_task = asyncio.create_task(_load_vector_stores(_state._repo_path))
+    _warm_savings_pricing(_state._repo_path)
     _log.info("repowise MCP: ready (vector stores loading in background)")
 
     yield

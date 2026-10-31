@@ -74,6 +74,8 @@ export interface ZoomCanvasProps {
    * map key), or none when unset. Build it once per pick, not per render.
    */
   highlightIds?: ReadonlySet<string> | null;
+  /** Draw the set-aside test layer's relations too. See `DrawOptions.showTestLinks`. */
+  showTestLinks?: boolean;
   /**
    * Relations incident to a node, for the hover card's one-line summary. The
    * host already indexes these for its detail panel, so it passes the lookup in
@@ -120,6 +122,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
     showStats,
     relationVerbs = null,
     highlightIds = null,
+    showTestLinks = false,
     relationsByNode,
     selectionInsetRight = 0,
     minimapClassName = "bottom-3 left-3",
@@ -284,6 +287,10 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   useEffect(() => {
     rendererRef.current?.setHighlight(highlightIds);
   }, [highlightIds]);
+
+  useEffect(() => {
+    rendererRef.current?.setShowTestLinks(showTestLinks);
+  }, [showTestLinks]);
 
   // One-shot: jump to the URL-provided focus node once the canvas has done its
   // initial fit (it needs a real viewport size before a node rect can be framed).

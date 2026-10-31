@@ -215,10 +215,25 @@ async def test_attribution_is_unknown_without_an_announced_client(repo: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_repository_without_a_sidecar_records_nothing(
+async def test_an_indexed_repository_without_a_sidecar_records_its_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absent sidecar is an opt-out, and a tool call must still succeed."""
+    """A repo indexed before the sidecar existed creates it on its first call."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert len(_events(tmp_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_directory_without_repowise_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``.repowise/`` is an opt-out, and a tool call must still succeed."""
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
 
     async def get_overview() -> dict:
@@ -444,3 +459,22 @@ def test_the_raw_size_is_shaped_on_a_copy() -> None:
 
     assert raw == {"results": ["a"], "_meta": {"timing_ms": 12.5}}
     assert shaped < savings_event.raw_response_tokens(raw)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_call_starts_a_background_price_warm(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call records unpriced at once; the warm prices the calls after it."""
+    from repowise.core.savings import pricing
+
+    pricing.clear_pricing_cache()
+    warmed: list[str] = []
+    monkeypatch.setattr(pricing, "warm_pricing_snapshot", lambda root: warmed.append(str(root)))
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert warmed == [str(repo)]
+    assert _events(repo)[0]["model"] is None

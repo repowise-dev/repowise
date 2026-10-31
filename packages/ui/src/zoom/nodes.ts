@@ -3,28 +3,26 @@
  *
  * Everything is drawn in screen-pixel space (the recursion in `draw-tree.ts`
  * resolves each node's screen rect from the camera), so text stays crisp at any
- * zoom instead of being scaled and blurred. The card's text zones (title,
- * chips, summary, footer) are painted by `card-text.ts`, which discloses detail
- * by the card's on-screen size.
+ * zoom instead of being scaled and blurred. The card's text zones (title and
+ * corner health score, technologies, summary, footer) are painted by
+ * `card-text.ts`, which discloses detail by the card's on-screen size.
  *
  * Visual language (Linear/Stripe idiom): cards are clean surfaces that float on
- * a faint dot-grid via a soft drop shadow and a hairline border. Role (entry /
- * hotspot / dead / on-flow) is shown as one small status dot, never a colored
- * frame, and detailed metrics live in the side panel rather than on the card, so
- * the canvas stays calm at a glance. Relations are deliberately low-emphasis: a
+ * a faint dot-grid via a soft drop shadow and a hairline border. Roles (entry /
+ * hotspot / dead) are small icons in the text, never a colored frame, and
+ * detailed metrics live in the side panel rather than on the card, so the
+ * canvas stays calm at a glance. Relations are deliberately low-emphasis: a
  * single neutral hue, thin, faded behind the cards.
  */
 
 import type { Rect } from "./camera";
 import type { CardPreview } from "./card-preview";
 import { drawCardText } from "./card-text";
-import { hasRole } from "./node-signals";
 import { ARROW_SIZE_PX, EDGE_LINE_PX } from "./constants";
 import type { EdgeRoute } from "./edges";
 import type { ZoomPalette } from "./theme";
 import type { ZoomNode } from "./types";
 
-const DOT_MIN_PX = 60; // draw the role status dot once there is room
 const CORNER_PX = 12;
 const TEXTURE_MIN_PX = 96; // paint the paper texture once the card is big enough
 
@@ -59,21 +57,6 @@ function drawPaperTexture(
   ctx.fillStyle = palette.paperWash;
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   ctx.restore();
-}
-
-/**
- * The role dot's colour, or null when a node carries no role.
- *
- * One hue, deliberately. A per-role palette collides with the health dot in the
- * footer — `palette.entry` and `palette.healthGood` are both `--color-success`,
- * so one green would mean "has an entry point" and another "Good", forty pixels
- * apart on the same card. The band colours belong to health.
- *
- * The role dot says only "there is something here"; `nodeRoles` in
- * `node-signals.ts` names every applicable role in words.
- */
-function roleColor(node: ZoomNode, palette: ZoomPalette): string | null {
-  return hasRole(node) ? palette.accent : null;
 }
 
 function roundRectPath(ctx: CanvasRenderingContext2D, r: Rect, radius: number): void {
@@ -133,7 +116,7 @@ export function drawCard(
   }
 
   // Hairline border; the hovered card firms up, the selected card gets an accent
-  // ring. No role color on the frame (that lives in the status dot). Re-establish
+  // ring. No role color on the frame (roles are icons in the text). Re-establish
   // the rounded path first: the fill/texture passes above left their own paths.
   roundRectPath(ctx, rect, radius);
   ctx.lineWidth = selected ? 2 : 1;
@@ -144,20 +127,10 @@ export function drawCard(
       : palette.nodeBorder;
   ctx.stroke();
 
-  // Role status dot, top-right. One dot, most-salient role only.
-  const role = rect.w >= DOT_MIN_PX && rect.h >= 28 ? roleColor(node, palette) : null;
-  const roleDot = role !== null;
-  if (role) {
-    ctx.beginPath();
-    ctx.arc(rect.x + rect.w - 13, rect.y + 13, 3.5, 0, Math.PI * 2);
-    ctx.fillStyle = role;
-    ctx.fill();
-  }
-
   // The node's own text recedes faster than its frame so that, mid-zoom, the
   // children fading in inside it read cleanly instead of overlapping its label.
   const textAlpha = alpha * Math.max(0, 1 - 2 * t);
-  if (textAlpha > 0.02) drawCardText(ctx, rect, node, palette, textAlpha, roleDot, state.preview ?? null);
+  if (textAlpha > 0.02) drawCardText(ctx, rect, node, palette, textAlpha, state.preview ?? null);
   ctx.globalAlpha = 1;
 }
 

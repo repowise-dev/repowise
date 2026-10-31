@@ -1,14 +1,16 @@
 /**
- * Per-parent masonry pack layout. Pure, browser-free and unit-testable.
+ * Per-parent pack layout. Pure, browser-free and unit-testable.
  *
  * The backend ships a containment tree and no placement. Every card is sized by
  * importance (more central = bigger, within bounds so nothing is unreadably
- * small) and the cards are row-packed into centred, variable-width rows. The
- * staggered row edges and the size variation give an organic architecture-map
- * feel rather than a rigid grid, while the whole cluster is uniform-fit
- * (aspect-preserving) into the parent so cards keep a single landscape shape.
- * The rect emitted is in parent `[0,1]` space, which is what the clip-and-scale
- * composition in `geometry.ts` consumes.
+ * small) and the cards are row-packed into centred, variable-width rows, the
+ * whole cluster uniform-fit (aspect-preserving) into the parent so cards keep a
+ * single landscape shape. Where the parent's children link to each other, the
+ * rows follow the dependency direction: callers above callees, each row ordered
+ * to cut crossings (see `dependencyOrder`, `uncross`). Children the caller
+ * sets aside (the test layer, from `testLayerIds` in `scene.ts`) get a column
+ * of their own. The rect emitted is in parent `[0,1]` space, which is what the
+ * clip-and-scale composition in `geometry.ts` consumes.
  */
 
 import type { Rect } from "./camera";
@@ -31,6 +33,13 @@ export interface LayoutChild {
   /** When given (with `kind`), the card widens so this name fits (see `labelAspect`). */
   name?: string;
   kind?: ZoomKind;
+}
+
+/** A sibling link the layout ranks by (the slice of a `ZoomRelation` it reads). */
+export interface LayoutRelation {
+  source_id: string;
+  target_id: string;
+  edge_count: number;
 }
 
 export interface PackLayoutOptions {
@@ -126,25 +135,235 @@ function packRows(
   return { rows, maxRowW, totalH, scale: Math.min(1 / maxRowW, 1 / totalH) };
 }
 
+/** Directed link weights between siblings: `out.get(a)?.get(b)` is a -> b, `into` the reverse. */
+interface SiblingLinks {
+  out: Map<string, Map<string, number>>;
+  into: Map<string, Map<string, number>>;
+}
+
+function addWeight(m: Map<string, Map<string, number>>, a: string, b: string, w: number): void {
+  let row = m.get(a);
+  if (!row) m.set(a, (row = new Map()));
+  row.set(b, (row.get(b) ?? 0) + w);
+}
+
+/** The links among `children`, or null when none join two of them. */
+function siblingLinks(
+  children: readonly LayoutChild[],
+  relations: readonly LayoutRelation[],
+): SiblingLinks | null {
+  if (relations.length === 0) return null;
+  const ids = new Set(children.map((c) => c.id));
+  const links: SiblingLinks = { out: new Map(), into: new Map() };
+  for (const r of relations) {
+    if (r.source_id === r.target_id || !(r.edge_count > 0)) continue;
+    if (!ids.has(r.source_id) || !ids.has(r.target_id)) continue;
+    addWeight(links.out, r.source_id, r.target_id, r.edge_count);
+    addWeight(links.into, r.target_id, r.source_id, r.edge_count);
+  }
+  return links.out.size > 0 ? links : null;
+}
+
+const EPS = 1e-9;
+
+function total(m: ReadonlyMap<string, number> | undefined): number {
+  let s = 0;
+  if (m) for (const w of m.values()) s += w;
+  return s;
+}
+
 /**
- * Lay `children` out as an importance-weighted masonry pack inside the unit
- * parent box. Children are ordered by `sibling_rank` (most important first, so
- * the biggest cards read top-left), sized by importance normalised across the
- * sibling set, widened where a long name needs it, then greedily row-packed to
- * ~`cols` cards per row. Rows are centred (so left edges stagger) and each card
- * is centred in its row band (so top edges stagger); the whole cluster is uniform-fit into `[0,1]²`. Returns
- * each child's rect in parent `[0,1]` space. Deterministic: stable order, ties
- * broken by id; no randomness.
+ * Callers before callees: a weighted greedy feedback-arc-set order (Eades, Lin
+ * and Smyth). Sinks peel off to the back and sources to the front; when only
+ * cycles are left, the child whose outgoing weight most exceeds its incoming
+ * goes next, so a cycle breaks at its weakest links. Rank breaks ties. Children
+ * with no links follow in rank order, into the bottom rows.
+ *
+ * Packing this order into rows is a layered layout with the layer count set by
+ * the parent's shape, not the graph's depth, so the fit and the importance
+ * sizing are untouched. Ceiling: a link may skip rows or run within one, and
+ * crossings are cut per row (see `uncross`), not minimised globally. elkjs
+ * (already a dependency) does a full layered pass, but it is async while the
+ * scene builds synchronously per parent, and its layers would not fit the
+ * parent's aspect; reach for it only if long skipped links start to read badly.
+ * Cost: linear in the parent's links plus quadratic in its linked children, a
+ * few microseconds per relation on a cold scene build; a re-layout repacks
+ * only the root.
+ */
+function dependencyOrder(byRank: readonly LayoutChild[], { out, into }: SiblingLinks): LayoutChild[] {
+  const linked = byRank.filter((c) => out.has(c.id) || into.has(c.id));
+  const n = linked.length;
+  // Index arrays, not id maps: this loop is quadratic in the linked children.
+  const at = new Map(linked.map((c, i) => [c.id, i] as const));
+  const outW = new Float64Array(n);
+  const inW = new Float64Array(n);
+  const live = new Uint8Array(n).fill(1);
+  linked.forEach((c, i) => {
+    outW[i] = total(out.get(c.id));
+    inW[i] = total(into.get(c.id));
+  });
+  const take = (i: number): void => {
+    live[i] = 0;
+    for (const [u, w] of out.get(linked[i]!.id) ?? []) inW[at.get(u)!]! -= w;
+    for (const [u, w] of into.get(linked[i]!.id) ?? []) outW[at.get(u)!]! -= w;
+  };
+  const head: LayoutChild[] = [];
+  const tail: LayoutChild[] = []; // reversed: the first sink taken ends last
+  for (let left = n; left > 0; left--) {
+    let pick = -1;
+    // The least important sink first, so the more important ones end higher.
+    for (let i = n - 1; i >= 0; i--) {
+      if (live[i] && outW[i]! <= EPS) {
+        pick = i;
+        break;
+      }
+    }
+    if (pick >= 0) {
+      take(pick);
+      tail.push(linked[pick]!);
+      continue;
+    }
+    let bestDelta = -Infinity;
+    for (let i = 0; i < n; i++) {
+      if (!live[i]) continue;
+      if (inW[i]! <= EPS) {
+        pick = i;
+        break;
+      }
+      if (outW[i]! - inW[i]! > bestDelta + EPS) {
+        bestDelta = outW[i]! - inW[i]!;
+        pick = i;
+      }
+    }
+    take(pick);
+    head.push(linked[pick]!);
+  }
+  const unlinked = byRank.filter((c) => !out.has(c.id) && !into.has(c.id));
+  return [...head, ...tail.reverse(), ...unlinked];
+}
+
+/**
+ * Reorder each row by the barycentre of its links into the rows around it: a
+ * sweep down (each row against everything above it), one back up (against
+ * everything below) and a last one down. Row widths do not change, so the fit
+ * holds. A card with no link into the reference rows keeps its place.
+ */
+function uncross(rows: Packed[][], { out, into }: SiblingLinks, maxRowW: number, gutter: number): void {
+  if (rows.length < 2) return;
+  const pos = new Map<string, number>();
+  const rowOf = new Map<string, number>();
+  const place = (row: readonly Packed[]): void => {
+    let x = (maxRowW - rowW(row, gutter)) / 2;
+    for (const c of row) {
+      pos.set(c.id, x + c.w / 2);
+      x += c.w + gutter;
+    }
+  };
+  rows.forEach((row, i) => {
+    place(row);
+    for (const c of row) rowOf.set(c.id, i);
+  });
+  const key = new Map<string, number>();
+  const sweep = (i: number, above: boolean): void => {
+    const row = rows[i]!;
+    for (const c of row) {
+      let sw = 0;
+      let sx = 0;
+      const add = (m: Map<string, number> | undefined): void => {
+        for (const [u, w] of m ?? []) {
+          const r = rowOf.get(u)!;
+          if (above ? r >= i : r <= i) continue;
+          sw += w;
+          sx += w * pos.get(u)!;
+        }
+      };
+      add(out.get(c.id));
+      add(into.get(c.id));
+      key.set(c.id, sw > 0 ? sx / sw : pos.get(c.id)!);
+    }
+    // Equal keys within float noise keep their order: a parent re-laid out at
+    // a shape a few ulps off must not swap two tied cards.
+    row.sort((a, b) => {
+      const d = key.get(a.id)! - key.get(b.id)!;
+      return Math.abs(d) > EPS ? d : 0;
+    });
+    place(row);
+  };
+  for (let i = 1; i < rows.length; i++) sweep(i, true);
+  for (let i = rows.length - 2; i >= 0; i--) sweep(i, false);
+  for (let i = 1; i < rows.length; i++) sweep(i, true);
+}
+
+/** Share of the parent's width a set-aside column takes, and the gap before it. */
+const ASIDE_FRAC = 0.14;
+const ASIDE_GAP = 0.02;
+
+/**
+ * Lay `children` out inside the unit parent box. Children are ranked by
+ * dependency direction over `relations` (their sibling links; see
+ * `dependencyOrder`), falling back to `sibling_rank` (most important first, so
+ * the biggest cards read top-left) where no links decide; sized by importance
+ * normalised across the sibling set, widened where a long name needs it, then
+ * greedily row-packed to ~`cols` cards per row. Rows are centred (so left edges
+ * stagger), each row is reordered to cut crossings, and each card is centred
+ * in its row band (so top edges stagger); the whole cluster is uniform-fit
+ * into `[0,1]²`. Children in `asideIds` go to a column on the right, and
+ * their links leave the ranking: tests call into almost every layer, so ranked
+ * with the rest they would sit on top of the map. Returns each child's rect in
+ * parent `[0,1]` space. Deterministic: stable order, ties broken by id; no randomness.
  */
 export function packLayout(
   children: readonly LayoutChild[],
   parentAspect: number,
   opts: PackLayoutOptions = {},
+  relations: readonly LayoutRelation[] = [],
+  asideIds?: ReadonlySet<string>,
 ): Map<string, Rect> {
-  // A parent of mostly files gets grouped tiles instead (see `layout-files.ts`).
-  const tiles = fileLevelLayout(children, parentAspect);
-  if (tiles) return tiles;
-  const gutter = opts.gutter ?? PACK_GUTTER;
+  const aside = asideIds ? children.filter((c) => asideIds.has(c.id)) : [];
+  if (aside.length === 0 || aside.length === children.length) {
+    return packRanked(children, parentAspect, opts, relations);
+  }
+  // Each side packs into its own column, then is squeezed into it along x.
+  // Packing to the column's aspect keeps the parentAspect pre-divide exact:
+  // `composeRect` re-applies the parent's width, the squeeze its share of it.
+  const mainFrac = 1 - ASIDE_FRAC - ASIDE_GAP;
+  const out = packRanked(
+    children.filter((c) => !asideIds!.has(c.id)),
+    parentAspect * mainFrac,
+    opts,
+    relations,
+  );
+  let top = Infinity;
+  for (const r of out.values()) {
+    r.x *= mainFrac;
+    r.w *= mainFrac;
+    top = Math.min(top, r.y);
+  }
+  const side = packRanked(aside, parentAspect * ASIDE_FRAC, opts, []);
+  let sideTop = Infinity;
+  let sideBottom = -Infinity;
+  for (const r of side.values()) {
+    sideTop = Math.min(sideTop, r.y);
+    sideBottom = Math.max(sideBottom, r.y + r.h);
+  }
+  // Top-aligned with the main cluster (a side note, not a centred peer), but
+  // never pushed out of the box.
+  const dy = Math.min(top - sideTop, 1 - sideBottom);
+  for (const [id, r] of side) {
+    out.set(id, { x: 1 - ASIDE_FRAC + r.x * ASIDE_FRAC, y: r.y + dy, w: r.w * ASIDE_FRAC, h: r.h });
+  }
+  return out;
+}
+
+/**
+ * Size each of `ordered` (kept in order) in the parent's local `[0,1]` box:
+ * height by importance normalised across the set, width by aspect.
+ */
+function sizeCards(
+  ordered: readonly LayoutChild[],
+  parentAspect: number,
+  opts: PackLayoutOptions,
+): Packed[] {
   const sizeMin = opts.sizeMin ?? PACK_SIZE_MIN;
   const sizeMax = opts.sizeMax ?? PACK_SIZE_MAX;
   const gamma = opts.gamma ?? PACK_IMPORTANCE_GAMMA;
@@ -164,14 +383,6 @@ export function packLayout(
     return Math.min(8, Math.max(0.2, want / (parentAspect || 1)));
   };
 
-  const out = new Map<string, Rect>();
-  const n = children.length;
-  if (n === 0) return out;
-
-  const ordered = [...children].sort(
-    (a, b) => a.sibling_rank - b.sibling_rank || (a.id < b.id ? -1 : 1),
-  );
-
   // Normalise importance across this sibling set so each parent shows a full
   // range of sizes (min-max within the group). If they are all equal, everyone
   // gets the max size (a uniform, generously-sized cluster).
@@ -189,10 +400,32 @@ export function packLayout(
     return sizeMin + (sizeMax - sizeMin) * Math.pow(norm, gamma);
   };
 
-  const cards: Packed[] = ordered.map((c) => {
+  return ordered.map((c) => {
     const h = heightOf(c);
     return { id: c.id, w: h * localAspect(c), h };
   });
+}
+
+function packRanked(
+  children: readonly LayoutChild[],
+  parentAspect: number,
+  opts: PackLayoutOptions,
+  relations: readonly LayoutRelation[],
+): Map<string, Rect> {
+  // A parent of mostly files gets grouped tiles instead (see `layout-files.ts`).
+  const tiles = fileLevelLayout(children, parentAspect);
+  if (tiles) return tiles;
+  const gutter = opts.gutter ?? PACK_GUTTER;
+  const out = new Map<string, Rect>();
+  const n = children.length;
+  if (n === 0) return out;
+
+  const byRank = [...children].sort(
+    (a, b) => a.sibling_rank - b.sibling_rank || (a.id < b.id ? -1 : 1),
+  );
+  const links = siblingLinks(byRank, relations);
+  const ordered = links ? dependencyOrder(byRank, links) : byRank;
+  const cards = sizeCards(ordered, parentAspect, opts);
 
   // Greedy row packing. The row target that fills the parent best depends on
   // how the card widths happen to break, so try a few shapes around the
@@ -213,6 +446,7 @@ export function packLayout(
     consider(packRows(cards, (sumW + (n - r) * gutter) / r, gutter, true));
   }
   const { rows, maxRowW, totalH, scale } = best!;
+  if (links) uncross(rows, links, maxRowW, gutter);
   const offX = (1 - maxRowW * scale) / 2;
   const offY = (1 - totalH * scale) / 2;
 

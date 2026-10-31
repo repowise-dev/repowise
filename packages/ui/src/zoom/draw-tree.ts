@@ -64,6 +64,12 @@ export interface DrawOptions {
    */
   highlightIds?: ReadonlySet<string> | null;
   /**
+   * Draw relations that touch a test layer (see `testLayerIds`). Off by default:
+   * tests call into nearly every layer and would take most of the strongest
+   * arrows, so the set-aside test layer keeps its links hidden until asked.
+   */
+  showTestLinks?: boolean;
+  /**
    * Rails drawn in place of a parent's own, keyed by parent id: along the
    * focus chain an outer rail drops what an inner one shows (see `focusLanes`).
    */

@@ -357,6 +357,8 @@ def _split_cached(
     repo_path: Path,
     fi_and_bytes: list[tuple],
     progress: ProgressCallback | None,
+    *,
+    write_cache: bool = True,
 ) -> tuple[Any, dict[int, Any], list[tuple[int, tuple, str]]]:
     """Partition pre-read files into parse-cache hits and misses.
 
@@ -368,31 +370,64 @@ def _split_cached(
     tick the parse progress bar here (misses tick when their worker
     finishes). Cache failures degrade to all-miss.
     """
-    from repowise.core.ingestion import compute_content_hash
+    from repowise.core.ingestion.document_extractors import source_fingerprint
     from repowise.core.ingestion.parse_cache import ParseCache
 
     cache = None
     hits: dict[int, Any] = {}
-    misses: list[tuple[int, tuple, str]] = []
+    cache_hashes: dict[int, str] = {}
     try:
         cache = ParseCache(repo_path / ".repowise")
         cache.load()
     except Exception as exc:
         logger.debug("parse_cache_init_failed", error=str(exc))
-        return None, hits, [(idx, item, "") for idx, item in enumerate(fi_and_bytes)]
 
     for idx, (fi, source) in enumerate(fi_and_bytes):
-        content_hash = compute_content_hash(source)
-        parsed = cache.get(fi, content_hash)
+        content_hash = source_fingerprint(fi, source)
+        cache_hashes[idx] = content_hash
+        parsed = cache.get(fi, content_hash) if cache is not None else None
         if parsed is not None:
             hits[idx] = parsed
             if progress:
                 progress.on_item_done("parse")
-        else:
-            misses.append((idx, (fi, source), content_hash))
-    if hits:
+
+    _prepare_document_sources(repo_path, fi_and_bytes, write_cache=write_cache)
+    misses = [
+        (idx, item, cache_hashes[idx])
+        for idx, item in enumerate(fi_and_bytes)
+        if idx not in hits
+    ]
+    if cache is not None and hits:
         logger.info("parse_cache_used", hits=cache.hits, misses=cache.misses)
     return cache, hits, misses
+
+
+def _prepare_document_sources(
+    repo_path: Path, fi_and_bytes: list[tuple], *, write_cache: bool = True
+) -> None:
+    """Read Markdown at the shared boundary, independently of the parse cache."""
+    from repowise.core.ingestion.source_reader import read_document_sources
+
+    requests = []
+    for idx, (fi, source) in enumerate(fi_and_bytes):
+        if fi.extractor_name is not None:
+            requests.append(
+                (
+                    idx,
+                    fi.extractor_name,
+                    fi.extractor_version,
+                    Path(fi.abs_path),
+                    fi.path,
+                    source,
+                )
+            )
+
+    extracted = read_document_sources(
+        repo_path, [request[1:] for request in requests], write_cache=write_cache
+    )
+    for (idx, *_request), parse_source in zip(requests, extracted, strict=True):
+        fi, _raw_source = fi_and_bytes[idx]
+        fi_and_bytes[idx] = (fi, parse_source)
 
 
 def _cache_parsed(cache: Any, parsed: Any, content_hash: str) -> None:
@@ -665,6 +700,8 @@ def _merge_parse_results(
     """Key fresh parses by traversal position next to the cache hits."""
     merged: dict[int, Any] = dict(cached_hits)
     for (idx, _item, content_hash), result in zip(to_parse, parse_results, strict=True):
+        if not isinstance(result, tuple | Exception):
+            result.content_hash = content_hash
         merged[idx] = result
         if not isinstance(result, tuple | Exception):
             _cache_parsed(parse_cache, result, content_hash)
@@ -708,7 +745,12 @@ async def _parse_stage(
     if progress:
         progress.on_phase_start("parse", len(file_infos))
     fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
-    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
+    parse_cache, cached_hits, to_parse = await asyncio.to_thread(
+        _split_cached, repo_path, fi_and_bytes, None,
+    )
+    if progress:
+        for _ in cached_hits:
+            progress.on_item_done("parse")
     parse_results = await _parse_misses(
         to_parse, progress, fallback_event=fallback_event, warn_on_fallback=warn_on_fallback
     )

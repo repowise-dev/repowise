@@ -1,13 +1,13 @@
 /**
- * Card body painting: the summary, the "contains" list, the composition bar and
- * the stats row, plus the frame and health colors the other card zones share.
- * Browser code.
+ * Card body painting: the summary, the "contains" list and the composition
+ * bar, plus the frame and health colors the other card zones share. Browser
+ * code.
  */
 
 import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
 
 import type { Rect } from "./camera";
-import { cardStatPrefixes, summaryLineCap, type CardTier } from "./card-content";
+import { summaryLineCap, type CardTier } from "./card-content";
 import { font, textWidth, wrap } from "./card-measure";
 import { COMPOSITION_BANDS, type CardPreview, type PreviewItem } from "./card-preview";
 import type { ZoomPalette } from "./theme";
@@ -45,32 +45,14 @@ export interface CardFrame {
   titlePx: number;
 }
 
-/**
- * One muted stats line (role counts) at `y`: the longest run of whole stats
- * that fits, so a narrow card drops a stat instead of cutting one.
- */
-function drawStats(f: CardFrame, px: number, prefixes: readonly string[], y: number): void {
-  const { ctx, rect, palette, pad } = f;
-  const maxW = rect.w - 2 * pad;
-  let row = "";
-  for (const p of prefixes) {
-    if (textWidth(ctx, 400, px, p) > maxW) break;
-    row = p;
-  }
-  if (!row) return;
-  ctx.font = font(400, px);
-  ctx.globalAlpha = f.alpha * 0.9;
-  ctx.fillStyle = palette.textMuted;
-  ctx.fillText(row, Math.round(rect.x + pad), y);
-}
-
 /** Summary lines kept when a "contains" list shares the body. */
 const PREVIEW_SUMMARY_LINES = 3;
 /** A preview column narrower than this would cut most names. */
 const PREVIEW_COL_MIN_PX = 132;
 const PREVIEW_COL_GAP_PX = 16;
-/** Composition bar height and the gap above it. */
-const BAR_PX = 4;
+/** Composition bar height (thinner on a small card) and the gap above it. */
+const BAR_PX = 6;
+const BAR_SMALL_PX = 4;
 const BAR_GAP_PX = 8;
 
 const moreLabels = new Map<number, string>();
@@ -152,24 +134,26 @@ function drawPreviewList(f: CardFrame, preview: CardPreview, top: number, bottom
 
 /**
  * Files by health band as one thin stacked bar on the body's `bottom` edge,
- * worst band first, when the body has three lines to spare. Returns the
- * bottom left for the zones above it.
+ * worst band first, from the small tier up: it says how a box's health is
+ * spread where the corner score gives only the average. Returns the bottom
+ * left for the zones above it.
  */
 function drawComposition(
   f: CardFrame,
   preview: CardPreview,
+  tier: CardTier,
   top: number,
   bottom: number,
-  lineH: number,
 ): number {
-  if (preview.files <= 0 || bottom - top < 3 * lineH) return bottom;
+  const h = tier === "small" ? BAR_SMALL_PX : BAR_PX;
+  if (preview.files <= 0 || bottom - top < h) return bottom;
   const { ctx, rect, palette, pad } = f;
-  const y = bottom - BAR_PX;
+  const y = bottom - h;
   const x0 = rect.x + pad;
   const w = rect.w - 2 * pad;
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(x0, y, w, BAR_PX, BAR_PX / 2);
+  ctx.roundRect(x0, y, w, h, h / 2);
   ctx.clip();
   let x = x0;
   for (let i = 0; i < preview.bands.length; i++) {
@@ -180,7 +164,7 @@ function drawComposition(
     // Unscored files read as a quiet track, not as a band.
     ctx.globalAlpha = f.alpha * (band ? 0.9 : 0.3);
     ctx.fillStyle = band ? palette[HEALTH_SLOT[band]] : palette.healthNeutral;
-    ctx.fillRect(x, y, seg + 0.5, BAR_PX);
+    ctx.fillRect(x, y, seg + 0.5, h);
     x += seg;
   }
   ctx.restore();
@@ -199,31 +183,14 @@ function drawSummary(f: CardFrame, px: number, lineH: number, y: number, cap: nu
   return y + lines.length * lineH;
 }
 
-const NO_STATS: readonly string[] = [];
-
 /** Text lines of `px` type at `lineH` spacing in `space`: the last needs only its glyph height. */
 function linesThatFit(space: number, px: number, lineH: number): number {
   return space < px ? 0 : 1 + Math.floor((space - px) / lineH);
 }
 
-/** The stats row is for large cards, and for medium ones with no summary. */
-function bodyStats(node: ZoomNode, tier: CardTier): readonly string[] {
-  const show = tier === "large" || (!node.summary && tier !== "small");
-  return show ? cardStatPrefixes(node) : NO_STATS;
-}
-
 /**
- * Room for the stats row on the body's bottom edge. Only a large card keeps
- * one; a medium card gives the room to its list and shows stats only in
- * place of one.
- */
-function statsRowFits(tier: CardTier, stats: readonly string[], space: number, lineH: number): boolean {
-  return tier === "large" && stats.length > 0 && space >= 2 * lineH;
-}
-
-/**
- * The summary and the "contains" list from `top`; true when either drew.
- * With a list to follow the summary is kept short.
+ * The summary and the "contains" list from `top`. With a list to follow the
+ * summary is kept short.
  */
 function drawContent(
   f: CardFrame,
@@ -231,13 +198,13 @@ function drawContent(
   listed: CardPreview | null,
   top: number,
   bottom: number,
-): boolean {
+): void {
   const { px, lineH } = bodyType(f);
   const tierCap = summaryLineCap(tier);
   const cap = listed ? Math.min(PREVIEW_SUMMARY_LINES, tierCap) : tierCap;
   const lines = f.node.summary ? Math.min(cap, linesThatFit(bottom - top, px, lineH)) : 0;
   const y = lines > 0 ? drawSummary(f, px, lineH, top, lines) + 6 : top;
-  return (listed !== null && drawPreviewList(f, listed, y, bottom)) || y > top;
+  if (listed !== null) drawPreviewList(f, listed, y, bottom);
 }
 
 // Reused (read synchronously): body type sizes without a per-card object.
@@ -251,11 +218,9 @@ export function bodyType(f: CardFrame): { px: number; lineH: number } {
 }
 
 /**
- * The body between `top` and `bottom`, top down: the summary (capped by tier,
- * shorter when a list follows) and a container's "contains" list, with the
- * stats row (large cards) and the composition bar anchored to the bottom.
- * With neither summary nor list the stats row moves to the top, so the body
- * is never a blank band over one muted line.
+ * The body between `top` and `bottom`: the composition bar anchored to the
+ * bottom (small cards up), then, from medium up, the summary (capped by tier,
+ * shorter when a list follows) and a container's "contains" list top down.
  */
 export function drawBody(
   f: CardFrame,
@@ -264,13 +229,7 @@ export function drawBody(
   bottom: number,
   preview: CardPreview | null,
 ): void {
-  const { px, lineH } = bodyType(f);
-  if (bottom - top < px) return;
-  const listed = tier === "small" ? null : preview;
-  if (listed && tier === "large") bottom = drawComposition(f, listed, top, bottom, lineH);
-  const stats = bodyStats(f.node, tier);
-  const statsRoom = statsRowFits(tier, stats, bottom - top, lineH);
-  const end = statsRoom ? bottom - lineH : bottom;
-  if (!drawContent(f, tier, listed, top, end)) drawStats(f, px, stats, top);
-  else if (statsRoom) drawStats(f, px, stats, end + 2);
+  if (preview) bottom = drawComposition(f, preview, tier, top, bottom);
+  if (tier === "small" || bottom - top < bodyType(f).px) return;
+  drawContent(f, tier, preview, top, bottom);
 }

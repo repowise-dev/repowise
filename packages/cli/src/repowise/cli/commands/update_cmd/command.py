@@ -887,7 +887,12 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
     """Uncommitted work, when asked for; read before the "up to date" gate."""
     from repowise.core.ingestion import ChangeDetector
 
-    run.detector = detector = ChangeDetector(run.repo_path)
+    run.detector = detector = ChangeDetector(
+        run.repo_path,
+        exclude_patterns=run.cfg.get("exclude_patterns"),
+        include_submodules=bool(run.state.get("include_submodules", False)),
+        include_nested_repos=bool(run.state.get("include_nested_repos", False)),
+    )
     if not opts.include_working_tree:
         return
     run.working_tree_diffs = detector.get_working_tree_changes()

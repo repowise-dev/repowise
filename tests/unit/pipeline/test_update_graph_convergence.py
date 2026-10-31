@@ -317,9 +317,25 @@ def test_dynamic_hint_failure_logs_warning_and_does_not_raise(tmp_path: Path) ->
     )
 
 
-def test_read_only_build_is_the_update_graph_and_writes_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_document", [False, True])
+def test_read_only_build_is_the_update_graph_and_writes_nothing(
+    tmp_path: Path, monkeypatch, with_document: bool
+) -> None:
     """The live commands' read-only build is the update path's graph, minus the writes."""
     _build_git_repo(tmp_path)
+    if with_document:
+        from repowise.core.ingestion.document_extractors import document_extractors
+        from repowise.core.registry import plugins
+        from tests.unit.ingestion.document_extractor_spawn_plugin import SpawnExtractor
+
+        monkeypatch.setattr(document_extractors, "_impls", {})
+        monkeypatch.setattr(document_extractors, "_chosen", None)
+        monkeypatch.setattr(plugins, "load_plugins", lambda: [])
+        monkeypatch.setenv(
+            "REPOWISE_PLUGINS", "tests.unit.ingestion.document_extractor_spawn_plugin:register"
+        )
+        document_extractors.register("spawn-test-extractor", SpawnExtractor())
+        (tmp_path / "spec.xyz").write_bytes(b"document source")
     index_dir = tmp_path / ".repowise"
     index_dir.mkdir()
 
@@ -327,6 +343,8 @@ def test_read_only_build_is_the_update_graph_and_writes_nothing(tmp_path: Path) 
         tmp_path, [], collect_sources=True, read_only=True
     )
     assert list(index_dir.iterdir()) == []
+    if with_document:
+        assert ro_src["spec.xyz"] == b"# Extracted document\n\ndocument source\n"
 
     pf, src, gb, _s, count = build_repo_graph(tmp_path, [], collect_sources=True)
     assert list(index_dir.iterdir()), "the update path keeps its caches"
@@ -335,3 +353,7 @@ def test_read_only_build_is_the_update_graph_and_writes_nothing(tmp_path: Path) 
     assert [p.file_info.path for p in ro_pf] == [p.file_info.path for p in pf]
     assert set(ro_gb.graph().nodes()) == set(gb.graph().nodes())
     assert _edge_set(ro_gb) == _edge_set(gb)
+    if with_document:
+        before = {p: p.read_bytes() for p in index_dir.rglob("*") if p.is_file()}
+        build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)
+        assert before == {p: p.read_bytes() for p in index_dir.rglob("*") if p.is_file()}

@@ -195,7 +195,10 @@ class TraversalStats:
         out skips the same generated files every run.
         """
         return [
-            *((s.path, s.reason) for s in (*self.skipped_source_files, *self.unknown_language_files)),
+            *(
+                (s.path, s.reason)
+                for s in (*self.skipped_source_files, *self.unknown_language_files)
+            ),
             *((path, "generated") for path in sorted(self.generated_files)),
         ]
 
@@ -378,10 +381,21 @@ _UNITY_STATE_DIR_NAMES: frozenset[str] = frozenset(
 
 #: Languages a build or report writes (bundles, generated C, HTML reports),
 #: so their files are no evidence that an output-named directory is source.
-_EMITTED_LANGUAGES: frozenset[str] = _SKIP_GENERATED_CHECK | {"c", "cpp", "javascript", "objectivec"}
+_EMITTED_LANGUAGES: frozenset[str] = _SKIP_GENERATED_CHECK | {
+    "c",
+    "cpp",
+    "javascript",
+    "objectivec",
+}
 
 #: Filename endings a compiler emits in otherwise hand-written languages.
-_EMITTED_SUFFIXES: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts", ".qmltypes", *_GENERATED_SUFFIXES)
+_EMITTED_SUFFIXES: tuple[str, ...] = (
+    ".d.ts",
+    ".d.mts",
+    ".d.cts",
+    ".qmltypes",
+    *_GENERATED_SUFFIXES,
+)
 
 
 class FileTraverser:
@@ -614,9 +628,7 @@ class FileTraverser:
 
             # Prune ignored directories in-place (affects os.walk recursion)
             dirnames[:] = sorted(
-                d
-                for d in dirnames
-                if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
+                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
             )
 
             for filename in sorted(filenames):
@@ -837,12 +849,23 @@ class FileTraverser:
         # Name/extension lookup does no I/O; only an unrecognised extension
         # pays for binary and shebang sniffing.
         language = _content_language(abs_path, _language_from_name_or_ext(abs_path))
-        if language is not None:
+        shebang_language = None
+        if language in (None, "unknown"):
+            binary = _is_binary(abs_path)
+            if not binary:
+                shebang_language = _detect_by_shebang(abs_path)
+                if shebang_language != "unknown":
+                    return shebang_language
+            from .document_extractors import document_extractor_for_path
+
+            if document_extractor_for_path(abs_path) is not None:
+                return "markdown"
+            if binary:
+                self._count("skipped_binary")
+                return None
+        if language not in (None, "unknown"):
             return language
-        if _is_binary(abs_path):
-            self._count("skipped_binary")
-            return None
-        language = _detect_by_shebang(abs_path)
+        language = shebang_language or _detect_by_shebang(abs_path)
         if language == "unknown" and abs_path.suffix.lower() not in self._keep_unparsed:
             self._note_unknown_language(abs_path, rel_str, size_bytes)
             return None
@@ -894,6 +917,7 @@ class FileTraverser:
         language = self._resolve_language(abs_path, rel_str, size_bytes)
         if language is None or self._skip_generated(abs_path, rel_str, language):
             return None
+        extractor_name, extractor_version = _extractor_identity(abs_path, language)
 
         manifest_entry = (
             _is_console_script_target(rel_str, self._console_script_modules)
@@ -930,7 +954,21 @@ class FileTraverser:
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
             is_application_main=app_main,
+            extractor_name=extractor_name,
+            extractor_version=extractor_version,
         )
+
+    def document_source_eligible(self, path: str, size_bytes: int) -> bool:
+        """Apply current traversal policy to supplied document bytes, even after deletion."""
+        relative = Path(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return False
+        abs_path = self.repo_root / relative
+        if self.dir_chain_skipped(relative.parent):
+            return False
+        if self._excluding_rule(abs_path, relative.as_posix()) is not None:
+            return False
+        return self._oversize_skip_reason(abs_path, size_bytes) is None
 
     def _is_package_root_dir(self, rel_dir: str) -> bool:
         """Whether *rel_dir* holds a package manifest, so it ships as a package.
@@ -1066,6 +1104,19 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     if language is None and is_legacy_flow_path(abs_path.as_posix()):
         return "salesforce_flow"
     return language
+
+
+def _extractor_identity(abs_path: Path, language: LanguageTag) -> tuple[str | None, str | None]:
+    """The claiming document extractor's ``(name, version)``, or ``(None, None)``."""
+    if language != "markdown" or _language_from_name_or_ext(abs_path) is not None:
+        return None, None
+    from .document_extractors import document_extractor_for_path
+
+    claim = document_extractor_for_path(abs_path)
+    if claim is None:
+        return None, None
+    name, extractor = claim
+    return name, extractor.version
 
 
 def _language_from_name_suffix(filename: str) -> LanguageTag | None:
@@ -1218,15 +1269,16 @@ def _content_language(
 def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag:
     """Detect the language of a file from name, extension, content, or shebang."""
     lang = _content_language(abs_path, _language_from_name_or_ext(abs_path), source)
-    return lang if lang is not None else _detect_by_shebang(abs_path)
+    return lang if lang is not None else _detect_by_shebang(abs_path, source)
 
 
-def _detect_by_shebang(abs_path: Path) -> LanguageTag:
-    try:
-        with open(abs_path, encoding="utf-8", errors="ignore") as f:
-            first_line = f.readline(200)
-    except OSError:
+def _detect_by_shebang(abs_path: Path, source: bytes | None = None) -> LanguageTag:
+    """Classify an interpreter line from the bytes supplied by the caller."""
+    head = _head(abs_path, source, 800)
+    if head is None:
         return "unknown"
+    text = head.decode("utf-8", errors="ignore")
+    first_line = text.splitlines()[0][:200] if text else ""
     if not first_line.startswith("#!"):
         return "unknown"
     for spec in _LANG_REGISTRY.all_specs():
@@ -1621,9 +1673,7 @@ def _package_files(
     from repowise.core.fs_walk import walk_repo
 
     try:
-        for dirpath, dirnames, filenames in walk_repo(
-            directory, prune_nested_git=prune_nested_git
-        ):
+        for dirpath, dirnames, filenames in walk_repo(directory, prune_nested_git=prune_nested_git):
             # Prune in place so the walk never descends, matching
             # scan_package_roots. Candidates are repo-relative because
             # dir_chain_skipped tests each level against the repo root.
@@ -1685,9 +1735,7 @@ def is_output_dir(abs_dir: Path) -> bool:
         return False
     try:
         with os.scandir(abs_dir) as entries:
-            return not any(
-                _is_handwritten_source_name(e.name) and e.is_file() for e in entries
-            )
+            return not any(_is_handwritten_source_name(e.name) and e.is_file() for e in entries)
     except OSError:
         return False
 
@@ -1789,9 +1837,7 @@ def _check_output_dir_cached(
 ) -> bool:
     """Whether *abs_dir* is an output root, using *cache* when provided."""
     cached = None if cache is None else cache.get(abs_dir)
-    if cached is None or (
-        cached and is_leaf_file and _is_handwritten_source_name(leaf_name)
-    ):
+    if cached is None or (cached and is_leaf_file and _is_handwritten_source_name(leaf_name)):
         cached = is_output_dir(abs_dir)
         if cache is not None:
             cache[abs_dir] = cached
@@ -1834,7 +1880,7 @@ def _is_segment_blocked(
     cur_rel = "/".join(dirs[:depth])
     parent_dir = None
     if repo_root is not None:
-        parent_dir = repo_root if depth == 1 else repo_root.joinpath(*dirs[:depth - 1])
+        parent_dir = repo_root if depth == 1 else repo_root.joinpath(*dirs[: depth - 1])
     active_dir_ignore = dir_ignore if (is_dir and depth == len(dirs)) else None
     if _is_dir_reincluded(
         cur_rel, part, root_patterns, parent_dir, active_dir_ignore, extra_ignore_filename
@@ -1890,8 +1936,16 @@ def in_blocked_dir(
     leaf_name = parts[-1] if not is_dir else ""
     return any(
         _is_segment_blocked(
-            dirs, depth, part, leaf_name, is_dir, repo_root,
-            root_pats, dir_ignore, extra_ignore_filename, cache
+            dirs,
+            depth,
+            part,
+            leaf_name,
+            is_dir,
+            repo_root,
+            root_pats,
+            dir_ignore,
+            extra_ignore_filename,
+            cache,
         )
         for depth, part in enumerate(dirs, 1)
     )
@@ -1928,19 +1982,19 @@ def is_candidate_source_path(
 ) -> bool:
     """Whether *rel_path* is shaped like a file this repo would index.
 
-    Path-shape only: the directory blocklist, the blocked extensions/filename
-    patterns, and the known-language extension map. No gitignore, no
-    binary/size/generated checks, so a ``True`` answer means "worth handing to
-    the pipeline", never "will be indexed". :class:`FileTraverser` still
-    applies the full test on the files it walks. The only disk access is the
-    output-directory listing of :func:`in_blocked_dir`, given *repo_root*
-    (and memoized in *cache* when given).
+    Path-shape check: the directory blocklist, blocked extensions/filename
+    patterns, known-language extensions and registered document-extractor
+    claims. A ``True`` answer means "worth handing to the pipeline", never
+    "will be indexed"; :class:`FileTraverser` still applies the full test.
+    The only disk access is the output-directory listing of
+    :func:`in_blocked_dir`, given *repo_root* (and memoized in *cache* when
+    given).
 
     It serves the change sources that only see a path: the working-tree diff
     and the file watcher.
 
-    One known false negative: an extensionless script that :class:`FileTraverser`
-    accepts by shebang is rejected here, since deciding that means reading it.
+    Extensionless scripts are still rejected because deciding whether they
+    have a supported shebang would require reading them.
     """
     posix = rel_path.replace("\\", "/")
     parts = Path(posix).parts
@@ -1964,7 +2018,11 @@ def is_candidate_source_path(
         return False
     if _BLOCKED_FILENAME_SPEC.match_file(name):
         return False
-    return suffix in EXTENSION_TO_LANGUAGE or is_aura_markup_path(posix)
+    if suffix in EXTENSION_TO_LANGUAGE or is_aura_markup_path(posix):
+        return True
+    from .document_extractors import document_extractor_claims
+
+    return suffix in document_extractor_claims()
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
