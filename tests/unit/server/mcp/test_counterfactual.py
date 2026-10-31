@@ -81,7 +81,8 @@ def test_get_answer_counts_search_plus_cited_reads() -> None:
         "citations": ["pkg/a.py"],
         "fallback_targets": ["pkg/a.py", "pkg/b.py"],
     }
-    expected = cf.ANSWER_SEARCH_FLOOR + 2 * cf.ANSWER_READ_FLOOR_PER_FILE
+    # Only the cited file: a fallback the answer did not cite was not replaced.
+    expected = cf.ANSWER_SEARCH_FLOOR + cf.ANSWER_READ_FLOOR_PER_FILE
     assert cf.replaced_tokens_for("get_answer", result) == expected
 
 
@@ -317,10 +318,13 @@ def test_a_file_card_credits_one_read_of_its_file_when_it_can_be_read() -> None:
             "a.py": {"type": "file"},
             "b.py": {"type": "file", "skeleton": {"full_tokens": 4321}},
             "c.py::C": {"type": "symbol", "skeleton": {"full_tokens": 99, "of_file": "c.py"}},
+            "a.py::A": {"type": "symbol", "skeleton": {"full_tokens": 99, "of_file": "a.py"}},
+            "empty.py": {"type": "file"},
             "gone.py": {"type": "file"},
         }
     }
-    sizes = {"a.py": 9000, "b.py": 4500, "c.py": 2000}
+    sizes = {"a.py": 9000, "b.py": 4500, "c.py": 2000, "empty.py": 0}
+    # a.py is read once however many cards cover it; an empty file costs nothing.
     assert cf.context_replaced_tokens(result, sizes.get) == (
         9000 + 4500 + 2000 + cf.CONTEXT_FILE_FLOOR
     )

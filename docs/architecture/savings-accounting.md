@@ -106,7 +106,7 @@ sides, since Claude Code numbers the replacement it is handed too.
 | Tool | `R` | Why that is what it replaces |
 |---|---|---|
 | `get_symbol` | one Read of each file a served body came from | the agent opens the file to find and read the symbol |
-| `get_context` file card, with or without skeleton | one Read of the file | the card answers what the file holds and how it is laid out, which is why the agent would open it |
+| `get_context` file card, with or without skeleton | one Read of the file, once per file per call | the card answers what the file holds and how it is laid out, which is why the agent would open it |
 | `get_context` module / symbol card | 600 per listed child file (cap 20,000) / 1,200 | a directory skim / locating a definition and its callers |
 | `get_answer`, synthesised at high or medium confidence | 400 for the search plus one Read of each cited file | the answer stands in for finding and reading its sources |
 | `get_answer`, low confidence or no provider | one Read per file whose whole verified body it inlined, plus 400 per other file it points at | a reply that says "verify" does not replace those reads; it replaces the search, as `search_codebase` credits, and any body it served, as `get_symbol` credits |

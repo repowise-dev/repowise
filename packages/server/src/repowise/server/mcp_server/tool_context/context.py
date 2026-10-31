@@ -235,14 +235,17 @@ async def get_context(
 
 
 def _declare_replaced_reads(response: dict[str, Any], repo_root: Any) -> None:
-    """Credit each file card with what one Read of its file costs."""
+    """Credit each file card with what one Read of its file costs. Never raises."""
     from repowise.server.mcp_server._savings import declare_replaced
     from repowise.server.mcp_server._savings.counterfactual import context_replaced_tokens
     from repowise.server.mcp_server._savings.reads import file_read_tokens
 
-    declare_replaced(
-        response, context_replaced_tokens(response, lambda p: file_read_tokens(repo_root, p))
-    )
+    try:
+        tokens = context_replaced_tokens(response, lambda p: file_read_tokens(repo_root, p))
+    except Exception:  # savings accounting never breaks a tool call
+        _log.debug("get_context savings declaration failed", exc_info=True)
+        return
+    declare_replaced(response, tokens)
 
 
 def _include_set(include: list[str] | None, ignored: list[dict[str, Any]]) -> set[str]:

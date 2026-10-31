@@ -68,34 +68,39 @@ ReadCost = Callable[[str], int | None]
 
 
 def _read_cost(read_cost: ReadCost | None, path: Any, fallback: int) -> int:
-    """One Read of *path* through *read_cost*, else *fallback*."""
+    """One Read of *path* through *read_cost*, else *fallback* when it cannot be sized."""
     if read_cost is not None and isinstance(path, str) and path:
         tokens = read_cost(path)
-        if isinstance(tokens, int) and tokens > 0:
+        if isinstance(tokens, int) and tokens >= 0:
             return tokens
     return fallback
 
 
-def _context_target_tokens(key: Any, target: dict[str, Any], read_cost: ReadCost | None) -> int:
-    """What one card replaced: a Read of its file, a module skim, or a symbol lookup."""
+def _context_target_tokens(
+    key: Any, target: dict[str, Any], read_cost: ReadCost | None
+) -> tuple[Any, int]:
+    """``(file it reads, tokens)`` for one card: a Read, a module skim or a symbol lookup.
+
+    The file is None for a card that replaces no Read.
+    """
     skeleton = target.get("skeleton")
     if isinstance(skeleton, dict):
         full = skeleton.get("full_tokens")
         if isinstance(full, int) and full > 0:
             # A ``file.py::Symbol`` target renders the file that defines it.
-            return _read_cost(read_cost, skeleton.get("of_file") or key, full)
+            path = skeleton.get("of_file") or key
+            return path, _read_cost(read_cost, path, full)
     target_type = target.get("type")
+    if target_type == "file":
+        return key, _read_cost(read_cost, key, CONTEXT_FILE_FLOOR)
+    if target_type == "symbol":
+        return None, CONTEXT_SYMBOL_FLOOR
     if target_type == "module":
         docs = target.get("docs")
         files = docs.get("files") if isinstance(docs, dict) else None
         if isinstance(files, list) and files:
-            return min(CONTEXT_MODULE_MAX, len(files) * CONTEXT_MODULE_FILE_FLOOR)
-        return 0
-    if target_type == "symbol":
-        return CONTEXT_SYMBOL_FLOOR
-    if target_type == "file":
-        return _read_cost(read_cost, key, CONTEXT_FILE_FLOOR)
-    return 0
+            return None, min(CONTEXT_MODULE_MAX, len(files) * CONTEXT_MODULE_FILE_FLOOR)
+    return None, 0
 
 
 def context_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None = None) -> int:
@@ -108,11 +113,19 @@ def context_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None =
     targets = result.get("targets")
     if not isinstance(targets, dict):
         return 0
-    return sum(
-        _context_target_tokens(key, target, read_cost)
-        for key, target in targets.items()
-        if isinstance(target, dict) and not target.get("error")
-    )
+    total = 0
+    read: set[Any] = set()
+    for key, target in targets.items():
+        if not isinstance(target, dict) or target.get("error"):
+            continue
+        path, tokens = _context_target_tokens(key, target, read_cost)
+        if path is not None:
+            # Two cards over one file replace one Read of it.
+            if path in read:
+                continue
+            read.add(path)
+        total += tokens
+    return total
 
 
 def _estimate_get_context(result: dict[str, Any]) -> int:
@@ -227,6 +240,10 @@ FLOWS_PER_NODE = 80
 FLOWS_MAX = 6000
 
 
+def _cited_paths(result: dict[str, Any]) -> set[str]:
+    return {p for p in result.get("citations") or [] if isinstance(p, str) and p}
+
+
 def _answer_paths(result: dict[str, Any]) -> set[str]:
     """Every file the reply points at: citations, top fallbacks, ranked guesses."""
     guesses = [g.get("file") for g in result.get("best_guesses") or [] if isinstance(g, dict)]
@@ -266,17 +283,18 @@ def answer_replaced_tokens(result: dict[str, Any], read_cost: ReadCost | None = 
     """
     if result.get("error"):
         return 0
-    paths = _answer_paths(result)
     answered = (
         not result.get("degraded")
         and str(result.get("answer") or "").strip()
         and result.get("confidence") in _ANSWERED_CONFIDENCE
     )
     if answered:
-        if not paths:
+        cited = _cited_paths(result)
+        if not cited:
             return 0
-        reads = sum(_read_cost(read_cost, p, ANSWER_READ_FLOOR_PER_FILE) for p in paths)
+        reads = sum(_read_cost(read_cost, p, ANSWER_READ_FLOOR_PER_FILE) for p in cited)
         return ANSWER_SEARCH_FLOOR + reads
+    paths = _answer_paths(result)
     bodies = _whole_body_paths(result)
     reads = sum(_read_cost(read_cost, p, ANSWER_READ_FLOOR_PER_FILE) for p in bodies)
     return reads + len(paths - bodies) * SEARCH_FLOOR_PER_HIT

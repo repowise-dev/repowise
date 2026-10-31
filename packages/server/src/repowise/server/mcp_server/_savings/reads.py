@@ -47,4 +47,4 @@ def file_read_tokens(root: Any, path: str) -> int | None:
         return None
     if "\x00" in text:
         return None
-    return read_tokens(text) or None
+    return read_tokens(text)
