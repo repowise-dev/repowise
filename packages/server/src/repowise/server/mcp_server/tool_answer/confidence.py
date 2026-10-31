@@ -13,6 +13,7 @@ gate reads live beside it.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections import Counter
 from collections.abc import Collection
@@ -859,11 +860,14 @@ class _GradeState:
     weak_agreement: bool = False
     #: The file an earned high rests on, when the route names one.
     earned_path: str | None = None
-    #: The verified value line the answer states for the constant the question names.
-    value_line: dict | None = None
     unhydrated_names: tuple[str, ...] = ()
     stop_reason: str | None = None
     cut_off: bool = False
+
+    @functools.cached_property
+    def value_line(self) -> dict | None:
+        """The verified value line the answer states for the constant the question names."""
+        return stated_value_line(self.question, self.question_ids, self.answer_text, self.hits)
 
 
 def _earned_high(
@@ -1396,7 +1400,6 @@ def _grade_answer(
     start = "high" if vouched or earn_high else "medium"
     s = _GradeState(
         earned_path=earned_path,
-        value_line=stated_value_line(question, question_ids, answer_text, hits),
         unindexed_names=set(unindexed_names),
         absent_names=tuple(absent_names),
         split_names=dict(split_names or {}),
