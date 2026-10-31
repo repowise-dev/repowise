@@ -48,6 +48,7 @@ export type LinkStrategy =
   | "unique_path"
   | "ambiguous_path"
   | "prefix_stripped"
+  | "param_segment"
   | "manual"
   | "manifest";
 

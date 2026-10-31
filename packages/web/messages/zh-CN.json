@@ -2452,6 +2452,7 @@
         "unique_path": "仅按路径匹配",
         "ambiguous_path": "路径由多个服务提供",
         "prefix_stripped": "去除前缀后匹配",
+        "param_segment": "匹配路由参数",
         "manual": "手动声明",
         "manifest": "在清单中声明"
       },

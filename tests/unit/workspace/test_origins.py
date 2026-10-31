@@ -163,6 +163,11 @@ def _in_service(contract: Contract, service: str) -> Contract:
             {},
             LinkStrategy.AMBIGUOUS_PATH,
         ),
+        (
+            [_provider("render", "/api/render/{param}"), _consumer("/api/render/1")],
+            {},
+            LinkStrategy.PARAM_SEGMENT,
+        ),
     ],
 )
 def test_each_http_link_names_the_rule_that_made_it(

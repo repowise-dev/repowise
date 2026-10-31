@@ -2452,6 +2452,7 @@
         "unique_path": "Matched by path only",
         "ambiguous_path": "Path served by several services",
         "prefix_stripped": "Matched after stripping a prefix",
+        "param_segment": "Matched a route parameter",
         "manual": "Declared by hand",
         "manifest": "Declared in a manifest"
       },

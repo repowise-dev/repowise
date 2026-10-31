@@ -57,6 +57,7 @@ MATCHERS: dict[str, TypeMatcher] = {
             http.gateway_pass,
             http.base_resolved_pass,
             http.candidate_pass,
+            http.segment_pass,
             http.service_pass,
         ),
     ),

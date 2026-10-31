@@ -41,6 +41,7 @@ follows from the strategy.
 | 1.0 | `unique_path` | exact | The consumer's base is unread and one service serves the path |
 | 0.6 | `ambiguous_path` | candidate | The base is unread and several services of one repo serve the path; linked to each |
 | 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
+| 0.6 | `param_segment` | candidate | A concrete path segment in the call meets the route's `{param}` segment (`/render/1` to `/render/{id}`); the most literal route wins, and routes in two or more repos link to none |
 | 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
 | 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
 | 1.0 | `manual` | manual | Declared in the workspace config |
