@@ -331,14 +331,20 @@ class RepoRegistry:
             if lance_dir.exists() and self._on_vector_store_error is not None:
                 self._on_vector_store_error(ctx.alias, exc)
 
+        from repowise.core.providers.embedding.base import warm_query_embedder
+
+        has_index = lance_dir.exists()
+        # Overlaps the import and open below; awaited before ready is set.
+        warmup = asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             try:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                if lance_dir.exists():
+                if has_index:
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
+                    await warmup
                     # Repoint both stores to the same LanceDB table.
                     # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
@@ -352,6 +358,7 @@ class RepoRegistry:
                 )
                 _report(exc)
         finally:
+            warmup.cancel()  # a no-op once awaited; stops it on a failed open
             # Only signal ready if this context is still the active one.
             # If it was evicted before we finished loading, a fresh context
             # will have its own event — setting the stale one would leave the

@@ -48,6 +48,9 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
     vector_search_timeout_s,
 )
+from repowise.server.mcp_server._helpers import (
+    wait_for_vector_store as _wait_for_vector_store,
+)
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, semantic_search_state
@@ -128,7 +131,6 @@ from repowise.server.mcp_server.tool_search.retrieval import (
     _safe_vector,
     _search_single_repo,
     _symbol_leg_target,
-    _wait_for_vector_store,
 )
 from repowise.server.mcp_server.tool_search.serve import (
     _FRESHNESS_TIEBREAK,

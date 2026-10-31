@@ -25,7 +25,11 @@ from repowise.core.persistence.database import (
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
-from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
+from repowise.core.providers.embedding.base import (
+    KeylessEmbedder,
+    is_semantic_embedder,
+    warm_query_embedder,
+)
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
@@ -419,16 +423,21 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         from pathlib import Path
 
         lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
+        has_index = lance_dir is not None and lance_dir.exists()
+        # Overlaps the import and open below; awaited before ready is set.
+        warmup = _asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
             await _asyncio.to_thread(__import__, "lancedb")
 
             from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            if lance_dir is not None and lance_dir.exists():
+            if has_index:
                 vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                 # Step 2: pre-connect so first search() is instant.
                 await vs._ensure_connected()
+                # Step 3: a warm embedder, so the first vector leg fits the grace.
+                await warmup
                 vector_store = vs
                 _state._vector_store_errors.pop("", None)
         except Exception as exc:
@@ -436,6 +445,8 @@ async def _load_vector_stores(repo_path: str | None) -> None:
             # is as broken as an unreadable one. No index is a keyless repo.
             if lance_dir is not None and lance_dir.exists():
                 _mark_vector_store_unreadable(exc)
+        finally:
+            warmup.cancel()  # a no-op once awaited; stops it on a failed open
 
         # decision_store is repointed to the shared page store — decisions are
         # now embedded under the "decision:" namespace within the same table.

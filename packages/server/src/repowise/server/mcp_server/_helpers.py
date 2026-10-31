@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -52,6 +54,8 @@ _VECTOR_TIMEOUT_MAX_S = 120.0
 # rate-limited embedder takes 5-13s, and full-text hits are ready long before.
 _SEMANTIC_GRACE_ENV = "REPOWISE_SEMANTIC_GRACE_S"
 _SEMANTIC_GRACE_DEFAULT_S = 1.0
+# How long a vector leg waits for the store to finish loading at server start.
+_VECTOR_STORE_READY_TIMEOUT_S = 30.0
 
 
 def vector_search_timeout_s() -> float:
@@ -255,6 +259,24 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             "Fan out with _federation.Federation instead."
         )
     return await registry.get(resolved)
+
+
+async def wait_for_vector_store(ctx: Any) -> None:
+    """Wait, bounded, for a vector store still loading at startup.
+
+    A single-repo context is a copy of ``_state`` taken when the tool started,
+    so one taken mid-load still holds the keyless placeholder and its vector
+    leg would quietly return nothing. It is pointed at the loaded stores here.
+    Workspace contexts are updated in place by their registry.
+    """
+    ready = getattr(ctx, "vector_store_ready", None)
+    if ready is None:
+        return
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(ready.wait(), timeout=_VECTOR_STORE_READY_TIMEOUT_S)
+    if _state._registry is None and ready is _state._vector_store_ready:
+        ctx.vector_store = _state._vector_store
+        ctx.decision_store = _state._decision_store
 
 
 def _unsupported_repo_all(tool_name: str) -> dict:
