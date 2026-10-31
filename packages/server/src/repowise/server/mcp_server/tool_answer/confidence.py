@@ -131,13 +131,15 @@ _LINE_NUMBER_RE = re.compile(
 )
 _CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\bso\b")
 # The words a "no line numbers" clause is made of; any other word names something missing.
-_LINE_CLAUSE_FILLER = frozenset(
-    "a an the it its their these those this them they i here there given any no not do does "
-    "did is are was were isn't aren't can't cannot cite exact specific lines line include "
-    "includes included show shows shown give gives carry carries have has provide provides "
-    "provided list lists listed for in of with excerpt excerpts retrieved summary wiki "
-    "declaration declarations body available unknown".split()
-)
+_LINE_CLAUSE_FILLER = frozenset((
+    "a", "an", "the", "it", "its", "their", "these", "those", "this", "them", "they", "i",
+    "here", "there", "given", "any", "no", "not", "do", "does", "did", "is", "are", "was",
+    "were", "isn't", "aren't", "can't", "cannot", "cite", "exact", "specific", "lines", "line",
+    "include", "includes", "included", "show", "shows", "shown", "give", "gives", "carry",
+    "carries", "have", "has", "provide", "provides", "provided", "list", "lists", "listed",
+    "for", "in", "of", "with", "excerpt", "excerpts", "retrieved", "summary", "wiki",
+    "declaration", "declarations", "body", "available", "unknown",
+))
 # A clause going on with what else is missing (", nor the validator").
 _LIST_GOES_ON_RE = re.compile(r"\s*(?:nor|or|and|plus|as well as|along with|let alone)\b")
 
