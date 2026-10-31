@@ -181,9 +181,9 @@ def skeleton_replacement(
 #: Without them the cap scales backwards: the biggest files, which have the
 #: most to save, are the ones whose signatures alone overflow it. Signatures
 #: drops the docstring summaries; the outline keeps one line per symbol, its
-#: signature cut at the given width.
+#: signature cut at the given width (only the outline reads the width).
 _FALLBACK_RENDERS: tuple[tuple[str, int], ...] = (
-    ("signatures", 0),
+    ("signatures", 120),
     ("outline", 120),
     ("outline", 64),
 )
@@ -196,8 +196,7 @@ def _fit_under_cap(
     from repowise.core.distill.skeleton import build_skeleton
 
     for mode, width in _FALLBACK_RENDERS:
-        kwargs = {"outline_width": width} if width else {}
-        result = build_skeleton(source, symbols, mode=mode, **kwargs)
+        result = build_skeleton(source, symbols, mode=mode, outline_width=width)
         text = _render(rel, result, total_lines)
         if len(text) <= _MAX_OUTPUT_CHARS:
             return result, text
