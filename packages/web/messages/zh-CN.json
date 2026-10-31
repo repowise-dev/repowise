@@ -312,7 +312,7 @@
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
       "viewReview": "审查变更",
-      "reviewDescription": "选择一次变更涉及的文件，查看依赖它们的代码、常与它们一起变更的文件，以及合适的审查者。",
+      "reviewDescription": "选择一次变更（未提交的改动、分支或提交），查看它影响到哪些代码、应先查看哪些文件、该运行哪些测试以及该找谁审查。",
       "listTitle": "提交历史",
       "listDescription": "最新的在前，每行先显示它对代码健康的影响。筛选作用于整个仓库，而不仅是当前页。",
       "hotspotMark": "热点",

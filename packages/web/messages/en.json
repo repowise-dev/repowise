@@ -312,7 +312,7 @@
       "viewByChange": "By change",
       "viewByCommit": "By commit",
       "viewReview": "Review a change",
-      "reviewDescription": "Pick the files a change touches to see what depends on them, what tends to change with them, and who should review.",
+      "reviewDescription": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask.",
       "listTitle": "Commit history",
       "listDescription": "Newest first, each led by what it did to code health. The filters narrow the whole repository, not the page.",
       "hotspotMark": "Hotspot",

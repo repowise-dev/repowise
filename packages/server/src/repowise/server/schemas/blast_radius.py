@@ -15,6 +15,8 @@ from repowise.server.schemas.risk_semantics import (
 class BlastRadiusRequest(BaseModel):
     changed_files: list[str]
     max_depth: int = Field(default=3, ge=1, le=10)
+    #: Also return ``via`` on transitive rows and ``affected_signals``, for drawing.
+    with_graph: bool = False
 
 
 class DirectRiskEntry(BaseModel):
@@ -33,6 +35,9 @@ class DirectRiskEntry(BaseModel):
 class TransitiveEntry(BaseModel):
     path: str
     depth: int
+    #: The file one hop nearer the change that this one imports. Only sent
+    #: with the change analysis, which draws the reach as a graph.
+    via: str | None = None
 
 
 class CochangeWarning(BaseModel):
@@ -148,7 +153,18 @@ class TestImpactResponse(BaseModel):
     analysis: TestImpactAnalysis
 
 
+class AffectedSignal(BaseModel):
+    """What the index knows about one affected file. ``None`` means unknown, never healthy."""
+
+    path: str
+    is_hotspot: bool | None = None
+    health_score: float | None = None
+    module: str | None = None
+
+
 class BlastRadiusResponse(BaseModel):
+    #: Per affected file; only when the request asked ``with_graph``.
+    affected_signals: list[AffectedSignal] | None = None
     direct_risks: list[DirectRiskEntry]
     transitive_affected: list[TransitiveEntry]
     cochange_warnings: list[CochangeWarning]
@@ -161,3 +177,40 @@ class BlastRadiusResponse(BaseModel):
     #: Deprecated exact alias; never repurposed to a new unit.
     overall_risk_score: float
     overall_risk_score_compatibility: RiskCompatibilityField
+
+
+class ChangeCandidateModel(BaseModel):
+    id: str
+    kind: Literal["working_tree", "branch", "commit"]
+    label: str
+    title: str | None = None
+    author: str | None = None
+    committed_at: str | None = None
+    head_sha: str | None = None
+    base: str | None = None
+    ahead: int | None = None
+    files_changed: int | None = None
+    is_current: bool = False
+
+
+class ChangeCandidatesResponse(BaseModel):
+    """The changes a reviewer can pick, and the one to open first."""
+
+    changes: list[ChangeCandidateModel]
+    default_id: str | None = None
+    #: False on a server without a checkout: only indexed commits are offered.
+    working_tree_supported: bool
+
+
+class ChangeBlastRadiusRequest(BaseModel):
+    #: An ``id`` from ``GET /blast-radius/changes``.
+    change_id: str = Field(min_length=1, max_length=300)
+    max_depth: int = Field(default=3, ge=1, le=10)
+
+
+class ChangeBlastRadiusResponse(BlastRadiusResponse):
+    change_id: str
+    #: The paths analyzed, after the cap below.
+    changed_files: list[str]
+    #: Every path the change touches, before the cap.
+    changed_files_total: int
