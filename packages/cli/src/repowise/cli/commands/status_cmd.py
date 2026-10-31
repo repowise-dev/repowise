@@ -500,6 +500,23 @@ def _query_health_line(repo_path: Path) -> str | None:
     )
 
 
+def _latency_table(repo_path: Path) -> Table | None:
+    """p50 and p90 per MCP tool from the local call log, or ``None`` without one."""
+    from repowise.core.mcp_latency import latency_summary
+
+    summary = latency_summary(repo_path)
+    if not summary:
+        return None
+    table = Table(title="MCP Tool Latency")
+    table.add_column("Tool", style="cyan")
+    table.add_column("Calls", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p90", justify="right")
+    for tool, row in summary.items():
+        table.add_row(tool, str(row["calls"]), f"{row['p50']} ms", f"{row['p90']} ms")
+    return table
+
+
 def _rescore_pending(state: dict) -> list[str]:
     """Which stored results the next ``repowise update`` redoes for a newer analyzer."""
     from repowise.cli.commands.update_cmd.persistence import (
@@ -1057,6 +1074,10 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         pages_table.add_row("[bold]Total[/bold]", f"[bold]{sum(counts.values())}[/bold]")
         pages_table.add_row("Total tokens", f"{total_db_tokens:,}")
         console.print(pages_table)
+
+    latency_table = _latency_table(repo_path)
+    if latency_table is not None:
+        console.print(latency_table)
 
     health_line = _query_health_line(repo_path)
     if health_line:

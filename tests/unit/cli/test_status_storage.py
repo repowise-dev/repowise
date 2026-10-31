@@ -153,3 +153,23 @@ def test_health_line_leads_performance_with_the_causes_worth_fixing_now(monkeypa
     line = status_cmd._query_health_line(Path("."))
     assert line is not None
     assert " · 4 of 415 production perf causes worth fixing now (9.7)" in line
+
+
+def test_latency_table_prints_p50_and_p90_per_tool(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    from repowise.core import mcp_latency
+
+    assert status_cmd._latency_table(tmp_path) is None
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / mcp_latency.LOG_FILENAME).write_text(
+        "".join(f'{{"tool":"get_answer","ms":{ms},"cold":false}}\n' for ms in range(1, 11))
+    )
+    table = status_cmd._latency_table(tmp_path)
+    assert table is not None
+    out = StringIO()
+    Console(file=out, width=80).print(table)
+    text = out.getvalue()
+    assert "get_answer" in text and "5 ms" in text and "9 ms" in text

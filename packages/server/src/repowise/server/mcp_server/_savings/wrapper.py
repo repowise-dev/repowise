@@ -34,6 +34,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from repowise.core.mcp_latency import record_call
 from repowise.server.mcp_server._meta import full_meta
 
 from . import counterfactual, interaction
@@ -319,6 +320,12 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
             _emit_telemetry(tool, result, duration_ms)
         except Exception:  # pragma: no cover - defensive; telemetry never breaks a tool
             logger.debug("mcp telemetry emit failed for %s", tool, exc_info=True)
+        try:
+            from repowise.server.mcp_server import _state
+
+            record_call(getattr(_state, "_repo_path", None), tool, duration_ms)
+        except Exception:  # pragma: no cover - defensive; the latency log never breaks a tool
+            logger.debug("mcp latency log failed for %s", tool, exc_info=True)
         return result
 
     # Preserve the original signature so FastMCP builds the correct tool schema.
