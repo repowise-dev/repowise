@@ -195,7 +195,12 @@ def _inner_declarator(decl: Node) -> Node | None:
     """The next declarator down a C/C++ declarator spine, or ``None``."""
     inner = decl.child_by_field_name("declarator")
     if inner is None and decl.type in _FIELDLESS_DECLARATORS:
-        inner = next((c for c in decl.named_children if not is_comment(c)), None)
+        inner = next(
+            (c for c in decl.named_children if c.type != "ERROR" and not is_comment(c)),
+            None,
+        )
+    if inner is None and decl.type == "qualified_identifier":
+        inner = decl.child_by_field_name("name")
     return inner
 
 
