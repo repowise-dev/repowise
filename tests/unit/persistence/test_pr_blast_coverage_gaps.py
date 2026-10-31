@@ -65,3 +65,47 @@ async def test_filename_fallback_when_map_has_no_data(async_session):
 
     assert "src/foo.py" not in gaps  # name-matched test -> not a gap
     assert "src/bar.py" in gaps  # no test, no coverage -> gap
+
+
+async def test_file_tests_names_the_evidence_per_file(async_session):
+    from repowise.core.analysis.pr_blast import FileTests, file_tests
+
+    repo = await insert_repo(async_session)
+    await _node(async_session, repo.id, "src/weirdly.py")
+    await _node(async_session, repo.id, "src/foo.py")
+    await _node(async_session, repo.id, "src/bar.py")
+    await _node(async_session, repo.id, "tests/test_foo.py", is_test=True)
+    await save_test_coverage(
+        async_session,
+        repo.id,
+        [
+            TestCoverage(
+                test_id="tests/test_misc.py::test_it",
+                file_path="src/weirdly.py",
+                covered_lines=[1],
+                source_format="coverage.py",
+                test_file="tests/test_misc.py",
+            ),
+            TestCoverage(
+                test_id="test_dynamic",
+                file_path="src/weirdly.py",
+                covered_lines=[2],
+                source_format="coverage.py",
+            ),
+        ],
+        source_format="coverage.py",
+    )
+    await async_session.commit()
+
+    rows = await file_tests(
+        async_session,
+        repo.id,
+        ["src/weirdly.py", "src/foo.py", "src/bar.py", "tests/test_foo.py", "pyproject.toml"],
+    )
+    assert rows == {
+        "src/weirdly.py": FileTests("tested", covered_by=("test_dynamic", "tests/test_misc.py")),
+        "src/foo.py": FileTests("tested", named_by=("tests/test_foo.py",)),
+        "src/bar.py": FileTests("untested"),
+        "tests/test_foo.py": FileTests("test"),
+        "pyproject.toml": FileTests("not_code"),
+    }

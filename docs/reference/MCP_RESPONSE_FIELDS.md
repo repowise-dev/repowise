@@ -219,7 +219,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 | `skeleton` / `skeleton+` | Bodies elided; `skeleton+` keeps all non-function code and elides every body. Both asked renders `skeleton+` |
 | `health`, `doc_drift` | Health scores and biomarkers; documents naming the file |
 | `symbols` | Every symbol of a file |
-| `changes`, `provenance`, `suspects` | See below |
+| `changes`, `provenance`, `suspects`, `files` | See below |
 
 `docs` and `freshness` are always on and legal to pass; `freshness` is sent only on drift.
 
@@ -254,6 +254,17 @@ Never complete for:
 
 - Below 30% coverage `agent_share` is null with `suppressed_reason: "coverage_below_floor"`, and the agent and human-attested counts are dropped.
 - Unknown never counts as human. Attribution off: `{"unavailable": "attribution_off"}`.
+
+### files
+
+On a directory or module card only: every file under it, recursively, code files before tests and each group by path, with the test evidence `get_risk` reads for its test gaps.
+
+- `total`, `complete`, `counts` (listed rows per state: `tested`, `untested`, `type_only`, `test`, `not_code`), `rows`, `basis`.
+- Over 100 files: the first 100, `complete: false`, `omitted` and a `hint`. A cap cuts test files first; name a subdirectory as a target for the rest.
+- A code row is `{path, has_test}` plus, when found, `named_tests` (test files with its file name, nearest directory first; one in another directory is a weaker match), `reached_by` (other tests reaching it through calls or imports) and `covered_by` (per-test coverage rows from `repowise coverage add`), 3 each with `*_total` beyond.
+- `has_test: false` means none of the three exists. `type_only: true` marks a file that declares only types and needs no test.
+- A test file is `{path, is_test: true}`; a file that is not code is `{path, code: false}`.
+- `note` appears when the index holds no test files, so `has_test: false` is not evidence there.
 
 ### suspects
 

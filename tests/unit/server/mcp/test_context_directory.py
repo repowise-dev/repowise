@@ -167,3 +167,81 @@ async def test_partial_module_match_is_case_sensitive(setup_mcp):
     assert targets["DB"].get("type") != "module", targets["DB"]
     assert targets["db"]["type"] == "module"
     assert targets["db"]["docs"]["title"]
+
+
+@pytest.mark.asyncio
+async def test_files_lists_every_file_with_its_tests(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    card = (await get_context(["src/"], include=["files"]))["targets"]["src/"]
+    files = card["files"]
+    assert files["total"] == 2 and files["complete"] is True
+    assert "omitted" not in files and "note" not in files
+    assert files["counts"] == {"tested": 1, "untested": 1}
+    assert files["rows"] == [
+        {
+            "path": "src/auth/service.py",
+            "has_test": True,
+            "named_tests": ["tests/test_service.py"],
+        },
+        {"path": "src/db/models.py", "has_test": False},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_files_is_opt_in_and_directory_only(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    targets = (await get_context(["src/", "src/auth/service.py"]))["targets"]
+    assert "files" not in targets["src/"]
+    asked = (await get_context(["src/auth/service.py"], include=["files"]))["targets"]
+    assert "files" not in asked["src/auth/service.py"]
+
+
+@pytest.mark.asyncio
+async def test_files_over_the_cap_say_what_they_left_out(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import files
+
+    monkeypatch.setattr(files, "MAX_FILE_ROWS", 1)
+    block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
+    assert block["total"] == 2 and block["complete"] is False and block["omitted"] == 1
+    assert [r["path"] for r in block["rows"]] == ["src/auth/service.py"]
+    assert "subdirectory" in block["hint"]
+
+
+@pytest.mark.asyncio
+async def test_files_without_indexed_tests_says_false_is_not_evidence(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import files
+
+    async def no_tests(*_args):
+        return frozenset()
+
+    monkeypatch.setattr(files, "cached_test_files", no_tests)
+    block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
+    assert "not evidence" in block["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_file_list_names_the_files_opt_in(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import targets
+
+    monkeypatch.setattr(targets, "_SYMBOL_CAP", 1)
+    docs = (await get_context(["src/"]))["targets"]["src/"]["docs"]
+    assert docs["files_all"] == 'include=["files"]'
+    asked = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["docs"]
+    assert "files_all" not in asked
+
+
+@pytest.mark.asyncio
+async def test_files_rows_stop_at_the_size_budget(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import files
+
+    monkeypatch.setattr(files, "MAX_ROW_CHARS", 100)
+    block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
+    assert [r["path"] for r in block["rows"]] == ["src/auth/service.py"]
+    assert block["complete"] is False and block["omitted"] == 1
+    assert block["counts"] == {"tested": 1}

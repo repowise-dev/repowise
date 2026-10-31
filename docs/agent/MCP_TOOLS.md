@@ -156,7 +156,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
-| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
+| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
 | `repo` | string | default repo | `"all"` returns an error |
@@ -164,7 +164,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 Target kinds:
 
 - `path::Symbol`: a miss falls back to the file's card.
-- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`). Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
+- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`, and `docs.files_all` naming the opt-in when more exist). `include=["files"]` lists every file under it with `has_test` and the tests that cover each, for questions like "which files here have no test". Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
 - `component:<name>`: declared context and rolled-up facts, from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or derived.
 - `change:<id>` (`change:pr-123` or a commit sha): one [Change Record](../reference/CLI_REFERENCE.md#repowise-changes).
 - `package:<name>` (`package:requests`, `package:npm:lodash`): where a package is imported ([PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md)).

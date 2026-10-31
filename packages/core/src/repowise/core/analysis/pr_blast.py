@@ -17,7 +17,8 @@ from __future__ import annotations
 import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,59 +65,106 @@ def _subject_names(path: str) -> list[str]:
 async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) -> list[str]:
     """The code files among *paths* nothing can be shown to test, in their order.
 
-    Three signals, checked in descending order of what they can prove, and a
-    file only becomes a gap when all three stay silent. Asserting "nothing
+    The ``untested`` rows of :func:`file_tests`.
+    """
+    rows = await file_tests(session, repo_id, paths)
+    return [p for p, row in rows.items() if row.state == "untested"]
+
+
+@dataclass(frozen=True)
+class FileTests:
+    """What shows that tests exercise one file (:func:`file_tests`).
+
+    ``state``: ``test`` (a test file itself), ``not_code`` (a manifest, a
+    workflow), ``type_only`` (declares only types), ``tested`` or ``untested``.
+    The three test tuples are the evidence, strongest first; any one makes
+    the file ``tested``.
+    """
+
+    state: Literal["test", "not_code", "type_only", "tested", "untested"]
+    #: Tests with a per-test coverage row for the file (execution proof).
+    covered_by: tuple[str, ...] = ()
+    #: Test files that reach it in the dependency graph (a recorded edge).
+    reached_by: tuple[str, ...] = ()
+    #: Test files named for it by convention (its direct test file).
+    named_by: tuple[str, ...] = ()
+
+
+async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> dict[str, FileTests]:
+    """A :class:`FileTests` row per path in *paths*, in their order.
+
+    Three signals, in descending order of what they can prove, and a file
+    only becomes ``untested`` when all three stay silent. Asserting "nothing
     tests this" is the one claim here that costs a reader something if it is
     wrong, so the bar for making it is no evidence at all.
 
     1. A per-test coverage row (from ``repowise coverage add``) is
-       execution-*proof*: never a gap.
+       execution-*proof*.
     2. A test file reaching it in the dependency graph is evidence, not proof,
        but a recorded edge, not a guess, and it finds the suites that
        name their tests for behaviour instead of for the file under test.
-    3. Otherwise a test named for it by convention (``tests_matching_by_name``,
-       also tried with a dispatch-role prefix stripped), an honest "unknown",
+    3. A test named for it by convention (``tests_matching_by_name``, also
+       tried with a dispatch-role prefix stripped), an honest "unknown",
        never asserted as untested.
 
     Test files, files that are not code (a manifest, a workflow), and files
     that declare only types (:func:`~repowise.core.analysis.test_reach.is_type_only`,
-    read from the repository's checkout) are never gaps: they need no test of
-    their own.
+    read from the repository's checkout) are never ``untested``: they need no
+    test of their own.
     """
+    from repowise.core.analysis.test_reachability import cached_test_files
+    from repowise.core.analysis.test_selection import is_code_file
+
+    rows: dict[str, FileTests] = {}
+    if not paths:
+        return rows
+    test_files = await cached_test_files(session, repo_id)
+    for p in dict.fromkeys(paths):
+        if p in test_files:
+            rows[p] = FileTests("test")
+        elif not is_code_file(p):
+            rows[p] = FileTests("not_code")
+    candidates = [p for p in dict.fromkeys(paths) if p not in rows]
+    if candidates:
+        rows.update(await _code_file_tests(session, repo_id, candidates, test_files))
+    return {p: rows[p] for p in dict.fromkeys(paths)}
+
+
+async def _code_file_tests(
+    session: AsyncSession, repo_id: str, candidates: list[str], test_files: frozenset[str]
+) -> dict[str, FileTests]:
+    """:func:`file_tests` for code files that are not tests themselves."""
     from repowise.core.analysis.test_reachability import (
-        cached_test_files,
         read_under,
         tests_matching_by_name,
         tests_reaching,
         type_only_files,
     )
-    from repowise.core.analysis.test_selection import is_code_file
     from repowise.core.persistence.crud import covered_source_files
 
-    if not paths:
-        return []
-    test_files = await cached_test_files(session, repo_id)
-    candidates = [p for p in paths if is_code_file(p) and p not in test_files]
-    if not candidates:
-        return []
     covered = await covered_source_files(session, repo_id, set(candidates))
     # Degrades to "no signal" and never raises: a failed walk must not
     # turn into a false accusation.
     try:
-        reached = set(await tests_reaching(session, repo_id, candidates, test_files=test_files))
+        reached = await tests_reaching(session, repo_id, candidates, test_files=test_files)
     except Exception:
-        reached = set()
-    rest = [p for p in candidates if p not in covered and p not in reached]
-    subjects = {p: _subject_names(p) for p in rest}
+        reached = {}
+    subjects = {p: _subject_names(p) for p in candidates}
     named = tests_matching_by_name(sorted({n for ns in subjects.values() for n in ns}), test_files)
-    gaps = [p for p in rest if not any(n in named for n in subjects[p])]
-    if not gaps:
-        return []
-    root = (
-        await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
-    ).scalar_one_or_none()
-    types = type_only_files(gaps, read_under(root))
-    return [p for p in gaps if p not in types]
+    rows: dict[str, FileTests] = {}
+    for p in candidates:
+        by_name = tuple(dict.fromkeys(t for n in subjects[p] if n in named for t in named[n].tests))
+        evidence = (tuple(covered.get(p, ())), tuple(reached.get(p, ())), by_name)
+        state = "tested" if any(evidence) else "untested"
+        rows[p] = FileTests(state, *evidence)
+    gaps = [p for p, row in rows.items() if row.state == "untested"]
+    if gaps:
+        root = (
+            await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
+        ).scalar_one_or_none()
+        for p in type_only_files(gaps, read_under(root)):
+            rows[p] = FileTests("type_only")
+    return rows
 
 
 class PRBlastRadiusAnalyzer:
