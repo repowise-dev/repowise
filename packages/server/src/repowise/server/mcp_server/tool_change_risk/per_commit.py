@@ -90,6 +90,20 @@ def _shape(scored: Any, revspec: str, diagnostics: bool) -> dict[str, Any]:
     return payload
 
 
+def _refusal(revspec: str | None, finding_id: str | None) -> dict[str, Any] | None:
+    """The error for a request per_commit cannot answer, else None."""
+    if finding_id is not None:
+        return {"error": "finding_id expands a finding of one change; call without per_commit."}
+    if not revspec or split_revspec(revspec) is None:
+        return {
+            "error": (
+                f"per_commit needs a base..head range, got {revspec or 'no revspec'!r}. "
+                "Example: get_change_risk(revspec='main..HEAD', per_commit=True)."
+            )
+        }
+    return None
+
+
 async def per_commit_reply(
     ctx: Any,
     revspec: str | None,
@@ -102,15 +116,8 @@ async def per_commit_reply(
     started: float,
 ) -> dict[str, Any]:
     """Score each commit of *revspec* on its own and return one row per commit."""
-    if finding_id is not None:
-        return {"error": "finding_id expands a finding of one change; call without per_commit."}
-    if not revspec or split_revspec(revspec) is None:
-        return {
-            "error": (
-                f"per_commit needs a base..head range, got {revspec or 'no revspec'!r}. "
-                "Example: get_change_risk(revspec='main..HEAD', per_commit=True)."
-            )
-        }
+    if refusal := _refusal(revspec, finding_id):
+        return refusal
     ignored: list[dict] = []
     for block in include or ():
         resolve_enum_argument(block, ("diagnostics",), argument="include", ignored=ignored)
