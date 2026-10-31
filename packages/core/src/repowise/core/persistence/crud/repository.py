@@ -259,6 +259,10 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     repo = rows[0]
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path
+    # The savings ledger in the same .repowise follows the row.
+    from ...savings.recorder import relocate_ledger
+
+    await asyncio.to_thread(relocate_ledger, local_path)
     return repo
 
 

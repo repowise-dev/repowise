@@ -119,3 +119,65 @@ async def test_store_outside_the_repo_keeps_one_row_per_path(tmp_path: Path) -> 
 
     await _upsert(shared, tmp_path / "second")
     assert len(_rows(shared)) == 2
+
+
+def _record_saving(repo: Path, index: int) -> None:
+    from repowise.core.savings import recorder
+    from repowise.core.savings.correlation import scoped_idempotency_key
+
+    payload = {
+        "idempotency_key": scoped_idempotency_key(str(repo), "mcp", index),
+        "occurred_at": f"2026-10-01T00:00:0{index}Z",
+        "surface": "mcp",
+        "integration": "claude_code",
+        "agent": "claude_code",
+        "operation": "get_context",
+        "evidence_kind": "inferred",
+        "estimator": "chars_per_token_floor_v1",
+        "token_unit": "estimated_tokens",
+        "result_state": "success",
+        "is_usable": True,
+        "baseline_input_tokens": 1_000,
+        "pre_budget_input_tokens": 1_000,
+        "delivered_input_tokens": 100,
+    }
+    assert recorder.record_event(repo, payload) is True
+
+
+async def test_moved_repo_keeps_its_savings_history(tmp_path: Path) -> None:
+    from repowise.core.distill.store import OmissionStore
+    from repowise.core.savings import recorder
+    from repowise.core.savings.service import load_report
+
+    old = _git_repo(tmp_path / "old")
+    await _indexed(old)
+    OmissionStore(recorder.sidecar_path(old)).close()
+    _record_saving(old, 1)
+    _record_saving(old, 2)
+    new = tmp_path / "new"
+    old.rename(new)
+    assert load_report(new).unique_events == 0
+
+    await _upsert(new, new)
+
+    report = load_report(new)
+    assert report.unique_events == 2
+    assert report.saved_input_tokens == 1_800
+
+
+async def test_copied_repo_leaves_the_original_ledger_alone(tmp_path: Path) -> None:
+    from repowise.core.distill.store import OmissionStore
+    from repowise.core.savings import recorder
+    from repowise.core.savings.service import load_report
+
+    old = _git_repo(tmp_path / "old")
+    await _indexed(old)
+    OmissionStore(recorder.sidecar_path(old)).close()
+    _record_saving(old, 1)
+    copy = tmp_path / "copy"
+    shutil.copytree(old, copy)
+
+    await _upsert(copy, copy)
+
+    assert load_report(copy).unique_events == 1
+    assert load_report(old).unique_events == 1
