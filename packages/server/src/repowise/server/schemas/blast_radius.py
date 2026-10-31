@@ -50,6 +50,8 @@ class ReviewerEntry(BaseModel):
     email: str
     files: int
     ownership_pct: float
+    #: Display name from git history; only on the change analysis.
+    name: str | None = None
 
 
 class TestImpactEvidence(BaseModel):
@@ -191,6 +193,9 @@ class ChangeCandidateModel(BaseModel):
     ahead: int | None = None
     files_changed: int | None = None
     is_current: bool = False
+    #: For a branch: whether it exists on the remote. A local-only branch is
+    #: often scratch work, so the picker shows it quieter.
+    pushed: bool | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):

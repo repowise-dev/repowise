@@ -49,6 +49,9 @@ class ChangeCandidate:
     files_changed: int | None = None
     #: The checked-out branch.
     is_current: bool = False
+    #: For a branch: whether it exists on the remote (a local-only branch is
+    #: often scratch work).
+    pushed: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -170,6 +173,7 @@ def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate 
     if base == "HEAD":
         return wip, []
     kept = _branches_ahead(repo_path, base, max_branches)
+    remote_names = {r.name.split("/", 1)[-1] for r in git_refs.list_branches(repo_path) if r.is_remote}
     # The same three-dot diff the analysis reads, so the count in the list is
     # the count the verdict reports. One diff per kept branch, capped above.
     files = {r.name: git_refs.changed_files(repo_path, base, r.name) for r, _ in kept}
@@ -187,6 +191,7 @@ def _git_candidates(repo_path: str, max_branches: int) -> tuple[ChangeCandidate 
             ahead=ahead,
             files_changed=len(files[ref.name]),
             is_current=ref.name == current,
+            pushed=ref.is_remote or ref.name in remote_names,
         )
         for ref, ahead in kept
     ]

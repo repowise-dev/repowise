@@ -68,6 +68,8 @@ async def test_lists_work_in_progress_branches_and_commits(client, session, tmp_
     ]
     branch = body["changes"][1]
     assert (branch["ahead"], branch["files_changed"], branch["title"]) == (1, 1, "feat: change core")
+    # Never pushed: the picker shows it as local scratch work.
+    assert branch["pushed"] is False
     # Uncommitted work opens first.
     assert body["default_id"] == "working-tree"
 
@@ -83,7 +85,16 @@ async def test_analyzes_a_branch_with_reach_edges_and_signals(client, session, t
             id="e0", repository_id=rid, source_node_id="app.py", target_node_id="core.py", edge_type="imports"
         )
     )
-    session.add(GitMetadata(repository_id=rid, file_path="app.py", is_hotspot=True))
+    session.add(
+        GitMetadata(
+            repository_id=rid,
+            file_path="app.py",
+            is_hotspot=True,
+            primary_owner_email="ann@example.com",
+            primary_owner_name="Ann Lee",
+            primary_owner_commit_pct=0.8,
+        )
+    )
     session.add(HealthFileMetric(repository_id=rid, file_path="app.py", score=4.2, module="src"))
     await session.commit()
 
@@ -102,6 +113,7 @@ async def test_analyzes_a_branch_with_reach_edges_and_signals(client, session, t
     assert signals["app.py"]["health_score"] == 4.2
     # No health row is unknown, never a score.
     assert signals["core.py"]["health_score"] is None
+    assert body["recommended_reviewers"][0]["name"] == "Ann Lee"
 
 
 async def test_plain_analysis_keeps_its_shape(session, client, tmp_path):
@@ -109,6 +121,7 @@ async def test_plain_analysis_keeps_its_shape(session, client, tmp_path):
     repo = await create_test_repo(client, tmp_path)
     result = await PRBlastRadiusAnalyzer(session, repo["id"]).analyze_files(["core.py"])
     assert "affected_signals" not in result
+    assert all("name" not in r for r in result["recommended_reviewers"])
     assert all("via" not in row for row in result["transitive_affected"])
 
 

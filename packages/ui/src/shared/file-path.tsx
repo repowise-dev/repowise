@@ -235,7 +235,8 @@ function useHostFocus(
   }, [ref, setOpen, active]);
 }
 
-function CopyPathButton({ text, label, copiedLabel }: { text: string; label: string; copiedLabel: string }) {
+/** The copy-path button on its own, for a path rendered inside a link. */
+export function CopyPathButton({ text, label, copiedLabel }: { text: string; label: string; copiedLabel: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {

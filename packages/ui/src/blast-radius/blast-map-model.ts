@@ -12,7 +12,7 @@ import type {
   AffectedSignal,
   BlastRadiusResponse,
 } from "@repowise-dev/types/blast-radius";
-import { isWeakHealthBand, bandForScore } from "@repowise-dev/types/health";
+import { HEALTH_BAND_LABEL, formatScore, isWeakHealthBand, bandForScore } from "@repowise-dev/types/health";
 
 /** What the index knows about a file. `null` is unknown, never "fine". */
 export interface FileMarks {
@@ -94,6 +94,17 @@ export function attention(m: FileMarks): number {
     (m.healthScore !== null && isWeakHealthBand(bandForScore(m.healthScore)) ? 1 : 0) +
     (m.untested ? 1 : 0)
   );
+}
+
+/** Every mark a file carries, in words, for tooltips, lists and the review prompt. */
+export function describeMarks(m: FileMarks): string[] {
+  const words: string[] = [];
+  if (m.healthScore !== null)
+    words.push(`${HEALTH_BAND_LABEL[bandForScore(m.healthScore)]} ${formatScore(m.healthScore)}`);
+  else words.push("Health not scored");
+  if (m.isHotspot) words.push("Hotspot");
+  if (m.untested) words.push("No test evidence");
+  return words;
 }
 
 export function isWeak(m: FileMarks): boolean {

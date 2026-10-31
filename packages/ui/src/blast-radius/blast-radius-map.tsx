@@ -2,13 +2,15 @@
 
 import { useMemo, useState } from "react";
 import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
-import { HEALTH_BAND_LABEL, bandForScore, formatScore } from "@repowise-dev/types/health";
 import { healthRampFill } from "../health/tokens";
 import { disambiguateBasenames } from "../lib/format";
+import { FilePath } from "../shared/file-path";
+export { describeMarks } from "./blast-map-model";
 import {
   CX,
   CY,
   buildBlastMap,
+  describeMarks,
   type BlastMap,
   type FileMarks,
   type MapFileNode,
@@ -22,17 +24,6 @@ const EDGE = "var(--color-text-tertiary)";
 /** The node's fill: its health band on the canonical ramp, neutral when unscored. */
 function fillOf(m: FileMarks): string {
   return m.healthScore === null ? NEUTRAL : healthRampFill(m.healthScore);
-}
-
-/** Every mark a file carries, in words, for the tooltip and the inspector. */
-export function describeMarks(m: FileMarks): string[] {
-  const words: string[] = [];
-  if (m.healthScore !== null)
-    words.push(`${HEALTH_BAND_LABEL[bandForScore(m.healthScore)]} ${formatScore(m.healthScore)}`);
-  else words.push("Health not scored");
-  if (m.isHotspot) words.push("Hotspot");
-  if (m.untested) words.push("No test evidence");
-  return words;
 }
 
 /** Hotspot mark: a small solid triangle above the node, in ink, so it never reads as a health colour. */
@@ -291,13 +282,12 @@ function NotDrawnNote({ map }: { map: BlastMap }) {
 }
 
 function FileRef({ path, href }: { path: string; href: string | undefined }) {
-  const cls = "min-w-0 break-all font-mono text-[var(--color-text-primary)]";
   return href ? (
-    <a href={href} className={`${cls} hover:underline`}>
-      {path}
+    <a href={href} className="min-w-0 hover:underline">
+      <FilePath path={path} accent />
     </a>
   ) : (
-    <span className={cls}>{path}</span>
+    <FilePath path={path} copyable />
   );
 }
 
