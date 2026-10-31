@@ -818,6 +818,17 @@ class TestGoCallAssignments:
             CallAssignment(2, "d", "detect", "NewDetector"),
         )
 
+    def test_a_generic_call_names_its_target(self) -> None:
+        body = (
+            "func f() {\n\tx := New[T](cfg)\n\ty := pkg.New[T](cfg)\n"
+            "\tz := New[Pair[int, string]](cfg)\n}"
+        )
+        assert scan_call_assignments(body, "go") == (
+            CallAssignment(2, "x", None, "New"),
+            CallAssignment(3, "y", "pkg", "New"),
+            CallAssignment(4, "z", None, "New"),
+        )
+
     def test_a_multiple_result_call_names_its_first_result(self) -> None:
         body = "func f() {\n\td, err := New()\n}"
         assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)
