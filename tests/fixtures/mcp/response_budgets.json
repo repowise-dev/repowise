@@ -11,6 +11,7 @@
   "search_path": 256,
   "risk": 436,
   "change_risk": 1640,
+  "change_risk_per_commit": 534,
   "why": 342,
   "health": 2973,
   "dead_code": 14386

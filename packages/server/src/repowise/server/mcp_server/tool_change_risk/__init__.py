@@ -34,6 +34,7 @@ from repowise.core.analysis.change_risk import (
     fixes_reachable_from,
     normalize_extensions,
     score_live_change,
+    score_range_commits,
 )
 from repowise.core.analysis.change_risk.features import revspec_head
 from repowise.core.analysis.change_risk.render import LIMITS, size_text
@@ -169,5 +170,6 @@ from repowise.server.mcp_server.tool_change_risk.tool import (
     _attach_change_blocks,
     _nothing_to_score,
     _score_change,
+    _score_guarded,
     get_change_risk,
 )

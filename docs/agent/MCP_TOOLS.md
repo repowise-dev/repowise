@@ -258,6 +258,7 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 | `baseline` | int | `200` | Recent commits sampled for percentiles; `0` disables |
 | `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `evidence` (the record `repowise changes show` prints), `tests` |
 | `finding_id` | string | none | Expand one `health_delta` finding |
+| `per_commit` | bool | `false` | With a range, one compact row per commit (up to 30) in place of the review |
 | `repo` | string | default repo | `"all"` not supported |
 
 `include_paths` and `exclude_patterns` scope the score, health delta and per-file blocks; `impacted_tests` still selects over the whole change, less repowise's own output.
@@ -268,6 +269,7 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 get_change_risk()
 get_change_risk(revspec="main..HEAD", exclude_patterns=["tests/"])
 get_change_risk(revspec="main..HEAD", finding_id="chf_27a13be11e7ee33f")
+get_change_risk(revspec="main..HEAD", per_commit=True)
 ```
 
 ---
