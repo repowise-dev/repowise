@@ -1,4 +1,9 @@
-import type { AffectedSignal, BlastRadiusResponse, ChangeCandidate } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusResponse,
+  ChangeCandidate,
+  ChangeHealthCheckResponse,
+} from "@repowise-dev/types/blast-radius";
 import type { BlastPromptChange, BlastPromptInput } from "../health/ai-prompts/blast-radius-prompt";
 import { describeMarks, riskySpots, type Reach } from "./blast-map-model";
 import type { ReviewStatus } from "./review-status";
@@ -38,6 +43,23 @@ function promptOwners(result: Result, changed: number): BlastPromptInput["owners
   return result.recommended_reviewers.slice(0, 3).map((r) => ({ name: ownerName(r), email: r.email, files: r.files }));
 }
 
+/** The health check's rows a reviewer acts on, labelled by what the change did. */
+function checkFindings(check: ChangeHealthCheckResponse) {
+  return check.findings
+    .map((f) => {
+      const group =
+        f.source === "diff-risk"
+          ? `diff risk (${f.rule})`
+          : f.change_kind === "resolved" || f.change_kind === "improved"
+            ? "fixed"
+            : f.change_kind;
+      return { group: group ?? "", severity: f.severity ?? f.level, path: f.file_path, line: f.line_number, message: f.message };
+    })
+    .filter((f) => ["introduced", "worsened", "fixed"].includes(f.group) || f.group.startsWith("diff risk"))
+    // What the change made worse leads; fixes come last so a cap never hides a regression.
+    .sort((a, b) => Number(a.group === "fixed") - Number(b.group === "fixed"));
+}
+
 /** Everything the review prompt says, read from one analysis. Pure. */
 export function blastPromptInput(
   result: Result,
@@ -46,6 +68,7 @@ export function blastPromptInput(
   changedFiles: string[],
   change: ChangeCandidate | undefined,
   changedTotal?: number,
+  healthCheck?: ChangeHealthCheckResponse,
 ): BlastPromptInput {
   const impact = result.test_impact;
   return {
@@ -67,5 +90,8 @@ export function blastPromptInput(
     testCommands: result.test_commands ?? [],
     missingPartners: missingPartners(result),
     owners: promptOwners(result, changedFiles.length),
+    healthCheck: healthCheck
+      ? { revspec: healthCheck.revspec, verdict: healthCheck.gate.verdict, findings: checkFindings(healthCheck) }
+      : undefined,
   };
 }

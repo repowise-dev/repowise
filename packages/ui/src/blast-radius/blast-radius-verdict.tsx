@@ -2,7 +2,12 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
-import type { AffectedSignal, BlastRadiusResponse, ChangeCandidate } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusResponse,
+  ChangeCandidate,
+  ChangeHealthCheckResponse,
+} from "@repowise-dev/types/blast-radius";
 import { isWeak, riskySpots, type FileMarks, type Reach } from "./blast-map-model";
 import { blastPromptInput, missingPartners, ownerName, testsLimited } from "./blast-prompt-input";
 import { count, reviewStatus, roughCount, type ReviewStatus } from "./review-status";
@@ -292,6 +297,8 @@ export interface BlastRadiusVerdictProps {
   changedTotal?: number | undefined;
   /** The picked change, for the review prompt; omit for a hand-picked file set. */
   change?: ChangeCandidate | undefined;
+  /** A health check the reader ran on this change; its findings join the prompt. */
+  healthCheck?: ChangeHealthCheckResponse | undefined;
   fileHref?: Href;
 }
 
@@ -301,7 +308,15 @@ export interface BlastRadiusVerdictProps {
  * look at, which tests to run, who to ask, and what is missing, each as
  * short rows. Blocks with nothing to say stay out.
  */
-export function BlastRadiusVerdict({ result, reach, changedFiles, changedTotal, change, fileHref }: BlastRadiusVerdictProps) {
+export function BlastRadiusVerdict({
+  result,
+  reach,
+  changedFiles,
+  changedTotal,
+  change,
+  healthCheck,
+  fileHref,
+}: BlastRadiusVerdictProps) {
   const [promptOpen, setPromptOpen] = useState(false);
   const total = changedTotal ?? changedFiles.length;
   const testsTotal = result.test_impact?.recommendations_total ?? 0;
@@ -345,7 +360,10 @@ export function BlastRadiusVerdict({ result, reach, changedFiles, changedTotal, 
         open={promptOpen}
         onOpenChange={setPromptOpen}
         getPrompt={(flavor) =>
-          buildBlastRadiusPrompt({ input: blastPromptInput(result, reach, status, changedFiles, change, changedTotal), flavor })
+          buildBlastRadiusPrompt({
+            input: blastPromptInput(result, reach, status, changedFiles, change, changedTotal, healthCheck),
+            flavor,
+          })
         }
         filePath={change?.label ?? null}
         title="Review prompt"

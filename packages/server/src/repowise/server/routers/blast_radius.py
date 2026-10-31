@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_candidates import (
     UnknownChangeError,
+    change_revspec,
     list_change_candidates,
     resolve_change_files,
 )
@@ -21,6 +23,8 @@ from repowise.server.schemas.blast_radius import (
     ChangeBlastRadiusRequest,
     ChangeBlastRadiusResponse,
     ChangeCandidatesResponse,
+    ChangeHealthCheckRequest,
+    ChangeHealthCheckResponse,
 )
 
 #: Changed paths analyzed per change. A long-lived branch can touch thousands;
@@ -103,3 +107,49 @@ async def analyze_change_blast_radius(
         changed_files=analyzed,
         changed_files_total=len(files),
     )
+
+
+def _health_check(root: str, change_id: str) -> ChangeHealthCheckResponse:
+    from repowise.core.analysis.change_health.check import run_health_check
+
+    check = run_health_check(root, change_revspec(root, change_id))
+    doc = check.as_json()
+    return ChangeHealthCheckResponse(
+        change_id=change_id,
+        revspec=doc["revspec"],
+        status=doc["status"],
+        explanation=doc.get("explanation"),
+        scope=doc["scope"],
+        skipped=doc["skipped"],
+        findings=doc["findings"],
+        gate=doc["gate"],
+    )
+
+
+@router.post("/{repo_id}/blast-radius/health-check", response_model=ChangeHealthCheckResponse)
+@read_route
+async def check_change_health(
+    repo_id: str,
+    body: ChangeHealthCheckRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> ChangeHealthCheckResponse:
+    """``repowise health check`` on one listed change, read from git (no index).
+
+    On demand only: it parses both sides of every changed file, so it can take
+    seconds on a large change. Needs a checkout on this server.
+    """
+    from repowise.core.analysis.change_health.check import HealthCheckUnavailable
+
+    root = await _checkout(session, repo_id)
+    if root is None:
+        raise HTTPException(status_code=404, detail="This server has no checkout to read the change from.")
+    try:
+        return await asyncio.to_thread(_health_check, root, body.change_id)
+    except UnknownChangeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except HealthCheckUnavailable as exc:
+        raise HTTPException(status_code=422, detail=f"{exc} ({exc.code})") from exc
+    except Exception as exc:  # git timeouts, unreadable blobs: say so, as the CLI does
+        raise HTTPException(
+            status_code=500, detail=f"The health check failed unexpectedly: {exc!r} (internal_error)"
+        ) from exc

@@ -430,3 +430,22 @@ async def resolve_change_files(
         raise UnknownChangeError(f"unknown commit {ref!r}")
 
     raise UnknownChangeError(f"unknown change {change_id!r}")
+
+
+def change_revspec(repo_path: str, change_id: str) -> str | None:
+    """The revspec a health check judges for a listed change; ``None`` is the working tree.
+
+    A branch is ``<default branch>...<branch>`` (what it would bring), a
+    commit its sha. Validated like :func:`resolve_change_files`, so no client
+    string reaches git as an option or a range.
+    """
+    if change_id == WORKING_TREE_ID:
+        return None
+    kind, _, ref = change_id.partition(":")
+    if kind == "branch":
+        if ref not in {b.name for b in git_refs.list_branches(repo_path)}:
+            raise UnknownChangeError(f"unknown branch {ref!r}")
+        return f"{git_refs.default_base(repo_path)}...{ref}"
+    if kind == "commit" and _SHA.match(ref) and git_refs.resolve(repo_path, ref):
+        return ref
+    raise UnknownChangeError(f"unknown change {change_id!r}")

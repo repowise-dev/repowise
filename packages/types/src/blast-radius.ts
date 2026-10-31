@@ -232,3 +232,44 @@ export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
   /** Every path the change touches, before the cap. */
   changed_files_total: number;
 }
+
+/** One row the health gate weighed: a health finding or a diff-risk rule. */
+export interface HealthCheckFinding {
+  /** `health` or `diff-risk`. */
+  source: string;
+  /** The biomarker, or the diff-risk rule (added-suppression, weakened-tests, test-only-branch). */
+  rule: string;
+  /** The gate's level: error fails, warning warns, note informs. */
+  level: "error" | "warning" | "note";
+  file_path: string;
+  line_number: number | null;
+  symbol: string | null;
+  message: string;
+  fingerprint: string;
+  /** Health rows: introduced, worsened, resolved, moved... */
+  change_kind?: string;
+  severity?: string;
+  severity_before?: string;
+  [key: string]: unknown;
+}
+
+export interface ChangeHealthCheckResponse {
+  change_id: string;
+  revspec: string;
+  status: string;
+  explanation: string | null;
+  scope: Record<string, unknown>;
+  skipped: Record<string, string>;
+  findings: HealthCheckFinding[];
+  gate: {
+    passed: boolean;
+    verdict: "pass" | "warn" | "fail";
+    fail_on: string;
+    fail_at: string;
+    failing_count: number;
+    warning_count: number;
+    note_count: number;
+    notes: string[];
+    [key: string]: unknown;
+  };
+}

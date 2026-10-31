@@ -5,6 +5,7 @@ import type {
   ChangeBlastRadiusRequest,
   ChangeBlastRadiusResponse,
   ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
 } from "@repowise-dev/types/blast-radius";
 
 export type {
@@ -19,6 +20,8 @@ export type {
   ChangeCandidatesResponse,
   ChangeBlastRadiusRequest,
   ChangeBlastRadiusResponse,
+  ChangeHealthCheckResponse,
+  HealthCheckFinding,
 } from "@repowise-dev/types/blast-radius";
 
 export async function analyzeBlastRadius(
@@ -42,4 +45,9 @@ export async function analyzeChangeBlastRadius(
   body: ChangeBlastRadiusRequest,
 ): Promise<ChangeBlastRadiusResponse> {
   return apiPost<ChangeBlastRadiusResponse>(`/api/repos/${repoId}/blast-radius/change`, body);
+}
+
+/** `repowise health check` on one listed change, run on demand (it reads both sides from git). */
+export async function checkChangeHealth(repoId: string, changeId: string): Promise<ChangeHealthCheckResponse> {
+  return apiPost<ChangeHealthCheckResponse>(`/api/repos/${repoId}/blast-radius/health-check`, { change_id: changeId });
 }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -234,3 +234,26 @@ class ChangeBlastRadiusResponse(BlastRadiusResponse):
     changed_files: list[str]
     #: Every path the change touches, before the cap.
     changed_files_total: int
+
+
+class ChangeHealthCheckRequest(BaseModel):
+    #: An ``id`` from ``GET /blast-radius/changes``.
+    change_id: str = Field(min_length=1, max_length=300)
+
+
+class ChangeHealthCheckResponse(BaseModel):
+    """``repowise health check <revspec> --format json`` for one listed change.
+
+    ``findings`` are the gate's rows (health findings introduced, worsened or
+    fixed, and the diff-risk rules); ``gate`` holds the verdict at the CLI
+    defaults (fail on introduced, at high).
+    """
+
+    change_id: str
+    revspec: str
+    status: str
+    explanation: str | None = None
+    scope: dict[str, Any]
+    skipped: dict[str, str]
+    findings: list[dict[str, Any]]
+    gate: dict[str, Any]

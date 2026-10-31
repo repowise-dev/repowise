@@ -61,3 +61,21 @@ describe("buildBlastRadiusPrompt", () => {
     expect(p).toContain("this list is a floor");
   });
 });
+
+describe("buildBlastRadiusPrompt with a health check", () => {
+  it("adds the check's verdict and findings once one has run", () => {
+    const p = buildBlastRadiusPrompt({
+      input: {
+        ...INPUT,
+        healthCheck: {
+          revspec: "origin/main...feat/x",
+          verdict: "fail",
+          findings: [{ group: "introduced", severity: "high", path: "packages/core/src/a.py", line: 12, message: "Deep nesting (introduced, high)" }],
+        },
+      },
+    });
+    expect(p).toContain("## Health check: fail (`repowise health check origin/main...feat/x`)");
+    expect(p).toContain("introduced high: `packages/core/src/a.py:12` Deep nesting");
+    expect(buildBlastRadiusPrompt({ input: INPUT })).not.toContain("## Health check");
+  });
+});

@@ -270,3 +270,22 @@ async def test_ahead_counts_hold_across_chunks(client, tmp_path, monkeypatch):
 
     ahead = {c["label"]: c["ahead"] for c in body["changes"] if c["kind"] == "branch"}
     assert ahead == {"feat/x": 1, "feat/y": 1}
+
+
+async def test_health_check_judges_a_listed_change_from_git(client, tmp_path):
+    """The same check as `repowise health check`, on demand, for each kind of change."""
+    _git_repo(tmp_path)
+    repo = await create_test_repo(client, tmp_path)
+    url = f"/api/repos/{repo['id']}/blast-radius/health-check"
+
+    wip = await client.post(url, json={"change_id": "working-tree"})
+    assert wip.status_code == 200, wip.text
+    assert wip.json()["revspec"] == "working tree"
+    assert wip.json()["gate"]["verdict"] in {"pass", "warn", "fail"}
+    assert (wip.json()["gate"]["fail_on"], wip.json()["gate"]["fail_at"]) == ("introduced", "high")
+
+    branch = await client.post(url, json={"change_id": "branch:feat/x"})
+    assert branch.status_code == 200, branch.text
+    assert branch.json()["revspec"].endswith("...feat/x")
+
+    assert (await client.post(url, json={"change_id": "branch:--output=x"})).status_code == 404

@@ -14,6 +14,7 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   analyzeBlastRadius,
   analyzeChangeBlastRadius,
+  checkChangeHealth,
   listBlastRadiusChanges,
 } from "@/lib/api/blast-radius";
 import { getHotspots } from "@/lib/api/git";
@@ -39,6 +40,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
     listChanges: () => listBlastRadiusChanges(repoId),
     analyzeChange: ({ changeId, maxDepth }) =>
       analyzeChangeBlastRadius(repoId, { change_id: changeId, max_depth: maxDepth }),
+    checkHealth: (changeId) => checkChangeHealth(repoId, changeId),
     fileHref: (path) => fileEntityPath(`/repos/${repoId}`, path),
   }), [repoId]);
 

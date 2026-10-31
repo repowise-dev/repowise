@@ -633,6 +633,28 @@ export interface ChangeForgeMetadata {
   linked_issues?: string[] | null;
 }
 
+export interface ChangeHealthCheckRequest {
+  change_id: string;
+}
+
+/**
+ * ``repowise health check <revspec> --format json`` for one listed change.
+ *
+ * ``findings`` are the gate's rows (health findings introduced, worsened or
+ * fixed, and the diff-risk rules); ``gate`` holds the verdict at the CLI
+ * defaults (fail on introduced, at high).
+ */
+export interface ChangeHealthCheckResponse {
+  change_id: string;
+  revspec: string;
+  status: string;
+  explanation?: string | null;
+  scope: Record<string, unknown>;
+  skipped: Record<string, string>;
+  findings: Record<string, unknown>[];
+  gate: Record<string, unknown>;
+}
+
 /** A finding a change's commit introduced or worsened, with that commit. */
 export interface ChangeHealthFindingResponse {
   change_kind: string;

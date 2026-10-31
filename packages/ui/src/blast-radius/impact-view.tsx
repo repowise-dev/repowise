@@ -36,6 +36,7 @@ import { BlastRadiusVerdict } from "./blast-radius-verdict";
 import { AffectedByModule, ChangedFilesList } from "./affected-files";
 import { readReach } from "./blast-map-model";
 import { ChangePicker, changeName } from "./change-picker";
+import { HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
 import { count } from "./review-status";
 import type { ImpactAdapter } from "./impact-adapter";
 import { toFriendlyMessage } from "../lib/errors";
@@ -210,15 +211,23 @@ function NoReach({ depth, tests }: { depth: number; tests: number }) {
   );
 }
 
+/** The health check for one change: its state and how to run it. */
+interface ChangeCheck {
+  state: HealthCheckState | undefined;
+  onRun: () => void;
+}
+
 function ReviewBody({
   analysis,
   change,
+  check,
   fileHref,
   maxDepth,
   onDepth,
 }: {
   analysis: Analysis;
   change: ChangeCandidate | undefined;
+  check: ChangeCheck | undefined;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
@@ -239,8 +248,10 @@ function ReviewBody({
         changedFiles={changedFiles}
         changedTotal={changedTotal}
         change={change}
+        healthCheck={check?.state?.status === "done" ? check.state.result : undefined}
         fileHref={fileHref}
       />
+      {check && <HealthCheckPanel state={check.state} onRun={check.onRun} fileHref={fileHref} />}
       <Section title="Where it reaches" action={<DepthSelect value={maxDepth} onChange={onDepth} />}>
         {reach.files.length > 0 ? (
           <BlastRadiusMap reach={reach} fileHref={fileHref} selectedModule={filter || null} onSelectModule={pickModule} />
@@ -332,6 +343,28 @@ function useAnalysis(adapter: ImpactAdapter, selection: Selection | null, maxDep
   return { analysis, error, loading };
 }
 
+/** Health checks by change id: run on demand, kept for the page's life. */
+function useHealthChecks(adapter: ImpactAdapter) {
+  const [checks, setChecks] = useState<Record<string, HealthCheckState>>({});
+  const adapterRef = useRef(adapter);
+  adapterRef.current = adapter;
+  const run = useCallback(async (changeId: string) => {
+    const check = adapterRef.current.checkHealth;
+    if (!check) return;
+    setChecks((prev) => ({ ...prev, [changeId]: { status: "running" } }));
+    try {
+      const result = await check(changeId);
+      setChecks((prev) => ({ ...prev, [changeId]: { status: "done", result } }));
+    } catch (err) {
+      setChecks((prev) => ({
+        ...prev,
+        [changeId]: { status: "error", message: toFriendlyMessage(err, "The health check could not run.") },
+      }));
+    }
+  }, []);
+  return { checks, run };
+}
+
 function ReviewHeader({
   listsChanges,
   changes,
@@ -372,6 +405,7 @@ function ResultPane({
   pickedName,
   empty,
   shownChange,
+  check,
   fileHref,
   maxDepth,
   onDepth,
@@ -380,6 +414,7 @@ function ResultPane({
   pickedName: string;
   empty: ReactNode;
   shownChange: ChangeCandidate | undefined;
+  check: ChangeCheck | undefined;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
@@ -403,6 +438,7 @@ function ResultPane({
             key={selectionKeyOf(analysis.selection)}
             analysis={analysis}
             change={shownChange}
+            check={check}
             fileHref={fileHref}
             maxDepth={maxDepth}
             onDepth={onDepth}
@@ -452,6 +488,7 @@ export function ImpactView({
   const [filesOpen, setFilesOpen] = useState(!listsChanges || seed.length > 0);
   const [maxDepth, setMaxDepth] = useState(3);
   const state = useAnalysis(adapter, selection, maxDepth);
+  const health = useHealthChecks(adapter);
 
   // A new file seed (following another file's CTA) replaces the selection.
   useEffect(() => {
@@ -470,6 +507,11 @@ export function ImpactView({
   const analyzed = state.analysis?.selection;
   const shownChange = analyzed?.kind === "change" ? changeFor(analyzed.id, listed) : undefined;
   const filesName = selection?.kind === "files" ? count(selection.files.length, "picked file") : "";
+  // A health check needs a checkout, which the listing reports as working-tree support.
+  const check: ChangeCheck | undefined =
+    shownChange && adapter.checkHealth && changes?.working_tree_supported
+      ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
+      : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
@@ -509,6 +551,7 @@ export function ImpactView({
         pickedName={picked ? changeName(picked) : filesName}
         empty={empty}
         shownChange={shownChange}
+        check={check}
         fileHref={fileHref}
         maxDepth={maxDepth}
         onDepth={setMaxDepth}

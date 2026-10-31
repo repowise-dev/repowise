@@ -33,6 +33,12 @@ export interface BlastPromptInput {
   missingPartners: { path: string; partnerOf: string }[];
   /** Owners of the changed files (`of` is how many were analyzed); without `of`, owners of affected files. */
   owners: { name: string; email: string; files: number; of?: number | undefined }[];
+  /** A health check run on the change, when the reader ran one. */
+  healthCheck?: {
+    revspec: string;
+    verdict: string;
+    findings: { group: string; severity: string; path: string; line: number | null; message: string }[];
+  } | undefined;
 }
 
 export interface BuildBlastPromptOptions {
@@ -161,6 +167,29 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
       ]
     : [];
 
+  // `repowise health check` with no revspec judges committed work against the
+  // base, not uncommitted changes, so a working-tree check names no command.
+  const checkSubject = !i.healthCheck
+    ? ""
+    : i.healthCheck.revspec === "working tree"
+      ? "the uncommitted changes against HEAD"
+      : `\`repowise health check ${i.healthCheck.revspec}\``;
+  const check = i.healthCheck
+    ? [
+        `## Health check: ${i.healthCheck.verdict} (${checkSubject})`,
+        "",
+        i.healthCheck.findings.length
+          ? capped(
+              i.healthCheck.findings,
+              10,
+              (f) => `${f.group} ${f.severity}: \`${f.path}${f.line ? `:${f.line}` : ""}\` ${f.message}`,
+              (n) => `${n} more`,
+            )
+          : "- No finding introduced, worsened or fixed.",
+        "",
+      ]
+    : [];
+
   return joinSections([
     lead,
     "",
@@ -179,6 +208,7 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     "",
     ...partners,
     ...owners,
+    ...check,
     "## What I want back",
     "",
     "1. Risks: concrete defects or regressions this diff can cause in the files that import it, each with file:line and why.",
