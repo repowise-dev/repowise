@@ -17,9 +17,13 @@ import {
 // server page for a component that has no state.
 import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
-import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
-import { healthMark, type HealthMark, type HealthMarkBand } from "@repowise-dev/ui/health/tokens";
+import {
+  ContractTypeCounts,
+  WorkspaceOverviewSections,
+  lowestHealthStat,
+  lowestRepoHealth,
+} from "@repowise-dev/ui/workspace/workspace-overview";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
 import { getWorkspaceActions } from "@/lib/api/actions";
 import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
@@ -44,15 +48,6 @@ type Translator = (key: string, values?: Record<string, string | number>) => str
  *  figure is never reported as a total, so the cap cannot be read as one. */
 const COCHANGE_PREVIEW = 8;
 
-/** The three-band health mark as a text class, so the ribbon's figure takes
- *  the same colour as the repository row it names (the five-band
- *  `scoreTextColor` paints a 7.7 green while its row says Warning). */
-const MARK_TEXT: Record<HealthMarkBand, string> = {
-  healthy: "text-[var(--color-success)]",
-  warning: "text-[var(--color-warning)]",
-  alert: "text-[var(--color-error)]",
-};
-
 /**
  * The workspace overview.
  *
@@ -72,11 +67,8 @@ const MARK_TEXT: Record<HealthMarkBand, string> = {
  *   - The repo grid became `RepoRows`, so a repository's health leads the row
  *     that decides whether you open it.
  *
- * Order, top down: the lede (how many repositories, and which need fixing),
- * the cross-repo ribbon, the repositories, "Do next" folded to one line, then
- * contracts and co-changes. "Do next" used to sit above the repositories and,
- * open, ran two actions per repository, which pushed the list this page exists
- * for below the first screen.
+ * The section order lives in `WorkspaceOverviewSections`, so every host
+ * renders the same page; this file fetches and words it.
  */
 export default async function WorkspaceDashboardPage() {
   const t = await getTranslations("views.workspace");
@@ -126,23 +118,17 @@ export default async function WorkspaceDashboardPage() {
   const docs = workspaceDocFreshness(repos);
   const docFreshness = docs.pct;
 
-  const health = lowestHealth(repos);
+  const rows = repos.slice().sort(byAttention).map(toRow);
 
   // Files and symbols are not here: the lede sentence above already says
   // both, and the ribbon is for the signals that cut across repositories.
   const ribbon: RibbonStat[] = [
-    {
+    lowestHealthStat(lowestRepoHealth(rows), {
       label: t("ribbon.lowestHealth"),
-      value: health ? health.mark.value : "—",
-      valueColor: health ? MARK_TEXT[health.mark.band] : undefined,
-      sub: health
-        ? t("ribbon.lowestHealthSub", {
-            name: health.alias,
-            healthy: health.healthy,
-            scored: health.scored,
-          })
-        : t("ribbon.lowestHealthNone"),
-    },
+      sub: (low) =>
+        t("ribbon.lowestHealthSub", { name: low.name, healthy: low.healthy, scored: low.scored }),
+      none: t("ribbon.lowestHealthNone"),
+    }),
     {
       label: t("ribbon.docFreshness"),
       value: docFreshness === null ? "—" : `${docFreshness}%`,
@@ -169,8 +155,6 @@ export default async function WorkspaceDashboardPage() {
     },
   ];
 
-  const contractTypes = Object.entries(contracts?.by_type ?? {}).sort((a, b) => b[1] - a[1]);
-
   return (
     <PageShell
       title={workspace?.workspace_name ?? "Workspace"}
@@ -178,107 +162,96 @@ export default async function WorkspaceDashboardPage() {
       description={t("description")}
       actions={<SyncButton variant="primary" label={t("syncWorkspace")} />}
     >
-      <PageLede
-        label={t("ledeLabel")}
-        value={String(repos.length)}
-        unit={t("ledeUnit")}
-        layout="beside"
-        action={
-          <LedeLink href="/workspace/system-map" LinkComponent={Link}>
-            {t("seeSystemMap")}
-          </LedeLink>
+      <WorkspaceOverviewSections
+        lede={
+          <PageLede
+            label={t("ledeLabel")}
+            value={String(repos.length)}
+            unit={t("ledeUnit")}
+            layout="beside"
+            action={
+              <LedeLink href="/workspace/system-map" LinkComponent={Link}>
+                {t("seeSystemMap")}
+              </LedeLink>
+            }
+          >
+            <p>
+              {t("ledeSentence", {
+                files: formatNumber(totals.files),
+                symbols: formatNumber(totals.symbols),
+                pages:
+                  totals.pages > 0
+                    ? t("ledePagesWith", { pages: formatNumber(totals.pages) })
+                    : "",
+              })}{" "}
+              {workspace?.workspace_root &&
+                t.rich("ledeRootedAt", {
+                  root: (chunks) => (
+                    <span className="font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+                      {chunks}
+                    </span>
+                  ),
+                  path: workspace.workspace_root,
+                })}
+            </p>
+            <p>{attentionSentence(t, repos)}</p>
+            {unregisteredNote(t, repos, crossRepo)}
+          </PageLede>
         }
-      >
-        <p>
-          {t("ledeSentence", {
-            files: formatNumber(totals.files),
-            symbols: formatNumber(totals.symbols),
-            pages:
-              totals.pages > 0
-                ? t("ledePagesWith", { pages: formatNumber(totals.pages) })
-                : "",
-          })}{" "}
-          {workspace?.workspace_root &&
-            t.rich("ledeRootedAt", {
-              root: (chunks) => (
-                <span className="font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-                  {chunks}
-                </span>
-              ),
-              path: workspace.workspace_root,
-            })}
-        </p>
-        <p>{attentionSentence(t, repos)}</p>
-        {unregisteredNote(t, repos, crossRepo)}
-      </PageLede>
-
-      <StatRibbon stats={ribbon} LinkComponent={Link} />
-
-      <OverviewSection
-        title={t("reposTitle")}
-        description={t("reposDescription")}
-      >
-        <RepoRows
-          repos={repos.slice().sort(byAttention).map(toRow)}
-          LinkComponent={Link}
-          actionsFor={(repo) =>
-            repo.status === "missing_dir" ? (
-              <RemoveWorkspaceRepoButton alias={repo.id} repoName={repo.name} />
-            ) : (
-              <SyncButton
-                alias={repo.id}
-                label={repo.status === "indexed" ? t("sync") : t("indexNow")}
-              />
-            )
-          }
-        />
-      </OverviewSection>
-
-      {/* After the repositories, folded: the list it would fold open is per
-          repository, so it reads as "and here is what to do across these". */}
-      {actions && <WorkspaceNextActionsPanel data={actions} />}
-
-      {contracts && contracts.total_contracts > 0 && (
-        <OverviewSection
-          title={t("contractsTitle")}
-          description={t("contractsDescription")}
-          action={
-            <SectionLink href="/workspace/contracts" LinkComponent={Link}>
-              {t("viewAllContracts")}
-            </SectionLink>
-          }
-        >
-          {/* Badge and figure sit together rather than spanning the cell:
-              justify-between across a quarter of 1280px pushed them so far
-              apart they stopped reading as one pair. */}
-          <dl className="m-0 flex flex-wrap gap-x-10 gap-y-3">
-            {contractTypes.map(([type, count]) => (
-              <div key={type} className="flex items-center gap-2.5">
-                <dt>
-                  <ContractTypeBadge type={type} />
-                </dt>
-                <dd className="text-sm font-medium tabular-nums text-[var(--color-text-primary)]">
-                  {formatNumber(count)}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </OverviewSection>
-      )}
-
-      {coChanges && coChanges.co_changes.length > 0 && (
-        <OverviewSection
-          title={t("coChangesTitle")}
-          description={t("coChangesDescription")}
-          action={
-            <SectionLink href="/workspace/co-changes" LinkComponent={Link}>
-              {t("viewAllCoChanges")}
-            </SectionLink>
-          }
-        >
-          <CoChangeTable coChanges={coChanges.co_changes} compact />
-        </OverviewSection>
-      )}
+        ribbon={<StatRibbon stats={ribbon} LinkComponent={Link} />}
+        repositories={
+          <OverviewSection
+            title={t("reposTitle")}
+            description={t("reposDescription")}
+          >
+            <RepoRows
+              repos={rows}
+              LinkComponent={Link}
+              actionsFor={(repo) =>
+                repo.status === "missing_dir" ? (
+                  <RemoveWorkspaceRepoButton alias={repo.id} repoName={repo.name} />
+                ) : (
+                  <SyncButton
+                    alias={repo.id}
+                    label={repo.status === "indexed" ? t("sync") : t("indexNow")}
+                  />
+                )
+              }
+            />
+          </OverviewSection>
+        }
+        nextActions={actions && <WorkspaceNextActionsPanel data={actions} />}
+        contracts={
+          contracts && contracts.total_contracts > 0 && (
+            <OverviewSection
+              title={t("contractsTitle")}
+              description={t("contractsDescription")}
+              action={
+                <SectionLink href="/workspace/contracts" LinkComponent={Link}>
+                  {t("viewAllContracts")}
+                </SectionLink>
+              }
+            >
+              <ContractTypeCounts byType={contracts.by_type} />
+            </OverviewSection>
+          )
+        }
+        coChanges={
+          coChanges && coChanges.co_changes.length > 0 && (
+            <OverviewSection
+              title={t("coChangesTitle")}
+              description={t("coChangesDescription")}
+              action={
+                <SectionLink href="/workspace/co-changes" LinkComponent={Link}>
+                  {t("viewAllCoChanges")}
+                </SectionLink>
+              }
+            >
+              <CoChangeTable coChanges={coChanges.co_changes} compact />
+            </OverviewSection>
+          )
+        }
+      />
     </PageShell>
   );
 }
@@ -305,32 +278,6 @@ function byAttention(a: WorkspaceRepoEntry, b: WorkspaceRepoEntry): number {
   const ha = a.health_score ?? Number.POSITIVE_INFINITY;
   const hb = b.health_score ?? Number.POSITIVE_INFINITY;
   return ha - hb;
-}
-
-/**
- * The weakest scored repository, and how many scored ones sit in the healthy
- * band. Null when no repository has a score yet: an unmeasured workspace is
- * not one whose lowest health is zero.
- */
-function lowestHealth(repos: WorkspaceRepoEntry[]): {
-  alias: string;
-  score: number;
-  mark: HealthMark;
-  healthy: number;
-  scored: number;
-} | null {
-  // The wire carries 0-100; the health bands read 0-10.
-  const scored = repos
-    .filter((r) => r.health_score != null)
-    .map((r) => ({ alias: r.alias, score: r.health_score! / 10 }));
-  if (scored.length === 0) return null;
-  const low = scored.reduce((a, b) => (b.score < a.score ? b : a));
-  return {
-    ...low,
-    mark: healthMark(low.score),
-    healthy: scored.filter((r) => healthMark(r.score).band === "healthy").length,
-    scored: scored.length,
-  };
 }
 
 function toRow(repo: WorkspaceRepoEntry): RepoRow {

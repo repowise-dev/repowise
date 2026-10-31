@@ -284,6 +284,17 @@ export function healthMark(score: number): HealthMark {
   return { value: formatScore(score), band: b.band, label: b.label, color: b.color };
 }
 
+/** Tailwind text colour for a 1-10 score, on the band its health mark takes. */
+const HEALTH_MARK_TEXT: Record<HealthMarkBand, string> = {
+  healthy: "text-[var(--color-success)]",
+  warning: "text-[var(--color-warning)]",
+  alert: "text-[var(--color-error)]",
+};
+
+export function healthMarkTextColor(score: number): string {
+  return HEALTH_MARK_TEXT[healthMark(score).band];
+}
+
 export function riskInk(risk01: number): string {
   if (risk01 >= 0.66) return "var(--color-error)";
   if (risk01 >= 0.33) return "var(--color-warning)";
