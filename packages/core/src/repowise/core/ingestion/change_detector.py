@@ -67,6 +67,9 @@ class FileDiff:
     trigger_commit_message: str | None = None
     trigger_commit_author: str | None = None
     diff_text: str | None = None  # unified diff, capped at 4K chars
+    # A claimed document still on disk that can no longer be indexed, so its
+    # "deleted" status must outweigh the file's presence when rows are pruned.
+    unindexable: bool = False
 
 
 @dataclass
@@ -397,6 +400,7 @@ class ChangeDetector:
             symbol_diff=SymbolDiff(removed=list(diff.old_parsed.symbols))
             if diff.old_parsed
             else None,
+            unindexable=True,
         )
 
     def detect_symbol_renames(
@@ -638,7 +642,7 @@ class ChangeDetector:
         lang = _detect_language(Path(path), source)
         claim = document_extractor_for_path(Path(path), language=lang)
         if claim is not None:
-            if not self._document_eligible(path, len(source)):
+            if not self._document_eligible(path, source):
                 self._unindexable_documents.add(path)
                 return None
             extractor_name, extractor = claim
@@ -699,14 +703,14 @@ class ChangeDetector:
                 )
             ],
         )[0]
-        if markdown is None:
+        if not isinstance(markdown, bytes):
             self._unindexable_documents.add(file_info.path)
             return None
         parsed = parse_file(file_info, markdown)
         parsed.content_hash = source_fingerprint(file_info, source)
         return parsed
 
-    def _document_eligible(self, path: str, size_bytes: int) -> bool:
+    def _document_eligible(self, path: str, source: bytes) -> bool:
         from .traverser import FileTraverser
 
         if self._document_policy is None:
@@ -718,7 +722,7 @@ class ChangeDetector:
                     "exclude_patterns"
                 )
             self._document_policy = FileTraverser(self.repo_path, **options)
-        return self._document_policy.document_source_eligible(path, size_bytes)
+        return self._document_policy.document_source_eligible(path, source)
 
     def _compute_symbol_diff(
         self,

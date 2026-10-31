@@ -767,9 +767,13 @@ class FileTraverser:
     # Internal: FileInfo construction
     # ------------------------------------------------------------------
 
-    def _oversize_skip_reason(self, abs_path: Path, size_bytes: int) -> _OversizeSkip | None:
+    def _oversize_skip_reason(
+        self, abs_path: Path, size_bytes: int, source: bytes | None = None
+    ) -> _OversizeSkip | None:
         """This traverser's size verdict for one file. See :func:`size_verdict`."""
-        return size_verdict(abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes)
+        return size_verdict(
+            abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes, source=source
+        )
 
     def _record_skipped_source(
         self, records: list[SkippedSourceFile], cap: int, record: SkippedSourceFile
@@ -958,7 +962,7 @@ class FileTraverser:
             extractor_version=extractor_version,
         )
 
-    def document_source_eligible(self, path: str, size_bytes: int) -> bool:
+    def document_source_eligible(self, path: str, source: bytes) -> bool:
         """Apply current traversal policy to supplied document bytes, even after deletion."""
         relative = Path(path)
         if relative.is_absolute() or ".." in relative.parts:
@@ -968,7 +972,7 @@ class FileTraverser:
             return False
         if self._excluding_rule(abs_path, relative.as_posix()) is not None:
             return False
-        return self._oversize_skip_reason(abs_path, size_bytes) is None
+        return self._oversize_skip_reason(abs_path, len(source), source) is None
 
     def _is_package_root_dir(self, rel_dir: str) -> bool:
         """Whether *rel_dir* holds a package manifest, so it ships as a package.
@@ -1301,13 +1305,16 @@ def size_verdict(
     size_bytes: int,
     *,
     max_file_size_bytes: int = _DEFAULT_MAX_FILE_SIZE_BYTES,
+    source: bytes | None = None,
 ) -> _OversizeSkip | None:
     """Whether this file is excluded on size, and why. None means "index it".
 
     Which ceiling applies depends on whether anything can actually read the
     file. A parserless file (lockfile, changelog, image, video) is bounded by
-    *max_file_size_bytes*, the caller-facing knob, unless a document extractor
-    claims it and declares its own ceiling. A file whose language has a
+    *max_file_size_bytes*, the caller-facing knob, unless it resolves to a
+    document an extractor claims and that extractor declares its own ceiling
+    (*source*, when given, is the bytes to sniff instead of the file on disk;
+    see :func:`~.document_extractors.document_source_ceiling`). A file whose language has a
     parser is bounded by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, which is
     deliberately *not* configurable: it is a memory budget (~95 MB of peak RSS
     per MB of source, times an 8-worker parse pool), not a preference, so
@@ -1321,7 +1328,7 @@ def size_verdict(
         # A document extractor's claim may declare its own source ceiling.
         from .document_extractors import document_source_ceiling
 
-        max_file_size_bytes = document_source_ceiling(abs_path, max_file_size_bytes)
+        max_file_size_bytes = document_source_ceiling(abs_path, max_file_size_bytes, source=source)
     # No parser, so size is the only signal.
     if language is None or language in _SKIP_GENERATED_CHECK:
         if size_bytes > max_file_size_bytes:

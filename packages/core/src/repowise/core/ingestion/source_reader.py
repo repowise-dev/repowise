@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
+from typing import NamedTuple
 
 from .document_extractors import (
     document_fingerprint,
@@ -17,6 +18,12 @@ from .traverser import _DEFAULT_MAX_FILE_SIZE_BYTES, _SOURCE_MAX_FILE_SIZE_BYTES
 _log = logging.getLogger(__name__)
 
 
+class OverCeiling(NamedTuple):
+    """Extracted Markdown too large to index, by its size in bytes."""
+
+    size_bytes: int
+
+
 def _extracted_over_ceiling(markdown: bytes) -> bool:
     """Whether extracted Markdown is too large to index (the parseable-source ceiling)."""
     return len(markdown) > _SOURCE_MAX_FILE_SIZE_BYTES
@@ -27,12 +34,12 @@ def read_document_sources(
     requests: list[tuple[str, str, Path, str, bytes]],
     *,
     write_cache: bool = True,
-) -> list[bytes | None]:
+) -> list[bytes | OverCeiling]:
     """Read cached Markdown or batch-convert already eligible working-tree/Git bytes.
 
     Source-size checks belong before this boundary. Markdown over
-    :data:`_SOURCE_MAX_FILE_SIZE_BYTES` comes back as ``None`` and is never
-    cached: the document is not indexed.
+    :data:`_SOURCE_MAX_FILE_SIZE_BYTES` comes back as :class:`OverCeiling` and
+    is never cached: the document is not indexed.
     """
     from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
@@ -68,9 +75,10 @@ def read_document_sources(
             dump_sealed_pickle(cache_path, markdown, domain=domain)
         except Exception as exc:
             _log.debug("Could not cache document %s: %s", requests[index][3], exc)
+    results = [outputs[index] for index in range(len(requests))]
     return [
-        None if _extracted_over_ceiling(outputs[index]) else outputs[index]
-        for index in range(len(requests))
+        OverCeiling(len(markdown)) if _extracted_over_ceiling(markdown) else markdown
+        for markdown in results
     ]
 
 
@@ -109,7 +117,8 @@ def read_source(
     if claim is None:
         return source
     name, extractor = claim
-    return read_document_sources(
+    markdown = read_document_sources(
         repo_path,
         [(name, extractor.version, indexed_path, file_path, source)],
     )[0]
+    return markdown if isinstance(markdown, bytes) else None

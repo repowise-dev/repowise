@@ -128,15 +128,23 @@ def document_extractor_for_path(
     return _extension_claims().get(path.suffix.lower())
 
 
-def document_source_ceiling(path: Path | str, default: int) -> int:
+def document_source_ceiling(path: Path | str, default: int, *, source: bytes | None = None) -> int:
     """Source byte ceiling for *path*: its extractor's declared one, else *default*.
 
     The one rule every eligibility check uses (traversal, historical blobs, MCP
-    reads). Decided from the extension alone, so it costs no I/O. An unclaimed
-    path gets *default* unchanged.
+    reads). Only a file that resolves to an extracted document gets the declared
+    ceiling: a claimed extension whose bytes are code (a shebang script) keeps
+    *default*, so a large declaration never lets code past the parser budget.
+    *source* is the file's bytes when supplied (a Git blob); otherwise its head
+    is read from disk, and only for a claimed extension.
     """
     claim = document_extractor_for_path(path)
     if claim is None:
+        return default
+    try:
+        if not is_extracted_document(path, source):
+            return default
+    except OSError:
         return default
     declared = getattr(claim[1], "max_source_bytes", None)
     return min(default if declared is None else declared, MAX_DOCUMENT_SOURCE_BYTES)

@@ -338,16 +338,17 @@ async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
 
 
 def _left_index(ctx: IncrementalPersist) -> set[str]:
-    """Paths reported deleted that this run's walk did not index, though on disk.
+    """Documents the change detector dropped as no longer indexable, though on disk.
 
-    A document whose new version can no longer be indexed is reported deleted
-    while its file stays, so the disk alone would keep its rows.
+    Only those: any other deleted path that still exists keeps its rows, as the
+    disk-and-git liveness rule intends.
     """
-    traversed = getattr(ctx.graph_builder, "traversed_file_paths", None)
-    if traversed is None:
-        return set()
-    deleted = {fd.path for fd in ctx.file_diffs or [] if fd.status == "deleted"}
-    return deleted - set(traversed)
+    traversed = set(getattr(ctx.graph_builder, "traversed_file_paths", None) or ())
+    return {
+        fd.path
+        for fd in ctx.file_diffs or []
+        if fd.status == "deleted" and getattr(fd, "unindexable", False)
+    } - traversed
 
 
 async def prune_deleted(ctx: IncrementalPersist) -> None:

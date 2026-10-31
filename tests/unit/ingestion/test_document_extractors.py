@@ -316,7 +316,8 @@ async def test_claimed_source_uses_its_declared_size_ceiling(
     assert ("deck.xyz" in {fi.path for fi in file_infos}) is indexed
     assert any(item.file_info.path == "deck.xyz" for item in parsed) is indexed
     assert calls == (["deck.xyz"] if indexed else [])
-    assert ChangeDetector(tmp_path)._document_eligible("deck.xyz", size) is indexed
+    source = (tmp_path / "deck.xyz").read_bytes()
+    assert ChangeDetector(tmp_path)._document_eligible("deck.xyz", source) is indexed
 
 
 def test_declared_source_ceiling_is_clamped(tmp_path, extractor_registry):
@@ -328,12 +329,37 @@ def test_declared_source_ceiling_is_clamped(tmp_path, extractor_registry):
 
     _register("huge", CeilingExtractor(max_source_bytes=10 * MAX_DOCUMENT_SOURCE_BYTES))
     path = tmp_path / "deck.xyz"
+    path.write_bytes(b"\x00document")
 
     assert document_source_ceiling(path, 500 * 1024) == MAX_DOCUMENT_SOURCE_BYTES
     assert size_verdict(path, MAX_DOCUMENT_SOURCE_BYTES) is None
     assert size_verdict(path, MAX_DOCUMENT_SOURCE_BYTES + 1) is not None
     # Unclaimed paths keep the caller's ceiling untouched.
     assert document_source_ceiling(tmp_path / "deck.bin", 123) == 123
+
+
+@pytest.mark.asyncio
+async def test_claimed_extension_with_code_shebang_keeps_the_normal_size_rule(
+    tmp_path, extractor_registry, monkeypatch
+):
+    from repowise.core.ingestion.document_extractors import MAX_DOCUMENT_SOURCE_BYTES
+    from repowise.core.ingestion.traverser import size_verdict
+
+    _register("huge", CeilingExtractor(max_source_bytes=MAX_DOCUMENT_SOURCE_BYTES))
+    calls = _convert_in_parent(monkeypatch)
+    script = tmp_path / "script.xyz"
+    source = b"#!/usr/bin/env python3\n" + b"VALUE = 1\n" * (60 * 1024)
+    script.write_bytes(source)
+    assert len(source) > 500 * 1024
+
+    parsed, file_infos, *_ = await _ingest(tmp_path)
+
+    assert file_infos == []
+    assert parsed == []
+    assert calls == []
+    verdict = size_verdict(script, len(source))
+    assert verdict is not None and verdict.reason == "over_max_size"
+    assert size_verdict(script, len(source), source=source) == verdict
 
 
 @pytest.mark.parametrize("limit", [0, -1, True, "1024", 1.5, None])
@@ -379,11 +405,12 @@ async def test_extracted_markdown_over_ceiling_is_skipped_and_not_cached(
     assert [item.file_info.path for item in parsed] == ["main.py"]
     assert [fi.path for fi in file_infos] == ["main.py"]
     assert "spec.xyz" not in source_map
-    assert SkippedSourceFile("spec.xyz", 0, "extracted_over_max_size") in (
+    # The size reported is the Markdown's, which is what broke the limit.
+    assert SkippedSourceFile("spec.xyz", 2048, "extracted_over_max_size") in (
         stats.skipped_source_files
     )
     assert any(
-        "Not indexed: spec.xyz" in line and "extracted Markdown over the 2,048 KB limit" in line
+        "Not indexed: spec.xyz (2,048 KB, extracted Markdown over the 2,048 KB limit)" in line
         for line in progress.messages
     )
     document_cache = tmp_path / ".repowise" / "document-cache"
@@ -906,3 +933,40 @@ def test_update_drops_a_document_that_can_no_longer_be_indexed(
     assert not any(
         "spec.xyz" in node for node in asyncio.run(_db_snapshot(repo))["graph_node_ids"]
     ), result.output
+
+
+def test_update_keeps_rows_of_a_git_deleted_file_still_on_disk(
+    tmp_path, extractor_registry, monkeypatch
+):
+    from repowise.cli.helpers import save_state
+    from repowise.cli.main import cli
+    from repowise.core.update_lock import release_update_lock
+    from tests.unit.cli.test_update_e2e import _db_snapshot, _git, _index_full, _make_git_repo
+    from tests.unit.cli.test_workspace_docs_pointer import CURRENT_GIT_HISTORY, CURRENT_STORE_FORMAT
+
+    repo = _make_git_repo(tmp_path)
+    _index_full(repo)
+    assert "b.py" in asyncio.run(_db_snapshot(repo))["graph_node_ids"]
+    save_state(
+        repo,
+        {
+            "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
+            "docs_enabled": False,
+            **CURRENT_GIT_HISTORY,
+            **CURRENT_STORE_FORMAT,
+        },
+    )
+    # Untracked and ignored, but still on disk: not a plugin document, so the
+    # disk-and-git liveness rule keeps its rows.
+    _git(repo, "rm", "--cached", "-q", "b.py")
+    (repo / ".gitignore").write_text("b.py\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "stop tracking b.py")
+
+    monkeypatch.chdir(repo.parent)
+    try:
+        result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
+    finally:
+        release_update_lock(repo)
+    assert result.exit_code == 0, result.output
+    assert "b.py" in asyncio.run(_db_snapshot(repo))["graph_node_ids"], result.output

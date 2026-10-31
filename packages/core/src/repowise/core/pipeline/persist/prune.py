@@ -320,9 +320,9 @@ async def prune_deleted_file_rows(
     file, so it fails every liveness test there is, and only the fact that the
     graph build just re-minted it says it is not a deletion.
 
-    *left_index* names files that are still on disk but that this run reported
-    deleted and did not traverse, such as a document that grew past its size
-    ceiling. They count as gone whatever the disk says.
+    *left_index* names plugin-extracted documents that are still on disk but
+    can no longer be indexed (a source or its Markdown over its size ceiling, or
+    newly excluded). They count as gone whatever the disk says.
 
     Returns ``(deleted_path_count, refusals)``, where a refusal is a one-line
     explanation of a floor guard that fired, for the caller's degraded report.

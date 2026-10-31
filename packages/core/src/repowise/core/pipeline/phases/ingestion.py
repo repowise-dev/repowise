@@ -449,7 +449,7 @@ def _prepare_document_sources(
     over the parseable-source ceiling. Those entries keep their original bytes
     for the caller to drop.
     """
-    from repowise.core.ingestion.source_reader import read_document_sources
+    from repowise.core.ingestion.source_reader import OverCeiling, read_document_sources
     from repowise.core.ingestion.traverser import SkippedSourceFile
 
     requests = [
@@ -463,9 +463,12 @@ def _prepare_document_sources(
     skipped = []
     for (idx, *_request), parse_source in zip(requests, extracted, strict=True):
         fi, _raw_source = fi_and_bytes[idx]
-        if parse_source is None:
+        if isinstance(parse_source, OverCeiling):
+            # The size that broke the limit: the Markdown's, not the source's.
             skipped.append(
-                SkippedSourceFile(fi.path, fi.size_bytes // 1024, "extracted_over_max_size")
+                SkippedSourceFile(
+                    fi.path, parse_source.size_bytes // 1024, "extracted_over_max_size"
+                )
             )
         else:
             fi_and_bytes[idx] = (fi, parse_source)
