@@ -22,7 +22,8 @@ OWNERSHIP_SHIFT_JACCARD = 0.5
 #: Dead code must grow by both of these to count.
 DEAD_CODE_MIN_FINDINGS = 5
 DEAD_CODE_MIN_RATIO = 0.25
-#: Test reach must fall by this share, over at least this many production files.
+#: Test reach must fall by this share, and by more than one file, over at least this many
+#: production files. The file floor keeps one new untested file on a small component quiet.
 TEST_REACH_MIN_DROP = 0.10
 TEST_REACH_MIN_FILES = 5
 #: Measured line coverage must fall by this many points.
@@ -183,7 +184,8 @@ def _test_reach(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator
     if min(a["production_files"], b["production_files"]) < TEST_REACH_MIN_FILES:
         return
     ev: dict[str, Any] = {}
-    if round(a["share"] - b["share"], 3) >= TEST_REACH_MIN_DROP:
+    drop = round(a["share"] - b["share"], 3)
+    if drop >= TEST_REACH_MIN_DROP and round(drop * b["production_files"], 3) > 1:
         ev.update(
             basis=b.get("basis"),
             previous_share=a["share"],
