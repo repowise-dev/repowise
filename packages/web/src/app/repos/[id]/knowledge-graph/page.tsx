@@ -21,13 +21,18 @@
  * under the pointer, so the next double-click hit a different card. The canvas
  * never resizes for chrome; it pans a selected card clear of the sheet only
  * when the card would sit underneath (`selectionInsetRight`).
+ *
+ * `?view=c4` swaps the map for a classic C4 diagram of the same system (a
+ * separate, lazily loaded React Flow surface); the default `map` is untouched.
  */
 
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseAsString, useQueryState } from "nuqs";
+import dynamic from "next/dynamic";
+import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { useTranslations } from "next-intl";
 import { ScanSearch } from "lucide-react";
 import { PageFrame, PAGE_SHELL_TITLE } from "@repowise-dev/ui/shared/page-shell";
+import { Segmented } from "@repowise-dev/ui/shared/segmented";
 import { ZoomCanvas } from "@repowise-dev/ui/zoom";
 import { indexRelationsByNode, summarizeRelations } from "@repowise-dev/ui/zoom";
 import type { ZoomCanvasHandle, ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
@@ -44,6 +49,18 @@ import { ZOOM_FRAME, ZoomCanvasError, ZoomCanvasSkeleton } from "@/components/zo
 import { useZoomCanvasLabels } from "@/components/zoom/use-zoom-canvas-labels";
 import { ZOOM_SHEET_INSET_PX, ZoomSheet } from "@/components/zoom/zoom-sheet";
 import { useZoomC4, ZoomC4Provider } from "@/components/zoom/zoom-detail-c4";
+
+/**
+ * React Flow and ELK load only when somebody opens the diagram. The chunk is
+ * small next to the layout, and the diagram says "Loading" itself, so the
+ * frame stays empty for that moment.
+ */
+const C4View = dynamic(() => import("@/components/c4/c4-view").then((m) => m.C4View), {
+  ssr: false,
+});
+
+const VIEWS = ["map", "c4"] as const;
+type KnowledgeGraphView = (typeof VIEWS)[number];
 
 /** Stable identities, so an unselected / unloaded render does not churn props. */
 const EMPTY_RELATIONS: ZoomRelation[] = [];
@@ -80,6 +97,11 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     parseAsString.withOptions({ history: "replace", shallow: true }),
   );
   const writeFocusParam = useSettledWrite(setFocusParam);
+  const [view, setView] = useQueryState(
+    "view",
+    parseAsStringLiteral(VIEWS).withDefault("map").withOptions({ history: "replace", shallow: true }),
+  );
+  const isMap = view === "map";
   const [chain, setChain] = useState<ZoomNode[]>([]);
   const [selected, setSelected] = useState<ZoomNode | null>(null);
   const [relationVerbs, setRelationVerbs] = useState<ReadonlySet<string> | null>(null);
@@ -142,11 +164,11 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
           {t("title")}
         </h1>
         <div className="min-w-0 flex-1">
-          <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />
+          {isMap && <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />}
         </div>
         {/* Holds the search box's place while the map loads, so the header does not shift. */}
-        {isLoading && <Skeleton aria-hidden className="h-[26px] w-60" />}
-        {ready && (
+        {isMap && isLoading && <Skeleton aria-hidden className="h-[26px] w-60" />}
+        {isMap && ready && (
           <ZoomSearch
             map={zoomMap}
             onPick={(id) => {
@@ -156,6 +178,21 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
             }}
           />
         )}
+        <Segmented<KnowledgeGraphView>
+          label={t("viewLabel")}
+          value={view}
+          options={[
+            { value: "map", label: t("viewMap") },
+            { value: "c4", label: t("viewC4") },
+          ]}
+          onChange={(next) => {
+            // The canvas unmounts while the diagram shows and reports its
+            // focus and selection afresh when it comes back.
+            setChain([]);
+            setSelected(null);
+            void setView(next === "map" ? null : next);
+          }}
+        />
         {/* The export has its own endpoint and does not need the zoom map, but
             a map that failed to load is the cheapest signal that this repo has
             nothing indexed to export either. */}
@@ -165,9 +202,18 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
           who meet the page before the canvas. */}
       <p className="sr-only">{t("description")}</p>
 
-      {isLoading && <ZoomCanvasSkeleton />}
-      {error && !isLoading && <ZoomCanvasError onRetry={() => void retry()} />}
-      {ready && (
+      {!isMap && (
+        <div className={ZOOM_FRAME}>
+          <C4View
+            repoId={repoId}
+            systemName={zoomMap?.project_name ?? ""}
+            containers={zoomMap?.containers}
+          />
+        </div>
+      )}
+      {isMap && isLoading && <ZoomCanvasSkeleton />}
+      {isMap && error && !isLoading && <ZoomCanvasError onRetry={() => void retry()} />}
+      {isMap && ready && (
         <div className={ZOOM_FRAME}>
           <ZoomCanvas
             ref={canvasRef}

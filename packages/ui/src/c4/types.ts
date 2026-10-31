@@ -47,6 +47,13 @@ export interface C4Container {
   symbol_count: number;
   hotspot_count: number;
   dead_count: number;
+  /**
+   * Not on the wire: a host that knows the deployable kind (the zoom map's
+   * `cli` / `api` / `web_app` / `library`, ...) and its technologies joins
+   * them in, so a library reads apart from a container that runs on its own.
+   */
+  kind?: string;
+  technologies?: string[];
 }
 
 export interface C4Component {
@@ -101,6 +108,8 @@ export type C4NodeData =
 
 export interface C4EdgeData {
   relation: C4Relation;
+  /** The target sits outside the system: drawn dashed, as C4 draws a dependency. */
+  toExternal?: boolean;
 }
 
 // ---------------------------------------------------------------------------

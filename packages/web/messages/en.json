@@ -624,7 +624,25 @@
       "loading": "Building the knowledge graph…",
       "error": "Could not load the knowledge graph for this repository.",
       "errorHint": "The server did not return a map. Check that the repository is indexed and the API is running, then try again.",
-      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds."
+      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds.",
+      "viewLabel": "View",
+      "viewMap": "Map",
+      "viewC4": "C4 diagram",
+      "c4": {
+        "containerPicker": "Container",
+        "key": {
+          "person": "Person",
+          "container": "Container",
+          "library": "Library",
+          "external": "External system",
+          "boundary": "System boundary",
+          "containerHint": "Runs on its own",
+          "libraryHint": "Linked into containers"
+        },
+        "hiddenLinks": "{count, plural, one {# weaker link hidden} other {# weaker links hidden}}",
+        "showAll": "Show all",
+        "hideWeak": "Hide weaker links"
+      }
     },
     "refactoring": {
       "title": "Refactoring",

@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useState } from "react";
-import type { Edge, Node } from "@xyflow/react";
+import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import {
   C4_NODE_SIZES,
   computeC4Layout,
@@ -28,7 +28,11 @@ import type {
 interface BuiltInputs {
   nodes: { id: string; type: keyof typeof C4_NODE_SIZES; data: C4NodeData }[];
   edges: { id: string; source: string; target: string; relation: C4Relation }[];
+  /** The dashed box drawn around the inside of the system (L2) or container (L3). */
+  boundary?: { label: string; members: ReadonlySet<string> };
 }
+
+const BOUNDARY_ID = "c4-boundary";
 
 function buildL1(view: C4L1): BuiltInputs {
   return {
@@ -58,8 +62,16 @@ function buildL1(view: C4L1): BuiltInputs {
   };
 }
 
-function buildL2(view: C4L2, docsPathSet?: ReadonlySet<string>): BuiltInputs {
+function buildL2(view: C4L2, docsPathSet?: ReadonlySet<string>, systemName?: string): BuiltInputs {
   return {
+    ...(systemName
+      ? {
+          boundary: {
+            label: `${systemName} [Software System]`,
+            members: new Set(view.containers.map((c) => c.id)),
+          },
+        }
+      : {}),
     nodes: [
       ...view.containers.map((c) => ({
         id: c.id,
@@ -87,6 +99,10 @@ function buildL2(view: C4L2, docsPathSet?: ReadonlySet<string>): BuiltInputs {
 
 function buildL3(view: C4L3, docsPathSet?: ReadonlySet<string>): BuiltInputs {
   return {
+    boundary: {
+      label: `${view.container.name} [Container]`,
+      members: new Set(view.components.map((c) => c.id)),
+    },
     nodes: [
       ...view.components.map((c) => ({
         id: c.id,
@@ -121,6 +137,8 @@ export interface C4LayoutResult {
 export interface UseC4LayoutOptions {
   /** Paths (container.path / component.path) that have a wiki page. */
   docsPathSet?: ReadonlySet<string>;
+  /** Names the L2 system boundary; without it L2 draws no boundary. */
+  systemName?: string;
 }
 
 export function useC4Layout(
@@ -129,6 +147,8 @@ export function useC4Layout(
   options: UseC4LayoutOptions = {},
 ): C4LayoutResult {
   const { docsPathSet } = options;
+  // Only L2 draws the system's name; other levels must not re-lay out when it changes.
+  const systemName = level === 2 ? options.systemName : undefined;
   const [result, setResult] = useState<C4LayoutResult>({ nodes: [], edges: [], loading: false });
 
   useEffect(() => {
@@ -143,7 +163,7 @@ export function useC4Layout(
       level === 1
         ? buildL1(view as C4L1)
         : level === 2
-        ? buildL2(view as C4L2, docsPathSet)
+        ? buildL2(view as C4L2, docsPathSet, systemName)
         : buildL3(view as C4L3, docsPathSet);
 
     const layoutNodes: C4LayoutNode[] = built.nodes.map((n) => ({
@@ -153,9 +173,33 @@ export function useC4Layout(
     }));
     const layoutEdges = built.edges.map((e) => ({ id: e.id, source: e.source, target: e.target }));
 
-    void computeC4Layout(layoutNodes, layoutEdges).then((positions) => {
+    const boundary = built.boundary;
+    const layoutOptions = boundary ? { boundary: { id: BOUNDARY_ID, members: boundary.members } } : {};
+
+    void computeC4Layout(layoutNodes, layoutEdges, layoutOptions).then((positions) => {
       if (cancelled) return;
-      const nodes: Node[] = built.nodes.map((n) => {
+      const box = boundary ? positions.get(BOUNDARY_ID) : undefined;
+      // Behind every card and out of the pointer's way; the exporter draws it too.
+      const frame: Node[] =
+        boundary && box
+          ? [
+              {
+                id: BOUNDARY_ID,
+                type: "scopeFrame",
+                position: { x: box.x, y: box.y },
+                data: { label: boundary.label, width: box.width, height: box.height },
+                width: box.width,
+                height: box.height,
+                zIndex: -1,
+                selectable: false,
+                draggable: false,
+                focusable: false,
+                style: { pointerEvents: "none" },
+              },
+            ]
+          : [];
+      const externalIds = new Set(built.nodes.filter((n) => n.type === "external").map((n) => n.id));
+      const cards: Node[] = built.nodes.map((n) => {
         const pos = positions.get(n.id) ?? { x: 0, y: 0, width: 0, height: 0 };
         return {
           id: n.id,
@@ -171,15 +215,19 @@ export function useC4Layout(
         source: e.source,
         target: e.target,
         type: "relation",
-        data: { relation: e.relation } as unknown as C4EdgeData & Record<string, unknown>,
+        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--color-diagram-edge)" },
+        data: {
+          relation: e.relation,
+          toExternal: externalIds.has(e.target),
+        } as unknown as C4EdgeData & Record<string, unknown>,
       }));
-      setResult({ nodes, edges, loading: false });
+      setResult({ nodes: [...frame, ...cards], edges, loading: false });
     });
 
     return () => {
       cancelled = true;
     };
-  }, [level, view, docsPathSet]);
+  }, [level, view, docsPathSet, systemName]);
 
   return result;
 }

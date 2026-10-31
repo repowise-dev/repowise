@@ -47,6 +47,25 @@ function getBorderStyle(props: NodeShellProps): string {
   return "solid";
 }
 
+/**
+ * A tone's colours, each overridable by a host through `--c4-<tone>-<part>`
+ * (bg, border, band, band-text, text) on any ancestor. The literal palette is
+ * the fallback, so a host that sets nothing renders exactly as before; the web
+ * C4 view maps the parts onto its design tokens.
+ */
+function toneColors(tone: string) {
+  const s = getTone(tone);
+  const v = (part: string, fallback: string) => `var(--c4-${tone}-${part}, ${fallback})`;
+  const text = v("text", s.text);
+  return {
+    bg: v("bg", s.bg),
+    border: v("border", s.border),
+    band: v("band", s.band),
+    bandText: `var(--c4-${tone}-band-text, ${text})`,
+    text,
+  };
+}
+
 export function NodeShell(props: NodeShellProps) {
   const {
     tone,
@@ -66,7 +85,9 @@ export function NodeShell(props: NodeShellProps) {
     subtitleLineClamp = 3,
   } = props;
 
-  const s = getTone(tone);
+  const s = toneColors(tone);
+  const borderStyle = getBorderStyle(props);
+  const borderColor = getBorderColor(props, s.border);
   const opacity = diffState === "faded" ? 0.25 : 1;
 
   return (
@@ -76,8 +97,12 @@ export function NodeShell(props: NodeShellProps) {
         width,
         height,
         background: s.bg,
-        border: `1.5px ${getBorderStyle(props)} ${getBorderColor(props, s.border)}`,
-        borderLeft: `3px solid ${selected ? "var(--color-viz-selection)" : s.band}`,
+        // Longhands, not `border` + `borderLeft`: a shorthand holding var()
+        // cannot be partly overridden by a longhand in every engine (jsdom
+        // drops it), and the tone colours are var()s.
+        borderWidth: "1.5px 1.5px 1.5px 3px",
+        borderStyle: `${borderStyle} ${borderStyle} ${borderStyle} solid`,
+        borderColor: `${borderColor} ${borderColor} ${borderColor} ${selected ? "var(--color-viz-selection)" : s.band}`,
         borderRadius: 8,
         color: s.text,
         overflow: "hidden",
@@ -98,6 +123,7 @@ export function NodeShell(props: NodeShellProps) {
           fontWeight: 600,
           letterSpacing: 0.6,
           textTransform: "uppercase",
+          color: s.bandText,
           opacity: 0.85,
           display: "flex",
           alignItems: "center",

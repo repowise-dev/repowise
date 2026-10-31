@@ -9,7 +9,7 @@
  * either lifted from the host via props OR managed locally via `useC4Store`.
  */
 
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -17,6 +17,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
@@ -80,10 +81,17 @@ export interface C4DiagramProps {
    */
   fetchStructurizr?: ((options: { standalone: boolean }) => Promise<string>) | undefined;
 
+  /** Rendered in the toolbar after the level tabs (e.g. a container picker). */
+  toolbarExtra?: ReactNode;
+  /** Replaces the built-in tone legend in the toolbar. */
+  legend?: ReactNode;
+
   onLevelChange: (level: C4Level) => void;
   onDrillInto: (containerId: string) => void;
   onDrillOut: () => void;
 }
+
+const FIT_VIEW_OPTIONS = { padding: 0.15 };
 
 export function C4Diagram(props: C4DiagramProps) {
   return (
@@ -106,13 +114,27 @@ function C4DiagramInner({
   renderInspector,
   fetchMermaid,
   fetchStructurizr,
+  toolbarExtra,
+  legend,
   onLevelChange,
   onDrillInto,
   onDrillOut,
 }: C4DiagramProps) {
   const view = level === 1 ? l1View : level === 2 ? l2View : l3View;
-  const layoutOpts = useMemo(() => (docsPathSet ? { docsPathSet } : {}), [docsPathSet]);
+  const layoutOpts = useMemo(
+    () => ({ systemName, ...(docsPathSet ? { docsPathSet } : {}) }),
+    [docsPathSet, systemName],
+  );
   const { nodes, edges, loading: layoutLoading } = useC4Layout(level, view, layoutOpts);
+
+  // `fitView` on <ReactFlow> frames only the first layout; a level switch or a
+  // new container lays out fresh nodes, so frame each one.
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    if (nodes.length === 0) return;
+    const frame = requestAnimationFrame(() => void fitView(FIT_VIEW_OPTIONS));
+    return () => cancelAnimationFrame(frame);
+  }, [nodes, fitView]);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const selectedNode = useMemo(
@@ -180,6 +202,7 @@ function C4DiagramInner({
           onLevelChange={onLevelChange}
           l3Enabled={activeContainerId != null || level === 3}
         />
+        {toolbarExtra}
         <div style={{ width: 1, height: 20, background: "var(--color-border-default)" }} />
         <C4Breadcrumb
           level={level}
@@ -188,7 +211,7 @@ function C4DiagramInner({
           onNavigate={onLevelChange}
         />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          <C4Legend />
+          {legend ?? <C4Legend />}
           <C4ExportMenu
             nodes={nodes}
             edges={edges}
@@ -237,7 +260,7 @@ function C4DiagramInner({
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
+          fitViewOptions={FIT_VIEW_OPTIONS}
           minZoom={0.2}
           maxZoom={2.5}
           proOptions={{ hideAttribution: true }}

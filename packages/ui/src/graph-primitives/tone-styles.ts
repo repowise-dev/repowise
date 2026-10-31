@@ -12,6 +12,7 @@ export const TONE_STYLES = {
   person:       { bg: "#2c2530", border: "#84778a", band: "#84778a", text: "#ffffff" }, // charcoal mauve
   external:     { bg: "#251f2c", border: "#5e5360", band: "#5e5360", text: "#e7e1f0" }, // muted plum-gray
   container:    { bg: "#3a2417", border: "#d9825f", band: "#d9825f", text: "#ffffff" }, // peach
+  library:      { bg: "#2d1f1a", border: "#8a6a5a", band: "#8a6a5a", text: "#f1ece9" }, // peach-muted: linked in, does not run
   component:    { bg: "#2d1f1a", border: "#cf6a55", band: "#cf6a55", text: "#f1ece9" }, // terracotta
   file:         { bg: "#2a1c33", border: "#826aa0", band: "#826aa0", text: "#ffffff" }, // plum
   function:     { bg: "#1f2a18", border: "#6b7a3d", band: "#6b7a3d", text: "#ffffff" }, // olive/sage
