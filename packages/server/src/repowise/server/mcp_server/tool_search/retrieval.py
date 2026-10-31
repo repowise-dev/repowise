@@ -325,6 +325,8 @@ async def _federated_search(
     # No single indexed commit to compare a live HEAD against: per-repo
     # freshness rides on ``repos_stale`` and the rows' ``stale`` flag instead.
     response: dict = {"results": output, "_meta": _build_meta()}
+    if output and _pkg.semantic_search_state() is False:
+        response["_meta"]["keyless_note"] = _pkg.KEYLESS_CONCEPT_SEARCH_NOTE
     fed.annotate(response, output)
     # Drawn from every repo's ranked list, not the merged cut: a workspace
     # search that spends its window on module pages should still be able to
