@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 
 from repowise.core.persistence.database import get_session
+from repowise.core.precedent.currency import commits_since
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
     cap_collection,
@@ -26,6 +29,30 @@ from repowise.server.mcp_server.tool_why.caps import (
     _MAX_HEALTH_UNGOVERNED,
 )
 from repowise.server.mcp_server.tool_why.loading import _attach_decision_evidence
+
+
+def _stale_row_currency(root: Path, decision: object, files: list[str]) -> dict:
+    """What git can say about one stale row: commits since, and files gone.
+
+    Only keys git can answer are returned; a failed query omits them rather
+    than guessing. ``commits_since`` counts from the evidence commit when
+    there is one, else from the record's creation date.
+    """
+    evidence = json.loads(getattr(decision, "evidence_commits_json", None) or "[]")
+    since_commit = evidence[-1] if evidence else None
+    count = commits_since(
+        root,
+        since_commit=since_commit,
+        since_date=None if since_commit else getattr(decision, "created_at", None),
+        nodes=files,
+    )
+    extra: dict = {}
+    if count is not None:
+        extra["commits_since"] = count
+    moved = [f for f in files if not (Path(root) / f).exists()]
+    if moved:
+        extra["moved_files"] = moved
+    return extra
 
 
 async def _why_health_dashboard(repo: str | None) -> dict:
@@ -116,6 +143,20 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                 cap,
                 collector,
                 label=f"health {key} beyond cap={cap}",
+            )
+        # After the cap, so the git cost is bounded by the rows actually served.
+        by_id = {d.id: d for d in stale}
+        for entry in result_data["stale_decisions"]:
+            decision = by_id.get(entry["id"])
+            if decision is None:
+                continue
+            entry.update(
+                await asyncio.to_thread(
+                    _stale_row_currency,
+                    Path(ctx.path),
+                    decision,
+                    entry["affected_files"],
+                )
             )
         collector.attach(result_data)
         return result_data
