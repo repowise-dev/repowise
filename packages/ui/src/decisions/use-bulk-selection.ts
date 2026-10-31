@@ -40,6 +40,10 @@ export function useBulkSelection(
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(new Set());
   const [bulk, setBulk] = React.useState<BulkState | null>(null);
   const runRef = React.useRef(0);
+  // The rows as they are when a run settles, which may be a later page than
+  // the one it started on.
+  const rowsRef = React.useRef(rows);
+  rowsRef.current = rows;
 
   const rowIds = rows.map((d) => d.id).join(",");
   React.useEffect(() => {
@@ -80,8 +84,11 @@ export function useBulkSelection(
     });
     if (runRef.current !== run) return;
     setBulk({ total: picked.length, settled: picked.length, result });
-    // What was refused stays selected, so a retry is one click.
-    setSelected(new Set(result.failed.map((f) => f.decision.id)));
+    // What was refused stays selected, so a retry is one click, but only
+    // where it is still on screen: a reader who paged on meanwhile would
+    // otherwise get a count and a button for rows they cannot see.
+    const visible = new Set(rowsRef.current.map((d) => d.id));
+    setSelected(new Set(result.failed.map((f) => f.decision.id).filter((id) => visible.has(id))));
   };
 
   const clear = () => {

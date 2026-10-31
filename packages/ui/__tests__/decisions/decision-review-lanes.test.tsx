@@ -519,6 +519,40 @@ describe("dismissing a selection of candidates", () => {
     expect(screen.getByRole("button", { name: "Dismiss 1" })).toBeInTheDocument();
   });
 
+  it("does not select refused rows that left the screen while it ran", async () => {
+    let finish: (r: { done: DecisionRecord[]; failed: { decision: DecisionRecord; message: string }[] }) => void =
+      () => {};
+    const onDismissMany = vi.fn(
+      (ds: DecisionRecord[]) =>
+        new Promise<{ done: DecisionRecord[]; failed: { decision: DecisionRecord; message: string }[] }>(
+          (resolve) => {
+            finish = resolve;
+            void ds;
+          },
+        ),
+    );
+    const view = renderLanes("candidates", { decisions: two(), onDismissMany });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select every candidate on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss 2" }));
+    // The reader pages on before the run settles.
+    view.rerender(
+      <DecisionReviewLanes
+        lane="candidates"
+        onLaneChange={vi.fn()}
+        decisions={[record({ id: "d9", title: "Next page" })]}
+        repoId="r1"
+        onDismissMany={onDismissMany}
+      />,
+    );
+    await act(async () => {
+      finish({ done: [], failed: [{ decision: record({ id: "d1" }), message: "locked" }] });
+    });
+
+    expect(screen.queryByText(/selected$/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Dismiss \d/ })).toBeNull();
+  });
+
   it("is off where the surface cannot write", () => {
     renderLanes("candidates", {
       decisions: two(),
