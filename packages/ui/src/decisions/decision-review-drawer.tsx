@@ -46,6 +46,9 @@ export interface DecisionReviewDrawerProps {
   marks?: React.ReactNode;
 }
 
+/** Quote provenance as quiet row meta, matching the queue table. */
+const EVIDENCE_META = "text-2xs text-[var(--color-text-tertiary)]";
+
 const MICRO_LABEL =
   "font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
@@ -212,7 +215,7 @@ function EvidenceField({ d }: { d: DecisionRecord }) {
         <blockquote className="whitespace-pre-wrap text-xs italic text-[var(--color-text-secondary)]">
           &ldquo;{stripMarkdown(evidence.source_quote)}&rdquo;
         </blockquote>
-        <figcaption className={MICRO_LABEL}>
+        <figcaption className={EVIDENCE_META}>
           {decisionSourceLabel(evidence.source)}
           {where}
           {more > 0 ? ` · ${more} more` : ""}

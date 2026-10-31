@@ -126,6 +126,26 @@ describe("a candidate is a review request, not an instruction", () => {
     expect(screen.getByText(/2 more/)).toBeInTheDocument();
   });
 
+  it("writes where the quote came from as quiet meta, not a heading", () => {
+    renderLanes("candidates", {
+      decisions: [
+        record({
+          evidence_preview: {
+            source: "pr",
+            source_quote: "we settled on JWT",
+            verification: "exact",
+            evidence_file: "docs/auth.md",
+            evidence_line: 12,
+          },
+        }),
+      ],
+    });
+
+    const meta = screen.getByText(/docs\/auth\.md:12/);
+    expect(meta).toHaveClass("text-2xs");
+    expect(meta).not.toHaveClass("uppercase");
+  });
+
   it("says it governs nothing and nobody has accepted it", () => {
     renderLanes("candidates");
 

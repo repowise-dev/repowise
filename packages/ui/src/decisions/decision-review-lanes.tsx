@@ -323,8 +323,13 @@ export function DecisionReviewLanes({
 const REVIEW_ORDER_NOTE =
   "Most in need of a look first: records that can be accepted as they stand, then those naming churn hotspots, then those whose files have changed most since they were recorded.";
 
-const MICRO_LABEL =
-  "font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+/**
+ * Where a quote came from, as row metadata: the 11px tertiary line the rest of
+ * the row's meta uses, in sentence case. Not the uppercase micro label, which
+ * reads as a heading and outshouted the quote it describes.
+ */
+const EVIDENCE_META = "text-2xs text-[var(--color-text-tertiary)]";
+
 
 const NUMERIC_CELL = "font-mono text-xs tabular-nums whitespace-nowrap";
 
@@ -456,14 +461,14 @@ function renderDecisionCell(d: DecisionRecord) {
 function renderEvidenceCell(d: DecisionRecord) {
   const evidence = d.evidence_preview;
   if (!evidence?.source_quote) {
-    return <span className={MICRO_LABEL}>{decisionSourceLabel(d.source)}</span>;
+    return <span className={EVIDENCE_META}>{decisionSourceLabel(d.source)}</span>;
   }
   return (
     <figure className="min-w-0 space-y-0.5">
       <blockquote className="line-clamp-2 text-xs italic text-[var(--color-text-secondary)]">
         &ldquo;{stripMarkdown(evidence.source_quote)}&rdquo;
       </blockquote>
-      <figcaption className={cn(MICRO_LABEL, "break-all")}>
+      <figcaption className={cn(EVIDENCE_META, "break-all")}>
         {decisionSourceLabel(evidence.source)}
         {evidence.evidence_file ? ` · ${evidence.evidence_file}` : ""}
         {evidence.evidence_line != null ? `:${evidence.evidence_line}` : ""}
