@@ -83,17 +83,23 @@ export interface RestLinkSummary {
 
 const nodesByMap = new WeakMap<ZoomMap, Map<string, ZoomNode>>();
 
+/** `map`'s nodes by id, memoized per map so `isTestSubtree`'s memo is shared. */
+export function mapNodes(map: ZoomMap): ReadonlyMap<string, ZoomNode> {
+  let nodes = nodesByMap.get(map);
+  if (!nodes) {
+    nodes = new Map(map.nodes.map((n) => [n.id, n]));
+    nodesByMap.set(map, nodes);
+  }
+  return nodes;
+}
+
 /**
  * What the map key says about the at-rest arrows of `parentId`'s level. An
  * upper bound: the canvas also skips links whose cards are too small on screen
  * to anchor an arrow.
  */
 export function restLinkSummary(map: ZoomMap, parentId: string, q: RestLinkQuery): RestLinkSummary {
-  let nodes = nodesByMap.get(map);
-  if (!nodes) {
-    nodes = new Map(map.nodes.map((n) => [n.id, n]));
-    nodesByMap.set(map, nodes);
-  }
+  const nodes = mapNodes(map);
   let total = 0;
   let eligible = 0;
   for (const r of map.relations) {

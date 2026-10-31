@@ -31,6 +31,7 @@ import {
   bandContent,
 } from "./externals";
 import { type PackCache, computeWorldRects, type WorldLayoutOptions } from "./geometry";
+import { isTestSubtree, mapNodes } from "./rest-links";
 import type { ZoomContainer, ZoomExternal, ZoomMap, ZoomNode, ZoomRelation } from "./types";
 
 export interface ZoomScene {
@@ -142,33 +143,15 @@ const testLayersByMap = new WeakMap<ZoomMap, ReadonlySet<string>>();
 /**
  * Layers most of whose files are tests: the layout sets them aside in a side
  * column (see `packLayout`), and the host offers "Show test links" only when
- * there is one. Only files carry `is_test`; a curated test layer is known by
- * what it holds, not by its (model-written) name. Same rule as the links
- * filter's `isTestSubtree`. Memoized per map.
+ * there is one. Uses the links filter's `isTestSubtree`, so the set-aside
+ * column and the hidden test links always agree. Memoized per map.
  */
 export function testLayerIds(map: ZoomMap): ReadonlySet<string> {
   let out = testLayersByMap.get(map);
   if (out) return out;
-  const nodes = new Map(map.nodes.map((n) => [n.id, n] as const));
-  const count = (id: string): [number, number] => {
-    const n = nodes.get(id);
-    if (!n) return [0, 0];
-    if (n.kind === "file") return [1, n.is_test ? 1 : 0];
-    let files = 0;
-    let tests = 0;
-    for (const c of n.children) {
-      const [f, t] = count(c);
-      files += f;
-      tests += t;
-    }
-    return [files, tests];
-  };
+  const nodes = mapNodes(map);
   const ids = new Set<string>();
-  for (const n of map.nodes) {
-    if (n.kind !== "layer") continue;
-    const [files, tests] = count(n.id);
-    if (tests * 2 > files) ids.add(n.id);
-  }
+  for (const n of map.nodes) if (n.kind === "layer" && isTestSubtree(nodes, n.id)) ids.add(n.id);
   testLayersByMap.set(map, (out = ids));
   return out;
 }
