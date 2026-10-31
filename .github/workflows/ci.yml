@@ -19,6 +19,9 @@ jobs:
   test-python:
     name: Python ${{ matrix.python-version }} tests
     runs-on: ubuntu-latest
+    # A normal run takes 30-40 minutes. The per-test timeout in pyproject.toml
+    # catches a hung test; this catches a hang outside any test.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write   # proves the coverage upload comes from this repository

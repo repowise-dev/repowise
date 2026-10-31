@@ -40,6 +40,20 @@ from repowise.core.workspace.registry import RepoContext
 _NOW = datetime(2026, 4, 12, 10, 0, 0, tzinfo=UTC)
 
 
+async def _settle_background_tasks() -> None:
+    """Let the tasks a tool call left behind finish before the engines close.
+
+    A tool cancels its helper tasks when the call returns. SQLAlchemy closes
+    the connection of a task cancelled mid-query in a task of its own. When
+    the engine is disposed while that close is still running, both wait on
+    aiosqlite forever and the test's teardown hangs.
+    """
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks() if task is not current]
+    if pending:
+        await asyncio.wait(pending, timeout=10)
+
+
 async def _make_repo_context(
     alias: str,
     repo_path: str,
@@ -448,6 +462,7 @@ async def workspace_mcp(tmp_path):
     yield registry
 
     # Cleanup
+    await _settle_background_tasks()
     await registry.close()
     mcp_mod._registry = None
     mcp_mod._workspace_root = None
