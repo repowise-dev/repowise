@@ -337,6 +337,10 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         }
         if stored.existed:
             payload["kept"] = stored.kept
+        if stored.blockers:
+            payload["blockers"] = stored.blockers
+            agent_flag = f" --agent {stored.agent}" if stored.agent else ""
+            payload["next"] = f"confirm {stored.id}{agent_flag} --evidence <commit|file>"
         emit_json({"repo": str(repo_path), "decision": payload})
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
@@ -459,6 +463,8 @@ class _Persisted(NamedTuple):
     kind: str
     existed: bool
     kept: list[str]
+    blockers: tuple[str, ...] = ()
+    agent: str = ""
 
 
 #: Restatable fields, and the column each list field is stored in.
@@ -552,8 +558,13 @@ async def _persist_decision(
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
             # A different title means the derived id folded this onto a record
             # stating the same decision, which is an update too.
+            from repowise.core.persistence.crud.authority import record_blockers
+
             existed = existing is not None or rec.title != fields.title
-            stored = _Persisted(rec.id, rec.title, rec.status, rec.kind, existed, kept)
+            blockers = tuple(record_blockers(rec))
+            stored = _Persisted(
+                rec.id, rec.title, rec.status, rec.kind, existed, kept, blockers, signer.agent
+            )
 
         # After the session commits, so a network embed never holds the write
         # transaction or vectors an uncommitted record.
