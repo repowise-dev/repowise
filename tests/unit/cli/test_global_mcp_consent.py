@@ -1,4 +1,4 @@
-"""init asks before repointing the global ``repowise`` MCP entry.
+"""init adds the per-user ``repowise`` MCP entries but never moves one serving another repo.
 
 Every test runs against a fake home: the real ``~/.claude/settings.json`` and
 Claude Desktop config are never read or written.
@@ -19,6 +19,7 @@ from rich.console import Console
 from repowise.cli.editor_integrations import claude_config, global_mcp
 
 _REAL_HOME = Path.home()
+_LAUNCH_DIR_ARGS = ["mcp", "--transport", "stdio"]
 
 
 class _Tty(io.StringIO):
@@ -44,6 +45,10 @@ def _write(path: Path, entry: dict) -> None:
     path.write_text(json.dumps({"mcpServers": {"repowise": entry}}), encoding="utf-8")
 
 
+def _stored(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["repowise"]
+
+
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fake home holding both Claude configs' locations."""
@@ -53,6 +58,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(fake))
     monkeypatch.setenv("USERPROFILE", str(fake))
     monkeypatch.setenv("APPDATA", str(fake / "AppData" / "Roaming"))
+    monkeypatch.setenv("REPOWISE_WORKSPACE_CEILING", str(tmp_path))
     monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
     # tests/conftest.py turns editor setup off; this module is about it being on.
     monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
@@ -71,9 +77,21 @@ def _desktop(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def _no_desktop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     path = tmp_path / "repo"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def other(tmp_path: Path) -> Path:
+    """Another repo on the machine that still exists."""
+    path = tmp_path / "other"
     path.mkdir()
     return path
 
@@ -82,45 +100,100 @@ def _no_prompt(*_a: Any, **_k: Any) -> bool:
     raise AssertionError("must not prompt")
 
 
-def test_read_reports_not_set_on_first_run(home: Path, repo: Path, monkeypatch) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    target = global_mcp.read_global_mcp_target(repo)
-
-    assert target.repoints
-    assert target.new_target == _arg(repo)
-    [line] = target.summary_lines()
-    assert "now points at not set" in line
-    assert line.endswith(f"will point here: {_arg(repo)}")
-
-
-def test_read_lists_desktop_only_when_installed(home: Path, repo: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        claude_config, "_claude_desktop_config_path", lambda: home / "nope" / "c.json"
+def _run(repo: Path, *, yes: bool, consent: bool | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        repo_path=repo,
+        opts=SimpleNamespace(yes=yes, editor_setup=True),
+        global_mcp_consent=consent,
     )
-    clients = [e.client for e in global_mcp.read_global_mcp_target(repo).entries]
-    assert clients == ["Claude Code"]
 
 
-def test_read_names_each_client_when_they_differ(home: Path, repo: Path, monkeypatch) -> None:
+def _register(repo: Path, monkeypatch, *, yes: bool = True, consent: bool | None = None) -> str:
+    from repowise.cli.commands.init_cmd import _finish
+
+    console, buf = _console()
+    monkeypatch.setattr(_finish, "console", console)
+    _finish.register_clients(_run(repo, yes=yes, consent=consent))
+    return buf.getvalue()
+
+
+# --- the four machines -------------------------------------------------------
+
+
+def test_fresh_machine_writes_launch_dir_code_entry_and_desktop_path(
+    home: Path, repo: Path, monkeypatch
+) -> None:
     desktop = _desktop(home, monkeypatch)
-    _write(_settings(home), _entry("C:/a"))
-    _write(desktop, _entry("C:/b"))
+    monkeypatch.setattr(click, "confirm", _no_prompt)
 
-    lines = global_mcp.read_global_mcp_target(repo).summary_lines()
-    assert lines[0].endswith(f"will point here: {_arg(repo)}")
-    assert "Claude Code now points at C:/a" in lines[1]
-    assert "Claude Desktop now points at C:/b" in lines[2]
+    out = _register(repo, monkeypatch)
+
+    assert _stored(_settings(home))["args"] == _LAUNCH_DIR_ARGS
+    assert _stored(desktop)["args"][1] == _arg(repo)
+    assert "Claude Code repowise MCP entry now points at not set" in out
+    assert f"Claude Desktop MCP registered for {repo}" in out
 
 
-def test_read_truncated_entry_reads_not_set(home: Path, repo: Path, monkeypatch) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    _write(_settings(home), {"command": "repowise", "args": ["mcp"]})
-    [line] = global_mcp.read_global_mcp_target(repo).summary_lines()
-    assert "None" not in line and "not set" in line
+def test_entry_for_another_live_repo_is_never_moved(
+    home: Path, repo: Path, other: Path, monkeypatch
+) -> None:
+    desktop = _desktop(home, monkeypatch)
+    _write(_settings(home), _entry(_arg(other)))
+    _write(desktop, _entry(_arg(other)))
+    before = desktop.read_bytes()
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    out = _register(repo, monkeypatch)
+
+    # Hooks are repo-agnostic and still land in settings.json; the entry does not move.
+    assert _stored(_settings(home)) == _entry(_arg(other))
+    assert desktop.read_bytes() == before
+    assert f"global repowise entry serves {_arg(other)}; this repo's .mcp.json" in out
+    assert f"Claude Desktop's repowise entry serves {_arg(other)} and is left as is" in out
+    assert global_mcp.REGISTER_LATER_COMMAND in out
+    assert "now points at" not in out
+
+
+def test_entry_whose_repo_is_gone_is_healed(home: Path, repo: Path, tmp_path, monkeypatch) -> None:
+    desktop = _desktop(home, monkeypatch)
+    gone = _arg(tmp_path / "moved-away")
+    _write(_settings(home), _entry(gone))
+    _write(desktop, _entry(gone))
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    out = _register(repo, monkeypatch)
+
+    assert _stored(_settings(home))["args"] == _LAUNCH_DIR_ARGS
+    assert _stored(desktop)["args"][1] == _arg(repo)
+    assert f"now points at {gone} (missing)" in out
+
+
+def test_workspace_registers_root_and_sibling_init_keeps_it(
+    home: Path, tmp_path: Path, monkeypatch
+) -> None:
+    desktop = _desktop(home, monkeypatch)
+    root = tmp_path / "ws"
+    first, second = root / "api", root / "web"
+    first.mkdir(parents=True)
+    second.mkdir()
+    (root / ".repowise-workspace.yaml").write_text("repos: []\n", encoding="utf-8")
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    _register(first, monkeypatch)
+    after_first = (_stored(_settings(home)), desktop.read_bytes())
+    out = _register(second, monkeypatch)
+
+    assert _stored(desktop)["args"][1] == _arg(root)
+    assert _stored(_settings(home))["args"] == _LAUNCH_DIR_ARGS
+    assert (_stored(_settings(home)), desktop.read_bytes()) == after_first
+    assert "now points at" not in out
+
+
+# --- the rule in detail ------------------------------------------------------
 
 
 def test_same_target_is_quiet_and_never_asks(home: Path, repo: Path, monkeypatch) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    _no_desktop(monkeypatch)
     _write(_settings(home), _entry(_arg(repo)))
     monkeypatch.setattr("sys.stdin", _Tty())
     monkeypatch.setattr(click, "confirm", _no_prompt)
@@ -130,8 +203,20 @@ def test_same_target_is_quiet_and_never_asks(home: Path, repo: Path, monkeypatch
     assert buf.getvalue() == ""
 
 
+def test_same_target_keeps_its_path_form(home: Path, repo: Path, monkeypatch) -> None:
+    _no_desktop(monkeypatch)
+    _write(_settings(home), _entry(_arg(repo), command="C:/old/repowise.exe"))
+
+    assert claude_config.register_with_claude_code(repo) == _settings(home)
+    assert _stored(_settings(home)) == {**_entry(_arg(repo)), "description": _desc()}
+
+
+def _desc() -> str:
+    return claude_config.generate_mcp_config(None)["mcpServers"]["repowise"]["description"]
+
+
 def test_command_only_change_is_one_quiet_line(home: Path, repo: Path, monkeypatch) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    _no_desktop(monkeypatch)
     _write(_settings(home), _entry(_arg(repo), command="C:/old/repowise.exe"))
     monkeypatch.setattr("sys.stdin", _Tty())
     monkeypatch.setattr(click, "confirm", _no_prompt)
@@ -142,26 +227,76 @@ def test_command_only_change_is_one_quiet_line(home: Path, repo: Path, monkeypat
     assert len(out.splitlines()) == 1 and "command moves to repowise" in out
 
 
-@pytest.mark.parametrize("yes", [True, False])
-def test_yes_or_no_terminal_registers_and_prints_old_and_new(
-    home: Path, repo: Path, monkeypatch, yes: bool
+def test_launch_dir_entry_only_gets_its_command_refreshed(
+    home: Path, repo: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    _write(_settings(home), _entry("C:/elsewhere"))
-    monkeypatch.setattr("sys.stdin", _Tty() if yes else io.StringIO())
-    monkeypatch.setattr(click, "confirm", _no_prompt)
-    console, buf = _console()
+    _no_desktop(monkeypatch)
+    _write(_settings(home), {"command": "C:/old/repowise.exe", "args": ["mcp"]})
 
-    assert global_mcp.confirm_global_mcp(console, repo, yes=yes) is True
-    out = buf.getvalue()
-    assert "now points at C:/elsewhere" in out and _arg(repo) in out
+    assert claude_config.register_with_claude_code(repo) == _settings(home)
+    stored = _stored(_settings(home))
+    assert stored["command"] == "repowise" and stored["args"] == _LAUNCH_DIR_ARGS
+
+
+def test_hand_shaped_entry_is_kept(home: Path, repo: Path, monkeypatch) -> None:
+    _no_desktop(monkeypatch)
+    _write(_settings(home), {"command": "uvx", "args": ["repowise", "mcp"]})
+    before = _settings(home).read_bytes()
+
+    assert claude_config.register_with_claude_code(repo) is None
+    assert _settings(home).read_bytes() == before
+
+
+def test_missing_pinned_command_is_refreshed_without_moving(
+    home: Path, repo: Path, other: Path, monkeypatch
+) -> None:
+    _no_desktop(monkeypatch)
+    _write(_settings(home), _entry(_arg(other), command=str(other / "gone" / "repowise.exe")))
+
+    assert claude_config.register_with_claude_code(repo) == _settings(home)
+    stored = _stored(_settings(home))
+    assert stored["command"] == "repowise" and stored["args"][1] == _arg(other)
+
+
+def test_user_env_block_survives_a_heal(home: Path, repo: Path, tmp_path, monkeypatch) -> None:
+    _no_desktop(monkeypatch)
+    _write(_settings(home), {**_entry(_arg(tmp_path / "gone")), "env": {"A": "1"}})
+
+    claude_config.register_with_claude_code(repo)
+
+    assert _stored(_settings(home))["env"] == {"A": "1"}
+
+
+# --- explicit re-targeting ---------------------------------------------------
+
+
+def test_agents_add_moves_an_entry_and_refresh_does_not(
+    home: Path, repo: Path, other: Path, monkeypatch
+) -> None:
+    from repowise.cli.agent_targets.targets.claude_code import TARGET
+    from repowise.cli.agent_targets.types import InstallOptions, Scope
+
+    desktop = _desktop(home, monkeypatch)
+    for path in (_settings(home), desktop):
+        _write(path, _entry(_arg(other)))
+
+    TARGET.install(Scope.USER, InstallOptions(), repo_path=repo)
+    assert _stored(desktop)["args"][1] == _arg(other)
+    assert _stored(_settings(home))["args"][1] == _arg(other)
+
+    TARGET.install(Scope.USER, InstallOptions(retarget=True), repo_path=repo)
+    assert _stored(desktop)["args"][1] == _arg(repo)
+    assert _stored(_settings(home))["args"] == _LAUNCH_DIR_ARGS
+
+
+# --- consent -----------------------------------------------------------------
 
 
 @pytest.mark.parametrize("answer", [True, False])
-def test_interactive_asks_with_default_yes(
+def test_interactive_asks_before_adding_with_default_yes(
     home: Path, repo: Path, monkeypatch, answer: bool
 ) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    _no_desktop(monkeypatch)
     monkeypatch.setattr("sys.stdin", _Tty())
     asked: list[bool] = []
 
@@ -177,8 +312,20 @@ def test_interactive_asks_with_default_yes(
     assert ("left as is" in buf.getvalue()) is (not answer)
 
 
+def test_interactive_never_asks_about_an_entry_it_keeps(
+    home: Path, repo: Path, other: Path, monkeypatch
+) -> None:
+    _no_desktop(monkeypatch)
+    _write(_settings(home), _entry(_arg(other)))
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+    console, _ = _console()
+
+    assert global_mcp.confirm_global_mcp(console, repo) is True
+
+
 def test_unanswerable_prompt_declines(home: Path, repo: Path, monkeypatch) -> None:
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    _no_desktop(monkeypatch)
     monkeypatch.setattr("sys.stdin", _Tty())
 
     def abort(*_a: Any, **_k: Any) -> bool:
@@ -189,6 +336,22 @@ def test_unanswerable_prompt_declines(home: Path, repo: Path, monkeypatch) -> No
     assert global_mcp.confirm_global_mcp(console, repo) is False
 
 
+def test_decline_leaves_global_configs_byte_identical(
+    home: Path, repo: Path, tmp_path, monkeypatch
+) -> None:
+    desktop = _desktop(home, monkeypatch)
+    gone = _arg(tmp_path / "gone")
+    _write(_settings(home), _entry(gone))
+    _write(desktop, _entry(gone))
+    before = (_settings(home).read_bytes(), desktop.read_bytes())
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr(click, "confirm", lambda *_a, **_k: False)
+
+    _register(repo, monkeypatch, yes=False)
+
+    assert (_settings(home).read_bytes(), desktop.read_bytes()) == before
+
+
 def test_no_editor_setup_asks_and_prints_nothing(home: Path, repo: Path, monkeypatch) -> None:
     monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
     monkeypatch.setattr("sys.stdin", _Tty())
@@ -196,49 +359,6 @@ def test_no_editor_setup_asks_and_prints_nothing(home: Path, repo: Path, monkeyp
     console, buf = _console()
     assert global_mcp.confirm_global_mcp(console, repo, no_editor_setup=True) is False
     assert buf.getvalue() == ""
-
-
-def _run(repo: Path, *, yes: bool, consent: bool | None = None) -> SimpleNamespace:
-    return SimpleNamespace(
-        repo_path=repo,
-        opts=SimpleNamespace(yes=yes, editor_setup=True),
-        global_mcp_consent=consent,
-    )
-
-
-def test_decline_leaves_global_configs_byte_identical(
-    home: Path, repo: Path, monkeypatch
-) -> None:
-    from repowise.cli.commands.init_cmd import _finish
-
-    desktop = _desktop(home, monkeypatch)
-    _write(_settings(home), _entry("C:/elsewhere"))
-    _write(desktop, _entry("C:/elsewhere"))
-    before = (_settings(home).read_bytes(), desktop.read_bytes())
-    monkeypatch.setattr("sys.stdin", _Tty())
-    monkeypatch.setattr(click, "confirm", lambda *_a, **_k: False)
-    monkeypatch.setattr(_finish, "console", _console()[0])
-
-    _finish.register_clients(_run(repo, yes=False))
-
-    assert (_settings(home).read_bytes(), desktop.read_bytes()) == before
-
-
-def test_yes_repoints_both_global_configs(home: Path, repo: Path, monkeypatch) -> None:
-    from repowise.cli.commands.init_cmd import _finish
-
-    desktop = _desktop(home, monkeypatch)
-    _write(_settings(home), _entry("C:/elsewhere"))
-    monkeypatch.setattr(click, "confirm", _no_prompt)
-    console, buf = _console()
-    monkeypatch.setattr(_finish, "console", console)
-
-    _finish.register_clients(_run(repo, yes=True))
-
-    for path in (_settings(home), desktop):
-        stored = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["repowise"]
-        assert stored["args"][1] == _arg(repo)
-    assert "now points at" in buf.getvalue()
 
 
 def test_probe_failure_never_blocks_registration(home: Path, repo: Path, monkeypatch) -> None:
@@ -255,34 +375,59 @@ def test_probe_failure_never_blocks_registration(home: Path, repo: Path, monkeyp
 def test_plan_screen_this_repo_only_writes_nothing_and_asks_nothing(
     home: Path, repo: Path, monkeypatch
 ) -> None:
-    from repowise.cli.commands.init_cmd import _finish
-
-    _write(_settings(home), _entry("C:/elsewhere"))
-    before = _settings(home).read_bytes()
+    _no_desktop(monkeypatch)
     monkeypatch.setattr("sys.stdin", _Tty())
     monkeypatch.setattr(click, "confirm", _no_prompt)
-    console, buf = _console()
-    monkeypatch.setattr(_finish, "console", console)
 
-    _finish.register_clients(_run(repo, yes=False, consent=False))
+    out = _register(repo, monkeypatch, yes=False, consent=False)
 
-    assert _settings(home).read_bytes() == before
-    assert "this repo only" in buf.getvalue()
+    assert not _settings(home).exists()
+    assert "this repo only" in out
 
 
-def test_plan_screen_yes_repoints_without_asking_again(
-    home: Path, repo: Path, monkeypatch
+def test_plan_screen_yes_writes_without_asking_again(home: Path, repo: Path, monkeypatch) -> None:
+    _no_desktop(monkeypatch)
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+
+    out = _register(repo, monkeypatch, yes=False, consent=True)
+
+    assert _stored(_settings(home))["args"] == _LAUNCH_DIR_ARGS
+    assert "now points at not set" in out
+
+
+def test_plan_screen_lists_only_entries_that_change(
+    home: Path, repo: Path, other: Path, monkeypatch
 ) -> None:
-    from repowise.cli.commands.init_cmd import _finish
+    from repowise.cli.commands.init_cmd._plan import outside_lines
 
-    _write(_settings(home), _entry("C:/elsewhere"))
-    monkeypatch.setattr("sys.stdin", _Tty())
-    monkeypatch.setattr(click, "confirm", _no_prompt)
-    console, buf = _console()
-    monkeypatch.setattr(_finish, "console", console)
+    desktop = _desktop(home, monkeypatch)
+    _write(_settings(home), _entry(_arg(other)))
+    assert outside_lines(repo) == (
+        "Claude Desktop repowise MCP entry now points at not set, "
+        f"will serve {_arg(repo)}",
+    )
+    _write(desktop, _entry(_arg(other)))
+    assert outside_lines(repo) == ()
 
-    _finish.register_clients(_run(repo, yes=False, consent=True))
 
-    stored = json.loads(_settings(home).read_text(encoding="utf-8"))["mcpServers"]["repowise"]
-    assert stored["args"][1] == _arg(repo)
-    assert "now points at" in buf.getvalue()
+# --- doctor ------------------------------------------------------------------
+
+
+def test_doctor_flags_a_desktop_entry_whose_repo_is_gone(
+    home: Path, tmp_path: Path, other: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.doctor_cmd._checks.integrations import _claude_desktop_entry_row
+
+    desktop = _desktop(home, monkeypatch)
+    assert _claude_desktop_entry_row() is None
+
+    _write(desktop, _entry(_arg(other)))
+    row = _claude_desktop_entry_row()
+    assert row is not None and row.level != "warn" and _arg(other) in row.detail
+
+    gone = _arg(tmp_path / "gone")
+    _write(desktop, _entry(gone))
+    row = _claude_desktop_entry_row()
+    assert row is not None and row.level == "warn"
+    assert row.fix == global_mcp.REGISTER_LATER_COMMAND and gone in row.detail

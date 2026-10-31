@@ -1244,10 +1244,10 @@ def test_resolve_mcp_target_finds_workspace_through_multiple_ancestors(
     assert claude_config._resolve_mcp_target(deep) == workspace
 
 
-def test_register_with_claude_code_uses_workspace_root(
+def test_register_with_claude_code_new_entry_follows_the_launch_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``register_with_claude_code`` against a workspace member targets the root."""
+    """A new Claude Code entry names no repo: Claude Code starts it in the project."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
     workspace = tmp_path / "ws"
@@ -1258,19 +1258,13 @@ def test_register_with_claude_code_uses_workspace_root(
 
     settings_path = claude_config.register_with_claude_code(repo)
     assert settings_path is not None
-
-    args = _registered_repowise_args(settings_path)
-    # ``mcp <path> --transport stdio`` — second element is the target path
-    registered_path = Path(args[1])
-    assert registered_path == workspace.resolve()
+    assert _registered_repowise_args(settings_path) == ["mcp", "--transport", "stdio"]
 
 
 def test_register_with_claude_code_sibling_inits_dont_clobber(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The bug this fix targets: indexing two sibling repos in a workspace
-    must converge on a single registration pointing at the workspace root,
-    not flip-flop between per-repo paths."""
+    """An entry pinned to the workspace root stays there when a sibling inits."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
     workspace = tmp_path / "ws"
@@ -1281,20 +1275,24 @@ def test_register_with_claude_code_sibling_inits_dont_clobber(
     ops = workspace / "ops"
     ops.mkdir()
 
+    settings = tmp_path / "home" / ".claude" / "settings.json"
     claude_config.register_with_claude_code(engine)
-    first_args = _registered_repowise_args(tmp_path / "home" / ".claude" / "settings.json")
+    claude_config.merge_mcp_entry(
+        settings, claude_config.generate_mcp_config(workspace)["mcpServers"]
+    )
+    first_args = _registered_repowise_args(settings)
 
     claude_config.register_with_claude_code(ops)
-    second_args = _registered_repowise_args(tmp_path / "home" / ".claude" / "settings.json")
+    second_args = _registered_repowise_args(settings)
 
     assert first_args == second_args
     assert Path(first_args[1]) == workspace.resolve()
 
 
-def test_register_with_claude_code_no_workspace_uses_repo_path(
+def test_register_with_claude_code_solo_repo_follows_the_launch_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without a workspace yaml in any ancestor, behavior is unchanged."""
+    """Outside a workspace a new entry names no repo either."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
     solo = tmp_path / "solo"
@@ -1302,9 +1300,7 @@ def test_register_with_claude_code_no_workspace_uses_repo_path(
 
     settings_path = claude_config.register_with_claude_code(solo)
     assert settings_path is not None
-
-    args = _registered_repowise_args(settings_path)
-    assert Path(args[1]) == solo.resolve()
+    assert _registered_repowise_args(settings_path) == ["mcp", "--transport", "stdio"]
 
 
 def test_register_with_claude_desktop_uses_workspace_root(

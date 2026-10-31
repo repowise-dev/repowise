@@ -66,44 +66,112 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     return workspace_root if workspace_root is not None else repo_path
 
 
-def register_with_claude_desktop(repo_path: Path) -> Path | None:
+def planned_global_entry(
+    stored: dict | None,
+    repo_path: Path,
+    *,
+    follows_launch_dir: bool,
+    retarget: bool = False,
+) -> dict | None:
+    """The ``repowise`` entry to write into a per-user config, or None to keep *stored*.
+
+    A per-user config holds one entry for every repo on the machine, so
+    registering from a second repo never moves it. It is written when absent,
+    when it already serves this repo (the pinned command is refreshed, so a
+    moved venv self-heals), when the repo it names is gone (a moved repo), or
+    on *retarget* (``agents add``). An entry for another repo that still
+    exists keeps its target; only a pinned command that is gone is refreshed.
+
+    *follows_launch_dir* writes a new entry with no repo path, so the server
+    serves the repo the client starts it in. Claude Code starts stdio servers
+    in the project directory; Claude Desktop has no project, so it gets a path.
+    """
+    target = _resolve_mcp_target(repo_path)
+    command = resolve_repowise_command()
+    fresh = _user_entry(None if follows_launch_dir else target, command)
+    if stored is None or retarget:
+        return fresh
+    current = _entry_repo_target(stored)
+    if current is None:
+        # Ours with no path follows the launch dir already; a hand-shaped
+        # entry (another launcher, extra flags) is the user's and stays.
+        return fresh if follows_launch_dir and _is_launch_dir_entry(stored) else None
+    if _same_target(current, target):
+        return _user_entry(target, command)
+    if not Path(current).is_dir():
+        return fresh
+    if _pinned_command_missing(stored):
+        return _user_entry(Path(current), command)
+    return None
+
+
+def _user_entry(target: Path | None, command: str) -> dict:
+    """A per-user entry: pinned *command*, and *target* unless it follows the launch dir."""
+    return generate_mcp_config(target, command=command)["mcpServers"]["repowise"]
+
+
+def _same_target(stored: str, target: Path) -> bool:
+    from repowise.cli._helpers.paths import _same_path
+
+    return _same_path(Path(stored), target)
+
+
+def _is_launch_dir_entry(entry: dict) -> bool:
+    """``repowise mcp`` with flags only: the shape that serves the launch dir."""
+    args = entry.get("args")
+    return isinstance(args, list) and args[:1] == ["mcp"] and _entry_repo_target(entry) is None
+
+
+def _pinned_command_missing(entry: dict) -> bool:
+    command = entry.get("command")
+    pinned = isinstance(command, str) and ("/" in command or "\\" in command)
+    return pinned and not Path(str(command)).exists()
+
+
+def _register_global(
+    config_path: Path, repo_path: Path, *, follows_launch_dir: bool, retarget: bool
+) -> Path | None:
+    entry = planned_global_entry(
+        _stored_repowise_entry(config_path),
+        repo_path,
+        follows_launch_dir=follows_launch_dir,
+        retarget=retarget,
+    )
+    if entry is None:
+        return None
+    return config_path if merge_mcp_entry(config_path, {"repowise": entry}) else None
+
+
+def register_with_claude_desktop(repo_path: Path, *, retarget: bool = False) -> Path | None:
     """Add repowise MCP server to Claude Desktop's config.
 
-    When ``repo_path`` is inside a workspace, the registration targets the
-    workspace root so the MCP server starts in workspace mode.
+    Desktop has no project scope, so its one entry names a repo (the
+    workspace root inside a workspace). See :func:`planned_global_entry` for
+    when an existing entry is kept.
 
-    Returns the config path if successful, None if Claude Desktop is not
-    present or the platform is unsupported.
+    Returns the config path when it was written, None when Claude Desktop is
+    not present, the platform is unsupported, the entry was kept, or the
+    write failed.
     """
     config_path = _claude_desktop_config_path()
-    if config_path is None:
+    if config_path is None or not config_path.parent.exists():
         return None
-    if not config_path.parent.exists():
-        # Claude Desktop not installed
-        return None
-    target = _resolve_mcp_target(repo_path)
-    # Per-user config: pin the absolute path of the running install so a
-    # PATH shadow install (conda, old pip, pipx) can't hijack the server.
-    # Refreshed on every re-registration, so a moved venv self-heals on the
-    # next `repowise init`/`update`.
-    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
-    return config_path if merge_mcp_entry(config_path, entry) else None
+    return _register_global(config_path, repo_path, follows_launch_dir=False, retarget=retarget)
 
 
-def register_with_claude_code(repo_path: Path) -> Path | None:
+def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Path | None:
     """Add repowise MCP server to global Claude Code settings (~/.claude/settings.json).
 
-    When ``repo_path`` is inside a workspace, the registration targets the
-    workspace root so the MCP server starts in workspace mode and subsequent
-    inits against sibling repos do not overwrite the entry.
+    A new entry names no repo: Claude Code starts it in the project it opens,
+    so one entry serves every repo. See :func:`planned_global_entry` for when
+    an existing entry is kept.
 
-    Returns the settings path if successful, None on failure.
+    Returns the settings path when it was written, None when the entry was
+    kept or the write failed.
     """
-    settings_path = _claude_code_settings_path()
-    target = _resolve_mcp_target(repo_path)
-    # Per-user config: absolute command, see register_with_claude_desktop.
-    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
-    return settings_path if merge_mcp_entry(settings_path, entry) else None
+    return _register_global(
+        _claude_code_settings_path(), repo_path, follows_launch_dir=True, retarget=retarget
+    )
 
 
 def _stored_repowise_entry(config_path: Path | None) -> dict | None:
@@ -124,11 +192,16 @@ def _stored_repowise_entry(config_path: Path | None) -> dict | None:
 
 
 def _entry_repo_target(entry: dict) -> str | None:
-    """The repo path an existing MCP entry points at (``mcp <path> …``)."""
+    """The repo path an existing MCP entry points at (``mcp <path> …``).
+
+    None for any other shape. An entry whose slot after ``mcp`` is a flag or
+    missing serves whichever repo the client launches it in.
+    """
     args = entry.get("args")
-    if not isinstance(args, list) or len(args) < 2:
+    if not isinstance(args, list) or args[:1] != ["mcp"] or len(args) < 2:
         return None
-    return str(args[1])
+    target = args[1]
+    return target if isinstance(target, str) and not target.startswith("-") else None
 
 
 def enable_tool_search_in_claude_code() -> Path | None:

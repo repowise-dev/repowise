@@ -153,8 +153,8 @@ That runbook follows the steps below. An agent can also follow them directly.
    repowise init --yes --no-prose
    ```
 
-   It points the global repowise MCP entry at this repo and prints the old and
-   new target. Add `--no-editor-setup` in CI, in a sandbox, or on a repo the
+   It adds the global repowise MCP entry when there is none and never moves
+   one that serves another repo. Add `--no-editor-setup` in CI, in a sandbox, or on a repo the
    person only wants to try: then only `.repowise/` is written.
 3. **Run it in the background.** A small repo takes under a minute; a few
    thousand files can take several minutes, longer than many tool timeouts.

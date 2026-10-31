@@ -181,14 +181,14 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Adds a `.gitignore` line, so use `--no-save-key` for `--no-editor-setup`'s nothing-in-the-repo guarantee.
 - **`--yes`.** Model docs only with a configured provider (key in env or `.repowise/.env`), else from code; logged-in
   Claude Code, Codex or OpenCode needs `--provider`; `--no-prose` guarantees no model calls.
-  - Accepts the cost prompt; advanced defaults (standard mode at any size, comprehensive style); connects detected agents; repoints the global MCP entry here, printing old and new.
+  - Accepts the cost prompt; advanced defaults (standard mode at any size, comprehensive style); connects detected agents; adds the global MCP entry when absent or when its repo is gone, never moving one that serves another repo.
   - Installs the post-commit hook, not distill. With `--no-prose`, replaces model-written docs unasked.
 - **`--repos`.** Alias, directory name, or relative path (for duplicates). First listed is a new workspace's primary; existing ones keep theirs. Unknown names stop the run, listing options.
 
 **Plan screen.** TTY runs without `--provider`, `--no-prose`, `--mode fast`, `--resume` or `--yes` show scan, ETA, plan,
 and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then defaults. Keys:
 
-- Enter: free run (docs from code). `m`: pick a model. `s`: leave the global MCP entry. `q`: quit.
+- Enter: free run (docs from code). `m`: pick a model. `s`: skip the global MCP entry. `q`: quit.
 - `e`: edit plan (advanced options, agent checklist, post-commit hook, `.git/info/exclude` for machine-specific files, off).
 - `r`: folder of repos (listed): pick repos and primary.
 

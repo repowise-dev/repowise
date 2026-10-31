@@ -77,8 +77,8 @@ repowise serve                    # dashboard + MCP server (needs Node 20+; firs
 
 Restart Claude Code or run `/mcp`, then ask *"What breaks if I change
 `src/auth.py`?"* or *"Use Repowise `get_overview` to summarize this repository."*
-`init` wires Claude Code for this repo and points the global repowise MCP entry
-here. [Full setup for every agent →](docs/start/QUICKSTART.md)
+`init` wires Claude Code for this repo and adds the global repowise MCP entry
+when there is none; it never moves one that serves another repo. [Full setup for every agent →](docs/start/QUICKSTART.md)
 
 ---
 
