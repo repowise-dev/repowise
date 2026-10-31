@@ -4,7 +4,6 @@ import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { CommitsViewToggle } from "@/components/commits/commits-view-toggle";
 import { ByChangeView, type ByChangeParams } from "@/components/commits/by-change-view";
 import { CommitsView } from "@/components/commits/commits-view";
-import { EventsView } from "@/components/commits/events-view";
 import { ImpactTab } from "@/components/risk/impact-tab";
 import { parseCommitsView } from "@/lib/changes";
 import { getTranslations } from "next-intl/server";
@@ -12,12 +11,12 @@ import { getTranslations } from "next-intl/server";
 export const metadata: Metadata = { title: "Commits" };
 
 /**
- * The Commits page: one shell, one view at a time. The commit view
- * (`CommitsView`) is the default and leads with what the work did to code
- * health; `?view=changes` groups the history by merged change
- * (`ByChangeView`), `?view=events` lists what moved between index runs
- * (`EventsView`), `?view=review` shows a change's blast radius before it
- * lands (`ImpactTab`). Each view is a server component; what stays interactive is
+ * The Commits page: one shell, two lenses. History is the default and leads
+ * with what the work did to code health, one row per commit (`CommitsView`)
+ * or, with `?view=changes`, per merged change (`ByChangeView`); the list's
+ * own switch picks the grouping. `?view=review` shows a change's blast radius
+ * before it lands (`ImpactTab`). Every other `?view=` value lands on the
+ * history. The history views are server components; what stays interactive is
  * small islands sharing state through the URL.
  */
 export default async function CommitsPage({
@@ -34,11 +33,9 @@ export default async function CommitsPage({
   const description =
     view === "changes"
       ? (await getTranslations("views.changes"))("description")
-      : view === "events"
-        ? (await getTranslations("views.events"))("description")
-        : view === "review"
-          ? t("reviewDescription")
-          : t("description");
+      : view === "review"
+        ? t("reviewDescription")
+        : t("description");
 
   return (
     <PageShell
@@ -49,8 +46,6 @@ export default async function CommitsPage({
     >
       {view === "changes" ? (
         <ByChangeView repoId={id} params={sp} />
-      ) : view === "events" ? (
-        <EventsView repoId={id} />
       ) : view === "review" ? (
         <ImpactTab repoId={id} />
       ) : (
