@@ -137,21 +137,12 @@ class GeminiEmbedder:
             )
 
             raw_vectors = [list(e.values) for e in (result.embeddings or [])]
-            if len(raw_vectors) != len(texts):
-                raise ValueError(
-                    f"GeminiEmbedder expected {len(texts)} embeddings but the API returned"
-                    f" {len(raw_vectors)} (model={model!r}); one vector per input is required."
-                )
-            widths = {len(v) for v in raw_vectors}
-            if widths and widths != {output_dimensionality}:
-                actual = min(widths - {output_dimensionality})
-                raise ValueError(
-                    f"GeminiEmbedder declared {output_dimensionality}-dimensional vectors but"
-                    f" the API returned {actual} (model={model!r}). The API ignored"
-                    f" 'output_dimensionality'. Verify the model supports {output_dimensionality}"
-                    f" dimensions, or construct GeminiEmbedder with output_dimensionality={actual}."
-                )
-            return [_l2_normalize(v) for v in raw_vectors]
+            return _validated_vectors(
+                raw_vectors,
+                expected_count=len(texts),
+                dimensions=output_dimensionality,
+                model=model,
+            )
 
         return await asyncio.to_thread(_embed_sync)
 
@@ -162,6 +153,26 @@ def _embedding_2_texts(texts: list[str], kind: str) -> list[str]:
     if kind == "document":
         return [f"title: none | text: {text}" for text in texts]
     raise ValueError(f"kind must be 'query' or 'document', got {kind!r}")
+
+
+def _validated_vectors(
+    vectors: list[list[float]], *, expected_count: int, dimensions: int, model: str
+) -> list[list[float]]:
+    if len(vectors) != expected_count:
+        raise ValueError(
+            f"GeminiEmbedder expected {expected_count} embeddings but the API returned"
+            f" {len(vectors)} (model={model!r}); one vector per input is required."
+        )
+    widths = {len(v) for v in vectors}
+    if widths and widths != {dimensions}:
+        actual = min(widths - {dimensions})
+        raise ValueError(
+            f"GeminiEmbedder declared {dimensions}-dimensional vectors but"
+            f" the API returned {actual} (model={model!r}). The API ignored"
+            f" 'output_dimensionality'. Verify the model supports {dimensions}"
+            f" dimensions, or construct GeminiEmbedder with output_dimensionality={actual}."
+        )
+    return [_l2_normalize(v) for v in vectors]
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
