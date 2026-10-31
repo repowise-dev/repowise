@@ -276,9 +276,152 @@ def test_the_sql_link_map_resolves_the_same_nodes_as_the_plain_record_path() -> 
     }
     plain_linked = {
         link.node_id
-        for link in build_declaration_links(
-            systems, [{"node_id": node_id} for node_id in node_ids]
-        )
+        for link in build_declaration_links(systems, [{"node_id": node_id} for node_id in node_ids])
     }
 
     assert sql_linked == plain_linked
+
+
+# --- JVM package -> group:artifact ------------------------------------------
+
+
+def test_java_import_resolves_to_the_declared_maven_coordinate() -> None:
+    declarations = [
+        _Declaration("com.google.guava:guava", ecosystem="maven", declared_in="pom.xml")
+    ]
+    nodes = [_Node("external:com.google.common.collect"), _Node("external:com.google.common")]
+
+    assert _links(declarations, nodes) == [
+        ("external:com.google.common.collect", "maven", "com.google.guava:guava"),
+        ("external:com.google.common", "maven", "com.google.guava:guava"),
+    ]
+
+
+def test_longest_package_prefix_wins() -> None:
+    declarations = [
+        _Declaration("junit:junit", ecosystem="maven", declared_in="pom.xml"),
+        _Declaration(
+            "org.junit.jupiter:junit-jupiter-api", ecosystem="maven", declared_in="pom.xml"
+        ),
+    ]
+    nodes = [_Node("external:org.junit.Test"), _Node("external:org.junit.jupiter.api.Test")]
+
+    assert _links(declarations, nodes) == [
+        ("external:org.junit.Test", "maven", "junit:junit"),
+        ("external:org.junit.jupiter.api.Test", "maven", "org.junit.jupiter:junit-jupiter-api"),
+    ]
+
+
+def test_prefix_match_is_on_whole_segments() -> None:
+    declarations = [_Declaration("junit:junit", ecosystem="maven", declared_in="pom.xml")]
+
+    assert _links(declarations, [_Node("external:org.junitx.Foo")]) == []
+
+
+def test_unknown_java_import_stays_unlinked() -> None:
+    declarations = [
+        _Declaration("com.google.guava:guava", ecosystem="maven", declared_in="pom.xml")
+    ]
+
+    assert _links(declarations, [_Node("external:com.acme.internal.Widget")]) == []
+
+
+def test_known_import_without_a_declaration_stays_unlinked() -> None:
+    # No groupId-prefix guessing: the table only offers a name the manifest declares.
+    declarations = [
+        _Declaration("com.google.other:thing", ecosystem="maven", declared_in="pom.xml")
+    ]
+
+    assert _links(declarations, [_Node("external:com.google.common.collect")]) == []
+
+
+def test_jvm_candidates_do_not_disturb_other_ecosystems() -> None:
+    assert declaration_name_candidates("requests.adapters") == ("requests.adapters", "requests")
+    declarations = [_Declaration("requests", ecosystem="pypi", declared_in="requirements.txt")]
+
+    assert _links(declarations, [_Node("external:requests.adapters")]) == [
+        ("external:requests.adapters", "pypi", "requests")
+    ]
+
+
+def test_guava_subpackages_shipped_in_other_artifacts_are_not_linked_to_guava() -> None:
+    declarations = [
+        _Declaration("com.google.guava:guava", ecosystem="maven", declared_in="pom.xml"),
+        _Declaration("com.google.guava:guava-testlib", ecosystem="maven", declared_in="pom.xml"),
+        _Declaration("com.google.truth:truth", ecosystem="maven", declared_in="pom.xml"),
+    ]
+    nodes = [
+        _Node("external:com.google.common.base.Splitter"),
+        _Node("external:com.google.common.truth.Truth.assertThat"),
+        _Node("external:com.google.common.testing.EqualsTester"),
+        _Node("external:com.google.common.collect.testing.features.Feature"),
+    ]
+
+    assert _links(declarations, nodes) == [
+        ("external:com.google.common.base.Splitter", "maven", "com.google.guava:guava"),
+        ("external:com.google.common.truth.Truth.assertThat", "maven", "com.google.truth:truth"),
+        (
+            "external:com.google.common.testing.EqualsTester",
+            "maven",
+            "com.google.guava:guava-testlib",
+        ),
+        (
+            "external:com.google.common.collect.testing.features.Feature",
+            "maven",
+            "com.google.guava:guava-testlib",
+        ),
+    ]
+
+
+def test_a_fenced_prefix_stays_unlinked_even_when_a_shorter_prefix_is_declared() -> None:
+    declarations = [
+        _Declaration("com.google.code.gson:gson", ecosystem="maven", declared_in="pom.xml")
+    ]
+    nodes = [
+        _Node("external:com.google.gson.Gson"),
+        _Node("external:com.google.gson.protobuf.ProtoTypeAdapter"),
+        _Node("external:com.google.gson.protobuf2.TestAllTypesProto2"),
+    ]
+
+    assert _links(declarations, nodes) == [
+        ("external:com.google.gson.Gson", "maven", "com.google.code.gson:gson")
+    ]
+
+
+def test_protobuf_util_resolves_to_declared_util_artifact() -> None:
+    declarations = [
+        _Declaration(
+            "com.google.protobuf:protobuf-java",
+            ecosystem="maven",
+            declared_in="pom.xml",
+        ),
+        _Declaration(
+            "com.google.protobuf:protobuf-java-util",
+            ecosystem="maven",
+            declared_in="pom.xml",
+        ),
+    ]
+    nodes = [_Node("external:com.google.protobuf.util.JsonFormat")]
+
+    assert _links(declarations, nodes) == [
+        (
+            "external:com.google.protobuf.util.JsonFormat",
+            "maven",
+            "com.google.protobuf:protobuf-java-util",
+        )
+    ]
+
+
+def test_junit_platform_is_not_linked_to_junit4() -> None:
+    declarations = [
+        _Declaration("junit:junit", ecosystem="maven", declared_in="pom.xml"),
+    ]
+    nodes = [
+        _Node("external:org.junit.Test"),
+        _Node("external:org.junit.platform.launcher.Launcher"),
+        _Node("external:org.junit.platform.commons.util.ReflectionUtils"),
+    ]
+
+    assert _links(declarations, nodes) == [
+        ("external:org.junit.Test", "maven", "junit:junit"),
+    ]
