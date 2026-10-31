@@ -123,6 +123,40 @@ def test_merge_preview_writes_nothing(repo: Path) -> None:
     assert _signature(repo, "bbbb")["action"] == "accepted"
 
 
+def test_merging_into_a_decision_confirmed_with_evidence_needs_no_more(
+    tmp_path: Path,
+) -> None:
+    # The target's evidence lives on its acceptance row, not on the record.
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    _seed_wiki_db(
+        repo,
+        [
+            {
+                "id": "a" * 32,
+                "title": "Use JWT",
+                "status": "proposed",
+                "source": "pr",
+                "evidence_file": None,
+            },
+            {
+                "id": "b" * 32,
+                "title": "Use JWT",
+                "status": "proposed",
+                "source": "pr",
+                "evidence_file": None,
+            },
+        ],
+    )
+    confirmed = _run(repo, "confirm", "bbbb", "--agent", "probe", "--evidence", "HEAD")
+    assert confirmed.exit_code == 0, confirmed.output
+
+    result = _run(repo, "merge", "aaaa", "bbbb", "--agent", "probe")
+
+    assert result.exit_code == 0, result.output
+    assert _signature(repo, "bbbb")["action"] == "merged"
+
+
 def test_dismissing_a_candidate_records_who_did_it(repo: Path) -> None:
     result = _run(
         repo, "dismiss", "aaaa", "--agent", "claude_code", "--session", "s-1", "--reason", "noise"
