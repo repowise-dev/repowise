@@ -1695,9 +1695,7 @@ class CallResolver(
             return hit
         # Tier 2: import-scoped.
         binding = self._import_bindings.get(file_path, {}).get(call.target_name)
-        handled, resolved = self._imported_free_call(
-            file_path, call, caller_id, binding, declared
-        )
+        handled, resolved = self._imported_free_call(file_path, call, caller_id, binding)
         if handled:
             return resolved
         return self._repo_import_free_call(file_path, call, caller_id, binding)
@@ -1789,7 +1787,6 @@ class CallResolver(
         call: CallSite,
         caller_id: str,
         binding: NamedBinding | None,
-        declared: bool,
     ) -> tuple[bool, ResolvedCall | None]:
         """Tier 2: the import's own binding, then the refusals that end there."""
         hit = self._bound_import_call(call, caller_id, binding)
@@ -1799,6 +1796,7 @@ class CallResolver(
         # lookup or broaden to a same-named member from another imported type.
         if binding is not None and binding.member_of:
             return True, self._implicit_inherited_call(file_path, call, caller_id)
+        declared = call.target_name in self._global_symbols
         return self._import_stops(file_path, call, binding, declared)
 
     def _import_stops(
