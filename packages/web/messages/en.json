@@ -1788,6 +1788,28 @@
   },
   "commits": {
     "detail": {
+      "events": {
+        "title": "Flagged when this commit was indexed",
+        "description": "What the index run at this commit found had moved since the run before it.",
+        "repository": "Whole repository",
+        "kinds": {
+          "ownership_shift": "Declared owner changed",
+          "owner_inactive": "Main owners stopped changing it",
+          "bus_factor_drop": "Bus factor fell",
+          "new_hotspot": "Files became hotspots",
+          "contract_added": "Provided contract appeared",
+          "contract_broken": "Contract with consumers disappeared",
+          "decision_stale": "Governing decision went stale",
+          "dead_code_growth": "Dead-code findings grew",
+          "test_reach_drop": "Test reach fell"
+        },
+        "severities": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low"
+        }
+      },
       "title": "Review this commit",
       "fixPromptLabel": "Copy prompt to fix what this commit made worse",
       "fixPromptTitle": "Fix what this commit made worse",

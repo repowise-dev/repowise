@@ -1788,6 +1788,28 @@
   },
   "commits": {
     "detail": {
+      "events": {
+        "title": "索引此提交时标记的事件",
+        "description": "在此提交上运行的索引发现，与上一次运行相比发生了变化的内容。",
+        "repository": "整个仓库",
+        "kinds": {
+          "ownership_shift": "声明的负责人已变更",
+          "owner_inactive": "主要负责人不再修改它",
+          "bus_factor_drop": "巴士系数下降",
+          "new_hotspot": "文件成为热点",
+          "contract_added": "出现新的提供方契约",
+          "contract_broken": "有使用方的契约消失",
+          "decision_stale": "治理决策已过时",
+          "dead_code_growth": "死代码发现增多",
+          "test_reach_drop": "测试覆盖下降"
+        },
+        "severities": {
+          "critical": "严重",
+          "high": "高",
+          "medium": "中",
+          "low": "低"
+        }
+      },
       "title": "审阅这次提交",
       "fixPromptLabel": "复制提示词，修复此提交带来的问题",
       "fixPromptTitle": "修复此提交带来的问题",
