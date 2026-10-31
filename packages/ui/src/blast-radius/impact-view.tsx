@@ -4,35 +4,39 @@
  * Impact view: pick a change, see how far it reaches and what to do about it.
  *
  * With a host that lists changes (`listChanges` + `analyzeChange`), the view
- * leads with them: work in progress, branches ahead of the default branch and
- * recent commits, and opens the most relevant one on arrival. Picking files by
- * hand stays available as a secondary path, and is the only path for a host
- * that does not list changes. Every result reads the same way: a verdict with
- * actions, the map, then the detail tables.
+ * opens the most relevant change on arrival (work in progress, else the
+ * checked-out branch) and names it in one compact picker at the top. Picking
+ * files by hand stays available as a secondary path, and is the only path for
+ * a host that does not list changes. Every result reads the same way: a
+ * status line with the actions; what to look at, test and ask; where the
+ * change reaches; every file; then the details.
  *
  * Presentation and orchestration only: the host injects fetching, analysis,
  * file links and the reviewer slot through an {@link ImpactAdapter}, so web
  * and hosted render the same view from one source.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import useSWR from "swr";
 import { Plus, Flame } from "lucide-react";
 import type { AffectedSignal, BlastRadiusResponse, ChangeCandidate } from "@repowise-dev/types/blast-radius";
 
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
+import { Spinner } from "../ui/spinner";
 import { FilePathPicker } from "../health/file-path-picker";
-import { BlastRadiusResults } from "./blast-radius-results";
+import { ReviewDetails } from "./review-details";
 import { BlastRadiusMap } from "./blast-radius-map";
 import { BlastRadiusVerdict } from "./blast-radius-verdict";
-import { ChangePicker } from "./change-picker";
+import { AffectedByModule, ChangedFilesList } from "./affected-files";
+import { readReach } from "./blast-map-model";
+import { ChangePicker, changeName } from "./change-picker";
+import { count } from "./review-status";
 import type { ImpactAdapter } from "./impact-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 import { disambiguateBasenames } from "../lib/format";
 import { FilePath } from "../shared/file-path";
 import { EmptyState } from "../shared/empty-state";
-import { MICRO } from "../health/tokens";
 
 type Selection = { kind: "change"; id: string } | { kind: "files"; files: string[] };
 
@@ -44,7 +48,13 @@ interface Analysis {
   changedTotal?: number;
 }
 
-const DEPTHS = [1, 2, 3, 4, 5];
+const DEPTHS: { value: number; label: string }[] = [
+  { value: 1, label: "Direct importers only" },
+  { value: 2, label: "Up to 2 steps" },
+  { value: 3, label: "Up to 3 steps" },
+  { value: 4, label: "Up to 4 steps" },
+  { value: 5, label: "Up to 5 steps" },
+];
 
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -139,12 +149,131 @@ function FilesForm({
           ))}
         </div>
       )}
-      <Button size="sm" disabled={busy || selected.length === 0} onClick={() => onAnalyze(selected)}>
+      <Button size="sm" variant="outline" disabled={busy || selected.length === 0} onClick={() => onAnalyze(selected)}>
         {busy ? "Analyzing..." : "Analyze these files"}
       </Button>
     </div>
   );
 }
+
+function Section({ title, hint, action, children }: { title: string; hint?: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="flex items-baseline gap-2 text-[15px] font-medium text-[var(--color-text-primary)]">
+          {title}
+          {hint && <span className="text-xs font-normal tabular-nums text-[var(--color-text-tertiary)]">{hint}</span>}
+        </h3>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function DepthSelect({ value, onChange }: { value: number; onChange: (depth: number) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+      How far to look
+      <select
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
+      >
+        {DEPTHS.map((d) => (
+          <option key={d.value} value={d.value}>
+            {d.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** No source file imports the change: one sentence, with the tests that do counted apart. */
+function NoReach({ depth, tests }: { depth: number; tests: number }) {
+  const within = depth === 1 ? "directly" : `within ${depth} steps`;
+  const rest =
+    tests > 0
+      ? `; only ${count(tests, "test file")} ${tests === 1 ? "does" : "do"}, listed under Run these tests.`
+      : ". New files have nothing depending on them yet.";
+  return (
+    <p className="text-xs text-[var(--color-text-secondary)]">
+      No source file imports the changed files {within}
+      {rest}
+    </p>
+  );
+}
+
+function ReviewBody({
+  analysis,
+  change,
+  fileHref,
+  maxDepth,
+  onDepth,
+}: {
+  analysis: Analysis;
+  change: ChangeCandidate | undefined;
+  fileHref: ((path: string) => string) | undefined;
+  maxDepth: number;
+  onDepth: (depth: number) => void;
+}) {
+  const { result, changedFiles, changedTotal } = analysis;
+  const reach = useMemo(() => readReach(result, changedFiles), [result, changedFiles]);
+  const [filter, setFilter] = useState("");
+  const dependents = useRef<HTMLDivElement>(null);
+  const pickModule = (name: string | null) => {
+    setFilter(name ?? "");
+    if (name) dependents.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
+  return (
+    <>
+      <BlastRadiusVerdict
+        result={result}
+        reach={reach}
+        changedFiles={changedFiles}
+        changedTotal={changedTotal}
+        change={change}
+        fileHref={fileHref}
+      />
+      <Section title="Where it reaches" action={<DepthSelect value={maxDepth} onChange={onDepth} />}>
+        {reach.files.length > 0 ? (
+          <BlastRadiusMap reach={reach} fileHref={fileHref} selectedModule={filter || null} onSelectModule={pickModule} />
+        ) : (
+          <NoReach depth={maxDepth} tests={reach.tests.length} />
+        )}
+      </Section>
+      <Section title="Changed files" hint={(changedTotal ?? changedFiles.length).toLocaleString()}>
+        <ChangedFilesList result={result} reach={reach} fileHref={fileHref} />
+      </Section>
+      {reach.files.length > 0 && (
+        <div ref={dependents} className="scroll-mt-4">
+          <Section title="Files that depend on this" hint={reach.files.length.toLocaleString()}>
+            <AffectedByModule reach={reach} fileHref={fileHref} query={filter} onQueryChange={setFilter} />
+            {reach.tests.length > 0 && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Not counted here: {count(reach.tests.length, "test file")} that import the change. They are tests to run.
+              </p>
+            )}
+          </Section>
+        </div>
+      )}
+      <ReviewDetails result={result} reach={reach} fileHref={fileHref} />
+    </>
+  );
+}
+
+function AnalyzingNote({ name }: { name: string }) {
+  return (
+    <p className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]" role="status">
+      <Spinner size="xs" />
+      Reading what depends on {name}...
+    </p>
+  );
+}
+
+const QUIET_BUTTON =
+  "rounded-sm text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export function ImpactView({
   adapter,
@@ -199,33 +328,30 @@ export function ImpactView({
     if (!selection && changes?.default_id) setSelection({ kind: "change", id: changes.default_id });
   }, [changes, selection]);
 
-  const run = useCallback(
-    async (sel: Selection, depth: number) => {
-      const ticket = ++request.current;
-      setLoading(true);
-      setError(null);
-      try {
-        let next: Analysis;
-        if (sel.kind === "change") {
-          const r = await adapterRef.current.analyzeChange!({ changeId: sel.id, maxDepth: depth });
-          next = { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total };
-        } else {
-          const r = await adapterRef.current.analyze({ changedFiles: sel.files, maxDepth: depth });
-          next = { selection: sel, result: r, changedFiles: sel.files };
-        }
-        // A slower answer for an earlier pick never replaces the current one.
-        if (ticket === request.current) setAnalysis(next);
-      } catch (err) {
-        if (ticket === request.current) {
-          setAnalysis(null);
-          setError(toFriendlyMessage(err, "Analysis failed."));
-        }
-      } finally {
-        if (ticket === request.current) setLoading(false);
+  const run = useCallback(async (sel: Selection, depth: number) => {
+    const ticket = ++request.current;
+    setLoading(true);
+    setError(null);
+    try {
+      let next: Analysis;
+      if (sel.kind === "change") {
+        const r = await adapterRef.current.analyzeChange!({ changeId: sel.id, maxDepth: depth });
+        next = { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total };
+      } else {
+        const r = await adapterRef.current.analyze({ changedFiles: sel.files, maxDepth: depth });
+        next = { selection: sel, result: r, changedFiles: sel.files };
       }
-    },
-    [],
-  );
+      // A slower answer for an earlier pick never replaces the current one.
+      if (ticket === request.current) setAnalysis(next);
+    } catch (err) {
+      if (ticket === request.current) {
+        setAnalysis(null);
+        setError(toFriendlyMessage(err, "Analysis failed."));
+      }
+    } finally {
+      if (ticket === request.current) setLoading(false);
+    }
+  }, []);
 
   const selectionKey = selection
     ? selection.kind === "change"
@@ -238,78 +364,52 @@ export function ImpactView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectionKey, maxDepth, run]);
 
+  const listed = changes?.changes ?? [];
+  const picked = selection?.kind === "change" ? changeFor(selection.id, listed) : undefined;
+  // The change the numbers on screen belong to, so they never wear a newer pick's name.
   const analyzed = analysis?.selection;
-  const selectedChange =
-    analyzed?.kind === "change" ? changeFor(analyzed.id, changes?.changes ?? []) : undefined;
-  const subject = selectedChange ? (
-    <span className={selectedChange.kind === "working_tree" ? "font-medium" : "font-mono"}>
-      {selectedChange.label}
-    </span>
-  ) : (
-    "This set of files"
-  );
+  const shownChange = analyzed?.kind === "change" ? changeFor(analyzed.id, listed) : undefined;
+  const filesName = selection?.kind === "files" ? count(selection.files.length, "picked file") : "";
+  const pickedName = picked ? changeName(picked) : filesName;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
+  const pickChange = (id: string) => {
+    setSelection({ kind: "change", id });
+    setFilesOpen(false);
+    onChangePicked?.(changeLinkParam(id));
+  };
 
   return (
-    <div className="grid gap-x-8 gap-y-6 lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]">
-      {/* Below lg the list stacks above the result, so it scrolls in a short box. */}
-      <aside className="max-h-72 min-w-0 space-y-5 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8rem)]">
-        {listsChanges && (
-          <>
-            {changesLoading && (
-              <div className="space-y-2">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-11 w-full" />
-                ))}
-              </div>
-            )}
-            {changesError && (
-              <p className="text-xs text-[var(--color-error)]">
-                {toFriendlyMessage(changesError, "Could not list changes.")}
-              </p>
-            )}
-            {changes && (
-              <ChangePicker
-                data={changes}
-                selectedId={selection?.kind === "change" ? selection.id : null}
-                onSelect={(id) => {
-                  setSelection({ kind: "change", id });
-                  onChangePicked?.(changeLinkParam(id));
-                }}
-              />
-            )}
-          </>
+    <div className="min-w-0 space-y-6" aria-busy={loading}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="text-[15px] text-[var(--color-text-secondary)]">Reviewing</span>
+        {listsChanges && selection?.kind !== "files" ? (
+          <ChangePicker data={changes} loading={changesLoading} selected={picked} onSelect={pickChange} />
+        ) : (
+          <span className="text-[15px] font-medium text-[var(--color-text-primary)]">{filesName || "the files you pick"}</span>
         )}
-        <div
-          className={
-            listsChanges ? "space-y-2 border-t border-[var(--color-border-default)] pt-4" : "space-y-2"
-          }
-        >
-          {listsChanges ? (
-            <button
-              type="button"
-              aria-expanded={filesOpen}
-              onClick={() => setFilesOpen((v) => !v)}
-              className={`${MICRO} hover:text-[var(--color-text-primary)]`}
-            >
-              {filesOpen ? "▾" : "▸"} Or pick files
-            </button>
-          ) : (
-            <p className={MICRO}>Changed files</p>
-          )}
-          {filesOpen && (
-            <FilesForm
-              key={seedKey}
-              adapter={adapter}
-              initial={selection?.kind === "files" ? selection.files : seed}
-              busy={loading}
-              onAnalyze={(files) => setSelection({ kind: "files", files })}
-            />
-          )}
-        </div>
-      </aside>
+        {listsChanges && selection?.kind === "files" && (
+          <ChangePicker data={changes} loading={changesLoading} selected={undefined} onSelect={pickChange} />
+        )}
+        {listsChanges && (
+          <button type="button" aria-expanded={filesOpen} onClick={() => setFilesOpen((v) => !v)} className={QUIET_BUTTON}>
+            {filesOpen ? "Hide file picker" : "Or pick files"}
+          </button>
+        )}
+      </div>
+      {changesError && (
+        <p className="text-xs text-[var(--color-error)]">{toFriendlyMessage(changesError, "Could not list changes.")}</p>
+      )}
+      {filesOpen && (
+        <FilesForm
+          key={seedKey}
+          adapter={adapter}
+          initial={selection?.kind === "files" ? selection.files : seed}
+          busy={loading}
+          onAnalyze={(files) => setSelection({ kind: "files", files })}
+        />
+      )}
 
-      <section className="min-w-0 space-y-6" aria-live="polite" aria-busy={loading}>
+      <section className="min-w-0 space-y-6" aria-live="polite">
         {!selection && !changesLoading && (
           <EmptyState
             title="Pick a change"
@@ -321,6 +421,7 @@ export function ImpactView({
           />
         )}
         {error && <p className="text-xs text-[var(--color-error)]">{error}</p>}
+        {loading && pickedName && <AnalyzingNote name={pickedName} />}
         {loading && !analysis && (
           <div className="space-y-4">
             <Skeleton className="h-16 w-full" />
@@ -329,48 +430,7 @@ export function ImpactView({
         )}
         {analysis && (
           <div className={loading ? "space-y-6 opacity-60 transition-opacity" : "space-y-6"}>
-            <BlastRadiusVerdict
-              result={analysis.result}
-              changedFiles={analysis.changedFiles}
-              changedTotal={analysis.changedTotal}
-              subject={subject}
-              change={selectedChange}
-              fileHref={fileHref}
-            />
-            {/* The depth control stays when nothing is reached: a deeper look may find some. */}
-              <div className="space-y-2 border-t border-[var(--color-border-default)] pt-5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className={MICRO}>Blast radius</p>
-                  <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
-                    Follow imports up to
-                    <select
-                      value={maxDepth}
-                      onChange={(e) => setMaxDepth(Number(e.target.value))}
-                      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
-                    >
-                      {DEPTHS.map((d) => (
-                        <option key={d} value={d}>
-                          {d} hop{d === 1 ? "" : "s"}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                {analysis.result.transitive_affected.length > 0 ? (
-                  <BlastRadiusMap result={analysis.result} changedFiles={analysis.changedFiles} fileHref={fileHref} />
-                ) : (
-                  <p className="text-xs text-[var(--color-text-secondary)]">
-                    No indexed file imports the changed files within {maxDepth} hop{maxDepth === 1 ? "" : "s"}.
-                  </p>
-                )}
-              </div>
-            <BlastRadiusResults
-              result={analysis.result}
-              changedFiles={analysis.changedFiles}
-              reviewersSlot={adapter.renderReviewers?.(analysis.changedFiles)}
-              detailsOnly
-              fileHref={fileHref}
-            />
+            <ReviewBody analysis={analysis} change={shownChange} fileHref={fileHref} maxDepth={maxDepth} onDepth={setMaxDepth} />
           </div>
         )}
       </section>

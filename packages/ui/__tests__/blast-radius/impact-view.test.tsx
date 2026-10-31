@@ -100,11 +100,13 @@ function changeResult(files: string[]): ChangeBlastRadiusResponse {
   };
 }
 
+async function openPicker(name: RegExp) {
+  fireEvent.click(await screen.findByRole("button", { name }));
+}
+
 describe("ImpactView without a change list", () => {
   it("leads with picking files and analyzes the chosen hotspot", async () => {
-    const adapter = makeAdapter({
-      renderReviewers: (files) => <div>reviewers for {files.length} paths</div>,
-    });
+    const adapter = makeAdapter();
     renderView(<ImpactView adapter={adapter} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Add hotspot src/hot.ts" }));
@@ -113,7 +115,9 @@ describe("ImpactView without a change list", () => {
     await waitFor(() =>
       expect(adapter.analyze).toHaveBeenCalledWith({ changedFiles: ["src/hot.ts"], maxDepth: 3 }),
     );
-    expect(await screen.findByText("reviewers for 1 paths")).toBeInTheDocument();
+    // The verdict leads, with the agent prompt as the action.
+    expect(await screen.findByRole("button", { name: /Copy review prompt/ })).toBeInTheDocument();
+    expect(screen.getByText("Small change.")).toBeInTheDocument();
   });
 
   it("cannot analyze an empty selection", async () => {
@@ -128,12 +132,12 @@ describe("ImpactView without a change list", () => {
     await waitFor(() =>
       expect(adapter.analyze).toHaveBeenCalledWith({ changedFiles: ["src/a.ts"], maxDepth: 3 }),
     );
-    expect(await screen.findByText(/This set of files/)).toBeInTheDocument();
+    expect(await screen.findByText("1 picked file")).toBeInTheDocument();
   });
 });
 
 describe("ImpactView with a change list", () => {
-  it("opens the default change and switches with one click", async () => {
+  it("opens the default change and switches from the picker", async () => {
     const analyzeChange = vi.fn(async ({ changeId }: { changeId: string }) =>
       changeResult(changeId === "working-tree" ? ["src/a.ts", "src/b.ts"] : ["src/core.ts"]),
     );
@@ -145,17 +149,19 @@ describe("ImpactView with a change list", () => {
     renderView(<ImpactView adapter={adapter} />);
 
     await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "working-tree", maxDepth: 3 }));
-    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "2 changed")).toBeInTheDocument();
-    // The picked change's importer is a weak-health hotspot: it leads the actions.
+    expect(await screen.findByText("2 files changed, no test found to run.")).toBeInTheDocument();
+    // The importer is a weak-health hotspot: it is the first file to look at.
     expect(screen.getAllByRole("link", { name: /src\/app\.ts/ })[0]).toHaveAttribute("href", "/files/src/app.ts");
 
-    fireEvent.click(screen.getByRole("button", { name: /feat\/x/ }));
+    await openPicker(/Change under review: Uncommitted changes/);
+    fireEvent.click(screen.getByRole("radio", { name: /Branches/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /feat\/x/ }));
     await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "branch:feat/x", maxDepth: 3 }));
-    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "1 changed")).toBeInTheDocument();
+    expect(await screen.findByText("1 file changed, no test found to run.")).toBeInTheDocument();
     expect(adapter.analyze).not.toHaveBeenCalled();
   });
 
-  it("names a change only once its own numbers arrive", async () => {
+  it("keeps the numbers on screen until the new pick's own arrive, and says it is reading", async () => {
     let release: () => void = () => {};
     const analyzeChange = vi.fn(({ changeId }: { changeId: string }) =>
       changeId === "working-tree"
@@ -167,13 +173,15 @@ describe("ImpactView with a change list", () => {
     renderView(
       <ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />,
     );
-    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "2 changed")).toBeInTheDocument();
+    expect(await screen.findByText("2 files changed, no test found to run.")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /feat\/x/ }));
-    // Still the previous result, so still the previous name.
-    expect(screen.getByText(/Uncommitted changes/, { selector: "p span" })).toBeInTheDocument();
+    await openPicker(/Change under review/);
+    fireEvent.click(screen.getByRole("radio", { name: /Branches/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /feat\/x/ }));
+    expect(await screen.findByText("Reading what depends on feat/x...")).toBeInTheDocument();
+    expect(screen.getByText("2 files changed, no test found to run.")).toBeInTheDocument();
     release();
-    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "1 changed")).toBeInTheDocument();
+    expect(await screen.findByText("1 file changed, no test found to run.")).toBeInTheDocument();
   });
 });
 
@@ -204,6 +212,8 @@ describe("shareable change links", () => {
     await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "branch:feat/x", maxDepth: 3 }));
     expect(analyzeChange).not.toHaveBeenCalledWith({ changeId: "working-tree", maxDepth: 3 });
 
+    await openPicker(/Change under review: feat\/x/);
+    fireEvent.click(screen.getByRole("radio", { name: /Working tree/ }));
     fireEvent.click(await screen.findByRole("button", { name: /Uncommitted changes/ }));
     expect(onChangePicked).toHaveBeenCalledWith("wip");
   });

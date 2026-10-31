@@ -1,49 +1,41 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
-import { healthRampFill } from "../health/tokens";
+import { useMemo } from "react";
 import { disambiguateBasenames } from "../lib/format";
-import { FilePath } from "../shared/file-path";
-export { describeMarks } from "./blast-map-model";
 import {
   CX,
   CY,
   buildBlastMap,
   describeMarks,
+  needsLook,
   type BlastMap,
-  type FileMarks,
   type MapFileNode,
   type MapModuleNode,
+  type Reach,
 } from "./blast-map-model";
 
-const NEUTRAL = "var(--color-node-neutral)";
 const INK = "var(--color-text-primary)";
 const EDGE = "var(--color-text-tertiary)";
-
-/** The node's fill: its health band on the canonical ramp, neutral when unscored. */
-function fillOf(m: FileMarks): string {
-  return m.healthScore === null ? NEUTRAL : healthRampFill(m.healthScore);
-}
-
-/** Hotspot mark: a small solid triangle above the node, in ink, so it never reads as a health colour. */
-function HotspotMark({ x, y, r }: { x: number; y: number; r: number }) {
-  const top = y - r - 9;
-  return <path d={`M ${x} ${top} l 4 6 l -8 0 z`} fill={INK} aria-hidden />;
-}
+const CALM_FILL = "var(--color-node-neutral)";
+const CALM_STROKE = "var(--color-text-tertiary)";
+const LOOK = "var(--color-warning)";
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
 function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
+  return `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function hopWords(hop: number): string {
+  return hop <= 1 ? "imports the change directly" : `${hop} imports away`;
 }
 
 /**
  * Where a node's label goes: outward along its angle from the centre, so
- * first-ring names spread around the ring instead of stacking on one side.
- * A lone changed file at the very centre has no angle; its label sits below.
+ * names spread around the ring instead of stacking on one side. A lone
+ * changed file at the very centre has no angle; its label sits below.
  */
 function labelPlacement(node: { x: number; y: number; r: number }): {
   x: number;
@@ -60,82 +52,55 @@ function labelPlacement(node: { x: number; y: number; r: number }): {
   return { x: node.x + cos * out, y: node.y + sin * out + 3.5 + below, anchor };
 }
 
-/** Changed files carry an ink outline; files with no test evidence a dashed one. */
-function fileStroke(node: MapFileNode): { stroke: string; strokeWidth: number; strokeDasharray?: string } {
-  const changed = node.hop === 0;
-  return {
-    stroke: changed ? INK : "var(--color-border-hover)",
-    strokeWidth: changed ? 2 : 1.25,
-    ...(node.untested ? { strokeDasharray: "2.5 2" } : {}),
-  };
+function Label({ node, text, strong }: { node: { x: number; y: number; r: number }; text: string; strong?: boolean }) {
+  if (!text) return null;
+  const place = labelPlacement(node);
+  return (
+    <text
+      x={place.x}
+      y={place.y}
+      textAnchor={place.anchor}
+      stroke="var(--color-bg-root)"
+      strokeWidth={3}
+      paintOrder="stroke"
+      className={strong ? "fill-[var(--color-text-primary)]" : "fill-[var(--color-text-secondary)]"}
+      style={{ fontSize: 10.5, fontFamily: "var(--font-mono, monospace)" }}
+    >
+      {text}
+    </text>
+  );
 }
 
-function FileDot({
-  node,
-  label,
-  href,
-  showLabel,
-}: {
-  node: MapFileNode;
-  label: string;
-  href: string | undefined;
-  showLabel: boolean;
-}) {
+function FileDot({ node, label, href }: { node: MapFileNode; label: string; href: string | undefined }) {
+  const changed = node.hop === 0;
+  const look = needsLook(node);
+  const role = changed ? "Changed" : hopWords(node.hop);
   const marks = describeMarks(node);
-  const role = node.hop === 0 ? "Changed" : "Imports a changed file";
-  const place = labelPlacement(node);
   const body = (
-    <g className="group/node">
+    <g>
       <circle
         cx={node.x}
         cy={node.y}
         r={node.r}
-        fill={fillOf(node)}
-        {...fileStroke(node)}
-        className="transition-[stroke-width] group-hover/node:[stroke-width:3]"
+        fill={look ? LOOK : changed ? "var(--color-bg-surface)" : CALM_FILL}
+        fillOpacity={look ? 0.45 : 1}
+        stroke={changed ? INK : look ? LOOK : CALM_STROKE}
+        strokeWidth={changed ? 2 : 1.25}
       />
-      {node.isHotspot && <HotspotMark x={node.x} y={node.y} r={node.r} />}
-      {showLabel && (
-        <text
-          x={place.x}
-          y={place.y}
-          textAnchor={place.anchor}
-          className="fill-[var(--color-text-secondary)] group-hover/node:fill-[var(--color-text-primary)]"
-          style={{ fontSize: 10.5, fontFamily: "var(--font-mono, monospace)" }}
-        >
-          {truncate(label, 18)}
-        </text>
-      )}
-      <title>{`${node.path}\n${role} · ${marks.join(" · ")}`}</title>
+      <Label node={node} text={truncate(label, 20)} strong={changed} />
+      <title>{`${node.path}\n${role}: ${marks.join(", ")}`}</title>
     </g>
   );
   if (!href) return body;
   return (
     <a
       href={href}
-      aria-label={`${node.path}: ${marks.join(", ")}`}
+      aria-label={`${node.path}: ${role}, ${marks.join(", ")}`}
       className="focus:outline-none [&:focus-visible>g>circle]:[stroke-width:3]"
     >
       {body}
     </a>
   );
-}
-
-/** A module's marks in words; empty when it holds none. */
-function moduleMarks(node: MapModuleNode): string[] {
-  const marks: string[] = [];
-  if (node.hotspots) marks.push(plural(node.hotspots, "hotspot"));
-  if (node.weak) marks.push(`${node.weak} weak health`);
-  if (node.untested) marks.push(`${node.untested} untested`);
-  return marks;
-}
-
-/** The short line under a module's name: files, hotspots, weak health. */
-function moduleCountLine(node: MapModuleNode): string {
-  const parts = [plural(node.files.length, "file")];
-  if (node.hotspots > 0) parts.push(`${node.hotspots} hot`);
-  if (node.weak > 0) parts.push(`${node.weak} weak`);
-  return parts.join(" · ");
 }
 
 function onActivate(handler: () => void) {
@@ -146,82 +111,59 @@ function onActivate(handler: () => void) {
   };
 }
 
-function ModuleBubble({
-  node,
-  selected,
-  onSelect,
-}: {
-  node: MapModuleNode;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const anchorEnd = node.x < CX - 4;
-  const textX = anchorEnd ? node.x - node.r - 5 : node.x + node.r + 5;
-  const anchor = anchorEnd ? "end" : "start";
-  const marks = moduleMarks(node);
-  const markText = marks.join(", ");
+function ModuleBubble({ node, selected, onSelect }: { node: MapModuleNode; selected: boolean; onSelect: () => void }) {
+  const look = node.flagged > 0;
   const name = node.name.split("/").slice(-2).join("/");
+  const summary = [
+    `${node.name}: ${plural(node.files, "file")}, nearest ${hopWords(node.hop)}`,
+    look ? `${node.flagged} change often with no test found` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
   return (
     <g
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      aria-label={[`${node.name}: ${plural(node.files.length, "file")}, ${node.hop} hops out`, ...marks].join(", ")}
+      aria-label={`${summary}. Show its files in the list`}
       onClick={onSelect}
       onKeyDown={onActivate(onSelect)}
-      className="cursor-pointer focus:outline-none [&:focus-visible>circle]:[stroke-width:2.5]"
+      className="cursor-pointer focus:outline-none [&:focus-visible>circle]:[stroke-width:3]"
     >
       <circle
         cx={node.x}
         cy={node.y}
         r={node.r}
-        fill="var(--color-bg-elevated)"
-        stroke={selected ? "var(--color-accent-primary)" : "var(--color-border-hover)"}
-        strokeWidth={selected ? 2 : 1.25}
+        fill={look ? LOOK : CALM_FILL}
+        fillOpacity={look ? 0.4 : 0.9}
+        stroke={selected ? "var(--color-accent-primary)" : look ? LOOK : CALM_STROKE}
+        strokeWidth={selected ? 2.5 : 1.25}
       />
-      <text
-        x={textX}
-        y={node.y - 1}
-        textAnchor={anchor}
-        className="fill-[var(--color-text-secondary)]"
-        style={{ fontSize: 10.5, fontFamily: "var(--font-mono, monospace)" }}
-      >
-        {truncate(name, 24)}
-      </text>
-      <text x={textX} y={node.y + 11} textAnchor={anchor} className="fill-[var(--color-text-tertiary)]" style={{ fontSize: 9.5 }}>
-        {moduleCountLine(node)}
-      </text>
-      <title>{[`${node.name}`, `${plural(node.files.length, "file")}, nearest ${node.hop} hops out`, markText, "Click to list them"].filter(Boolean).join("\n")}</title>
+      {(node.labelled || selected) && (
+        <Label node={node} text={`${truncate(name, 22)} ${node.files.toLocaleString()}`} strong={selected} />
+      )}
+      <title>{`${summary}\nClick to show its files below`}</title>
     </g>
   );
 }
 
-function Legend() {
-  const swatch = "inline-block h-2.5 w-2.5 rounded-full";
+function Legend({ mode }: { mode: BlastMap["mode"] }) {
+  const swatch = "inline-block h-2.5 w-2.5 shrink-0 rounded-full";
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)]">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[var(--color-text-tertiary)]">
       <span className="flex items-center gap-1.5">
         <span className={swatch} style={{ border: `2px solid ${INK}` }} /> Changed
       </span>
       <span className="flex items-center gap-1.5">
-        <span className={swatch} style={{ background: healthRampFill(9) }} />
-        <span className={swatch} style={{ background: healthRampFill(6) }} />
-        <span className={swatch} style={{ background: healthRampFill(3) }} /> Health band
+        <span className={swatch} style={{ background: CALM_FILL, border: `1px solid ${CALM_STROKE}` }} />
+        {mode === "modules" ? "Module, sized by the files in it that depend on the change" : "Depends on the change"}
       </span>
       <span className="flex items-center gap-1.5">
-        <span className={swatch} style={{ background: NEUTRAL }} /> Not scored
-      </span>
-      <span className="flex items-center gap-1.5">
-        <svg width="10" height="8" aria-hidden>
-          <path d="M5 0 l4 7 l-8 0 z" fill={INK} />
-        </svg>
-        Hotspot
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className={swatch} style={{ border: "1.5px dashed var(--color-text-tertiary)" }} /> No test evidence
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className={`${swatch} border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]`} /> Module, sized by files reached
+        <span
+          className={swatch}
+          style={{ background: `color-mix(in srgb, ${LOOK} 45%, transparent)`, border: `1px solid ${LOOK}` }}
+        />
+        {mode === "modules" ? "Holds files that change often and have no test" : "Changes often and has no test"}
       </span>
     </div>
   );
@@ -229,16 +171,17 @@ function Legend() {
 
 function RingGuides({ map }: { map: BlastMap }) {
   const drawn = map.ringRadii.slice(0, Math.max(1, Math.min(3, map.maxHop)));
-  const name = ["1 hop", "2 hops", "3+ hops"];
+  const name = ["direct", "2 steps", "3+ steps"];
   return (
     <>
       {drawn.map((r, i) => (
         <g key={r}>
-          <circle cx={map.cx} cy={map.cy} r={r} fill="none" stroke="var(--color-border-default)" strokeOpacity={0.6} strokeDasharray="2 5" />
+          <circle cx={map.cx} cy={map.cy} r={r} fill="none" stroke="var(--color-border-hover)" strokeDasharray="2 5" />
+          {/* Lower left: modules are laid out from the top, so the top is where they crowd. */}
           <text
-            x={map.cx}
-            y={map.cy - r + 3}
-            textAnchor="middle"
+            x={map.cx - r * 0.72}
+            y={map.cy + r * 0.72}
+            textAnchor="end"
             stroke="var(--color-bg-root)"
             strokeWidth={3}
             paintOrder="stroke"
@@ -254,15 +197,17 @@ function RingGuides({ map }: { map: BlastMap }) {
 }
 
 /** Each drawn node to the node it hangs from, or to the hub when that one is not drawn. */
-function Edges({ map, nodeByKey }: { map: BlastMap; nodeByKey: Map<string, MapFileNode> }) {
-  const from = (key: string | null) => (key ? nodeByKey.get(key) : undefined) ?? { x: map.cx, y: map.cy };
-  const line = (key: string, a: { x: number; y: number }, b: { x: number; y: number }, opacity: number) => (
-    <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={EDGE} strokeOpacity={opacity} strokeWidth={1} />
+function Edges({ map }: { map: BlastMap }) {
+  const nodes = new Map<string, { x: number; y: number }>(
+    [...map.changed, ...map.files, ...map.modules].map((n) => [n.key, n]),
   );
+  const from = (key: string | null) => (key ? nodes.get(key) : undefined) ?? { x: map.cx, y: map.cy };
   return (
     <>
-      {map.modules.map((m) => line(`e:${m.key}`, from(m.parentKey), m, m.parentKey ? 0.35 : 0.12))}
-      {map.firstHop.map((n) => line(`e:${n.key}`, from(n.parentKey), n, 0.45))}
+      {[...map.files, ...map.modules].map((n) => {
+        const a = from(n.parentKey);
+        return <line key={`e:${n.key}`} x1={a.x} y1={a.y} x2={n.x} y2={n.y} stroke={EDGE} strokeOpacity={0.35} strokeWidth={1} />;
+      })}
     </>
   );
 }
@@ -270,113 +215,68 @@ function Edges({ map, nodeByKey }: { map: BlastMap; nodeByKey: Map<string, MapFi
 /** What exists but is not drawn, so the picture never claims to be everything. */
 function NotDrawnNote({ map }: { map: BlastMap }) {
   const parts: string[] = [];
-  if (map.hiddenChanged > 0) parts.push(`${map.hiddenChanged} more changed files`);
-  if (map.hiddenFirstHop > 0) parts.push(`${map.hiddenFirstHop} more files one hop out (the riskiest are drawn)`);
-  if (map.hiddenModules > 0) parts.push(`${map.hiddenModules} smaller modules holding ${map.hiddenModuleFiles} files`);
+  if (map.hiddenChanged > 0) parts.push(plural(map.hiddenChanged, "more changed file"));
+  if (map.hiddenModules > 0)
+    parts.push(`${plural(map.hiddenModules, "smaller module")} holding ${plural(map.hiddenModuleFiles, "file")}`);
   if (parts.length === 0) return null;
-  return (
-    <p className="text-[11px] text-[var(--color-text-tertiary)]">
-      Not drawn: {parts.join("; ")}. The tables below list every file.
-    </p>
-  );
-}
-
-function FileRef({ path, href }: { path: string; href: string | undefined }) {
-  return href ? (
-    <a href={href} className="min-w-0 hover:underline">
-      <FilePath path={path} accent />
-    </a>
-  ) : (
-    <FilePath path={path} copyable />
-  );
-}
-
-/** The files of the module picked on the map. */
-function ModuleFiles({ module, fileHref }: { module: MapModuleNode; fileHref: ((path: string) => string) | undefined }) {
-  return (
-    <div className="border-t border-[var(--color-border-default)] pt-3">
-      <p className="mb-2 text-xs text-[var(--color-text-secondary)]">
-        <span className="font-mono text-[var(--color-text-primary)]">{module.name}</span>: {module.files.length} files
-        reached, nearest {module.hop} hops out
-      </p>
-      <ul className="max-h-64 space-y-0.5 overflow-y-auto text-xs">
-        {module.files.map((f) => (
-          <li key={f.path} className="flex flex-wrap items-baseline justify-between gap-x-3">
-            <FileRef path={f.path} href={fileHref?.(f.path)} />
-            <span className="text-[var(--color-text-tertiary)]">{describeMarks(f).join(" · ")}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+  return <p className="text-xs text-[var(--color-text-tertiary)]">Not drawn: {parts.join("; ")}. The lists below have every file.</p>;
 }
 
 export interface BlastRadiusMapProps {
-  result: BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
-  changedFiles: string[];
+  reach: Reach;
   /** Where a file node goes; omit to draw nodes that do not open anything. */
   fileHref?: ((path: string) => string) | undefined;
+  /** The module picked on the map, if any. */
+  selectedModule?: string | null | undefined;
+  /** Called with a module's name when it is clicked, `null` when it is clicked again. */
+  onSelectModule?: ((name: string | null) => void) | undefined;
 }
 
 /**
- * The blast radius drawn: changed files at the centre, the files that import
- * them on the first ring, and modules reached further out on the rings
- * beyond. Fill is health on the canonical band, a triangle marks a hotspot, a
- * dashed outline marks a file with no test evidence. A file opens on click; a
- * module lists its files below the picture.
+ * Where the change reaches, drawn: the changed files at the centre and, on
+ * the rings around them, what depends on them one, two, and three or more
+ * imports away. File by file for a small reach; module by module, sized by
+ * file count, past that. Amber marks what changes often with no test. A file
+ * opens on click; a module shows its files in the list below.
  */
-export function BlastRadiusMap({ result, changedFiles, fileHref }: BlastRadiusMapProps) {
-  const map = useMemo(() => buildBlastMap(result, changedFiles), [result, changedFiles]);
-  const [selectedModule, setSelectedModule] = useState<string | null>(null);
-  const labels = useMemo(
-    () => disambiguateBasenames([...map.changed, ...map.firstHop].map((n) => n.path)),
-    [map],
-  );
-  const nodeByKey = useMemo(
-    () => new Map([...map.changed, ...map.firstHop].map((n) => [n.key, n] as const)),
-    [map],
-  );
-  const selected = map.modules.find((m) => m.key === selectedModule) ?? null;
-  // A crowded centre is listed in the verdict above; its names would collide here.
+export function BlastRadiusMap({ reach, fileHref, selectedModule = null, onSelectModule }: BlastRadiusMapProps) {
+  const map = useMemo(() => buildBlastMap(reach), [reach]);
+  const labels = useMemo(() => disambiguateBasenames([...map.changed, ...map.files].map((n) => n.path)), [map]);
+  // A crowded centre is listed above; its names would collide here.
   const labelChanged = map.changed.length <= 3;
-  const dot = (n: MapFileNode, showLabel: boolean) => (
-    <FileDot key={n.key} node={n} label={labels.get(n.path) ?? n.path} href={fileHref?.(n.path)} showLabel={showLabel} />
+  const dot = (n: MapFileNode, label: boolean) => (
+    <FileDot key={n.key} node={n} label={label ? (labels.get(n.path) ?? n.path) : ""} href={fileHref?.(n.path)} />
   );
-
+  const around = map.mode === "modules" ? plural(map.modules.length, "module") : plural(map.files.length, "file");
   return (
     <div className="space-y-3">
-      <div className="overflow-hidden">
-        <svg
-          viewBox={`0 0 ${map.width} ${map.height}`}
-          className="mx-auto h-auto w-full max-w-[820px]"
-          role="group"
-          aria-label={`Blast radius: ${map.changed.length} changed files at the centre, ${map.firstHop.length} files one hop out, ${map.modules.length} modules further out`}
-        >
-          <RingGuides map={map} />
-          <Edges map={map} nodeByKey={nodeByKey} />
-          {/* The hub: edges from files whose changed file is not drawn meet here. */}
-          <circle cx={map.cx} cy={map.cy} r={3} fill={EDGE} />
-          {map.modules.map((m) => (
-            <ModuleBubble
-              key={m.key}
-              node={m}
-              selected={m.key === selectedModule}
-              onSelect={() => setSelectedModule((cur) => (cur === m.key ? null : m.key))}
-            />
-          ))}
-          {map.firstHop.map((n) => dot(n, true))}
-          {map.changed.map((n) => dot(n, labelChanged))}
-          {!labelChanged && (
-            <text x={map.cx} y={map.cy + 74} textAnchor="middle" className="fill-[var(--color-text-tertiary)]" style={{ fontSize: 10 }}>
-              {map.changed.length + map.hiddenChanged} changed files
-            </text>
-          )}
-        </svg>
-      </div>
-
-      <Legend />
+      <svg
+        viewBox={`0 0 ${map.width} ${map.height}`}
+        className="mx-auto h-auto w-full max-w-[640px]"
+        role="group"
+        aria-label={`What depends on the change: ${plural(map.changed.length + map.hiddenChanged, "changed file")} at the centre, ${around} around it`}
+      >
+        <RingGuides map={map} />
+        <Edges map={map} />
+        <circle cx={map.cx} cy={map.cy} r={3} fill={EDGE} />
+        {map.modules.map((m) => (
+          <ModuleBubble
+            key={m.key}
+            node={m}
+            selected={m.name === selectedModule}
+            onSelect={() => onSelectModule?.(m.name === selectedModule ? null : m.name)}
+          />
+        ))}
+        {map.files.map((n) => dot(n, true))}
+        {map.changed.map((n) => dot(n, labelChanged))}
+        {!labelChanged && (
+          <text x={map.cx} y={map.cy + 62} textAnchor="middle" className="fill-[var(--color-text-tertiary)]" style={{ fontSize: 10 }}>
+            {plural(map.changed.length + map.hiddenChanged, "changed file")}
+          </text>
+        )}
+      </svg>
+      <Legend mode={map.mode} />
       <NotDrawnNote map={map} />
-      {selected && <ModuleFiles module={selected} fileHref={fileHref} />}
     </div>
   );
 }

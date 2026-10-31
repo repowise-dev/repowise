@@ -17,16 +17,22 @@ export interface BlastPromptInput {
   changedFiles: string[];
   /** Every path the change touches, when the analysis was capped. */
   changedTotal?: number | undefined;
-  reach: { files: number; modules: number; direct: number; band: string };
+  /** The screen's one-line verdict, e.g. "Look first: 2 changed files change often or have weak health." */
+  status?: string | undefined;
+  /** Source files that import the change; test files that do are counted apart in `tests`. */
+  reach: { files: number; modules: number; direct: number; band: string; tests?: number | undefined };
   /** Changed or directly importing files that carry a signal, with the signals in words. */
   lookFirst: { path: string; changed: boolean; signals: string[] }[];
   tests: { name: string; basis: "measured" | "inferred" }[];
   testsTotal: number;
   /** True when coverage is missing, partial or stale, so an empty or short list proves nothing. */
   testsLimited: boolean;
+  /** Commands that run the tests above, one per runner. */
+  testCommands?: string[] | undefined;
   /** Files history changes alongside these that the change does not touch. */
   missingPartners: { path: string; partnerOf: string }[];
-  owners: { name: string; email: string; files: number }[];
+  /** Owners of the changed files (`of` is how many were analyzed); without `of`, owners of affected files. */
+  owners: { name: string; email: string; files: number; of?: number | undefined }[];
 }
 
 export interface BuildBlastPromptOptions {
@@ -88,7 +94,10 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
   const facts = bulletList([
     changeLine(i.change),
     `Diff: \`${diffCommand(i.change, i.changedFiles)}\``,
-    `Reach: ${i.reach.files.toLocaleString()} file${pluralS(i.reach.files)} in ${i.reach.modules} module${pluralS(i.reach.modules)} import it within the analyzed depth, ${i.reach.direct} directly; structural reach ${i.reach.band} (an estimate of spread, not a breakage probability)`,
+    i.status ? `Screen verdict: ${i.status}` : null,
+    `Reach: ${i.reach.files.toLocaleString()} source file${pluralS(i.reach.files)} in ${i.reach.modules} module${pluralS(i.reach.modules)} import it within the analyzed depth, ${i.reach.direct} directly${
+      i.reach.tests ? `; ${i.reach.tests.toLocaleString()} test file${pluralS(i.reach.tests)} also import it (tests to run, not reach)` : ""
+    }; structural reach ${i.reach.band} (an estimate of spread, not a breakage probability)`,
   ]);
 
   const changed = capped(
@@ -117,6 +126,9 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
         i.testsTotal > listedTests.length ? `${i.testsTotal - listedTests.length} more of ${i.testsTotal} in all` : null,
       ])
     : "- None identified.";
+  const commands = i.testCommands?.length
+    ? ["", "", "Run them with:", "", "```", ...i.testCommands, "```"].join("\n")
+    : "";
   const testsNote = i.testsLimited
     ? "\nCoverage evidence is missing, partial or stale here, so this list is a floor, not the full set."
     : "";
@@ -135,8 +147,18 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
       ]
     : [];
 
+  const ofChanged = i.owners.some((o) => o.of !== undefined);
   const owners = i.owners.length
-    ? ["## Owners of the affected files", "", bulletList(i.owners.slice(0, 3).map((o) => `${o.name} <${o.email}>, ${o.files} file${pluralS(o.files)}`)), ""]
+    ? [
+        ofChanged ? "## Owners of the changed files" : "## Owners of the affected files",
+        "",
+        bulletList(
+          i.owners
+            .slice(0, 3)
+            .map((o) => `${o.name} <${o.email}>, ${o.of !== undefined ? `owns ${o.files} of the ${o.of} changed` : `${o.files}`} file${pluralS(o.of ?? o.files)}`),
+        ),
+        "",
+      ]
     : [];
 
   return joinSections([
@@ -153,7 +175,7 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     ...risky,
     "## Tests to run",
     "",
-    testsBody + testsNote,
+    testsBody + commands + testsNote,
     "",
     ...partners,
     ...owners,

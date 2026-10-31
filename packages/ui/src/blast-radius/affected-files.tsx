@@ -1,141 +1,186 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
-import type { AffectedSignal, BlastRadiusResponse, DirectRiskEntry } from "@repowise-dev/types/blast-radius";
-import { HealthBadge } from "../health/health-badge";
-import { CopyPathButton, FilePath } from "../shared/file-path";
+import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { cn } from "../lib/cn";
-import { attention, moduleOf, type FileMarks } from "./blast-map-model";
+import { attention, type FileMarks, type Reach, type ReachedFile } from "./blast-map-model";
+import { CHIP, PathRef, SignalChips } from "./blast-radius-verdict";
 
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
 type Href = ((path: string) => string) | undefined;
 
-const CHIP =
-  "inline-flex h-[18px] items-center gap-1 rounded border border-[var(--color-border-default)] px-1.5 text-[10px] text-[var(--color-text-secondary)]";
+const PER_MODULE = 5;
+const FOLDERS_FROM = 8;
 
-function marksOf(path: string, signals: Map<string, AffectedSignal>, gaps: Set<string>, hot?: boolean): FileMarks {
-  const s = signals.get(path);
-  return {
-    path,
-    healthScore: s?.health_score ?? null,
-    isHotspot: s ? s.is_hotspot : (hot ?? null),
-    untested: gaps.has(path),
-  };
+function folderOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i < 0 ? "(root)" : path.slice(0, i);
 }
 
-function Path({ path, href }: { path: string; href: string | undefined }) {
-  const label = <FilePath path={path} accent={Boolean(href)} className="max-w-full" />;
+function FileRow({ m, href, extra, nameOnly }: { m: FileMarks; href: string | undefined; extra?: React.ReactNode; nameOnly?: boolean | undefined }) {
   return (
-    <span className="flex min-w-0 items-center">
-      {href ? (
-        <a href={href} className="min-w-0 hover:underline">
-          {label}
-        </a>
-      ) : (
-        label
-      )}
-      <CopyPathButton text={path} label="Copy path" copiedLabel="Copied" />
-    </span>
+    <li className="flex min-w-0 items-center justify-between gap-3 text-xs">
+      <PathRef path={m.path} href={href} nameOnly={nameOnly} />
+      <SignalChips m={m} extra={extra} />
+    </li>
   );
-}
-
-function Marks({ m, extra }: { m: FileMarks; extra?: ReactNode }) {
-  return (
-    <span className="flex shrink-0 items-center gap-1">
-      {extra}
-      <HealthBadge score={m.healthScore} />
-      {m.isHotspot && <span className={CHIP}>▲ hot</span>}
-      {m.untested && <span className={`${CHIP} border-dashed`}>no tests</span>}
-    </span>
-  );
-}
-
-/** "Top 3%": the churn rank as a reader says it; the raw sum rides in the tooltip. */
-function churnRank(d: DirectRiskEntry): string {
-  const top = Math.max(1, Math.round((1 - (d.churn_percentile ?? 0)) * 100));
-  return `top ${top}%`;
 }
 
 /**
- * The changed files, each with what makes it risky in plain words: health,
- * how often it changed lately (as a rank), whether many files lean on it,
- * and test evidence. The raw scores sit in tooltips for whoever wants them.
+ * The changed files, the ones asking for attention first, each with what
+ * makes it risky as plain chips; grouped by folder once there are enough to
+ * need it. Pagerank only decides the "widely imported" chip; it is never printed.
  */
-export function ChangedFilesList({ result, changedFiles, fileHref }: { result: Result; changedFiles: string[]; fileHref: Href }) {
-  const signals = useMemo(() => new Map((result.affected_signals ?? []).map((s) => [s.path, s])), [result]);
-  const gaps = useMemo(() => new Set(result.test_gaps), [result]);
+export function ChangedFilesList({ result, reach, fileHref }: { result: Result; reach: Reach; fileHref: Href }) {
   const direct = useMemo(() => new Map(result.direct_risks.map((d) => [d.path, d])), [result]);
-  // Within this change: the most depended-on third, by pagerank. Pagerank is
-  // tiny and repo-relative, so it is compared here, never printed as a percent.
+  // The most depended-on third of this change, by pagerank. Pagerank is tiny
+  // and repo-relative, so it is compared here and never printed.
   const centralCut = useMemo(() => {
     const ranks = result.direct_risks.map((d) => d.centrality).sort((a, b) => b - a);
     return ranks.length >= 3 ? (ranks[Math.floor(ranks.length / 3) - 1] ?? Infinity) : Infinity;
   }, [result]);
-  const rows = changedFiles
-    .map((p) => ({ m: marksOf(p, signals, gaps, direct.get(p)?.is_hotspot), d: direct.get(p) }))
-    .sort((a, b) => attention(b.m) - attention(a.m) || (b.d?.structural_score ?? 0) - (a.d?.structural_score ?? 0));
+  // Only a file something imports can be widely imported; pagerank alone
+  // ranks a file nothing imports above zero.
+  const imported = useMemo(() => new Set(reach.files.filter((f) => f.depth === 1).map((f) => f.via)), [reach]);
+  const grouped = reach.changed.length >= FOLDERS_FROM;
+  const row = (m: FileMarks) => {
+    const d = direct.get(m.path);
+    const central = d && imported.has(m.path) && d.centrality >= centralCut;
+    return (
+      <FileRow
+        key={m.path}
+        m={m}
+        href={fileHref?.(m.path)}
+        nameOnly={grouped}
+        extra={
+          central ? (
+            <span className={CHIP} title={`Among the most imported files in this change (pagerank ${d.centrality.toExponential(2)})`}>
+              widely imported
+            </span>
+          ) : null
+        }
+      />
+    );
+  };
+  if (!grouped) return <ul className="space-y-1.5">{reach.changed.map(row)}</ul>;
+  const folders = new Map<string, FileMarks[]>();
+  for (const m of reach.changed) folders.set(folderOf(m.path), [...(folders.get(folderOf(m.path)) ?? []), m]);
+  const ordered = [...folders.entries()].sort(
+    (a, b) => Math.max(...b[1].map(attention)) - Math.max(...a[1].map(attention)) || a[0].localeCompare(b[0]),
+  );
   return (
-    <ul className="space-y-1">
-      {rows.map(({ m, d }) => (
-        <li key={m.path} className="flex min-w-0 items-center justify-between gap-2 text-xs">
-          <Path path={m.path} href={fileHref?.(m.path)} />
-          <Marks
-            // The churn rank chip below already says hotspot, with its rank.
-            m={d?.is_hotspot ? { ...m, isHotspot: false } : m}
-            extra={
-              <>
-                {d && d.centrality > 0 && d.centrality >= centralCut && (
-                  <span className={CHIP} title={`Among the most depended-on files in this change (pagerank ${d.centrality.toExponential(2)})`}>
-                    central
-                  </span>
-                )}
-                {d?.is_hotspot && (
-                  <span className={CHIP} title={`Changed often lately: ${churnRank(d)} of files by recent churn (raw ${d.temporal_hotspot.toFixed(1)})`}>
-                    ▲ {churnRank(d)} churn
-                  </span>
-                )}
-              </>
-            }
-          />
-        </li>
+    <div className="space-y-3">
+      {ordered.map(([folder, files]) => (
+        <div key={folder} className="space-y-1.5">
+          <p className="font-mono text-xs text-[var(--color-text-tertiary)]">
+            {folder}/ <span className="tabular-nums">{files.length}</span>
+          </p>
+          <ul className="space-y-1.5 pl-3">{files.map(row)}</ul>
+        </div>
       ))}
-    </ul>
+    </div>
   );
 }
 
 interface Group {
   name: string;
   depth: number;
-  files: (FileMarks & { depth: number })[];
+  files: ReachedFile[];
   risk: number;
 }
 
-/**
- * Every file the change reaches, by module: each module a row with its count,
- * nearest hop and risk marks, opening to its files nearest first. A filter
- * narrows modules and files by path.
- */
-export function AffectedByModule({ result, fileHref }: { result: Result; fileHref: Href }) {
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState<Set<string>>(new Set());
-  const groups = useMemo(() => {
-    const signals = new Map((result.affected_signals ?? []).map((s) => [s.path, s]));
-    const gaps = new Set(result.test_gaps);
-    const byName = new Map<string, Group>();
-    for (const t of result.transitive_affected) {
-      const name = moduleOf(t.path, signals.get(t.path));
-      const g = byName.get(name) ?? { name, depth: t.depth, files: [], risk: 0 };
-      const m = { ...marksOf(t.path, signals, gaps), depth: t.depth };
-      g.files.push(m);
-      g.depth = Math.min(g.depth, t.depth);
-      g.risk += attention(m);
-      byName.set(name, g);
-    }
-    for (const g of byName.values()) g.files.sort((a, b) => a.depth - b.depth || attention(b) - attention(a) || a.path.localeCompare(b.path));
-    return [...byName.values()].sort((a, b) => a.depth - b.depth || b.risk - a.risk || b.files.length - a.files.length);
-  }, [result]);
+function groupByModule(files: ReachedFile[]): Group[] {
+  const byName = new Map<string, Group>();
+  for (const f of files) {
+    const g = byName.get(f.module) ?? { name: f.module, depth: f.depth, files: [], risk: 0 };
+    g.files.push(f);
+    g.depth = Math.min(g.depth, f.depth);
+    g.risk += attention(f);
+    byName.set(f.module, g);
+  }
+  for (const g of byName.values())
+    g.files.sort((a, b) => a.depth - b.depth || attention(b) - attention(a) || a.path.localeCompare(b.path));
+  return [...byName.values()].sort((a, b) => a.depth - b.depth || b.risk - a.risk || b.files.length - a.files.length);
+}
 
+function steps(depth: number): string {
+  return depth === 1 ? "direct" : `${depth} steps`;
+}
+
+function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: boolean; onToggle: () => void; fileHref: Href }) {
+  const [all, setAll] = useState(false);
+  const often = g.files.filter((f) => f.isHotspot).length;
+  const untested = g.files.filter((f) => f.untested).length;
+  const shown = all ? g.files : g.files.slice(0, PER_MODULE);
+  return (
+    <li>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+      >
+        <ChevronRight
+          className={cn("h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-transform", expanded && "rotate-90")}
+          aria-hidden
+        />
+        <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-primary)]">{g.name}</span>
+        <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
+          {g.files.length.toLocaleString()} {g.files.length === 1 ? "file" : "files"}
+        </span>
+        <span className="hidden w-16 shrink-0 text-right text-[var(--color-text-tertiary)] sm:inline">{steps(g.depth)}</span>
+        <span className="hidden shrink-0 justify-end gap-1 sm:flex sm:w-44">
+          {often > 0 && <span className={CHIP}>{often} changed often</span>}
+          {untested > 0 && <span className={`${CHIP} border-dashed`}>{untested} no test</span>}
+        </span>
+      </button>
+      {expanded && (
+        <div className="space-y-1 pb-2 pl-6">
+          <ul className="space-y-1.5">
+            {shown.map((f) => (
+              <FileRow
+                key={f.path}
+                m={f}
+                href={fileHref?.(f.path)}
+                extra={<span className="text-[10px] text-[var(--color-text-tertiary)]">{steps(f.depth)}</span>}
+              />
+            ))}
+          </ul>
+          {g.files.length > PER_MODULE && (
+            <button
+              type="button"
+              onClick={() => setAll((v) => !v)}
+              className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            >
+              {all ? "Show fewer" : `+${(g.files.length - PER_MODULE).toLocaleString()} more`}
+            </button>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Every source file that depends on the change, by module: each module a
+ * row with its count, how far it sits and its marks, opening to its nearest
+ * files first. A filter narrows modules and files by path; picking a module
+ * on the map fills it in.
+ */
+export function AffectedByModule({
+  reach,
+  fileHref,
+  query,
+  onQueryChange,
+}: {
+  reach: Reach;
+  fileHref: Href;
+  query: string;
+  onQueryChange: (q: string) => void;
+}) {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const groups = useMemo(() => groupByModule(reach.files), [reach]);
   const q = query.trim().toLowerCase();
   const shown = q
     ? groups
@@ -155,53 +200,23 @@ export function AffectedByModule({ result, fileHref }: { result: Result; fileHre
       <input
         type="search"
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => onQueryChange(e.target.value)}
         placeholder="Filter by path or module"
-        aria-label="Filter affected files"
+        aria-label="Filter files that depend on the change"
         className="w-full max-w-xs rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
       />
       <ul className="divide-y divide-[var(--color-border-default)]">
-        {shown.map((g) => {
-          const expanded = open.has(g.name) || (q !== "" && shown.length <= 3);
-          const hot = g.files.filter((f) => f.isHotspot).length;
-          const untested = g.files.filter((f) => f.untested).length;
-          return (
-            <li key={g.name}>
-              <button
-                type="button"
-                aria-expanded={expanded}
-                onClick={() => toggle(g.name)}
-                className="flex w-full min-w-0 items-center gap-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
-              >
-                <ChevronRight
-                  className={cn("h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-transform", expanded && "rotate-90")}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-primary)]">{g.name}</span>
-                <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">{g.files.length} files</span>
-                <span className="w-14 shrink-0 text-right text-[var(--color-text-tertiary)]">
-                  {g.depth === 1 ? "direct" : `${g.depth} hops`}
-                </span>
-                <span className="flex w-28 shrink-0 justify-end gap-1">
-                  {hot > 0 && <span className={CHIP} title={`${hot} hotspot files`}>▲ {hot}</span>}
-                  {untested > 0 && <span className={`${CHIP} border-dashed`} title={`${untested} files without test evidence`}>{untested}</span>}
-                </span>
-              </button>
-              {expanded && (
-                <ul className="space-y-1 pb-2 pl-6">
-                  {g.files.map((f) => (
-                    <li key={f.path} className="flex min-w-0 items-center justify-between gap-2 text-xs">
-                      <Path path={f.path} href={fileHref?.(f.path)} />
-                      <Marks m={f} extra={<span className="text-[10px] text-[var(--color-text-tertiary)]">{f.depth === 1 ? "direct" : `${f.depth} hops`}</span>} />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </li>
-          );
-        })}
+        {shown.map((g) => (
+          <ModuleRow
+            key={g.name}
+            g={g}
+            expanded={open.has(g.name) || (q !== "" && shown.length <= 3)}
+            onToggle={() => toggle(g.name)}
+            fileHref={fileHref}
+          />
+        ))}
       </ul>
-      {shown.length === 0 && <p className="text-xs text-[var(--color-text-tertiary)]">No affected file matches.</p>}
+      {shown.length === 0 && <p className="text-xs text-[var(--color-text-tertiary)]">No file matches.</p>}
     </div>
   );
 }

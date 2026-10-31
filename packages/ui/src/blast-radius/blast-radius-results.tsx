@@ -8,7 +8,6 @@ import { CochangeTable } from "./cochange-table";
 import { ReviewersTable } from "./reviewers-table";
 import { TestGapsList } from "./test-gaps-list";
 import { CollapsibleSection } from "../shared/collapsible-section";
-import { AffectedByModule, ChangedFilesList } from "./affected-files";
 import { EmptyState } from "../shared/empty-state";
 
 interface BlastRadiusResultsProps {
@@ -18,13 +17,6 @@ interface BlastRadiusResultsProps {
   /** Rich reviewer panel (e.g. `ReviewerSuggestions` fed by the
    *  reviewer-suggestions endpoint). Replaces the thin email table. */
   reviewersSlot?: ReactNode | undefined;
-  /**
-   * Only the detail tables, under a Details heading: for a host that already
-   * shows the verdict and the map above them.
-   */
-  detailsOnly?: boolean;
-  /** Where a file links, for the details lists. */
-  fileHref?: ((path: string) => string) | undefined;
 }
 
 /**
@@ -36,8 +28,6 @@ export function BlastRadiusResults({
   result,
   changedFiles = [],
   reviewersSlot,
-  detailsOnly = false,
-  fileHref,
 }: BlastRadiusResultsProps) {
   const testImpact = result.test_impact;
   const recommendations = testImpact?.recommendations ?? [];
@@ -62,15 +52,9 @@ export function BlastRadiusResults({
 
   return (
     <div className="space-y-6">
-      {detailsOnly ? (
-        <p className="border-t border-[var(--color-border-default)] pt-5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-          Details
-        </p>
-      ) : (
-        <BlastRadiusHeader result={result} changedFiles={changedFiles} />
-      )}
+      <BlastRadiusHeader result={result} changedFiles={changedFiles} />
 
-      {detailsOnly ? null : noDownstream ? (
+      {noDownstream ? (
         <EmptyState
           tone="positive"
           title="No downstream impact"
@@ -86,22 +70,11 @@ export function BlastRadiusResults({
         </div>
       )}
 
-      {detailsOnly && (
-        <CollapsibleSection title="Changed files" hint={changedFiles.length || undefined}>
-          <ChangedFilesList result={result} changedFiles={changedFiles} fileHref={fileHref} />
-        </CollapsibleSection>
-      )}
-      {detailsOnly && result.transitive_affected.length > 0 && (
-        <CollapsibleSection title="Affected files by module" hint={result.transitive_affected.length}>
-          <AffectedByModule result={result} fileHref={fileHref} />
-        </CollapsibleSection>
-      )}
-
-      {!detailsOnly && !noDownstream && (
+      {!noDownstream && (
       <CollapsibleSection
           title="Direct risks"
           hint={result.direct_risks.length || undefined}
-          defaultOpen={!detailsOnly && result.direct_risks.length > 0}
+          defaultOpen={result.direct_risks.length > 0}
         >
           {result.direct_risks.length > 0 ? (
             <DirectRisksTable rows={result.direct_risks} />
@@ -115,7 +88,7 @@ export function BlastRadiusResults({
         </CollapsibleSection>
       )}
 
-      {!detailsOnly && !noDownstream && (
+      {!noDownstream && (
       <CollapsibleSection
           title="Transitive affected files"
           hint={result.transitive_affected.length || undefined}
@@ -167,7 +140,7 @@ export function BlastRadiusResults({
       <CollapsibleSection
         title="Tests to run"
         hint={testImpact?.recommendations_total || undefined}
-        defaultOpen={!detailsOnly && (recommendations.length > 0 || testAnalysisLimited)}
+        defaultOpen={recommendations.length > 0 || testAnalysisLimited}
       >
         {recommendations.length > 0 ? (
           <div className="space-y-1">
