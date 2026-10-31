@@ -444,3 +444,22 @@ def test_the_raw_size_is_shaped_on_a_copy() -> None:
 
     assert raw == {"results": ["a"], "_meta": {"timing_ms": 12.5}}
     assert shaped < savings_event.raw_response_tokens(raw)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_call_starts_a_background_price_warm(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call records unpriced at once; the warm prices the calls after it."""
+    from repowise.core.savings import pricing
+
+    pricing.clear_pricing_cache()
+    warmed: list[str] = []
+    monkeypatch.setattr(pricing, "warm_pricing_snapshot", lambda root: warmed.append(str(root)))
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert warmed == [str(repo)]
+    assert _events(repo)[0]["model"] is None

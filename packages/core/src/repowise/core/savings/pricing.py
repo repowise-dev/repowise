@@ -18,8 +18,9 @@ processes that could not amortize one anyway. They write an unpriced event when
 the cache is cold, and the report counts priced and unpriced tokens separately
 for exactly that reason.
 
-The cache is filled by ``repowise distill`` run directly and by
-``repowise saved`` -- commands a human typed, where once a day is affordable.
+The cache is filled by ``repowise distill`` run directly, by ``repowise saved``,
+and by :func:`warm_pricing_snapshot`, which the long-lived MCP and web servers
+call to scan on a background thread, off every tool call and request.
 """
 
 from __future__ import annotations
@@ -111,6 +112,54 @@ def resolve_pricing_snapshot(
 def clear_pricing_cache() -> None:
     """Drop the in-process memo. For tests and long-lived process teardown."""
     _memo.clear()
+    with _warm_lock:
+        _warm_started.clear()
+
+
+#: Floor between background warms of one repository. A scan that detects no
+#: model caches nothing, and must not rerun on every tool call that follows.
+_WARM_RETRY_SECONDS = 60 * 60
+
+#: ``0`` turns the background warm off, for test suites.
+WARM_ENV = "REPOWISE_PRICING_WARM"
+
+_warm_lock = threading.Lock()
+#: repository root -> monotonic time its last warm started.
+_warm_started: dict[str, float] = {}
+
+
+def warm_pricing_snapshot(repo_root: str | Path | None) -> None:
+    """Refresh *repo_root*'s cached snapshot on a daemon thread. Never blocks or raises.
+
+    For long-lived processes. Their events read the cache with
+    ``allow_scan=False``, so without this a cache that was cold or expired
+    stayed that way until someone ran ``repowise distill`` or ``repowise saved``,
+    and every event in between went unpriced. A fresh cache costs the thread
+    one file read; a cold one costs the transcript scan, at most once per
+    :data:`_WARM_RETRY_SECONDS` per repository. The scan reads local files
+    only, so it works offline.
+    """
+    try:
+        if repo_root is None or os.environ.get(WARM_ENV) == "0":
+            return
+        root = Path(repo_root)
+        if not (root / ".repowise").is_dir():
+            return
+        key = str(root)
+        now = time.monotonic()
+        with _warm_lock:
+            last = _warm_started.get(key)
+            if last is not None and now - last < _WARM_RETRY_SECONDS:
+                return
+            _warm_started[key] = now
+        threading.Thread(
+            target=resolve_pricing_snapshot,
+            args=(root,),
+            name="repowise-pricing-warm",
+            daemon=True,
+        ).start()
+    except Exception:
+        return
 
 
 def _resolve(repo_root: Path, *, allow_scan: bool) -> PricingSnapshot | None:

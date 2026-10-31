@@ -471,3 +471,66 @@ def test_a_real_local_model_is_still_free(model: str) -> None:
 
     assert cost_tracker.is_local_model(model) is True
     assert cost_tracker.resolve_model_pricing(model) == {"input": 0.0, "output": 0.0}
+
+
+def _join_warm_threads() -> None:
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name == "repowise-pricing-warm":
+            thread.join(timeout=10)
+
+
+def test_the_background_warm_fills_the_cache_off_the_calling_thread(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    monkeypatch.delenv(pricing.WARM_ENV, raising=False)
+    callers: list[str] = []
+    calls = _count_scans(monkeypatch)
+    scan = pricing._scan
+
+    def record_thread(repo_root: Path) -> PricingSnapshot:
+        callers.append(threading.current_thread().name)
+        return scan(repo_root)
+
+    monkeypatch.setattr(pricing, "_scan", record_thread)
+    pricing.warm_pricing_snapshot(repo)
+    _join_warm_threads()
+
+    assert calls == [1]
+    assert callers == ["repowise-pricing-warm"]
+    assert resolve_pricing_snapshot(repo, allow_scan=False) is not None
+
+
+def test_a_warm_that_found_nothing_is_not_retried_on_every_call(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(pricing.WARM_ENV, raising=False)
+    calls: list[int] = []
+    monkeypatch.setattr(pricing, "_scan", lambda repo_root: calls.append(1))
+    for _ in range(5):
+        pricing.warm_pricing_snapshot(repo)
+        _join_warm_threads()
+    assert calls == [1]
+
+
+def test_the_warm_skips_a_directory_that_has_not_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(pricing.WARM_ENV, raising=False)
+    calls = _count_scans(monkeypatch)
+    pricing.warm_pricing_snapshot(tmp_path)
+    pricing.warm_pricing_snapshot(None)
+    _join_warm_threads()
+    assert calls == []
+    assert not (tmp_path / ".repowise").exists()
+
+
+def test_the_warm_can_be_turned_off(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(pricing.WARM_ENV, "0")
+    calls = _count_scans(monkeypatch)
+    pricing.warm_pricing_snapshot(repo)
+    _join_warm_threads()
+    assert calls == []

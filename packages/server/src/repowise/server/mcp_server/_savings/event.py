@@ -140,7 +140,7 @@ def record(interaction: Interaction, result: Any) -> bool:
 
 def _record(interaction: Interaction, result: Any) -> bool:
     from repowise.core.savings import recorder
-    from repowise.core.savings.pricing import resolve_pricing_snapshot
+    from repowise.core.savings.pricing import resolve_pricing_snapshot, warm_pricing_snapshot
 
     from .wrapper import response_tokens
 
@@ -157,10 +157,12 @@ def _record(interaction: Interaction, result: Any) -> bool:
     # seconds on a repository with no Codex history, and this runs inside the
     # agent's own tool call. Once a day is still far too often to stall one.
     #
-    # So the tool call takes an unpriced event and `repowise distill` or
-    # `repowise saved` fills the cache; the report counts priced and unpriced
+    # So the tool call takes an unpriced event and starts a background scan
+    # that prices the calls after it; the report counts priced and unpriced
     # tokens separately for exactly this reason.
     pricing = resolve_pricing_snapshot(interaction.repo_root, allow_scan=False)
+    if pricing is None:
+        warm_pricing_snapshot(interaction.repo_root)
 
     payload: dict[str, Any] = {
         "event_id": interaction.event_id,
