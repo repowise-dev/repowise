@@ -103,10 +103,9 @@ function Row({ children }: { children: ReactNode }) {
   return <li className="flex min-w-0 items-center justify-between gap-3 text-xs">{children}</li>;
 }
 
+/** Shown only when something is marked; a calm change says so once, in the status line. */
 function LookFirst({ reach, fileHref }: { reach: Reach; fileHref: Href }) {
   const spots = riskySpots(reach);
-  if (spots.length === 0)
-    return <p className={NONE}>No changed or directly dependent file changes often, has weak health or lacks a test.</p>;
   return (
     <ul className="space-y-1.5">
       {spots.map((node) => (
@@ -163,7 +162,7 @@ function TestsToRun({ result }: { result: Result }) {
   return (
     <div className="space-y-2">
       {commands.length > 0 && (
-        <pre className="max-h-16 overflow-hidden whitespace-pre-wrap break-all rounded bg-[var(--color-bg-inset)] px-2.5 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
+        <pre className="max-h-24 overflow-y-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-inset)] px-2.5 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
           {commands.join("\n")}
         </pre>
       )}
@@ -178,7 +177,7 @@ function TestsToRun({ result }: { result: Result }) {
 function Owners({ result, changed }: { result: Result; changed: number }) {
   const ofChanged = result.changed_owners;
   const people = ofChanged
-    ? ofChanged.map((o) => ({ email: o.email, name: ownerName(o), why: `owns ${o.files} of the ${count(changed, "changed file")}` }))
+    ? ofChanged.map((o) => ({ email: o.email, name: ownerName(o), why: `owns ${o.files.toLocaleString()} of the ${count(changed, "changed file")}` }))
     : result.recommended_reviewers.slice(0, 3).map((r) => ({ email: r.email, name: ownerName(r), why: "owns code that depends on this" }));
   if (people.length === 0) return <p className={NONE}>No one owns the changed files yet: they are new or have no history.</p>;
   return (
@@ -324,9 +323,11 @@ export function BlastRadiusVerdict({ result, reach, changedFiles, changedTotal, 
       </div>
 
       <div className="grid gap-x-10 gap-y-6 border-t border-[var(--color-border-default)] pt-5 md:grid-cols-2">
-        <Block title="Look at first">
-          <LookFirst reach={reach} fileHref={fileHref} />
-        </Block>
+        {riskySpots(reach).length > 0 && (
+          <Block title="Look at first">
+            <LookFirst reach={reach} fileHref={fileHref} />
+          </Block>
+        )}
         <Block title="Run these tests" hint={testsTotal > 0 ? testsTotal.toLocaleString() : undefined}>
           <TestsToRun result={result} />
         </Block>

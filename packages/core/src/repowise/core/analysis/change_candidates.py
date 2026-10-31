@@ -202,7 +202,9 @@ def _diff_files(repo_path: str, base: str, base_sha: str, head: str, head_sha: s
         if keep and key in _DIFFS:
             _DIFFS.move_to_end(key)
             return _DIFFS[key]
-    files = git_refs.changed_files(repo_path, base, head)
+    # Diff the commit the key names, so the cache never holds another ref's answer
+    # (a tag can share a branch's name).
+    files = git_refs.changed_files(repo_path, base, head_sha or head)
     if keep:
         with _DIFFS_LOCK:
             _DIFFS[key] = files

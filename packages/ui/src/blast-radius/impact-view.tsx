@@ -201,7 +201,7 @@ function NoReach({ depth, tests }: { depth: number; tests: number }) {
   const rest =
     tests > 0
       ? `; only ${count(tests, "test file")} ${tests === 1 ? "does" : "do"}, listed under Run these tests.`
-      : ". New files have nothing depending on them yet.";
+      : ".";
   return (
     <p className="text-xs text-[var(--color-text-secondary)]">
       No source file imports the changed files {within}
@@ -398,7 +398,15 @@ function ResultPane({
       )}
       {analysis && (
         <div className={loading ? "space-y-6 opacity-60 transition-opacity" : "space-y-6"}>
-          <ReviewBody analysis={analysis} change={shownChange} fileHref={fileHref} maxDepth={maxDepth} onDepth={onDepth} />
+          <ReviewBody
+            // A new pick starts with no module filter left over from the last one.
+            key={selectionKeyOf(analysis.selection)}
+            analysis={analysis}
+            change={shownChange}
+            fileHref={fileHref}
+            maxDepth={maxDepth}
+            onDepth={onDepth}
+          />
         </div>
       )}
     </section>

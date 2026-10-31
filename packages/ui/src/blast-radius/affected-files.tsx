@@ -46,7 +46,7 @@ export function ChangedFilesList({ result, reach, fileHref }: { result: Result; 
   const grouped = reach.changed.length >= FOLDERS_FROM;
   const row = (m: FileMarks) => {
     const d = direct.get(m.path);
-    const central = d && imported.has(m.path) && d.centrality >= centralCut;
+    const central = d && imported.has(m.path) && d.centrality > 0 && d.centrality >= centralCut;
     return (
       <FileRow
         key={m.path}
