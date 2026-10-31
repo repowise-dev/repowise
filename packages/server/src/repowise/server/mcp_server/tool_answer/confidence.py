@@ -129,7 +129,7 @@ def _sentences(answer_text: str) -> list[str]:
 _LINE_NUMBER_RE = re.compile(
     r"\bline[- ]?numbers?\b|\bline[- ]numbered\b|\bline ranges?\b|\bcite (?:the )?(?:exact|specific) lines?\b"
 )
-_CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\bso\b")
+_CLAUSE_BREAK_RE = re.compile(r"([,;:()]|\bso\b)")
 # The words a "no line numbers" clause is made of; any other word names something missing.
 _LINE_CLAUSE_FILLER = frozenset((
     "a", "an", "the", "it", "its", "their", "these", "those", "this", "them", "they", "i",
@@ -158,12 +158,16 @@ def _is_admission(sentence: str) -> bool:
     A clause that only says the excerpts carry no line numbers is not one:
     the code is served, only its location is missing.
     """
-    clauses = _CLAUSE_BREAK_RE.split(_normalized(sentence))
-    low = " ".join(
-        c
-        for i, c in enumerate(clauses)
-        if not _line_number_only(c)
-        or (i + 1 < len(clauses) and _LIST_GOES_ON_RE.match(clauses[i + 1]))
+    # Clauses at even indices, their delimiters kept between them, so every other
+    # marker reads the sentence as written.
+    parts = _CLAUSE_BREAK_RE.split(_normalized(sentence))
+    low = "".join(
+        ""
+        if i % 2 == 0
+        and _line_number_only(p)
+        and not (i + 2 < len(parts) and _LIST_GOES_ON_RE.match(parts[i + 2]))
+        else p
+        for i, p in enumerate(parts)
     )
     return (
         _BARE_GAP_RE.search(low) is not None

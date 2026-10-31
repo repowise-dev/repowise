@@ -651,6 +651,8 @@ _STILL_ADMITS = (
     "The excerpts do not show the line numbers or the code that reads it.",
     "The excerpts do not include the check, so I can't cite its line numbers.",
     "(The excerpts don't include the validator's name or implementation.)",
+    # Punctuation is kept: the clause end after "is not included" still reads.
+    "`_retry` is not included (in any hit).",
 )
 _CODE_BEHAVIOUR = (
     "`Client.send` retries 3 times and doesn't include backoff.",
