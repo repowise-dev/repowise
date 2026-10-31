@@ -322,10 +322,12 @@ def decision_add(
             f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
-    _report_added(repo_path, stored, fmt)
+    _report_added(repo_path, stored, fmt, agent=signer.agent)
 
 
-def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
+def _report_added(
+    repo_path: Path, stored: _Persisted, fmt: str, agent: str = ""
+) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
         # The full id: a caller passes it back to `confirm` or `show`.
@@ -338,6 +340,19 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         }
         if stored.existed:
             payload["kept"] = stored.kept
+        if stored.blockers:
+            # What still blocks acceptance, and the one command that clears
+            # it: without this, a caller learns the gap only when `confirm`
+            # refuses. Omitted when empty, like `kept` is when nothing kept.
+            payload["blockers"] = list(stored.blockers)
+            parts = [f"repowise decision confirm {stored.id[:8]}"]
+            if agent:
+                parts.append(f"--agent {agent}")
+            if NO_EVIDENCE_BLOCKER in stored.blockers:
+                parts.append("--evidence <commit|file>")
+            if NO_SCOPE_BLOCKER in stored.blockers:
+                parts.append("--scope <path>")
+            payload["next"] = " ".join(parts)
         emit_json({"repo": str(repo_path), "decision": payload})
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
@@ -460,6 +475,9 @@ class _Persisted(NamedTuple):
     kind: str
     existed: bool
     kept: list[str]
+    #: Why the contract would refuse this record as it stands; empty when
+    #: nothing blocks acceptance. Computed from the stored row, not the flags.
+    blockers: tuple[str, ...] = ()
 
 
 #: Restatable fields, and the column each list field is stored in.
@@ -554,7 +572,20 @@ async def _persist_decision(
             # A different title means the derived id folded this onto a record
             # stating the same decision, which is an update too.
             existed = existing is not None or rec.title != fields.title
-            stored = _Persisted(rec.id, rec.title, rec.status, rec.kind, existed, kept)
+            # From the stored row, while the session still holds it: what a
+            # later `confirm` would refuse on, so `add --format json` can say
+            # it up front instead of costing the caller a failed call.
+            from repowise.core.persistence.crud.authority import record_blockers
+
+            stored = _Persisted(
+                rec.id,
+                rec.title,
+                rec.status,
+                rec.kind,
+                existed,
+                kept,
+                tuple(record_blockers(rec)),
+            )
 
         await _rewrite_read_views(sf, repo.id)
         # After the session commits, so a network embed never holds the write

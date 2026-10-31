@@ -214,6 +214,63 @@ def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
     assert json.loads(result.output)["decision"]["status"] == "proposed"
 
 
+def test_decision_add_json_lists_evidence_blocker_and_next(indexed_repo: Path) -> None:
+    """An add without evidence says so up front, with the clearing command.
+
+    Before this, the JSON payload carried no hint, so a caller learned the
+    gap only when `confirm` refused — one wasted call per record.
+    """
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--agent", "probe",
+            "--title", "Use cobra flags",
+            "--decision", "Use pflag",
+            "--rationale", "r",
+            "--affects", "command.go",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    decision = json.loads(result.output)["decision"]
+    assert decision["blockers"] == ["no evidence reference"]
+    assert decision["next"] == (
+        f"repowise decision confirm {decision['id'][:8]}"
+        " --agent probe --evidence <commit|file>"
+    )
+    # Existing keys and exit codes are untouched by the new keys.
+    assert decision["status"] == "proposed"
+    assert decision["existed"] is False
+
+
+def test_decision_add_json_omits_blockers_when_evidence_given(indexed_repo: Path) -> None:
+    """An add with --evidence-commit has no blockers, so no keys appear."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--agent", "probe",
+            "--title", "Use cobra flags",
+            "--decision", "Use pflag",
+            "--rationale", "r",
+            "--affects", "command.go",
+            "--evidence-commit", "abc123",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    decision = json.loads(result.output)["decision"]
+    assert "blockers" not in decision
+    assert "next" not in decision
+
+
 def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
     """Answering the prompts is an acceptance, and a scope is part of it."""
     answers = "\nInteractive title\ncontext\nthe decision\nwhy\n\n\nsrc/app.py\n\n"
