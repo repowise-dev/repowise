@@ -118,9 +118,20 @@ def local_refs_from_tree(
 
 
 def _bound_name(stmt: ast.stmt) -> str | None:
-    """Return the symbol name a top-level def/class binds, else ``None``."""
+    """Return the symbol name a top-level def/class/type alias binds, else ``None``."""
     if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return stmt.name
+    type_alias_cls = getattr(ast, "TypeAlias", None)
+    if type_alias_cls is not None and isinstance(stmt, type_alias_cls):
+        name_node = getattr(stmt, "name", None)
+        if isinstance(name_node, ast.Name):
+            return name_node.id
+    if (
+        isinstance(stmt, ast.AnnAssign)
+        and _is_type_alias_annotation(stmt.annotation)
+        and isinstance(stmt.target, ast.Name)
+    ):
+        return stmt.target.id
     return None
 
 
@@ -148,18 +159,43 @@ def _collect_refs(
         # constants in the AST; their inner names are invisible to the
         # ``Name`` walk above. Re-parse each annotation's string literals
         # and collect any defined name they reference.
-        annotation = _annotation_of(sub)
-        if annotation is not None:
-            _collect_forward_refs(annotation, defined_names, owner, out)
+        for expr in _type_expressions_of(sub):
+            _collect_forward_refs(expr, defined_names, owner, out)
 
 
 def _annotation_of(node: ast.AST) -> ast.expr | None:
     """Return the annotation expression carried by *node*, if any."""
-    if isinstance(node, (ast.AnnAssign, ast.arg)):
-        return node.annotation
+    exprs = _type_expressions_of(node)
+    return exprs[0] if exprs else None
+
+
+def _is_type_alias_annotation(expr: ast.expr) -> bool:
+    """Whether *expr* represents typing.TypeAlias or TypeAlias."""
+    if isinstance(expr, ast.Name):
+        return expr.id == "TypeAlias"
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "TypeAlias"
+    return False
+
+
+def _type_expressions_of(node: ast.AST) -> list[ast.expr]:
+    """Return type or annotation expressions carried by *node*."""
+    type_alias_cls = getattr(ast, "TypeAlias", None)
+    if type_alias_cls is not None and isinstance(node, type_alias_cls):
+        val = getattr(node, "value", None)
+        return [val] if isinstance(val, ast.expr) else []
+    if isinstance(node, ast.AnnAssign):
+        exprs: list[ast.expr] = [node.annotation]
+        if node.value is not None and _is_type_alias_annotation(node.annotation):
+            exprs.append(node.value)
+        return exprs
+    if isinstance(node, ast.arg):
+        return [node.annotation] if node.annotation else []
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return node.returns
-    return None
+        return [node.returns] if node.returns else []
+    if isinstance(node, ast.ClassDef):
+        return [b for b in node.bases if isinstance(b, ast.expr)]
+    return []
 
 
 def _collect_forward_refs(
@@ -181,10 +217,36 @@ def _collect_forward_refs(
             out.add(ref.id)
 
 
+def _non_type_string_nodes(expr: ast.expr) -> set[int]:
+    """Return ids of string Constant nodes that represent values, not types."""
+    ignored: set[int] = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Subscript):
+            val = node.value
+            name = val.id if isinstance(val, ast.Name) else getattr(val, "attr", None)
+            if name == "Literal":
+                for sub in ast.walk(node.slice):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        ignored.add(id(sub))
+        elif isinstance(node, ast.Call):
+            for arg in node.args:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        ignored.add(id(sub))
+            for kw in node.keywords:
+                for sub in ast.walk(kw.value):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        ignored.add(id(sub))
+    return ignored
+
+
 def _forward_ref_nodes(annotation: ast.expr) -> Iterator[tuple[ast.AST, int]]:
     """Each node of each quoted forward ref in *annotation*, with the quote's line."""
+    ignored = _non_type_string_nodes(annotation)
     for sub in ast.walk(annotation):
         if not (isinstance(sub, ast.Constant) and isinstance(sub.value, str)):
+            continue
+        if id(sub) in ignored:
             continue
         try:
             inner = parse_python(sub.value, mode="eval")
@@ -234,9 +296,8 @@ def _loaded_refs(tree: ast.Module) -> Iterator[tuple[ast.AST, int]]:
     for sub in ast.walk(tree):
         if isinstance(sub, (ast.Name, ast.Attribute)) and isinstance(sub.ctx, ast.Load):
             yield sub, sub.lineno
-        annotation = _annotation_of(sub)
-        if annotation is not None:
-            yield from _forward_ref_nodes(annotation)
+        for expr in _type_expressions_of(sub):
+            yield from _forward_ref_nodes(expr)
 
 
 def _names_nested(ref: ast.AST, outer: str, inner: str, in_outer: bool) -> bool:
