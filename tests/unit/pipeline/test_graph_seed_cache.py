@@ -265,6 +265,14 @@ def test_invalidation_removes_snapshot_before_update_write(tmp_path: Path) -> No
     assert not cache.exists()
 
 
+async def test_unreadable_database_means_no_seed_not_a_failed_update(tmp_path: Path) -> None:
+    # An index directory whose database has no tables yet.
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "wiki.db").write_bytes(b"")
+
+    assert await load_seed_edges_for_reconciliation(tmp_path) is None
+
+
 def test_full_build_restores_rows_for_unparsed_files_from_prior_snapshot() -> None:
     previous_graph = nx.DiGraph()
     previous_graph.add_node("a.py::run", file_path="a.py")

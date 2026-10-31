@@ -123,7 +123,7 @@ async def test_opt_out_update_does_not_touch_incremental_graph_caches(
     resolutions = index_dir / "resolved_imports.pkl"
     seed.write_bytes(b"existing seed snapshot")
     resolutions.write_bytes(b"existing resolution snapshot")
-    monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+    monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
 
     await rebuild_graph_and_git(
         tmp_path,
@@ -147,7 +147,7 @@ async def test_update_does_not_touch_incremental_caches_when_opted_out(
     resolutions_path = index / "resolved_imports.pkl"
     seed_path.write_bytes(b"existing seed is untouched when opt-out")
     resolutions_path.write_bytes(b"existing resolutions are untouched when opt-out")
-    monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+    monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
 
     await rebuild_graph_and_git(
         tmp_path,
@@ -357,3 +357,16 @@ def test_read_only_build_is_the_update_graph_and_writes_nothing(
         before = {p: p.read_bytes() for p in index_dir.rglob("*") if p.is_file()}
         build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)
         assert before == {p: p.read_bytes() for p in index_dir.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, True), ("1", True), ("0", False)])
+def test_incremental_graph_is_on_unless_turned_off(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
+) -> None:
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+    if value is None:
+        monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+    else:
+        monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", value)
+    assert incremental_graph_enabled() is expected

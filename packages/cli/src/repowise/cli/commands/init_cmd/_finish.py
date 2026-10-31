@@ -60,7 +60,7 @@ def persist_index(run: InitRun) -> None:
             invalidate_seed_edge_cache(run.repo_path)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
-        # Seed the opt-in incremental graph update from a sealed sequential cache.
+        # Seed the incremental graph update from a sealed sequential cache.
         if cache_incremental_graph and run.result.graph_builder is not None:
             from repowise.core.pipeline.incremental.graph_seed import save_seed_edge_cache
 

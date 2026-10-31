@@ -433,7 +433,7 @@ def build_repo_graph(
 pass reads the sources.
 
     ``seed_edges`` is the last full graph snapshot. ``patch_requested`` says
-    the experimental feature is enabled, including when a cache miss forces
+    the incremental graph feature is enabled, including when a cache miss forces
     the safe full-build fallback. ``cache_resolutions`` opts into writing the
     supporting per-file import cache. ``changed_paths`` is the
     complete source/config diff from the update detector; it must exactly match
@@ -674,7 +674,7 @@ async def _load_update_seed(
     timings: PhaseTimings | None,
     log: LogFn,
 ) -> tuple[Any | None, Any | None]:
-    """Load and invalidate the optional seed before any opted-in update write."""
+    """Load and invalidate the optional seed before any update write that uses it."""
     if not enabled:
         return None, None
     from .graph_seed import (
