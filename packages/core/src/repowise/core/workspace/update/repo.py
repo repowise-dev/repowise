@@ -189,6 +189,7 @@ async def _incremental_repo_update(
     Raises on failure — the caller falls back to the full pipeline.
     """
     from ...pipeline.incremental import persist_incremental_index, rebuild_graph_and_git
+    from ...pipeline.incremental.feature import incremental_graph_enabled
     from ...pipeline.phases.git import drop_transient_git_signals
     from ...repo_config import load_repo_config
 
@@ -226,6 +227,9 @@ async def _incremental_repo_update(
         force_full_git=force_full_git,
         git_summary_sink=full_git_summaries,
         log=_log.info,
+        # Same switch as the CLI update: it also invalidates the seed snapshot
+        # before persistence rewrites the graph rows the snapshot mirrors.
+        patch_graph=incremental_graph_enabled(),
     )
 
     partial_health_report, dead_code_report, doc_drift_report = await _partial_analysis(

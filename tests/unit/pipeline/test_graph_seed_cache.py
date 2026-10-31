@@ -269,7 +269,11 @@ async def test_unreadable_database_means_no_seed_not_a_failed_update(tmp_path: P
     # An index directory whose database has no tables yet.
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "wiki.db").write_bytes(b"")
+    (tmp_path / ".repowise" / "state.json").write_text(
+        json.dumps({"graph_update": {"enabled": True}}), encoding="utf-8"
+    )
 
+    assert await load_seed_edges(tmp_path) is None
     assert await load_seed_edges_for_reconciliation(tmp_path) is None
 
 
