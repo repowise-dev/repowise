@@ -26,7 +26,8 @@ interface MermaidDiagramProps {
  *
  * The look is the brand "blueprint" aesthetic: ink-filled rounded nodes on a
  * faint grid (grid lives on the container, see MermaidDiagram), dashed
- * connectors, and the entry node highlighted in brand orange.
+ * connectors. No node is singled out by position: a linked node sits alone
+ * in its <a>, so a :first-of-type rule matches every one of them.
  */
 function mermaidThemeConfig() {
   // Rendered only client-side (dynamic import inside an effect), so the live
@@ -39,8 +40,6 @@ function mermaidThemeConfig() {
   const nodeBorder = resolveToken("--color-diagram-node-border");
   const edge = resolveToken("--color-diagram-edge");
   const clusterBorder = resolveToken("--color-diagram-cluster-border");
-  const accentFill = resolveToken("--color-accent-fill");
-  const textOnAccent = resolveToken("--color-text-on-accent");
   const fontMono = resolveToken("--font-mono") || "ui-monospace, Menlo, monospace";
 
   return {
@@ -62,7 +61,7 @@ function mermaidThemeConfig() {
       edgeLabelBackground: elevated,
     },
     // Flowchart-specific polish themeVariables can't express: rounded ink
-    // blocks, dashed connectors, dashed cluster frames, orange entry node.
+    // blocks, dashed connectors, dashed cluster frames.
     themeCSS: `
       .node rect, .node polygon, .node circle {
         rx: 8px; ry: 8px;
@@ -82,17 +81,6 @@ function mermaidThemeConfig() {
         color: ${edge};
         fill: ${edge};
         font-weight: 600;
-      }
-      .nodes .node:first-of-type rect,
-      .nodes .node:first-of-type polygon,
-      .nodes .node:first-of-type circle {
-        fill: ${accentFill};
-        stroke: ${accentFill};
-      }
-      .nodes .node:first-of-type .nodeLabel,
-      .nodes .node:first-of-type .nodeLabel * {
-        color: ${textOnAccent} !important;
-        fill: ${textOnAccent} !important;
       }
     `,
   };
