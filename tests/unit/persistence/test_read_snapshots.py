@@ -572,3 +572,42 @@ async def test_a_workspace_read_with_the_cut_stores_nothing(file_factory) -> Non
     rid = await _seeded(file_factory)
     await _read_view(file_factory, rid, alias="member")
     assert await _actions_key(file_factory) is None
+
+
+async def test_a_claim_left_behind_is_a_miss_the_next_read_replaces(file_factory) -> None:
+    from repowise.core.persistence import read_snapshots
+
+    rid = await _seeded(file_factory)
+    engine = file_factory.kw["bind"]
+    assert await read_snapshots._claim(engine, rid, "actions", "claim:abandoned")
+    await _read_view(file_factory, rid)
+    assert await _actions_key(file_factory) == actions_loader._KEY
+
+
+async def test_a_build_that_cannot_be_stored_is_still_served(file_factory, monkeypatch) -> None:
+    rid = await _seeded(file_factory)
+    real = actions_loader._ruled
+
+    async def unserialisable(session, repo_id, *args, **kwargs):
+        return {**await real(session, repo_id, *args, **kwargs), "odd": object()}
+
+    monkeypatch.setattr(actions_loader, "_ruled", unserialisable)
+    assert (await _read_view(file_factory, rid))["unavailable"] == {}
+    assert await _actions_key(file_factory) != actions_loader._KEY
+
+
+async def test_a_session_with_its_own_input_writes_stores_nothing(file_factory) -> None:
+    rid = await _seeded(file_factory)
+    async with file_factory() as session:
+        await _new_secret(session, rid)  # pending, not committed
+        await load_actions_view(session, rid, now=NOW)
+        await session.rollback()
+    assert await _actions_key(file_factory) is None
+
+
+async def test_a_file_store_without_the_table_builds_live(file_factory) -> None:
+    rid = await _seeded(file_factory)
+    async with file_factory() as session:
+        await session.execute(text("DROP TABLE read_snapshots"))
+        await session.commit()
+    assert (await _read_view(file_factory, rid))["unavailable"] == {}

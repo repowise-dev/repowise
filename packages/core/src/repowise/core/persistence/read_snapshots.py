@@ -315,11 +315,12 @@ async def _claim(engine: AsyncEngine, repo_id: str, kind: str, claim: str) -> bo
 
 
 async def _fill(
-    engine: AsyncEngine, repo_id: str, kind: str, claim: str, key: str, payload: str
+    engine: AsyncEngine, repo_id: str, kind: str, claim: str, key: str, value: Any
 ) -> bool:
-    """Store ``payload`` only while the claim still stands: an input write
+    """Store ``value`` only while the claim still stands: an input write
     since the claim deleted it, and a later reader's claim replaced it."""
     try:
+        payload = json.dumps(value, ensure_ascii=False)
         async with engine.begin() as conn:
             result = await conn.execute(
                 update(ReadSnapshot)
@@ -331,7 +332,7 @@ async def _fill(
                 .values(key=key, payload_json=payload)
             )
         return result.rowcount == 1
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, TypeError, ValueError) as exc:  # the build is served anyway
         logger.debug("read snapshot %s not stored: %s", kind, exc)
         return False
 
@@ -350,8 +351,11 @@ async def build_and_store(
     reads all follow the claim: an input write that lands before the store
     has deleted the claim, so a stale build is never stored. A store that is
     locked or read-only skips the write and still returns the build; so does
-    a store this cannot reopen, which builds on ``session``.
+    a store this cannot reopen, and a session holding its own input writes,
+    which build on ``session``.
     """
+    if stale(session.sync_session, kind):
+        return await build(session)
     engine = _write_back_engine(session)
     if engine is None:
         return await build(session)
@@ -361,7 +365,7 @@ async def build_and_store(
             return await build(session)
         async with AsyncSession(session.bind, expire_on_commit=False) as fresh:
             value = await build(fresh)
-        await _fill(engine, repo_id, kind, claim, key, json.dumps(value, ensure_ascii=False))
+        await _fill(engine, repo_id, kind, claim, key, value)
         return value
     finally:
         await engine.dispose()
