@@ -555,10 +555,15 @@ def set_api_key(
     """
     if provider_id not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_id}")
-    if key is not None and ("\n" in key or "\r" in key):
-        # Reject before writing anything so a bad value can't inject extra env
-        # lines nor leave a partial store update. A real key has no newline.
-        raise ValueError("API key must not contain a newline")
+    if key is not None:
+        key = key.strip()
+        if not key:
+            raise ValueError("API key must not be empty")
+        if "\n" in key or "\r" in key or len(key.splitlines()) != 1:
+            # Reject before writing anything so a bad value can't inject extra env
+            # lines nor leave a partial store update. A real key has no newline.
+            raise ValueError("API key must not contain a newline")
+
     def change(config: dict[str, Any]) -> None:
         keys = config.setdefault("keys", {})
         if key:

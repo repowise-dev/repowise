@@ -252,3 +252,39 @@ async def test_detect_query_reports_signed_in_agent_clis(client: AsyncClient, mo
     assert by_id(plain)["codex_cli"] is None
     assert by_id(detected)["codex_cli"] == "signed_in"
     assert by_id(detected)["claude_cli"] is None
+
+
+@pytest.mark.asyncio
+async def test_add_key_rejects_whitespace_only(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/api/providers/openai/key",
+        json={"api_key": "sk-test-real"},
+    )
+    assert resp.status_code == 204
+
+    resp_blank = await client.post(
+        "/api/providers/openai/key",
+        json={"api_key": "   "},
+    )
+    assert resp_blank.status_code == 400
+    assert "empty" in resp_blank.json()["detail"].lower()
+
+    prov_resp = await client.get("/api/providers")
+    openai_prov = next(p for p in prov_resp.json()["providers"] if p["id"] == "openai")
+    assert openai_prov["configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_key_strips_padding(client: AsyncClient) -> None:
+    from pathlib import Path
+
+    repo = await create_test_repo(client)
+    resp = await client.post(
+        "/api/providers/anthropic/key",
+        json={"api_key": "  sk-ant-x  ", "repo_id": repo["id"]},
+    )
+    assert resp.status_code == 204
+
+    env = load_repo_env(Path(repo["local_path"]))
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-x"
+

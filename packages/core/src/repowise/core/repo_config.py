@@ -407,7 +407,7 @@ def save_repo_env_key(
     ``KEY=value`` lines that a later ``load_repo_env`` would parse as separate
     environment variables. A real API key never contains one.
     """
-    if value is not None and ("\n" in value or "\r" in value):
+    if value is not None and ("\n" in value or "\r" in value or len(value.splitlines()) != 1):
         raise ValueError("env value must not contain a newline")
     env_dir = get_repowise_dir(repo_path)
     env_file = env_dir / ".env"
