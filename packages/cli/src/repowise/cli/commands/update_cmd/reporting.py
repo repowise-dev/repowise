@@ -156,22 +156,25 @@ class JsonProgressEmitter:
         duration_s: float,
         degraded: list[str] | None = None,
         outcome: str | None = None,
+        docs_deferred: bool = False,
+        stale_pages: int | None = None,
     ) -> None:
         # ``outcome`` lets a supervising agent tell a real regeneration apart
         # from a run that only deferred to an in-flight update or found nothing
         # to do — all three otherwise emit ``ok=True, pages_generated=0``.
         # Mirrors the ``UpdateOutcome`` values in ``command.py``.
-        self._emit(
-            {
-                "event": "done",
-                "ok": ok,
-                "outcome": outcome,
-                "pages_generated": pages_generated,
-                "cost_usd": cost_usd,
-                "duration_s": duration_s,
-                "degraded": degraded or [],
-            }
-        )
+        event = {
+            "event": "done",
+            "ok": ok,
+            "outcome": outcome,
+            "pages_generated": pages_generated,
+            "cost_usd": cost_usd,
+            "duration_s": duration_s,
+            "degraded": degraded or [],
+        }
+        if docs_deferred:
+            event.update(docs_deferred=True, stale_pages=stale_pages)
+        self._emit(event)
 
     def error(self, message: str) -> None:
         self._emit({"event": "error", "message": message})

@@ -333,6 +333,12 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     ),
 )
 @click.option(
+    "--defer-docs",
+    is_flag=True,
+    default=False,
+    help="With --index-only, persist facts and mark docs stale without rendering or embedding.",
+)
+@click.option(
     "--working-tree",
     "include_working_tree",
     is_flag=True,
@@ -440,6 +446,7 @@ def update_command(
     verbose: bool = False,
     progress: str = "rich",
     include_working_tree: bool = False,
+    defer_docs: bool = False,
 ) -> None:
     """Incrementally update the index and pages for files changed since the last sync.
 
@@ -470,6 +477,7 @@ def update_command(
         verbose=verbose,
         progress=progress,
         include_working_tree=include_working_tree,
+        defer_docs=defer_docs,
     )
 
 
@@ -633,7 +641,7 @@ def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
 def _start_run(opts: UpdateOptions) -> UpdateRun:
     """Start the run clock and pick the progress output (rich or JSON events)."""
     # ``run`` is the denominator of every stage row; stages nest and overlap.
-    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings())
+    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings(), defer_docs=opts.defer_docs)
     run.timings.start("run")
 
     if opts.progress == "json":
@@ -662,7 +670,11 @@ def _emit_done(
 ) -> UpdateOutcome:
     """Send the JSON ``done`` event (when one is wanted) and hand back *outcome*."""
     if run.emitter is not None:
-        extra = {} if degraded is None else {"degraded": degraded}
+        extra: dict[str, Any] = {} if degraded is None else {"degraded": degraded}
+        if run.defer_docs:
+            from repowise.cli.commands._page_freshness import stale_page_count
+
+            extra.update(docs_deferred=True, stale_pages=run_async(stale_page_count(run.repo_path)))
         run.emitter.done(
             ok=True,
             pages_generated=pages_generated,
@@ -931,7 +943,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         run.head
         and run.head == run.base_ref
         and not run.config.changed
-        and not run.renderer_changed
+        and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
         and not run.analyzer_changed
@@ -1020,10 +1032,16 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
         )
     if run.stale_pages_deferred:
-        console.print(
-            f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
-            "[bold]repowise generate --stale[/bold].[/dim]"
-        )
+        if opts.defer_docs and resolve_docs_mode(run.state) == "deterministic":
+            console.print(
+                f"[dim]{run.stale_pages_deferred} stale page(s) wait for documentation refresh: "
+                "[bold]repowise update --index-only[/bold].[/dim]"
+            )
+        else:
+            console.print(
+                f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
+                "[bold]repowise generate --stale[/bold].[/dim]"
+            )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
@@ -1062,6 +1080,10 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         log.debug("self_heal_skipped", reason="another update holds the lock")
         return
     try:
+        if opts.defer_docs and run.renderer_changed:
+            from .stale_targets import defer_renderer_pages
+
+            run_async(defer_renderer_pages(run))
         rescanned = run.scanner_changed and rescan_security_if_changed(
             repo_path, state, list(run.cfg.get("exclude_patterns") or [])
         )
@@ -1073,7 +1095,11 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
                     **state,
                     "config_fingerprint": run.config.curr_fingerprint,
                     "config_dependency_fingerprints": run.config.curr_dependency_fps,
-                    "renderer_fingerprint": run.curr_renderer_fp,
+                    "renderer_fingerprint": (
+                        state.get("renderer_fingerprint")
+                        if opts.defer_docs
+                        else run.curr_renderer_fp
+                    ),
                     "phase_timings": run.timings.totals,
                 },
             )
@@ -1260,7 +1286,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         "last_sync_commit": head,
         "config_fingerprint": run.config.curr_fingerprint,
         "config_dependency_fingerprints": run.config.curr_dependency_fps,
-        "renderer_fingerprint": run.curr_renderer_fp,
+        "renderer_fingerprint": (
+            state.get("renderer_fingerprint") if opts.defer_docs else run.curr_renderer_fp
+        ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
     # is: another base says nothing about the marker's range.
@@ -1669,13 +1697,18 @@ class _TemplatePages:
     render_stats: dict[str, int] = field(default_factory=dict)
     # False after a failed renderer-driven render: keep the old stamp and pages.
     renderer_render_ok: bool = True
+    docs_deferred: bool = False
 
 
 def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Index-only: re-render a template wiki (no model), persist, and finish."""
     docs_mode = resolve_docs_mode(run.state)
-    pages = _TemplatePages(docs_mode=docs_mode, renderer_render_ok=docs_mode != "llm")
-    if pages.docs_mode == "deterministic":
+    pages = _TemplatePages(
+        docs_mode=docs_mode,
+        renderer_render_ok=docs_mode != "llm" and not opts.defer_docs,
+        docs_deferred=opts.defer_docs,
+    )
+    if pages.docs_mode == "deterministic" and not opts.defer_docs:
         _render_template_pages(opts, run, pages)
     _stage(run, "persist")
     with _errors_reported(run):
@@ -1799,6 +1832,7 @@ def _render_template_page_set(
 
 def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
     config = run.config
+    assert config is not None
     template_wiki = pages.docs_mode == "deterministic"
     persisted_changed_paths = (
         [pf.file_info.path for pf in run.parsed_files]
@@ -1825,7 +1859,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         source_map=run.source_map,
         degraded=run.degraded,
         # The repo's docs mode, not this run's page count.
-        template_wiki=template_wiki,
+        template_wiki=template_wiki and not pages.docs_deferred,
         pages_rendered=len(pages.pages),
         git_decay_map=run.git_decay_map,
         exclude_patterns=run.exclude_patterns,
@@ -1840,6 +1874,17 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         dependency_fingerprints=config.curr_dependency_fps,
         vector_store=config_vector_store,
         require_config_rebuild_success=config.rebuild_required,
+        deferred_page_scope=(
+            ("all" if run.full_generation else "template" if run.renderer_changed else "changed")
+            if pages.docs_deferred
+            else None
+        ),
+        deferred_page_paths=(
+            list(dict.fromkeys([*run.affected.regenerate, *run.affected.decay_only]))
+            if pages.docs_deferred
+            else None
+        ),
+        stamp_config=not (pages.docs_deferred and config.generation_changed),
         timings=run.timings,
     )
 
@@ -1847,6 +1892,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
 def _config_vector_store(run: UpdateRun, pages: _TemplatePages, template_wiki: bool):
     """The vector store a config-driven rebuild writes to, or None without one."""
     config = run.config
+    if pages.docs_deferred:
+        return None
     if not (config.traversal_changed or config.generation_changed):
         return None
     vector_store = _build_update_vector_store(
@@ -1867,7 +1914,7 @@ def _full_generation_page_ids(
     full_render = run.config.generation_changed or (
         (run.renderer_changed or run.wiki_rebuild) and pages.renderer_render_ok
     )
-    if template_wiki and full_render:
+    if template_wiki and full_render and not pages.docs_deferred:
         return {page.page_id for page in pages.pages}
     return None
 
@@ -2228,6 +2275,7 @@ def run_update(
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
+    defer_docs: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2268,10 +2316,23 @@ def run_update(
         progress=progress,
         skip_cross_repo_hooks=skip_cross_repo_hooks,
         include_working_tree=include_working_tree,
+        defer_docs=defer_docs,
     )
+    if opts.defer_docs and (
+        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
+    ):
+        raise reasoned_error(
+            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
+            reason="defer_docs_needs_index_only",
+        )
     run = _start_run(opts)
     target = _resolve_target(opts)
     if target.is_workspace:
+        if opts.defer_docs:
+            raise reasoned_error(
+                "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
+                reason="defer_docs_needs_one_repo",
+            )
         return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
@@ -2288,7 +2349,8 @@ def run_update(
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
     _check_config_and_renderer(run)
-    resolve_wiki_rebuild(opts, run)
+    if not opts.defer_docs:
+        resolve_wiki_rebuild(opts, run)
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
     _assess_staleness(opts, run)
