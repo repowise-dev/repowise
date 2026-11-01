@@ -515,6 +515,22 @@ def doc_mentions(entry: Entry, sections: Iterable[DocSection]) -> int:
     return sum(any(rx.search(s) for s in sec.spans) for sec in sections)
 
 
+def quickstart_entries(entries: Iterable[Entry], sections: Iterable[DocSection]) -> set[str]:
+    """Nodes of the entries the root README's first example shows in code.
+
+    That example (a quickstart, a "using it" block) is what a newcomer runs
+    first, so its entries are walked before better-mentioned ones elsewhere.
+    """
+    patterns = [(e.node, mention_pattern(e)) for e in entries]
+    for sec in sections:
+        if "/" in sec.path or PurePosixPath(sec.path).stem.lower() != "readme":
+            continue
+        shown = {node for node, rx in patterns if any(rx.search(s) for s in sec.spans)}
+        if shown:
+            return shown
+    return set()
+
+
 def is_ui_path(path: str) -> bool:
     """A UI component file: the render tree is not an operation a walkthrough tells."""
     p = PurePosixPath(path)

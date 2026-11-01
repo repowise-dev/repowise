@@ -64,6 +64,65 @@ def test_documented_entries_outrank_bigger_undocumented_ones():
     assert plans[0].title == "How the get_answer tool answers a call"
 
 
+def _two_doors(second: str) -> nx.DiGraph:
+    """A ``health`` command and *second* entry, each with its own front code, both running one engine."""
+    g = nx.DiGraph()
+    _add(g, "cli/health.py::health_command", 1, 9, decorators=['@cli.command("health")'])
+    _add(g, "srv/tool.py::get_health", 1, 9, decorators=[second])
+    _add(g, "engine/core.py::analyze", 1, 9)
+    _wide(g, "engine/core.py::analyze", "eng")
+    for front, prefix in (("cli/health.py::health_command", "clif"), ("srv/tool.py::get_health", "srvf")):
+        _wide(g, front, prefix)
+        _call(g, front, "engine/core.py::analyze", 60)
+    return g
+
+
+def test_a_command_and_a_tool_running_one_engine_get_one_page_under_the_better_documented():
+    docs = [DocSection("docs/a.md", "Tools", 1, 9, "", ("get_health(targets)",))] * 3
+    docs.append(DocSection("docs/b.md", "CLI", 1, 9, "", ("tool health",)))
+    plans = select_flow_plans(_two_doors("@mcp.tool()"), program="tool", docs=docs)
+    assert [p.public for p in plans] == ["get_health"]
+    # Two commands of one CLI sharing that engine are two operations.
+    plans = select_flow_plans(_two_doors('@cli.command("check")'), program="tool", docs=docs)
+    assert sorted(p.public for p in plans) == ["tool check", "tool health"]
+
+
+def test_an_engine_most_entries_run_does_not_merge_them():
+    g = _two_doors("@mcp.tool()")
+    # Two more entries run the same engine: it is shared plumbing now.
+    for n, deco in enumerate(['@cli.command("a")', '@cli.command("b")']):
+        node = f"cli/more{n}.py::extra{n}"
+        _add(g, node, 1, 9, decorators=[deco])
+        _wide(g, node, f"more{n}")
+        _call(g, node, "engine/core.py::analyze", 60)
+    plans = select_flow_plans(g, program="tool")
+    assert {"get_health", "tool health"} <= {p.public for p in plans}
+
+
+def test_undeclared_roots_fill_only_the_lower_half_of_the_budget():
+    g = nx.DiGraph()
+    for n in range(6):
+        root = f"pkg{n}/main.py::job{n}"
+        _add(g, root, 1, 9)
+        _wide(g, root, f"pkg{n}/w")
+    assert len(select_flow_plans(g, code_file_count=10)) == 3
+
+
+def test_the_readme_first_example_is_walked_before_better_mentioned_entries():
+    g = nx.DiGraph()
+    _add(g, "srv/a.py::get_big", 1, 9, decorators=["@mcp.tool()"])
+    _add(g, "cli/b.py::serve_command", 1, 9, decorators=['@cli.command("serve")'])
+    _wide(g, "srv/a.py::get_big", "big", n=16)
+    _wide(g, "cli/b.py::serve_command", "srv", n=13)
+    docs = [
+        DocSection("README.md", "Intro", 1, 3, "", ()),
+        DocSection("README.md", "Quickstart", 4, 9, "", ("tool serve --port 8000",)),
+        *[DocSection("docs/tools.md", "Tools", 1, 9, "", ("get_big(x)",))] * 5,
+    ]
+    plans = select_flow_plans(g, program="tool", docs=docs)
+    assert [p.public for p in plans] == ["tool serve", "get_big"]
+
+
 def test_doc_mentions_count_code_as_typed_not_prose():
     entry = Entry("cli.py::run_command", CLI, "tool run")
     sections = [
