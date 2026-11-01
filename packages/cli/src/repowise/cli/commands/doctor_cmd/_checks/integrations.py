@@ -480,22 +480,24 @@ def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
     name, check_id = "Distill rewrite hook", "distill-rewrite-hook"
     try:
         installed_names, any_unmatched = _installed_rewrite_hooks(_rewrite_hook_surfaces())
-        if installed_names:
-            commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
-            opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
-            detail = ", ".join(installed_names)
-            detail += " (this repo opted out)" if opted_out else ""
-            detail = f"installed: {detail}"
-            off_path = "" if opted_out else _distill_off_path_note()
-            detail += off_path
-            fix = "repowise hook rewrite install" if any_unmatched else None
-            if fix or off_path:
-                return _check(name, True, detail, check_id=check_id, warn=True, fix=fix)
-        else:
+        if not installed_names:
             detail = "not installed (opt-in: repowise hook rewrite install)"
-        return _check(name, True, detail, check_id=check_id)
+            return _check(name, True, detail, check_id=check_id)
+        detail, warn = _installed_rewrite_detail(installed_names, distill_cfg)
+        fix = "repowise hook rewrite install" if any_unmatched else None
+        return _check(name, True, detail, check_id=check_id, warn=warn or any_unmatched, fix=fix)
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+
+
+def _installed_rewrite_detail(installed_names: list[str], distill_cfg: object) -> tuple[str, bool]:
+    """``(detail, off_path)`` for a rewrite hook row with the hook installed."""
+    commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else {}
+    opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
+    if opted_out:
+        return f"installed: {', '.join(installed_names)} (this repo opted out)", False
+    off_path = _distill_off_path_note()
+    return f"installed: {', '.join(installed_names)}{off_path}", bool(off_path)
 
 
 def _hook_scripts_row(repo_path: _DoctorPath | None = None) -> DoctorCheck:
