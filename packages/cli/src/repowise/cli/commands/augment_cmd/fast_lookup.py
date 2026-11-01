@@ -1,4 +1,4 @@
-"""Read-only stdlib-``sqlite3`` twins of the three hot hook index lookups.
+"""Read-only stdlib-``sqlite3`` twins of the hot hook index lookups.
 
 Why this exists rather than the ORM the rest of the codebase uses: in a fresh
 hook process, ``import repowise.core.persistence`` costs ~958ms on this
