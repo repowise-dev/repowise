@@ -51,6 +51,7 @@ def test_body_without_a_start_line_has_no_range() -> None:
     [
         "It is defined in `client.py` (line 27).",
         "See lines 26-27.",
+        "It reads the flag (`cobra.go`, lines 46 and 55).",
         "Lines 10 to 12 build it.",
         "The body (L40-L52) reads it.",
         "In client.py:27-29 it is set.",

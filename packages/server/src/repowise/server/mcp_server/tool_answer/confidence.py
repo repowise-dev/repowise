@@ -206,7 +206,7 @@ _FILE_LINE_REF_RE = re.compile(r"[\w./-]+:\d+(?:-\d+)?")
 # line range, so answers cite it in prose. Only a citation context counts, so
 # "max lines 500" or "set to line 30" still assert their number.
 _PROSE_LINE_REF_RE = re.compile(
-    r"\b(?:lines?|L)\s*\d+(?:\s*(?:-|–|to|through)\s*L?\d+)?\b", re.IGNORECASE
+    r"\b(?:lines?|L)\s*\d+(?:\s*(?:-|–|to|and|through)\s*L?\d+)?\b", re.IGNORECASE
 )
 _LINE_REF_LEAD_RE = re.compile(
     r"(?:[(,]|\b(?:at|on|in|see|from|of|source)|\.\w{1,5}`?|^)\s*$", re.IGNORECASE
