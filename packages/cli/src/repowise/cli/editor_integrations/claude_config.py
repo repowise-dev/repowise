@@ -217,6 +217,25 @@ def claude_code_plugin_installed() -> bool:
     return not (isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False)
 
 
+def claude_code_user_scope_serves(repo_path: Path) -> bool:
+    """Whether Claude Code already loads a user-scope repowise server in *repo_path*.
+
+    True for the enabled plugin, or a ``~/.claude.json`` entry that follows the
+    launch dir or names this repo (or its workspace root) and whose pinned
+    command still exists. A project ``.mcp.json`` entry beside either makes
+    Claude Code report conflicting scopes, so init leaves it out.
+    """
+    if claude_code_plugin_installed():
+        return True
+    stored = _stored_repowise_entry(_claude_code_user_config_path())
+    if stored is None or _pinned_command_missing(stored):
+        return False
+    target = _entry_repo_target(stored)
+    if target is None:
+        return _is_launch_dir_entry(stored)
+    return any(_same_target(target, p) for p in (repo_path, _resolve_mcp_target(repo_path)))
+
+
 def _upsert_user_entry(config_path: Path, entry: dict) -> bool:
     """Write *entry* as ``mcpServers.repowise`` in ~/.claude.json, touching nothing else.
 
