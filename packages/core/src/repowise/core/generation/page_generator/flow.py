@@ -13,6 +13,7 @@ grounded on the excerpt windows, the step spans and those doc sections.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Mapping, Sequence
@@ -97,20 +98,19 @@ def flow_context(
 ) -> dict[str, Any]:
     """What both renderings read: one row per step plus, for the model, the material."""
     rows = _step_rows(plan, graph, modules)
-    if material is None:
-        material = build_material(plan, graph, line_reader(None, source_map), ())
-    for row, code in zip(rows, material.excerpts, strict=True):
-        row["code"] = code
-    if rows:
-        rows[0]["cite"] = material.root_cite
+    if material is not None:  # the keyless page lists steps without code
+        for row, code in zip(rows, material.excerpts, strict=True):
+            row["code"] = code
+        if rows:
+            rows[0]["cite"] = material.root_cite
     return {
         "title": plan.title,
         "kind": plan.kind,
         "public": plan.public or (rows[0]["name"] if rows else ""),
         "steps": rows,
         "exits": [r for r in rows if r["how_called"] in ("early_exit", "handler")],
-        "surface": material.surface,
-        "docs": material.docs,
+        "surface": material.surface if material else "",
+        "docs": material.docs if material else (),
         "skipped": list(plan.skipped),
         "modules": sorted({row["module"] for row in rows if row["module"]}),
         "neighbours": _neighbours(rows, related),
@@ -198,10 +198,23 @@ def _step_sources(plan: FlowPlan) -> list[dict[str, object]]:
     ]
 
 
-def _subject(plan: FlowPlan, source_map: Mapping[str, bytes]) -> str:
-    """The page's subject: which steps, where they sit, and their files' bytes."""
-    steps = "|".join(f"{s.symbol_id}@{s.start_line}-{s.end_line}" for s in plan.steps)
-    return f"{plan.entry_id}|{steps}|{files_digest(plan.files, source_map)}"
+def _subject(
+    plan: FlowPlan, source_map: Mapping[str, bytes], material: FlowMaterial, related: Sequence[str]
+) -> str:
+    """The page's subject: the steps, their files' bytes, and the rest of what the prompt reads.
+
+    The docs, options summary, call kinds and neighbouring walkthroughs feed
+    the prompt too, so an edit to a doc section or an option's help text
+    regenerates the page instead of reusing it.
+    """
+    steps = "|".join(
+        f"{s.symbol_id}@{s.start_line}-{s.end_line}:{s.context}" for s in plan.steps
+    )
+    extra = "\x00".join(
+        [material.surface, *(d.text for d in material.docs), *sorted(related)]
+    )
+    digest = hashlib.sha256(extra.encode()).hexdigest()[:16]
+    return f"{plan.entry_id}|{steps}|{files_digest(plan.files, source_map)}|{digest}"
 
 
 class FlowPageMixin:
@@ -252,7 +265,8 @@ class FlowPageMixin:
             related=related,
         )
         user_prompt = self._render("flow_page.j2", ctx=ctx, word_budget=_WORD_BUDGET)
-        reuse_key = model_reuse_key(self, _subject(plan, source_map), FLOW_PAGE_TYPE, "flow_page.j2")
+        subject = _subject(plan, source_map, material, related)
+        reuse_key = model_reuse_key(self, subject, FLOW_PAGE_TYPE, "flow_page.j2")
         try:
             response = await self._call_provider(
                 FLOW_PAGE_TYPE,

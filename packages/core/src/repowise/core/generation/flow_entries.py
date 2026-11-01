@@ -92,9 +92,11 @@ _ROUTE_DECO = re.compile(
 _GO_NAME = re.compile(r"^func \(\w+ \*?(\w+)\) Name\(\) string \{")
 _GO_RETURN = re.compile(r'\s*return "([\w-]+)"')
 _GO_USE = re.compile(r"\bUse:\s*\"([\w-]+)")
-_GO_RUN = re.compile(r"\bRunE?:\s*(?:\w+\.)?(\w+)\s*,")
+_GO_RUN = re.compile(r"\bRunE?:\s*(?:\w+\.)?(\w+)\s*[,}]?\s*$")
 _GO_HANDLE = re.compile(r"\bHandle(?:Func)?\(\s*\"([^\"]+)\"\s*,\s*(?:\w+\.)?(\w+)\s*\)")
-_REEXPORT = re.compile(r"^from \.([\w.]*) import \(?([^)\n]*(?:\n[^)\n]*)*?)\)?$", re.M)
+# ``from .mod import a, b`` or the parenthesised multi-line form.
+_REEXPORT = re.compile(r"^from \.([\w.]*) import (?:\(([^)]*)\)|([^\n(]+))$", re.M)
+_re_comment = re.compile(r"#[^\n]*")
 _INIT = re.compile(r"(?:src/)?\w+/__init__\.py")
 _CALLABLE = ("function", "method")
 
@@ -149,12 +151,19 @@ def _go_line_entry(
     if _GO_NAME.match(lines[i]):
         return _go_named_command(path, lines, i, graph, program)
     if m := _GO_USE.search(lines[i]):  # cobra.Command{Use: "x", RunE: fn}
-        run = next((r for r in map(_GO_RUN.search, lines[i : i + 40]) if r), None)
+        run = next((r for r in map(_GO_RUN.search, _literal_body(lines, i)) if r), None)
         if run and run.group(1) in names:
             return Entry(names[run.group(1)], CLI, _cli_public(program, m.group(1)))
         return None
     m = _GO_HANDLE.search(lines[i])
     return Entry(names[m.group(2)], ROUTE, m.group(1)) if m and m.group(2) in names else None
+
+
+def _literal_body(lines: list[str], i: int) -> list[str]:
+    """Lines of the command literal opened at *i*: up to the next ``Use:`` (40 at most)."""
+    window = lines[i : i + 40]
+    nxt = next((k for k in range(1, len(window)) if _GO_USE.search(window[k])), len(window))
+    return window[:nxt]
 
 
 def _go_file_entries(
@@ -174,7 +183,8 @@ def _python_public_api(
         if not _INIT.fullmatch(init) or init.split("/")[-2].startswith("test"):
             continue
         pkg = init.rsplit("/", 1)[0]
-        for module, names in _REEXPORT.findall("\n".join(read(init))):
+        for module, wrapped, plain in _REEXPORT.findall("\n".join(read(init))):
+            names = _re_comment.sub("", wrapped or plain)
             src = f"{pkg}/{module.replace('.', '/')}.py" if module else init
             if src not in by_file:
                 src = f"{pkg}/{module.replace('.', '/')}/__init__.py"

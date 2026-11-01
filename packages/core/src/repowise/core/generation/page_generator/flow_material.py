@@ -34,7 +34,8 @@ OPTION_LINES = 30
 _HEADS = (40, 30, 22, 16, 12, 8, 5)
 _ROOT_EXTRA = 10  # the root's head: where options are unpacked and the run is set up
 _WINDOW = 2
-_DEF = re.compile(r"\s*(async\s+def|def|func|function|export|class|const|public|private|fn|pub)\b")
+# Lines above a definition: decorators and annotations, comments, attributes.
+_NOT_DEF = ("@", "#", "//", "/*", "*", "[")
 _USER_DOC_DIRS = frozenset(
     {"start", "getting-started", "getting_started", "guide", "guides", "reference", "usage"}
 )
@@ -60,10 +61,17 @@ class FlowMaterial:
 
 
 def def_line(lines: list[str], start: int) -> int:
-    """The first definition line at or after *start* (skips decorators and comments)."""
+    """The definition line at or after *start*: skips a decorator stack and comments.
+
+    Only lines that are plainly not the definition are skipped, so a language
+    whose definition keyword is unknown here still starts at *start*.
+    """
+    depth = 0
     for i in range(start - 1, min(len(lines), start + 80)):
-        if _DEF.match(lines[i]):
+        text = lines[i].strip()
+        if depth == 0 and text and not text.startswith(_NOT_DEF):
             return i + 1
+        depth = max(0, depth + text.count("(") - text.count(")"))
     return start
 
 

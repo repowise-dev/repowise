@@ -185,3 +185,20 @@ def test_a_narrow_citation_inside_a_step_is_kept_and_a_wrong_one_is_grounded():
     assert "`app/run.py:4-9`" in out
     assert "`app/run.py:1-40`" in out
     assert "`app/run.py`" in out
+
+
+def test_a_package_reexport_in_parentheses_is_public_api():
+    from repowise.core.generation.flow_entries import API, declared_entries
+
+    g = nx.DiGraph()
+    _add(g, "pkg/app.py::serve", 1, 5)
+    g.add_node("pkg/__init__.py", node_type="file")
+    source = {"pkg/__init__.py": ["from .app import (", "    serve,  # the server", "    _private,", ")"]}
+    entries = declared_entries(g, lambda p: source.get(p, []))
+    assert [(e.kind, e.public) for e in entries] == [(API, "serve")]
+
+
+def test_a_call_in_a_braced_catch_block_is_a_handler():
+    lines = ["function run() {", "  try {", "    work();", "  } catch (e) {", "    recover();", "  }", "}"]
+    assert call_context(lines, 3, 1) == "always"
+    assert call_context(lines, 5, 1) == "handler"

@@ -99,8 +99,9 @@ def _block_kinds(lines: list[str], call_line: int, def_line: int) -> list[str]:
     for i in range(call_line - 2, max(def_line - 1, 0) - 1, -1):
         if indent == 0:
             break
-        stripped = lines[i].strip()
-        if not stripped or stripped.startswith(("#", "//", ")", "]", "}")) or _indent(lines[i]) >= indent:
+        # ``} catch (e) {`` / ``} else {`` open a block like any other head.
+        stripped = lines[i].strip().lstrip("}").strip()
+        if not stripped or stripped.startswith(("#", "//", ")", "]")) or _indent(lines[i]) >= indent:
             continue
         words = stripped.split()
         head = words[1] if words[0] == "async" and len(words) > 1 else words[0]

@@ -310,7 +310,7 @@ def _same_operation(cand: _Candidate, other: _Candidate) -> bool:
         cand.entry.node in other.reach
         or other.entry.node in cand.reach
         or len(cand.reach & other.reach) / max(1, len(cand.reach)) > _MAX_OVERLAP
-        or cand.entry.public == other.entry.public
+        or (cand.entry.kind != FUNCTION and cand.entry.public == other.entry.public)
     )
 
 
