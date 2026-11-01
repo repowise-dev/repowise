@@ -22,7 +22,7 @@ For the exact settings entries each install writes, see the
 |------|--------|--------------|----------|--------------|
 | **Post-commit auto-sync** | git | `repowise init` by default (`--no-hook` skips it), or `repowise hook install` | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
 | **Pre-commit security check** | git | `repowise hook install --security` (opt-in) | every `git commit` | Runs `repowise security check --staged` and blocks a commit that adds a finding at or above `high` ([details](../layers/SECURITY.md#before-a-commit---staged)) |
-| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line, core-tool pointer, and the standing decisions relevant to this session |
+| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line and the standing decisions relevant to this session |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it lands as a candidate |
@@ -90,7 +90,7 @@ either way; re-run `repowise init` without the flag to register the repo later.
 The generated `CLAUDE.md` is static between reindexes, so it cannot say whether
 the index is current right now. This hook adds a short block at session start:
 
-- **Index current**: one line saying so, plus the core-tool pointer.
+- **Index current**: one line saying so, with the indexed `HEAD`.
 - **Update running**: a "catching up" notice.
 - **Index behind**: indexed commit vs `HEAD` with a changed-file count, and the
   trust rule (a `stale_warning` fires only when a file a response served has
@@ -130,11 +130,12 @@ context from the index:
     Git: HOTSPOT, bus-factor=1, owner=alice
 ```
 
-**Search-flood digests.** A grep that returns 50 or more lines also gets a
-per-file digest: each matched file with its match count and anchor line
-numbers, ranked by graph centrality when the index can rank them, with a
-`(N more files, M matches)` tail past the top ten. With `hooks.search_digest:
-true`, the digest replaces the raw match list. Single-file context greps (`-C`,
+**Search-flood digests.** With `hooks.search_digest: true`, a grep that
+returns 50 or more lines across three or more files comes back as a per-file
+digest in place of the raw match list: each matched file with its match count
+and anchor line numbers, ranked by graph centrality when the index can rank
+them, with a `(N more files, M matches)` tail past the top ten. With the flag
+off, the hook adds nothing to such a grep. Single-file context greps (`-C`,
 `-A`, `-B`) and `files_with_matches` results are never digested.
 
 **Read notices.** On a `Read` of an indexed file, repowise warns when the file

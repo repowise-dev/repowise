@@ -13,10 +13,11 @@ something".
 The digest is the exception and stays index-free by design: it summarizes the
 flood rather than reasoning about it, so it works on an unindexed repo.
 
-Rescue, triage and the appended digest are **advisory**: they add context
-next to the tool output, they do not replace it. They therefore spend tokens
-and are not billed to the savings ledger; only the *served* digest
-(:mod:`search_digest`) replaces bytes and records a saving.
+Rescue and triage are **advisory**: they add context next to the tool output,
+they do not replace it. They therefore spend tokens and are not billed to the
+savings ledger. The digest is only ever *served* in place of the flood
+(:mod:`search_digest`), which replaces bytes and records a saving; when it is
+not served it says nothing.
 """
 
 from __future__ import annotations
@@ -96,23 +97,24 @@ def _handle_search_post(
         return HookResult()
     output_text = _extract_output_text(tool_output)
 
-    # A genuine flood gets a compact per-file digest regardless of what the
-    # pattern looks like — it summarizes the actual results, not the concept.
+    # A genuine multi-file flood belongs to the digest surface regardless of
+    # what the pattern looks like: it is served in place of the flood or not
+    # at all. Triage never runs on it.
     if result_count >= _DIGEST_THRESHOLD:
-        digest = _grep_flood_digest(repo_path, output_text)
-        if digest:
+        groups = _flood_groups(output_text)
+        if groups is not None:
             return _digest_result(
                 repo_path,
                 tool_name,
                 tool_input,
                 tool_output,
                 output_text,
-                digest,
+                groups,
                 session_id,
                 adapter=adapter,
             )
         # Unparseable output (e.g. Glob path lists, or a single-file context
-        # grep, see search_digest): fall through to triage.
+        # grep, see search_digest), or one or two files: fall through to triage.
 
     pattern = tool_input.get("pattern")
     if not isinstance(pattern, str) or not pattern.strip():
@@ -179,23 +181,26 @@ def _digest_result(
     tool_input: dict,
     tool_output: object,
     output_text: str,
-    digest: str,
+    groups: dict,
     session_id: str,
     *,
     adapter,
 ) -> HookResult:
-    """Serve the digest in place of the flood, or append it as before.
+    """Serve the digest in place of the flood, or say nothing.
 
-    Two ledger categories on purpose. A *served* digest and an *appended* one
-    are different products. One costs the agent tokens to gain a ranking, the
-    other saves them, and pooling both under ``digest`` would average a cost
-    and a saving into a number that describes neither. ``digest_served`` is
-    scored as no-action-expected for the same structural reason
-    ``skeleton_served`` is: its text leaves as ``updatedToolOutput`` and never
-    appears in the transcript the classifier reads.
+    The digest used to be appended beside the flood when it was not served.
+    That added 1-2 KB on top of output the agent had already been billed for,
+    and agents searched again after it as often as without it. So an unserved
+    digest is never emitted. ``digest_served`` is scored as
+    no-action-expected for the same structural reason ``skeleton_served`` is:
+    its text leaves as ``updatedToolOutput`` and never appears in the
+    transcript the classifier reads.
 
-    Every gate between "there is a digest" and "the agent got it" belongs to
-    :func:`replacement.offer`, which the Read surfaces use too.
+    The digest is rendered inside *build*, so a client that cannot replace
+    pays nothing for it and an opted-out repo pays only after its response
+    is out (the forgone-saving write). Every gate between "there is a digest"
+    and "the agent got it" belongs to :func:`replacement.offer`, which the
+    Read surfaces use too.
     """
     from .replacement import offer
     from .search_digest import CONFIG_FLAG, SAVINGS_SOURCE, digest_replacement
@@ -209,17 +214,16 @@ def _digest_result(
         tool_name=tool_name,
         tool_response=tool_output,
         build=lambda: digest_replacement(
-            pattern if isinstance(pattern, str) else "", output_text, digest
+            pattern if isinstance(pattern, str) else "",
+            output_text,
+            _grep_flood_digest(repo_path, groups),
         ),
     )
     if served is not None:
         _log_search_firing(repo_path, session_id, served.category, served.text)
         return HookResult(replacement=served.payload, on_emitted=on_emitted)
-
-    # Nothing was replaced, so the digest rides alongside as it always did.
-    # ``on_emitted`` here is the forgone-saving write, when there was one.
-    _log_search_firing(repo_path, session_id, "digest", digest)
-    return HookResult(context=digest, on_emitted=on_emitted)
+    # ``on_emitted`` is the forgone-saving write, when there was one.
+    return HookResult(on_emitted=on_emitted)
 
 
 def _log_search_firing(
@@ -250,24 +254,28 @@ def _log_search_firing(
     )
 
 
-def _grep_flood_digest(repo_path: Path, output_text: str) -> str | None:
-    """Compact per-file digest of a Grep flood, index-ranked when possible.
+def _flood_groups(output_text: str) -> dict | None:
+    """Matches grouped per file, or None when the output is not a digestible flood.
 
-    Cannot replace the tool output (PostToolUse is additionalContext only),
-    so this is positioned as a digest the agent can navigate by instead of
-    scanning hundreds of match lines. Grouping is pure text work from the
-    shared distill filter; PageRank ordering is attempted against the index
-    and silently skipped when there is no graph (plain count order then).
+    Pure text work from the shared distill filter, cheap enough to decide on
+    before the response; the ranking in :func:`_grep_flood_digest` is not.
     """
-    from repowise.core.distill.filters.search_results import (
-        group_search_matches,
-        render_search_digest,
-    )
+    from repowise.core.distill.filters.search_results import group_search_matches
 
     groups = group_search_matches(output_text)
     if groups is None or len(groups) < 3:
         # One or two files: the raw output is already navigable.
         return None
+    return groups
+
+
+def _grep_flood_digest(repo_path: Path, groups: dict) -> str:
+    """Compact per-file digest of a grouped Grep flood, index-ranked when possible.
+
+    PageRank ordering is attempted against the index and silently skipped
+    when there is no graph (plain count order then).
+    """
+    from repowise.core.distill.filters.search_results import render_search_digest
 
     paths = list(groups.keys())
     file_order = _fast_pagerank_file_order(repo_path, paths)

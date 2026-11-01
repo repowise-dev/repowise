@@ -38,7 +38,9 @@ def test_current_index(repo, monkeypatch) -> None:
     assert out is not None
     assert "current" in out
     assert _INDEXED[:8] in out
-    assert "get_answer" in out
+    # The freshness fact only: no "prefer the MCP tools" nudge.
+    assert "get_answer" not in out
+    assert "prefer" not in out
 
 
 def test_behind_head_with_changed_count(repo, monkeypatch) -> None:
@@ -83,7 +85,8 @@ def test_git_failure_never_claims_current(repo, monkeypatch) -> None:
     out = _handle(repo)
     assert out is not None
     assert "current" not in out
-    assert "MCP tools" in out
+    assert "local codebase index" in out
+    assert "prefer" not in out.lower()
 
 
 def test_silent_outside_indexed_repo(tmp_path) -> None:

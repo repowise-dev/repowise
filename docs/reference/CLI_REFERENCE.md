@@ -1984,7 +1984,7 @@ repowise hook read-reread status -w
 | `read-reread` | `hooks.read_reread` | Re-reading an unchanged, unedited file returns a notice naming the earlier read; changed content comes in full, flagged; reading again returns content. |
 
 - No hook to install: `init`'s PostToolUse hook carries all three; these set the verdict in `.repowise/config.yaml` (`init` sets it from `--distill-hook`).
-- `uninstall` returns whole results (the digest rides alongside again). `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
+- `uninstall` returns whole results, with nothing added. `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
 
 ### `repowise hook health-gate install|uninstall|status`
 

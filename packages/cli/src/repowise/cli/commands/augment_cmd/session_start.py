@@ -5,7 +5,7 @@ whether the index is current *right now*. This handler closes that gap with a
 short per-session block so the agent starts with calibrated trust instead of
 discovering staleness mid-task:
 
-  * index current  → one line saying so, plus the core-tool pointer;
+  * index current  → one line saying so;
   * update running → positive "catching up" notice (never a stale scare);
   * index behind   → indexed vs HEAD with a changed-file count, and the
     target-scoped trust rule (stale_warning only when a served file changed).
@@ -18,7 +18,7 @@ it is scored against what this session is about to touch.
 
 Same operational rules as the rest of augment: stdlib + git subprocess only,
 any failure returns None, and a git failure never produces a false "current"
-claim (it degrades to the freshness-free reminder).
+claim (it degrades to a line without the freshness fact).
 """
 
 from __future__ import annotations
@@ -87,19 +87,13 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
     """
     tag = f"[repowise {emitting_build()}]"
     head = _git_head(repo_path)
+    # No "prefer the MCP tools" sentence on the two lines below: agents did not
+    # act on it, and the generated CLAUDE.md already carries the tool table.
     if head is None:
-        return (
-            f"{tag} This repository has a local codebase index. Prefer the "
-            f"repowise MCP tools ({_CORE_TOOLS}) over raw file reads for locating "
-            "and understanding code before you edit."
-        )
+        return f"{tag} This repository has a local codebase index."
 
     if head == last_sync:
-        return (
-            f"{tag} Codebase index is current (HEAD {head[:8]}). The MCP tools "
-            f"({_CORE_TOOLS}) serve content verified against this exact tree; prefer "
-            "them over raw file reads for locating and understanding code before you edit."
-        )
+        return f"{tag} Codebase index is current (HEAD {head[:8]})."
 
     in_flight = _read_in_flight_marker(repo_path)
     if in_flight is not None:
