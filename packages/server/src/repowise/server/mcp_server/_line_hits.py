@@ -37,6 +37,7 @@ from repowise.server.mcp_server._edit_sites import (
     _MAX_FILE_BYTES,
     MAX_REFERENCES_PER_FILE,
     MAX_TEXT_CHARS,
+    SMALL_SET_LINES,
     _bare_name,
     _cap_references_per_file,
     _read_lines,
@@ -68,9 +69,6 @@ MAX_LINES_MIXED = 15
 MAX_OMITTED_FILES = 5
 OVER_LINES_MIXED = f"over {MAX_LINES_MIXED} lines for a multi-word query; search one name for more"
 MAX_LINES_PER_FILE = 5
-# A literal set this small comes back whole: the per-file cut only keeps one
-# busy file from crowding out the rest of a large set.
-SMALL_SET_LINES = 20
 MAX_SYMBOLS = 3
 MAX_SCAN_FILES = 20_000
 MAX_SCAN_BYTES = 32_000_000

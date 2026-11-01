@@ -24,13 +24,13 @@ Routine responses carry a lean envelope. `get_overview` (called once per session
 |-------|--------------|---------|
 | `hint` | Sometimes | A short follow-up suggestion |
 | `cached` | Only when `true` | The response came from cache |
-| `stale_warning` | Only on a real signal | The index is behind in a way that matters for this response |
+| `stale_warning` | Only on a real signal | One fact: the commit the facts below describe, and what differs from it for this response |
 | `index_scope` | Recorded, and `status` not `complete` | How the index was built: run mode, provenance, git tier, whether it is whole |
 | `degraded` | A part of the server failed for this call | Reasons, e.g. `["embedder"]` or `["retrieval:vector"]` |
 | `embedder_warning` | Embedder fell back, or the semantic index could not open | Why |
 | `semantic_search` | Only when `false` | Retrieval is full-text only (keyless install or degraded embedder) |
 | `newer_release` | Once per server process | A newer repowise is published; restart the server after upgrading |
-| `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade); restart the MCP server |
+| `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade) until it restarts |
 | `keyless_note` | Keyless `get_answer`; `get_overview` until a model writes the prose | The command that adds answers and docs |
 | `omitted` | Content was cut | `refs`, `tokens`, `restore`; see [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | The omission store could not be written | The storage failure; cut rows cannot be restored |
@@ -55,8 +55,8 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 
 Notes:
 
-- **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again.
-- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. With uncommitted edits it names `repowise update --working-tree`.
+- **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD and no file it cites changed, it says so.
+- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. It is a fact, never a command: `Facts below describe <indexed sha>; a file this response serves differs at HEAD <sha>.` (or `differs in the working tree`, or, for a call from another checkout, `differs in <checkout> at <sha>`). `repowise update` (`--working-tree` for uncommitted edits) brings the index up to date.
 - **`index_scope`:** the whole object comes with `get_overview(include=["scope"])`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`.
 - **`keyless_note`:** on every `get_answer` that degrades with `no-llm-provider`, and on `get_overview` while no model has written the prose. One line: set a provider key, run `repowise generate` (one command, no re-index; `repowise update --full` on an Index only repo), then restart the MCP server. With model-written prose, `get_answer` names only the key and the restart.
 - **`complete`:** sliced bodies and partial ranges never count.
@@ -240,7 +240,7 @@ Never complete for:
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
 - over 50 documents naming it
-- over 3 plain `reference` sites in one file: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`
+- over 3 plain `reference` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
 
 ### changes
 
@@ -362,7 +362,7 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
-- Past 3 plain `reference` lines per file, or 50 total, rows go to `lines_omitted_by_file`, recoverable from `_meta.omitted`. Test files sort last.
+- Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows go to `lines_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Test files sort last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports) and lists the 5 files with most omitted rows; `lines_omitted_by_file_total` counts all.
 
 Ranking:

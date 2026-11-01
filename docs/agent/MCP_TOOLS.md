@@ -83,7 +83,7 @@ repowise mcp --all                             # every tool usable in this mode
 
 Every tool returns JSON with a `_meta` envelope ([fields](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope)). Check:
 
-- `stale_warning`: run the `repowise update` it names before trusting file-level detail. Absent means current.
+- `stale_warning`: the commit the facts describe and what differs from it; read the files this response served from disk. Absent means current.
 - `complete`: content verified against the live file. Do not re-read it.
 - `degraded`: the parts of the server that failed for this call. A degraded empty result is a failed read, not an empty repository.
 - `get_answer`'s top-level `confidence` is its one trust signal.

@@ -38,6 +38,9 @@ MAX_TEXT_CHARS = 160
 # Plain mentions kept per file when a collector can hold the rest: a mock-heavy
 # test can name a symbol hundreds of times and bury its real callers.
 MAX_REFERENCES_PER_FILE = 3
+# A set this small comes back whole: the per-file cuts only keep one busy file
+# from crowding out the rest of a large set.
+SMALL_SET_LINES = 20
 # Ceiling on files read per call; past it the set is reported incomplete
 # rather than read without bound.
 MAX_FILES = 300
@@ -503,7 +506,10 @@ _TRAILING_KINDS = {"same_name": 1, "doc": 2}
 
 
 def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*sites* with plain references past the per-file cap dropped; other kinds always stay."""
+    """*sites* with plain references past the per-file cap dropped; other kinds
+    always stay, and a set of at most ``SMALL_SET_LINES`` rows stays whole."""
+    if len(sites) <= SMALL_SET_LINES:
+        return sites
     seen: Counter[str] = Counter()
     kept: list[dict[str, Any]] = []
     for site in sites:

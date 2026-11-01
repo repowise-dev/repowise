@@ -145,6 +145,12 @@ def borrowed_checkout(local_path: str | None) -> CallerCheckout | None:
     return caller if same_path(local_path, caller.served) else None
 
 
+def stale_fact(subject: str, rest: str) -> str:
+    """The one shape of a ``stale_warning``: what the facts describe, then what
+    differs. A fact, never a command; the agent decides what to do with it."""
+    return f"Facts below describe {subject}; {rest}."
+
+
 def checkout_fact(
     caller: CallerCheckout, indexed: str | None, caller_head: str | None, served_file: bool
 ) -> str:
@@ -152,11 +158,10 @@ def checkout_fact(
     at = f" at {indexed[:12]}" if indexed else ""
     head = f" at {caller_head[:12]}" if caller_head else ""
     if served_file:
-        return (
-            f"Facts below describe {caller.served}{at}; a file this response "
-            f"serves differs in {caller.caller}{head}."
+        return stale_fact(
+            f"{caller.served}{at}", f"a file this response serves differs in {caller.caller}{head}"
         )
-    return f"Facts below describe {caller.served}{at}; {caller.caller} is{head}."
+    return stale_fact(f"{caller.served}{at}", f"{caller.caller} is{head}")
 
 
 # ``HEAD`` or ``@`` alone, with a suffix (``HEAD~2``) or in a range
