@@ -149,17 +149,17 @@ def measure_layer_grouping(
 
 
 def _onboarding_rank(page: GeneratedPage) -> int:
-    """Position of an onboarding page in the canonical reading order."""
-    from .onboarding.slots import ONBOARDING_ORDER
+    """Position of an onboarding page in display order."""
+    from .onboarding.slots import ONBOARDING_SLOTS
 
     slot = str(page.metadata.get("onboarding_slot") or "")
     if not slot:
         # The slot is the tail of the target path for dedicated onboarding pages.
         slot = page.target_path.rsplit("/", 1)[-1]
     try:
-        return ONBOARDING_ORDER.index(slot)
+        return ONBOARDING_SLOTS.index(slot)
     except ValueError:
-        return len(ONBOARDING_ORDER)
+        return len(ONBOARDING_SLOTS)
 
 
 def _sort_key(page: GeneratedPage, reader_rank: dict[str, tuple[int, ...]]) -> tuple:

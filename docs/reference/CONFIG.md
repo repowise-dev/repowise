@@ -174,13 +174,12 @@ generation_context:
 | `files` | none | Page key to an ordered list of repo-relative paths. |
 
 - Page keys: `repo_overview`, or `onboarding/` plus `getting_started`,
-  `key_concepts`, `how_it_works` or `active_landscape`.
+  `how_it_works` or `active_landscape`.
 - `onboarding/project_overview` is invalid (that slot is `repo_overview`).
-  `onboarding/glossary` is accepted but has no effect: that page is rendered
-  from mined vocabulary with no model.
-- `onboarding/guided_tour`, `onboarding/codebase_map` and
-  `onboarding/development_guide` name pages Repowise does not generate: they
-  are ignored with a warning naming the key, so upgrades never break a config.
+- `onboarding/guided_tour`, `onboarding/codebase_map`,
+  `onboarding/development_guide`, `onboarding/key_concepts` and
+  `onboarding/glossary` name pages Repowise does not generate: they are
+  ignored with a warning naming the key, so upgrades never break a config.
 - Other unknown page keys and malformed values fail generation. Keys other than
   `token_budget` and `files` directly under the block are ignored.
 - Eligible files are in the indexed source map with non-empty UTF-8 text.

@@ -1,8 +1,8 @@
 """Onboarding slot identifiers and reading order.
 
-The Onboarding collection is a fixed set of six curated slots. One slot is
+The Onboarding collection is a fixed set of curated slots. One slot is
 "promoted": it reuses the existing `repo_overview` page, tagged via
-``metadata.onboarding_slot``. The other five are new pages with
+``metadata.onboarding_slot``. The others are pages with
 ``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
 
 Slot identifiers are used three ways:
@@ -15,10 +15,10 @@ Every slot here must also appear in ``ONBOARDING_SLOT_TITLES`` in
 in the Onboarding folder at all, and a slot missing from it falls through to
 path-based grouping and surfaces as a stray ``onboarding/`` directory. The
 reading *order* is not duplicated there — it arrives on the pages themselves as
-``display_order``, assigned from this tuple at generation time.
+``display_order``, assigned from this module at generation time.
 
 A slot without enough signal is skipped at generation time, so a repo can end
-up with fewer than five.
+up with fewer pages than slots.
 
 Retiring a slot is not just a deletion here. The pages already written into
 every existing index have to be retired too, or they keep being served: see
@@ -37,33 +37,31 @@ import re
 # rendered prompt is byte-identical. Bump when a builder or template change
 # should reach already-cached pages. (File pages have an equivalent in
 # ``_generation_fingerprint``; onboarding pages had none until this.)
-ONBOARDING_GENERATION_VERSION = "5"
+ONBOARDING_GENERATION_VERSION = "6"
 
 # ---- Slot identifiers ----
 
 SLOT_PROJECT_OVERVIEW = "project_overview"
 SLOT_GETTING_STARTED = "getting_started"
-SLOT_KEY_CONCEPTS = "key_concepts"
 SLOT_HOW_IT_WORKS = "how_it_works"
 SLOT_ACTIVE_LANDSCAPE = "active_landscape"
-SLOT_GLOSSARY = "glossary"
 
-# Fixed reading order. Slots not yet implemented are silently skipped at
-# generation time and absent from the UI tree.
-#
-# How It Works comes before Key Concepts: a reader who has followed the main
-# journeys meets the concepts already knowing where they act. The glossary is
-# last on purpose: it is a lookup surface rather than a reading step, and a
-# reader who does not yet know the vocabulary is not helped by meeting all of
-# it at once.
+# Fixed reading order: the pages a newcomer reads first, each one's "Next"
+# link pointing at the following one that exists.
 ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_PROJECT_OVERVIEW,
     SLOT_GETTING_STARTED,
     SLOT_HOW_IT_WORKS,
-    SLOT_KEY_CONCEPTS,
-    SLOT_ACTIVE_LANDSCAPE,
-    SLOT_GLOSSARY,
 )
+
+# Every slot, in display order. A slot past the reading order is kept out of
+# it: no "Next" link leads to or from it, and the docs tree places it in its
+# project activity section, read from ``metadata.nav_section`` (see
+# :func:`slot_metadata`).
+ONBOARDING_SLOTS: tuple[str, ...] = (*ONBOARDING_ORDER, SLOT_ACTIVE_LANDSCAPE)
+
+#: The ``metadata.nav_section`` value of a slot outside the reading order.
+NAV_SECTION_ACTIVITY = "project_activity"
 
 # Maps existing page_type → onboarding slot. The generator tags these pages
 # with ``metadata.onboarding_slot`` after they're produced at level 6; no
@@ -77,16 +75,22 @@ PROMOTED_SLOTS: dict[str, str] = {
 SLOT_TITLES: dict[str, str] = {
     SLOT_PROJECT_OVERVIEW: "Project Overview",
     SLOT_GETTING_STARTED: "Getting Started",
-    SLOT_KEY_CONCEPTS: "Key Concepts",
     SLOT_HOW_IT_WORKS: "How It Works",
     SLOT_ACTIVE_LANDSCAPE: "Active Landscape",
-    SLOT_GLOSSARY: "Glossary",
 }
 
 
 def target_path(slot: str) -> str:
     """Canonical wiki ``target_path`` for an onboarding slot."""
     return f"onboarding/{slot}"
+
+
+def slot_metadata(slot: str) -> dict[str, str]:
+    """The metadata every generated page of *slot* carries."""
+    meta = {"subkind": slot, "onboarding_slot": slot}
+    if slot not in ONBOARDING_ORDER:
+        meta["nav_section"] = NAV_SECTION_ACTIVITY
+    return meta
 
 
 #: A trailing "Next:" line, matched so a reused page gets the current one.
@@ -96,7 +100,12 @@ _FOOTER = "\n---\n"
 
 
 def next_slot(slot: str, present: set[str]) -> str | None:
-    """The slot a reader opens after *slot*: the next one in reading order that exists."""
+    """The slot a reader opens after *slot*: the next one in reading order that exists.
+
+    ``None`` for a slot outside the reading order.
+    """
+    if slot not in ONBOARDING_ORDER:
+        return None
     after = ONBOARDING_ORDER[ONBOARDING_ORDER.index(slot) + 1 :]
     return next((s for s in after if s in present), None)
 

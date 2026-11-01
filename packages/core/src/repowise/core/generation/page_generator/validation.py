@@ -190,6 +190,24 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             "not traced here), never about what this request did or did not include."
         ),
     ),
+    ArtifactRule(
+        name="instruction_echo",
+        # A line of the page templates' own shape guidance copied into the
+        # page, which small local models do. Each alternative is phrasing only
+        # an instruction uses: the uppercase ONE, a sentence cap with its word
+        # range, a section count with its heading rule. Inline code is already
+        # stripped, so "`##` sections" arrives as "  sections".
+        pattern=re.compile(
+            r"never text to copy into it"
+            r"|\b(?-i:ONE) paragraph of at most \d+ sentences"
+            r"|\bat most \d+ sentences \(about \d+ to \d+ words\)"
+            r"|\b(?:\d+|two|three) (?:or|to) (?:\d+|three|five)\s+sections"
+            r"(?: on what| in the order|, each with its own)",
+            re.IGNORECASE,
+        ),
+        explanation="repeats the page's writing instructions as if they were content",
+        remedy="Write only the page itself; follow the shape instructions without restating them.",
+    ),
 )
 
 # How many responses each rule has seen and rejected, for the whole process.

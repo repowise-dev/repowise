@@ -93,8 +93,8 @@ class MapEdge:
 class SystemMap:
     nodes: tuple[MapNode, ...]
     edges: tuple[MapEdge, ...]
-    #: Code parts left off the map for space.
-    omitted: int = 0
+    #: Names of the code parts left off the map for space, most important first.
+    omitted: tuple[str, ...] = ()
     #: A model-written sentence introducing the map; empty when keyless.
     caption: str = ""
     #: True when the arrow budget left out links that no drawn path shows.
@@ -242,7 +242,7 @@ def build_system_map(
     return SystemMap(
         nodes=_connected_actors(nodes, map_edges),
         edges=tuple(map_edges + drawn),
-        omitted=len(units) - len(kept),
+        omitted=_left_out(ranked, kept, labels, package_names, repo_name),
         arrows_cut=cut,
     )
 
@@ -523,6 +523,21 @@ def _connected_actors(nodes: list[MapNode], edges: list[MapEdge]) -> tuple[MapNo
     """*nodes* without an actor whose way in did not make the map: it would float."""
     linked = {e.source for e in edges}
     return tuple(n for n in nodes if n.tier != "actor" or n.id in linked)
+
+
+def _left_out(
+    ranked: Sequence[str],
+    kept: Collection[str],
+    labels: Mapping[str, str],
+    package_names: Mapping[str, str],
+    repo_name: str,
+) -> tuple[str, ...]:
+    """Display names of the ranked parts the map did not keep, in rank order."""
+    return tuple(
+        _display_name(u, labels.get(u) or package_names.get(u), repo_name)
+        for u in ranked
+        if u not in kept
+    )
 
 
 def _display_name(unit: str, declared: str | None, repo_name: str) -> str:

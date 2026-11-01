@@ -154,6 +154,9 @@ class PriorPage:
     #: written by a model — a keyless stub, or a stub a failed provider call
     #: left behind — so it must never be reused as if it were prose.
     provider_name: str = ""
+    #: Persisted ``freshness_status``. A ``tombstone`` row is kept for its
+    #: inbound links, not served as a page.
+    freshness_status: str = ""
 
 
 class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin):

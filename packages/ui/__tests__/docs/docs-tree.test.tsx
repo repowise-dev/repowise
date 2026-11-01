@@ -945,18 +945,18 @@ describe("DocsTree", () => {
       parent_page_id: ONBOARDING.id,
       display_order: 9,
     });
-    const keyConcepts = makePage({
-      id: "onboarding:onboarding/key_concepts",
+    const howItWorks = makePage({
+      id: "onboarding:onboarding/how_it_works",
       page_type: "onboarding",
-      title: "Key Concepts",
-      target_path: "onboarding/key_concepts",
+      title: "How It Works",
+      target_path: "onboarding/how_it_works",
       parent_page_id: ROOT.id,
       display_order: 0,
       section_number: null,
     });
     render(
       <DocsTree
-        pages={[flow, ...SPINE, keyConcepts]}
+        pages={[flow, ...SPINE, howItWorks]}
         selectedPageId={null}
         onSelectPage={() => {}}
       />,
@@ -966,7 +966,7 @@ describe("DocsTree", () => {
     expect(start).toBe(2);
     const order = [
       "Repository Overview: demo",
-      "Key Concepts",
+      "How It Works",
       "Getting Started",
       "Walkthroughs (1)",
       "Zebra Runtime",

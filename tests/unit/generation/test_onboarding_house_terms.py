@@ -1,8 +1,7 @@
-"""The repository's own vocabulary reaches the onboarding builders, or says so.
+"""The repository's own vocabulary is mined for the overview, or says so.
 
-The miner has existed for three merges with no consumer. What this covers is
-the wiring: a run reads the repository once, hands every subkind the same
-ranked terms, and reports what it found.
+What this covers is the wiring: a run reads the repository, reports what it
+found, and the onboarding level never pays for a walk it does not use.
 
 The negative cases carry the weight. A run given no repository path and a
 repository that documents nothing both produce an empty tuple, and an empty
@@ -20,7 +19,7 @@ from typing import Any
 
 from structlog.testing import capture_logs
 
-from repowise.core.generation.page_generator.levels import build_level8_coros
+from repowise.core.generation.page_generator.levels import _mine_house_terms, build_level8_coros
 from repowise.core.generation.report import (
     GenerationReport,
     house_terms_mined,
@@ -156,13 +155,9 @@ def _run(*, repo_path: Path | None) -> SimpleNamespace:
         decisions_all=(),
         external_systems=(),
         completed_page_summaries={},
-        # The glossary corroborates mined terms against the module groups, so
-        # level 8 now reads these too. Empty here: this module is about the
-        # mining, and the glossary's own tests cover what corroboration does.
         sel_module_groups=[],
         vector_store=None,
         tour_stops=(),
-        layer_order=(),
         kg_ctx=None,
         on_subphase=None,
         flow_plans=lambda: [],
@@ -170,87 +165,46 @@ def _run(*, repo_path: Path | None) -> SimpleNamespace:
     )
 
 
-async def _signals_from_level8(run: SimpleNamespace) -> Any:
-    coros = await build_level8_coros(run)
-    assert coros, "level 8 produced no pages, so no signals were built"
-    assert run.gen.seen, "no subkind was handed the signals"
-    return run.gen.seen[0]
-
-
 # ---------------------------------------------------------------------------
-# The field
+# The mining
 # ---------------------------------------------------------------------------
 
 
-async def test_documented_repository_populates_the_field(tmp_path: Path) -> None:
+def test_documented_repository_yields_its_terms(tmp_path: Path) -> None:
     reset_house_terms()
-    signals = await _signals_from_level8(_run(repo_path=_repo(tmp_path)))
-
-    terms = {t.term for t in signals.house_terms}
+    terms = {t.term for t in _mine_house_terms(_run(repo_path=_repo(tmp_path)))}
     assert "Blast radius" in terms
     assert "Change risk" in terms
 
 
-async def test_every_subkind_reads_the_same_mined_terms(tmp_path: Path) -> None:
-    """One walk of the repository per run, not one per slot."""
+async def test_the_onboarding_level_does_not_read_the_repository(tmp_path: Path) -> None:
+    """Mining walks the whole repository; no onboarding page reads the terms."""
     reset_house_terms()
     run = _run(repo_path=_repo(tmp_path))
     await build_level8_coros(run)
 
-    assert len(run.gen.seen) > 1, "expected more than one onboarding slot"
-    first = run.gen.seen[0].house_terms
-    assert all(s.house_terms is first for s in run.gen.seen)
-
-
-async def test_a_run_emitting_no_onboarding_page_does_not_read_the_repository(
-    tmp_path: Path,
-) -> None:
-    """Mining walks the whole repository, so a run writing none must not pay.
-
-    A scoped run asking for one file page, and a resumed run whose onboarding
-    pages already exist, both reach this level and emit nothing from it.
-    """
-    reset_house_terms()
-    run = _run(repo_path=_repo(tmp_path))
-    run._emit = lambda page_id: False
-
-    assert await build_level8_coros(run) == []
-    assert run.gen.seen == []
+    assert run.gen.seen, "no onboarding page was built"
     assert house_terms_mined().mined is False
 
 
-async def test_a_term_the_codebase_defines_is_marked_as_a_symbol(tmp_path: Path) -> None:
-    """``is_indexed_symbol`` decides whether a term may be backticked.
-
-    Without the run's symbol names it is ``False`` for every term, which reads
-    downstream as "this repository defines none of its own vocabulary".
-    """
-    reset_house_terms()
-    signals = await _signals_from_level8(_run(repo_path=_repo(tmp_path)))
-
-    by_term = {t.term: t for t in signals.house_terms}
-    assert by_term["Blast radius"].is_indexed_symbol is False
-    assert any(t.is_indexed_symbol for t in signals.house_terms) is False
-
-
-async def test_undocumented_repository_yields_nothing_and_says_so(tmp_path: Path) -> None:
+def test_undocumented_repository_yields_nothing_and_says_so(tmp_path: Path) -> None:
     reset_house_terms()
     run = _run(repo_path=_repo(tmp_path, documented=False))
     with capture_logs() as logs:
-        signals = await _signals_from_level8(run)
+        terms = _mine_house_terms(run)
 
-    assert signals.house_terms == ()
+    assert terms == ()
     assert any(entry["event"] == "onboarding.house_terms_empty" for entry in logs)
     assert house_terms_mined().mined is True
 
 
-async def test_a_run_without_a_repository_path_yields_nothing_and_says_so() -> None:
+def test_a_run_without_a_repository_path_yields_nothing_and_says_so() -> None:
     reset_house_terms()
     run = _run(repo_path=None)
     with capture_logs() as logs:
-        signals = await _signals_from_level8(run)
+        terms = _mine_house_terms(run)
 
-    assert signals.house_terms == ()
+    assert terms == ()
     skipped = [e for e in logs if e["event"] == "onboarding.house_terms_skipped"]
     assert skipped and skipped[0]["reason"] == "no_repo_path"
     # Not the same fact as a repository that documents nothing.
@@ -262,13 +216,13 @@ async def test_a_run_without_a_repository_path_yields_nothing_and_says_so() -> N
 # ---------------------------------------------------------------------------
 
 
-async def test_the_count_and_the_top_terms_reach_the_report(tmp_path: Path) -> None:
+def test_the_count_and_the_top_terms_reach_the_report(tmp_path: Path) -> None:
     reset_house_terms()
-    signals = await _signals_from_level8(_run(repo_path=_repo(tmp_path)))
+    terms = _mine_house_terms(_run(repo_path=_repo(tmp_path)))
 
     report = GenerationReport.from_pages([])
     assert report.house_terms.mined is True
-    assert report.house_terms.count == len(signals.house_terms)
+    assert report.house_terms.count == len(terms)
     assert "Blast radius" in report.house_terms.top
     assert "Blast radius" in report.house_terms.summary_line()
 
@@ -287,10 +241,10 @@ def test_the_report_keeps_nothing_read_apart_from_nothing_found() -> None:
     assert "not measured" not in empty.summary_line()
 
 
-async def test_a_new_run_does_not_report_the_previous_run_s_vocabulary(tmp_path: Path) -> None:
+def test_a_new_run_does_not_report_the_previous_run_s_vocabulary(tmp_path: Path) -> None:
     """The reset lives on ``generate_all``; this pins what it is there for."""
     reset_house_terms()
-    await _signals_from_level8(_run(repo_path=_repo(tmp_path)))
+    _mine_house_terms(_run(repo_path=_repo(tmp_path)))
     assert house_terms_mined().count > 0
 
     reset_house_terms()
