@@ -66,6 +66,12 @@ DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET = 8000
 _ANSWER_RESERVE = 4096
 
 
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def _source_evidence_page_keys() -> set[str]:
     """Return synthesis page keys that have a model-written consumer."""
     from .onboarding.slots import ONBOARDING_ORDER, PROMOTED_SLOTS
@@ -436,11 +442,8 @@ class GenerationConfig:
                 raw_files, label="generation_context.files"
             )
 
-        raw_window = config.get("context_window")
-        if raw_window is not None:
-            if isinstance(raw_window, bool) or not isinstance(raw_window, int) or raw_window <= 0:
-                raise ValueError("context_window must be a positive integer")
-            values["context_window"] = raw_window
+        if config.get("context_window") is not None:
+            values["context_window"] = _positive_int(config["context_window"], "context_window")
 
         raw_folder_coverage = config.get("folder_coverage")
         if raw_folder_coverage is not None:

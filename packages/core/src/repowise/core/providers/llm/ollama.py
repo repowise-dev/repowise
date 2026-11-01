@@ -160,12 +160,20 @@ def _read_model_facts(base_url: str, model: str) -> _ModelFacts:
         (v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)),
         None,
     )
-    num_ctx = None
-    for line in str(data.get("parameters") or "").splitlines():
+    return _ModelFacts(
+        trained,
+        _modelfile_num_ctx(str(data.get("parameters") or "")),
+        "thinking" in (data.get("capabilities") or ()),
+    )
+
+
+def _modelfile_num_ctx(parameters: str) -> int | None:
+    """``num_ctx`` from /api/show's ``parameters``, one ``name value`` pair per line."""
+    for line in parameters.splitlines():
         key, _, value = line.strip().partition(" ")
         if key == "num_ctx" and value.strip().isdigit():
-            num_ctx = int(value.strip())
-    return _ModelFacts(trained, num_ctx, "thinking" in (data.get("capabilities") or ()))
+            return int(value.strip())
+    return None
 
 
 class OllamaProvider(SdkClientOwner, BaseProvider):
