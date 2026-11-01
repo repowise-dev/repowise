@@ -69,6 +69,8 @@ log = structlog.get_logger(__name__)
 # Failures that leave a usable page when the re-ask fails too: a diagram that
 # will not render (dropped) and a page over its template's shape budget (kept).
 _KEPT_AFTER_RETRY = (InvalidMermaidError, PageShapeError)
+# An overview or onboarding prompt's size besides its source evidence.
+_SYNTHESIS_FRAME_TOKENS = 8000
 
 
 def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
@@ -180,7 +182,11 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
     ) -> None:
         self._provider = provider
         self._assembler = assembler
-        self._config = config
+        # Material budgets follow the window the model runs with; a local
+        # model's is small (see GenerationConfig.material_budget). The
+        # assembler sizes module material, so it takes the same window.
+        self._config = config.with_provider_window(provider)
+        assembler.use_context_window(self._config.context_window)
         self._vector_store = vector_store
         # Output language: explicit arg wins, else the config's, else English.
         self._language = language if language is not None else getattr(config, "language", "en")
@@ -699,10 +705,12 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
     ) -> EvidenceSelection:
         """Select bounded repository evidence and log every decision."""
         configured = self._config.source_evidence_files.get(page_key, ())
+        evidence = self._config.source_evidence_token_budget
+        token_budget = self._config.material_budget(evidence, evidence + _SYNTHESIS_FRAME_TOKENS)
         selection = select_prompt_evidence(
             source_map,
             configured,
-            token_budget=self._config.source_evidence_token_budget,
+            token_budget=token_budget,
             parsed_files=parsed_files,
             references=references,
         )
@@ -712,7 +720,7 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
                 page_key=page_key,
                 paths=[item.path for item in selection.included],
                 estimated_tokens=selection.estimated_tokens,
-                token_budget=self._config.source_evidence_token_budget,
+                token_budget=token_budget,
             )
         if selection.skipped:
             log.warning(

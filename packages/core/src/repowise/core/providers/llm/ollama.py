@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -33,6 +34,7 @@ from openai import AsyncOpenAI
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
+    LOCAL_CONTEXT_WINDOW,
     BaseProvider,
     ChatStreamEvent,
     GeneratedResponse,
@@ -57,8 +59,14 @@ from repowise.core.reasoning import ReasoningMode
 log = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
-_OLLAMA_REASONING_MODES: tuple[ReasoningMode, ...] = ("off",)
-_MIN_NUM_CTX = 8192
+_OLLAMA_REASONING_MODES: tuple[ReasoningMode, ...] = ("off", "low", "medium", "high")
+# Room kept for the answer when sizing num_ctx. A page answer runs 1-3k tokens
+# once thinking is off; reserving the whole max_tokens (16k) doubled the window
+# for every prompt, a two-line one included. A thinking call keeps max_tokens.
+_ANSWER_RESERVE = 4096
+# Page prompts measured 3.4 characters per token on qwen3.5 (code and prose).
+# Three leaves headroom; a denser prompt than that grows the window instead.
+_CHARS_PER_TOKEN = 3
 # Streamed, so the read timeout bounds silence between chunks, not the whole
 # page. It still has to cover prompt evaluation, which streams nothing.
 _STREAM_TIMEOUT = httpx.Timeout(1200.0, connect=10.0)
@@ -133,6 +141,33 @@ def _ollama_model_options(
     return tuple(options)
 
 
+@dataclass(frozen=True)
+class _ModelFacts:
+    trained: int | None = None  # context length the model was trained with
+    num_ctx: int | None = None  # a window set in the model's Modelfile
+    thinks: bool = False
+
+
+def _read_model_facts(base_url: str, model: str) -> _ModelFacts:
+    try:
+        response = httpx.post(f"{base_url}/api/show", json={"model": model}, timeout=5.0)
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
+        return _ModelFacts()
+    info = data.get("model_info") or {}
+    trained = next(
+        (v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)),
+        None,
+    )
+    num_ctx = None
+    for line in str(data.get("parameters") or "").splitlines():
+        key, _, value = line.strip().partition(" ")
+        if key == "num_ctx" and value.strip().isdigit():
+            num_ctx = int(value.strip())
+    return _ModelFacts(trained, num_ctx, "thinking" in (data.get("capabilities") or ()))
+
+
 class OllamaProvider(SdkClientOwner, BaseProvider):
     """Ollama provider for local, offline LLM inference.
 
@@ -168,7 +203,8 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
         self._model = model
         self._rate_limiter = rate_limiter
         self._fixed_num_ctx = _positive_int_env("REPOWISE_OLLAMA_NUM_CTX")
-        self._num_ctx = _MIN_NUM_CTX
+        self._num_ctx = 0
+        self._facts: _ModelFacts | None = None
         self._parallel = _positive_int_env("OLLAMA_NUM_PARALLEL") or 1
         self._slots: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
 
@@ -186,6 +222,23 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _ollama_model_options(self._native_url, self._model)
 
+    def context_window(self) -> int:
+        """REPOWISE_OLLAMA_NUM_CTX, else the model's own num_ctx, else a small local window.
+
+        Never more than the context length the model was trained with.
+        """
+        if self._fixed_num_ctx:
+            return self._fixed_num_ctx
+        facts = self._model_facts()
+        window = facts.num_ctx or LOCAL_CONTEXT_WINDOW
+        return min(window, facts.trained) if facts.trained else window
+
+    def _model_facts(self) -> _ModelFacts:
+        """What /api/show says about the model, read once; empty when the server can't say."""
+        if self._facts is None:
+            self._facts = _read_model_facts(self._native_url, self._model)
+        return self._facts
+
     async def generate(
         self,
         system_prompt: str,
@@ -202,7 +255,8 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
             reasoning,
             _OLLAMA_REASONING_MODES,
             detail=(
-                "Ollama maps reasoning='off' to think=false on its chat API."
+                "Ollama maps reasoning='off' to think=false and low/medium/high "
+                "to think=true on its chat API."
             ),
         )
         if self._rate_limiter:
@@ -258,10 +312,20 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
     ) -> GeneratedResponse:
         # The native endpoint, because the OpenAI-compatible one ignores
         # num_ctx and silently cuts every prompt to the server's default window.
+        think: bool | None = None
+        if reasoning != "auto":
+            think = reasoning != "off"
+        elif (await asyncio.to_thread(self._model_facts)).thinks:
+            # Thinking multiplies a local page's time several times over (one
+            # short outline call thought for 16k tokens on qwen3.5:4b) for no
+            # better prose, so ``auto`` turns it off; low/medium/high turn it on.
+            think = False
+        # A thinking answer can run to max_tokens, so it gets the room for it.
+        answer = max_tokens if think else min(max_tokens, _ANSWER_RESERVE)
         options = {
             "num_predict": max_tokens,
             "temperature": temperature,
-            "num_ctx": self._context_window(system_prompt, user_prompt, max_tokens),
+            "num_ctx": self._context_window(system_prompt, user_prompt, answer),
         }
         payload: dict[str, Any] = {
             "model": self._model,
@@ -272,8 +336,8 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
             "stream": True,
             "options": options,
         }
-        if reasoning == "off":
-            payload["think"] = False
+        if think is not None:
+            payload["think"] = think
 
         content, final = await self._stream_native_chat(payload)
         input_tokens = int(final.get("prompt_eval_count") or 0)
@@ -334,19 +398,24 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
             raise ProviderError("ollama", f"unreadable response: {exc}") from exc
         return "".join(parts), final
 
-    def _context_window(self, system_prompt: str, user_prompt: str, max_tokens: int) -> int:
-        """num_ctx that fits this request, never shrinking between calls.
+    def _context_window(self, system_prompt: str, user_prompt: str, answer: int) -> int:
+        """num_ctx for this request: the model's window, doubled while the prompt overflows it.
 
-        Ollama reloads the model whenever num_ctx changes, so the window only
-        grows, in powers of two. Two characters per token overestimates prose
-        and all but the densest code.
+        Page material is sized to :meth:`context_window`, so a page prompt fits
+        it; a prompt built without a budget, or a thinking answer, grows it,
+        never past what the model was trained with. Ollama reloads the model whenever num_ctx
+        changes, so the window never shrinks between calls.
         """
         if self._fixed_num_ctx:
             return self._fixed_num_ctx
-        needed = (len(system_prompt) + len(user_prompt)) // 2 + max_tokens
-        window = _MIN_NUM_CTX
+        chars = len(system_prompt) + len(user_prompt)
+        needed = chars // _CHARS_PER_TOKEN + answer
+        window = self.context_window()
         while window < needed:
             window *= 2
+        trained = self._model_facts().trained
+        if trained:
+            window = min(window, trained)
         self._num_ctx = max(self._num_ctx, window)
         return self._num_ctx
 

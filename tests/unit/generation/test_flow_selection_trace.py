@@ -163,6 +163,15 @@ def test_every_step_gets_an_excerpt_with_its_call_sites():
     assert ctx["public"] == "run" and ctx["kind"] == CLI
 
 
+def test_a_small_code_cap_drops_the_deepest_steps_code_first():
+    g = _traced_graph()
+    (plan,) = select_flow_plans(g, read=_read)
+    full = build_material(plan, g, _read, ()).excerpts
+    tight = build_material(plan, g, _read, (), code_cap=len(full[0]) // 4).excerpts
+    assert tight[0] and len(tight) == len(full)
+    assert not tight[-1]
+
+
 def test_options_are_summarised_one_line_each():
     out = options_summary([
         '@click.command("run")',
