@@ -211,7 +211,7 @@ def _gemini_error(exc: Exception) -> ProviderError:
     """Classify a google-genai failure; quota errors become ``RateLimitError``.
 
     The SDK does not type its 429s consistently, so the status attribute and
-    the message text are both consulted.
+    the message text are both consulted. Other failures keep the SDK status.
     """
     exc_str = str(exc)
     status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
@@ -222,7 +222,11 @@ def _gemini_error(exc: Exception) -> ProviderError:
             status_code=429,
             retry_after=_gemini_retry_delay(exc_str),
         )
-    return ProviderError("gemini", f"{type(exc).__name__}: {exc_str}")
+    return ProviderError(
+        "gemini",
+        f"{type(exc).__name__}: {exc_str}",
+        status_code=status_code if isinstance(status_code, int) else None,
+    )
 
 
 class GeminiProvider(BaseProvider):

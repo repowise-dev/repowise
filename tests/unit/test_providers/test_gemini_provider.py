@@ -280,3 +280,34 @@ async def test_stream_chat_ends_with_the_usage_of_its_calls():
 
     assert [e.type for e in events] == ["text_delta", "stop", "usage"]
     assert (events[-1].input_tokens, events[-1].output_tokens) == (100, 50)
+
+
+async def test_invalid_api_key_is_auth_and_not_retried():
+    from repowise.core.providers.llm.error_hints import describe_provider_error
+
+    provider = GeminiProvider(api_key="fake-key")
+
+    class ClientError(Exception):
+        code = 400
+
+    with patch("google.genai.Client") as mock_client:
+        generate = mock_client.return_value.models.generate_content
+        generate.side_effect = ClientError(
+            "400 INVALID_ARGUMENT. API key not valid. [reason: 'API_KEY_INVALID']"
+        )
+        with pytest.raises(ProviderError) as info:
+            await provider.generate("sys", "user")
+
+    assert generate.call_count == 1
+    assert info.value.status_code == 400
+    hint = describe_provider_error(info.value)
+    assert hint is not None
+    assert hint.kind == "auth"
+
+
+def test_other_gemini_400_stays_unclassified():
+    from repowise.core.providers.llm.error_hints import describe_provider_error
+
+    error = ProviderError("gemini", "400 INVALID_ARGUMENT. bad schema", status_code=400)
+
+    assert describe_provider_error(error) is None

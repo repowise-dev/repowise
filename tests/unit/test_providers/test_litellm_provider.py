@@ -232,3 +232,24 @@ async def test_discovery_and_execution_accept_the_same_effort_flags(monkeypatch)
     await provider.generate("sys", "user", reasoning="minimal")
 
     assert completion.call_args.kwargs["reasoning_effort"] == "minimal"
+
+
+async def test_authentication_error_is_auth_and_not_retried(monkeypatch):
+    from repowise.core.providers.llm.error_hints import describe_provider_error
+
+    litellm = pytest.importorskip("litellm", reason="litellm SDK not installed")
+    completion = AsyncMock(
+        side_effect=litellm.AuthenticationError(
+            message="invalid api key", llm_provider="openai", model="vendor/plain"
+        )
+    )
+    monkeypatch.setattr(litellm, "acompletion", completion, raising=False)
+
+    with pytest.raises(ProviderError) as info:
+        await LiteLLMProvider(model="vendor/plain").generate("sys", "user")
+
+    assert completion.call_count == 1
+    assert info.value.status_code == 401
+    hint = describe_provider_error(info.value)
+    assert hint is not None
+    assert hint.kind == "auth"
