@@ -40,7 +40,7 @@ def _score(states: dict[str, str], ids: list[str]) -> tuple[int, int, int]:
 
 
 async def _replay(session, recorded: dict) -> dict[str, str]:
-    # No checkout on disk: nothing is read as type-only, as when recorded files exist.
+    # No checkout on disk, so nothing is judged type-only; the recorder refuses type-only files.
     repo = await insert_repo(session, local_path=str(FIXTURE / "no-checkout"))
     session.add_all(GraphNode(repository_id=repo.id, node_id=p) for p in recorded["files"])
     session.add_all(

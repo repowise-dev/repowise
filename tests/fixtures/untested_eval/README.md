@@ -31,9 +31,11 @@ pairing all go through).
   on the rule was tuned on. The `random draws only` row of the report leaves
   them out.
 
-Flagged files are over-sampled, so precision over the set approximates
-precision over the flagged population, stratum by stratum; it is not a
-whole-repository rate.
+Flagged files are over-sampled and tested ones under-sampled, and the split
+comes from the rule being measured. Precision over the set approximates
+precision over the flagged population, stratum by stratum. Recall and false
+"tested" are rates over this set, not whole-repository rates: compare rules on
+the same set, not against other measurements.
 
 ## How the labels were made
 

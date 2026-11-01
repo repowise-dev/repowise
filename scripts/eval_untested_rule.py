@@ -112,7 +112,8 @@ async def record_slice(db: str, paths: list[str]) -> dict:
 
     Every edge into (or, for ``defines``, out of) a node the walks ask about,
     with its type and origin, plus the file nodes it names and the test files.
-    ``tests/unit/analysis/test_untested_eval_slice.py`` replays it.
+    ``tests/unit/persistence/test_untested_eval_slice.py`` replays it, with no
+    checkout, so a file recorded as type-only would replay as a claim: such files are refused.
     """
     from sqlalchemy import text
 
@@ -203,6 +204,11 @@ async def record(dbs: dict[str, str], out: str, ids: str | None) -> None:
         }
     )
     files = [f for f in load_labels()["files"] if f["id"] in wanted]
+    missing = {f["repo"] for f in files} - set(dbs)
+    if missing:
+        raise SystemExit(
+            f"--record needs a --db for every repository in the slice: {sorted(missing)}"
+        )
     repos = {}
     for repo, db in dbs.items():
         mine = [f for f in files if f["repo"] == repo]
@@ -211,6 +217,11 @@ async def record(dbs: dict[str, str], out: str, ids: str | None) -> None:
                 "ids": sorted(f["id"] for f in mine),
                 **await record_slice(db, [f["path"] for f in mine]),
             }
+            claimed = {p for p, state in repos[repo]["states"].items() if state == "type_only"}
+            if claimed:
+                raise SystemExit(
+                    f"type-only files cannot replay without a checkout: {sorted(claimed)}"
+                )
     Path(out).write_text(json.dumps({"repos": repos}, indent=0) + "\n", encoding="utf-8")
 
 
