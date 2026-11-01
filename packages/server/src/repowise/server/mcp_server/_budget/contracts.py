@@ -942,9 +942,12 @@ def enforce_response_budget(
         emergency.attach(result)
         trimmed = True
 
-    run_post_enforce(tool, result, _call_arguments(signature, args, kwargs))
-    # Before the accounting below, so the stamped size is the delivered one.
-    collapse_omission(result)
+    call = _call_arguments(signature, args, kwargs)
+    run_post_enforce(tool, result, call)
+    if call is not None:
+        # An MCP call, not a bridged CLI one, whose commands print the marker.
+        # Before the accounting below, so the stamped size is the delivered one.
+        collapse_omission(result)
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True
