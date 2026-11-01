@@ -23,6 +23,7 @@ from repowise.server.mcp_server._why_relevance import (
     word_set,
 )
 from repowise.server.mcp_server.tool_why.basis import _stamp_answer_basis
+from repowise.server.mcp_server.tool_why.commit_bodies import keep_one_excerpt
 
 #: Rationale comments kept, in the order the tool ranked them.
 RATIONALE_KEPT = 3
@@ -57,6 +58,7 @@ def compact_unanswered(result: dict[str, Any], call: Mapping[str, Any]) -> None:
     targets = _targets(result, call)
     if _has_decision_rows(result):
         _fold_recalls(result, targets)
+        keep_one_excerpt(result)
         return
     rationale = [_rationale_row(r) for r in (result.get("code_rationale") or [])[:RATIONALE_KEPT]]
     query = str(result.get("query") or call.get("query") or "")
@@ -170,7 +172,9 @@ def _key_commits(result: dict[str, Any], query: str, *, fill: bool) -> list[dict
         key=lambda t: t[:2],
     )
     kept += [r for score, _, r in scored if score < 0]
-    return [_commit_row(r) for r in kept[:COMMITS_KEPT]]
+    rows = [_commit_row(r) for r in kept[:COMMITS_KEPT]]
+    keep_one_excerpt({"key_commits": rows})
+    return rows
 
 
 def _commit_pools(result: dict[str, Any]) -> tuple[list[dict], list[dict]]:
@@ -221,6 +225,8 @@ def _commit_row(row: dict) -> dict[str, Any]:
     out["message"] = row.get("message")
     if row.get("pr_number"):
         out["pr_number"] = row["pr_number"]
+    if row.get("body_excerpt"):
+        out["body_excerpt"] = row["body_excerpt"]
     return out
 
 

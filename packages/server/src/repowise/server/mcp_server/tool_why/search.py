@@ -43,6 +43,7 @@ from repowise.server.mcp_server.tool_why.caps import (
     _cap_target_context,
     _serve_episodes,
 )
+from repowise.server.mcp_server.tool_why.commit_bodies import attach_body_excerpts
 from repowise.server.mcp_server.tool_why.lineage import _lineage_for_matches
 from repowise.server.mcp_server.tool_why.loading import (
     _defining_files,
@@ -365,6 +366,7 @@ async def _why_no_match(
         )
         _cap_supporting_lanes(result, collector, label=query)
         _cap_target_context(result["target_context"], collector)
+    await attach_body_excerpts(result, ctx.path, target_git, query)
     # Don't redirect away from evidence this response is already serving.
     served = _served_lanes(result)
     if served:
