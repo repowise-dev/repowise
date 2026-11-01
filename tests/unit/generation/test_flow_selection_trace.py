@@ -202,3 +202,16 @@ def test_a_call_in_a_braced_catch_block_is_a_handler():
     lines = ["function run() {", "  try {", "    work();", "  } catch (e) {", "    recover();", "  }", "}"]
     assert call_context(lines, 3, 1) == "always"
     assert call_context(lines, 5, 1) == "handler"
+
+
+def test_a_one_line_guard_return_is_an_early_exit():
+    lines = ["def run(data):", "    if not data: return bail()", "    work(data)"]
+    assert call_context(lines, 2, 1) == "early_exit"
+    assert call_context(lines, 3, 1) == "always"
+
+
+def test_an_indented_method_cites_from_its_decorators():
+    from repowise.core.generation.page_generator.flow_material import decorator_start
+
+    lines = ["class Tools:", "", "    @mcp.tool()", "    @traced", "    def get_x(self):", "        pass"]
+    assert decorator_start(lines, 5) == 3

@@ -51,6 +51,7 @@ _PLUMBING = frozenset(
 )
 _TOKEN_SPLIT = re.compile(r"[_\W]+|(?<=[a-z])(?=[A-Z])")
 _WITH = re.compile(r"\s*(async\s+)?with\b")
+_ONE_LINE_GUARD = re.compile(r"(if|elif|else)\b[^#]*:\s*return\s")
 _BRANCH_HEADS = frozenset({"if", "elif", "else", "match", "case", "switch"})
 _HANDLER_HEADS = frozenset({"except", "catch", "finally"})
 _SCOPE_HEADS = frozenset({"def", "function", "class", "func"})
@@ -126,9 +127,14 @@ def call_context(lines: list[str], call_line: int | None, def_line: int | None) 
     if any(k in ("for", "while") for k in kinds):
         return "loop"
     branched = any(k in _BRANCH_HEADS for k in kinds)
-    if branched and text.strip().startswith("return "):
-        return "early_exit"  # ``if x: return f()`` is another way the operation ends
+    if _returns_early(text.strip(), branched):
+        return "early_exit"
     return "conditional" if branched else "always"
+
+
+def _returns_early(text: str, branched: bool) -> bool:
+    """``if x: return f()``, on one line or as a return inside a branch: another way it ends."""
+    return bool(_ONE_LINE_GUARD.match(text)) or (branched and text.startswith("return "))
 
 
 @dataclass

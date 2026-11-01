@@ -80,7 +80,7 @@ def decorator_start(lines: list[str], def_ln: int) -> int:
     first = def_ln
     i = def_ln - 2
     while i >= 0 and lines[i].strip() and lines[i].startswith((" ", "\t", "@", ")")):
-        if lines[i].startswith("@"):
+        if lines[i].lstrip().startswith("@"):  # a method's decorators are indented
             first = i + 1
         i -= 1
     return first
