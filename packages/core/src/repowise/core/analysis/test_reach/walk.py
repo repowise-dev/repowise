@@ -289,39 +289,48 @@ def package_walk(
         importers: dict[str, list[str]] = {}
         for dependent, dependency in (yield Need("importers", tuple(frontier))):
             importers.setdefault(dependency, []).append(dependent)
-        frontier = []
-        queued: set[str] = set()
+        queued: dict[str, None] = {}
         for node, who in importers.items():
             carried = start.get(node, frozenset())
             if len(who) > HUB_MIN_FAN_IN:
                 carried &= {node}
             for dependent in who:
                 if dependent in tests:
-                    for seed in carried:
-                        reached.setdefault(seed, set()).add(dependent)
-                    continue
-                if not is_code_file(dependent):
-                    continue
-                # Beside the target, or the barrel of its directory or its parent's.
-                where = _directory(dependent)
-                barrel = PurePosixPath(dependent).name in BARREL_FILENAMES
-                fresh = {
-                    s
-                    for s in carried
-                    if home[s] == where or (barrel and _directory(home[s]) == where)
-                }
-                fresh -= origins.get(dependent, set())
-                if not fresh:
-                    continue
-                origins.setdefault(dependent, set()).update(fresh)
-                if dependent not in queued:
-                    queued.add(dependent)
-                    frontier.append(dependent)
+                    _record_tests(reached, carried, dependent)
+                elif _carry_in_package(dependent, carried, home, origins):
+                    queued[dependent] = None
+        frontier = list(queued)
     edited = frozenset(c.split("::", 1)[0] for c in seeds)
     return {
         target: capped(target, found, "import-graph", changed=seeds, edited=edited, rank=rank)
         for target, found in reached.items()
     }
+
+
+def _record_tests(reached: dict[str, set[str]], seeds: Collection[str], test: str) -> None:
+    for seed in seeds:
+        reached.setdefault(seed, set()).add(test)
+
+
+def _carry_in_package(
+    node: str,
+    carried: Collection[str],
+    home: Mapping[str, str],
+    origins: dict[str, set[str]],
+) -> bool:
+    """Give *node* the carried seeds whose package it is in; True when it gained any.
+
+    In a seed's package: beside it, or the barrel of its directory or its parent's.
+    """
+    if not is_code_file(node):
+        return False
+    where = _directory(node)
+    barrel = PurePosixPath(node).name in BARREL_FILENAMES
+    fresh = {s for s in carried if home[s] == where or (barrel and _directory(home[s]) == where)}
+    fresh -= origins.get(node, set())
+    if fresh:
+        origins.setdefault(node, set()).update(fresh)
+    return bool(fresh)
 
 
 def _directory(path: str) -> str:
