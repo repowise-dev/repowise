@@ -17,6 +17,7 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._changes import overview_changes
 from repowise.server.mcp_server._components import component_list
 from repowise.server.mcp_server._helpers import (
@@ -296,8 +297,7 @@ async def _in_turn(session: Any, repository: Any, actions: Any) -> tuple[Any, An
 async def _abandon(slow: Any) -> None:
     """Stop the slow reads when the rest failed, so no task outlives the call."""
     if isinstance(slow, asyncio.Future):
-        slow.cancel()
-        await asyncio.gather(slow, return_exceptions=True)
+        await cancel_and_wait([slow])
     else:
         slow.close()  # an in-turn read that never started
 

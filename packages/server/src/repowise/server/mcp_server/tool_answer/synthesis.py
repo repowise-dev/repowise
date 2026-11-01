@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from repowise.core.providers.llm.base import RateLimitError
+from repowise.core.providers.llm.error_hints import describe_provider_error
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.reasoning import ReasoningMode, resolve_reasoning
 from repowise.core.repo_config import load_repo_config
@@ -282,11 +283,36 @@ def _synthesis_failure_note(exc: BaseException, provider, timeout_s: float, time
             f"{headroom} switch to a faster provider. Read the listed files to "
             "answer meanwhile."
         )
+    if _key_rejected(exc):
+        return _key_rejected_note(provider, who)
     detail = " ".join(str(exc).split())[:200]
     suffix = f": {detail}" if detail else ""
     return (
         f"DEGRADED: LLM synthesis failed ({type(exc).__name__}{suffix}) "
         f"[{who}]. Read the listed files to answer."
+    )
+
+
+def _key_rejected(exc: BaseException | None) -> bool:
+    """Whether the provider refused the credentials (401/403)."""
+    hint = describe_provider_error(exc) if exc is not None else None
+    return hint is not None and hint.kind == "auth"
+
+
+def _key_rejected_note(provider, who: str) -> str:
+    """Where to put a working key. Never quotes the error, which can echo the key."""
+    spec = _spec(provider)
+    if spec is None or not spec.api_key_envs:
+        return (
+            f"DEGRADED: the provider rejected its credentials ({who}). Check the "
+            "provider's login or access. Read the listed files to answer meanwhile."
+        )
+    names = " or ".join(spec.api_key_envs)
+    return (
+        f"DEGRADED: the provider rejected the API key or its access ({who}). Set a "
+        f"valid {names} in the repo's .repowise/.env (read on the next call) or in "
+        "the MCP server's environment, which wins and needs a server restart. Read "
+        "the listed files to answer meanwhile."
     )
 
 
@@ -484,13 +510,14 @@ async def _first_call(provider, prompts, configured, timeout_s, started):
     the token cap asks the same way. When the provider refuses the ``low`` mode
     synthesis chose (Gemini 2.5 models reject thinking levels), the call is made
     once more with the configured mode, and ``low`` is not tried again. Any
-    other failure under ``low`` also gets that one call, but keeps ``low``.
+    other failure under ``low`` also gets that one call, but keeps ``low``,
+    except a rate limit or a rejected key, which another mode cannot fix.
     """
     reasoning = await _synthesis_reasoning(provider, configured)
     call = functools.partial(_generate_within, provider, *prompts, reasoning=reasoning)
     response, failure, timed_out = await call(max_tokens=_SYNTHESIS_MAX_TOKENS, timeout_s=timeout_s)
     refused = failure is not None and not timed_out and reasoning != configured
-    if not refused or isinstance(failure, RateLimitError):
+    if not refused or isinstance(failure, RateLimitError) or _key_rejected(failure):
         return call, response, failure, timed_out
     if _REFUSED_MODE.search(str(failure)):
         _log.info("get_answer synthesis: %s refused reasoning=low (%s)", _model_key(provider), failure)

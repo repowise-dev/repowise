@@ -68,6 +68,9 @@ MAX_LINES_MIXED = 15
 MAX_OMITTED_FILES = 5
 OVER_LINES_MIXED = f"over {MAX_LINES_MIXED} lines for a multi-word query; search one name for more"
 MAX_LINES_PER_FILE = 5
+# A literal set this small comes back whole: the per-file cut only keeps one
+# busy file from crowding out the rest of a large set.
+SMALL_SET_LINES = 20
 MAX_SYMBOLS = 3
 MAX_SCAN_FILES = 20_000
 MAX_SCAN_BYTES = 32_000_000
@@ -133,7 +136,7 @@ def _definition_re(needle: str, word: bool) -> re.Pattern[str]:
 
 
 def _matching_lines(text: str, pattern: re.Pattern[str]) -> list[tuple[int, str]]:
-    """``(line number, line)`` for up to one past the per-file cap."""
+    """``(line number, line)`` for up to one past the small-set size."""
     out: list[tuple[int, str]] = []
     line_no, counted_to, last_start = 1, 0, -1
     for m in pattern.finditer(text):
@@ -144,7 +147,7 @@ def _matching_lines(text: str, pattern: re.Pattern[str]) -> list[tuple[int, str]
         counted_to = last_start = start
         end = text.find("\n", start)
         out.append((line_no, text[start : end if end >= 0 else len(text)]))
-        if len(out) > MAX_LINES_PER_FILE:
+        if len(out) > max(SMALL_SET_LINES, MAX_LINES_PER_FILE):
             break
     return out
 
@@ -292,6 +295,32 @@ def _hit_kinds(
     return [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
 
 
+def _line_row(rel: str, n: int, line: str, kind: str) -> dict[str, Any]:
+    return {"path": rel, "line": n, "kind": kind, "text": line.strip()[:MAX_TEXT_CHARS]}
+
+
+def _with_tails(
+    rows: list[dict[str, Any]],
+    tails: list[tuple[str, list[tuple[int, str]]]],
+    definition: re.Pattern[str],
+    capped: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """``(rows, files still cut)``: *rows* with each cut file's remaining lines
+    after its own when every cut file served rows and the whole set holds at
+    most ``SMALL_SET_LINES`` lines; else *rows* and *capped* unchanged."""
+    extra = {rel: _hit_kinds(rel, tail, definition) for rel, tail in tails if tail}
+    total = len(rows) + sum(map(len, extra.values()))
+    if not extra or len(extra) != capped or total > SMALL_SET_LINES:
+        return rows, capped
+    out: list[dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        out.append(row)
+        last = i + 1 == len(rows) or rows[i + 1]["path"] != row["path"]
+        if last and row["path"] in extra:
+            out += [_line_row(row["path"], n, line, k) for n, line, k in extra.pop(row["path"])]
+    return out, 0
+
+
 def scan_literal(
     root: Path, files: list[str], needle: str, word: bool
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -305,6 +334,7 @@ def scan_literal(
     oversized: list[str] = []
     unreadable: list[str] = []
     per_file_capped = overflow = defs = 0
+    tails: list[tuple[str, list[tuple[int, str]]]] = []
     deadline = time.monotonic() + MAX_SCAN_SECONDS
     undecodable = binary_hits = 0
     from repowise.core.ingestion.document_extractors import (
@@ -365,9 +395,9 @@ def scan_literal(
             continue
         text = data.decode("utf-8", errors="replace")
         found = _matching_lines(text, pattern)
-        if len(found) > MAX_LINES_PER_FILE:
-            per_file_capped += 1
-            del found[MAX_LINES_PER_FILE:]
+        tail = found[MAX_LINES_PER_FILE:]
+        per_file_capped += bool(tail)
+        del found[MAX_LINES_PER_FILE:]
         hits = _hit_kinds(rel, found, definition)
         if len(rows) >= MAX_LINES:
             # Full: only definitions still earn a row, as they sort first.
@@ -382,10 +412,9 @@ def scan_literal(
             unreadable.append(rel)
             continue
         defs += sum(h[2] == "definition" for h in hits)
-        rows += [
-            {"path": rel, "line": n, "kind": k, "text": line.strip()[:MAX_TEXT_CHARS]}
-            for n, line, k in hits
-        ]
+        rows += [_line_row(rel, n, line, k) for n, line, k in hits]
+        tails.append((rel, tail))
+    rows, per_file_capped = _with_tails(rows, tails, definition, per_file_capped)
     if overflow:
         reasons.append(OVER_LINES)
     if oversized:

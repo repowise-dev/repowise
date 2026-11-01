@@ -803,13 +803,14 @@ def test_the_directive_names_the_scope_and_the_tests_to_extend():
         "1 changed executable line in the working tree is uncovered; "
         "add tests for them (patch_coverage.files)"
     )
-    # Files changed since the coverage was measured lead: they have no figure yet.
+    # Stale files are a status (freshness, file_counts), never an action; the
+    # measured lines still get theirs.
     stale = {**_patch_block(0, 1, hints, freshness="stale"), "file_counts": {"stale_file": 2}}
     assert patch_coverage_action(stale) == (
-        "Stored coverage predates this change: re-run the tests with coverage, then "
-        "`repowise coverage add` (the hook does it automatically) and call again "
-        "(2 changed files not measured until then)"
+        "1 changed executable line since origin/main is uncovered; "
+        "extend tests/test_a.py, tests/test_c.py"
     )
+    assert patch_coverage_action({**stale, "covered_line_count": 1}) is None
     # A file untouched since the measurement keeps real figures, stale or not.
     assert patch_coverage_action(_patch_block(0, 1, freshness="stale")).endswith(
         "is uncovered; add tests for them (patch_coverage.files)"

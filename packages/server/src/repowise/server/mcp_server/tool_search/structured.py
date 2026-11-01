@@ -256,6 +256,32 @@ def _select_results(
     return _hybrid_mode_results(plan, pools, exact), 0
 
 
+def _named_directory(query: str, paths: list[str]) -> str | None:
+    """The one indexed directory a path query names (``src/utils``, ``utils``), else None."""
+    q = query.strip().replace("\\", "/").strip("/")
+    if not q or "*" in q or "?" in q:
+        return None
+    found: set[str] = set()
+    for p in paths:
+        if p.startswith(f"{q}/"):
+            found.add(q)
+        elif (i := p.find(f"/{q}/")) >= 0:
+            found.add(p[: i + 1 + len(q)])
+    if q in found:
+        return q
+    return found.pop() if len(found) == 1 else None
+
+
+def _directory_action(plan: _SearchPlan, pools: _Pools) -> list[str]:
+    """The get_context call listing a directory's files, for a path query naming one."""
+    if plan.mode != "path" or plan.multi:
+        return []
+    folder = _named_directory(plan.query, pools.indexed_paths)
+    if folder is None:
+        return []
+    return [f'get_context(targets=["{folder}"], include=["files"]): its files and their tests']
+
+
 async def _single_repository(contexts: list[Any], multi: bool) -> Any:
     """The repository row a single-repo search ran against, else None."""
     if multi or not contexts:
@@ -392,6 +418,8 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
+    if actions := _directory_action(plan, pools):
+        response["next_actions"] = actions
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands

@@ -236,6 +236,7 @@ async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
 @pytest.mark.asyncio
 async def test_cap_hit_marks_lines_incomplete(tree, monkeypatch):
     monkeypatch.setattr(_line_hits, "MAX_LINES_PER_FILE", 0)
+    monkeypatch.setattr(_line_hits, "SMALL_SET_LINES", 0)
 
     out = await search_codebase("47821")
 
@@ -808,3 +809,36 @@ async def test_punctuated_literals_return_their_lines(tree):
     # An identifier inside the literal (``backend_of``) does not turn it into a symbol query.
     call = await search_codebase("backend_of('m')")
     assert [(r["path"], r["line"]) for r in call["lines"]] == [("app/widget.py", 6)]
+
+
+def _scan(tmp_path, counts: dict[str, int]):
+    for rel, n in counts.items():
+        (tmp_path / rel).write_text("".join(f"limit_{i} = max_hops\n" for i in range(n)), "utf-8")
+    return _line_hits.scan_literal(tmp_path, list(counts), "max_hops", True)
+
+
+def test_a_small_set_comes_back_whole_in_file_order(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 2})
+
+    assert reasons == []
+    assert [(r["path"], r["line"]) for r in rows] == [
+        *(("a.py", n) for n in range(1, 11)),
+        ("b.py", 1),
+        ("b.py", 2),
+    ]
+
+
+def test_a_large_set_keeps_the_per_file_cut(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 15})
+
+    cap = _line_hits.MAX_LINES_PER_FILE
+    assert len(rows) == 2 * cap
+    assert reasons == [f"over {cap} lines in 2 files"]
+
+
+def test_the_small_set_bound_is_inclusive(tmp_path):
+    size = _line_hits.SMALL_SET_LINES
+    rows, reasons = _scan(tmp_path, {"a.py": size})
+    assert (len(rows), reasons) == (size, [])
+    rows, reasons = _scan(tmp_path, {"a.py": size + 1})
+    assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons

@@ -276,11 +276,21 @@ def test_directive_without_a_test_block_asks_for_nothing():
         assert directive(_clean_delta(), absent)["next_actions"] == []
 
 
-def test_directive_still_names_a_missing_index():
+def test_a_missing_index_is_a_status_not_an_action():
+    """``impacted_tests.status`` already says no_index; the action named nothing in the diff."""
     from repowise.server.mcp_server._change_health import directive
 
-    actions = directive(_clean_delta(), {"status": "no_index"})["next_actions"]
-    assert actions == ["No measured test map; run the suite covering the changed files."]
+    assert directive(_clean_delta(), {"status": "no_index"})["next_actions"] == []
+
+
+def test_skipped_files_are_a_reason_not_an_action():
+    from repowise.server.mcp_server._change_health import directive
+
+    delta = _clean_delta()
+    delta.skipped = {"src/a.py": "parse_error"}
+    rendered = directive(delta, {"tests_to_run": ["tests/test_a.py"]})
+    assert rendered["next_actions"] == ["Run: tests/test_a.py"]
+    assert any("not analysed" in r for r in rendered["reasons"])
 
 
 def test_directive_says_to_run_every_test_and_why():

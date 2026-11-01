@@ -24,7 +24,8 @@ def test_instructions_say_when_each_tool_replaces_a_text_search() -> None:
     text = mcp.instructions
     assert "search_codebase" in text and "`lines`" in text
     assert 'include=["references"]' in text
-    assert "get_answer" in text
+    assert "get_answer" in text and "per call" in text
+    assert 'include=["files"]' in text
     assert "get_risk" in text and "get_change_risk" in text and "get_why" in text
     assert "repowise update --working-tree" in text
 

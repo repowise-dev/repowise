@@ -755,3 +755,35 @@ async def test_health_and_lane_counts_agree(client: AsyncClient, app) -> None:
     assert health["summary"]["proposed"] == lanes["candidates"]
     assert health["summary"]["stale"] == lanes["needs_review"]
     assert health["summary"]["unscoped"] == lanes["uncheckable"]
+
+
+@pytest.mark.asyncio
+async def test_reaffirming_a_drifted_decision_moves_it_out_of_needs_review(
+    client: AsyncClient, app
+) -> None:
+    """The Needs review lane's verb has to empty the lane it is offered in."""
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    # A tracked file whose last change predates the reaffirmation: what was
+    # re-read still describes it. An untracked path would score as gone.
+    async with get_session(sf) as session:
+        from datetime import UTC, datetime
+
+        from repowise.core.persistence.models import GitMetadata
+
+        session.add(
+            GitMetadata(
+                repository_id=repo["id"],
+                file_path="src/app.py",
+                last_commit_at=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+        )
+        await session.flush()
+    did = await _seed(sf, repo["id"], title="Drifted", accept=True, staleness=0.9)
+    assert [d["title"] for d in await _lane(client, repo["id"], "needs_review")] == ["Drifted"]
+
+    res = await client.post(f"/api/repos/{repo['id']}/decisions/{did}/reaffirm")
+
+    assert res.status_code == 200, res.text
+    assert await _lane(client, repo["id"], "needs_review") == []
+    assert [d["title"] for d in await _lane(client, repo["id"], "active")] == ["Drifted"]

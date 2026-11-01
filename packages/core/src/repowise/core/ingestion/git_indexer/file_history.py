@@ -313,6 +313,7 @@ def index_file(
     trace_index: Any | None = None,
     history_only: bool = False,
     forge: ForgeKind = ForgeKind.GENERIC,
+    shallow_roots: frozenset[str] = frozenset(),
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -331,6 +332,10 @@ def index_file(
 
     *forge* is the repo's forge, read first when a commit message names the
     change it merged.
+
+    *shallow_roots* are the commits a shallow clone cut. Git shows each as
+    adding every file it holds, so they still count as commits here but credit
+    no author and are never a key commit.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
@@ -363,9 +368,10 @@ def index_file(
 
     # Each step writes its fields in turn, so a failure keeps the fields
     # the earlier steps already wrote.
+    authored = _authored(commits, shallow_roots)
     try:
         _add_span(meta, commits, now)
-        authors = _Authors.tally(commits, ninety_days_ago_ts)
+        authors = _Authors.tally(authored, ninety_days_ago_ts)
         _add_windows(meta, commits, ninety_days_ago_ts, thirty_days_ago_ts)
         _add_ownership(meta, authors)
         meta["is_stable"] = _is_stable(meta)
@@ -375,7 +381,7 @@ def index_file(
         meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
         if include_blame:
             _add_blame_ownership(meta, repo, repo_path, now, authors)
-        _add_commit_messages(meta, commits, forge)
+        _add_commit_messages(meta, authored, forge)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
             meta["original_path"] = orig_path
@@ -383,6 +389,13 @@ def index_file(
         logger.debug("git_indexer_partial_failure", file_path=file_path, exc_info=True)
 
     return meta
+
+
+def _authored(commits: list[_CommitRec], shallow_roots: frozenset[str]) -> list[_CommitRec]:
+    """*commits* without a shallow clone's cut commits, which changed no file here."""
+    if not shallow_roots:
+        return commits
+    return [c for c in commits if c.sha not in shallow_roots]
 
 
 def decay_meta(file_path: str, commits: list[_CommitRec], as_of_ts: float | None) -> dict:

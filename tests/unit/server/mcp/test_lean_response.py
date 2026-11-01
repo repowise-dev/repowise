@@ -154,16 +154,12 @@ async def test_debug_meta_keeps_the_whole_shape(monkeypatch: pytest.MonkeyPatch)
     assert result["_meta"]["index_behind"] is False
 
 
-async def get_overview(include: list[str] | None = None) -> dict[str, Any]:
-    return {
-        "summary": "x",
-        "omission_marker": "[repowise#aaaaaaaaaaaa: 3 lines omitted]",
-        "_meta": {"omitted": {"refs": ["repowise#aaaaaaaaaaaa"], "restore": "r"}},
-    }
-
-
 async def test_a_full_meta_tool_still_carries_one_omission_entry() -> None:
     """get_overview keeps its whole envelope, but not a marker restating ``_meta.omitted``."""
+
+    async def get_overview(include: list[str] | None = None) -> dict[str, Any]:
+        return _with_marker()
+
     result = await tool_middleware(get_overview)()
 
     assert "omission_marker" not in result
@@ -195,3 +191,32 @@ def test_a_bridged_cli_call_keeps_its_marker() -> None:
 
     assert "omission_marker" in cli
     assert "omission_marker" not in mcp
+
+
+async def get_overview() -> dict[str, Any]:
+    return {"_meta": {"index_behind": False, "embedder_degraded": False, "contract_version": 4}}
+
+
+async def test_the_orientation_call_keeps_diagnostics_but_no_false_status_flag() -> None:
+    meta = (await tool_middleware(get_overview)())["_meta"]
+
+    assert "embedder_degraded" not in meta
+    assert meta["index_behind"] is False
+    assert meta["contract_version"] == 4
+
+
+async def test_the_orientation_call_keeps_a_raised_flag() -> None:
+    async def get_overview() -> dict[str, Any]:
+        return {"_meta": {"embedder_degraded": True}}
+
+    assert (await tool_middleware(get_overview)())["_meta"]["embedder_degraded"] is True
+
+
+async def test_debug_meta_keeps_the_orientation_calls_false_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+
+    meta = (await tool_middleware(get_overview)())["_meta"]
+
+    assert meta["embedder_degraded"] is False

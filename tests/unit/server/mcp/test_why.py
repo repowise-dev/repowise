@@ -889,6 +889,33 @@ def test_cross_references_match_whole_tokens_not_substrings():
     assert refs[0]["matched_terms"] == ["auth", "cache"]
 
 
+def test_file_git_log_drops_a_shallow_clone_cut_commit(tmp_path):
+    """At depth 1 git shows the cut commit adding every file; it did not touch util.py."""
+    import subprocess
+
+    from repowise.server.mcp_server.tool_why.archaeology import _sync_git_log
+
+    def git(*args, cwd):
+        subprocess.run(["git", "-c", "user.name=A", "-c", "user.email=a@x", *args],
+                       cwd=cwd, check=True, capture_output=True)
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git("init", "-q", "-b", "main", cwd=origin)
+    (origin / "util.py").write_text("x = 1\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-q", "-m", "feat: add util", cwd=origin)
+    (origin / "app.py").write_text("y = 2\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-q", "-m", "feat: add app", cwd=origin)
+    shallow = tmp_path / "shallow"
+    git("clone", "-q", "--depth", "1", f"file://{origin.as_posix()}", str(shallow), cwd=tmp_path)
+
+    assert _sync_git_log(str(origin), "util.py", "util")[0]["source"] == "git_log_follow"
+    rows = _sync_git_log(str(shallow), "util.py", "util")
+    assert [r for r in rows if r["source"] == "git_log_follow"] == []
+
+
 @pytest.mark.asyncio
 async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session, setup_mcp):
     """A record naming only files gone at HEAD is history, not a binding rule."""

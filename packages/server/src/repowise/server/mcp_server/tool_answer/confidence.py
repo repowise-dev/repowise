@@ -13,6 +13,7 @@ gate reads live beside it.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections import Counter
 from collections.abc import Collection
@@ -85,10 +86,20 @@ _MARKDOWN_MARKUP_RE = re.compile(r"[*`]+|(?<!\w)_+|_+(?!\w)")
 
 def _normalized(answer_text: str) -> str:
     """Lower-cased, without markdown markup, with curly apostrophes folded and
-    spaces collapsed, so every phrase marker matches however the prose is styled."""
+    spaces collapsed, so every phrase marker matches however the prose is styled.
+    "The excerpts don't" reads as "the excerpts do not"; a contraction about the
+    code ("the loop doesn't include a backoff") is left alone."""
     text = _MARKDOWN_MARKUP_RE.sub("", (answer_text or "").lower())
     text = text.replace("\u2019", "'").replace("\u02bc", "'")
+    text = _EXCERPT_CONTRACTION_RE.sub(r"\1 \2 not", text)
     return re.sub(r"\s+", " ", text)
+
+
+# "The (retrieved) excerpts don't ...": the contraction says what the evidence lacks.
+_EXCERPT_CONTRACTION_RE = re.compile(
+    r"\b((?:excerpts?|evidence|material|snippets?)(?: (?:shown|provided|retrieved|here|above))?)"
+    r" (do|does)n't\b"
+)
 
 
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -115,9 +126,49 @@ def _sentences(answer_text: str) -> list[str]:
     return [s for s in (p.strip() for p in _SENTENCE_BREAK_RE.split(answer_text or "")) if s]
 
 
+_LINE_NUMBER_RE = re.compile(
+    r"\bline[- ]?numbers?\b|\bline[- ]numbered\b|\bline ranges?\b|\bcite (?:the )?(?:exact|specific) lines?\b"
+)
+_CLAUSE_BREAK_RE = re.compile(r"([,;:()]|\bso\b)")
+# The words a "no line numbers" clause is made of; any other word names something missing.
+_LINE_CLAUSE_FILLER = frozenset((
+    "a", "an", "the", "it", "its", "their", "these", "those", "this", "them", "they", "i",
+    "here", "there", "given", "any", "no", "not", "do", "does", "did", "is", "are", "was",
+    "were", "isn't", "aren't", "can't", "cannot", "cite", "exact", "specific", "lines", "line",
+    "include", "includes", "included", "show", "shows", "shown", "give", "gives", "carry",
+    "carries", "have", "has", "provide", "provides", "provided", "list", "lists", "listed",
+    "for", "in", "of", "with", "excerpt", "excerpts", "retrieved", "summary", "wiki",
+    "declaration", "declarations", "body", "available", "unknown",
+))
+# A clause going on with what else is missing (", nor the validator").
+_LIST_GOES_ON_RE = re.compile(r"\s*(?:nor|or|and|plus|as well as|along with|let alone)\b")
+
+
+def _line_number_only(clause: str) -> bool:
+    """Does *clause* say nothing but that the excerpts carry no line numbers?"""
+    if not _LINE_NUMBER_RE.search(clause):
+        return False
+    words = re.findall(r"[a-z][a-z']*", _LINE_NUMBER_RE.sub(" ", clause))
+    return all(w in _LINE_CLAUSE_FILLER for w in words)
+
+
 def _is_admission(sentence: str) -> bool:
-    """Does *sentence* say something asked is not in the evidence?"""
-    low = _normalized(sentence)
+    """Does *sentence* say something asked is not in the evidence?
+
+    A clause that only says the excerpts carry no line numbers is not one:
+    the code is served, only its location is missing.
+    """
+    # Clauses at even indices, their delimiters kept between them, so every other
+    # marker reads the sentence as written.
+    parts = _CLAUSE_BREAK_RE.split(_normalized(sentence))
+    low = "".join(
+        ""
+        if i % 2 == 0
+        and _line_number_only(p)
+        and not (i + 2 < len(parts) and _LIST_GOES_ON_RE.match(parts[i + 2]))
+        else p
+        for i, p in enumerate(parts)
+    )
     return (
         _BARE_GAP_RE.search(low) is not None
         or _TRUNCATED_GAP_RE.search(low) is not None
@@ -845,6 +896,11 @@ class _GradeState:
     stop_reason: str | None = None
     cut_off: bool = False
 
+    @functools.cached_property
+    def value_line(self) -> dict | None:
+        """The verified value line the answer states for the constant the question names."""
+        return stated_value_line(self.question, self.question_ids, self.answer_text, self.hits)
+
 
 def _earned_high(
     question: str,
@@ -1052,6 +1108,11 @@ def _admitted_gap_gate(s: _GradeState) -> None:
     if s.confidence != "high" or s.hedged:
         return
     s.admitted_gap = _admitted_gap(s.answer_text)
+    # The answer states the verified value of the constant the question names:
+    # what was asked is in hand, so the admission is about something else
+    # (where it is read, its line number).
+    if s.admitted_gap and s.value_line:
+        s.admitted_gap = None
     if s.admitted_gap:
         s.confidence = "medium"
 
@@ -1080,10 +1141,15 @@ def _identifier_gate(s: _GradeState) -> None:
 
     A name no symbol carries (``HTTP``, ``TypeScript``) cannot be hydrated, so
     only indexed names count. The file an earned high rests on counts as a top
-    hit: its line is the evidence, wherever it ranked.
+    hit: its line is the evidence, wherever it ranked. A top hit whose value
+    line the answer states hydrates what was asked: that line is the answer,
+    and its page carries every other word of the question.
     """
     names = s.question_ids - s.unindexed_names
     if s.confidence != "high" or not names:
+        return
+    top_paths = {h.get("target_path") for h in s.hits[:_ENRICH_TOP_N_HITS]}
+    if s.value_line and s.value_line["path"] in top_paths:
         return
     top_n = [
         h

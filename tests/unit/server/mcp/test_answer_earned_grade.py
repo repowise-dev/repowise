@@ -632,3 +632,101 @@ def test_a_name_only_a_comment_writes_is_absent(tmp_path) -> None:
         repo_root=tmp_path, question="How does the RowTree component render?",
     ))
     assert homonyms["absent"] == ["RowTree"]
+
+
+# --- caveats about what was not asked ----------------------------------------
+
+
+_LINE_ONLY = (
+    "The excerpt does not include line numbers.",
+    "Its body isn't line-numbered in the excerpts, so I can't cite exact lines.",
+    "`preExecHookFn` is a variable (the excerpt does not include line numbers):",
+    "The excerpts don't include line numbers, so none are cited.",
+)
+_STILL_ADMITS = (
+    "The excerpts do not include line numbers nor the validator.",
+    "The excerpts do not include line numbers, nor the validator.",
+    "The excerpts do not include the line numbers, plus the function that enforces it.",
+    "The excerpts do not include the line numbers of the retry check.",
+    "The excerpts do not show the line numbers or the code that reads it.",
+    "The excerpts do not include the check, so I can't cite its line numbers.",
+    "(The excerpts don't include the validator's name or implementation.)",
+    # Punctuation is kept: the clause end after "is not included" still reads.
+    "`_retry` is not included (in any hit).",
+)
+_CODE_BEHAVIOUR = (
+    "`Client.send` retries 3 times and doesn't include backoff.",
+    "It doesn't contain a lock.",
+)
+
+
+def test_a_missing_line_number_is_not_an_admission() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _is_admission
+
+    assert not any(_is_admission(s) for s in _LINE_ONLY)
+    assert all(_is_admission(s) for s in _STILL_ADMITS)
+    assert not any(_is_admission(s) for s in _CODE_BEHAVIOUR)
+
+
+def test_a_line_number_aside_before_the_claim_is_no_hedge() -> None:
+    aside = "`_is_dynamic_esm_import` is in ts_js.py (the excerpt does not include line numbers):"
+    grade = _grade(_TS_QUESTION, f"{aside} {_TS_CLAIM}", _TS_HITS)
+    assert not grade.hedged
+    assert grade.admitted_gap is None
+
+
+_READ_CAVEAT = "The excerpts do not show the code that reads it, so I can't confirm how it is applied."
+
+
+def _dominant_floor_hits(floor: dict | None = None) -> list[dict]:
+    return [
+        {"target_path": _CFG, "score": 5.0, "summary": "Default values of the get_answer tuning constants.",
+         "symbols": [floor or _FLOOR]},
+        {"target_path": "tool_answer/payload.py", "score": 2.0},
+    ]
+
+
+def test_a_caveat_beside_a_stated_value_line_keeps_high() -> None:
+    grade = _grade(_FLOOR_QUESTION, f"{_FLOOR_ANSWER} {_READ_CAVEAT}", _dominant_floor_hits())
+    assert grade.confidence == "high"
+    assert grade.admitted_gap is None
+
+
+def test_the_caveat_still_holds_an_answer_with_no_stated_value_line() -> None:
+    unverified = {**_FLOOR, "_verified": False}
+    grade = _grade(_FLOOR_QUESTION, f"{_FLOOR_ANSWER} {_READ_CAVEAT}", _dominant_floor_hits(unverified))
+    assert grade.confidence == "medium"
+    assert grade.admitted_gap == _READ_CAVEAT
+    wrong = _grade(_FLOOR_QUESTION, f"The floor is 2.0. {_READ_CAVEAT}", _dominant_floor_hits())
+    assert wrong.confidence != "high"
+
+
+def test_a_stated_value_line_exempts_the_identifier_gate() -> None:
+    hits = _dominant_floor_hits()
+    grade = _grade(_FLOOR_QUESTION, _FLOOR_ANSWER, hits, ids={"get_answer"})
+    assert grade.confidence == "high"
+    assert grade.unhydrated_names == ()
+    unverified = _dominant_floor_hits({**_FLOOR, "_verified": False})
+    held = _grade(_FLOOR_QUESTION, _FLOOR_ANSWER, unverified, ids={"get_answer"})
+    assert held.confidence == "medium"
+    assert held.unhydrated_names == ("get_answer",)
+
+
+def test_a_contracted_admission_before_any_claim_is_a_hedge() -> None:
+    answer = (
+        "The check is part of flag-group validation in command.go. "
+        "(The excerpts don't include the validator's name or implementation.) "
+        "It runs after `Execute` calls `ExecuteC`."
+    )
+    assert _answer_is_hedged(answer, "Where is the mutually exclusive flags check enforced?")
+    # A contraction about the code is a claim, not an admission.
+    grade = _grade(_TS_QUESTION, f"{_TS_CLAIM} It doesn't include the CJS path.", _TS_HITS)
+    assert not grade.hedged
+    assert grade.admitted_gap is None
+
+
+def test_a_value_line_does_not_clear_a_gap_in_a_second_question() -> None:
+    question = f"{_FLOOR_QUESTION[:-1]} and where is it read?"
+    answer = f"{_FLOOR_ANSWER} The excerpts do not show where it is read."
+    grade = _grade(question, answer, _dominant_floor_hits())
+    assert grade.confidence != "high"

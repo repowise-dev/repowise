@@ -917,16 +917,17 @@ async def get_answer(
     High confidence is content-grounded and may be used directly. Medium
     confidence keeps the smallest verification evidence; low confidence leads
     with an actionable local conclusion and ranked evidence. ``candidate_files``
-    ranks the files worth opening that the citations do not name. Provider keys and
-    network access are optional: local source, symbols, FTS, rationale, and
-    data-shape evidence remain usable when embeddings or synthesis fail.
+    ranks the files worth opening that the citations do not name. Without a
+    provider key or network it answers from local evidence.
 
     Responses fit 24,000 serialized characters. Pass ``include=["evidence"]``
     for the deduplicated expanded projection, capped at 32,000. Reductions carry
     totals, emitted counts, reasons, and a recovery: the same call with that include.
 
     Args:
-        question: Developer question.
+        question: One question about one subject. Split "where is X and
+            when does Y run" into two calls; do not paste a whole
+            multi-part task.
         scope: Optional repository-relative path prefix.
         repo: Usually omitted; a workspace alias when needed.
         include: Optional ``["evidence"]`` expanded projection;

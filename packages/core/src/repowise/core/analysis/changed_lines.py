@@ -503,18 +503,30 @@ def _diff(repo_path: str, args: list[str]) -> str:
         raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
 
 
-def is_shallow_root(repo_path: str, rev: str) -> bool:
-    """Whether *rev* is a boundary a shallow clone cut its parents from.
+def shallow_roots(repo_path: str) -> frozenset[str]:
+    """Full shas of the commits a shallow clone cut its parents from.
 
     Read from git's own list of grafted commits, so a genuine root commit is
-    never mistaken for a cut one.
+    never mistaken for a cut one. Empty for a full clone or when git cannot
+    answer.
     """
-    shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
-    path = Path(repo_path, shallow)
-    if not shallow or not path.is_file():
+    try:
+        shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
+        path = Path(repo_path, shallow)
+        if not shallow or not path.is_file():
+            return frozenset()
+        return frozenset(path.read_text(encoding="utf-8").split())
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+
+
+def is_shallow_root(repo_path: str, rev: str) -> bool:
+    """Whether *rev* is a boundary a shallow clone cut its parents from."""
+    roots = shallow_roots(repo_path)
+    if not roots:
         return False
     sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
-    return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()
+    return sha.strip() in roots
 
 
 def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> list[str] | None:

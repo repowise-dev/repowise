@@ -47,6 +47,7 @@ from repowise.core.analysis.decisions.rationale_harvest import (
 )
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.server.mcp_server._why_relevance import (
+    RELEVANCE_FLOOR,
     clears_floor,
     floor_ranked,
     question_terms,
@@ -186,33 +187,53 @@ def _number_term(num: str) -> str:
 
 
 def _score_block(
-    words: frozenset[str], own: frozenset[str], low: str, idf: dict[str, float]
+    words: frozenset[str],
+    own: frozenset[str],
+    low: str,
+    idf: dict[str, float],
+    *,
+    plain: bool = False,
 ) -> tuple[float, list[str], bool] | None:
     """Score a comment block, or ``None`` when it is not served.
 
-    Returns (score, matched_terms, has_marker). The score is the question's
+    Returns (score, matched_terms, plain_only); *plain_only* is set when only
+    the *plain* rule below admits the block. The score is the question's
     weighted coverage (rarer terms weigh more, over every block scanned) plus
     the bonuses above. Uses the broad ``RATIONALE_MARKERS`` set shared with the
     index-time harvest, in recall mode, so intent-only markers ("never",
     "always") count.
 
-    The gate: with question terms, a marked block needs one of their words in
-    its own text (*own*; *words* adds what an anchoring declaration lends) and
-    an unmarked block also needs the floor's share of their weight; a number
-    alone never qualifies, so "Strategy 3" does not answer "tier 3". Without
-    terms (path mode, "why is this file shaped this way") a marker is enough.
+    The gate: with question terms, a block needs one of their words in its own
+    text (*own*), or with *plain* documents a declaration the question names
+    (*words* then carries more than *own*). An unmarked block also needs the floor's
+    share of their weight, or with *plain* half of it and two of their words
+    in its own text: a comment is a line or two, so the plain statement of a
+    reason carries less of a question than a decision record does. A number alone never qualifies,
+    so "Strategy 3" does not answer "tier 3". Without terms (path mode, "why is
+    this file shaped this way") a marker is enough.
     """
     has_marker = any(m in low for m in RATIONALE_MARKERS)
     if not idf:
-        return (_MARKER_BONUS, [], True) if has_marker else None
+        return (_MARKER_BONUS, [], False) if has_marker else None
     matched = [t for t in idf if t in words]
     coverage = relevance(words, idf)
-    if not any(not t.startswith("#") and t in own for t in matched):
+    own_matched = {t for t in matched if not t.startswith("#") and t in own}
+    if not own_matched and not (plain and len(words) > len(own)):
         return None
-    if not (has_marker or clears_floor(coverage)):
+    strict = has_marker or clears_floor(coverage)
+    if not (strict or (plain and _plain_reason(coverage, own_matched))):
         return None
     score = coverage + (_MARKER_BONUS if has_marker else 0.0)
-    return score, sorted(t.lstrip("#") for t in matched), has_marker
+    return score, sorted(t.lstrip("#") for t in matched), not strict
+
+
+def _plain_reason(coverage: float, own_matched: set[str]) -> bool:
+    """Whether an unmarked block carries enough of the question to be served.
+
+    Measured on 25 targeted questions: the comments that stated the answer
+    carried 0.36 to 0.71 of the question's weight, the unmarked noise 0.07 to 0.2.
+    """
+    return coverage >= RELEVANCE_FLOOR / 2 and len(own_matched) >= _LEAD_MIN_MATCHES
 
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -230,12 +251,16 @@ def _query_identifiers(query: str | None) -> set[str]:
 
 # A line that declares a name: a keyword declaration, or ``NAME =`` /
 # ``NAME:`` at its start. A call site naming the identifier is not one.
-_DECL_KEYWORD_RE = re.compile(
+_DECL_MODIFIERS = (
     r"\s*(?:(?:export|public|private|protected|internal|static|async|final|pub|"
-    r"readonly|abstract|default|override|open|inline)\s+)*"
-    r"(?:def|class|fn|func|function|const|let|var|val|type|interface|struct|enum)\b"
+    r"readonly|abstract|default|override|open|inline|declare)\s+)*"
 )
-_DECL_ASSIGN_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=(?!=))")
+_DECL_KEYWORD_RE = re.compile(
+    _DECL_MODIFIERS
+    + r"(?:def|class|fn|func|function|const|let|var|val|type|interface|struct|enum)\b"
+)
+# The modifiers admit a class field (``private _basePath: string``).
+_DECL_ASSIGN_RE = re.compile(_DECL_MODIFIERS + r"([A-Za-z_][A-Za-z0-9_]*)(?:[?!]?\s*:|\s*=(?!=))")
 
 
 def _declares(line: str, idents: set[str]) -> bool:
@@ -332,8 +357,8 @@ def mine_rationale(
     near_lines: dict[str, int] | None = None,
     max_files: int = _MAX_FILES,
     max_results: int = _MAX_RESULTS,
-    truncate_blocks: bool = True,
     rarity_corpus: Sequence[Container[str]] = (),
+    for_why: bool = False,
 ) -> list[dict]:
     """Mine in-code rationale comments from ``file_paths``.
 
@@ -348,6 +373,11 @@ def mine_rationale(
             when larger than the scanned blocks. One file is a small sample:
             the file's own name, or a word one comment happens to use, weighs
             as the rarest term there.
+        for_why: get_why's reading. Blocks come back whole, and a comment
+            with no rationale marker that states enough of the question, or
+            one documenting a declaration the question names, is served too
+            (see :func:`_score_block`): a get_why question asks for a reason.
+            get_answer's anchoring keeps the strict gate and the char cap.
 
     Returns a ranked list of ``{path, lines: [start, end], comment,
     matched_terms}`` — at most ``max_results``. Best-effort: never raises.
@@ -380,12 +410,12 @@ def mine_rationale(
         pool = list(rarity_corpus)
     idf = term_idf(terms, pool) if terms else {}
 
-    scored: list[tuple[float, dict]] = []
+    scored: list[tuple[float, bool, dict]] = []
     for path, start, end, comment, words, own in blocks:
-        result = _score_block(words, own, comment.lower(), idf)
+        result = _score_block(words, own, comment.lower(), idf, plain=for_why)
         if result is None:
             continue
-        score, matched, _ = result
+        score, matched, plain = result
         near = near_lines.get(path)
         if near is not None and abs(start - near) <= _NEAR_LINE_WINDOW:
             score += _NEAR_LINE_BONUS
@@ -394,10 +424,13 @@ def mine_rationale(
         scored.append(
             (
                 score,
+                plain,
                 {
                     "path": path,
                     "lines": [start, end],
-                    "comment": _truncate_block(comment) if truncate_blocks else comment,
+                    # A plain admit is bounded whatever the caller asked: it is
+                    # served on a share of the question, not as a stated reason.
+                    "comment": comment if for_why and not plain else _truncate_block(comment),
                     "matched_terms": matched,
                 },
             )
@@ -411,7 +444,11 @@ def mine_rationale(
     if scored:
         floor = scored[0][0] * _RELEVANCE_FLOOR_FRACTION
         scored = [t for t in scored if t[0] >= floor]
-    return [entry for _, entry in scored[:max_results]]
+    # A plain statement admitted under the floor is the best one or none: past
+    # the first, it is the vocabulary of a long docstring, not a second reason.
+    first_plain = next((i for i, t in enumerate(scored) if t[1]), None)
+    scored = [t for i, t in enumerate(scored) if not t[1] or i == first_plain]
+    return [entry for _, _, entry in scored[:max_results]]
 
 
 # Cap / limit vocabulary: a question may say "capped" while the source comment
