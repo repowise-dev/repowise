@@ -145,6 +145,32 @@ class ResumeController:
             decision_report = await rehydrate_decision_report(session, self._repo_id)
         return dead_code_report, decision_report
 
+    async def _completed_analysis_metadata(self) -> dict[str, Any]:
+        """Read the latest checkpoint without hiding DB errors as missing evidence."""
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence._interfaces.job_store import JobState
+        from repowise.core.persistence.stores.sql_job_store import SqlJobStore
+
+        async with get_session(self._sf) as session:
+            jobs = await SqlJobStore(session).list_jobs(
+                repository_id=self._repo_id,
+                phase=str(ResumePhase.ANALYSIS),
+                state=JobState.COMPLETED,
+                limit=1,
+            )
+        return dict(jobs[0].metadata) if jobs else {}
+
+    async def has_persisted_health(self) -> bool | None:
+        """Read checkpoint health availability; None means it must be recomputed.
+
+        Legacy checkpoints cannot distinguish a failed health pass from older
+        rows left behind by it. Do not infer success from those rows. Read
+        errors propagate so the caller can likewise fall back to recomputing.
+        """
+        metadata = await self._completed_analysis_metadata()
+        completed = metadata.get("health_analysis_completed")
+        return completed if isinstance(completed, bool) else None
+
     # -- checkpoints -----------------------------------------------------------
 
     async def checkpoint_index(
@@ -275,6 +301,7 @@ class ResumeController:
         await self._ledger.mark_completed(
             ResumePhase.ANALYSIS,
             metadata={
+                "health_analysis_completed": health_report is not None,
                 "decision_extraction_completed": extraction_completed,
                 "decisions_count": decisions_count,
             },
@@ -332,10 +359,11 @@ class ResumeController:
 
     async def mark_decision_extraction_completed(self, count: int = 0) -> None:
         """Update the completed ANALYSIS job record to reflect that decision extraction finished."""
-        await self._ledger.mark_completed(
-            ResumePhase.ANALYSIS,
-            metadata={"decision_extraction_completed": True, "decisions_count": count},
-        )
+        # A resumed controller has no in-memory ledger job id: completing the
+        # backfill creates a new job, so carry the preceding health evidence.
+        metadata = await self._completed_analysis_metadata()
+        metadata.update(decision_extraction_completed=True, decisions_count=count)
+        await self._ledger.mark_completed(ResumePhase.ANALYSIS, metadata=metadata)
 
     async def mark_phase_complete(self, phase: ResumePhase) -> None:
         """Record *phase* as completed (analysis / generation persisted by the
