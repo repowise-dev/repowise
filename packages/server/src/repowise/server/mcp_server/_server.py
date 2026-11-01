@@ -792,8 +792,8 @@ _INSTRUCTIONS = (
     "- Use get_risk before editing a widely imported file, get_change_risk "
     "before committing a multi-file change, get_why before changing an "
     "established pattern. Skip them for one-line fixes.\n"
-    "- Targets with uncommitted edits are stale until "
-    "`repowise update --working-tree` runs.\n"
+    "- Targets with uncommitted edits are flagged: index facts for them "
+    "predate the edit.\n"
     "No index: tell the user to run 'repowise init --yes --no-prose' (no "
     "API key or model calls). Suggest it, do not run it yourself."
 )

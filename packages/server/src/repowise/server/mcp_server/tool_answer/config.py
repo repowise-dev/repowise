@@ -361,7 +361,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 # 31: a clause saying only that the excerpts carry no line numbers admits no
 #     gap; a stated value line keeps high past an admitted gap, and past the
 #     identifier gate when a top hit serves it.
-_ANSWER_SCHEMA_VERSION = 31
+# 32: the synthesis prompt asks for a gap only when it limits the answer to
+#     the question, and for no remarks on missing line numbers.
+_ANSWER_SCHEMA_VERSION = 32
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
@@ -464,7 +466,11 @@ _SYSTEM_PROMPT = (
     "language ('entirely', 'the sole', 'the only place', 'depends only on') "
     "is not justified from a top-k slice — omit it unless the retrieved "
     "material itself (an assertion, a type constraint, or an explicit "
-    "comment) says so. Never invent file paths."
+    "comment) says so. Never invent file paths. Do not remark on what the "
+    "excerpts leave out unless it limits the answer to this question: say "
+    "nothing about missing line numbers or other excerpt metadata, and do "
+    "not list bodies, call sites or details the question did not ask about. "
+    "When a gap does limit the answer, name what is missing once."
 )
 
 _USER_TEMPLATE = """\
@@ -475,7 +481,9 @@ Project wiki excerpts (top {n} retrieval hits):
 {context}
 
 Answer thoroughly (150–400 words). Cite file paths inline and line
-numbers when the excerpt provides them. Prefer a structured layout
+numbers when the excerpt provides them; when it does not, say nothing
+about line numbers. Mention a gap in the excerpts only when it limits
+the answer to this question. Prefer a structured layout
 (headings, bullets, short code block from the source body) on
 mechanism / architecture questions. Only hedge about having enough
 material if no signature, docstring, or source body in the excerpts is

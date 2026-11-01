@@ -730,3 +730,13 @@ def test_a_value_line_does_not_clear_a_gap_in_a_second_question() -> None:
     answer = f"{_FLOOR_ANSWER} The excerpts do not show where it is read."
     grade = _grade(question, answer, _dominant_floor_hits())
     assert grade.confidence != "high"
+
+
+def test_the_synthesis_prompt_asks_only_for_gaps_that_limit_the_answer() -> None:
+    from repowise.server.mcp_server.tool_answer.config import _SYSTEM_PROMPT, _USER_TEMPLATE
+
+    system, user = (" ".join(p.split()) for p in (_SYSTEM_PROMPT, _USER_TEMPLATE))
+    for prompt in (system, user):
+        assert "limits the answer to this question" in prompt
+        assert "line numbers" in prompt
+    assert "say nothing about line numbers" in user

@@ -161,7 +161,7 @@ def test_uncommitted_edits_are_marked_and_cleared_by_working_tree_update(
     assert _silent_wrong(before) == []
     context = before[("rename", "get_context")]
     assert context["_meta"]["working_tree_dirty"] == 1
-    assert "repowise update --working-tree" in context["_meta"]["stale_warning"]
+    assert "differs in the working tree" in context["_meta"]["stale_warning"]
     card = context["targets"]["billing.py"]
     assert card["freshness"]["working_tree"] == "modified"
 
@@ -179,7 +179,7 @@ def test_uncommitted_edits_are_marked_and_cleared_by_working_tree_update(
     reverted = asyncio.run(_serve(repo))
     assert _silent_wrong(reverted, reverted=True) == []
     meta = reverted[("rename", "get_context")]["_meta"]
-    assert "no longer in the working tree" in meta["stale_warning"]
+    assert "the working tree no longer has them" in meta["stale_warning"]
     assert "working_tree_dirty" not in meta
 
     # The update lock is released at process exit; this run shares the process.
@@ -250,7 +250,7 @@ def test_only_served_dirty_targets_warn(tmp_path: Path) -> None:
 
     served = _meta.freshness_from_repo(row, targets=["pricing.py::base_price", "billing.py"])
     assert served["working_tree_dirty"] == 1
-    assert "repowise update --working-tree" in served["stale_warning"]
+    assert "differs in the working tree" in served["stale_warning"]
 
 
 def test_untracked_files_and_directories_count(tmp_path: Path) -> None:
@@ -341,7 +341,7 @@ def test_a_reverted_working_tree_edit_is_stale_until_head_moves(tmp_path: Path) 
     _record(repo, ["pricing.py"])
 
     out = _meta.freshness_from_repo(row, targets=["pricing.py", "billing.py"])
-    assert "no longer in the working tree" in out["stale_warning"]
+    assert "the working tree no longer has them" in out["stale_warning"]
     assert "working_tree_dirty" not in out
     assert "stale_warning" not in _meta.freshness_from_repo(row, targets=["billing.py"])
     assert "stale_warning" not in _meta.freshness_from_repo(row, targets=None)
@@ -349,6 +349,6 @@ def test_a_reverted_working_tree_edit_is_stale_until_head_moves(tmp_path: Path) 
     # Still dirty means the dirty rule applies, not this one.
     (repo / "pricing.py").write_text(_EDITS["pricing.py"])
     _meta._dirty_paths_cache.clear()
-    assert "uncommitted edits:" in _meta.freshness_from_repo(row, targets=["pricing.py"])[
+    assert "differs in the working tree" in _meta.freshness_from_repo(row, targets=["pricing.py"])[
         "stale_warning"
     ]

@@ -57,7 +57,7 @@ def test_moved_repo_reports_dirty_files_of_the_served_checkout(
     out = _meta.build_meta(repository=row, targets=["pricing.py"])
 
     assert out["working_tree_dirty"] == 1
-    assert "repowise update --working-tree" in out["stale_warning"]
+    assert "differs in the working tree" in out["stale_warning"]
     assert out["index_behind"] is False
 
 
