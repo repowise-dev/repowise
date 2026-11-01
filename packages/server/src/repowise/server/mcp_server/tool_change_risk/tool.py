@@ -56,6 +56,7 @@ from .payload import (
     _path_patterns,
     _shape_payload,
 )
+from .per_commit import per_commit_reply
 from .prior_fixes import _prior_fixes_block
 
 
@@ -68,16 +69,24 @@ async def _score_change(
     baseline: int,
 ) -> tuple[Any, dict | None]:
     """Score the live change: ``(result, None)``, or ``(None, error reply)``."""
+    return await _score_guarded(
+        revspec,
+        _pkg.score_live_change,
+        repo_path,
+        revspec,
+        extensions=tuple(extensions or ()),
+        exclude_patterns=tuple(exclude_patterns or ()),
+        include_paths=include_paths,
+        baseline=baseline,
+    )
+
+
+async def _score_guarded(
+    revspec: str | None, score: Any, *args: Any, **kwargs: Any
+) -> tuple[Any, dict | None]:
+    """Run a git-reading *score* off the loop: ``(result, None)``, or ``(None, error reply)``."""
     try:
-        result = await asyncio.to_thread(
-            _pkg.score_live_change,
-            repo_path,
-            revspec,
-            extensions=tuple(extensions or ()),
-            exclude_patterns=tuple(exclude_patterns or ()),
-            include_paths=include_paths,
-            baseline=baseline,
-        )
+        result = await asyncio.to_thread(score, *args, **kwargs)
     except ValueError as exc:
         return None, {"error": str(exc)}
     except subprocess.CalledProcessError as exc:
@@ -295,6 +304,8 @@ async def get_change_risk(
     baseline: int = 200,
     include: list[str] | None = None,
     finding_id: str | None = None,
+    *,
+    per_commit: bool = False,
 ) -> dict:
     """Review a commit, ``base..head`` range, or uncommitted work.
 
@@ -311,8 +322,7 @@ async def get_change_risk(
     ``patch_coverage`` is the share of changed executable lines stored coverage
     ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
     bug-fix record, ``overlap`` the past fixes on these exact lines,
-    ``branch_overlap`` other branches editing them. An empty diff returns
-    ``status: "nothing_to_score"``.
+    ``branch_overlap`` other branches editing them.
 
     Args:
         revspec: Commit or ``base..head`` range. Omit to review uncommitted
@@ -321,11 +331,12 @@ async def get_change_risk(
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
         include_paths: Gitignore-style paths to keep, as a list or one
-            comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
+            comma-separated string. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
         include: ``"findings"``, ``"diagnostics"`` (raw mechanics),
             ``"scales"``, ``"evidence"`` or ``"tests"`` (why each runs).
         finding_id: Expand one ``health_delta`` finding by its id.
+        per_commit: With a range, one compact row per commit (up to 30).
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
@@ -335,6 +346,18 @@ async def get_change_risk(
         return refused
     started = time.perf_counter()
     includes = _path_patterns(include_paths)
+    if per_commit:
+        return await per_commit_reply(
+            ctx,
+            revspec,
+            extensions,
+            exclude_patterns,
+            includes,
+            baseline,
+            include,
+            finding_id,
+            started,
+        )
     key = await _cache.cache_key(ctx, revspec, extensions, exclude_patterns, includes, baseline)
     cached, rescan = await _from_cache(ctx, key, include, finding_id, revspec, started)
     if cached is not None:

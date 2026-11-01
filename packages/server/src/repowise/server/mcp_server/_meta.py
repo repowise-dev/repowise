@@ -149,29 +149,12 @@ def _canonical_scope_requested() -> bool:
     )
 
 
-def _full_scope_hint() -> str:
-    """The call that returns the whole scope, as this server is running.
-
-    The overview carries the whole scope only when asked for it. In workspace
-    mode ``get_overview(repo="all")`` returns the repo listing and carries no
-    scope at all, so a digest pointing there would send an agent somewhere
-    the rest of the answer is not. The argument is named rather than filled in
-    because the alias belongs to the caller's own request, not to the
-    repository row this envelope was built from.
-    """
-    from repowise.server.mcp_server import _state
-
-    if getattr(_state, "_registry", None) is not None:
-        return 'get_overview(repo=..., include=["scope"])'
-    return 'get_overview(include=["scope"])'
-
-
 def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
     """The scope an ordinary response carries: the digest, unless asked."""
     scope = read_index_scope(local_path)
     if scope is None or _canonical_scope_requested():
         return scope
-    return compact_index_scope(scope, full_hint=_full_scope_hint())
+    return compact_index_scope(scope)
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
@@ -842,10 +825,20 @@ def lean_response(result: Any) -> Any:
         if result.get("degraded") and meta.get("degraded") == result["degraded"]:
             del meta["degraded"]  # Already said at the top level.
         _lean_meta(meta)
-        if meta.get("omitted"):
-            # Restates ``_meta.omitted``.
-            result.pop("omission_marker", None)
+    collapse_omission(result)
     _prune(result, top=True)
+    return result
+
+
+def collapse_omission(result: Any) -> Any:
+    """One omission entry per response: ``_meta.omitted``, never a marker beside it.
+
+    The response budget runs it on every MCP response, including the tools that
+    keep their full ``_meta``. The marker restates the refs ``_meta.omitted``
+    lists and names only the CLI route.
+    """
+    if isinstance(result, dict) and (result.get("_meta") or {}).get("omitted"):
+        result.pop("omission_marker", None)
     return result
 
 
