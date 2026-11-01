@@ -289,3 +289,36 @@ def test_container_inserted_at_root_member_indent(tmp_path: Path, trailing: str)
         '{\n  "numStartups": 3,\n  "mcpServers": {\n    "repowise": {\n'
         '      "command": "repowise"\n    }\n  }\n}' + trailing
     )
+
+
+def test_refresh_with_plugin_retires_entry_without_the_both_note(home: Path, repo: Path) -> None:
+    from repowise.cli.commands.agents_cmd import _write_payload
+
+    claude_code.write_project_mcp_config(repo)
+    _plugin(home, enabled=True)
+
+    payload = _write_payload(
+        "refresh", repo, [claude_code.TARGET], "project", remove=False, refresh_only=True
+    )
+
+    project = payload["agents"][0]["writes"]["project"]
+    assert [f["action"] for f in project["files"]] == ["removed"]
+    assert not (repo / ".mcp.json").exists()
+    assert not any("load repowise from both" in note for note in project["notes"])
+
+
+def test_init_project_files_leave_out_a_kept_mcp_json(
+    home: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.editor_integrations import claude as claude_integration
+
+    monkeypatch.setattr(claude_integration, "maybe_generate_claude_md", lambda *a, **k: None)
+    config = repo / ".mcp.json"
+    config.write_text(json.dumps({"mcpServers": {"repowise": {"command": "uvx"}}}))
+    before = config.read_text()
+    _user_entry(home, _LAUNCH_DIR)
+
+    written = ClaudeCodeSetup().write_project_files(_silent(), repo, EditorSetupOptions())
+
+    assert written == []
+    assert config.read_text() == before

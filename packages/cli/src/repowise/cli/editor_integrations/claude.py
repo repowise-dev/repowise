@@ -104,9 +104,11 @@ def _sync_project_mcp(console_obj: Any, repo_path: Path) -> list[Path]:
         )
     elif result.action is FileAction.KEPT and result.reason:
         console_obj.print(f"  [dim].mcp.json left as is: {result.reason}.[/dim]")
-    if result.action in (FileAction.REMOVED, FileAction.NOT_FOUND):
-        return []
-    return [result.path]
+    # Only a file that holds our entry is reported; a removed, absent or
+    # deliberately untouched one is not something setup put in the tree.
+    if result.action in (FileAction.CREATED, FileAction.UPDATED, FileAction.UNCHANGED):
+        return [result.path]
+    return []
 
 
 def _uses_lean_tool_surface(repo_path: Path) -> bool:
