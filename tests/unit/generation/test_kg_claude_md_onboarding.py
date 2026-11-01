@@ -114,17 +114,15 @@ class TestClaudeMdKGSection:
         hot = HotspotFile(path="src/a.py", churn_percentile=99.0, commit_count_90d=3, owner=None)
         rendered = tmpl.render(data=self._data(entry_points=["src/main.py"], hotspots=[hot]))
         assert "### How to work in this repo" in rendered
-        # The load-bearing trust and basis clauses stay; the rest of the old
-        # bullets ride in the responses themselves (`_meta` hints, stale warnings).
-        assert "`verified: true` need no re-read" in rendered
-        assert '`bounds: "approximate"`' in rendered
+        # The basis clause stays; the rest rides in the responses themselves.
         assert "`*_basis`" in rendered
         assert "never re-read them" not in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.
-        assert "raw Read of any file you will Edit" in rendered
-        # The tool table renders from the single-source module.
-        assert "| Tool | When and why |" in rendered
-        assert "`get_answer(question)`" in rendered
+        assert "Claude Code requires that Read" in rendered
+        # Task routing replaces the tool table, which is opt-in.
+        assert "`mcp__repowise__<tool>`" in rendered
+        assert 'get_answer(question="how does ...")' in rendered
+        assert "| Tool | When and why |" not in rendered
         # Repo facts lead: they are what an agent acts on before an edit.
         protocol = rendered.index("### How to work in this repo")
         assert rendered.index("### Entry points") < protocol

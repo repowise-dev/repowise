@@ -25,12 +25,11 @@ DEFAULT_SECTIONS: frozenset[str] = frozenset(
         "health",
         "decisions",
         "how_to_work",
-        "tools",
     }
 )
 
 OPT_IN_SECTIONS: frozenset[str] = frozenset(
-    {"code_health", "fix_first", "commands", "how_to_work_full"}
+    {"code_health", "fix_first", "commands", "how_to_work_full", "tools"}
 )
 
 ALL_SECTIONS: frozenset[str] = DEFAULT_SECTIONS | OPT_IN_SECTIONS
