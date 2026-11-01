@@ -176,7 +176,7 @@ async def get_health(
         only: keys to keep. ``biomarkers``/``accuracy``/``refactoring``
             alias their block; ``performance``/``defect``/``maintainability``
             do not.
-        limit: rows per ranked list (default 20); cursor: offset.
+        limit: rows per ranked list (default 20, 0 for none); cursor: offset.
         fix_id/finding_id/plan_id/opportunity_id: expand one item by ``id``.
         refactoring_*/performance_*: queue filters.
         scope: ``production`` drops non-production code.

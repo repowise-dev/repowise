@@ -322,7 +322,8 @@ async def get_change_risk(
             ``"evidence"``, ``"tests"`` (why each runs).
         finding_id: expand one ``health_delta`` finding.
         extensions: file suffixes to count, e.g. ``[".py"]``.
-        exclude_patterns, include_paths: gitignore-style paths to omit, keep.
+        exclude_patterns, include_paths: gitignore-style paths to omit, keep
+        (include_paths also takes one comma-separated string).
         baseline: commits sampled for the percentile; 0 disables it.
         repo: usually omitted.
     """
