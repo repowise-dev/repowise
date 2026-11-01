@@ -70,6 +70,13 @@ def indexed_repo(tmp_path):
     _index(repo, "src/mod.py", _symbols(text))
     (repo / "src" / "small.py").write_text("x = 1\n", encoding="utf-8")
     (repo / "notes.md").write_text("words\n" * 2000, encoding="utf-8")
+    (repo / "src" / "wide.py").write_text(("x = '" + "y" * 200 + "'\n") * 50, encoding="utf-8")
+    _index(repo, "src/wide.py", [("x", "variable", 1, 1)])
+    nested = repo / "nested"
+    (nested / ".repowise").mkdir(parents=True)
+    (nested / "src").mkdir()
+    (nested / "src" / "mod.py").write_text(text, encoding="utf-8", newline="\n")
+    _index(nested, "src/mod.py", _symbols(text))
     return repo
 
 
@@ -215,6 +222,9 @@ def test_cat_of_an_unindexed_file_is_raw(indexed_repo, monkeypatch) -> None:
     [
         ("cat src/mod.py", "file_read"),
         ("cd src && cat mod.py", "file_read"),
+        ("cd src; cat mod.py", "file_read"),
+        ("cd $X && cat mod.py", None),
+        ("cd src && cat mod.py | head", None),
         ("cat server.log", "logs"),
         ("cd src && cat a.py b.py", None),
         ("git log -p -3", "git_diff"),
@@ -234,6 +244,8 @@ def test_classify(command, family) -> None:
         ("cat notes.md", False),  # no indexed symbols
         ("cat src/mod.py | head", False),  # a pipe: the agent already bounded it
         ("cat src/missing.py", False),
+        ("cat src/wide.py", False),  # over 5 KB but under 300 lines
+        ("cat nested/src/mod.py", False),  # another repo's index
     ],
 )
 def test_file_read_gate(indexed_repo, command, rewritten) -> None:
