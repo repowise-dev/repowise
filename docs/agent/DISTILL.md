@@ -189,8 +189,9 @@ The PostToolUse hook adds passive read surfaces (details in
   a short notice. Never twice in a row, so one more Read always returns content.
 - **Stale-read notice**: after an `Edit`/`Write`, a later `Read` of the same file
   warns that earlier excerpts predate the edit.
-- **Search digest**: grep floods (50 or more lines) get a digest grouped by file
-  and ordered by graph centrality.
+- **Search digest**: with `hooks.search_digest: true`, grep floods (50 or more
+  lines) are served as a digest grouped by file and ordered by graph centrality.
+  With it off, the hook adds nothing to them.
 
 ### 5. MCP response budget: `_meta.omitted`
 
