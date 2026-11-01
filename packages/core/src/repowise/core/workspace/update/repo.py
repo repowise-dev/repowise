@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from repowise.core.store_location import resolve_store_dir
+
 from ...ingestion.git_indexer import git_history_stale
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from .state import commit_exists, get_head_commit, read_repo_state
@@ -45,7 +47,7 @@ async def _merged_repo_excludes(
 
 def _local_settings_json(repo_path: Path) -> str | None:
     """``settings_json`` from the repo-local ``wiki.db``, or ``None``."""
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.is_file():
         return None
     try:
@@ -454,7 +456,7 @@ async def _has_persisted_repo_index(repo_path: Path) -> bool:
     from ...persistence.database import get_configured_db_url
 
     if get_configured_db_url() is None:
-        return (repo_path / ".repowise" / "wiki.db").is_file()
+        return (resolve_store_dir(repo_path) / "wiki.db").is_file()
 
     from ...persistence import (
         create_engine,

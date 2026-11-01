@@ -11,6 +11,7 @@ from typing import Any
 import click
 
 from repowise.cli.helpers import CommandTarget, console, run_async
+from repowise.core.store_location import resolve_store_dir
 
 
 def _print_repo_result(result: Any) -> None:
@@ -253,7 +254,7 @@ def _repo_staleness(
     from repowise.core.workspace import check_repo_staleness
 
     is_stale, head, behind = check_repo_staleness(abs_path, stored)
-    indexed = (abs_path / ".repowise").is_dir()
+    indexed = resolve_store_dir(abs_path).is_dir()
     repo_state = load_state(abs_path) if indexed else {}
     config_stale = bool(
         indexed
@@ -766,7 +767,7 @@ def _refresh_workspace_editor_project_files(
         if repo_filter and entry.alias != repo_filter:
             continue
         repo_path = (ws_root / entry.path).resolve()
-        if not (repo_path / ".repowise").is_dir():
+        if not resolve_store_dir(repo_path).is_dir():
             continue
         if options is None and is_unchanged(repo_path, stamps):
             continue

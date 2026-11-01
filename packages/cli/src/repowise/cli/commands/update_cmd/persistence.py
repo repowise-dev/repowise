@@ -186,6 +186,9 @@ def heal_commit_offsets(repo_path: Any) -> None:
     from repowise.core.persistence.database import has_db_store
 
     root = Path(repo_path)
+    # has_db_store() answers for both the repo-local file and a configured
+    # database, and resolves the path through the store resolver, so it is the
+    # one guard that covers global store mode too.
     if not has_db_store(root):
         return
 

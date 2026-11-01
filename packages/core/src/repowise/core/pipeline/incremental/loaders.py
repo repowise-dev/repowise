@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._common import LogFn, _noop_log
 
 
@@ -30,7 +32,7 @@ async def load_stored_git_meta(
     # wiki.db was deleted to force a rebuild would otherwise be handed an
     # empty one here, and an empty database reads as "indexed" downstream.
     # Same guard, and the same reason, as the head-commit stamper.
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not (resolve_store_dir(repo_path) / "wiki.db").is_file():
         log("[yellow]No store to read git metadata from; dead-code scope narrowed[/yellow]")
         return None
     try:
@@ -80,7 +82,7 @@ async def load_stored_performance_callers(
     log = log or _noop_log
     if not changed_paths:
         return set()
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not (resolve_store_dir(repo_path) / "wiki.db").is_file():
         return None
     try:
         import json
@@ -144,7 +146,7 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
     walked-set computation in that case.
     """
     log = log or _noop_log
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not (resolve_store_dir(repo_path) / "wiki.db").is_file():
         return None
     try:
         from repowise.core.persistence import (
@@ -205,7 +207,7 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     """
     log = log or _noop_log
 
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not (resolve_store_dir(repo_path) / "wiki.db").is_file():
         return {}
     try:
         from repowise.core.persistence import (

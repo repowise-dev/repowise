@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from repowise.core.store_location import resolve_store_dir
 from repowise.core.update_lock import read_update_lock
 
 if TYPE_CHECKING:
@@ -32,7 +33,7 @@ def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
     import json
     import subprocess
 
-    state_path = Path(repo_path) / ".repowise" / "state.json"
+    state_path = resolve_store_dir(repo_path) / "state.json"
     stored_commit = None
     if state_path.is_file():
         try:

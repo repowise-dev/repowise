@@ -48,6 +48,8 @@ class InitOptions:
     hook: bool | None
     editor_setup: bool
     save_key: bool
+    #: ``--global-store`` / ``--local-store``; None leaves auto-detection alone.
+    global_store: bool | None
     include_submodules: bool
     no_workspace: bool
     init_all: bool

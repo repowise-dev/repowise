@@ -47,6 +47,7 @@ from repowise.core.analysis.health.scope import (
 from repowise.core.analysis.health.scoring import ADVISORY_DIMENSION, compute_kpis
 from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
+from repowise.core.store_location import resolve_store_dir
 
 from .codegen import _generate_refactoring_code
 from .persist import (
@@ -756,7 +757,7 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         # Coverage folds in from whatever `repowise coverage add` (or index-time
         # ingest) persisted; ingestion lives solely in the `coverage` group.
         coverage_map=_load_persisted_coverage_map(repo_path),
-        duplication_cache_dir=Path(repo_path) / ".repowise",
+        duplication_cache_dir=resolve_store_dir(repo_path),
         repo_root=repo_path,
     )
     from .live_score import analyzer_config

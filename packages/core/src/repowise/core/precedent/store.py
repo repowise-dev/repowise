@@ -30,6 +30,7 @@ from pathlib import Path
 
 from repowise.core.fts_query import build_fts5_query, meaningful_terms
 from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
+from repowise.core.store_location import resolve_store_dir
 
 _log = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ END;
 
 def default_store_path(repo_path: Path | str) -> Path:
     """Path to *repo_path*'s episode database (not created here)."""
-    return Path(repo_path) / ".repowise" / EPISODES_DIRNAME / EPISODES_DB_FILENAME
+    return resolve_store_dir(repo_path) / EPISODES_DIRNAME / EPISODES_DB_FILENAME
 
 
 def episode_id(tier: str, kind: str, subject: str) -> str:

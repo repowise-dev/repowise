@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 
 # The shared single-flight guards: ``update_single_repo_index`` bypasses the CLI
 # lock acquisition, so the workspace pass takes the per-repo lock itself.
+from repowise.core.store_location import resolve_store_dir
 from repowise.core.update_lock import (
     lock_age_seconds as _lock_age_seconds,
 )
@@ -229,7 +230,7 @@ async def _select_stale_repos(
         # First-time indexing runs the full pipeline; the `.repowise/` dir is
         # created on demand by ``update_single_repo_index`` (resolve_db_url)
         # and ``state.json`` is written by ``_write_repo_state``.
-        first_time = not (abs_path / ".repowise").is_dir()
+        first_time = not resolve_store_dir(abs_path).is_dir()
         stale_repos.append(_StaleRepo(entry.alias, abs_path, current_head or "", first_time))
     return stale_repos
 
@@ -285,8 +286,10 @@ def _defer_to_running_workspace_update(
     for _alias, path, new_head, _first_time in stale_repos:
         if new_head:
             with suppress(OSError):
-                (path / ".repowise").mkdir(parents=True, exist_ok=True)
-                (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
+                resolve_store_dir(path).mkdir(parents=True, exist_ok=True)
+                (resolve_store_dir(path) / ".update.pending").write_text(
+                    new_head, encoding="utf-8"
+                )
     return [
         RepoUpdateResult(
             alias=alias,
@@ -308,7 +311,7 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
 
             # Ensure the .repowise/ dir exists before the pipeline runs so
             # first-time indexing has a place to put wiki.db and state.json.
-            (path / ".repowise").mkdir(parents=True, exist_ok=True)
+            resolve_store_dir(path).mkdir(parents=True, exist_ok=True)
 
             # Per-repo single-flight lock. The post-commit hook fires a
             # new ``repowise update`` for every commit; without this guard,
@@ -391,7 +394,7 @@ def _defer_in_flight_repo(
     )
     # Record pending so the running update can roll forward.
     with suppress(OSError):
-        (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
+        (resolve_store_dir(path) / ".update.pending").write_text(new_head, encoding="utf-8")
     return RepoUpdateResult(
         alias=alias,
         updated=False,
@@ -404,7 +407,7 @@ def _write_repo_state(
     path: Path, alias: str, new_head: str, first_time: bool, result: RepoUpdateResult
 ) -> None:
     """Advance ``state.json`` to *new_head* after a successful repo update."""
-    state_path = path / ".repowise" / "state.json"
+    state_path = resolve_store_dir(path) / "state.json"
     state = read_repo_state(path)
 
     # Falsy, not absent: an explicit null survives a

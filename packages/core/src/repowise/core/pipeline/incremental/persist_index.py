@@ -21,6 +21,7 @@ from repowise.core.pipeline.index_persistence import (
 )
 from repowise.core.pipeline.phase_timing import PhaseTimings, timed
 from repowise.core.pipeline.step_runner import PersistRun, Step, run_steps
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import LogFn, _noop_log
 from .commits import persist_incremental_commits
@@ -511,7 +512,7 @@ async def delete_vector_rows(ctx: IncrementalPersist) -> None:
 
 
 def _lance_dir(ctx: IncrementalPersist) -> Path:
-    return Path(ctx.repo_path) / ".repowise" / "lancedb"
+    return resolve_store_dir(ctx.repo_path) / "lancedb"
 
 
 def _needs_vector_store(ctx: IncrementalPersist) -> bool:

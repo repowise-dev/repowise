@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from repowise.core.store_location import resolve_store_dir
+
 from ..config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -78,7 +80,7 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
     points strictly *ahead* of ``indexed_head``; equal, ancestor and
     unresolvable commits are cleared.
     """
-    pending_path = repo_path / ".repowise" / ".update.pending"
+    pending_path = resolve_store_dir(repo_path) / ".update.pending"
     try:
         pending_head = pending_path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -103,7 +105,7 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
 
 def read_repo_state(repo_path: Path) -> dict[str, Any]:
     """Return the parsed ``<repo>/.repowise/state.json``, or ``{}``."""
-    state_path = repo_path / ".repowise" / "state.json"
+    state_path = resolve_store_dir(repo_path) / "state.json"
     if not state_path.is_file():
         return {}
     try:

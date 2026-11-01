@@ -5,6 +5,8 @@ from __future__ import annotations
 import functools as _functools
 from pathlib import Path as _DoctorPath
 
+from repowise.core.store_location import resolve_store_dir
+
 from .._types import DoctorCheck, _check
 from .context import CheckContext
 
@@ -403,7 +405,7 @@ def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCh
         from repowise.core.distill.config import omission_store_settings
 
         _ttl_days, max_mb = omission_store_settings(distill_cfg)
-        db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+        db_path = resolve_store_dir(repo_path) / "omissions" / "omissions.db"
         if not db_path.is_file():
             return _check("Omission store", True, "not created yet", check_id="omission-store")
         size_mb = _store_bytes_in_use(db_path) / (1024 * 1024)

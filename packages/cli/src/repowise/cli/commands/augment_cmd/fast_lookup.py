@@ -25,6 +25,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._shared import sqlite_wait_s
 
 #: The env vars ``resolve_db_url`` honours, copied from
@@ -63,7 +65,7 @@ def connect(repo_path: Path) -> sqlite3.Connection | None:
     """
     if any(os.environ.get(name) for name in _DB_ENV_VARS):
         return None
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.exists():
         return None
     try:
@@ -82,7 +84,7 @@ def index_locked(repo_path: Path) -> bool:
     statement. Any other outcome is False, so the caller's own error
     handling runs exactly as before.
     """
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.exists():
         return False
     try:

@@ -31,6 +31,7 @@ from repowise.core.providers.embedding.base import (
     warm_query_embedder,
 )
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.store_location import resolve_store_dir
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
 from repowise.server.mcp_server._checkout import close_own_index_contexts
@@ -422,9 +423,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
-        from pathlib import Path
-
-        lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
+        lance_dir = resolve_store_dir(repo_path) / "lancedb" if repo_path else None
         has_index = lance_dir is not None and lance_dir.exists()
         # Overlaps the import and open below; awaited before ready is set.
         warmup = _asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))

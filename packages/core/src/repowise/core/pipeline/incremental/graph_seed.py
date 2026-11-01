@@ -17,6 +17,7 @@ from typing import Any
 import structlog
 
 from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
+from repowise.core.store_location import resolve_store_dir
 
 log = structlog.get_logger(__name__)
 _CACHE_NAME = "graph_seed_edges.pkl"
@@ -30,7 +31,7 @@ def invalidate_seed_edge_cache(repo_path: Any) -> None:
     the next update must rebuild from current sources rather than trust a
     pre-commit snapshot.
     """
-    path = Path(repo_path) / ".repowise" / _CACHE_NAME
+    path = resolve_store_dir(repo_path) / _CACHE_NAME
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
@@ -89,7 +90,7 @@ async def _query_database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
 def _incremental_cache_is_enabled(root: Path) -> bool:
     """Whether the last persisted index run had incremental graph state enabled."""
     try:
-        state = json.loads((root / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        state = json.loads((resolve_store_dir(root) / "state.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     graph_update = state.get("graph_update")
@@ -148,7 +149,7 @@ async def load_seed_edges(repo_path: Any) -> dict[str, list] | None:
     if not fingerprint or fingerprint != parser_fingerprint():
         log.info("graph_seed_cache_skipped", reason="edge parser fingerprint mismatch")
         return None
-    cache_path = root / ".repowise" / _CACHE_NAME
+    cache_path = resolve_store_dir(root) / _CACHE_NAME
     try:
         cache = load_sealed_pickle(cache_path, domain=_CACHE_NAME)
     except FileNotFoundError:
@@ -180,7 +181,7 @@ async def load_seed_edges_for_reconciliation(repo_path: Any) -> dict[str, list] 
     stamp = await _database_stamp(root)
     if stamp is None or stamp[1] == 0:
         return None
-    cache_path = root / ".repowise" / _CACHE_NAME
+    cache_path = resolve_store_dir(root) / _CACHE_NAME
     try:
         cache = load_sealed_pickle(cache_path, domain=_CACHE_NAME)
     except FileNotFoundError:
@@ -446,7 +447,7 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
                     db_edges=edge_count,
                 )
                 return
-        dump_sealed_pickle(root / ".repowise" / _CACHE_NAME, payload, domain=_CACHE_NAME)
+        dump_sealed_pickle(resolve_store_dir(root) / _CACHE_NAME, payload, domain=_CACHE_NAME)
         log.info("graph_seed_cache_saved", nodes=len(payload["nodes"]), edges=edge_count)
     except Exception as exc:
         # The cache is optional; the next update can always rebuild from sources.

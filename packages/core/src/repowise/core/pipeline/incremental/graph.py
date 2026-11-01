@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.pipeline.phase_timing import PhaseTimings, timed
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import LogFn, _noop_log, logger
 
@@ -188,7 +189,7 @@ def _plan_graph_patch(
 
     from .resolution_cache import covers, load_resolutions
 
-    resolutions = load_resolutions(Path(repo_path) / ".repowise")
+    resolutions = load_resolutions(resolve_store_dir(repo_path))
     if covers(resolutions, parsed_files, patch_plan.scope):
         return patch_plan, resolutions
 
@@ -345,7 +346,7 @@ def _new_update_graph_builder(
     builder = GraphBuilder(
         repo_path,
         exclude_patterns=exclude_patterns,
-        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
+        centrality_cache_dir=None if read_only else resolve_store_dir(repo_path),
         head_commit=get_head_commit(Path(repo_path)),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
@@ -522,7 +523,7 @@ pass reads the sources.
     if not read_only and cache_resolutions:
         from .resolution_cache import save_resolutions
 
-        save_resolutions(Path(repo_path) / ".repowise", parsed_files)
+        save_resolutions(resolve_store_dir(repo_path), parsed_files)
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
             parse_cache.save()

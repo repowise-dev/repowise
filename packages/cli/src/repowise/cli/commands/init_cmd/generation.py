@@ -51,6 +51,7 @@ from repowise.core.generation.models import (
     count_stub_fallbacks,
     is_stub_fallback,
 )
+from repowise.core.store_location import resolve_store_dir
 
 logger = structlog.get_logger(__name__)
 
@@ -281,7 +282,7 @@ def _enrich_knowledge_graph(
 
 def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]:
     """Failed page ids read back from the jobs directory, for a run that did not report."""
-    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
+    jobs_dir = resolve_store_dir(repo_path) / "jobs"
     if not jobs_dir.exists():
         return []
     with contextlib.suppress(Exception):

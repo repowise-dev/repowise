@@ -501,7 +501,19 @@ def refresh_editor_project_files(
     Also re-pins an installed git post-commit hook that no live install owns
     (``hooks.heal``). A repo initialised with ``--no-editor-setup`` gets
     nothing written.
+
+    Skipped when the store is not repo-local, which means the checkout is in
+    global store mode (issue #1551). A repo indexed under ``$HOME/.repowise``
+    is one the user asked repowise not to edit, and every file this function
+    touches (``CLAUDE.md``, ``AGENTS.md``, the ``.vscode`` pair) is a write
+    into that working tree. ``update`` runs this on every outcome, including
+    the fast paths, so without the guard a single ``repowise update`` after a
+    global ``init`` put four files back into a tree the init had left clean.
     """
+    from repowise.core.store_location import store_is_repo_local
+
+    if not store_is_repo_local(repo_path):
+        return
     if _editor_setup_declined(repo_path):
         return
     resolved_options = options or EditorSetupOptions()

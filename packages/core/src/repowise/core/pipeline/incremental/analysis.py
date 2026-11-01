@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.pipeline.phase_timing import PhaseTimings, timed
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import LogFn, _noop_log
 
@@ -129,7 +130,7 @@ def run_partial_analysis(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             community_label_map=file_community_labels(graph_builder),
-            duplication_cache_dir=Path(repo_path) / ".repowise",
+            duplication_cache_dir=resolve_store_dir(repo_path),
             repo_root=repo_path,
             coverage_map=coverage_map,
         )

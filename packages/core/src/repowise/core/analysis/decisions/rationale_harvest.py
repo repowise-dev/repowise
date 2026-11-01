@@ -29,6 +29,7 @@ from repowise.core.analysis.decisions.rationale_comments import (
 )
 from repowise.core.code_origin import code_origin
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.core.store_location import resolve_store_dir
 
 _log = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ def _live_rows(root: Path, path: str, plain: bool) -> list[dict]:
 
 
 def _store_path(root: Path) -> Path:
-    return root / ".repowise" / _FILENAME
+    return resolve_store_dir(root) / _FILENAME
 
 
 def _fingerprint() -> str:
@@ -210,7 +211,7 @@ def refresh_rationale_store(repo_path: Path | str) -> None:
     """
     try:
         root = Path(repo_path).resolve()
-        blobs = _tracked_blobs(root) if (root / ".repowise").is_dir() else None
+        blobs = _tracked_blobs(root) if resolve_store_dir(root).is_dir() else None
         if blobs is None:
             return
         old, files = _refreshed_entries(root, blobs)
