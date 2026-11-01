@@ -1702,6 +1702,15 @@ class CallResolver(
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
+        # A static import names one repo type's member, declared or inherited. When
+        # that type has none, the name tiers below would find a nested type's.
+        if (
+            binding is not None
+            and binding.member_of
+            and binding.source_file
+            and not binding.source_file.startswith(_EXTERNAL_PREFIX)
+        ):
+            return None
         # A Python name imported from outside the repository is that module's,
         # not a same-named repo symbol a later tier would find. Python only:
         # Python resolves a repo's own absolute imports by dotted path, while
@@ -1870,13 +1879,19 @@ class CallResolver(
         binding: NamedBinding | None,
     ) -> ResolvedCall | None:
         """2a: the specific imported name, binding-aware."""
-        published = self._imported_symbol(binding, call.target_name)
+        published = self._imported_symbol(binding, call.target_name, caller_id)
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
-    def _imported_symbol(self, binding: NamedBinding | None, name: str) -> str | None:
-        """The repo symbol an imported *name* binds, one barrel hop followed."""
+    def _imported_symbol(
+        self, binding: NamedBinding | None, name: str, caller_id: str = ""
+    ) -> str | None:
+        """The repo symbol an imported *name* binds, one barrel hop followed.
+
+        *caller_id* keeps a static import from binding the caller to itself; the
+        alias pass has no caller and its bindings never name a member's type.
+        """
         if not (binding and binding.source_file):
             return None
         source_file = binding.source_file
@@ -1885,9 +1900,27 @@ class CallResolver(
         if lookup_name in barrel:
             source_file = barrel[lookup_name]
         if binding.member_of:
-            # A static import names the member's type; a nested type's same-named member is another.
-            return self._published_by(source_file, binding.member_of, lookup_name)
+            return self._static_import_member(
+                source_file, binding.member_of, lookup_name, caller_id
+            )
         return self._published(source_file, lookup_name)
+
+    def _static_import_member(
+        self, source_file: str, owner: str, name: str, caller_id: str
+    ) -> str | None:
+        """The method ``import static owner.name`` binds, or None.
+
+        The named type's own declaration answers first, then the one it
+        inherits. A nested type's same-named member is neither, so a miss here
+        stays a miss instead of falling back to the file's flat symbol table.
+        """
+        owned = self._file_methods.get(source_file, {}).get((owner, name))
+        if owned is not None:
+            return owned
+        for path, (type_id, *_), _ in self._declared_types_named(owner):
+            if path == source_file:
+                return self._ancestor_method(type_id, name, caller_id, class_chain_first=True)
+        return None
 
     def _link_imported_aliases(self) -> None:
         """Redirect a module-level alias of an imported name onto its definition.
