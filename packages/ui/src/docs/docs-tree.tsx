@@ -41,7 +41,7 @@ const SUPPORTING_KEY = "@group:supporting-packages";
 // The bottom row holding what the project has been doing lately.
 const PROJECT_ACTIVITY_KEY = "@group:project-activity";
 // The reference folder's sub-folders, one per kind of deterministic page.
-const REF_API_KEY = "@group:reference:api";
+const REF_CONTRACTS_KEY = "@group:reference:api";
 const REF_FILES_KEY = "@group:reference:files";
 const REF_INFRA_KEY = "@group:reference:infra";
 const REF_CYCLES_KEY = "@group:reference:cycles";
@@ -632,7 +632,7 @@ function buildReferenceFolder(pages: DocPageSummary[], copy: DocsTreeCopy): Tree
   const grouped = new Set(["api_contract", "infra_page", "scc_page"]);
   const files = pages.filter((p) => !grouped.has(p.page_type));
   const children = [
-    referenceGroup(REF_API_KEY, copy.referenceApi, contracts, (p) => resources.get(p.id) ?? p.target_path),
+    referenceGroup(REF_CONTRACTS_KEY, copy.referenceApi, contracts, (p) => resources.get(p.id) ?? p.target_path),
     files.length > 0
       ? {
           name: copy.referenceFiles,
