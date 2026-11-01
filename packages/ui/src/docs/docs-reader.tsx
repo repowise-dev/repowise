@@ -104,18 +104,16 @@ export const DEFAULT_DOCS_READER_COPY: DocsReaderCopy = {
   moreRelated: (n) => `+ ${n} more`,
 };
 
-// Remove a leading level-1 heading whose text is exactly the page title. The
-// title is already rendered above the body, so this heading is a duplicate.
-// Only the first heading is considered and only on an exact (case-insensitive)
-// match, so a section that legitimately reuses the title text is never cut.
-function stripLeadingTitleHeading(content: string, title: string): string {
-  const wanted = title.trim().toLowerCase();
-  if (!wanted) return content;
+// Remove the level-1 heading a body opens with. The reader renders the page
+// title as the H1 above the body, so a second H1 is the same page named twice,
+// and when the writer worded it differently ("repowise: overview" under
+// "Repository Overview: repowise") it reads as two pages. Only a heading on the
+// first non-blank line is removed; a later H1 is content.
+function stripLeadingTitleHeading(content: string): string {
   const lines = content.split("\n");
   let i = 0;
   while (i < lines.length && lines[i]!.trim() === "") i++;
-  const heading = lines[i]?.match(/^#\s+(.+?)\s*$/);
-  if (!heading || heading[1]!.trim().toLowerCase() !== wanted) return content;
+  if (!/^#\s+\S/.test(lines[i] ?? "")) return content;
   lines.splice(0, i + 1);
   while (lines.length > 0 && lines[0]!.trim() === "") lines.shift();
   return lines.join("\n");
@@ -447,11 +445,11 @@ function DocsReaderBody({
 
   // The reader renders the page title as the H1 above the body, but generated
   // content often opens with its own "# <title>" line (the deterministic
-  // templates do), so the same heading shows twice. Drop a leading H1 that
-  // exactly matches the title before anything else reads the content.
+  // templates do), so the page is named twice. Drop the body's opening H1
+  // before anything else reads the content.
   const bodyContent = useMemo(
-    () => stripLeadingTitleHeading(page.content, page.title),
-    [page.content, page.title],
+    () => stripLeadingTitleHeading(page.content),
+    [page.content],
   );
 
   const visibleContent = useMemo(

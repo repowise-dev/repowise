@@ -220,3 +220,85 @@ def page_nav_title(page_type: str, title: str, metadata: object = None) -> str:
     if isinstance(metadata, dict):
         chosen = clean_nav_title(metadata.get(NAV_TITLE_KEY))
     return chosen or nav_label(title, page_type)
+
+
+# ---------------------------------------------------------------------------
+# A label in its place: under its parent, in a named product
+# ---------------------------------------------------------------------------
+
+# Words that name where code sits rather than what it does. They never open a
+# label and never stand alone: "Web Source" under Web is Web again.
+_PATH_WORDS = frozenset(
+    {"src", "source", "app", "apps", "lib", "libs", "library", "package", "packages", "pkg"}
+)
+# A hosting directory named after the label's subject: ".github" under "CI".
+_HOST_WORDS = frozenset({"github", "gitlab"})
+# What is left of a glued name ("UI and Stats") once its first half is cut.
+_JOINERS = frozenset({"and", "or", "of", "for", "&"})
+
+
+def _drop_lead(words: list[str], lead: list[str]) -> list[str]:
+    """*words* without *lead* at their start, compared case-insensitively."""
+    n = len(lead)
+    if n and [w.lower() for w in words[:n]] == lead:
+        return words[n:]
+    return words
+
+
+def contextual_label(label: str, parent_label: str = "", product: str = "") -> str:
+    """*label* as a row under *parent_label* in a repository named *product*.
+
+    A row never repeats what its parent row already says ("UI Zoom" under UI
+    reads "Zoom", "API Client Types" under API Client reads "Types"), never
+    opens with the product's own name ("Repowise Server" reads "Server") and
+    never opens with or is only a path word ("Source", "Lib"). A label left
+    with nothing of its own comes back as *parent_label*, which a tree reads
+    as the parent's own page and folds into the parent's row. A top-level
+    label with nothing left keeps its words.
+    """
+    words = label.split()
+    parent = parent_label.lower().split()
+    brand = product.lower().replace("-", " ").replace("_", " ").split()
+    changed = True
+    while changed and words:
+        before = words
+        words = _drop_lead(_drop_lead(words, brand), parent)
+        while words and (words[0].lower() in _PATH_WORDS or words[0].lower() in _JOINERS):
+            words = words[1:]
+        if len(words) > 1 and words[-1].lower() in _HOST_WORDS:
+            words = words[:-1]
+        words = _strip_kind_words(" ".join(words)).split()
+        changed = words != before
+    if not words:
+        return parent_label or label
+    return " ".join(words)
+
+
+def apply_outline_labels(rows: list, product: str = "") -> None:
+    """Set each outline row's ``nav_title`` in the context of its parent row.
+
+    *rows* carry ``id``, ``parent_page_id`` and ``nav_title`` (``None`` for a
+    reference page, which is left alone). A parent absent from *rows* (a
+    paginated listing) reads as no parent. Parents are labelled before their
+    children, so "Repowise Core" under "Core" compares with the parent's final
+    label, not its stored one.
+    """
+    by_id = {row.id: row for row in rows}
+    done: dict[str, str] = {}
+
+    def label(row, seen: frozenset[str]) -> str:
+        if row.id in done:
+            return done[row.id]
+        parent = by_id.get(row.parent_page_id or "")
+        parent_label = ""
+        if parent is not None and parent.nav_title and parent.id not in seen:
+            parent_label = label(parent, seen | {row.id})
+        done[row.id] = contextual_label(row.nav_title, parent_label, product)
+        return done[row.id]
+
+    for row in rows:
+        if row.nav_title:
+            label(row, frozenset())
+    for row in rows:
+        if row.id in done:
+            row.nav_title = done[row.id]

@@ -738,6 +738,40 @@ _SUMMARY_COLUMNS = (
 SUMMARY_METADATA_KEYS = ("layer_id", "is_chapter", "nav_title")
 
 
+async def list_outline_labels(session: AsyncSession, repository_id: str) -> list[Any]:
+    """Every outline page's id, parent and navigation label, for naming rows in place.
+
+    The outline is the overview, onboarding, module and walkthrough pages: a
+    few hundred rows at most, read with their metadata only where it names a
+    chosen label.
+    """
+    from types import SimpleNamespace
+
+    from repowise.core.generation.nav_titles import NAV_TITLE_KEY, page_nav_title
+
+    rows = await session.execute(
+        select(
+            Page.id,
+            Page.parent_page_id,
+            Page.page_type,
+            Page.title,
+            case((Page.metadata_json.contains(NAV_TITLE_KEY), Page.metadata_json), else_=None),
+        ).where(
+            Page.repository_id == repository_id,
+            Page.page_type.in_(("repo_overview", "onboarding", "module_page", "flow_page")),
+            Page.freshness_status != "tombstone",
+        )
+    )
+    return [
+        SimpleNamespace(
+            id=pid,
+            parent_page_id=parent,
+            nav_title=page_nav_title(page_type, title or "", meta),
+        )
+        for pid, parent, page_type, title, meta in rows.tuples().all()
+    ]
+
+
 async def list_page_summaries(
     session: AsyncSession, repository_id: str, listing: PageListing
 ) -> list[Any]:

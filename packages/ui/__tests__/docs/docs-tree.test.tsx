@@ -170,12 +170,35 @@ describe("DocsTree", () => {
     expect(row).not.toMatch(/^\d/);
   });
 
-  it("shows the layer as a badge on a section, not as a row", () => {
+  it("names a section without its layer", () => {
     renderTree(OUTLINE);
     const engine = rowLabels().find((l) => l.includes("Zebra Engine")) ?? "";
-    expect(engine).toContain("Service");
-    const api = rowLabels().find((l) => l.includes("Alpha API")) ?? "";
-    expect(api).toMatch(/API.*API/);
+    expect(engine).not.toContain("Service");
+  });
+
+  it("folds a part named as its section into the section's row", () => {
+    const echo = makePage({
+      id: "module_page:engine/src",
+      page_type: "module_page",
+      title: "Engine Source",
+      nav_title: "Zebra Engine",
+      target_path: "engine/src",
+      parent_page_id: ENGINE.id,
+      display_order: 0,
+    });
+    const inner = makePage({
+      id: "module_page:engine/src/graph",
+      page_type: "module_page",
+      title: "Graph",
+      target_path: "engine/src/graph",
+      parent_page_id: echo.id,
+      display_order: 1,
+    });
+    renderTree([...OUTLINE, echo, inner]);
+    expect(rowLabels().filter((l) => l.includes("Zebra Engine"))).toHaveLength(1);
+    // What the folded part held is listed under the section instead.
+    expect(indexOfRow("Zebra Engine")).toBeLessThan(indexOfRow("Graph"));
+    expect(indexOfRow("Graph")).toBeLessThan(indexOfRow("Alpha API"));
   });
 
   it("caps nesting two rungs below a section, listing deeper pages flat", () => {

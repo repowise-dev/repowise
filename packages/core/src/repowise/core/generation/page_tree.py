@@ -49,6 +49,7 @@ from typing import Any
 from ..ids import is_external
 from .layers import import_balance, is_support_layer, reading_bucket
 from .models import GeneratedPage
+from .nav_titles import contextual_label, nav_label
 
 
 @dataclass
@@ -68,6 +69,8 @@ class TreeNode:
     parent_page_id: str | None = None
     display_order: int = 0
     section_number: str | None = None
+    #: The stored title, for telling a part that only restates its section.
+    title: str = ""
 
 
 # Rank of each page type among siblings sharing a parent. Lower sorts first.
@@ -712,6 +715,20 @@ def _grouped_at_top(page: TreeNode | GeneratedPage, reader_rank: dict[str, tuple
     return page.page_type == "module_page" and bool(rank) and rank[0] == _SUPPORTING_RANK
 
 
+def _restates(page: TreeNode | GeneratedPage, parent: TreeNode | GeneratedPage | None, product: str) -> bool:
+    """Whether *page* is named as its parent section is, once read in place.
+
+    "Repowise Core" under Core, "Web Source" under Web: a reader-facing tree
+    folds such a row into its section's own, so it takes no number of its own
+    and the parts after it are numbered from 1.
+    """
+    if parent is None or page.page_type != "module_page" or parent.page_type != "module_page":
+        return False
+    section = contextual_label(nav_label(parent.title or ""), "", product)
+    own = contextual_label(nav_label(page.title or ""), section, product)
+    return bool(section) and own.lower() == section.lower()
+
+
 def _takes_number(
     page: TreeNode | GeneratedPage,
     depth: int,
@@ -765,13 +782,19 @@ def _number(
         siblings.sort(key=lambda p: _sort_key(p, reader_rank))
 
     numbered: set[str] = set()
+    by_id = {p.page_id: p for p in pages}
+    product = by_id[root_id].target_path if root_id in by_id else ""
 
-    def walk(parent_id: str | None, prefix: str, depth: int) -> None:
-        counter = 0
+    def walk(parent_id: str | None, prefix: str, depth: int, counter: int = 0) -> int:
         for index, page in enumerate(children.get(parent_id, []), start=1):
             page.display_order = index
             page.section_number = None
             numbered.add(page.page_id)
+            if depth == 2 and _restates(page, by_id.get(parent_id or ""), product):
+                # Folded into its section's row, so what it holds is numbered
+                # as the section's own parts, in its place.
+                counter = walk(page.page_id, prefix, depth, counter)
+                continue
             if _takes_number(page, depth, prefix, reader_rank):
                 counter += 1
                 page.section_number = f"{prefix}{counter}"
@@ -782,6 +805,7 @@ def _number(
             )
         if depth == 1:
             _number_top_groups(children.get(parent_id, []), counter, reader_rank)
+        return counter
 
     if root_id is not None:
         root = next(p for p in pages if p.page_id == root_id)

@@ -110,3 +110,41 @@ def test_a_tiny_group_never_crosses_a_package_root() -> None:
 def test_concept_group_is_still_constructible() -> None:
     # Guards the fixture shape the tests above rely on.
     assert ConceptGroup(members=["a/b.py"], dirs=["a"], target_path="a").file_count == 1
+
+
+@pytest.mark.parametrize(
+    ("label", "parent", "expected"),
+    [
+        ("UI Zoom", "UI", "Zoom"),
+        ("API Client Types", "API Client", "Types"),
+        ("Repowise Pipeline", "Core", "Pipeline"),
+        ("Repowise Core", "Core", "Core"),
+        ("Web Source", "Web", "Web"),
+        ("Source API Client", "API Client", "API Client"),
+        ("App Application Web", "Web", "Web"),
+        ("CI GitHub", "", "CI"),
+        ("Alembic", "Core", "Alembic"),
+        ("UI and Stats", "UI", "Stats"),
+        ("Lib and Components", "Components", "Components"),
+        ("Source", "", "Source"),
+    ],
+)
+def test_a_label_in_place_drops_its_parent_product_and_path_words(label, parent, expected):
+    from repowise.core.generation.nav_titles import contextual_label
+
+    assert contextual_label(label, parent, "repowise") == expected
+
+
+def test_outline_labels_read_each_parent_in_place_first():
+    from types import SimpleNamespace
+
+    from repowise.core.generation.nav_titles import apply_outline_labels
+
+    rows = [
+        SimpleNamespace(id="c", parent_page_id="b", nav_title="Repowise Server MCP"),
+        SimpleNamespace(id="b", parent_page_id="a", nav_title="Repowise Server"),
+        SimpleNamespace(id="a", parent_page_id=None, nav_title="Overview"),
+        SimpleNamespace(id="f", parent_page_id="b", nav_title=None),
+    ]
+    apply_outline_labels(rows, "repowise")
+    assert [r.nav_title for r in rows] == ["MCP", "Server", "Overview", None]

@@ -146,8 +146,6 @@ interface TreeNode {
   section?: string;
   /** Quiet trailing detail on a group row, such as what a folder holds. */
   meta?: string;
-  /** The architectural layer a section belongs to, drawn as a small badge. */
-  badge?: string;
 }
 
 interface DocsTreeProps {
@@ -435,7 +433,7 @@ function buildTree(allPages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[] {
 //
 //   Overview                   the root, rendered first
 //   1   Getting Started        the reading path, in canonical order
-//   3   sections               module pages, a layer badge on each
+//   3   sections               module pages
 //   3.1   their parts          anything deeper listed flat under a part
 //   11  Supporting packages    small top-level packages, when there are many
 //   12  Walkthroughs           the flow pages
@@ -650,13 +648,6 @@ function buildReferenceFolder(pages: DocPageSummary[], copy: DocsTreeCopy): Tree
   return { name: copy.codeReference, path: AUTO_ROOT_KEY, isDir: true, children };
 }
 
-/** A section's layer, as a quiet badge, when the outline spans several. */
-function layerBadges(sections: DocPageSummary[]): (page: DocPageSummary) => string | undefined {
-  const names = new Set(sections.map((p) => p.layer_name).filter(Boolean));
-  if (names.size < 2) return () => undefined;
-  return (page) => page.layer_name ?? undefined;
-}
-
 /** A group row on the top rung, numbered as the section its pages sit in
  *  ("12" for pages numbered "12.1", "12.2"). `null` when it holds nothing. */
 function groupRow(path: string, name: string, pages: DocPageSummary[]): TreeNode | null {
@@ -700,35 +691,42 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
   // Reached, not just claimed: a parent cycle would otherwise silently swallow
   // every page in it. Anything the walk misses lands in the tail instead.
   const reached = new Set<string>();
-  function toNode(
-    page: DocPageSummary,
-    parent: DocPageSummary | undefined,
-    depth: number,
-    badge?: string,
-  ): TreeNode {
+  function toNode(page: DocPageSummary, parent: DocPageSummary | undefined, depth: number): TreeNode {
     reached.add(page.id);
+    const name = treeLabel(page, parent);
+    // A part named as its section is the section's own page ("Repowise Core"
+    // under Core, "Web Source" under Web): its row folds into the section's
+    // and whatever it holds is listed in its place.
+    const restates = (node: TreeNode) =>
+      node.page?.page_type === "module_page" && node.name.toLowerCase() === name.toLowerCase();
     const kids: TreeNode[] =
       depth < MAX_OUTLINE_DEPTH - 1
         ? (childrenOf.get(page.id) ?? [])
             .filter((c) => !reached.has(c.id))
             .sort(compareSiblings)
             .map((c) => toNode(c, page, depth + 1))
-        : descendantsOf(page, childrenOf, reached).map((c) => ({
-            name: treeLabel(c, page),
-            path: c.id,
-            isDir: false,
-            page: c,
-            children: [],
-          }));
+            .flatMap((node) => (restates(node) ? node.children : [node]))
+        : descendantsOf(page, childrenOf, reached)
+            .map((c): TreeNode => {
+              const section = outlineSection(c);
+              return {
+                name: treeLabel(c, page),
+                path: c.id,
+                isDir: false,
+                page: c,
+                children: [],
+                ...(section ? { section } : {}),
+              };
+            })
+            .filter((node) => !restates(node));
     const section = outlineSection(page);
     return {
-      name: treeLabel(page, parent),
+      name,
       path: page.id,
       isDir: kids.length > 0,
       page,
       children: kids,
       ...(section ? { section } : {}),
-      ...(badge ? { badge } : {}),
     };
   }
 
@@ -744,7 +742,7 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
     reached.add(root.id);
     top.push({ name: treeLabel(root, undefined), path: root.id, isDir: false, page: root, children: [] });
     // The reading path, then the sections, in stored order: one rung, each
-    // row carrying its number. A layer is a badge on its section, not a row.
+    // row carrying its number. Layers group nothing here.
     const rows = (childrenOf.get(root.id) ?? [])
       .filter((c) => !reached.has(c.id))
       .sort(compareSiblings);
@@ -755,10 +753,7 @@ function buildStoredTree(pages: DocPageSummary[], copy: DocsTreeCopy): TreeNode[
     );
     const grouped = new Set(supporting.map((p) => p.id));
     const sections = rows.filter((p) => !grouped.has(p.id));
-    const badge = layerBadges(sections.filter((p) => p.page_type === "module_page"));
-    for (const child of sections) {
-      top.push(toNode(child, root, 1, child.page_type === "module_page" ? badge(child) : undefined));
-    }
+    for (const child of sections) top.push(toNode(child, root, 1));
     const group = groupRow(SUPPORTING_KEY, copy.supportingPackages(supporting.length), supporting);
     if (group) {
       group.children = supporting.map((page) => toNode(page, root, 2));
@@ -1042,7 +1037,6 @@ function TreeItem({
           )}
         >
           {node.name}
-          <LayerBadge label={node.badge} />
           {/* Under the name rather than beside it, so a long count never
               squeezes the label it describes. */}
           {node.meta && (
@@ -1106,10 +1100,7 @@ function TreeItem({
           )}
         />
       )}
-      <span className="min-w-0 text-left [overflow-wrap:anywhere]">
-        {node.name}
-        <LayerBadge label={node.badge} />
-      </span>
+      <span className="min-w-0 text-left [overflow-wrap:anywhere]">{node.name}</span>
       <RowMarkers page={node.page} showFreshness={showFreshness} stubTitle={stubTitle} />
     </button>
   );
@@ -1154,17 +1145,6 @@ function SectionNumber({ section }: { section?: string | undefined }) {
   return (
     <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
       {section}
-    </span>
-  );
-}
-
-/** The section's architectural layer: a quiet tag beside its name, so layers
- *  inform the outline without being rows of their own. */
-function LayerBadge({ label }: { label?: string | undefined }) {
-  if (!label) return null;
-  return (
-    <span className="ml-1.5 inline-block rounded border border-[var(--color-border-default)] px-1 align-middle text-[9px] font-normal leading-4 text-[var(--color-text-tertiary)]">
-      {label}
     </span>
   );
 }
