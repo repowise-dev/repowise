@@ -179,10 +179,12 @@ def _check_folder_coverage(
         "or OpenCode is used only with --provider; the cost confirmation is "
         "accepted; advanced options keep their defaults (standard run mode at "
         "any size, comprehensive style); the detected agents "
-        "are connected; the global repowise MCP entry is pointed here, with the "
-        "old and new target printed; the post-commit hook is installed and the "
-        "distill rewrite hook is not; and with --no-prose, documentation a "
-        "model wrote is replaced without asking."
+        "are connected; Claude Code gets a user-level repowise MCP entry in "
+        "~/.claude.json that names no repo and serves the repo Claude Code "
+        "starts in, added when absent and never moved off another repo it "
+        "serves; the post-commit hook and the distill rewrite hook are "
+        "installed; and with --no-prose, documentation a model wrote is "
+        "replaced without asking."
     ),
 )
 @click.option(
