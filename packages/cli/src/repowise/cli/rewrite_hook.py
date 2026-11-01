@@ -454,22 +454,27 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
         if family is None:
             return None
         families.append(family)
-    if not families and _is_cd_then_cat(segments, piped_from):
-        # `cd <dir> && cat <file>` is how agents read a whole file; the `cat`
-        # alone is inert above, so the pair is recognized here.
-        return ("file_read",)
     return tuple(families) or None
 
 
-def _is_cd_then_cat(segments: list[list[str]], piped_from: set[int]) -> bool:
-    """True for exactly ``cd <dir>`` then a lone ``cat <file>``, not piped."""
-    return (
-        len(segments) == 2
-        and not piped_from
-        and len(segments[0]) == 2
-        and segments[0][0] == "cd"
-        and _classify_head(" ".join(segments[1])) == "file_read"
-    )
+def _chain_or_file_read(command: str) -> tuple[str, ...] | None:
+    """:func:`_chain_families`, plus ``cd <dir> && cat <file>`` as a file read.
+
+    That pair is how agents read a whole file. Inside a chain a read-only
+    ``cat`` is inert, so the pair is recognized here instead.
+    """
+    families = _chain_families(command)
+    if families or _EXPANSION_CHAR in command:
+        return families
+    tokens = list(tokenize(command.strip()))
+    if (
+        [t.kind for t in tokens] == ["arg", "arg", "op", "arg", "arg"]
+        and tokens[0].text == "cd"
+        and tokens[2].text in ("&&", ";")
+        and _classify_head(f"{tokens[3].text} {tokens[4].text}") == "file_read"
+    ):
+        return ("file_read",)
+    return None
 
 
 # Watch/follow modes are long-running; wrapping them buffers forever.
@@ -517,7 +522,7 @@ def classify(command: str, shell: str = SHELL_POSIX) -> str | None:
         return _classify_head(split[0])
     if shell == SHELL_POWERSHELL:
         return None
-    families = _chain_families(command)
+    families = _chain_or_file_read(command)
     return families[0] if families else None
 
 
@@ -803,7 +808,7 @@ def _decide(
     elif command and shell != SHELL_POWERSHELL:
         # A chain is POSIX shell syntax by construction (`&&`, `;`, `|`), so
         # it is only ever offered to the POSIX dialect.
-        chain = _chain_families(command) or ()
+        chain = _chain_or_file_read(command) or ()
         if not chain:
             return None, BAIL_SHAPE, _find_repo_root(cwd)
         family, needs_inner_shell = chain[0], True
@@ -915,12 +920,10 @@ def main() -> None:
                     sys.stdout.write(adapter.render_response(result))
                     sys.stdout.flush()
                     outcome = REWRITTEN
-                    if repo_root and reason in _REPEAT_RAW_FAMILIES:
-                        _remember_rewrite(
-                            repo_root, request.session_id, request.cwd, request.command
-                        )
                 else:
                     reason = BAIL_PERMISSION
+            if outcome == REWRITTEN and repo_root and reason in _REPEAT_RAW_FAMILIES:
+                _remember_rewrite(repo_root, request.session_id, request.cwd, request.command)
             _count_decision(repo_root, request.session_id, outcome, reason)
     except (SystemExit, KeyboardInterrupt):
         raise

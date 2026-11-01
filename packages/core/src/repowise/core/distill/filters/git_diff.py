@@ -171,49 +171,75 @@ class _FileBlock:
         self.generated = any(fnmatch.fnmatchcase(name, p) for p in _GENERATED_PATTERNS)
 
 
-def _split_file_blocks(output: str) -> tuple[list[str], list[_FileBlock]]:
-    """The lines before the first file header, and one block per file.
+class _HunkCursor:
+    """Tracks hunk bodies by the line counts in each ``@@`` header.
 
-    Hunk bodies are tracked by the counts in each ``@@`` header, so a changed
-    line that itself starts with ``---`` or ``+++`` is still counted, and the
-    first line after the last hunk that is not diff-shaped starts the tail.
+    A changed line that itself starts with ``---`` or ``+++`` is still a
+    changed line, and a line after a hunk's last counted line is not part of
+    the diff.
     """
+
+    __slots__ = ("new", "old", "seen")
+
+    def __init__(self) -> None:
+        self.old = self.new = 0
+        self.seen = False
+
+    def classify(self, line: str) -> str:
+        """``hunk``, ``context``, ``removed``, ``added`` or ``outside``."""
+        in_hunk = self.old > 0 or self.new > 0
+        if hunk := _HUNK_RE.match(line):
+            self.old = int(hunk.group("old") or 1)
+            self.new = int(hunk.group("new") or 1)
+            self.seen = True
+            return "hunk"
+        if not in_hunk:
+            return "outside"
+        if line.startswith(" ") or line == "":
+            self.old -= 1
+            self.new -= 1
+            return "context"
+        if line.startswith("-"):
+            self.old -= 1
+            return "removed"
+        if line.startswith("+"):
+            self.new -= 1
+            return "added"
+        return "outside"
+
+
+def _split_file_blocks(output: str) -> tuple[list[str], list[_FileBlock]]:
+    """The lines before the first file header, and one block per file."""
     preamble: list[str] = []
     blocks: list[_FileBlock] = []
     current: _FileBlock | None = None
-    old_left = new_left = 0
-    seen_hunk = False
+    cursor = _HunkCursor()
     for line in output.splitlines():
         if m := _FILE_HEADER_RE.match(line):
             current = _FileBlock(m.group("b"))
             blocks.append(current)
-            old_left = new_left = 0
-            seen_hunk = False
+            cursor = _HunkCursor()
         if current is None:
             preamble.append(line)
-            continue
-        if current.tail:
-            current.tail.append(line)
-            continue
-        in_hunk = old_left > 0 or new_left > 0
-        if hunk := _HUNK_RE.match(line):
-            old_left = int(hunk.group("old") or 1)
-            new_left = int(hunk.group("new") or 1)
-            seen_hunk = True
-        elif in_hunk and (line.startswith(" ") or line == ""):
-            old_left -= 1
-            new_left -= 1
-        elif in_hunk and line.startswith("-"):
-            old_left -= 1
-            current.deleted += 1
-        elif in_hunk and line.startswith("+"):
-            new_left -= 1
-            current.added += 1
-        elif seen_hunk and not in_hunk and not line.startswith("\\"):
-            current.tail.append(line)
-            continue
-        current.lines.append(line)
+        else:
+            _place(current, cursor, line)
     return preamble, blocks
+
+
+def _place(block: _FileBlock, cursor: _HunkCursor, line: str) -> None:
+    """Add *line* to *block*: its hunks and headers, or the tail after them."""
+    if block.tail:
+        block.tail.append(line)
+        return
+    kind = cursor.classify(line)
+    if kind == "added":
+        block.added += 1
+    elif kind == "removed":
+        block.deleted += 1
+    elif kind == "outside" and cursor.seen and not line.startswith("\\"):
+        block.tail.append(line)
+        return
+    block.lines.append(line)
 
 
 def _size(lines: list[str]) -> int:
@@ -221,32 +247,19 @@ def _size(lines: list[str]) -> int:
 
 
 def _fold_block(block: _FileBlock) -> list[str]:
-    """One file block with its context runs and redundant header lines folded.
-
-    Hunk bodies are tracked by the counts in each ``@@`` header, so a line is
-    only treated as context while the hunk still owes lines.
-    """
+    """One file block with its context runs and redundant header lines folded."""
     if block.generated:
         return [block.lines[0], f"  ... lockfile or generated: +{block.added} -{block.deleted}"]
     out: list[str] = []
     context: list[str] = []
-    old_left = new_left = 0
+    cursor = _HunkCursor()
     for line in block.lines:
-        in_hunk = old_left > 0 or new_left > 0
-        if in_hunk and (line.startswith(" ") or line == ""):
-            old_left -= 1
-            new_left -= 1
+        kind = cursor.classify(line)
+        if kind == "context":
             context.append(line)
             continue
         _flush_context(context, out)
-        if hunk := _HUNK_RE.match(line):
-            old_left = int(hunk.group("old") or 1)
-            new_left = int(hunk.group("new") or 1)
-        elif in_hunk and line.startswith("-"):
-            old_left -= 1
-        elif in_hunk and line.startswith("+"):
-            new_left -= 1
-        elif not in_hunk and _REDUNDANT_HEADER_RE.match(line):
+        if kind == "outside" and not cursor.seen and _REDUNDANT_HEADER_RE.match(line):
             continue
         out.append(line)
     _flush_context(context, out)
@@ -299,26 +312,9 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
     is capped head and tail first: on a month of agent diffs that kept more
     changed lines than skipping it for smaller files.
     """
-    summary = {id(block): f"  {block.path} | +{block.added} -{block.deleted}" for block, _ in rendered}
     ranked = sorted(rendered, key=lambda item: item[0].added + item[0].deleted, reverse=True)
-    shown_counts = {id(block) for block, _ in ranked[:MAX_SUMMARY_ROWS] if not block.generated}
-    used = _size(["hunks omitted for 0000 files:", "  ... and 0000 more"])
-    used += sum(len(summary[key]) + 1 for key in shown_counts)
-    used += sum(_size(folded) for block, folded in rendered if block.generated)
-    used += sum(_size(block.tail) for block, _ in rendered)
-    kept: dict[int, list[str]] = {}
-    for block, folded in ranked:
-        if block.generated:
-            continue
-        refund = len(summary[id(block)]) + 1 if id(block) in shown_counts else 0
-        cost = _size(folded) - refund
-        if used + cost > budget:
-            if kept:
-                continue
-            folded = _cap_to(folded, max(0, budget - used + refund))
-            cost = _size(folded) - refund
-        kept[id(block)] = folded
-        used += cost
+    counted = {id(b) for b, _ in ranked[:MAX_SUMMARY_ROWS] if not b.generated}
+    kept = _choose_kept(rendered, ranked, counted, budget)
     out: list[str] = []
     summarized: list[str] = []
     for block, folded in rendered:
@@ -326,8 +322,8 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
             out.extend(kept[id(block)])
         elif block.generated:
             out.extend(folded)
-        elif id(block) in shown_counts:
-            summarized.append(summary[id(block)])
+        elif id(block) in counted:
+            summarized.append(_count_row(block))
         out.extend(block.tail)
     hidden = sum(1 for b, _ in rendered if not b.generated and id(b) not in kept) - len(summarized)
     if summarized or hidden:
@@ -336,3 +332,32 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
         if hidden:
             out.append(f"  ... and {hidden} more")
     return out
+
+
+def _count_row(block: _FileBlock) -> str:
+    return f"  {block.path} | +{block.added} -{block.deleted}"
+
+
+def _choose_kept(
+    rendered: list[tuple[_FileBlock, list[str]]],
+    ranked: list[tuple[_FileBlock, list[str]]],
+    counted: set[int],
+    budget: int,
+) -> dict[int, list[str]]:
+    """The files whose folded hunks are shown, keyed by block id."""
+    used = _size(["hunks omitted for 0000 files:", "  ... and 0000 more"])
+    used += sum(len(_count_row(b)) + 1 for b, _ in rendered if id(b) in counted)
+    used += sum(_size(folded) for b, folded in rendered if b.generated)
+    used += sum(_size(b.tail) for b, _ in rendered)
+    kept: dict[int, list[str]] = {}
+    for block, folded in ranked:
+        if block.generated:
+            continue
+        refund = len(_count_row(block)) + 1 if id(block) in counted else 0
+        if used + _size(folded) - refund > budget:
+            if kept:
+                continue
+            folded = _cap_to(folded, max(0, budget - used + refund))
+        kept[id(block)] = folded
+        used += _size(folded) - refund
+    return kept
