@@ -138,7 +138,6 @@ function ModuleRow({
 }) {
   const [all, setAll] = useState(false);
   const often = g.files.filter((f) => f.isHotspot).length;
-  const untested = g.files.filter((f) => f.untested).length;
   const shown = all ? g.files : g.files.slice(0, PER_MODULE);
   return (
     <li>
@@ -161,7 +160,6 @@ function ModuleRow({
           <span className="hidden sm:inline">
             , {g.depth === 1 ? "direct" : `nearest ${g.depth} steps away`}
             {often > 0 && `, ${often.toLocaleString()} changed often`}
-            {untested > 0 && `, ${untested.toLocaleString()} with no test`}
           </span>
         </span>
       </button>

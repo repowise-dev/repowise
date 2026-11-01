@@ -10,7 +10,7 @@ type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
 
 /**
  * The details a review rarely needs first, collapsed and last: changed files
- * with no test, dependent files with no test, and the files history says
+ * with no test, and the files history says
  * usually change with these that this change leaves out. Each section stays
  * out when it has nothing in it.
  */
@@ -27,23 +27,16 @@ function UntestedList({ paths, fileHref }: { paths: string[]; fileHref: ((path: 
 }
 
 export function ReviewDetails({ result, reach, fileHref }: { result: Result; reach: Reach; fileHref: ((path: string) => string) | undefined }) {
-  // One meaning per number: changed files with no test, then source files
-  // that depend on the change with no test. Tests and files the index does
-  // not have yet are in neither.
+  // One meaning per number: changed files with no test. Tests and files the
+  // index does not have yet are not in it.
   const changed = reach.changed.filter((m) => m.untested).map((m) => m.path);
-  const dependents = reach.files.filter((f) => f.untested).map((f) => f.path);
   const partners = new Set(result.cochange_warnings.map((w) => w.missing_partner)).size;
-  if (changed.length === 0 && dependents.length === 0 && partners === 0) return null;
+  if (changed.length === 0 && partners === 0) return null;
   return (
     <div>
       {changed.length > 0 && (
         <CollapsibleSection title="Changed files with no test" hint={changed.length.toLocaleString()}>
           <UntestedList paths={changed} fileHref={fileHref} />
-        </CollapsibleSection>
-      )}
-      {dependents.length > 0 && (
-        <CollapsibleSection title="Dependent files with no test" hint={dependents.length.toLocaleString()}>
-          <UntestedList paths={dependents} fileHref={fileHref} />
         </CollapsibleSection>
       )}
       {partners > 0 && (

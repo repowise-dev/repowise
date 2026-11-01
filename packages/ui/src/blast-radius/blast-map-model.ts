@@ -122,7 +122,10 @@ export function readReach(result: Result, changedFiles: string[]): Reach {
   for (const t of result.transitive_affected) {
     const signal = signals.get(t.path);
     if (isTestFile(t.path, signal)) tests.push(t.path);
-    else files.push({ ...marks(t.path), depth: t.depth, via: t.via ?? null, module: moduleOf(t.path, signal) });
+    // "No test" is said of changed files only: whether a dependent is tested is
+    // not about this change, and the direct-import rule behind it undercounts.
+    else
+      files.push({ ...marks(t.path), untested: false, depth: t.depth, via: t.via ?? null, module: moduleOf(t.path, signal) });
   }
   return {
     changed: changedFiles.map(marks).sort(byAttentionThenPath),

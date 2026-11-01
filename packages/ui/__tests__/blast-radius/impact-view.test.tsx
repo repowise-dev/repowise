@@ -479,7 +479,7 @@ describe("drawing interactions", () => {
 });
 
 describe("what the page counts", () => {
-  it("never calls a file new since the last index untested, says so once, and splits the no-test lists", async () => {
+  it("never calls a file new since the last index untested, says so once, and counts only changed files with no test", async () => {
     const analyze = vi.fn(async () => ({
       ...RESULT,
       transitive_affected: [{ path: "src/dep.py", depth: 1, via: "src/old.py" }],
@@ -495,7 +495,8 @@ describe("what the page counts", () => {
     expect(await screen.findByText(/1 changed file is new since the last index/)).toBeInTheDocument();
     expect(screen.getByText(/That is 1 of the 2 changed files; the rest have no owner on record/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Changed files with no test/ })).toHaveTextContent("1");
-    expect(screen.getByRole("button", { name: /Dependent files with no test/ })).toHaveTextContent("1");
+    // Whether a dependent is tested is not about this change: no count, section or chip says it.
+    expect(screen.queryByText(/Dependent files with no test/)).not.toBeInTheDocument();
     expect(screen.getByText("1 changed file with no test found.")).toBeInTheDocument();
   });
 });
