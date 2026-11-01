@@ -285,7 +285,10 @@ overrides a key for one session.
   eliding only function and method bodies.
 - A file whose skeleton is over the 10,000-character hook output cap is served
   as an outline: one line per symbol, long signatures cut, the same range
-  markers. Only a file whose outline is still over the cap is passed through.
+  markers. When the outline is still over the cap, it lists as many symbols as
+  fit (top-level types first, then the longest functions) and says how many.
+- A file edited since the last index is passed through whole, so the line
+  numbers are never off.
 - Savings show in `repowise saved` under `read_skeleton`. Needs Claude Code
   2.1.218+; older clients get the one-line pointer at
   `get_context(include=["skeleton"])`.
