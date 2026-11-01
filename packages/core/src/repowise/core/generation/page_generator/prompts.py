@@ -80,13 +80,14 @@ SYSTEM_PROMPTS: dict[str, str] = {
     ),
     "flow_page": _SHARED_VOICE
     + (
-        "This page is a walkthrough. It follows a single operation through the code "
-        "from the function that starts it to the work it hands off, so a newcomer "
-        "can trace it in the source. Explain what each step decides or produces and "
-        "why the operation needs it, in short plain sentences. "
+        "This page is a walkthrough. It follows a single operation from what the "
+        "user runs or calls to what it leaves behind, told as stages of work with "
+        "the data handed between them, so a newcomer can follow it and then trace "
+        "it in the source. Explain what each stage decides, produces or writes and "
+        "why, and how the operation can end early. "
         "\n"
-        "Ground every claim in the traced steps listed below: never invent "
-        "functions, files, calls or rationale that are not there."
+        "Ground every claim in the steps, code and documentation listed below: never "
+        "invent functions, files, calls, options or rationale that are not there."
     ),
     "repo_overview": _SHARED_VOICE
     + (

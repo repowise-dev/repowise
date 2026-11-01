@@ -1,0 +1,400 @@
+"""What a user runs or calls, and what the project's own docs say about it.
+
+Flow pages walk operations a reader asks about: a CLI command, an agent tool,
+an HTTP route, a library's public call. Those are declared, not inferred, so
+they are read here from what declares them:
+
+* Python: the decorators the parser keeps on each symbol (``@x.command("init")``,
+  ``@mcp.tool()``, ``@app.route("/x")``), and the names a top-level package
+  re-exports from its ``__init__.py``.
+* Go: ``cobra.Command{Use: "x", RunE: fn}`` literals, a ``Name() string``
+  method returning a literal on a type that has ``Run`` (simplecobra), and
+  ``Handle("/x", fn)`` routes.
+
+Ceiling: decorator and literal patterns per framework family. Not covered:
+JS/TS commander or yargs, argparse sub-parsers, Java/C# attributes; those
+repos fall back to the call-graph roots :mod:`.flow_pages` ranks.
+
+The docs side splits the root README and a top-level ``docs`` tree into
+heading sections and keeps the code a reader types (inline spans, code
+blocks), so an entry can be ranked by how often the docs show it in use and a
+page can quote the sections that mention it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import tomllib
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from repowise.core.support_paths import is_support_path
+from repowise.core.test_paths import is_test_path
+
+#: ``path -> lines`` of a repository file, empty when it cannot be read.
+LineReader = Callable[[str], list[str]]
+
+CLI = "CLI command"
+TOOL = "Agent tool"
+ROUTE = "HTTP route"
+API = "Public API"
+FUNCTION = "Function"
+
+
+@dataclass(frozen=True)
+class Entry:
+    """Something a user or another program calls, and the function that runs it."""
+
+    node: str
+    kind: str
+    public: str
+
+
+# ---------------------------------------------------------------------------
+# Reading files
+# ---------------------------------------------------------------------------
+
+
+def line_reader(repo_root: Path | str | None, source_map: Mapping[str, bytes] | None) -> LineReader:
+    """A memoised ``path -> lines`` over the bytes already read, else the disk."""
+    cache: dict[str, list[str]] = {}
+    root = Path(repo_root) if repo_root else None
+    held = source_map or {}
+
+    def read(path: str) -> list[str]:
+        if path not in cache:
+            raw = held.get(path)
+            if raw is None and root is not None:
+                try:
+                    raw = (root / path).read_bytes()
+                except OSError:
+                    raw = b""
+            cache[path] = (raw or b"").decode("utf-8", errors="replace").splitlines()
+        return cache[path]
+
+    return read
+
+
+# ---------------------------------------------------------------------------
+# Declared entries
+# ---------------------------------------------------------------------------
+
+_CLI_DECO = re.compile(r"^@(?:\w+\.)*(?:command|group)\s*\(\s*(?:name\s*=\s*)?(?:[\"']([\w-]+)[\"'])?")
+_TOOL_DECO = re.compile(r"^@(?:\w+\.)*tool\b")
+_ROUTE_DECO = re.compile(
+    r"^@\w+(?:\.\w+)*\.(?:route|get|post|put|delete|patch|websocket|api_route)\(\s*[\"']([^\"']+)"
+)
+_GO_NAME = re.compile(r"^func \(\w+ \*?(\w+)\) Name\(\) string \{")
+_GO_RETURN = re.compile(r'\s*return "([\w-]+)"')
+_GO_USE = re.compile(r"\bUse:\s*\"([\w-]+)")
+_GO_RUN = re.compile(r"\bRunE?:\s*(?:\w+\.)?(\w+)\s*,")
+_GO_HANDLE = re.compile(r"\bHandle(?:Func)?\(\s*\"([^\"]+)\"\s*,\s*(?:\w+\.)?(\w+)\s*\)")
+_REEXPORT = re.compile(r"^from \.([\w.]*) import \(?([^)\n]*(?:\n[^)\n]*)*?)\)?$", re.M)
+_INIT = re.compile(r"(?:src/)?\w+/__init__\.py")
+_CALLABLE = ("function", "method")
+
+
+def _cli_public(program: str, command: str) -> str:
+    return command if not program or command == program else f"{program} {command}"
+
+
+def _decorator_entry(node: str, attrs: Mapping[str, Any], program: str) -> Entry | None:
+    """The entry a Python decorator declares on *node*, if any."""
+    name = attrs.get("name") or ""
+    for text in attrs.get("decorators") or ():
+        if m := _CLI_DECO.match(text):
+            command = m.group(1) or re.sub(r"_(command|cmd)$", "", name).replace("_", "-")
+            return Entry(node, CLI, _cli_public(program, command))
+        if _TOOL_DECO.match(text):
+            return Entry(node, TOOL, name)
+        if m := _ROUTE_DECO.match(text):
+            return Entry(node, ROUTE, m.group(1))
+    return None
+
+
+def _symbols_by_file(graph: Any) -> dict[str, list[tuple[str, str]]]:
+    """``file -> [(name, node)]`` for functions and methods, in node order."""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for node, attrs in graph.nodes(data=True):
+        if attrs.get("node_type") == "symbol" and attrs.get("kind") in _CALLABLE:
+            out.setdefault(attrs.get("file_path") or "", []).append((attrs.get("name") or "", node))
+    return out
+
+
+def _first_named(symbols: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """``name -> node``, the first symbol under each name."""
+    out: dict[str, str] = {}
+    for name, node in symbols:
+        out.setdefault(name, node)
+    return out
+
+
+def _go_file_entries(
+    path: str, lines: list[str], names: Mapping[str, str], graph: Any, program: str
+) -> Iterable[Entry]:
+    for i, line in enumerate(lines):
+        if (m := _GO_NAME.match(line)) and i + 1 < len(lines):
+            lit = _GO_RETURN.match(lines[i + 1])
+            node = f"{path}::{m.group(1)}::Run"
+            if lit and node in graph:
+                yield Entry(node, CLI, _cli_public(program, lit.group(1)))
+        elif m := _GO_USE.search(line):
+            run = next((r for r in map(_GO_RUN.search, lines[i : i + 40]) if r), None)
+            if run and run.group(1) in names:
+                yield Entry(names[run.group(1)], CLI, _cli_public(program, m.group(1)))
+        elif (m := _GO_HANDLE.search(line)) and m.group(2) in names:
+            yield Entry(names[m.group(2)], ROUTE, m.group(1))
+
+
+def _python_public_api(
+    paths: Iterable[str], by_file: Mapping[str, list[tuple[str, str]]], read: LineReader
+) -> Iterable[Entry]:
+    """Functions and public methods a top-level package re-exports by name."""
+    for init in paths:
+        if not _INIT.fullmatch(init) or init.split("/")[-2].startswith("test"):
+            continue
+        pkg = init.rsplit("/", 1)[0]
+        for module, names in _REEXPORT.findall("\n".join(read(init))):
+            src = f"{pkg}/{module.replace('.', '/')}.py" if module else init
+            if src not in by_file:
+                src = f"{pkg}/{module.replace('.', '/')}/__init__.py"
+            yield from _reexported(src, names, by_file.get(src, []))
+
+
+def _reexported(src: str, names: str, symbols: list[tuple[str, str]]) -> Iterable[Entry]:
+    for part in names.split(","):
+        bits = [b.strip() for b in part.strip().split(" as ")]
+        if not bits[0].isidentifier() or bits[-1].startswith("_"):
+            continue
+        name, alias = bits[0], bits[-1]
+        prefix = f"{src}::{name}::"
+        for method, node in symbols:
+            if node == f"{src}::{name}":
+                yield Entry(node, API, alias)
+            elif node.startswith(prefix) and not method.startswith("_"):
+                yield Entry(node, API, f"{alias}.{method}")
+
+
+def _production(path: str) -> bool:
+    return bool(path) and not (is_test_path(path) or is_support_path(path))
+
+
+def declared_entries(graph: Any, read: LineReader, program: str = "") -> list[Entry]:
+    """Every declared command, tool and route, plus a Python library's public API."""
+    out: dict[str, Entry] = {}
+    for node, attrs in graph.nodes(data=True):
+        if attrs.get("node_type") == "symbol" and attrs.get("kind") in _CALLABLE:
+            entry = _decorator_entry(node, attrs, program)
+            if entry and _production(attrs.get("file_path") or ""):
+                out.setdefault(node, entry)
+    by_file = _symbols_by_file(graph)
+    go_files = sorted(p for p in by_file if p.endswith(".go") and _production(p))
+    for path in go_files:
+        names = _first_named(by_file[path])
+        for entry in _go_file_entries(path, read(path), names, graph, program):
+            out.setdefault(entry.node, entry)
+    inits = sorted(p for p in _file_paths(graph) if _production(p))
+    for entry in _python_public_api(inits, by_file, read):
+        out.setdefault(entry.node, entry)
+    return sorted(out.values(), key=lambda e: e.node)
+
+
+def _file_paths(graph: Any) -> list[str]:
+    return [n for n, a in graph.nodes(data=True) if a.get("node_type") == "file"]
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _python_script(root: Path) -> str:
+    try:
+        data = tomllib.loads(_read_text(root / "pyproject.toml"))
+    except tomllib.TOMLDecodeError:
+        return ""
+    scripts = data.get("project", {}).get("scripts") or {}
+    return sorted(scripts)[0] if scripts else ""
+
+
+def _npm_bin(root: Path) -> str:
+    try:
+        data = json.loads(_read_text(root / "package.json") or "{}")
+    except ValueError:
+        return ""
+    binaries = data.get("bin") if isinstance(data, dict) else None
+    if isinstance(binaries, dict) and binaries:
+        return sorted(binaries)[0]
+    if isinstance(binaries, str) and data.get("name"):
+        return str(data["name"]).split("/")[-1]
+    return ""
+
+
+def _go_program(root: Path, graph: Any) -> str:
+    m = re.search(r"^module\s+(\S+)", _read_text(root / "go.mod"), re.M)
+    return m.group(1).rstrip("/").split("/")[-1] if m and "main.go" in graph else ""
+
+
+def program_name(repo_root: Path | str | None, graph: Any) -> str:
+    """What a user types to start the program, from the root manifest.
+
+    Read from the checkout rather than the ingestion's launcher list, which a
+    graph rebuilt from the database does not carry: generation, the update
+    cascade and cost estimation must name a command the same way.
+    """
+    if not repo_root:
+        return ""
+    root = Path(repo_root)
+    return _python_script(root) or _npm_bin(root) or _go_program(root, graph)
+
+
+# ---------------------------------------------------------------------------
+# Documentation sections
+# ---------------------------------------------------------------------------
+
+_DOC_DIRS = ("docs", "doc", "documentation")
+_DOC_EXTS = (".md", ".rst")
+_SKIP_DOC_DIRS = frozenset({"node_modules", "tests", "test", "fixtures", "vendor"})
+_MAX_DOC_FILES = 3000
+_RST_UNDERLINE = re.compile(r"([=\-~^\"'`#*+])\1+")
+
+
+@dataclass(frozen=True)
+class DocSection:
+    path: str
+    heading: str
+    start: int  # 1-based, inclusive
+    end: int
+    text: str
+    spans: tuple[str, ...]  # code a reader types: inline spans and code-block lines
+
+
+def _doc_files(root: Path) -> list[str]:
+    """The root README and CONTRIBUTING plus every page under a top-level docs dir."""
+    out = [
+        p.name
+        for p in sorted(root.iterdir())
+        if p.is_file() and p.suffix.lower() in _DOC_EXTS and p.stem.lower() in ("readme", "contributing")
+    ]
+    for top in _DOC_DIRS:
+        base = root / top
+        if not base.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d.lower() not in _SKIP_DOC_DIRS and not d.startswith("."))
+            rel = Path(dirpath).relative_to(root).as_posix()
+            out += [f"{rel}/{f}" for f in sorted(filenames) if f.lower().endswith(_DOC_EXTS) and "changelog" not in f.lower()]
+            if len(out) >= _MAX_DOC_FILES:
+                return out[:_MAX_DOC_FILES]
+    return out
+
+
+def _md_heads(lines: list[str]) -> list[int]:
+    heads, fenced = [], False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and re.match(r"#{1,4} ", line):
+            heads.append(i)
+    return heads
+
+
+def _rst_heads(lines: list[str]) -> list[int]:
+    """reStructuredText titles: a text line underlined by one repeated punctuation char."""
+    heads = []
+    for i in range(len(lines) - 1):
+        title, under = lines[i].rstrip(), lines[i + 1].rstrip()
+        stripped = title.strip()
+        if stripped and not title.startswith(" ") and len(under) >= len(stripped) >= 2 and _RST_UNDERLINE.fullmatch(under):
+            heads.append(i)
+    return heads
+
+
+def _code_spans(text: str, rst: bool) -> tuple[str, ...]:
+    spans = re.findall(r"`{1,2}([^`\n]+)`{1,2}", text)
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif fenced or (rst and line.startswith("    ")):
+            spans.append(line.strip())
+    return tuple(re.sub(r"^\$\s*", "", s.strip()) for s in spans if s.strip())
+
+
+def _split_sections(path: str, lines: list[str]) -> list[DocSection]:
+    rst = path.lower().endswith(".rst")
+    heads = (_rst_heads(lines) if rst else _md_heads(lines)) or [0]
+    if heads[0] != 0:
+        heads = [0, *heads]
+    out = []
+    for a, b in zip(heads, [*heads[1:], len(lines)], strict=True):
+        text = "\n".join(lines[a:b]).strip()
+        if text:
+            out.append(DocSection(path, lines[a].lstrip("# ").strip(), a + 1, b, text, _code_spans(text, rst)))
+    return out
+
+
+@lru_cache(maxsize=4)
+def _sections_cached(root: str, stamp: tuple[tuple[str, int, int], ...]) -> tuple[DocSection, ...]:
+    out: list[DocSection] = []
+    for path, _mtime, _size in stamp:
+        try:
+            text = (Path(root) / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out += _split_sections(path, text.splitlines())
+    return tuple(out)
+
+
+def doc_sections(repo_root: Path | str | None) -> tuple[DocSection, ...]:
+    """The project's documentation split by heading; cached while no file changes."""
+    if not repo_root or not Path(repo_root).is_dir():
+        return ()
+    root = Path(repo_root)
+    stamp = []
+    for path in _doc_files(root):
+        try:
+            st = (root / path).stat()
+        except OSError:
+            continue
+        stamp.append((path, st.st_mtime_ns, st.st_size))
+    return _sections_cached(str(root), tuple(stamp))
+
+
+def mention_pattern(entry: Entry) -> re.Pattern[str]:
+    """How a doc's code names *entry* the way a user types or calls it."""
+    public = entry.public
+    if entry.kind == CLI:
+        return re.compile(rf"^{re.escape(public)}(\s|$)")
+    if entry.kind == ROUTE:
+        # The whole path, not the tail of a longer one: a router-relative
+        # ``/{id}`` must not match every ``/api/items/{id}`` in the docs.
+        return re.compile(rf"(?<![\w/{{}}-]){re.escape(public)}(?![\w/{{}}-])")
+    if "." in public:
+        method = re.escape(public.rsplit(".", 1)[1])
+        return re.compile(rf"(^|\.){method}(\(|$)|^{re.escape(public)}")
+    name = re.escape(public)
+    return re.compile(rf"(^|[^\w.]){name}\(|^{name}$|import .*\b{name}\b")
+
+
+def doc_mentions(entry: Entry, sections: Iterable[DocSection]) -> int:
+    """Doc sections whose code names the entry as typed."""
+    rx = mention_pattern(entry)
+    return sum(any(rx.search(s) for s in sec.spans) for sec in sections)
+
+
+def is_ui_path(path: str) -> bool:
+    """A UI component file: the render tree is not an operation a walkthrough tells."""
+    p = PurePosixPath(path)
+    parts = {s.lower() for s in p.parts[:-1]}
+    return bool(parts & _UI_SEGMENTS) or p.suffix in (".tsx", ".jsx", ".vue", ".svelte")
+
+
+_UI_SEGMENTS = frozenset(["ui", "web", "frontend", "components", "views", "templates", "static", "pages", "widgets"])

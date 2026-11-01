@@ -511,7 +511,12 @@ def build_flow_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         (
             plan.page_id,
             run.gen.generate_flow_page(
-                plan, graph=run.graph, modules=modules, source_map=run.source_map
+                plan,
+                graph=run.graph,
+                modules=modules,
+                source_map=run.source_map,
+                repo_path=run.repo_path,
+                related=[other.title for other in plans if other is not plan],
             ),
         )
         for plan in emitted
