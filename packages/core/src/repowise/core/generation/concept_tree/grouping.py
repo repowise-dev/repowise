@@ -509,7 +509,17 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
         if not owned and "" not in candidates and len({m.split("/")[0] for m in group.members}) > 1:
             candidates.append("")
         if not group.packages:
-            candidates.extend(d for d in group.dirs if d and d not in candidates)
+            # Most files first. The title is taken from the directory holding
+            # most of the group, so a target taken in path order put a page
+            # titled "Dead Code" (33 of its 50 files) at ``change_risk`` (8),
+            # which happened to sort first.
+            held = Counter(m.rpartition("/")[0] for m in group.members)
+            candidates.extend(
+                sorted(
+                    (d for d in group.dirs if d and d not in candidates),
+                    key=lambda d: (-held[d], d),
+                )
+            )
         if owned and owned not in candidates:
             candidates.append(owned)
         # The root is substituted before the uniqueness check, never after.
