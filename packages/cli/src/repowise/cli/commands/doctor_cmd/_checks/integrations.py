@@ -487,10 +487,9 @@ def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
             detail += " (this repo opted out)" if opted_out else ""
             detail = f"installed: {detail}"
             off_path = "" if opted_out else _distill_off_path_note()
-            if off_path:
-                return _check(name, True, detail + off_path, check_id=check_id, warn=True)
-            if any_unmatched:
-                fix = "repowise hook rewrite install"
+            detail += off_path
+            fix = "repowise hook rewrite install" if any_unmatched else None
+            if fix or off_path:
                 return _check(name, True, detail, check_id=check_id, warn=True, fix=fix)
         else:
             detail = "not installed (opt-in: repowise hook rewrite install)"

@@ -801,6 +801,8 @@ class TestDistillNotOnPath:
 
         monkeypatch.setattr(rewrite_hook, "_distill_on_path", _fail)
         assert rewrite_hook._decide("cd src", str(repo))[1] == rewrite_hook.BAIL_UNRECOGNIZED
+        _write_config(repo, {"commands": {"families": {"test_output": "off"}}})
+        assert rewrite_hook._decide("pytest -x", str(repo))[1] == rewrite_hook.BAIL_FAMILY_OFF
         _write_config(repo, {"commands": {"enabled": False}})
         assert rewrite_hook._decide("pytest -x", str(repo))[1] == rewrite_hook.BAIL_DISABLED
 

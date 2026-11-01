@@ -702,7 +702,9 @@ def _decide(
         permission = family_setting
     # Pass through when the rewrite could not run. Ceiling: an install that is
     # only in an off-PATH venv gets no distill; the upgrade path is emitting
-    # the absolute script path, quoted per shell dialect and agent.
+    # the absolute script path, quoted per shell dialect and agent. This reads
+    # the hook's PATH; a shell profile that adds repowise only for the agent's
+    # shell reads as missing, which costs the savings, never the command.
     if not _distill_on_path():
         return None, BAIL_NO_DISTILL, repo_root
 
