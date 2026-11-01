@@ -273,14 +273,14 @@ def _rank_for_outline(symbols: list[SkeletonSymbol]) -> list[SkeletonSymbol]:
 #: Names a declaration line can carry. Anything else (``<anonymous>``,
 #: ``default``) is indexed under a name the source does not spell out there.
 _CHECKABLE_NAME_RE = re.compile(r"^[A-Za-z_$#][\w$]*$")
-#: Most leading lines (decorators, attributes, doc comments) skipped before
-#: the declaration line that has to carry the symbol's name.
+#: Most leading lines (decorators, attributes) skipped before the declaration
+#: line that has to carry the symbol's name.
 _MAX_LEAD_LINES = 40
-#: ``#`` counts only as a comment (``# x``, ``#!``) or attribute (``#[``), so a
-#: ``#private`` member or a ``#define`` is still a declaration line. A line of
-#: closing brackets is the tail of a multi-line decorator, where some grammars
-#: start the decorated symbol.
-_LEAD_RE = re.compile(r"^\s*(?:@|#(?:[\s!\[]|$)|//|/\*|\*|--|[)\]]+[,;]?\s*$|$)")
+#: Lead-in a symbol's indexed start may sit on: a decorator or attribute, or a
+#: line of closing brackets (the tail of a multi-line decorator, where some
+#: grammars start the decorated symbol). Never a blank: a start that lands on
+#: one means the symbol moved.
+_LEAD_RE = re.compile(r"^\s*(?:@|#\[|[)\]]+[,;]?\s*$)")
 
 
 def _bounds_current(lines: list[str], symbols: list[SkeletonSymbol]) -> bool:
@@ -288,33 +288,29 @@ def _bounds_current(lines: list[str], symbols: list[SkeletonSymbol]) -> bool:
 
     A file edited since the index has moved its symbols, and a skeleton cut on
     the old bounds would number lines wrongly. Checking that each symbol's
-    name sits on its declaration line (the first line from its start that is
-    not a decorator, comment or blank) needs no index query and no parser.
-    Any miss counts: an edit moves only the symbols below it, so one moved
-    symbol is enough to make the numbers after it wrong.
+    name is a whole word on its declaration line (its start, past any
+    decorators) needs no index query and no parser. Any miss counts: an edit
+    moves only the symbols below it, so one moved symbol is enough to make the
+    numbers after it wrong.
     """
     for sym in symbols:
         name = re.split(r"[.:]+", sym.name)[-1]
         if name == "default" or not _CHECKABLE_NAME_RE.match(name):
             continue
-        if name not in _declaration_line(lines, sym.start_line - 1):
+        word = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])")
+        if not word.search(_declaration_line(lines, sym.start_line - 1)):
             return False
     return True
 
 
 def _declaration_line(lines: list[str], start: int) -> str:
-    """The lines from *start* through the first that is not lead-in.
-
-    Lead-in lines are included so ``/** doc */ function f()`` on one line
-    still counts.
-    """
+    """The lines from *start* through the first that is not decorator lead-in."""
     window = lines[start : start + _MAX_LEAD_LINES]
     depth = 0  # open brackets of a multi-line decorator or attribute
     for i, line in enumerate(window):
         if depth <= 0 and not _LEAD_RE.match(line):
             return "\n".join(window[: i + 1])
-        if depth > 0 or line.lstrip().startswith(("@", "#[")):
-            depth += line.count("(") + line.count("[") - line.count(")") - line.count("]")
+        depth += line.count("(") + line.count("[") - line.count(")") - line.count("]")
     return "\n".join(window)
 
 
