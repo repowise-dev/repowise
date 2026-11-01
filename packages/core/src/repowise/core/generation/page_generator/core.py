@@ -184,9 +184,8 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         self._vector_store = vector_store
         # Output language: explicit arg wins, else the config's, else English.
         self._language = language if language is not None else getattr(config, "language", "en")
-        # Resolve the wiki style once. "comprehensive" (default) is inert, so this
-        # is a no-op for repos that never opt in. ``repo_path`` lets a user-defined
-        # ``.repowise/styles/<name>`` style resolve (Phase 5).
+        # Resolve the wiki style once ("comprehensive" by default). ``repo_path``
+        # lets a user-defined ``.repowise/styles/<name>`` style resolve (Phase 5).
         self._style = resolve_style(getattr(config, "wiki_style", None), repo_path=repo_path)
         self._cache: dict[str, GeneratedResponse] = {}
         # Map of page_id → PriorPage from previous generation runs. When the
@@ -563,7 +562,7 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         The style fingerprint is already embedded in ``user_prompt`` for active
         styles, but include it explicitly so the in-memory cache never collides
         across styles even if a future change moves the directive out of the prompt
-        body. Empty for the default style → key is unchanged from before.
+        body.
         """
         raw = (
             f"{self._provider.model_name}:{self._language}:"
@@ -608,8 +607,8 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
             # extraction from it. Not the claim a template page makes.
             confidence=MODEL_PAGE_CONFIDENCE,
         )
-        # Record the effective style as page provenance (D10). Only for active
-        # styles, so default ("comprehensive") pages keep byte-identical metadata.
+        # Record the effective style as page provenance (D10). Every built-in
+        # style is active; only a voiceless spec leaves no record.
         if self._style.is_active:
             page.metadata["style"] = self._style.name
         # Keep the completion boundary visible after persistence. A successful
@@ -632,7 +631,14 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
             page.metadata["self_repair"] = True
         return page
 
-    def _render(self, template_name: str, *, style_prefix: bool = True, **kwargs: Any) -> str:
+    def _render(
+        self,
+        template_name: str,
+        *,
+        style_prefix: bool = True,
+        word_budget: tuple[int, int] | None = None,
+        **kwargs: Any,
+    ) -> str:
         """Render a Jinja2 template with the given kwargs.
 
         For LLM *prompts* (the default), the active wiki style's directive is
@@ -643,13 +649,25 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         ``style_prefix=False`` is for deterministic templates whose render output is
         the page *content* itself (tier-2 file pages), not a prompt — those must not
         carry a style directive.
+
+        ``word_budget`` is the page's ``(lo, hi)`` prose range. The default style
+        states it in its prefix; the template sees ``style_states_length`` and
+        leaves its own length line out when that is true, so a page never gets
+        two ranges and the other styles keep their own density.
         """
+        is_onboarding = template_name.startswith("onboarding/")
         template = self._jinja_env.get_template(template_name)
-        body = template.render(**kwargs)
+        body = template.render(
+            style_states_length=style_prefix
+            and word_budget is not None
+            and self._style.states_length(is_onboarding=is_onboarding),
+            **kwargs,
+        )
         if not style_prefix:
             return body
-        is_onboarding = template_name.startswith("onboarding/")
-        prefix = self._style.user_prompt_prefix(is_onboarding=is_onboarding)
+        prefix = self._style.user_prompt_prefix(
+            is_onboarding=is_onboarding, word_budget=word_budget
+        )
         return prefix + body if prefix else body
 
     def _append_source_evidence(

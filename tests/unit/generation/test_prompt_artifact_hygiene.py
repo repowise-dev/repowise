@@ -28,6 +28,7 @@ from repowise.core.generation.page_generator.validation import (
     GENERATION_ARTIFACT_RULES,
     ArtifactRule,
 )
+from repowise.core.generation.styles import list_styles
 
 _GENERATION_DIR = Path(page_generator.__file__).resolve().parent.parent
 _TEMPLATE_FILES = sorted(_GENERATION_DIR.rglob("*.j2"))
@@ -51,6 +52,17 @@ def test_system_prompt_avoids_banned_vocabulary(page_type: str) -> None:
         f"validate_generated_response rejects, so a model that echoes the "
         f"instruction loses the page: "
         + "; ".join(f"{rule.name} ({phrase!r}) — {rule.explanation}" for rule, phrase in hits)
+    )
+
+
+@pytest.mark.parametrize("style", list_styles(), ids=lambda spec: spec.name)
+def test_style_directives_avoid_banned_vocabulary(style) -> None:
+    """A style's text is prompt text too: the model echoes it the same way."""
+    prefix = style.user_prompt_prefix(is_onboarding=False, word_budget=(500, 800))
+    hits = _offenders(f"{prefix}\n{style.system_note}")
+    assert not hits, (
+        f"the {style.name} style uses phrasing validate_generated_response rejects: "
+        + "; ".join(f"{rule.name} ({phrase!r})" for rule, phrase in hits)
     )
 
 
