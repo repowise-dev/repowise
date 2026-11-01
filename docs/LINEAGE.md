@@ -153,7 +153,7 @@ language, every day. Where we departed from the source, we say so:
 - **Weights are fitted.** The original detectors use fixed thresholds. Repowise fits
   the weight of each detector on a defect corpus, with file size as a control, and
   ships only the fitted constants. A detector that cannot show defect lift beyond size
-  does not move the defect score; 25 of the 53 detectors do.
+  does not move the defect score; 23 of the 59 detectors do.
 - **God Class uses simpler inputs.** Lanza and Marinescu's strategy reads attribute
   access across classes (ATFD). Repowise uses size, method count and the presence of a
   brain method, and gates Brain Method on how central the function is in the graph.

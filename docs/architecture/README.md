@@ -8,7 +8,7 @@ curious; you don't need them to *use* repowise (start with
 |-----|--------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The single end-to-end system reference: stores, provider abstraction, the init and maintenance pipelines, git intelligence, dead code, decisions, MCP/REST/UI layers, and key design decisions |
 | [deep-dives.md](deep-dives.md) | Algorithm-level treatment of the hard parts: dead-code detection, the decision/ADR system, search & vector-store internals, incremental updates & webhooks, the change-cascade algorithm |
-| [code-health.md](code-health.md) | The code-health layer as a full vertical slice: pipeline, the 53 registered detectors, scoring, trends, persistence schema, and extension points |
+| [code-health.md](code-health.md) | The code-health layer as a full vertical slice: pipeline, the 59 registered detectors, scoring, trends, persistence schema, and extension points |
 | [change-risk.md](change-risk.md) | The change-risk model: features, offline calibration and why the score is reported as a size statistic, PR structural impact, and the public risk-scale inventory |
 | [bug-history.md](bug-history.md) | Bug-fix history internals: fix-shape classification, the `fix_events` table, the bug-magnet rollup, the inducing-commit (SZZ) work that was measured and not shipped, and the suspects ranking measurement |
 | [decisions.md](decisions.md) | Decision capture internals: the source registry, evidence verification, confidence, currency, session mining and hook delivery |

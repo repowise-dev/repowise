@@ -1086,8 +1086,7 @@ credential's own endpoint is not read.
   build that picks units outside the project files (a script passing `-U`)
   is seen only as a same-named variant no project claims. tree-sitter-pascal
   has no rule for non-ASCII identifiers.
-- **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
-  without column handling.
+- **COBOL dynamic `CALL` targets stay silent.**
 - **Razor has no import edges**, because every directive is blanked by the
   projection.
 - **GDScript string dispatch is unresolved**, and a script without `class_name`

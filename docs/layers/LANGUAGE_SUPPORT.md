@@ -83,7 +83,8 @@ The COBOL and Apex grammars download on first use; offline, set
 `REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise grammars fetch
 <dir>` stages that cache on a machine with network access; copy `<dir>` to the
 offline machine. `repowise doctor` reports whether each grammar is cached.
-COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
+COBOL is read in fixed reference format, or in free format when the source
+carries a free-format directive such as `>>SOURCE FORMAT FREE`, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
 procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
 nearest copybook with that name; system copybooks such as `DFHAID` stay external.
@@ -307,7 +308,7 @@ Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 - Razor has no import edges.
 - Scala import resolution is partial, and the Elixir and F# import resolvers
   have known gaps.
-- COBOL dynamic `CALL` targets and free-format source produce no edges.
+- COBOL dynamic `CALL` targets produce no edges.
 - C has no performance risk support.
 - Salesforce references are followed when the name is literal: runtime-built
   names and objects with no metadata file in the repository get no edge.
