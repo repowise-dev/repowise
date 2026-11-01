@@ -135,7 +135,7 @@ def test_fresh_machine_writes_launch_dir_code_entry_and_desktop_path(
 
     assert _stored(_code(home))["args"] == _LAUNCH_DIR_ARGS
     assert _stored(desktop)["args"][1] == _arg(repo)
-    assert "Claude Code repowise MCP entry now points at not set" in out
+    assert "Claude Code repowise MCP entry added, will serve the repo it is started in" in out
     assert f"Claude Desktop MCP registered for {repo}" in out
 
 
@@ -387,6 +387,22 @@ def test_plan_screen_this_repo_only_writes_nothing_and_asks_nothing(
     assert "this repo only" in out
 
 
+def test_present_pathless_entry_names_its_current_scope(repo: Path) -> None:
+    entry = global_mcp.GlobalMcpEntry(
+        client="Claude Code",
+        config_path=Path("claude.json"),
+        target=None,
+        command="repowise",
+        present=True,
+        planned=_entry(_arg(repo)),
+    )
+
+    assert global_mcp.GlobalMcpTarget(entries=(entry,)).summary_lines() == [
+        "Claude Code repowise MCP entry now points at the repo it is started in, "
+        f"will serve {_arg(repo)}"
+    ]
+
+
 def test_plan_screen_yes_writes_without_asking_again(home: Path, repo: Path, monkeypatch) -> None:
     _no_desktop(monkeypatch)
     monkeypatch.setattr("sys.stdin", _Tty())
@@ -395,7 +411,7 @@ def test_plan_screen_yes_writes_without_asking_again(home: Path, repo: Path, mon
     out = _register(repo, monkeypatch, yes=False, consent=True)
 
     assert _stored(_code(home))["args"] == _LAUNCH_DIR_ARGS
-    assert "now points at not set" in out
+    assert "repowise MCP entry added, will serve the repo it is started in" in out
 
 
 def test_plan_screen_lists_only_entries_that_change(
@@ -406,7 +422,7 @@ def test_plan_screen_lists_only_entries_that_change(
     desktop = _desktop(home, monkeypatch)
     _write(_code(home), _entry(_arg(other)))
     assert outside_lines(repo) == (
-        "Claude Desktop repowise MCP entry now points at not set, "
+        "Claude Desktop repowise MCP entry added, "
         f"will serve {_arg(repo)}",
     )
     _write(desktop, _entry(_arg(other)))
