@@ -83,13 +83,16 @@ emitting_build = _hook_ledger.emitting_build
 #: contended case. The savings ledger writes keep their own timeouts: they
 #: contend with sibling hook processes, and a lost write is lost data.
 _SQLITE_WAIT_BUDGET_MS = 1500
+#: The budget counts from process start, so a slow start can spend it before
+#: any wait. The floor keeps a short grace for a writer's brief commit.
+_SQLITE_WAIT_FLOOR_S = 0.25
 
 
 def sqlite_wait_s(cap_s: float) -> float:
     """Busy timeout for the next index connection: *cap_s*, or what is left
-    of this process's :data:`_SQLITE_WAIT_BUDGET_MS`, whichever is smaller."""
+    of this process's :data:`_SQLITE_WAIT_BUDGET_MS`, never under the floor."""
     left_s = (_SQLITE_WAIT_BUDGET_MS - _elapsed_ms()) / 1000
-    return max(0.0, min(cap_s, left_s))
+    return min(cap_s, max(_SQLITE_WAIT_FLOOR_S, left_s))
 
 
 def _ledger_key(surface: str, category: str, text: str) -> str:

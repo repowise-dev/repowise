@@ -69,7 +69,7 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
     # A locked index fails every decision query anyway, each after its own
-    # busy wait (nine seconds in all); one probe answers the same in one.
+    # busy wait; one probe answers the same within one wait.
     decisions = None
     if not index_locked(repo_path):
         try:

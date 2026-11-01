@@ -113,7 +113,7 @@ class TestEquivalence:
         assert fast == asyncio.run(_pagerank_file_order(indexed_repo, paths))
         assert fast == ["src/a.py", "src/b.py"]
 
-    @pytest.mark.parametrize("pattern", ["parse_yaml", "PARSEYAML", "yaml", "parse%"])
+    @pytest.mark.parametrize("pattern", ["parse_yaml", "PARSEYAML", "yaml", "parse%", "e_y"])
     def test_zero_result_rescue_symbol_hit_says_what_the_orm_says(
         self, indexed_repo: Path, pattern: str
     ) -> None:
@@ -161,10 +161,11 @@ class TestLockedIndex:
 
         monkeypatch.setattr(_shared, "_elapsed_ms", lambda: 0)
         assert _shared.sqlite_wait_s(1) == 1
-        monkeypatch.setattr(_shared, "_elapsed_ms", lambda: _shared._SQLITE_WAIT_BUDGET_MS - 250)
-        assert _shared.sqlite_wait_s(1) == pytest.approx(0.25)
+        monkeypatch.setattr(_shared, "_elapsed_ms", lambda: _shared._SQLITE_WAIT_BUDGET_MS - 600)
+        assert _shared.sqlite_wait_s(1) == pytest.approx(0.6)
+        # A spent budget still leaves the floor, so a brief commit is waited out.
         monkeypatch.setattr(_shared, "_elapsed_ms", lambda: _shared._SQLITE_WAIT_BUDGET_MS + 1)
-        assert _shared.sqlite_wait_s(30) == 0
+        assert _shared.sqlite_wait_s(30) == _shared._SQLITE_WAIT_FLOOR_S
 
 
 class TestFallsBackToTheOrm:
