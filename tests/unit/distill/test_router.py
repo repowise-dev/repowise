@@ -107,6 +107,7 @@ def test_disabled_filters_are_skipped() -> None:
         "git show origin/main:packages/core/src/engine.py",
         "git show HEAD~2:README.md | sed -n 165,215p",
         "git show v0.59.0:src/app.py",
+        "git show :src/app.py",
     ],
 )
 def test_git_show_of_a_file_blob_is_not_routed_as_a_diff(command: str) -> None:
@@ -117,7 +118,12 @@ def test_git_show_of_a_file_blob_is_not_routed_as_a_diff(command: str) -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["git show HEAD", "git show HEAD -- src/app.py", "git show --format=%H:%s HEAD"],
+    [
+        "git show HEAD",
+        "git show HEAD -- src/app.py",
+        "git show --format=%H:%s HEAD",
+        "git show HEAD -- C:/repo/src/app.py",
+    ],
 )
 def test_git_show_of_a_commit_still_routes_as_a_diff(command: str) -> None:
     assert select_filter(command, "").name == "git_diff"
