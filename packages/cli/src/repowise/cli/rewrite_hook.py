@@ -700,14 +700,21 @@ def _file_read_worth_it(command: str, cwd: str, repo_root: str) -> bool:
     return has_indexed_symbols(*located)
 
 
-def _family_bail(
+def _late_bail(
     family: str, command: str, cwd: str, repo_root: str, session_id: str
 ) -> str | None:
-    """Why a recognized command of *family* still passes through, or None."""
+    """Why an allowed command of *family* still passes through, or None."""
     if family == "file_read" and not _file_read_worth_it(command, cwd, repo_root):
         return BAIL_FILE_READ
     if family in _REPEAT_RAW_FAMILIES and _is_repeat(repo_root, session_id, cwd, command):
         return BAIL_REPEAT
+    # Pass through when the rewrite could not run. Ceiling: an install that is
+    # only in an off-PATH venv gets no distill; the upgrade path is emitting
+    # the absolute script path, quoted per shell dialect and agent. This reads
+    # the hook's PATH; a shell profile that adds repowise only for the agent's
+    # shell reads as missing, which costs the savings, never the command.
+    if not _distill_on_path():
+        return BAIL_NO_DISTILL
     return None
 
 
@@ -844,16 +851,9 @@ def _decide(
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
-    family_bail = _family_bail(family, command, cwd, repo_root, session_id)
-    if family_bail is not None:
-        return None, family_bail, repo_root
-    # Pass through when the rewrite could not run. Ceiling: an install that is
-    # only in an off-PATH venv gets no distill; the upgrade path is emitting
-    # the absolute script path, quoted per shell dialect and agent. This reads
-    # the hook's PATH; a shell profile that adds repowise only for the agent's
-    # shell reads as missing, which costs the savings, never the command.
-    if not _distill_on_path():
-        return None, BAIL_NO_DISTILL, repo_root
+    late_bail = _late_bail(family, command, cwd, repo_root, session_id)
+    if late_bail is not None:
+        return None, late_bail, repo_root
 
     # The --source tag lands in the savings ledger so `repowise saved
     # --by source` can tell hook surfaces apart from direct CLI use — and,
