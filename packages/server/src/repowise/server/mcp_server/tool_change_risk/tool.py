@@ -19,6 +19,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._call_tasks import ends_call_tasks, start_call_task
 from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     attach_ignored_arguments,
@@ -143,16 +144,12 @@ def _start_delta(
     timings: dict[str, int],
 ) -> asyncio.Task:
     """Begin the health comparison; it ends with the calling request."""
-    task = asyncio.create_task(
+    return start_call_task(
         _timed_delta(
             timings,
             _delta_with_index(ctx, revspec, tuple(extensions or ()), excludes, includes),
         )
     )
-    request = asyncio.current_task()
-    if request is not None:
-        request.add_done_callback(lambda _done: task.cancel())
-    return task
 
 
 async def _early_delta(
@@ -286,6 +283,7 @@ _CARRIED_META = frozenset({"omitted", "recovery_unavailable", "replaced_tokens"}
     presentation="change_risk",
     evidence_basis="measured",
 )
+@ends_call_tasks
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,
@@ -379,30 +377,24 @@ async def get_change_risk(
     if finding_id is None:
         scan, branches = rescan or await _branch_scan(ctx, key, changed, revspec)
     independent = None
-    try:
-        if finding_id is None:
-            await _pkg._attach_change_blocks(
-                ctx,
-                payload,
-                result,
-                revspec,
-                extensions,
-                (changed, changed_error),
-                collector,
-                includes,
-                tests_detail="tests" in include_set,
-                timings=timings,
+    # A block that raises leaves the comparison and the scan to ends_call_tasks.
+    if finding_id is None:
+        await _pkg._attach_change_blocks(
+            ctx,
+            payload,
+            result,
+            revspec,
+            extensions,
+            (changed, changed_error),
+            collector,
+            includes,
+            tests_detail="tests" in include_set,
+            timings=timings,
+        )
+        with _timed(timings, "branch_overlap"):
+            independent = await _attach_branch_blocks(
+                ctx, payload, changed, collector, revspec, scan
             )
-            with _timed(timings, "branch_overlap"):
-                independent = await _attach_branch_blocks(
-                    ctx, payload, changed, collector, revspec, scan
-                )
-    except BaseException:
-        # Never leave the comparison or the scan running for a request that is already over.
-        delta_task.cancel()
-        if scan is not None:
-            scan.cancel()
-        raise
     delta = await delta_task
     await _attach_health_references(ctx, delta)
     scored_entry = _cache.remember(key, payload["ref"], delta)

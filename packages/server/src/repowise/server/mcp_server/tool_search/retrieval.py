@@ -19,6 +19,7 @@ from repowise.server.mcp_server._answer_pipeline import (
     leg_ranks,
 )
 from repowise.server.mcp_server._answer_pipeline.leg_record import _record_leg, vector_leg_within
+from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
@@ -153,7 +154,7 @@ async def _run_legs(ctx, query: str, fetch_limit: int, *, semantic: bool) -> tup
         lexical = await _lexical_legs(ctx, query, fetch_limit)
         await _pkg._wait_for_vector_store(ctx)
     except BaseException:
-        vector_leg.cancel()
+        await cancel_and_wait([vector_leg])
         raise
     return (await vector_leg_within(vector_leg, semantic_grace_s()), *lexical)
 
