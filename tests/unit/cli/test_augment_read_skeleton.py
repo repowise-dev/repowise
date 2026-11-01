@@ -414,6 +414,10 @@ def test_one_moved_symbol_is_enough_to_count_as_stale() -> None:
     assert _bounds_current(lines, indexed) is False
     indexed[2] = SkeletonSymbol(name="c", kind="function", start_line=6, end_line=7)
     assert _bounds_current(lines, indexed) is True
+    # A symbol indexed from the tail of a multi-line decorator is still in place.
+    decorated = ["@pytest.mark.parametrize(", "    'x',", "    [1, 2],", ")", "def test_x(x):", "    pass"]
+    tail = [SkeletonSymbol(name="test_x", kind="function", start_line=4, end_line=6)]
+    assert _bounds_current(decorated, tail) is True
     # A name the declaration does not spell out is not held against the file.
     indexed.append(SkeletonSymbol(name="<anonymous>", kind="function", start_line=7, end_line=7))
     assert _bounds_current(lines, indexed) is True
