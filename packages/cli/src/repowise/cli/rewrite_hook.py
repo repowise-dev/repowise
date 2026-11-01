@@ -170,6 +170,9 @@ FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("infra_plan", re.compile(r"^(?:terraform|tofu) plan\b|^helm (?:diff|upgrade)\b")),
     ("git_status", re.compile(r"^git status\b(?!.*--porcelain)")),
+    # `git log -p` prints diffs, which the hunk renderer keeps; the log
+    # renderer would reduce them to subject lines.
+    ("git_diff", re.compile(r"^git log\b.*\s(?:-p|--patch|-u)(?=\s|$)")),
     ("git_log", re.compile(r"^git log\b")),
     # `gh pr diff` emits a plain unified diff, so it distills as one. Only
     # this one gh subcommand is listed: `gh` at large includes mutations
@@ -182,6 +185,9 @@ FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("search_results", re.compile(r"^(rg\b|grep\b|egrep\b|fgrep\b|git grep\b)")),
     ("file_listing", re.compile(r"^(ls\b|tree\b|find\b|fd\b|git ls-files\b)")),
     ("logs", re.compile(r"^(tail\b|journalctl\b|docker logs\b|kubectl logs\b|cat\b.*\.log\b)")),
+    # One whole file and nothing else. `_file_read_gate` decides whether this
+    # particular file is worth it before anything is rewritten.
+    ("file_read", re.compile(r"^cat\s+[^\s|;&<>-][^\s|;&<>]*$")),
 )
 
 #: First tokens that are never worth wrapping: trivial, mutating, or
@@ -448,7 +454,22 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
         if family is None:
             return None
         families.append(family)
+    if not families and _is_cd_then_cat(segments, piped_from):
+        # `cd <dir> && cat <file>` is how agents read a whole file; the `cat`
+        # alone is inert above, so the pair is recognized here.
+        return ("file_read",)
     return tuple(families) or None
+
+
+def _is_cd_then_cat(segments: list[list[str]], piped_from: set[int]) -> bool:
+    """True for exactly ``cd <dir>`` then a lone ``cat <file>``, not piped."""
+    return (
+        len(segments) == 2
+        and not piped_from
+        and len(segments[0]) == 2
+        and segments[0][0] == "cd"
+        and _classify_head(" ".join(segments[1])) == "file_read"
+    )
 
 
 # Watch/follow modes are long-running; wrapping them buffers forever.
@@ -625,6 +646,93 @@ BAIL_DISABLED = "disabled"  # this repo turned command rewriting off
 BAIL_FAMILY_OFF = "family_off"  # this family specifically is off
 BAIL_PERMISSION = "permission"  # agent cannot honour the decided posture
 BAIL_NO_DISTILL = "distill_not_on_path"  # `repowise` is not on PATH to run the rewrite
+BAIL_FILE_READ = "file_read_skip"  # not a large file with indexed symbols
+BAIL_REPEAT = "repeat"  # same command again right after its rewrite: runs raw
+
+#: Families whose identical next command, right after a rewrite, runs raw: a
+#: re-run of the same read says the compact view was not enough.
+_REPEAT_RAW_FAMILIES = frozenset({"file_read", "git_diff"})
+#: Sessions remembered in the repeat state file; older ones drop off.
+_REPEAT_STATE_SESSIONS = 64
+
+
+def _file_read_worth_it(command: str, cwd: str) -> bool:
+    """Whether a ``cat`` reads one large file the index holds symbols for.
+
+    Imported here, not at module scope: only a ``cat`` candidate pays for it,
+    and the module is stdlib-only (the distill filter shares it, so both read
+    the same target).
+    """
+    from repowise.core.distill.cat_target import (
+        MIN_FILE_LINES,
+        MIN_OUTPUT_CHARS,
+        has_indexed_symbols,
+        locate_index,
+        resolve_cat_path,
+    )
+
+    path = resolve_cat_path(command, cwd)
+    if path is None:
+        return False
+    try:
+        if os.path.getsize(path) < MIN_OUTPUT_CHARS:
+            return False
+        with open(path, "rb") as fh:
+            if fh.read().count(b"\n") < MIN_FILE_LINES:
+                return False
+    except OSError:
+        return False
+    located = locate_index(path)
+    return located is not None and has_indexed_symbols(*located)
+
+
+def _repeat_state_path(repo_root: str) -> str:
+    return os.path.join(repo_root, ".repowise", "rewrite_last.json")
+
+
+def _load_repeat_state(repo_root: str) -> dict:
+    import json
+
+    try:
+        with open(_repeat_state_path(repo_root), encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _save_repeat_state(repo_root: str, state: dict) -> None:
+    import json
+
+    try:
+        with open(_repeat_state_path(repo_root), "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+    except OSError:
+        return
+
+
+def _is_repeat(repo_root: str, session_id: str, cwd: str, command: str) -> bool:
+    """True when *command* is the one this session's last rewrite ran; forgets it."""
+    if not session_id:
+        return False
+    state = _load_repeat_state(repo_root)
+    if state.get(session_id) != [cwd, command.strip()]:
+        return False
+    del state[session_id]
+    _save_repeat_state(repo_root, state)
+    return True
+
+
+def _remember_rewrite(repo_root: str, session_id: str, cwd: str, command: str) -> None:
+    """Record the command a rewrite just compacted, so an identical next one runs raw."""
+    if not session_id:
+        return
+    state = _load_repeat_state(repo_root)
+    state.pop(session_id, None)
+    state[session_id] = [cwd, command.strip()]
+    for stale in list(state)[:-_REPEAT_STATE_SESSIONS]:
+        del state[stale]
+    _save_repeat_state(repo_root, state)
 
 
 def _distill_on_path() -> bool:
@@ -652,7 +760,11 @@ def decide(
 
 
 def _decide(
-    command: str, cwd: str, shell: str = "posix", source: str | None = None
+    command: str,
+    cwd: str,
+    shell: str = "posix",
+    source: str | None = None,
+    session_id: str = "",
 ) -> tuple[RewriteResult | None, str, str | None]:
     """:func:`decide`, plus why it said no and which repo it was asked about.
 
@@ -700,6 +812,10 @@ def _decide(
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
+    if family == "file_read" and not _file_read_worth_it(command, cwd):
+        return None, BAIL_FILE_READ, repo_root
+    if family in _REPEAT_RAW_FAMILIES and _is_repeat(repo_root, session_id, cwd, command):
+        return None, BAIL_REPEAT, repo_root
     # Pass through when the rewrite could not run. Ceiling: an install that is
     # only in an off-PATH venv gets no distill; the upgrade path is emitting
     # the absolute script path, quoted per shell dialect and agent. This reads
@@ -768,7 +884,11 @@ def main() -> None:
         if request is not None:
             source = adapter.savings_source
             result, reason, repo_root = _decide(
-                request.command, request.cwd, request.shell, source=source
+                request.command,
+                request.cwd,
+                request.shell,
+                source=source,
+                session_id=request.session_id,
             )
             outcome = BAILED
             # An agent that can't honor the decided posture gets a
@@ -779,6 +899,10 @@ def main() -> None:
                     sys.stdout.write(adapter.render_response(result))
                     sys.stdout.flush()
                     outcome = REWRITTEN
+                    if repo_root and reason in _REPEAT_RAW_FAMILIES:
+                        _remember_rewrite(
+                            repo_root, request.session_id, request.cwd, request.command
+                        )
                 else:
                     reason = BAIL_PERMISSION
             _count_decision(repo_root, request.session_id, outcome, reason)

@@ -30,6 +30,9 @@ _ENV_ASSIGN_RE = re.compile(r"^\w+=\S+\s+")
 # stripping a ``cmd /c "dir /s /b ..."`` wrapper.
 _WHOLE_QUOTED_RE = re.compile(r'^"([^"]*)"$')
 
+# A unified diff's file header, anywhere in an output.
+_DIFF_HEADER_RE = re.compile(r"^diff --git a/", re.MULTILINE)
+
 # Path prefix on the executable: .venv\Scripts\pytest.exe → pytest
 _EXE_PATH_RE = re.compile(r'^(?:"[^"]*[\\/]|\S*[\\/])(?P<exe>[\w.-]+?)(?:\.exe)?(?:")?(?=\s|$)')
 
@@ -64,11 +67,26 @@ def select_filter(
     """Pick the filter for *command*/*output*, or None when nothing applies."""
     disabled_set = set(disabled)
     candidates = [f for f in filter_registry.filters() if f.name not in disabled_set]
+    chosen = _by_command(command, candidates) or _by_content(output, candidates)
+    # A chain can print a diff after another command's output (`git log --stat
+    # && git diff`). The first command's filter would drop the hunks, so a
+    # diff anywhere in the output goes to the diff renderer, which keeps the
+    # other lines as they are.
+    if (chosen is None or chosen.name != "git_diff") and _DIFF_HEADER_RE.search(output):
+        return next((f for f in candidates if f.name == "git_diff"), chosen)
+    return chosen
+
+
+def _by_command(command: str, candidates: list[OutputFilter]) -> OutputFilter | None:
     normalized = normalize_command(command) if command else ""
     if normalized:
         for f in candidates:
             if f.matches_command(normalized):
                 return f
+    return None
+
+
+def _by_content(output: str, candidates: list[OutputFilter]) -> OutputFilter | None:
     if output:
         for f in candidates:
             if f.matches_content(output):
