@@ -127,3 +127,23 @@ def test_malformed_cache_refetches(monkeypatch, tmp_path):
         "0.58.0",
         "0.57.1",
     ]
+
+
+def test_dev_build_keeps_only_releases_newer_than_its_release(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp(TAGGED))
+    entries = rel.fetch_newer_changelog("0.57.0.dev3+g1a2b", "0.58.0")
+    assert [e.version for e in entries] == ["0.58.0", "0.57.1"]
+
+
+@pytest.mark.parametrize("var", ["REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"])
+def test_network_switch_off_never_fetches(monkeypatch, tmp_path, var):
+    monkeypatch.setenv(var, "1")
+
+    def _fail(url, timeout):
+        raise AssertionError("network checks are off")
+
+    monkeypatch.setattr(httpx, "get", _fail)
+    assert rel.fetch_newer_changelog("0.57.0", "0.58.0") is None
+    assert rel.newer_changelog_cached("0.57.0", "0.58.0") == []
+    # Nothing cached, so the notes show once the switch is off.
+    assert not (tmp_path / "release-notes.json").exists()

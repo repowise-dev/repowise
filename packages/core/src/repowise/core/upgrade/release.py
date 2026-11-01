@@ -261,8 +261,15 @@ def fetch_newer_changelog(
 
     Read from the changelog at the ``v{latest_version}`` tag, because the
     installed wheel's bundled changelog was built before those releases existed.
-    ``None`` on any network failure, so the caller falls back to the bundled one.
+    ``None`` on any network failure, or when network checks are off, so the
+    caller falls back to the bundled one. Nothing is sent but the GET.
     """
+    # Compare on the numeric release: a dev or local build's version
+    # ("0.59.1.dev3+g1a2b") would otherwise open the lower bound and repeat
+    # the whole changelog above the bundled one.
+    current = parse_release(current_version)
+    if network_disabled() or current is None or parse_release(latest_version) is None:
+        return None
     import httpx
 
     try:
@@ -271,7 +278,9 @@ def fetch_newer_changelog(
     except httpx.HTTPError:  # offline, timeout, non-2xx (a tag without the file)
         return None
     return entries_between(
-        parse_changelog(resp.text), newer_than=current_version, up_to=latest_version
+        parse_changelog(resp.text),
+        newer_than=".".join(map(str, current)),
+        up_to=latest_version,
     )
 
 
@@ -300,6 +309,8 @@ def newer_changelog_cached(
             return entries
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass  # no cache yet, or a malformed one: fetch
+    if network_disabled():
+        return []  # not cached, so the notes show once the switch is off
     entries = fetch_newer_changelog(current_version, latest_version, timeout=timeout) or []
     with contextlib.suppress(OSError):  # a read-only home only costs a refetch
         _NEWER_NOTES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
