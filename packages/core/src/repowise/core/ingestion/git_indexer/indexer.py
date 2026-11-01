@@ -994,7 +994,7 @@ class GitIndexer:
         ``history_only``, and carries no code signal.
         """
         out: dict[str, dict] = {}
-        cut = shallow_roots(str(self.repo_path)) if history_files else frozenset()
+        cut = shallow_roots(str(self.repo_path))
         for fp in idle_paths:
             if fp in history_files:
                 # The history tier comes only from this shared walk, so this is
@@ -1015,7 +1015,7 @@ class GitIndexer:
                     shallow_roots=cut,
                 )
                 continue
-            meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts)
+            meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts, cut)
             meta["change_entropy"] = walk.entropy.get(fp, 0.0)
             meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
             meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)

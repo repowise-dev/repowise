@@ -122,6 +122,31 @@ def test_origin_story_serves_the_commit_that_states_a_governing_decision():
     assert 'Commit "Use JWT tokens for authentication" by Bob is evidence for' in origin["summary"]
 
 
+def test_origin_story_does_not_call_a_truncated_history_start_the_creation():
+    """A shallow clone's cut (or the commit cap) is where history starts (#5160)."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server._helpers import _build_origin_story
+
+    meta = SimpleNamespace(
+        top_authors_json="[]",
+        significant_commits_json="[]",
+        primary_owner_name=None,
+        primary_owner_commit_pct=None,
+        commit_count_total=1,
+        commit_count_capped=True,
+        first_commit_at=datetime(2026, 10, 25),
+        last_commit_at=None,
+        age_days=6,
+    )
+
+    summary = _build_origin_story("a.py", meta, [])["summary"]
+
+    assert "Created" not in summary
+    assert summary.startswith("History starts ~2026-10-25 (older commits not indexed)")
+
+
 @pytest.mark.asyncio
 async def test_get_why_natural_language_with_targets(setup_mcp):
     from repowise.server.mcp_server import get_why

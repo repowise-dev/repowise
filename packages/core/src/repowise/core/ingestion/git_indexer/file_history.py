@@ -335,7 +335,9 @@ def index_file(
 
     *shallow_roots* are the commits a shallow clone cut. Git shows each as
     adding every file it holds, so they still count as commits here but credit
-    no author and are never a key commit.
+    no author, are never a key commit and add no churn. A file whose history
+    reaches one is marked ``commit_count_capped``: its first commit is where
+    the clone's history starts, not when the file was made.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
@@ -364,21 +366,21 @@ def index_file(
         return meta
 
     meta["commit_count_total"] = len(commits)
-    meta["commit_count_capped"] = len(commits) >= commit_limit
+    authored = _authored(commits, shallow_roots)
+    meta["commit_count_capped"] = _history_capped(commits, authored, commit_limit)
 
     # Each step writes its fields in turn, so a failure keeps the fields
     # the earlier steps already wrote.
-    authored = _authored(commits, shallow_roots)
     try:
-        _add_span(meta, commits, now)
+        _add_span(meta, commits, authored, now)
         authors = _Authors.tally(authored, ninety_days_ago_ts)
-        _add_windows(meta, commits, ninety_days_ago_ts, thirty_days_ago_ts)
+        _add_windows(meta, authored, ninety_days_ago_ts, thirty_days_ago_ts)
         _add_ownership(meta, authors)
         meta["is_stable"] = _is_stable(meta)
         if history_only:
             return meta
         _add_agent_rollup(meta, commits)
-        meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
+        meta["temporal_hotspot_score"] = _temporal_hotspot_score(authored, now)
         if include_blame:
             _add_blame_ownership(meta, repo, repo_path, now, authors)
         _add_commit_messages(meta, authored, forge)
@@ -398,7 +400,19 @@ def _authored(commits: list[_CommitRec], shallow_roots: frozenset[str]) -> list[
     return [c for c in commits if c.sha not in shallow_roots]
 
 
-def decay_meta(file_path: str, commits: list[_CommitRec], as_of_ts: float | None) -> dict:
+def _history_capped(
+    commits: list[_CommitRec], authored: list[_CommitRec], commit_limit: int
+) -> bool:
+    """Whether older history is missing: the commit cap was hit or a shallow clone cut it."""
+    return len(commits) >= commit_limit or len(authored) < len(commits)
+
+
+def decay_meta(
+    file_path: str,
+    commits: list[_CommitRec],
+    as_of_ts: float | None,
+    shallow_roots: frozenset[str] = frozenset(),
+) -> dict:
     """A code file's window and decay fields, as :func:`index_file` computes them.
 
     The idle refresh keeps only :data:`DECAY_REFRESH_KEYS`, so it skips the
@@ -406,6 +420,7 @@ def decay_meta(file_path: str, commits: list[_CommitRec], as_of_ts: float | None
     """
     now = _window_anchor(as_of_ts)
     meta = new_meta(file_path)
+    commits = _authored(commits, shallow_roots)
     if commits:
         _add_windows(
             meta,
@@ -423,14 +438,22 @@ def _window_anchor(as_of_ts: float | None) -> datetime:
     return datetime.now(UTC)
 
 
-def _add_span(meta: dict[str, Any], commits: list[_CommitRec], now: datetime) -> None:
+def _add_span(
+    meta: dict[str, Any], commits: list[_CommitRec], authored: list[_CommitRec], now: datetime
+) -> None:
+    """First commit and age from every commit, last commit from *authored* ones.
+
+    A shallow clone's cut commit is where the visible history starts, but it
+    changed nothing here, so it is never the file's last change.
+    """
     timestamps = [c.ts for c in commits if c.ts > 0]
     if timestamps:
         first_ts = min(timestamps)
-        last_ts = max(timestamps)
         meta["first_commit_at"] = datetime.fromtimestamp(first_ts, tz=UTC)
-        meta["last_commit_at"] = datetime.fromtimestamp(last_ts, tz=UTC)
         meta["age_days"] = (now - datetime.fromtimestamp(first_ts, tz=UTC)).days
+    changed = [c.ts for c in authored if c.ts > 0]
+    if changed:
+        meta["last_commit_at"] = datetime.fromtimestamp(max(changed), tz=UTC)
 
 
 def _add_windows(

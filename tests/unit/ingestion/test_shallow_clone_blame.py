@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 from repowise.core.ingestion.git_indexer.file_history import index_file
@@ -227,3 +228,74 @@ def test_git_indexer_passes_the_cut_to_every_file(tmp_path: Path) -> None:
     by_path = {m["file_path"]: m for m in metas}
     assert _key_messages(by_path["util.py"]) == []
     assert _authors(by_path["app.py"]) == []
+
+
+# Five days after Carol's commit, so it sits in both trailing windows (#5160).
+_AS_OF = datetime(2026, 6, 20, tzinfo=UTC).timestamp()
+
+
+def _index_as_of(clone: Path, path: str) -> dict:
+    import git as gitpython
+
+    from repowise.core.analysis.changed_lines import shallow_roots
+
+    return index_file(
+        gitpython.Repo(clone), path, repo_path=clone, commit_limit=500,
+        follow_renames=False, include_blame=False, as_of_ts=_AS_OF,
+        shallow_roots=shallow_roots(str(clone)),
+    )
+
+
+def test_shallow_cut_commit_is_no_recent_churn(tmp_path: Path) -> None:
+    """util.py last changed in January; the cut must not make it look hot."""
+    _full, shallow = _clones(tmp_path)
+    meta = _index_as_of(shallow, "util.py")
+    assert meta["commit_count_90d"] == 0
+    assert meta["commit_count_30d"] == 0
+    assert meta["lines_added_90d"] == 0
+    assert meta["temporal_hotspot_score"] == 0.0
+    # The cut is where the visible history starts, not a change to the file.
+    assert meta["first_commit_at"] == datetime(2026, 6, 15, 12, tzinfo=UTC)
+    assert meta["last_commit_at"] is None
+    assert meta["commit_count_capped"] is True
+
+
+def test_full_clone_keeps_its_root_commit_churn_and_span(tmp_path: Path) -> None:
+    full, _shallow = _clones(tmp_path)
+    meta = _index_as_of(full, "app.py")
+    assert meta["commit_count_90d"] == 1
+    assert meta["temporal_hotspot_score"] > 0
+    assert meta["first_commit_at"] == datetime(2026, 1, 1, 12, tzinfo=UTC)
+    assert meta["last_commit_at"] == datetime(2026, 6, 15, 12, tzinfo=UTC)
+    assert meta["commit_count_capped"] is False
+
+
+def test_decay_refresh_drops_the_cut_commit(tmp_path: Path) -> None:
+    import git as gitpython
+
+    from repowise.core.analysis.changed_lines import shallow_roots
+    from repowise.core.ingestion.git_indexer.file_history import (
+        _parse_per_file_log,
+        decay_meta,
+    )
+
+    _full, shallow = _clones(tmp_path)
+    commits, _orig = _parse_per_file_log(
+        gitpython.Repo(shallow), "util.py", commit_limit=500, follow_renames=False
+    )
+    meta = decay_meta("util.py", commits, _AS_OF, shallow_roots(str(shallow)))
+    assert meta["commit_count_90d"] == 0
+    assert meta["temporal_hotspot_score"] == 0.0
+
+
+def test_repo_first_commit_is_not_the_cut(tmp_path: Path) -> None:
+    import git as gitpython
+
+    from repowise.core.ingestion.git_indexer.records import capture_repo_totals
+
+    full, shallow = _clones(tmp_path)
+    assert capture_repo_totals(gitpython.Repo(full)).first_commit_subject == "feat: initial import"
+    totals = capture_repo_totals(gitpython.Repo(shallow))
+    assert totals.first_commit_at is None
+    assert totals.first_commit_author is None
+    assert totals.first_commit_subject is None
