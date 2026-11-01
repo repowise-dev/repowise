@@ -124,17 +124,13 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     their own. Nor is a file the index has not seen (one the change adds):
     it is ``new``, since its tests and callers are not in the graph yet.
     """
-    from repowise.core.analysis.test_reachability import cached_file_paths, cached_test_files
+    from repowise.core.analysis.test_reachability import cached_test_files
 
     rows: dict[str, FileTests] = {}
     if not paths:
         return rows
     test_files = await cached_test_files(session, repo_id)
-    # No file nodes at all is no index to judge "new" by, not a repository of new files.
-    try:
-        indexed_files = await cached_file_paths(session, repo_id) or None
-    except Exception:
-        indexed_files = None
+    indexed_files = await _indexed_files(session, repo_id)
     for p in dict.fromkeys(paths):
         known = _known_state(p, test_files, indexed_files)
         if known is not None:
@@ -148,6 +144,17 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
             await _code_file_tests(session, repo_id, candidates, test_files, indexed_files or ())
         )
     return {p: rows[p] for p in dict.fromkeys(paths)}
+
+
+async def _indexed_files(session: AsyncSession, repo_id: str) -> frozenset[str] | None:
+    """Every indexed file path; ``None`` when there is no index to judge "new" by."""
+    from repowise.core.analysis.test_reachability import cached_file_paths
+
+    # No file nodes at all is no index, not a repository of new files.
+    try:
+        return await cached_file_paths(session, repo_id) or None
+    except Exception:
+        return None
 
 
 async def _owing_a_test(session: AsyncSession, repo_id: str, paths: list[str]) -> set[str]:
