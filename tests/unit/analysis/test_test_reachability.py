@@ -21,7 +21,7 @@ from repowise.core.analysis.test_reachability import (
     files_reached_by_tests,
     files_with_paired_tests,
     rank_reaching,
-    tests_matching_by_name,
+    tests_matching_by_name as name_match,
 )
 
 
@@ -209,7 +209,7 @@ def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
         "src/middleware/jwt/index.ts",
         "src/middleware/jwt/index.test.ts",
     }
-    found = tests_matching_by_name(
+    found = name_match(
         ["src/utils/jwt/index.ts", "src/middleware/jwt/index.ts"],
         {"src/middleware/jwt/index.test.ts"},
         files,
@@ -220,7 +220,7 @@ def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
 
 
 def test_a_test_without_a_sibling_source_still_matches_across_directories() -> None:
-    found = tests_matching_by_name(
+    found = name_match(
         ["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"}
     )
 
