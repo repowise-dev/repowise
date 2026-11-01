@@ -40,6 +40,7 @@ import { ChangePicker, changeName } from "./change-picker";
 import { HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
 import { count } from "./review-status";
 import type { ImpactAdapter } from "./impact-adapter";
+import { changeIdFromLink, changeLinkParam } from "./change-links";
 import { toFriendlyMessage } from "../lib/errors";
 import { disambiguateBasenames } from "../lib/format";
 import { FilePath } from "../shared/file-path";
@@ -63,30 +64,7 @@ const DEPTHS: { value: number; label: string }[] = [
   { value: 5, label: "Up to 5 steps" },
 ];
 
-const SHA = /^[0-9a-f]{40}$/;
-/** A pull request's id and link value alike: `pr:123`. `:` never appears in a branch name. */
-const PR = /^pr:\d+$/;
-
-/**
- * A change's id in a shareable link: `wip`, a branch name, or a full sha.
- * Stable across reloads and machines, unlike a list position.
- */
-export function changeLinkParam(changeId: string): string {
-  if (changeId === "working-tree") return "wip";
-  if (PR.test(changeId)) return changeId;
-  if (changeId.startsWith("commit:")) return changeId.slice("commit:".length);
-  const branch = changeId.replace(/^branch:/, "");
-  // A branch named like the other two forms keeps its prefix; `:` never
-  // appears in a git branch name, so the prefixed form is unambiguous.
-  return branch === "wip" || SHA.test(branch) ? `branch:${branch}` : branch;
-}
-
-/** The change id a link's `change` value names. */
-export function changeIdFromLink(param: string): string {
-  if (param.startsWith("branch:") || PR.test(param)) return param;
-  if (param === "wip") return "working-tree";
-  return SHA.test(param) ? `commit:${param}` : `branch:${param}`;
-}
+export { changeIdFromLink, changeLinkParam } from "./change-links";
 
 /**
  * The candidate an id names: the listed one, else one read off the id itself,

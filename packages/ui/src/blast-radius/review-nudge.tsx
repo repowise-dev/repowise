@@ -1,6 +1,7 @@
 import type { ElementType } from "react";
 import { GitPullRequestArrow } from "lucide-react";
 import type { ChangeCandidate, ChangeCandidatesResponse } from "@repowise-dev/types/blast-radius";
+import { changeLinkParam } from "./change-links";
 
 /**
  * The change worth a review right now: uncommitted work, else the checked-out
@@ -27,7 +28,7 @@ export function ReviewNudge({
   LinkComponent = "a",
 }: {
   data: ChangeCandidatesResponse | null | undefined;
-  /** Where Review opens for a change link value (`wip` or a branch name). */
+  /** Where Review opens for a change link value (`wip`, a branch name, or `branch:<name>` for one named like those). */
   href: (change: string) => string;
   LinkComponent?: ElementType;
 }) {
@@ -45,7 +46,7 @@ export function ReviewNudge({
       </span>
       {files != null && <span className="tabular-nums">· {files} file{files === 1 ? "" : "s"}</span>}
       <Link
-        href={href(change.kind === "working_tree" ? "wip" : change.label)}
+        href={href(changeLinkParam(change.id))}
         className="font-medium text-[var(--color-accent-primary)] hover:underline"
       >
         Review →
