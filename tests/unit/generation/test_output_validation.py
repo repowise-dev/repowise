@@ -208,11 +208,27 @@ def test_supplied_context_accepts_plain_descriptions_of_arguments(sentence: str)
         "The record does not provide source excerpts or declarations.",
         "Examples cannot be named from the available facts.",
         "The supplied record cannot say which behaviour exists today.",
+        "The supplied facts do not show where the cache is cleared.",
+        "The provided material has no examples of a retry.",
     ],
 )
 def test_supplied_context_rejects_prompt_leaks(sentence: str) -> None:
     with pytest.raises(InvalidGeneratedContentError, match="supplied_context"):
         validate_generated_response(_response(f"# Overview\n\n{sentence}\n"))
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The encoder writes the given record to the stream.",
+        "It validates the supplied record type before decoding.",
+        "The given facts table maps each key to its column.",
+        "The provided record is copied before the merge.",
+    ],
+)
+def test_supplied_context_leaves_record_modules_alone(sentence: str) -> None:
+    """A module about records names "the given record" as data, not as the prompt."""
+    validate_generated_response(_response(f"# Overview\n\n{sentence}\n"))
 
 
 def test_artifact_checks_are_counted_so_a_clean_run_is_not_silence() -> None:

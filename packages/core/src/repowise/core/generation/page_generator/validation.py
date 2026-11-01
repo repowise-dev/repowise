@@ -170,8 +170,15 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             # What the page was written from, named as a source that falls
             # short ("the available record names no functions", "the record
             # does not provide excerpts"). "The record does not include" and
-            # "the facts do not match" are left alone: they describe data.
-            r"|\bthe (?:available|provided|supplied|given) (?:record|facts|material)\b"
+            # "the facts do not match" are left alone: they describe data, and
+            # so do "the given record" and "the supplied record type" in a
+            # module about records. The qualified noun therefore matches only
+            # when a shortfall follows it, or as "the available facts".
+            r"|\bthe (?:available|provided|supplied|given) (?:record|facts|material) "
+            r"(?:(?:names?|lists?|shows?|has|have|contains?) no\b|"
+            r"(?:does|do|did|can|could) ?not (?:provide|show|name|say|state|mention|give|"
+            r"supply|reveal|include|list|describe|establish)\b)"
+            r"|\bthe available (?:facts|material)\b"
             r"|\bthe record (?:does|did) not "
             r"(?:provide|show|name|say|state|mention|give|supply|reveal)\b",
             re.IGNORECASE,
