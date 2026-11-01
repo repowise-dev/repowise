@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...ingestion.barrels import BARREL_FILENAMES
 from ...support_paths import is_support_path
 from ..onboarding import SLOT_GETTING_STARTED, SLOT_HOW_IT_WORKS, SLOT_TITLES
 from ..onboarding.docs import DocSection, doc_sections, is_user_doc, rank_sections, readme_intro
@@ -102,7 +103,9 @@ _CODE_BUILT = re.compile(
     r"^`[^`]+`(\s+(defines|imports|·)|\s*$)|\bis imported by\b|\bCovers the \d+|"
     r"belongs to the \w+ layer|\*\*Language:\*\*"
 )
-_PACKAGE_FILES = ("__init__.py", "doc.go", "index.ts", "index.js", "mod.rs", "lib.rs")
+#: Files that stand for their package: the barrels, plus Go's package comment
+#: file and a Rust crate root.
+_PACKAGE_FILES = BARREL_FILENAMES | {"doc.go", "lib.rs"}
 
 
 def _file_doc(text: str, path: str) -> str:
