@@ -700,6 +700,17 @@ def _file_read_worth_it(command: str, cwd: str, repo_root: str) -> bool:
     return has_indexed_symbols(*located)
 
 
+def _family_bail(
+    family: str, command: str, cwd: str, repo_root: str, session_id: str
+) -> str | None:
+    """Why a recognized command of *family* still passes through, or None."""
+    if family == "file_read" and not _file_read_worth_it(command, cwd, repo_root):
+        return BAIL_FILE_READ
+    if family in _REPEAT_RAW_FAMILIES and _is_repeat(repo_root, session_id, cwd, command):
+        return BAIL_REPEAT
+    return None
+
+
 def _same_dir(a: str, b: str) -> bool:
     try:
         return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
@@ -833,10 +844,9 @@ def _decide(
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
-    if family == "file_read" and not _file_read_worth_it(command, cwd, repo_root):
-        return None, BAIL_FILE_READ, repo_root
-    if family in _REPEAT_RAW_FAMILIES and _is_repeat(repo_root, session_id, cwd, command):
-        return None, BAIL_REPEAT, repo_root
+    family_bail = _family_bail(family, command, cwd, repo_root, session_id)
+    if family_bail is not None:
+        return None, family_bail, repo_root
     # Pass through when the rewrite could not run. Ceiling: an install that is
     # only in an off-PATH venv gets no distill; the upgrade path is emitting
     # the absolute script path, quoted per shell dialect and agent. This reads
