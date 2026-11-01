@@ -25,6 +25,7 @@ from repowise.cli.commands.doctor_cmd._types import _check
 PINNED_IDS = {
     "agent-*",
     "agent-hook-scripts",
+    "agent-hooks-firing",
     "agent-integrations",
     "attribution-notes",
     "claude-code-mcp-entry",
