@@ -605,6 +605,11 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                 repo_name=run.repo_name,
                 module_groups=len(run.sel_module_groups),
             )
+        material, unavailable = await _material_or_unavailable(run, capabilities)
+        if unavailable and _has_written_overview(gen, run.repo_name):
+            # Keep the written page rather than let a model describe a
+            # repository with no README and no parts; the next run retries.
+            return coros
         coros.append(
             (
                 compute_page_id("repo_overview", run.repo_name),
@@ -631,15 +636,27 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # What a first-time reader needs: the README, the commands
                     # and walkthroughs, the parts. Only a model writes from it,
                     # so a keyless run does not build it.
-                    material=(
-                        None
-                        if getattr(getattr(gen, "_config", None), "deterministic", False)
-                        else await _overview_material(run, capabilities)
-                    ),
+                    material=material,
+                    # Material that failed to build is not an empty repository:
+                    # the page renders structurally and stays unwritten.
+                    structural_only=unavailable,
                 ),
             )
         )
     return coros
+
+
+async def _material_or_unavailable(run: _GenerationRun, capabilities: list[Any]) -> tuple[Any, bool]:
+    """``(material, failed)``: none on a keyless run, and a failure said as one."""
+    if getattr(getattr(run.gen, "_config", None), "deterministic", False):
+        return None, False
+    material = await _overview_material(run, capabilities)
+    return material, material is None
+
+
+def _has_written_overview(gen: Any, repo_name: str) -> bool:
+    prior = (getattr(gen, "_prior_pages", {}) or {}).get(compute_page_id("repo_overview", repo_name))
+    return prior is not None and getattr(prior, "provider_name", "") != "template"
 
 
 def flow_module_index(module_groups: list[Any]) -> dict[str, tuple[str, str]]:

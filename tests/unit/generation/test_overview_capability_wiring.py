@@ -396,3 +396,34 @@ async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
     run.repo_path = None
     assert await build_level6_coros(run)
     assert run.gen.overview_kwargs["material"].readme == []
+
+
+async def test_material_that_fails_keeps_the_written_front_page(tmp_path, monkeypatch):
+    """A failed material build is not an empty repository: no overview is
+    rewritten this run, so the stored page stands and the next run retries."""
+    from repowise.core.generation.page_generator import front_page
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("docs unreadable")
+
+    monkeypatch.setattr(front_page, "overview_material", _boom)
+    run = _run(tmp_path)
+    run.gen._config = SimpleNamespace(deterministic=False)
+    run.gen._prior_pages = {
+        "repo_overview:ledger": SimpleNamespace(provider_name="openai", metadata={})
+    }
+    assert await build_level6_coros(run) == []
+
+
+async def test_material_that_fails_with_nothing_written_renders_structurally(tmp_path, monkeypatch):
+    from repowise.core.generation.page_generator import front_page
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("docs unreadable")
+
+    monkeypatch.setattr(front_page, "overview_material", _boom)
+    run = _run(tmp_path)
+    run.gen._config = SimpleNamespace(deterministic=False)
+    assert await build_level6_coros(run)
+    assert run.gen.overview_kwargs["structural_only"] is True
+    assert run.gen.overview_kwargs["material"] is None

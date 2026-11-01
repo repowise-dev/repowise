@@ -131,9 +131,6 @@ class TestWhatItIsWrittenFrom:
     def test_no_walkthroughs_means_no_walkthrough_section(self, structure):
         assert "## What happens when it runs`:" not in prompt(structure, material=_material())
 
-    def test_no_readme_says_so(self, structure):
-        assert "The repository has no README." in prompt(structure)
-
 
 class TestWhatItIsToldToWrite:
     def test_the_shape_is_fixed(self, structure):
@@ -235,3 +232,26 @@ async def test_model_overview_repairs_machine_local_file_links(structure, parsed
     assert "C:\\worktrees" not in page.content
     assert "rw-upper" not in page.content
     assert "the core (`packages/core/a.py`)" in page.content
+
+
+class TestNoReadmeIsOnlySaidWhenTrue:
+    def test_a_repository_without_a_readme_says_so(self, structure):
+        material = overview_material(
+            {}, surfaces=Surfaces(), journeys=[], parts=[], edges=[], terms=[]
+        )
+        assert "The repository has no README." in prompt(structure, material=material)
+
+    def test_missing_material_never_claims_an_absence(self, structure):
+        assert "no README" not in prompt(structure, material=None)
+
+    async def test_a_structural_only_overview_makes_no_model_call(self, structure, parsed_files):
+        config = GenerationConfig()
+        provider = MockProvider()
+        gen = PageGenerator(provider, ContextAssembler(config), config)
+        page = await gen.generate_repo_overview(
+            structure, {}, [], {}, repo_name="testrepo", parsed_files=parsed_files,
+            structural_only=True,
+        )
+        assert provider.call_count == 0
+        assert "no README" not in page.content
+        assert page.provider_name == "template"

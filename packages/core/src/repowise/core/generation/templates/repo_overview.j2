@@ -7,7 +7,7 @@ You are writing the front page of the wiki for `{{ ctx.repo_name }}`, the first 
 {% if m and m.readme %}{% for s in m.readme %}
 From `{{ s.cite }}`:
 {{ s.text }}
-{% endfor %}{% else %}The repository has no README.
+{% endfor %}{% elif m %}The repository has no README.
 {% endif %}
 ### Programs this repository installs
 {{ (m.programs | join(", ")) if m and m.programs else "none declared" }}

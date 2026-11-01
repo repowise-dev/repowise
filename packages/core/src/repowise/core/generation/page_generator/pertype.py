@@ -492,7 +492,9 @@ class PerTypeGenerationMixin:
         parsed_files: list[ParsedFile] | None = None,
         capabilities: Sequence[Capability] = (),
         material: Any = None,
+        structural_only: bool = False,
     ) -> GeneratedPage:
+        """Write the front page; *structural_only* renders the keyless page this run."""
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
             pagerank,
@@ -525,7 +527,7 @@ class PerTypeGenerationMixin:
             repo_name = getattr(repo_structure, "name", None) or "repo"
         prior = self._prior_pages.get(compute_page_id("repo_overview", repo_name))
         prior_names = dict(prior.metadata).get(SYSTEM_MAP_NAMES) if prior else None
-        if self._config.deterministic:
+        if self._config.deterministic or structural_only:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
