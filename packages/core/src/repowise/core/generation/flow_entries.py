@@ -134,21 +134,36 @@ def _first_named(symbols: Iterable[tuple[str, str]]) -> dict[str, str]:
     return out
 
 
+def _go_named_command(path: str, lines: list[str], i: int, graph: Any, program: str) -> Entry | None:
+    """simplecobra: ``func (c *x) Name() string { return "lit" }`` on a type with ``Run``."""
+    m = _GO_NAME.match(lines[i])
+    lit = _GO_RETURN.match(lines[i + 1]) if m and i + 1 < len(lines) else None
+    node = f"{path}::{m.group(1)}::Run" if m else ""
+    return Entry(node, CLI, _cli_public(program, lit.group(1))) if lit and node in graph else None
+
+
+def _go_line_entry(
+    path: str, lines: list[str], i: int, ctx: tuple[Mapping[str, str], Any, str]
+) -> Entry | None:
+    names, graph, program = ctx
+    if _GO_NAME.match(lines[i]):
+        return _go_named_command(path, lines, i, graph, program)
+    if m := _GO_USE.search(lines[i]):  # cobra.Command{Use: "x", RunE: fn}
+        run = next((r for r in map(_GO_RUN.search, lines[i : i + 40]) if r), None)
+        if run and run.group(1) in names:
+            return Entry(names[run.group(1)], CLI, _cli_public(program, m.group(1)))
+        return None
+    m = _GO_HANDLE.search(lines[i])
+    return Entry(names[m.group(2)], ROUTE, m.group(1)) if m and m.group(2) in names else None
+
+
 def _go_file_entries(
     path: str, lines: list[str], names: Mapping[str, str], graph: Any, program: str
 ) -> Iterable[Entry]:
-    for i, line in enumerate(lines):
-        if (m := _GO_NAME.match(line)) and i + 1 < len(lines):
-            lit = _GO_RETURN.match(lines[i + 1])
-            node = f"{path}::{m.group(1)}::Run"
-            if lit and node in graph:
-                yield Entry(node, CLI, _cli_public(program, lit.group(1)))
-        elif m := _GO_USE.search(line):
-            run = next((r for r in map(_GO_RUN.search, lines[i : i + 40]) if r), None)
-            if run and run.group(1) in names:
-                yield Entry(names[run.group(1)], CLI, _cli_public(program, m.group(1)))
-        elif (m := _GO_HANDLE.search(line)) and m.group(2) in names:
-            yield Entry(names[m.group(2)], ROUTE, m.group(1))
+    for i in range(len(lines)):
+        entry = _go_line_entry(path, lines, i, (names, graph, program))
+        if entry is not None:
+            yield entry
 
 
 def _python_public_api(
@@ -184,22 +199,32 @@ def _production(path: str) -> bool:
     return bool(path) and not (is_test_path(path) or is_support_path(path))
 
 
+def _decorated_entries(graph: Any, program: str) -> Iterable[Entry]:
+    for node, attrs in graph.nodes(data=True):
+        if attrs.get("node_type") != "symbol" or attrs.get("kind") not in _CALLABLE:
+            continue
+        entry = _decorator_entry(node, attrs, program)
+        if entry and _production(attrs.get("file_path") or ""):
+            yield entry
+
+
+def _go_entries(
+    by_file: Mapping[str, list[tuple[str, str]]], graph: Any, read: LineReader, program: str
+) -> Iterable[Entry]:
+    for path in sorted(p for p in by_file if p.endswith(".go") and _production(p)):
+        yield from _go_file_entries(path, read(path), _first_named(by_file[path]), graph, program)
+
+
 def declared_entries(graph: Any, read: LineReader, program: str = "") -> list[Entry]:
     """Every declared command, tool and route, plus a Python library's public API."""
-    out: dict[str, Entry] = {}
-    for node, attrs in graph.nodes(data=True):
-        if attrs.get("node_type") == "symbol" and attrs.get("kind") in _CALLABLE:
-            entry = _decorator_entry(node, attrs, program)
-            if entry and _production(attrs.get("file_path") or ""):
-                out.setdefault(node, entry)
     by_file = _symbols_by_file(graph)
-    go_files = sorted(p for p in by_file if p.endswith(".go") and _production(p))
-    for path in go_files:
-        names = _first_named(by_file[path])
-        for entry in _go_file_entries(path, read(path), names, graph, program):
-            out.setdefault(entry.node, entry)
     inits = sorted(p for p in _file_paths(graph) if _production(p))
-    for entry in _python_public_api(inits, by_file, read):
+    out: dict[str, Entry] = {}
+    for entry in (
+        *_decorated_entries(graph, program),
+        *_go_entries(by_file, graph, read, program),
+        *_python_public_api(inits, by_file, read),
+    ):
         out.setdefault(entry.node, entry)
     return sorted(out.values(), key=lambda e: e.node)
 
@@ -276,24 +301,32 @@ class DocSection:
     spans: tuple[str, ...]  # code a reader types: inline spans and code-block lines
 
 
+def _is_root_doc(p: Path) -> bool:
+    return p.is_file() and p.suffix.lower() in _DOC_EXTS and p.stem.lower() in ("readme", "contributing")
+
+
+def _is_doc_page(name: str) -> bool:
+    low = name.lower()
+    return low.endswith(_DOC_EXTS) and "changelog" not in low
+
+
+def _walk_docs(root: Path, base: Path) -> Iterable[str]:
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(
+            d for d in dirnames if d.lower() not in _SKIP_DOC_DIRS and not d.startswith(".")
+        )
+        rel = Path(dirpath).relative_to(root).as_posix()
+        yield from (f"{rel}/{f}" for f in sorted(filenames) if _is_doc_page(f))
+
+
 def _doc_files(root: Path) -> list[str]:
     """The root README and CONTRIBUTING plus every page under a top-level docs dir."""
-    out = [
-        p.name
-        for p in sorted(root.iterdir())
-        if p.is_file() and p.suffix.lower() in _DOC_EXTS and p.stem.lower() in ("readme", "contributing")
-    ]
+    out = [p.name for p in sorted(root.iterdir()) if _is_root_doc(p)]
     for top in _DOC_DIRS:
-        base = root / top
-        if not base.is_dir():
-            continue
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = sorted(d for d in dirnames if d.lower() not in _SKIP_DOC_DIRS and not d.startswith("."))
-            rel = Path(dirpath).relative_to(root).as_posix()
-            out += [f"{rel}/{f}" for f in sorted(filenames) if f.lower().endswith(_DOC_EXTS) and "changelog" not in f.lower()]
-            if len(out) >= _MAX_DOC_FILES:
-                return out[:_MAX_DOC_FILES]
-    return out
+        if (root / top).is_dir():
+            out += _walk_docs(root, root / top)
+    # Ceiling: a docs tree past this many pages is sampled in path order.
+    return out[:_MAX_DOC_FILES]
 
 
 def _md_heads(lines: list[str]) -> list[int]:
