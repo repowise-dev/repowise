@@ -24,13 +24,13 @@ Routine responses carry a lean envelope. `get_overview` (called once per session
 |-------|--------------|---------|
 | `hint` | Sometimes | A short follow-up suggestion |
 | `cached` | Only when `true` | The response came from cache |
-| `stale_warning` | Only on a real signal | The index is behind in a way that matters for this response |
+| `stale_warning` | Only on a real signal | One fact: the commit the facts below describe, and what differs from it for this response |
 | `index_scope` | Recorded, and `status` not `complete` | How the index was built: run mode, provenance, git tier, whether it is whole |
 | `degraded` | A part of the server failed for this call | Reasons, e.g. `["embedder"]` or `["retrieval:vector"]` |
 | `embedder_warning` | Embedder fell back, or the semantic index could not open | Why |
 | `semantic_search` | Only when `false` | Retrieval is full-text only (keyless install or degraded embedder) |
 | `newer_release` | Once per server process | A newer repowise is published; restart the server after upgrading |
-| `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade); restart the MCP server |
+| `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade) until it restarts |
 | `keyless_note` | Keyless `get_answer`; `get_overview` until a model writes the prose | The command that adds answers and docs |
 | `omitted` | Content was cut | `refs`, `tokens`, `restore`; see [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | The omission store could not be written | The storage failure; cut rows cannot be restored |
@@ -55,8 +55,8 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 
 Notes:
 
-- **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again.
-- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. With uncommitted edits it names `repowise update --working-tree`.
+- **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD and no file it cites changed, it says so.
+- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. It is a fact, never a command: `Facts below describe <indexed sha>; a file this response serves differs at HEAD <sha>.` (or `differs in the working tree`, or, for a call from another checkout, `differs in <checkout> at <sha>`). `repowise update` (`--working-tree` for uncommitted edits) brings the index up to date.
 - **`index_scope`:** the whole object comes with `get_overview(include=["scope"])`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`.
 - **`keyless_note`:** on every `get_answer` that degrades with `no-llm-provider`, and on `get_overview` while no model has written the prose. One line: set a provider key, run `repowise generate` (one command, no re-index; `repowise update --full` on an Index only repo), then restart the MCP server. With model-written prose, `get_answer` names only the key and the restart.
 - **`complete`:** sliced bodies and partial ranges never count.

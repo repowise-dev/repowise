@@ -475,7 +475,7 @@ def _behind(**extra) -> dict:
     return {"index_behind": True, "indexed_commit": "abc123abc123", **extra}
 
 
-def test_low_confidence_on_a_behind_index_points_at_repowise_update():
+def test_low_confidence_on_a_behind_index_states_the_fact():
     from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
     from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
 
@@ -484,8 +484,8 @@ def test_low_confidence_on_a_behind_index_points_at_repowise_update():
 
     assert hint == f"{existing} {INDEX_BEHIND_LOW_CONFIDENCE_HINT}"
     assert hint.startswith(existing)
-    assert "repowise update" in hint
-    assert INDEX_BEHIND_LOW_CONFIDENCE_HINT.count("repowise update") == 1
+    assert "behind HEAD" in hint
+    assert "repowise update" not in hint
 
 
 def test_the_pointer_is_the_whole_hint_when_there_was_none():
@@ -511,10 +511,10 @@ def test_a_current_index_never_adds_the_pointer():
         assert _hint_with_update_pointer("Low confidence.", "low", freshness) == "Low confidence."
 
 
-def test_a_stale_warning_already_names_the_command_so_the_hint_is_left_alone():
+def test_a_stale_warning_already_states_the_fact_so_the_hint_is_left_alone():
     from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
 
-    freshness = _behind(stale_warning="Index is behind live HEAD, run `repowise update`.")
+    freshness = _behind(stale_warning="Facts below describe abc123abc123; HEAD is def456def456.")
 
     assert _hint_with_update_pointer("Low confidence.", "low", freshness) == "Low confidence."
 

@@ -798,10 +798,10 @@ def _served_paths(payload: dict[str, Any]) -> list[str]:
 def _hint_with_update_pointer(
     hint: Any, confidence: Any, freshness: dict[str, Any]
 ) -> Any:
-    """Add the update pointer to a low-confidence hint served off a behind index."""
+    """Add the behind-index fact to a low-confidence hint."""
     if freshness.get("index_behind") is not True or confidence != "low":
         return hint
-    # A stale_warning already names the command, so don't say it twice.
+    # A stale_warning already states the index commit, so don't say it twice.
     if freshness.get("stale_warning"):
         return hint
     from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT

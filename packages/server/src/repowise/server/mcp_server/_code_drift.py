@@ -32,8 +32,8 @@ MIXED_CODE_ERRORS = (AttributeError, ImportError, NameError)
 
 #: The one wording for a server whose loaded code predates the install.
 SERVER_STALE_LINE = (
-    "This MCP server is running older repowise code than the install on disk. "
-    "Restart the MCP server (or the editor session) and retry."
+    "This MCP server runs older repowise code than the install on disk; "
+    "restarting the server or the editor session loads the new code."
 )
 
 # A poll stats every loaded module (about 1,100 files, ~20 ms on Windows) off

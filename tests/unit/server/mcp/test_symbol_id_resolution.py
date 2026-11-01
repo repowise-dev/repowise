@@ -232,7 +232,7 @@ async def test_bare_name_resolves_only_when_the_scan_saw_every_match(
 # --- live-grep wording -------------------------------------------------------
 
 
-async def test_live_grep_on_a_definition_line_names_the_refresh(setup_mcp, tmp_path) -> None:
+async def test_live_grep_on_a_definition_line_says_it_postdates_the_index(setup_mcp, tmp_path) -> None:
     from repowise.server.mcp_server import get_symbol
 
     (tmp_path / "pkg").mkdir()
@@ -241,7 +241,7 @@ async def test_live_grep_on_a_definition_line_names_the_refresh(setup_mcp, tmp_p
     defined = await get_symbol("pkg/mod.py::fresh")
     assert defined["resolution"] == "live_grep"
     assert "added after the last index" in defined["note"]
-    assert "`repowise update`" in defined["note"]
+    assert "repowise update" not in defined["note"]
     assert "constant, import, or alias" not in defined["note"]
 
     constant = await get_symbol("pkg/mod.py::LIMIT")

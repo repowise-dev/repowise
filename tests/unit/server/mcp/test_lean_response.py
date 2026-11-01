@@ -91,7 +91,7 @@ def test_meta_keeps_the_directive_and_drops_its_diagnostics() -> None:
                 "indexed_commit": "abc",
                 "live_head": "def",
                 "index_behind": True,
-                "stale_warning": "run `repowise update`",
+                "stale_warning": "Facts below describe abc; HEAD is def.",
                 "completeness": {"capped": True},
                 "state": {"truncated": True},
                 "floor": ["dependents_count"],
@@ -103,7 +103,7 @@ def test_meta_keeps_the_directive_and_drops_its_diagnostics() -> None:
 
     assert result == {
         "_meta": {
-            "stale_warning": "run `repowise update`",
+            "stale_warning": "Facts below describe abc; HEAD is def.",
             "omitted": {"refs": ["repowise#1"], "restore": "expand"},
         }
     }

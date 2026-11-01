@@ -453,8 +453,8 @@ def freshness_from_repo(
 
       1. **Git HEAD comparison** (preferred). If the repo is a checkout on
          disk, compare ``repository.head_commit`` to the live HEAD. They
-         match → silence. They differ → ``stale_warning`` plus the live SHA
-         so the agent can decide whether to call ``repowise update``.
+         match → silence. They differ → ``stale_warning``, a fact naming both
+         SHAs (never a command), so the agent decides what to re-read.
       2. **Age fallback** (only when git is unreachable). Warn only past 90
          days; under that, just emit ``index_age_days`` for the agent to
          consult on its own terms.
@@ -547,23 +547,22 @@ def freshness_from_repo(
                 pass
             elif targets is not None and changed is not None:
                 if targets_hit_by_changes(targets, changed):
-                    out["stale_warning"] = (
-                        "A file this response serves changed after indexing — "
-                        "verify against source or run `repowise update`."
+                    out["stale_warning"] = _checkout.stale_fact(
+                        indexed_full[:12],
+                        f"a file this response serves differs at HEAD {live_full[:12]}",
                     )
             else:
-                # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
-                # don't repeat them in prose. Just the directive.
-                out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
+                # The SHA repeats ``indexed_commit`` on purpose: lean replies
+                # drop that key and keep only this line.
+                out["stale_warning"] = _checkout.stale_fact(indexed_full[:12], "HEAD has moved")
         else:
             # Match. No prose, since silence is the signal, but the comparison
             # did run and its answer is "not behind", so say so explicitly.
             out["index_behind"] = False
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
-        out["stale_warning"] = (
-            f"Index is {age_days} days old and live HEAD is unreachable — "
-            "results may be stale. Run `repowise update`."
+        out["stale_warning"] = _checkout.stale_fact(
+            f"an index {age_days} days old", "HEAD is unreadable"
         )
 
     # Freshness above is commit-anchored, so an uncommitted edit to a served
@@ -575,14 +574,16 @@ def freshness_from_repo(
             out["working_tree_dirty"] = len(modified)
             out.setdefault(
                 "stale_warning",
-                "A file this response serves has uncommitted edits: source reads are live, "
-                "but graph and index facts for it predate the edit. "
-                "Run `repowise update --working-tree`.",
+                _checkout.stale_fact(
+                    out.get("indexed_commit", "the last index"),
+                    "a file this response serves differs in the working tree "
+                    "(source reads are live)",
+                ),
             )
         elif live_full and live_full == indexed_full and reverted_targets(local_path, targets):
-            out["stale_warning"] = (
-                "A file this response serves was indexed from uncommitted edits that are "
-                "no longer in the working tree. Run `repowise update --working-tree`."
+            out["stale_warning"] = _checkout.stale_fact(
+                "uncommitted edits to a file this response serves",
+                "the working tree no longer has them",
             )
 
     return out
@@ -1076,10 +1077,9 @@ EXHAUSTIVE_SWEEP_HINT = (
 )
 
 # Appended to a get_answer hint when the answer graded low and the index is
-# behind live HEAD; the one place holding both signals says what to do.
+# behind live HEAD while no file it cites changed (else stale_warning says so).
 INDEX_BEHIND_LOW_CONFIDENCE_HINT = (
-    "The index is behind HEAD, so run `repowise update` and ask again before "
-    "trusting a low-confidence answer."
+    "The index is behind HEAD; no file this answer cites changed since."
 )
 
 

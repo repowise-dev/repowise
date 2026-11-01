@@ -199,8 +199,7 @@ def _grep_matches(
             return members, _member_note(file_part, name, members)
     matches = _live_grep_fallback(repo_root, file_part, name)
     likely = (
-        "defined here, so likely added after the last index; "
-        "run `repowise update` to index it"
+        "defined here, so likely added after the last index"
         if any(m.get("defines") for m in matches)
         else "likely a constant, import, or alias"
     )
