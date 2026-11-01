@@ -9,7 +9,8 @@ object. Behaviour mirrors the original inline ``generate_all`` exactly.
 from __future__ import annotations
 
 import contextlib
-from pathlib import Path
+from collections import Counter
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -23,7 +24,13 @@ from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
 from ..page_tree import is_module_head, nearest_head
-from .helpers import _is_infra_file, decisions_for_files, indexed_parsed_files, rank_decisions
+from .helpers import (
+    _extract_summary,
+    _is_infra_file,
+    decisions_for_files,
+    indexed_parsed_files,
+    rank_decisions,
+)
 
 if TYPE_CHECKING:
     from ..concept_tree.vocabulary import HouseTerm
@@ -233,24 +240,80 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     return coros
 
 
-def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
-    """The pages a rollup links down to: those it is the nearest head of.
-
-    The same rule ``assign_page_tree`` nests by, so the links match the tree:
-    a nested overview links to the next level down (a sub-overview or a leaf),
-    not to every descendant leaf, and a leaf several directories below a
-    package chapter with no chapter in between is still linked. The rollup
-    itself is excluded. Titles are read after naming, so they match what the
-    tree shows.
-    """
-    heads = {
+def _heads(groups: list[Any]) -> set[str]:
+    """The groups other module pages nest under, by the rule the page tree uses."""
+    return {
         g.key
         for g in groups
         if is_module_head(g.key, getattr(g, "file_paths", ()), bool(getattr(g, "is_rollup", False)))
     }
-    children = [g for g in groups if g.key != rollup.key and nearest_head(g.key, heads) == rollup.key]
-    children.sort(key=lambda g: g.key)
-    return [{"title": g.display, "path": g.key} for g in children]
+
+
+def _children_of(key: str, groups: list[Any], heads: set[str]) -> list[Any]:
+    """The pages nested directly under *key*: those it is the nearest head of.
+
+    The same rule ``assign_page_tree`` nests by, so the parts a page describes
+    match the tree: the next level down (a sub-overview or a leaf), not every
+    descendant, and a leaf several directories below a package chapter with no
+    chapter in between still counts. The page itself is excluded.
+    """
+    return [g for g in groups if g.key != key and nearest_head(g.key, heads) == key]
+
+
+#: A map page with fewer parts than this looks through its biggest part to the
+#: parts below it, so a thin layer (``src/``, a single package directory) does
+#: not leave the page mapping one box.
+_MIN_PARTS = 4
+#: How much of a part page's opening a map page reads, and how many of the
+#: names other code imports from the part.
+_PART_SUMMARY_CHARS = 450
+_PART_NAMES = 3
+
+
+def _part_pages(rollup: Any, groups: list[Any], heads: set[str]) -> list[Any]:
+    """The groups a map page describes: its child pages, looking through thin layers."""
+    parts = _children_of(rollup.key, groups, heads)
+    while 0 < len(parts) < _MIN_PARTS:
+        deeper = [(len(_children_of(g.key, groups, heads)), g.key, g) for g in parts]
+        size, _, biggest = max(deeper, key=lambda t: (t[0], t[1]))
+        if not size:
+            break
+        parts = [g for g in parts if g is not biggest] + _children_of(biggest.key, groups, heads)
+    return sorted(parts, key=lambda g: g.key)
+
+
+def _part_summary(run: _GenerationRun, key: str) -> str:
+    """How a part's page opens: this run's page, else the stored one, else nothing."""
+    content = run.module_page_content.get(key)
+    if content is None:
+        prior = run.gen._prior_pages.get(compute_page_id("module_page", key))
+        content = prior.content if prior is not None else ""
+    return _extract_summary(content, max_chars=_PART_SUMMARY_CHARS)
+
+
+def _imported_names(graph: Any, files: list[str]) -> list[str]:
+    """The names code outside *files* imports from them most often."""
+    members = set(files)
+    counts: Counter[str] = Counter()
+    for target in members:
+        if target not in graph:
+            continue
+        for source, _, data in graph.in_edges(target, data=True):
+            if data.get("edge_type") == "imports" and source not in members:
+                counts.update(data.get("imported_names") or ())
+    return [n for n, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_PART_NAMES]]
+
+
+def _part_rows(run: _GenerationRun, rollup: Any, heads: set[str]) -> list[dict]:
+    """What a map page knows of each part: title, path, size, opening and key names."""
+    rows = []
+    for g in _part_pages(rollup, run.sel_module_groups, heads):
+        files = list(getattr(g, "context_paths", ()) or g.file_paths)
+        row = {"title": g.display, "path": g.key, "files": len(files)}
+        summary = _part_summary(run, g.key)
+        names = _imported_names(run.graph, files)
+        rows.append({**row, **({"summary": summary} if summary else {}), **({"names": names} if names else {})})
+    return rows
 
 
 def _is_empty_module(file_contexts: list[Any], has_parts: bool) -> bool:
@@ -262,6 +325,22 @@ def _is_empty_module(file_contexts: list[Any], has_parts: bool) -> bool:
     return not has_parts and all(not fc.symbols and not fc.dependencies for fc in file_contexts)
 
 
+def module_waves(groups: list[Any]) -> list[list[Any]]:
+    """Module groups in the order their pages are written: leaves, then maps deepest first.
+
+    A map page reads how its parts' pages open, so every part is written in an
+    earlier wave than the map above it.
+    """
+    heads = _heads(groups)
+    parents = {nearest_head(g.key, heads) for g in groups}
+    leaves = [g for g in groups if g.key not in parents]
+    by_depth: dict[int, list[Any]] = {}
+    for g in groups:
+        if g.key in parents:
+            by_depth.setdefault(len(PurePosixPath(g.key).parts), []).append(g)
+    return [w for w in [leaves, *(by_depth[d] for d in sorted(by_depth, reverse=True))] if w]
+
+
 def _execution_flows(graph_builder: Any) -> list[Any]:
     """The run's traced execution flows, for module pages that host one."""
     try:
@@ -271,14 +350,15 @@ def _execution_flows(graph_builder: Any) -> list[Any]:
         return []
 
 
-def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
-    """Level 4 (module_page), allow-set filtered."""
+def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> list[tuple[str, Any]]:
+    """Level 4 (module_page) for *groups* (default: every selected group), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
     package_roots = package_roots_from_paths(set(parsed_by_path))
     flows = _execution_flows(run.graph_builder)
-    for mg in run.sel_module_groups:
+    heads = _heads(run.sel_module_groups)
+    for mg in run.sel_module_groups if groups is None else groups:
         # Read from the wider set: a chapter's prose is about its whole
         # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
         # documents what. They are the same list for every leaf.
@@ -298,7 +378,9 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         page_id = compute_page_id("module_page", mg.key)
         if not run._emit(page_id):
             continue
-        if _is_empty_module(fcs, bool(getattr(mg, "is_rollup", False))):
+        is_rollup = bool(getattr(mg, "is_rollup", False))
+        parts = _part_rows(run, mg, heads)
+        if _is_empty_module(fcs, is_rollup or bool(parts)):
             log.info("module_page.skipped_empty", target_path=mg.key, members=len(material))
             continue
         coros.append(
@@ -330,12 +412,8 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     section=mg.section,
                     order=mg.order,
                     scope=getattr(mg, "scope", ""),
-                    is_rollup=getattr(mg, "is_rollup", False),
-                    child_pages=(
-                        _rollup_child_pages(mg, run.sel_module_groups)
-                        if getattr(mg, "is_rollup", False)
-                        else None
-                    ),
+                    is_rollup=is_rollup,
+                    child_pages=parts or None,
                     # Ownership is what ``file_paths`` says, not what the page's
                     # shape implies: a chapter that is also a leaf directory
                     # heads its children *and* documents its own loose files.

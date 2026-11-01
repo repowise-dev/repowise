@@ -206,6 +206,8 @@ class _GenerationRun:
         self.timings = timings
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
+        # Module pages written this run, by target, for the map pages above them.
+        self.module_page_content: dict[str, str] = {}
         self.completed_ids: set[str] = set()
         self.job_id: str | None = None
         self.file_page_contexts: dict[str, FilePageContext] = {}
@@ -865,8 +867,14 @@ class _GenerationRun:
         # Level 3 (scc_page).
         all_pages.extend(await self.run_level(_levels.build_level3_coros(self), 3))
 
-        # Level 4 (module_page).
-        all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
+        # Level 4 (module_page), in waves: a map page reads how the pages of
+        # its parts open, so the parts are written first.
+        for wave in _levels.module_waves(list(self.sel_module_groups)):
+            pages = await self.run_level(_levels.build_level4_coros(self, wave), 4)
+            self.module_page_content.update(
+                {p.target_path: p.content for p in pages if STUB_FALLBACK_ERROR not in p.metadata}
+            )
+            all_pages.extend(pages)
 
         # Level 4 is the last reader of the per-file contexts, and there is one
         # per code file. Dropping them here rather than at the end of the run

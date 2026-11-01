@@ -54,9 +54,14 @@ from ..overview_tables import (
 from ..page_sources import lint_sources, module_page_sources
 from ..prose import unwrap_markdown_links
 from ..structural_labels import structural_page_title
+from ..styles.registry import DEFAULT_STYLE
 from .reuse import files_digest, group_material, model_reuse_key
 
 log = structlog.get_logger(__name__)
+
+#: A ``Sources:`` line written straight under its paragraph renders as part of
+#: it; a blank line keeps it on its own.
+_SOURCES_GLUED = re.compile(r"(?<=\S)[ \t]*\n(?=Sources: )")
 
 
 def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
@@ -262,6 +267,8 @@ class PerTypeGenerationMixin:
             parsed_files=parsed_files,
             source_map=source_map,
             execution_flows=execution_flows,
+            target_path=target_path,
+            full_material=self._style.name == DEFAULT_STYLE,
         )
         module_git_summary = None
         if git_meta_map:
@@ -383,7 +390,7 @@ class PerTypeGenerationMixin:
 
             page = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(page))
-        user_prompt = self._render("module_page.j2", ctx=ctx)
+        user_prompt = self._render("module_page.j2", ctx=ctx, word_budget=ctx.words)
         # The page's subject is its group: the membership ``structural_key``
         # hashes, plus each member file's bytes, so an unchanged group reuses
         # its prose across RAG drift while an edited member regenerates it
@@ -432,6 +439,7 @@ class PerTypeGenerationMixin:
         )
         if cited:
             page.metadata["sources"] = cited
+        page.content = _SOURCES_GLUED.sub("\n\n", page.content)
         page.content = embed_section(
             page.content, CONNECTIONS_HEADING, connections_markdown(ctx.facts or {})
         )

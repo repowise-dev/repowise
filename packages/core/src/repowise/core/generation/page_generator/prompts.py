@@ -67,9 +67,11 @@ _SHARED_VOICE = (
 SYSTEM_PROMPTS: dict[str, str] = {
     "module_page": _SHARED_VOICE
     + (
-        "Clarity beats completeness: explain how the parts work together and why, "
-        "in short plain sentences, and leave lists of names to the reference "
-        "material kept beside the page. "
+        "This page explains one area of the code. When its parts have pages of their "
+        "own it is the map: what each part owns, when to open it, and how a run "
+        "crosses them. Otherwise it explains the mechanism, in the order the work "
+        "happens. Names alone are reference material kept beside the page: name a "
+        "function or type when the reader needs it to follow the work. "
         "\n"
         # The page shape, including the questions section, is stated once, in
         # module_page.j2: stating a heading in both places makes the model emit it

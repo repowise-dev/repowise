@@ -116,8 +116,17 @@ class ModulePageContext:
     # A rollup page summarises a subsystem directory whose detail lives on the
     # child concept pages below it, rather than owning files of its own.
     is_rollup: bool = False
-    # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
+    # Pages for the parts below this one: [{"title", "path", "files", "summary",
+    # "names"}]; a thin layer with a single part is looked through.
     child_pages: list[dict] = field(default_factory=list)
+    # READMEs beside the module's code, nearest first: [{"path", "text"}].
+    readmes: list[dict] = field(default_factory=list)
+    # Test files that import the module: [{"file", "tests"}].
+    tests: list[dict] = field(default_factory=list)
+    # Commits in 90 days and where changes and bug fixes cluster.
+    git_activity: dict = field(default_factory=dict)
+    # The prose length the page is asked for, scaled by the module's size.
+    words: tuple[int, int] = (500, 800)
     # Sibling packages a package roll-up covers: [{"path", "files"}].
     packages: list[dict] = field(default_factory=list)
     # What the page's packages publish, computed from manifests and re-exports:

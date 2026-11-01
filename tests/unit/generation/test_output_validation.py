@@ -181,6 +181,9 @@ def test_accepts_prose_that_merely_mentions_provided_files() -> None:
         "The table shown above lists the defaults.",
         "The formatter indents the provided snippet.",
         "`parse_doc` splits the supplied documentation string into sections.",
+        "When the record does not include a timestamp, `load` fills one in.",
+        "`merge` raises when the facts do not match the schema.",
+        "The material does not show up in the rendered output until it is flushed.",
     ],
 )
 def test_supplied_context_accepts_plain_descriptions_of_arguments(sentence: str) -> None:
@@ -200,6 +203,11 @@ def test_supplied_context_accepts_plain_descriptions_of_arguments(sentence: str)
         "The retry policy is not shown in the given context.",
         "The configuration provided above sets the port.",
         "The module includes the files you were shown.",
+        # Talk about what the page was written from, published on module pages.
+        "The available record names no functions or types.",
+        "The record does not provide source excerpts or declarations.",
+        "Examples cannot be named from the available facts.",
+        "The supplied record cannot say which behaviour exists today.",
     ],
 )
 def test_supplied_context_rejects_prompt_leaks(sentence: str) -> None:

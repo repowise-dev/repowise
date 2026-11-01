@@ -163,3 +163,46 @@ def readme_opening(repo_root: Path) -> str:
         if paragraph:
             return paragraph
     return ""
+
+
+#: A module page reads the README beside its code. Smaller than the front
+#: page's cap: it sits beside code excerpts that carry the mechanism.
+_MODULE_README_NAMES = ("README.md", "README.rst", "readme.md")
+_MODULE_README_CHARS = 2000
+_MODULE_README_TOTAL = 6000
+
+
+def module_readmes(repo_root: Path | str | None, directories: list[str | None]) -> list[dict]:
+    """READMEs in *directories*, shallowest first, each cut to its head. Never raises.
+
+    ``[{"path", "text"}]``; badges, images and link targets are dropped so the
+    cap is spent on the maintainers' sentences. The repository root's README is
+    the front page's, so an empty directory is skipped.
+    """
+    if repo_root is None:
+        return []
+    out: list[dict] = []
+    budget = _MODULE_README_TOTAL
+    for directory in sorted({d for d in directories if d}, key=lambda d: (d.count("/"), d)):
+        text, rel = _first_readme(Path(repo_root), directory)
+        if not text:
+            continue
+        kept = [_LINK.sub(_LINK_TEXT, _IMAGE.sub("", ln)) for ln in text.splitlines()]
+        clean = re.sub(r"\n{3,}", "\n\n", "\n".join(ln for ln in kept if not _DECORATION.match(ln)))
+        clean = clean.strip()[: min(_MODULE_README_CHARS, budget)]
+        if clean:
+            out.append({"path": rel, "text": clean})
+            budget -= len(clean)
+        if budget <= 0:
+            break
+    return out
+
+
+def _first_readme(repo_root: Path, directory: str) -> tuple[str, str]:
+    for name in _MODULE_README_NAMES:
+        rel = f"{directory}/{name}"
+        try:
+            return (repo_root / rel).read_text(encoding="utf-8", errors="replace"), rel
+        except OSError:
+            continue
+    return "", ""

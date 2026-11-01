@@ -21,7 +21,7 @@ from repowise.core.analysis.public_api import (
 )
 from repowise.core.generation.context_assembler import ContextAssembler, FilePageContext
 from repowise.core.generation.page_generator import PageGenerator
-from repowise.core.generation.page_generator.levels import _rollup_child_pages
+from repowise.core.generation.page_generator.levels import _children_of, _heads
 from repowise.core.generation.selection.selector import _build_module_groups
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.package_roots import package_roots_from_paths
@@ -200,12 +200,13 @@ def test_rollup_links_to_leaves_below_it_with_no_chapter_between():
     g = lambda key, rollup=False: SimpleNamespace(key=key, display=key, is_rollup=rollup)  # noqa: E731
     pkg, sub = g("pkgs/a", True), g("pkgs/a/src/x/deep", True)
     groups = [pkg, g("pkgs/a/src/io"), g("pkgs/a/src/model"), sub, g("pkgs/a/src/x/deep/y")]
-    assert [c["path"] for c in _rollup_child_pages(pkg, groups)] == [
+    heads = _heads(groups)
+    assert [c.key for c in _children_of(pkg.key, groups, heads)] == [
         "pkgs/a/src/io",
         "pkgs/a/src/model",
         "pkgs/a/src/x/deep",
     ]
-    assert [c["path"] for c in _rollup_child_pages(sub, groups)] == ["pkgs/a/src/x/deep/y"]
+    assert [c.key for c in _children_of(sub.key, groups, heads)] == ["pkgs/a/src/x/deep/y"]
 
 
 def test_python_dunder_all_decides_what_is_published(tmp_path):
