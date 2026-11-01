@@ -198,15 +198,31 @@ _VALUE_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# file.py:123 / file.py:123-145 / (line 27) / lines 26-27 / L40-L52: line refs
-# the LLM adds for citations are not value assertions and must not feed the
-# grounding check. The prompt prints each body's line range, so answers cite them.
-_FILE_LINE_REF_RE = re.compile(
-    r"[\w./-]+:\d+(?:-\d+)?"
-    r"|\blines?\s+\d+(?:\s*(?:-|–|to|and|through)\s*\d+)?"
-    r"|\bL\d+(?:\s*-\s*L?\d+)?\b",
-    re.IGNORECASE,
+# file.py:123 / file.py:123-145 — line refs the LLM adds for citations are
+# not value assertions and must not feed the grounding check.
+_FILE_LINE_REF_RE = re.compile(r"[\w./-]+:\d+(?:-\d+)?")
+
+# "(line 27)", "`a.go`, lines 26-27", "at line 40": the prompt prints each body's
+# line range, so answers cite it in prose. Only a citation context counts, so
+# "max lines 500" or "set to line 30" still assert their number.
+_PROSE_LINE_REF_RE = re.compile(
+    r"\b(?:lines?|L)\s*\d+(?:\s*(?:-|–|to|through)\s*L?\d+)?\b", re.IGNORECASE
 )
+_LINE_REF_LEAD_RE = re.compile(
+    r"(?:[(,]|\b(?:at|on|in|see|from|of|source)|\.\w{1,5}`?|^)\s*$", re.IGNORECASE
+)
+
+
+def _strip_line_refs(text: str) -> str:
+    """*text* with citation line refs blanked, file:line and prose forms alike."""
+    text = _FILE_LINE_REF_RE.sub(" ", text)
+
+    def blank_citation(m: re.Match) -> str:
+        lead = text[max(0, m.start() - 40) : m.start()]
+        return " " if _LINE_REF_LEAD_RE.search(lead) else m[0]
+
+    return _PROSE_LINE_REF_RE.sub(blank_citation, text)
+
 
 # Standalone numbers (int or decimal). Lookarounds keep version-ish and
 # identifier-embedded digits (v2, utf-8, sha256, 2.5.1) out while still
@@ -229,7 +245,7 @@ def _asserted_numbers(answer_text: str) -> set[str]:
     Shared by :func:`_ungrounded_numbers` and the value-grounding gate so the
     two never disagree about what counts as an asserted value.
     """
-    return _numbers_in(_FILE_LINE_REF_RE.sub(" ", answer_text or ""))
+    return _numbers_in(_strip_line_refs(answer_text or ""))
 
 
 def _is_value_question(question: str) -> bool:

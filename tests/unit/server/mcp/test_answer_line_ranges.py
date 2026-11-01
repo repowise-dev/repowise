@@ -65,6 +65,18 @@ def test_values_next_to_citations_are_still_asserted() -> None:
     assert _asserted_numbers(text) == {"20", "120"}
 
 
+@pytest.mark.parametrize(
+    ("text", "values"),
+    [
+        ("It reads max lines 500.", {"500"}),
+        ("The cursor is set to line 30.", {"30"}),
+        ("It waits between lines 10 and 30 seconds.", {"10", "30"}),
+    ],
+)
+def test_a_number_after_line_outside_a_citation_is_asserted(text: str, values: set) -> None:
+    assert _asserted_numbers(text) == values
+
+
 def test_a_cited_value_answer_is_grounded_by_the_body() -> None:
     src = "def redirect(url):\n    limit = 20\n    return url"
     answer = "`limit` is 20, set in `client.py` (line 41)."
