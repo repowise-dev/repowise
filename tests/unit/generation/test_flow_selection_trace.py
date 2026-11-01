@@ -215,3 +215,12 @@ def test_an_indented_method_cites_from_its_decorators():
 
     lines = ["class Tools:", "", "    @mcp.tool()", "    @traced", "    def get_x(self):", "        pass"]
     assert decorator_start(lines, 5) == 3
+
+
+def test_a_command_is_named_after_the_script_that_reaches_it():
+    g = nx.DiGraph()
+    _add(g, "src/acme/cli/cmds.py::init_command", 10, 40, decorators=['@cli.command("init")'])
+    _wide(g, "src/acme/cli/cmds.py::init_command", "engine")
+    scripts = {"acme-admin": "acme/admin", "acme-cli": "acme/cli"}
+    (plan,) = select_flow_plans(g, program="acme-admin", scripts=scripts)
+    assert plan.public == "acme-cli init"

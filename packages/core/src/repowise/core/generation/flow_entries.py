@@ -209,12 +209,27 @@ def _production(path: str) -> bool:
     return bool(path) and not (is_test_path(path) or is_support_path(path))
 
 
-def _decorated_entries(graph: Any, program: str) -> Iterable[Entry]:
+def script_for(path: str, scripts: Mapping[str, str], default: str) -> str:
+    """The console script whose entry module's package holds *path*, deepest first.
+
+    Scripts sharing that package (a main CLI and its hook launchers) resolve to
+    *default*, the project-named script, else to the shortest name.
+    """
+    hits = [
+        (-pkg.count("/"), name != default, len(name), name)
+        for name, pkg in scripts.items()
+        if f"/{pkg}/" in f"/{path}"
+    ]
+    return min(hits)[3] if hits else default
+
+
+def _decorated_entries(graph: Any, program: str, scripts: Mapping[str, str]) -> Iterable[Entry]:
     for node, attrs in graph.nodes(data=True):
         if attrs.get("node_type") != "symbol" or attrs.get("kind") not in _CALLABLE:
             continue
-        entry = _decorator_entry(node, attrs, program)
-        if entry and _production(attrs.get("file_path") or ""):
+        path = attrs.get("file_path") or ""
+        entry = _decorator_entry(node, attrs, script_for(path, scripts, program))
+        if entry and _production(path):
             yield entry
 
 
@@ -225,13 +240,19 @@ def _go_entries(
         yield from _go_file_entries(path, read(path), _first_named(by_file[path]), graph, program)
 
 
-def declared_entries(graph: Any, read: LineReader, program: str = "") -> list[Entry]:
-    """Every declared command, tool and route, plus a Python library's public API."""
+def declared_entries(
+    graph: Any, read: LineReader, program: str = "", scripts: Mapping[str, str] | None = None
+) -> list[Entry]:
+    """Every declared command, tool and route, plus a Python library's public API.
+
+    *scripts* maps each console script to its entry module's package path, so a
+    command is named after the script that reaches it; *program* is the fallback.
+    """
     by_file = _symbols_by_file(graph)
     inits = sorted(p for p in _file_paths(graph) if _production(p))
     out: dict[str, Entry] = {}
     for entry in (
-        *_decorated_entries(graph, program),
+        *_decorated_entries(graph, program, scripts or {}),
         *_go_entries(by_file, graph, read, program),
         *_python_public_api(inits, by_file, read),
     ):
@@ -250,13 +271,30 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _python_script(root: Path) -> str:
+def _pyproject(root: Path) -> dict[str, Any]:
     try:
-        data = tomllib.loads(_read_text(root / "pyproject.toml"))
+        return tomllib.loads(_read_text(root / "pyproject.toml")).get("project") or {}
     except tomllib.TOMLDecodeError:
-        return ""
-    scripts = data.get("project", {}).get("scripts") or {}
-    return sorted(scripts)[0] if scripts else ""
+        return {}
+
+
+def python_scripts(repo_root: Path | str | None) -> dict[str, str]:
+    """``console script -> package path`` of its entry module (``a.cli.main:run`` -> ``a/cli``)."""
+    if not repo_root:
+        return {}
+    scripts = _pyproject(Path(repo_root)).get("scripts") or {}
+    out = {}
+    for name, target in scripts.items():
+        module = str(target).split(":", 1)[0].strip().split(".")
+        out[name] = "/".join(module[:-1] or module)
+    return out
+
+
+def _python_script(root: Path) -> str:
+    """The script named after the project, else the first by name."""
+    scripts = sorted(_pyproject(root).get("scripts") or {})
+    project = str(_pyproject(root).get("name") or "")
+    return project if project in scripts else (scripts[0] if scripts else "")
 
 
 def _npm_bin(root: Path) -> str:

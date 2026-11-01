@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
@@ -66,6 +66,7 @@ from .flow_entries import (
     is_ui_path,
     line_reader,
     program_name,
+    python_scripts,
 )
 from .flow_trace import FlowStep, trace
 from .models import compute_page_id
@@ -427,6 +428,7 @@ def select_flow_plans(
     code_file_count: int | None = None,
     read: LineReader | None = None,
     program: str = "",
+    scripts: Mapping[str, str] | None = None,
     docs: Collection[DocSection] = (),
 ) -> list[FlowPlan]:
     """The operations this repository's flow pages walk, best first.
@@ -443,7 +445,7 @@ def select_flow_plans(
     index = _CallIndex(graph, out_deg, in_deg, roots)
     if code_file_count is None:
         code_file_count = _code_file_count(graph)
-    entries = declared_entries(graph, read or _no_lines, program)
+    entries = declared_entries(graph, read or _no_lines, program, scripts)
     cands = _candidates(index, roots, entries, docs, program)
     picked = _pick_diverse(cands, roots, flow_page_limit(code_file_count))
     traced = [trace_steps(index, c.entry.node, read) for c in picked]
@@ -486,6 +488,7 @@ def plans_for_index(graph_builder: Any, parsed_files: list[Any]) -> list[FlowPla
         package_roots=package_roots_from_paths(paths),
         read=line_reader(repo_root, getattr(graph_builder, "_source_map", None)),
         program=program_name(repo_root, graph),
+        scripts=python_scripts(repo_root),
         docs=doc_sections(repo_root),
     )
 
