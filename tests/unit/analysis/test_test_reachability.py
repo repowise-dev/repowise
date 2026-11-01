@@ -21,6 +21,7 @@ from repowise.core.analysis.test_reachability import (
     files_reached_by_tests,
     files_with_paired_tests,
     rank_reaching,
+    tests_matching_by_name,
 )
 
 
@@ -200,6 +201,30 @@ def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
     paired = files_with_paired_tests(g, paths, {"tests/distill/test_engine.py"})
     assert "src/distill/engine.py" in paired
     assert "src/health/engine.py" not in paired
+
+
+def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
+    files = {
+        "src/utils/jwt/index.ts",
+        "src/middleware/jwt/index.ts",
+        "src/middleware/jwt/index.test.ts",
+    }
+    found = tests_matching_by_name(
+        ["src/utils/jwt/index.ts", "src/middleware/jwt/index.ts"],
+        {"src/middleware/jwt/index.test.ts"},
+        files,
+    )
+
+    assert "src/utils/jwt/index.ts" not in found
+    assert found["src/middleware/jwt/index.ts"].tests == ["src/middleware/jwt/index.test.ts"]
+
+
+def test_a_test_without_a_sibling_source_still_matches_across_directories() -> None:
+    found = tests_matching_by_name(
+        ["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"}
+    )
+
+    assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
 
 
 def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> None:

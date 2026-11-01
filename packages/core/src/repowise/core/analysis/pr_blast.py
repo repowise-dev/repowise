@@ -135,6 +135,7 @@ async def _code_file_tests(
 ) -> dict[str, FileTests]:
     """:func:`file_tests` for code files that are not tests themselves."""
     from repowise.core.analysis.test_reachability import (
+        cached_file_paths,
         read_under,
         tests_matching_by_name,
         tests_reaching,
@@ -150,7 +151,11 @@ async def _code_file_tests(
     except Exception:
         reached = {}
     subjects = {p: _subject_names(p) for p in candidates}
-    named = tests_matching_by_name(sorted({n for ns in subjects.values() for n in ns}), test_files)
+    named = tests_matching_by_name(
+        sorted({n for ns in subjects.values() for n in ns}),
+        test_files,
+        await cached_file_paths(session, repo_id),
+    )
     rows: dict[str, FileTests] = {}
     for p in candidates:
         by_name = tuple(dict.fromkeys(t for n in subjects[p] if n in named for t in named[n].tests))

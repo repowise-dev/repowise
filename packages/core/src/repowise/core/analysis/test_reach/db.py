@@ -148,6 +148,19 @@ async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[st
     return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
 
 
+async def cached_file_paths(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """Every indexed file path, read once per index state."""
+    key = await _cache.key(session, repo_id, "file_paths")
+    if key in _cache:
+        return _cache.get(key)
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
+        )
+    )
+    return _cache.remember(key, frozenset(row[0] for row in res.all()))
+
+
 async def cached_hub_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
     """:func:`~.hubs.call_hub_files` by the stored call edges, read once per index state."""
     key = await _cache.key(session, repo_id, "hubs")
