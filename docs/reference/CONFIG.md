@@ -882,8 +882,9 @@ repowise init --provider ollama --model llama3.2
   16384, never above its trained context length. Page material (code
   excerpts, source evidence) shrinks to fit it, least important first, so a
   4B model on a laptop writes a page in seconds instead of minutes.
-- `context_window` in `config.yaml` or `REPOWISE_OLLAMA_NUM_CTX` (which also
-  pins `num_ctx`) gives a bigger model more material.
+- `REPOWISE_OLLAMA_NUM_CTX` pins `num_ctx` and sizes material to it, which
+  gives a bigger model more to read; `context_window` in `config.yaml` sizes
+  material only, and `num_ctx` grows to hold the prompt.
 - `reasoning: auto` turns thinking off for page generation; `low`, `medium` or
   `high` turn it on, and the window grows to hold the longer answer.
 - Requests go one at a time; with server `OLLAMA_NUM_PARALLEL` above 1, set the
@@ -940,7 +941,8 @@ model and base URL the same way; first match wins:
 - A local OpenAI-compatible server such as LM Studio: `provider: openai` with
   `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
   Page material is sized for a 16384-token window, since the server does not
-  report its own; set `context_window` to the server's context length. A
+  report its own; start the server with at least that context, or set
+  `context_window` to the context length it runs with. A
   local backend behind LiteLLM is sized the same way.
 - Since `config.yaml` may be committed, a non-local base URL there gets a key
   not in `.repowise/.env` only after you confirm in Settings or `repowise init`.

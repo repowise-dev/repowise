@@ -390,7 +390,8 @@ class GenerationConfig:
         if self.context_window:
             return self
         window = provider.context_window() if hasattr(provider, "context_window") else None
-        return replace(self, context_window=window) if window else self
+        valid = isinstance(window, int) and not isinstance(window, bool) and window > 0
+        return replace(self, context_window=window) if valid else self
 
     def to_dict(self) -> dict[str, Any]:
         """Return the supported plain, rehydratable configuration snapshot."""

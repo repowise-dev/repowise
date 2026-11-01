@@ -325,3 +325,11 @@ async def test_error_mid_stream_is_a_provider_error(monkeypatch):
     _serve(monkeypatch, lambda request, n: httpx.Response(200, text=body))
     with pytest.raises(ProviderError, match="unexpectedly stopped"):
         await _provider().generate("s", "u", max_tokens=10)
+
+
+def test_model_facts_are_asked_again_after_a_failed_read(monkeypatch):
+    answers = iter([_ModelFacts(), _ModelFacts(trained=8192)])
+    monkeypatch.setattr(ollama, "_read_model_facts", lambda url, model: next(answers))
+    provider = _provider()
+    assert provider.context_window() == LOCAL_CONTEXT_WINDOW
+    assert provider.context_window() == 8192

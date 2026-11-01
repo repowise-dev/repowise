@@ -155,6 +155,8 @@ def _read_model_facts(base_url: str, model: str) -> _ModelFacts:
         data = response.json()
     except (httpx.HTTPError, ValueError):
         return _ModelFacts()
+    if not isinstance(data, dict):
+        return _ModelFacts()
     info = data.get("model_info") or {}
     trained = next(
         (v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)),
@@ -243,9 +245,12 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
 
     def _model_facts(self) -> _ModelFacts:
         """What /api/show says about the model, read once; empty when the server can't say."""
-        if self._facts is None:
-            self._facts = _read_model_facts(self._native_url, self._model)
-        return self._facts
+        if self._facts is not None:
+            return self._facts
+        facts = _read_model_facts(self._native_url, self._model)
+        if facts != _ModelFacts():  # a server still starting is asked again next call
+            self._facts = facts
+        return facts
 
     async def generate(
         self,
@@ -320,10 +325,11 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
     ) -> GeneratedResponse:
         # The native endpoint, because the OpenAI-compatible one ignores
         # num_ctx and silently cuts every prompt to the server's default window.
+        facts = await asyncio.to_thread(self._model_facts)  # off the loop: a blocking read
         think: bool | None = None
         if reasoning != "auto":
             think = reasoning != "off"
-        elif (await asyncio.to_thread(self._model_facts)).thinks:
+        elif facts.thinks:
             # Thinking multiplies a local page's time several times over (one
             # short outline call thought for 16k tokens on qwen3.5:4b) for no
             # better prose, so ``auto`` turns it off; low/medium/high turn it on.
@@ -349,6 +355,15 @@ class OllamaProvider(SdkClientOwner, BaseProvider):
 
         content, final = await self._stream_native_chat(payload)
         input_tokens = int(final.get("prompt_eval_count") or 0)
+        if input_tokens >= options["num_ctx"] - answer:
+            # Ollama keeps the prompt's tail when it overflows num_ctx, and
+            # the instructions sit at its head: the page is likely off-brief.
+            log.warning(
+                "ollama.prompt_filled_window",
+                input_tokens=input_tokens,
+                num_ctx=options["num_ctx"],
+                hint="set REPOWISE_OLLAMA_NUM_CTX higher",
+            )
         output_tokens = int(final.get("eval_count") or 0)
         stop_reason, provider_stop_reason = normalize_stop_reason(final.get("done_reason"))
         result = GeneratedResponse(

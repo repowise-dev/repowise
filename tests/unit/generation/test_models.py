@@ -404,3 +404,9 @@ def test_generation_config_reads_context_window():
     assert GenerationConfig.from_repo_config({"context_window": 24_576}).context_window == 24_576
     with pytest.raises(ValueError, match="context_window"):
         GenerationConfig.from_repo_config({"context_window": "big"})
+
+
+def test_a_mock_provider_leaves_the_config_alone():
+    from unittest.mock import MagicMock
+
+    assert GenerationConfig().with_provider_window(MagicMock()).context_window is None
