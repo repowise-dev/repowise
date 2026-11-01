@@ -22,6 +22,8 @@ from repowise.core.distill.registry import filter_registry
 _COMMAND_RE = re.compile(r"^git(?:\.exe)? (?:diff|show)\b")
 # `git log -p` prints the same file blocks between commit headers.
 _LOG_PATCH_RE = re.compile(r"^git(?:\.exe)? log\b.*\s(?:-p|--patch|-u)(?=\s|$)")
+# `git show <rev>:<path>` prints a file's contents at that revision, not a diff.
+_SHOW_BLOB_RE = re.compile(r"^git(?:\.exe)? show\b[^|;&]*?\s[^\s:-][^\s:]*:\S")
 _FILE_HEADER_RE = re.compile(r"^diff --git a/(?P<a>.+?) b/(?P<b>.+)$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
 # File header lines the `diff --git` line already states.
@@ -76,6 +78,8 @@ class GitDiffFilter(OutputFilter):
     def matches_command(self, command: str) -> bool:
         if _LOG_PATCH_RE.match(command):
             return True
+        if _SHOW_BLOB_RE.match(command):
+            return False
         return bool(_COMMAND_RE.match(command)) and "--stat" not in command
 
     def matches_content(self, output: str) -> bool:
