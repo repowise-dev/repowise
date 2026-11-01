@@ -18,9 +18,13 @@ export function changeLinkParam(changeId: string): string {
   return branch === "wip" || SHA.test(branch) ? `branch:${branch}` : branch;
 }
 
-/** The change id a link's `change` value names. */
+/**
+ * The change id a link's `change` value names. A picker id pasted as is
+ * (`commit:<sha>`, `branch:<name>`, `pr:<n>`, `working-tree`) means itself.
+ */
 export function changeIdFromLink(param: string): string {
-  if (param.startsWith("branch:") || PR.test(param)) return param;
+  if (param.startsWith("branch:") || PR.test(param) || param === "working-tree") return param;
+  if (param.startsWith("commit:") && SHA.test(param.slice("commit:".length))) return param;
   if (param === "wip") return "working-tree";
   return SHA.test(param) ? `commit:${param}` : `branch:${param}`;
 }

@@ -26,14 +26,14 @@ const NONE = "text-xs text-[var(--color-text-tertiary)]";
 const MORE =
   "text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded-sm max-sm:min-h-10";
 /** A signal as quiet text: no fill and no box, so a dense row stays readable. */
-export const CHIP = "inline-flex items-center whitespace-nowrap text-[11px] text-[var(--color-text-tertiary)]";
+export const CHIP = "inline-flex items-center whitespace-nowrap text-xs text-[var(--color-text-tertiary)]";
 
 /** Weak health is the one signal with a colour: a dot and the score, never a filled badge. */
 function PoorHealth({ score }: { score: number }) {
   const band = bandForScore(score);
   return (
     <span
-      className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] tabular-nums text-[var(--color-error)]"
+      className="inline-flex items-center gap-1 whitespace-nowrap text-xs tabular-nums text-[var(--color-error)]"
       title={`${HEALTH_BAND_LABEL[band]}: health ${formatScore(score)} of 10`}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)]" aria-hidden />
@@ -94,28 +94,44 @@ export function PathRef({ path, href, nameOnly = false }: { path: string; href: 
   );
 }
 
-/** Each signal a file carries as its own chip, in plain words. */
+/**
+ * A file's signals as one trailing line of plain words joined by dots, so
+ * every row ends at the same edge and reads the same way whatever it carries.
+ */
 export function SignalChips({ m, extra }: { m: FileMarks; extra?: ReactNode }) {
+  const items: ReactNode[] = [];
+  if (extra) items.push(extra);
+  if (m.isHotspot)
+    items.push(
+      <span className={CHIP} title="Among the files with the most recent commits">
+        changed often
+      </span>,
+    );
+  if (m.untested)
+    items.push(
+      <span className={CHIP} title="No coverage row, test import or named test reaches it">
+        no test found
+      </span>,
+    );
+  if (isWeak(m) && m.healthScore !== null) items.push(<PoorHealth score={m.healthScore} />);
   return (
-    <span className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-0.5">
-      {extra}
-      {m.isHotspot && (
-        <span className={CHIP} title="Among the files with the most recent commits">
-          changed often
+    <span className="flex shrink-0 flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5">
+      {items.map((item, i) => (
+        <span key={i} className="inline-flex items-center gap-1.5">
+          {i > 0 && (
+            <span className="text-xs text-[var(--color-text-tertiary)]" aria-hidden>
+              ·
+            </span>
+          )}
+          {item}
         </span>
-      )}
-      {m.untested && (
-        <span className={CHIP} title="No coverage row, test import or named test reaches it">
-          no test found
-        </span>
-      )}
-      {isWeak(m) && m.healthScore !== null && <PoorHealth score={m.healthScore} />}
+      ))}
     </span>
   );
 }
 
 function Row({ children }: { children: ReactNode }) {
-  return <li className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">{children}</li>;
+  return <li className="flex min-w-0 items-center justify-between gap-x-3 gap-y-0.5 text-xs max-sm:flex-wrap">{children}</li>;
 }
 
 /** Shown only when something is marked; a calm change says so once, in the status line. */
@@ -143,12 +159,12 @@ function TestList({ impact }: { impact: Result["test_impact"] }) {
         {shown.map((t) => (
           <Row key={`${t.repository_id}:${t.test_id}`}>
             <PathRef path={t.test_file ?? t.test_id} href={undefined} />
-            <span
-              className={CHIP}
-              title={t.basis === "measured" ? "Coverage shows this test runs the changed code" : "Reaches the changed code through imports"}
-            >
-              {t.basis === "measured" ? "measured" : "inferred"}
-            </span>
+            {/* Inferred is the default and said once above the list; only a measured test is marked. */}
+            {t.basis === "measured" && (
+              <span className={CHIP} title="Coverage shows this test runs the changed code">
+                measured
+              </span>
+            )}
           </Row>
         ))}
       </ul>
@@ -158,6 +174,31 @@ function TestList({ impact }: { impact: Result["test_impact"] }) {
         </button>
       )}
     </>
+  );
+}
+
+/** Long enough to wrap past four lines at the narrowest column; shorter ones show whole. */
+const LONG_COMMAND = 240;
+
+/** The test command, four whole lines high (never cut through a line), with the rest a click away. */
+function TestCommand({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > LONG_COMMAND;
+  return (
+    <div className="space-y-1">
+      <pre
+        className={`overflow-hidden whitespace-pre-wrap break-all rounded bg-[var(--color-bg-inset)] px-2.5 py-1.5 font-mono text-xs leading-5 text-[var(--color-text-primary)] ${
+          long && !open ? "max-h-[92px] [mask-image:linear-gradient(to_bottom,black_70%,transparent)]" : ""
+        }`}
+      >
+        {text}
+      </pre>
+      {long && (
+        <button type="button" className={MORE} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          {open ? "Show less" : "Show the whole command"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -177,9 +218,7 @@ function TestsToRun({ result }: { result: Result }) {
   return (
     <div className="space-y-2">
       {commands.length > 0 && (
-        <pre className="max-h-24 overflow-y-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-inset)] px-2.5 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
-          {commands.join("\n")}
-        </pre>
+        <TestCommand text={commands.join("\n")} />
       )}
       <p className={NONE}>
         {measured > 0 ? `${count(measured, "test")} measured by coverage, the rest inferred from imports.` : "Inferred from imports; no coverage data names them."}
@@ -238,6 +277,7 @@ function StatusLine({ status }: { status: ReviewStatus }) {
       <span className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full" style={{ background: TONE_DOT[status.tone] }} aria-hidden />
       <span className="font-semibold text-[var(--color-text-primary)]">{status.word}.</span>
       <span className="text-[var(--color-text-secondary)]">{status.reason}</span>
+      <span className="basis-full pl-[18px] text-xs text-[var(--color-text-tertiary)]">{status.next}</span>
     </p>
   );
 }
@@ -309,6 +349,8 @@ export interface BlastRadiusVerdictProps {
   change?: ChangeCandidate | undefined;
   /** A health check the reader ran on this change; its findings join the prompt. */
   healthCheck?: ChangeHealthCheckResponse | undefined;
+  /** Quiet actions after the test command (the health check's run button). */
+  extraActions?: ReactNode;
   fileHref?: Href;
 }
 
@@ -325,6 +367,7 @@ export function BlastRadiusVerdict({
   changedTotal,
   change,
   healthCheck,
+  extraActions,
   fileHref,
 }: BlastRadiusVerdictProps) {
   const [promptOpen, setPromptOpen] = useState(false);
@@ -349,6 +392,7 @@ export function BlastRadiusVerdict({
             className="max-sm:h-10 border-transparent bg-[var(--color-action-primary)] text-[var(--color-text-on-action)] hover:border-transparent hover:bg-[var(--color-action-primary-hover)]"
           />
           <CopyTests result={result} />
+          {extraActions}
         </div>
       </div>
 

@@ -2,7 +2,6 @@
 
 import { Loader2, ShieldCheck } from "lucide-react";
 import type { ChangeHealthCheckResponse, HealthCheckFinding } from "@repowise-dev/types/blast-radius";
-import { Button } from "../ui/button";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { CopyPathButton, FilePath } from "../shared/file-path";
@@ -55,21 +54,37 @@ function FindingRow({ f, fileHref }: { f: HealthCheckFinding; fileHref: ((path: 
   );
 }
 
+/** A revspec with each full sha cut to 8 characters; the whole one stays in the tooltip. */
+export function shortRevspec(revspec: string): string {
+  return revspec.replace(/\b[0-9a-f]{40}\b/g, (sha) => sha.slice(0, 8));
+}
+
 function Result({ result, fileHref }: { result: ChangeHealthCheckResponse; fileHref: ((path: string) => string) | undefined }) {
   const v = VERDICT[result.gate.verdict];
   const groups = GROUPS.map((g) => ({ ...g, rows: result.findings.filter(g.match) })).filter((g) => g.rows.length > 0);
   return (
     <div className="space-y-3">
-      <p className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="inline-flex items-center gap-1.5 font-semibold" style={{ color: v.color }}>
-          <span className="h-2 w-2 rounded-full" style={{ background: v.color }} aria-hidden />
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        <p className="inline-flex items-center gap-2 text-[15px] font-semibold" style={{ color: v.color }}>
+          <span className="h-2.5 w-2.5 rounded-full" style={{ background: v.color }} aria-hidden />
           {v.word}
-        </span>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          {result.gate.failing_count} failing, {result.gate.warning_count} warning · fails on {result.gate.fail_on} at{" "}
-          {result.gate.fail_at} · <code className="font-mono">{result.revspec}</code>
-        </span>
-      </p>
+        </p>
+        <p className="flex items-baseline gap-1.5">
+          <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]">
+            {result.gate.failing_count}
+          </span>
+          <span className="text-xs text-[var(--color-text-secondary)]">failing</span>
+        </p>
+        <p className="flex items-baseline gap-1.5">
+          <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]">
+            {result.gate.warning_count}
+          </span>
+          <span className="text-xs text-[var(--color-text-secondary)]">{result.gate.warning_count === 1 ? "warning" : "warnings"}</span>
+        </p>
+        <p className="text-xs text-[var(--color-text-tertiary)]" title={result.revspec}>
+          Fails on {result.gate.fail_on} at {result.gate.fail_at}, judged on {shortRevspec(result.revspec)}
+        </p>
+      </div>
       {result.gate.notes.map((n) => (
         <p key={n} className="text-xs text-[var(--color-text-tertiary)]">
           {n}
@@ -100,39 +115,49 @@ function Result({ result, fileHref }: { result: ChangeHealthCheckResponse; fileH
   );
 }
 
+const ACTION =
+  "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-60 max-sm:h-10";
+
 /**
- * The on-demand health check for the picked change: the same check as
- * `repowise health check`, read from git. Never runs by itself; the button
- * runs it, and the result stays for that change until the page reloads.
+ * The quiet action beside Copy review prompt that runs the health check: the
+ * same check as `repowise health check`, on demand only.
+ */
+export function HealthCheckButton({ state, onRun }: { state: HealthCheckState | undefined; onRun: () => void }) {
+  const running = state?.status === "running";
+  return (
+    <button
+      type="button"
+      onClick={onRun}
+      disabled={running}
+      className={ACTION}
+      title="Compares code health before and after this change, plus added suppressions, weakened tests and test-only branches, the way repowise health check does in CI."
+    >
+      {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
+      {running ? "Checking..." : state?.status === "done" ? "Run health check again" : "Run health check"}
+    </button>
+  );
+}
+
+/**
+ * The health check's result for the picked change, once it has run: the
+ * verdict as the headline, the counts beside it, then the findings by what
+ * the change did. Renders nothing until the check is run.
  */
 export function HealthCheckPanel({
   state,
-  onRun,
   fileHref,
 }: {
   state: HealthCheckState | undefined;
-  onRun: () => void;
   fileHref?: ((path: string) => string) | undefined;
 }) {
-  const running = state?.status === "running";
+  if (!state) return null;
+  const running = state.status === "running";
   return (
-    <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5" aria-busy={running}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-[15px] font-medium text-[var(--color-text-primary)]">Health check</h3>
-        <Button size="sm" variant="outline" onClick={onRun} disabled={running} className="max-sm:h-10">
-          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
-          {running ? "Checking..." : state?.status === "done" ? "Run again" : "Run health check"}
-        </Button>
-      </div>
-      {!state && (
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          Compares code health before and after this change, plus added suppressions, weakened tests and test-only
-          branches, the way <code className="font-mono">repowise health check</code> does in CI.
-        </p>
-      )}
+    <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5" aria-busy={running} aria-live="polite">
+      <h3 className="text-[15px] font-medium text-[var(--color-text-primary)]">Health check</h3>
       {running && <p className="text-xs text-[var(--color-text-tertiary)]">Reading both sides of every changed file...</p>}
-      {state?.status === "error" && <p className="text-xs text-[var(--color-error)]">{state.message}</p>}
-      {state?.status === "done" && <Result result={state.result} fileHref={fileHref} />}
+      {state.status === "error" && <p className="text-xs text-[var(--color-error)]">{state.message}</p>}
+      {state.status === "done" && <Result result={state.result} fileHref={fileHref} />}
     </section>
   );
 }

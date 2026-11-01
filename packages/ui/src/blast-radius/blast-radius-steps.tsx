@@ -62,9 +62,9 @@ function Block({ b, selected, onSelect }: { b: StepBlock; selected: boolean; onS
         height={b.height + 6}
         rx={4}
         fill="none"
-        stroke="var(--color-text-primary)"
-        strokeWidth={1.25}
-        className={selected ? "opacity-100" : "opacity-0 group-hover:opacity-40 group-focus-visible:opacity-100"}
+        stroke={selected ? "var(--color-text-primary)" : "var(--color-focus-ring)"}
+        strokeWidth={selected ? 1.25 : 2}
+        className={selected ? "opacity-100 group-focus-visible:[stroke:var(--color-focus-ring)] group-focus-visible:[stroke-width:2]" : "opacity-0 group-hover:opacity-40 group-focus-visible:opacity-100"}
       />
       <rect x={b.x} y={b.y} width={L.blockWidth} height={b.height} rx={2} fill={b.column === 0 ? CHANGED : REACHED} />
       {poorHeight > 0 && (
@@ -74,6 +74,11 @@ function Block({ b, selected, onSelect }: { b: StepBlock; selected: boolean; onS
         x={b.x + L.blockWidth + L.labelGap}
         y={labelY}
         style={{ fontSize: 11.5 }}
+        // A halo in the page colour keeps the label readable over the bands behind it.
+        stroke="var(--color-bg-root)"
+        strokeWidth={3}
+        paintOrder="stroke"
+        strokeLinejoin="round"
         className={b.other ? "fill-[var(--color-text-tertiary)]" : "fill-[var(--color-text-primary)]"}
         fontWeight={selected ? 600 : 400}
       >

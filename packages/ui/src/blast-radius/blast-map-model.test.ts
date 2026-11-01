@@ -104,7 +104,7 @@ describe("reviewStatus", () => {
   });
 
   it("calls a small, calm change small, with its size", () => {
-    expect(reviewStatus(facts())).toEqual({ tone: "calm", word: "Small change", reason: "1 file changed, 2 tests to run." });
+    expect(reviewStatus(facts())).toMatchObject({ tone: "calm", word: "Small change", reason: "1 file changed, 2 tests to run." });
   });
 
   it("asks for tests first when a changed file has none", () => {

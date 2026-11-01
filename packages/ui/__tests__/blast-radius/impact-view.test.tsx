@@ -178,7 +178,7 @@ describe("ImpactView with a change list", () => {
     await openPicker(/Change under review/);
     fireEvent.click(screen.getByRole("radio", { name: /Branches/ }));
     fireEvent.click(await screen.findByRole("button", { name: /feat\/x/ }));
-    expect(await screen.findByText("Reading what depends on feat/x...")).toBeInTheDocument();
+    expect(await screen.findByText(/^Reading what depends on feat\/x/)).toBeInTheDocument();
     expect(screen.getByText("2 files changed, no test found to run.")).toBeInTheDocument();
     release();
     expect(await screen.findByText("1 file changed, no test found to run.")).toBeInTheDocument();
@@ -252,6 +252,16 @@ describe("the step map", () => {
 });
 
 describe("pull request links", () => {
+  it("reads every picker id pasted as is, so ?change=commit:<sha> opens the commit", () => {
+    const sha = "e".repeat(40);
+    for (const id of [`commit:${sha}`, "branch:feat/x", "pr:9", "working-tree"]) {
+      expect(changeIdFromLink(id)).toBe(id);
+      expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
+    }
+    // A malformed commit id stays a branch name rather than a bad commit.
+    expect(changeIdFromLink("commit:abc")).toBe("branch:commit:abc");
+  });
+
   it("passes pr:<n> through both ways, never as a branch", () => {
     expect(changeIdFromLink("pr:123")).toBe("pr:123");
     expect(changeLinkParam("pr:123")).toBe("pr:123");
@@ -310,5 +320,27 @@ describe("a host with no checkout", () => {
     expect(screen.getByRole("radio", { name: /Pull requests/ })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /Working tree/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Run health check/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("a change that fails to open", () => {
+  it("says a missing change is gone, keeps the picker, and offers a retry for other failures", async () => {
+    const analyzeChange = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("API error 404: unknown branch 'commit:x'"), { status: 404 }))
+      .mockRejectedValueOnce(new Error("API error 500: boom"))
+      .mockResolvedValue(changeResult(["src/core.ts"]));
+    const adapter = makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange });
+    renderView(<ImpactView adapter={adapter} />);
+    expect(await screen.findByText(/not in this repository any more/)).toBeInTheDocument();
+    expect(screen.queryByText(/API error/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+
+    await openPicker(/Change under review/);
+    fireEvent.click(screen.getByRole("radio", { name: /Branches/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /feat\/x/ }));
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("1 file changed, no test found to run.")).toBeInTheDocument();
   });
 });

@@ -20,7 +20,7 @@ function folderOf(path: string): string {
 
 function FileRow({ m, href, extra, nameOnly }: { m: FileMarks; href: string | undefined; extra?: React.ReactNode; nameOnly?: boolean | undefined }) {
   return (
-    <li className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">
+    <li className="flex min-w-0 items-center justify-between gap-x-3 gap-y-0.5 text-xs max-sm:flex-wrap">
       <PathRef path={m.path} href={href} nameOnly={nameOnly} />
       <SignalChips m={m} extra={extra} />
     </li>
@@ -126,13 +126,16 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
           aria-hidden
         />
         <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-primary)]">{g.name}</span>
-        <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
-          {g.files.length.toLocaleString()} {g.files.length === 1 ? "file" : "files"}
-        </span>
-        <span className="hidden w-16 shrink-0 text-right text-[var(--color-text-tertiary)] sm:inline">{steps(g.depth)}</span>
-        <span className="hidden shrink-0 justify-end gap-3 sm:flex sm:w-44">
-          {often > 0 && <span className={CHIP}>{often} changed often</span>}
-          {untested > 0 && <span className={CHIP}>{untested} no test</span>}
+        {/* One summary sentence, not unlabeled columns. */}
+        <span className="shrink-0 truncate text-right tabular-nums text-[var(--color-text-tertiary)]">
+          <span className="text-[var(--color-text-secondary)]">
+            {g.files.length.toLocaleString()} {g.files.length === 1 ? "file" : "files"}
+          </span>
+          <span className="hidden sm:inline">
+            , {g.depth === 1 ? "direct" : `nearest ${g.depth} steps away`}
+            {often > 0 && `, ${often.toLocaleString()} changed often`}
+            {untested > 0 && `, ${untested.toLocaleString()} with no test`}
+          </span>
         </span>
       </button>
       {expanded && (
@@ -143,7 +146,7 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
                 key={f.path}
                 m={f}
                 href={fileHref?.(f.path)}
-                extra={<span className="text-[10px] text-[var(--color-text-tertiary)]">{steps(f.depth)}</span>}
+                extra={<span className={CHIP}>{steps(f.depth)}</span>}
               />
             ))}
           </ul>

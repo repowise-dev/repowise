@@ -24,7 +24,7 @@ export const STEP_LAYOUT = {
   top: 28,
   bottom: 8,
   /** Room for the tallest column's blocks; columns with more files are scaled to fit. */
-  bodyHeight: 380,
+  bodyHeight: 300,
   /** A block is never shorter than one label line, and blocks keep a gap, so labels never overlap. */
   minBlock: 18,
   gap: 12,
@@ -175,13 +175,15 @@ export function buildStepMap(reach: Reach): StepMap {
   const totals = raw.map((col) => col.reduce((n, b) => n + b.files, 0));
   const maxBlocks = Math.max(1, ...raw.map((col) => col.length));
   // One scale for every column, so a block's height means the same everywhere.
-  const scale = (L.bodyHeight - L.gap * (maxBlocks - 1)) / Math.max(1, ...totals);
+  // Every block starts at the label's height and grows with its files, so the
+  // tallest column never passes the body height, however lopsided the reach.
+  const scale = Math.max(0, L.bodyHeight - L.gap * (maxBlocks - 1) - L.minBlock * maxBlocks) / Math.max(1, ...totals);
   const blocks: StepBlock[] = [];
   let bottom: number = L.top;
   raw.forEach((col, c) => {
     let y: number = L.top;
     for (const b of col) {
-      const height = Math.max(L.minBlock, b.files * scale);
+      const height = L.minBlock + b.files * scale;
       blocks.push({ ...b, x: c * L.colPitch, y, height });
       y += height + L.gap;
     }

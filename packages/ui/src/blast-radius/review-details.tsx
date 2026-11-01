@@ -25,7 +25,7 @@ export function ReviewDetails({ result, reach, fileHref }: { result: Result; rea
         <CollapsibleSection title="Files with no test found" hint={untested.length.toLocaleString()}>
           <ul className="space-y-1.5">
             {untested.map((path, i) => (
-              <li key={path} className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">
+              <li key={path} className="flex min-w-0 items-center justify-between gap-x-3 gap-y-0.5 text-xs max-sm:flex-wrap">
                 <PathRef path={path} href={fileHref?.(path)} />
                 <span className={CHIP}>{i < changed.length ? "changed" : "depends on it"}</span>
               </li>
