@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 _ANALYSES = IndexStampCache(16)
 #: Warm-up tasks in flight by (repository, change), held so they are not
 #: collected mid-run and so a page refreshed while one runs starts no second.
-_WARMING: dict[tuple[str, str], asyncio.Task[None]] = {}
+_WARMING: dict[tuple[str, str, int], asyncio.Task[None]] = {}
 
 
 async def _analyze_cached(
@@ -145,7 +145,8 @@ async def list_blast_radius_changes(
     server, only the commits."""
     checkout = await _checkout(session, repo_id)
     candidates = await list_change_candidates(session, repo_id, checkout)
-    warm_key = (repo_id, candidates.default_id or "")
+    # Tasks belong to one event loop, so the loop is part of the key.
+    warm_key = (repo_id, candidates.default_id or "", id(asyncio.get_running_loop()))
     if candidates.default_id and warm_key not in _WARMING:
         # The page analyzes the default change next; start it now in its own session.
         task = asyncio.create_task(

@@ -121,8 +121,7 @@ async def _read_coverage(
     session: AsyncSession, repository_id: str, changed: list[str]
 ) -> tuple[Mapping[str, Any], dict[str, list[Mapping[str, Any]]], str | None]:
     """The coverage summary, each changed path's measured rows, and the last read error."""
-    from repowise.core.persistence.crud import get_test_coverage_summary
-    from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
+    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering_files
 
     try:
         summary = await get_test_coverage_summary(session, repository_id)

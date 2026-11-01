@@ -6,6 +6,8 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
 from repowise.core.persistence.models import (
     GitCommit,
@@ -16,6 +18,25 @@ from repowise.core.persistence.models import (
     HealthFileMetric,
 )
 from tests.unit.server.conftest import create_test_repo
+
+
+@pytest.fixture(autouse=True)
+async def _finish_warm_ups():
+    """Listing changes starts a warm-up task; let this test's finish before its database closes."""
+    import asyncio
+
+    from repowise.server.routers import blast_radius as route
+
+    yield
+    await asyncio.gather(*_warming_here(route), return_exceptions=True)
+
+
+def _warming_here(route) -> list:
+    """The warm-up tasks this test's event loop started; other tests' loops own the rest."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    return [t for t in route._WARMING.values() if t.get_loop() is loop]
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -279,7 +300,7 @@ async def test_branch_listing_is_reused_until_head_moves(client, tmp_path, monke
 
     from repowise.server.routers import blast_radius as route
 
-    await asyncio.gather(*route._WARMING.values())
+    await asyncio.gather(*_warming_here(route))
     # A commit moves HEAD, so the branches are read again.
     _git(repo_dir, "commit", "-q", "-am", "main moves")
     await client.get(url)
@@ -338,7 +359,7 @@ async def test_listing_warms_the_default_change_and_repeats_reuse_it(client, tmp
 
     monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", counted)
     listing = (await client.get(f"/api/repos/{repo['id']}/blast-radius/changes")).json()
-    await asyncio.gather(*route._WARMING.values())
+    await asyncio.gather(*_warming_here(route))
     assert runs == 1
 
     url = f"/api/repos/{repo['id']}/blast-radius/change"
