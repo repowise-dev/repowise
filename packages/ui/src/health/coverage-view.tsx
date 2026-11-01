@@ -21,7 +21,6 @@
 import { useMemo, useState } from "react";
 import { ArrowUpRight } from "lucide-react";
 import useSWR from "swr";
-import { GOOD_MIN } from "@repowise-dev/types/health";
 import type {
   CoverageFileRow,
   HealthCoverageResponse,
@@ -127,13 +126,11 @@ export function CoverageView({
   );
 
   // The untested_hotspot findings carry dependents_count / commit_count_90d
-  // in their details — join them into the warning entries.
+  // in their details — join them into the warning entries. A failed read
+  // leaves them undefined, so the page claims neither hotspots nor none.
   const { data: untestedFindings } = useSWR<HealthFinding[]>(
     `code-health-untested-findings:${adapter.cacheKey}`,
-    () =>
-      adapter
-        .listFindings({ biomarker_type: "untested_hotspot", limit: 50 })
-        .catch(() => []),
+    () => adapter.listFindings({ biomarker_type: "untested_hotspot", limit: 50 }),
     { revalidateOnFocus: false },
   );
 
@@ -182,7 +179,7 @@ export function CoverageView({
         // inferred map.
         <CoverageBody
           data={data}
-          untestedFindings={untestedFindings ?? []}
+          untestedFindings={untestedFindings}
           onOpenFile={openFilePage}
           onGeneratePrompt={promptFor}
           copy={copy}
@@ -202,7 +199,8 @@ function CoverageBody({
   copy,
 }: {
   data: HealthCoverageResponse;
-  untestedFindings: HealthFinding[];
+  /** The server's untested_hotspot findings; undefined until they load. */
+  untestedFindings: HealthFinding[] | undefined;
   onOpenFile: (path: string) => void;
   /** One file or several; the modal builds a single or a batch prompt. */
   onGeneratePrompt: (rows: CoverageFilePromptInput[]) => void;
@@ -233,46 +231,26 @@ function CoverageBody({
   const num = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
 
-  // Untested hotspots: prefer the real biomarker findings (which carry
-  // dependents/commit context); fall back to the low-coverage × low-score
-  // heuristic when the biomarker never fired (e.g. coverage just ingested).
+  // Untested hotspots are the server's untested_hotspot findings, the one
+  // answer every surface shares; this page never derives its own from coverage.
   const filesByPath = useMemo(() => new Map(files.map((f) => [f.file_path, f])), [files]);
-  const untested = useMemo<UntestedHotspotEntry[]>(() => {
-    const covByPath = filesByPath;
-    if (untestedFindings.length > 0) {
-      return untestedFindings.slice(0, 10).map((f) => {
-        const cov = covByPath.get(f.file_path);
+  const untested = useMemo<UntestedHotspotEntry[]>(
+    () =>
+      (untestedFindings ?? []).slice(0, 10).map((f) => {
+        const cov = filesByPath.get(f.file_path);
         const d = f.details ?? {};
         const entry: UntestedHotspotEntry = {
           file_path: f.file_path,
-          line_coverage_pct:
-            num(d.line_coverage_pct) ?? cov?.line_coverage_pct ?? null,
+          line_coverage_pct: num(d.line_coverage_pct) ?? cov?.line_coverage_pct ?? null,
           commit_count_90d: num(d.commit_count_90d),
         };
         const dependents = num(d.dependents_count);
         if (dependents != null) entry.dependents_count = dependents;
         if (cov?.health_score != null) entry.health_score = cov.health_score;
         return entry;
-      });
-    }
-    return files
-      .filter(
-        (f) =>
-          f.total_coverable_lines > 0 &&
-          f.line_coverage_pct != null &&
-          f.line_coverage_pct < 30 &&
-          (f.health_score == null || f.health_score < GOOD_MIN),
-      )
-      .slice(0, 10)
-      .map((f) => {
-        const entry: UntestedHotspotEntry = {
-          file_path: f.file_path,
-          line_coverage_pct: f.line_coverage_pct,
-        };
-        if (f.health_score != null) entry.health_score = f.health_score;
-        return entry;
-      });
-  }, [files, filesByPath, untestedFindings]);
+      }),
+    [filesByPath, untestedFindings],
+  );
   // The untested entries that have a measured row, which is what a prompt needs.
   const untestedRows = useMemo(
     () => untested.flatMap((e) => filesByPath.get(e.file_path) ?? []),
@@ -477,7 +455,7 @@ function CoverageBody({
             }}
             promptLabel={promptLabel}
           />
-        ) : (
+        ) : untestedFindings === undefined ? null : (
           <CleanState
             align="start"
             title={

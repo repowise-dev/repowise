@@ -794,6 +794,16 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
             is_test=True,
         )
     )
+    # Indexed: a file the index has not seen is new, never a gap.
+    session.add(
+        GraphNode(
+            id="gn-source",
+            repository_id=repo_id,
+            node_id="src/my_module.py",
+            node_type="file",
+            language="python",
+        )
+    )
     await session.flush()
 
     assert not _has_paired_test_file("src/my_module.py", {"test_my_module_strategies.py"})

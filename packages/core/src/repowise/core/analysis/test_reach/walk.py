@@ -9,6 +9,7 @@ its queries.
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import replace
 from pathlib import PurePosixPath
@@ -54,6 +55,7 @@ def call_walk(
     *,
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
     avoid: Collection[str] = frozenset(),
+    fan_in_cap: int | None = None,
 ) -> Walk[dict[str, dict[str, ReachDistance]]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
@@ -73,6 +75,9 @@ def call_walk(
     symbols. Each level reads the distances it started with, so a seed moves
     one hop per level: no test is reached past *max_depth*, and the answer
     depends neither on which other seeds share the walk nor on edge order.
+
+    With *fan_in_cap*, a node with more callers than that carries nothing
+    further: reach through a dispatcher every test calls says nothing.
     """
     # node -> seed -> call hops from the node to the seed.
     origins = yield from _call_origins(seeds, symbol_seeds)
@@ -87,7 +92,11 @@ def call_walk(
         level, frontier = frontier, []
         queued: set[str] = set()
         start = {node: dict(origins[node]) for node in level}
-        for caller, callee in (yield Need("callers", tuple(level))):
+        pairs = yield Need("callers", tuple(level))
+        if fan_in_cap is not None:
+            fan_in = Counter(callee for _, callee in pairs)
+            start = {n: c for n, c in start.items() if fan_in[n] <= fan_in_cap}
+        for caller, callee in pairs:
             carried = start.get(callee)
             if not carried:
                 continue
@@ -307,6 +316,138 @@ def package_walk(
     }
 
 
+def use_walk(
+    targets: list[str],
+    test_files: Collection[str],
+    *,
+    rank: bool = True,
+) -> Walk[dict[str, ReachedBy]]:
+    """Tests that reach code which calls into each target, from any package.
+
+    Two legs, each bounded by ``DEFAULT_CALL_DEPTH``. First the call edges are
+    walked back from the target's symbols to the functions that call into it
+    from other files (:func:`_join_symbols`). Then a test counts when it
+    reaches one of those functions by the call graph, or loads that
+    function's file by a direct import or through its own package. A test is credited
+    only through code that calls a symbol the target defines: one that merely
+    imports something which imports the target, or a component held in a
+    registry nothing calls, gains nothing.
+
+    A symbol with more than ``HUB_MIN_FAN_IN`` callers is neither walked
+    through nor joined at: every test reaching a dispatcher would otherwise
+    reach everything it dispatches to.
+    """
+    seeds = sorted({t for t in targets if t})
+    joins = yield from _join_symbols(seeds, test_files, DEFAULT_CALL_DEPTH)
+    if not joins:
+        return {}
+    symbols = sorted({s for by_seed in joins.values() for s in by_seed})
+    found = yield from call_walk(
+        symbols,
+        test_files,
+        DEFAULT_CALL_DEPTH,
+        symbol_seeds={s: (s,) for s in symbols},
+        fan_in_cap=HUB_MIN_FAN_IN,
+    )
+    loaded = yield from _loading_tests(sorted({file_of_symbol(s) for s in symbols}), test_files)
+    reached: dict[str, set[str]] = {}
+    for seed, by_symbol in joins.items():
+        for symbol in by_symbol:
+            tests = set(found.get(symbol, ())) | loaded.get(file_of_symbol(symbol), set())
+            if tests:
+                reached.setdefault(seed, set()).update(tests)
+    edited = frozenset(c.split("::", 1)[0] for c in seeds)
+    return {
+        seed: capped(seed, tests, "call-graph", changed=seeds, edited=edited, rank=rank)
+        for seed, tests in reached.items()
+    }
+
+
+def _join_symbols(
+    seeds: list[str], test_files: Collection[str], max_depth: int
+) -> Walk[dict[str, set[str]]]:
+    """``{seed: symbols in other files that call into it within max_depth hops}``.
+
+    A seed that is a symbol id enters at that symbol; a file enters at every
+    symbol it declares. Callers in test files are left out: the call tier
+    already looked for those. The walk reads one level past *max_depth*, so
+    every join's own fan-in is known and a hub join can be dropped.
+    """
+    origins: dict[str, set[str]] = {s: {s} for s in seeds if "::" in s}
+    files = tuple(s for s in seeds if "::" not in s)
+    if files:
+        for seed, symbol in (yield Need("declared", files)):
+            origins.setdefault(symbol, set()).add(seed)
+    joins: dict[str, set[str]] = {}
+    hubs: set[str] = set()
+    frontier = sorted(origins)
+    for level in range(max_depth + 1):
+        if not frontier:
+            break
+        callers = yield from _callers_of(frontier)
+        hubs.update(c for c, who in callers.items() if len(who) > HUB_MIN_FAN_IN)
+        if level == max_depth:
+            break
+        frontier = _carry_to_callers(callers, origins, joins, test_files)
+    return {
+        seed: {s for s in symbols if s not in hubs}
+        for seed, symbols in joins.items()
+        if any(s not in hubs for s in symbols)
+    }
+
+
+def _callers_of(symbols: list[str]) -> Walk[dict[str, list[str]]]:
+    callers: dict[str, list[str]] = {}
+    for caller, callee in (yield Need("callers", tuple(symbols))):
+        callers.setdefault(callee, []).append(caller)
+    return callers
+
+
+def _carry_to_callers(
+    callers: Mapping[str, list[str]],
+    origins: dict[str, set[str]],
+    joins: dict[str, set[str]],
+    test_files: Collection[str],
+) -> list[str]:
+    """Carry each callee's seeds to its callers, recording joins; the next frontier."""
+    start = {callee: frozenset(origins.get(callee, ())) for callee in callers}
+    queued: dict[str, None] = {}
+    for callee, who in callers.items():
+        if len(who) > HUB_MIN_FAN_IN:
+            continue
+        for caller in who:
+            owner = file_of_symbol(caller)
+            fresh = start[callee] - origins.get(caller, set())
+            if owner in test_files or not fresh:
+                continue
+            origins.setdefault(caller, set()).update(fresh)
+            queued[caller] = None
+            for seed in fresh:
+                if owner != seed.split("::", 1)[0]:
+                    joins.setdefault(seed, set()).add(caller)
+    return list(queued)
+
+
+def _loading_tests(files: list[str], test_files: Collection[str]) -> Walk[dict[str, set[str]]]:
+    """``{file: tests}``: tests importing each file, or loading it through its own package.
+
+    Only tests a runner collects: a ``conftest.py`` that builds the app loads
+    every router, which says nothing about which routes a test calls. No helper
+    hop: an entry module only its smoke test imports (``extension.ts``) reads as
+    test support there, and would credit everything it registers.
+    """
+    if not files:
+        return {}
+    runnable = frozenset(t for t in test_files if is_runnable_test(t, is_test=True))
+    direct, _ = yield from import_walk(files, runnable, DEFAULT_MAX_DEPTH)
+    out = {f: set(t) for f, t in direct.items()}
+    rest = [f for f in files if f not in out]
+    if rest:
+        for f, by in (yield from package_walk(rest, runnable, rank=False)).items():
+            out[f] = set(by.all_tests or by.tests)
+    return out
+
+
 def _record_tests(reached: dict[str, set[str]], seeds: Collection[str], test: str) -> None:
     for seed in seeds:
         reached.setdefault(seed, set()).add(test)
@@ -409,6 +550,9 @@ def tier_walk(
         unanswered = [seed for seed in seeds if seed not in out]
         if unanswered:
             out |= yield from package_walk(unanswered, test_files, rank=rank)
+        unanswered = [seed for seed in seeds if seed not in out]
+        if unanswered:
+            out |= yield from use_walk(unanswered, test_files, rank=rank)
     return out
 
 

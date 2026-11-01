@@ -154,3 +154,19 @@ async def test_a_module_a_test_loads_through_its_package_is_not_a_gap(async_sess
         "web/components/view.tsx": FileTests("untested"),
         "tests/unit/test_new.py": FileTests("test"),
     }
+
+
+async def test_a_file_the_index_has_not_seen_is_new_never_a_gap(async_session):
+    """A file the change adds has no tests or callers in the graph yet: no claim either way."""
+    from repowise.core.analysis.pr_blast import FileTests, file_tests, untested_files
+
+    repo = await insert_repo(async_session)
+    await _node(async_session, repo.id, "src/old.py")
+    await _node(async_session, repo.id, "tests/test_misc.py", is_test=True)
+    await async_session.commit()
+
+    rows = await file_tests(async_session, repo.id, ["src/old.py", "src/added.py"])
+    assert rows == {"src/old.py": FileTests("untested"), "src/added.py": FileTests("new")}
+    assert await untested_files(async_session, repo.id, ["src/old.py", "src/added.py"]) == [
+        "src/old.py"
+    ]

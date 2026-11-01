@@ -107,9 +107,11 @@ def files_with_paired_tests(
     where names alone found 34.6% at 100%.
 
     Last, a file a test loads through its own package pairs too
-    (:func:`~.walk.package_walk`): the same bar ``pr_blast.file_tests``
-    clears before it calls a file untested, so the health surfaces and the
-    review surfaces agree about which files have no test.
+    (:func:`~.walk.package_walk`), and so does one a test reaches through
+    code that calls into it (:func:`~.walk.use_walk`): the same bar
+    ``pr_blast.file_tests`` clears before it calls a file untested, so the
+    health surfaces and the review surfaces agree about which files have no
+    test.
     """
     barrel_deps: dict[str, set[str]] = {}
 
@@ -154,24 +156,23 @@ def files_with_paired_tests(
 
 
 def _package_reached(graph: Any, paths: list[str], test_files: Collection[str]) -> set[str]:
-    """The *paths* a test loads through their own package, over the in-memory graph."""
-    from .maps import ImportGraph, WalkMaps, is_legacy_conftest_hint, run
-    from .walk import package_walk
+    """The *paths* a test loads through their own package, or reaches through code calling into them.
 
-    importers: dict[str, list[str]] = {}
+    The last two tiers ``pr_blast.file_tests`` runs before it calls a file
+    untested (:func:`~.walk.package_walk`, :func:`~.walk.use_walk`), over the
+    in-memory graph.
+    """
+    from dataclasses import replace
+
+    from .maps import build_walk_maps, run
+    from .walk import package_walk, use_walk
+
     try:
-        for src, dst, data in graph.edges(data=True):
-            if data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES and not is_legacy_conftest_hint(
-                data.get("edge_type"), data.get("hint_source")
-            ):
-                importers.setdefault(dst, []).append(src)
+        maps = replace(build_walk_maps(graph), test_files=frozenset(test_files))
     except Exception:
         return set()
-    maps = WalkMaps(
-        declares={},
-        callers={},
-        imports=ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()}),
-        files=frozenset(),
-        test_files=frozenset(test_files),
-    )
-    return set(run(package_walk(paths, test_files, rank=False), maps))
+    found = set(run(package_walk(paths, test_files, rank=False), maps))
+    rest = [p for p in paths if p not in found]
+    if rest:
+        found |= set(run(use_walk(rest, test_files, rank=False), maps))
+    return found

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import networkx as nx
 import pytest
 
@@ -287,6 +289,90 @@ def test_the_package_walk_does_not_leave_the_package() -> None:
     assert "src/pkg/a.py" not in reaching_by_tier(build_walk_maps(g), ["src/pkg/a.py"])
 
 
+def _chain(*symbols: str) -> list[tuple]:
+    """``defines`` for each symbol and a ``calls`` edge from each to the next."""
+    out: list[tuple] = [(s.split("::", 1)[0], s, "defines") for s in symbols]
+    out += [(a, b, "calls") for a, b in pairwise(symbols)]
+    return out
+
+
+def test_code_in_another_package_calling_the_target_carries_its_tests() -> None:
+    """Five calls from the test: past the call tier's depth, reached through a caller."""
+    g = _graph(
+        {"tests/test_engine.py": True, "src/engine/run.py": False, "src/passes/leaf.py": False},
+        _chain(
+            "tests/test_engine.py::test_it",
+            "src/engine/run.py::analyze",
+            "src/engine/run.py::passes",
+            "src/engine/run.py::one",
+            "src/passes/leaf.py::Leaf",
+            "src/passes/leaf.py::Leaf::visit",
+        ),
+    )
+    found = reaching_by_tier(build_walk_maps(g), ["src/passes/leaf.py"])
+    assert found["src/passes/leaf.py"].tests == ["tests/test_engine.py"]
+    assert found["src/passes/leaf.py"].via == "call-graph"
+
+
+def test_a_test_loading_the_caller_counts_but_not_a_conftest() -> None:
+    """A route handler calls the service; a test importing the router runs it, a conftest does not."""
+    files = {
+        "tests/server/conftest.py": True,
+        "src/routers/git.py": False,
+        "src/services/commits.py": False,
+    }
+    edges = [
+        *_chain("src/routers/git.py::get_commits", "src/services/commits.py::history"),
+        ("tests/server/conftest.py", "src/routers/git.py", "imports"),
+    ]
+    assert "src/services/commits.py" not in reaching_by_tier(
+        build_walk_maps(_graph(files, edges)), ["src/services/commits.py"]
+    )
+    files["tests/server/test_git.py"] = True
+    edges.append(("tests/server/test_git.py", "src/routers/git.py", "imports"))
+    found = reaching_by_tier(build_walk_maps(_graph(files, edges)), ["src/services/commits.py"])
+    assert found["src/services/commits.py"].tests == ["tests/server/test_git.py"]
+
+
+def test_importing_what_imports_the_target_is_not_using_it() -> None:
+    """A canvas holds the node in a registry; rendering the canvas calls nothing in the node."""
+    g = _graph(
+        {
+            "ui/__tests__/map.test.tsx": True,
+            "ui/src/map/canvas.tsx": False,
+            "ui/src/nodes/edge.tsx": False,
+        },
+        [
+            *_chain("ui/__tests__/map.test.tsx::render", "ui/src/map/canvas.tsx::Canvas"),
+            ("ui/src/map/canvas.tsx", "ui/src/nodes/edge.tsx", "imports"),
+            ("ui/src/nodes/edge.tsx", "ui/src/nodes/edge.tsx::Edge", "defines"),
+            ("ui/src/map/canvas.tsx::EDGE_TYPES", "ui/src/nodes/edge.tsx::Edge", "references"),
+        ],
+    )
+    assert "ui/src/nodes/edge.tsx" not in reaching_by_tier(
+        build_walk_maps(g), ["ui/src/nodes/edge.tsx"]
+    )
+
+
+def test_a_dispatcher_with_many_callers_lends_nothing() -> None:
+    """``main`` is called by every test; that it dispatches to a command says nothing."""
+    tests = [f"tests/test_{i:02}.py" for i in range(HUB_MIN_FAN_IN + 1)]
+    g = _graph(
+        {**dict.fromkeys(tests, True), "src/cli/main.py": False, "src/cmds/rare.py": False},
+        [
+            *_chain(
+                "src/cli/main.py::main",
+                "src/cli/main.py::dispatch",
+                "src/cli/main.py::route",
+                "src/cli/main.py::invoke",
+                "src/cmds/rare.py::rare",
+            ),
+            *[e for t in tests for e in _chain(f"{t}::test_it", "src/cli/main.py::main")],
+        ],
+    )
+    assert "src/cmds/rare.py" not in reaching_by_tier(build_walk_maps(g), ["src/cmds/rare.py"])
+
+
 # ---------------------------------------------------------------------------
 # reach_states: the negative claim, and the states beside it
 # ---------------------------------------------------------------------------
@@ -483,6 +569,17 @@ def test_go_inline_tests_are_the_test_files_of_the_same_directory() -> None:
         ("src/types.py", "def f():\n    return 1\n", False),
         ("src/types.py", "class P(Protocol\n", False),
         ("src/c.go", "package c\n", False),
+        # Nothing of their own: a re-export barrel, a package __init__, Java descriptors.
+        ("src/index.ts", "export * from './a';\nexport { b } from './b';\n", True),
+        ("src/index.ts", "import { a } from './a';\nexport { a };\n", True),
+        ("src/index.ts", "export * from './a';\nexport default 1;\n", False),
+        ("src/index.ts", "import './client';\nexport * from './a';\n", False),
+        ("src/pkg/__init__.py", '"""Pkg."""\nfrom .a import A\n__all__ = ["A"]\n', True),
+        ("src/pkg/__init__.py", "from .a import A\nA.register()\n", False),
+        ("src/pkg/__init__.py", "", False),
+        ("src/main/java/a/package-info.java", "", True),
+        ("src/main/java/module-info.java", "module a {}\n", True),
+        ("src/main/java/a/Info.java", "class Info {}\n", False),
     ],
 )
 def test_type_only_files(path: str, content: str, expected: bool) -> None:

@@ -79,12 +79,14 @@ class FileTests:
     """What shows that tests exercise one file (:func:`file_tests`).
 
     ``state``: ``test`` (a test file itself), ``not_code`` (a manifest, a
-    workflow), ``type_only`` (declares only types), ``tested`` or ``untested``.
+    workflow), ``type_only`` (declares only types or nothing of its own),
+    ``new`` (a file the index has not seen, which no index can vouch for
+    either way), ``tested`` or ``untested``.
     The three test tuples are the evidence, strongest first; any one makes
     the file ``tested``.
     """
 
-    state: Literal["test", "not_code", "type_only", "tested", "untested"]
+    state: Literal["test", "not_code", "type_only", "new", "tested", "untested"]
     #: Tests with a per-test coverage row for the file (execution proof).
     covered_by: tuple[str, ...] = ()
     #: Test files that reach it in the dependency graph (a recorded edge).
@@ -114,11 +116,13 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
        never asserted as untested.
 
     Test files, files that are not code (a manifest, a workflow), and files
-    that declare only types (:func:`~repowise.core.analysis.test_reach.is_type_only`,
-    read from the repository's checkout) are never ``untested``: they need no
-    test of their own.
+    that declare only types or nothing of their own
+    (:func:`~repowise.core.analysis.test_reach.is_type_only`, read from the
+    repository's checkout) are never ``untested``: they need no test of
+    their own. Nor is a file the index has not seen (one the change adds):
+    it is ``new``, since its tests and callers are not in the graph yet.
     """
-    from repowise.core.analysis.test_reachability import cached_test_files
+    from repowise.core.analysis.test_reachability import cached_file_paths, cached_test_files
     from repowise.core.analysis.test_selection import is_code_file
     from repowise.core.test_paths import in_test_tree
 
@@ -126,24 +130,35 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     if not paths:
         return rows
     test_files = await cached_test_files(session, repo_id)
+    try:
+        indexed_files = await cached_file_paths(session, repo_id)
+    except Exception:
+        indexed_files = None
     for p in dict.fromkeys(paths):
         # A test the index has not seen yet (one the change adds) is still a test.
         if p in test_files or in_test_tree(p):
             rows[p] = FileTests("test")
         elif not is_code_file(p):
             rows[p] = FileTests("not_code")
+        elif indexed_files is not None and p not in indexed_files:
+            rows[p] = FileTests("new")
     candidates = [p for p in dict.fromkeys(paths) if p not in rows]
     if candidates:
-        rows.update(await _code_file_tests(session, repo_id, candidates, test_files))
+        rows.update(
+            await _code_file_tests(session, repo_id, candidates, test_files, indexed_files or ())
+        )
     return {p: rows[p] for p in dict.fromkeys(paths)}
 
 
 async def _code_file_tests(
-    session: AsyncSession, repo_id: str, candidates: list[str], test_files: frozenset[str]
+    session: AsyncSession,
+    repo_id: str,
+    candidates: list[str],
+    test_files: frozenset[str],
+    indexed_files: frozenset[str] | tuple[()],
 ) -> dict[str, FileTests]:
     """:func:`file_tests` for code files that are not tests themselves."""
     from repowise.core.analysis.test_reachability import (
-        cached_file_paths,
         read_under,
         tests_matching_by_name,
         tests_reaching_by_tier,
@@ -164,10 +179,6 @@ async def _code_file_tests(
     except Exception:
         reached = {}
     subjects = {p: _subject_names(p) for p in candidates}
-    try:
-        indexed_files = await cached_file_paths(session, repo_id)
-    except Exception:
-        indexed_files = ()
     named = tests_matching_by_name(
         sorted({n for ns in subjects.values() for n in ns}),
         test_files,

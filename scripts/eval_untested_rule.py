@@ -111,9 +111,9 @@ async def record_slice(db: str, paths: list[str]) -> dict:
     """The graph rows ``file_tests`` reads for *paths*, for the checked-in regression slice.
 
     Every edge into (or, for ``defines``, out of) a node the walks ask about,
-    with its type and origin, plus the file nodes it names and the test files.
-    ``tests/unit/persistence/test_untested_eval_slice.py`` replays it, with no
-    checkout, so a file recorded as type-only would replay as a claim: such files are refused.
+    with its type and origin, plus the file nodes it names and the test files,
+    and the text of each path judged type-only (the replay has no checkout).
+    ``tests/unit/persistence/test_untested_eval_slice.py`` replays it.
     """
     from sqlalchemy import text
 
@@ -132,7 +132,9 @@ async def record_slice(db: str, paths: list[str]) -> dict:
     reach_db._answer = recording
     try:
         async with create_session_factory(engine)() as session:
-            repo_id = (await session.execute(text("SELECT id FROM repositories"))).scalar_one()
+            repo_id, root = (
+                await session.execute(text("SELECT id, local_path FROM repositories"))
+            ).one()
             from repowise.core.analysis.pr_blast import file_tests
             from repowise.core.analysis.test_reach import clear_test_map_cache
 
@@ -170,8 +172,14 @@ async def record_slice(db: str, paths: list[str]) -> dict:
         await engine.dispose()
     files = {file_of_symbol(n) for e in edges for n in e[:2]} | set(paths)
     named = {t for row in rows.values() for t in row.named_by}
+    contents = {
+        p: (Path(root) / p).read_text(encoding="utf-8")
+        for p, row in rows.items()
+        if row.state == "type_only"
+    }
     return {
         "states": {p: row.state for p, row in rows.items()},
+        "contents": contents,
         "files": sorted(f for f in files if f not in tests),
         "tests": sorted((files & tests) | named),
         "edges": sorted(list(e) for e in edges),
@@ -217,11 +225,6 @@ async def record(dbs: dict[str, str], out: str, ids: str | None) -> None:
                 "ids": sorted(f["id"] for f in mine),
                 **await record_slice(db, [f["path"] for f in mine]),
             }
-            claimed = {p for p, state in repos[repo]["states"].items() if state == "type_only"}
-            if claimed:
-                raise SystemExit(
-                    f"type-only files cannot replay without a checkout: {sorted(claimed)}"
-                )
     Path(out).write_text(json.dumps({"repos": repos}, indent=0) + "\n", encoding="utf-8")
 
 

@@ -39,9 +39,12 @@ def _score(states: dict[str, str], ids: list[str]) -> tuple[int, int, int]:
     return right, wrong, missed
 
 
-async def _replay(session, recorded: dict) -> dict[str, str]:
-    # No checkout on disk, so nothing is judged type-only; the recorder refuses type-only files.
-    repo = await insert_repo(session, local_path=str(FIXTURE / "no-checkout"))
+async def _replay(session, recorded: dict, checkout: Path) -> dict[str, str]:
+    # The checkout holds only the files recorded as type-only, which is all the rule reads.
+    for path, text in recorded["contents"].items():
+        (checkout / path).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / path).write_text(text, encoding="utf-8")
+    repo = await insert_repo(session, local_path=str(checkout))
     session.add_all(GraphNode(repository_id=repo.id, node_id=p) for p in recorded["files"])
     session.add_all(
         GraphNode(repository_id=repo.id, node_id=p, is_test=True) for p in recorded["tests"]
@@ -63,9 +66,9 @@ async def _replay(session, recorded: dict) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("repo", sorted(SLICE))
-async def test_untested_rule_does_not_regress_on_labelled_slice(async_session, repo):
+async def test_untested_rule_does_not_regress_on_labelled_slice(async_session, repo, tmp_path):
     recorded = SLICE[repo]
-    states = await _replay(async_session, recorded)
+    states = await _replay(async_session, recorded, tmp_path)
     right, wrong, missed = _score(states, recorded["ids"])
     was_right, was_wrong, was_missed = _score(recorded["states"], recorded["ids"])
     detail = {
