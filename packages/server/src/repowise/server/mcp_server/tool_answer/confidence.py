@@ -198,9 +198,15 @@ _VALUE_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# file.py:123 / file.py:123-145 — line refs the LLM adds for citations are
-# not value assertions and must not feed the grounding check.
-_FILE_LINE_REF_RE = re.compile(r"[\w./-]+:\d+(?:-\d+)?")
+# file.py:123 / file.py:123-145 / (line 27) / lines 26-27 / L40-L52: line refs
+# the LLM adds for citations are not value assertions and must not feed the
+# grounding check. The prompt prints each body's line range, so answers cite them.
+_FILE_LINE_REF_RE = re.compile(
+    r"[\w./-]+:\d+(?:-\d+)?"
+    r"|\blines?\s+\d+(?:\s*(?:-|–|to|and|through)\s*\d+)?"
+    r"|\bL\d+(?:\s*-\s*L?\d+)?\b",
+    re.IGNORECASE,
+)
 
 # Standalone numbers (int or decimal). Lookarounds keep version-ish and
 # identifier-embedded digits (v2, utf-8, sha256, 2.5.1) out while still
