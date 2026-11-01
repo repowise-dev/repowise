@@ -103,11 +103,11 @@ Last, :func:`~.walk.use_walk` lets reach cross packages on symbol evidence:
 call edges back from the file's symbols (``DEFAULT_CALL_DEPTH``) to code in
 other files that calls into it, then the tests that call that code or load its
 file. Importing something that imports the file is not enough, a symbol with
-more than ``HUB_MIN_FAN_IN`` callers neither carries nor joins, and a
+more than ``HUB_MIN_FAN_IN`` callers in code neither carries nor joins, and a
 ``conftest.py`` loading every router is no test. Files with no code of their
 own (re-export barrels, ``package-info.java``) are ``type_only``. On the
 labelled set in ``tests/fixtures/untested_eval`` (149 files, Python,
-TypeScript, Go, Java), precision of "untested" rose from 55% to 83% with
+TypeScript, Go, Java), precision of "untested" rose from 55% to 84% with
 recall of real gaps unchanged at 88%.
 
 Why recall reads low, and why that is not the graph's fault

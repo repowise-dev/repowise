@@ -381,7 +381,7 @@ def _join_symbols(
         if not frontier:
             break
         callers = yield from _callers_of(frontier)
-        hubs.update(c for c, who in callers.items() if len(who) > HUB_MIN_FAN_IN)
+        hubs.update(c for c, who in callers.items() if _is_hub(who, test_files))
         if level == max_depth:
             break
         frontier = _carry_to_callers(callers, origins, joins, test_files)
@@ -390,6 +390,11 @@ def _join_symbols(
         for seed, symbols in joins.items()
         if any(s not in hubs for s in symbols)
     }
+
+
+def _is_hub(callers: list[str], test_files: Collection[str]) -> bool:
+    """More than ``HUB_MIN_FAN_IN`` callers in code: tests calling a function make it tested, not a hub."""
+    return sum(file_of_symbol(c) not in test_files for c in callers) > HUB_MIN_FAN_IN
 
 
 def _seed_symbols(seeds: list[str]) -> Walk[dict[str, set[str]]]:
@@ -419,7 +424,7 @@ def _carry_to_callers(
     start = {callee: frozenset(origins.get(callee, ())) for callee in callers}
     queued: dict[str, None] = {}
     for callee, who in callers.items():
-        if len(who) > HUB_MIN_FAN_IN:
+        if _is_hub(who, test_files):
             continue
         for caller in who:
             owner = file_of_symbol(caller)

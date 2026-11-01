@@ -128,8 +128,9 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     if not paths:
         return rows
     test_files = await cached_test_files(session, repo_id)
+    # No file nodes at all is no index to judge "new" by, not a repository of new files.
     try:
-        indexed_files = await cached_file_paths(session, repo_id)
+        indexed_files = await cached_file_paths(session, repo_id) or None
     except Exception:
         indexed_files = None
     for p in dict.fromkeys(paths):

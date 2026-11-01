@@ -269,9 +269,17 @@ async def _read_test_hints(
 
     # A file the index has not seen (one the change adds) gets no hint: the
     # graph cannot say which test reaches it, so "no test reaches this" would
-    # be a guess (``pr_blast.file_tests`` calls it ``new``).
-    indexed = await cached_file_paths(session, repository_id)
-    files = [f for f in pc.with_status("measured") if f.uncovered_ranges and f.file_path in indexed]
+    # be a guess (``pr_blast.file_tests`` calls it ``new``). No file nodes at
+    # all is no index to judge by, and every file keeps its hint.
+    try:
+        known = await cached_file_paths(session, repository_id)
+    except Exception:
+        known = frozenset()
+    files = [
+        f
+        for f in pc.with_status("measured")
+        if f.uncovered_ranges and (not known or f.file_path in known)
+    ]
     if not files:
         return {}
     paths = sorted(f.file_path for f in files)

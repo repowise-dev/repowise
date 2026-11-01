@@ -119,6 +119,8 @@ async def test_an_index_with_no_tests_hints_none(async_session):
 async def test_a_file_the_index_has_not_seen_gets_no_hint(async_session):
     """A new file: the graph cannot say no test reaches it, so it says nothing."""
     repo = await insert_repo(async_session)
+    async_session.add(GraphNode(repository_id=repo.id, node_id="old.py", node_type="file"))
+    await async_session.flush()
     pc = compute_patch_coverage({"a.py": {1}}, {"a.py": file_coverage("a.py", [], [1])})
 
     assert "a.py" not in await read_test_hints(async_session, repo.id, pc)
