@@ -170,6 +170,9 @@ FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("infra_plan", re.compile(r"^(?:terraform|tofu) plan\b|^helm (?:diff|upgrade)\b")),
     ("git_status", re.compile(r"^git status\b(?!.*--porcelain)")),
+    # `git log -p` prints diffs, which the hunk renderer keeps; the log
+    # renderer would reduce them to subject lines.
+    ("git_diff", re.compile(r"^git log\b.*\s(?:-p|--patch|-u)(?=\s|$)")),
     ("git_log", re.compile(r"^git log\b")),
     # `gh pr diff` emits a plain unified diff, so it distills as one. Only
     # this one gh subcommand is listed: `gh` at large includes mutations
@@ -182,6 +185,9 @@ FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("search_results", re.compile(r"^(rg\b|grep\b|egrep\b|fgrep\b|git grep\b)")),
     ("file_listing", re.compile(r"^(ls\b|tree\b|find\b|fd\b|git ls-files\b)")),
     ("logs", re.compile(r"^(tail\b|journalctl\b|docker logs\b|kubectl logs\b|cat\b.*\.log\b)")),
+    # One whole file and nothing else. `_file_read_gate` decides whether this
+    # particular file is worth it before anything is rewritten.
+    ("file_read", re.compile(r"^cat\s+[^\s|;&<>-][^\s|;&<>]*$")),
 )
 
 #: First tokens that are never worth wrapping: trivial, mutating, or
@@ -451,6 +457,26 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
     return tuple(families) or None
 
 
+def _chain_or_file_read(command: str) -> tuple[str, ...] | None:
+    """:func:`_chain_families`, plus ``cd <dir> && cat <file>`` as a file read.
+
+    That pair is how agents read a whole file. Inside a chain a read-only
+    ``cat`` is inert, so the pair is recognized here instead.
+    """
+    families = _chain_families(command)
+    if families or _EXPANSION_CHAR in command:
+        return families
+    tokens = list(tokenize(command.strip()))
+    if (
+        [t.kind for t in tokens] == ["arg", "arg", "op", "arg", "arg"]
+        and tokens[0].text == "cd"
+        and tokens[2].text in ("&&", ";")
+        and _classify_head(f"{tokens[3].text} {tokens[4].text}") == "file_read"
+    ):
+        return ("file_read",)
+    return None
+
+
 # Watch/follow modes are long-running; wrapping them buffers forever.
 _WATCH_RE = re.compile(r"--watch(?:all)?\b|--looponfail\b|(?:^|\s)-f\b.*\.log\b|--follow\b")
 
@@ -496,7 +522,7 @@ def classify(command: str, shell: str = SHELL_POSIX) -> str | None:
         return _classify_head(split[0])
     if shell == SHELL_POWERSHELL:
         return None
-    families = _chain_families(command)
+    families = _chain_or_file_read(command)
     return families[0] if families else None
 
 
@@ -625,6 +651,127 @@ BAIL_DISABLED = "disabled"  # this repo turned command rewriting off
 BAIL_FAMILY_OFF = "family_off"  # this family specifically is off
 BAIL_PERMISSION = "permission"  # agent cannot honour the decided posture
 BAIL_NO_DISTILL = "distill_not_on_path"  # `repowise` is not on PATH to run the rewrite
+BAIL_FILE_READ = "file_read_skip"  # not a large file with indexed symbols
+BAIL_REPEAT = "repeat"  # same command again right after its rewrite: runs raw
+
+#: Families whose identical next command, right after a rewrite, runs raw: a
+#: re-read of the same file says the outline was not enough. Not diffs: the
+#: same `git diff` after an edit asks for the new state, not for raw bytes.
+_REPEAT_RAW_FAMILIES = frozenset({"file_read"})
+#: Sessions remembered in the repeat state file; older ones drop off.
+_REPEAT_STATE_SESSIONS = 64
+
+
+def _file_read_worth_it(command: str, cwd: str, repo_root: str) -> bool:
+    """Whether a ``cat`` reads one large file the index holds symbols for.
+
+    Imported here, not at module scope: only a ``cat`` candidate pays for it,
+    and the module is stdlib-only (the distill filter shares it, so both read
+    the same target).
+    """
+    from repowise.core.distill.cat_target import (
+        MIN_FILE_LINES,
+        MIN_OUTPUT_CHARS,
+        has_indexed_symbols,
+        locate_index,
+        resolve_cat_path,
+    )
+
+    path = resolve_cat_path(command, cwd)
+    if path is None:
+        return False
+    try:
+        if os.path.getsize(path) < MIN_OUTPUT_CHARS:
+            return False
+        newlines = 0
+        with open(path, "rb") as fh:
+            while newlines < MIN_FILE_LINES:
+                chunk = fh.read(65536)
+                if not chunk:
+                    return False
+                newlines += chunk.count(b"\n")
+    except OSError:
+        return False
+    located = locate_index(path)
+    # Only a file in this repo's own index: the rewrite runs under this repo's
+    # permission posture.
+    if located is None or not _same_dir(os.path.dirname(os.path.dirname(located[0])), repo_root):
+        return False
+    return has_indexed_symbols(*located)
+
+
+def _late_bail(
+    family: str, command: str, cwd: str, repo_root: str, session_id: str
+) -> str | None:
+    """Why an allowed command of *family* still passes through, or None."""
+    if family == "file_read" and not _file_read_worth_it(command, cwd, repo_root):
+        return BAIL_FILE_READ
+    if family in _REPEAT_RAW_FAMILIES and _is_repeat(repo_root, session_id, cwd, command):
+        return BAIL_REPEAT
+    # Pass through when the rewrite could not run. Ceiling: an install that is
+    # only in an off-PATH venv gets no distill; the upgrade path is emitting
+    # the absolute script path, quoted per shell dialect and agent. This reads
+    # the hook's PATH; a shell profile that adds repowise only for the agent's
+    # shell reads as missing, which costs the savings, never the command.
+    if not _distill_on_path():
+        return BAIL_NO_DISTILL
+    return None
+
+
+def _same_dir(a: str, b: str) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except OSError:
+        return False
+
+
+def _repeat_state_path(repo_root: str) -> str:
+    return os.path.join(repo_root, ".repowise", "rewrite_last.json")
+
+
+def _load_repeat_state(repo_root: str) -> dict:
+    import json
+
+    try:
+        with open(_repeat_state_path(repo_root), encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _save_repeat_state(repo_root: str, state: dict) -> None:
+    import json
+
+    try:
+        with open(_repeat_state_path(repo_root), "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+    except OSError:
+        return
+
+
+def _is_repeat(repo_root: str, session_id: str, cwd: str, command: str) -> bool:
+    """True when *command* is the one this session's last rewrite ran; forgets it."""
+    if not session_id:
+        return False
+    state = _load_repeat_state(repo_root)
+    if state.get(session_id) != [cwd, command.strip()]:
+        return False
+    del state[session_id]
+    _save_repeat_state(repo_root, state)
+    return True
+
+
+def _remember_rewrite(repo_root: str, session_id: str, cwd: str, command: str) -> None:
+    """Record the command a rewrite just compacted, so an identical next one runs raw."""
+    if not session_id:
+        return
+    state = _load_repeat_state(repo_root)
+    state.pop(session_id, None)
+    state[session_id] = [cwd, command.strip()]
+    for stale in list(state)[:-_REPEAT_STATE_SESSIONS]:
+        del state[stale]
+    _save_repeat_state(repo_root, state)
 
 
 def _distill_on_path() -> bool:
@@ -652,7 +799,11 @@ def decide(
 
 
 def _decide(
-    command: str, cwd: str, shell: str = "posix", source: str | None = None
+    command: str,
+    cwd: str,
+    shell: str = "posix",
+    source: str | None = None,
+    session_id: str = "",
 ) -> tuple[RewriteResult | None, str, str | None]:
     """:func:`decide`, plus why it said no and which repo it was asked about.
 
@@ -675,7 +826,7 @@ def _decide(
     elif command and shell != SHELL_POWERSHELL:
         # A chain is POSIX shell syntax by construction (`&&`, `;`, `|`), so
         # it is only ever offered to the POSIX dialect.
-        chain = _chain_families(command) or ()
+        chain = _chain_or_file_read(command) or ()
         if not chain:
             return None, BAIL_SHAPE, _find_repo_root(cwd)
         family, needs_inner_shell = chain[0], True
@@ -700,13 +851,9 @@ def _decide(
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
-    # Pass through when the rewrite could not run. Ceiling: an install that is
-    # only in an off-PATH venv gets no distill; the upgrade path is emitting
-    # the absolute script path, quoted per shell dialect and agent. This reads
-    # the hook's PATH; a shell profile that adds repowise only for the agent's
-    # shell reads as missing, which costs the savings, never the command.
-    if not _distill_on_path():
-        return None, BAIL_NO_DISTILL, repo_root
+    late_bail = _late_bail(family, command, cwd, repo_root, session_id)
+    if late_bail is not None:
+        return None, late_bail, repo_root
 
     # The --source tag lands in the savings ledger so `repowise saved
     # --by source` can tell hook surfaces apart from direct CLI use — and,
@@ -768,7 +915,11 @@ def main() -> None:
         if request is not None:
             source = adapter.savings_source
             result, reason, repo_root = _decide(
-                request.command, request.cwd, request.shell, source=source
+                request.command,
+                request.cwd,
+                request.shell,
+                source=source,
+                session_id=request.session_id,
             )
             outcome = BAILED
             # An agent that can't honor the decided posture gets a
@@ -781,6 +932,8 @@ def main() -> None:
                     outcome = REWRITTEN
                 else:
                     reason = BAIL_PERMISSION
+            if outcome == REWRITTEN and repo_root and reason in _REPEAT_RAW_FAMILIES:
+                _remember_rewrite(repo_root, request.session_id, request.cwd, request.command)
             _count_decision(repo_root, request.session_id, outcome, reason)
     except (SystemExit, KeyboardInterrupt):
         raise

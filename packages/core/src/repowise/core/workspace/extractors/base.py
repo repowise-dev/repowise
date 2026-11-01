@@ -143,6 +143,7 @@ class ScanContext:
     content: str
     mounts: Mapping[str, str] = field(default_factory=dict)
     index: RepoIndex | None = None
+    repo_root: Path | None = None
     _memo: _FileMemo = field(default_factory=_FileMemo, init=False, repr=False, compare=False)
 
     def has_any(self, tokens: tuple[str, ...]) -> bool:
