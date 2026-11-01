@@ -591,3 +591,34 @@ describe("empty and failed lanes", () => {
     expect(screen.getByText(/Couldn't load this lane/)).toBeInTheDocument();
   });
 });
+
+describe("a record with no recorded date", () => {
+  // The shared type says `string`, but a host whose schema allows a null
+  // timestamp sends one, and a single such row must not take down the queue.
+  const undated = () => record({ created_at: null as unknown as string });
+
+  it("renders the row with an empty-date mark and no date tooltip", () => {
+    renderLanes("candidates", { decisions: [undated()] });
+
+    expect(screen.getByText("Use JWT for authentication")).toBeInTheDocument();
+    const marks = screen.getAllByText("—");
+    expect(marks.length).toBeGreaterThan(0);
+    for (const mark of marks) expect(mark).not.toHaveAttribute("title");
+  });
+
+  it("leaves the recorded date out of the drawer header", () => {
+    renderLanes("candidates", { decisions: [undated()] });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
+    expect(drawer.queryByText(/recorded/)).not.toBeInTheDocument();
+  });
+
+  it("shows the recorded date in the drawer header when there is one", () => {
+    renderLanes("candidates");
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
+    expect(drawer.getByText(/recorded Jan 1, 2026/)).toBeInTheDocument();
+  });
+});

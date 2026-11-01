@@ -127,9 +127,24 @@ export function formatRelativeTimeOrNull(
   return formatRelativeTime(d);
 }
 
-/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC) */
-export function formatDate(date: string | Date): string {
+/** What the absolute date formatters render for a missing or unparseable
+ *  date, the same mark `formatRelativeTimeOrNull` uses. */
+const NO_DATE = "—";
+
+/** `parseDate` for a value that may be absent: null for a missing or
+ *  unparseable one. `Intl.DateTimeFormat.format` throws a RangeError on an
+ *  Invalid Date, so a single bad row would otherwise take down a whole table. */
+function parseDateOrNull(date: Timestamp | null | undefined): Date | null {
+  if (date == null || date === "") return null;
   const d = parseDate(date);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC).
+ *  A missing or unparseable date renders as "—". */
+export function formatDate(date: Timestamp | null | undefined): string {
+  const d = parseDateOrNull(date);
+  if (d == null) return NO_DATE;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -138,9 +153,11 @@ export function formatDate(date: string | Date): string {
   }).format(d);
 }
 
-/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC) */
-export function formatDateTime(date: string | Date): string {
-  const d = parseDate(date);
+/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC).
+ *  A missing or unparseable date renders as "—". */
+export function formatDateTime(date: Timestamp | null | undefined): string {
+  const d = parseDateOrNull(date);
+  if (d == null) return NO_DATE;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",

@@ -486,7 +486,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       render: (d) => (
         <span
           className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
-          title={formatDate(d.created_at)}
+          title={d.created_at ? formatDate(d.created_at) : undefined}
         >
           {formatRelativeTimeOrNull(d.created_at)}
         </span>
