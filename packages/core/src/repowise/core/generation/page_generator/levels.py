@@ -253,6 +253,15 @@ def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
     return [{"title": g.display, "path": g.key} for g in children]
 
 
+def _is_empty_module(file_contexts: list[Any], has_parts: bool) -> bool:
+    """Nothing to write about: no parts, and no file defines or imports anything.
+
+    A 0-byte ``__init__.py`` grouped on its own got a page of sentences saying
+    there was nothing to say. Any symbol or import keeps the page.
+    """
+    return not has_parts and all(not fc.symbols and not fc.dependencies for fc in file_contexts)
+
+
 def _execution_flows(graph_builder: Any) -> list[Any]:
     """The run's traced execution flows, for module pages that host one."""
     try:
@@ -288,6 +297,9 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             continue
         page_id = compute_page_id("module_page", mg.key)
         if not run._emit(page_id):
+            continue
+        if _is_empty_module(fcs, bool(getattr(mg, "is_rollup", False))):
+            log.info("module_page.skipped_empty", target_path=mg.key, members=len(material))
             continue
         coros.append(
             (
