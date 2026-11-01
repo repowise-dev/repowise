@@ -14,6 +14,8 @@ type Timestamp = string | Date;
  */
 export function parseDate(date: Timestamp): Date {
   if (date instanceof Date) return date;
+  // A date-only string already parses as UTC, and "2026-06-23Z" is invalid in Safari.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
   // No timezone suffix (`Z`/`z` or `+HH:MM`)? Treat the wall-clock as UTC.
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return new Date(`${date.trim()}Z`);
