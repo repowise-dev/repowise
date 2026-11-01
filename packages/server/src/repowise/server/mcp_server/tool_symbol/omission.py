@@ -99,5 +99,10 @@ def _resolve_omission_ref(
     if query is not None:
         response["query"] = query
         if not record.get("content"):
-            response["note"] = "No lines matched the query; omit query for the full content."
+            lines_total = record.get("lines_total")
+            response["lines_total"] = lines_total
+            response["note"] = (
+                f"No lines matched the query; the ref holds {lines_total} lines in total — "
+                "omit query for the full content."
+            )
     return response

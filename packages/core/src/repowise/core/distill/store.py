@@ -158,9 +158,10 @@ class OmissionStore:
     def get_record(self, ref: str, *, query: str | None = None) -> dict | None:
         """Like :meth:`get` but with the row's provenance metadata.
 
-        Returns ``{content, source, created_at, original_tokens, kept_tokens}``
-        or ``None`` when the ref is unknown/expired. *query* filters the
-        content lines exactly as in :meth:`get`.
+        Returns ``{content, source, created_at, original_tokens, kept_tokens,
+        lines_total}`` or ``None`` when the ref is unknown/expired. *query*
+        filters the content lines exactly as in :meth:`get`; ``lines_total``
+        always counts the unfiltered stored content.
         """
         from repowise.core.distill.markers import normalize_ref
 
@@ -179,6 +180,7 @@ class OmissionStore:
         )
         self._conn.commit()
         content = zlib.decompress(row[0]).decode("utf-8")
+        lines_total = len(content.splitlines())
         if query is not None:
             content = _filter_lines(content, query)
         return {
@@ -187,6 +189,7 @@ class OmissionStore:
             "created_at": row[2],
             "original_tokens": row[3],
             "kept_tokens": row[4],
+            "lines_total": lines_total,
         }
 
     def prune(self) -> None:

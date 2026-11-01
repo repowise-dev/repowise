@@ -41,8 +41,11 @@ def test_get_record_returns_provenance(store: OmissionStore) -> None:
     assert record["original_tokens"] == 50
     assert record["kept_tokens"] == 5
     assert record["created_at"] >= before
-    # Query filtering applies to the record's content too.
+    # Query filtering applies to the record's content too, while lines_total
+    # keeps counting the unfiltered stored content.
     assert store.get_record(ref, query="^ERROR")["content"] == "ERROR boom"
+    assert store.get_record(ref, query="^ERROR")["lines_total"] == 2
+    assert record["lines_total"] == 2
     assert store.get_record("0" * 12) is None
 
 

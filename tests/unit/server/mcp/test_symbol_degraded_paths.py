@@ -90,7 +90,21 @@ async def test_omission_query_that_matches_nothing_says_how_to_get_everything(
     assert result["query"] == "zeta"
     assert not result["content"]
     assert result["note"].startswith("No lines matched the query")
+    assert result["lines_total"] == 2
+    assert "2 lines" in result["note"]
     assert "created_at" in result
+
+
+@pytest.mark.asyncio
+async def test_omission_query_with_matches_keeps_its_shape(setup_mcp, omission_stores):
+    """A query that matches must not gain the miss-only keys."""
+    from repowise.server.mcp_server import get_symbol
+
+    ref = _put(omission_stores["repo"], "alpha\nbeta\n")
+    result = await get_symbol(f"repowise#{ref}", query="beta")
+    assert result["content"] == "beta"
+    assert "note" not in result
+    assert "lines_total" not in result
 
 
 @pytest.mark.asyncio
