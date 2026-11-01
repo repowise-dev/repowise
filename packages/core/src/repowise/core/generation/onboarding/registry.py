@@ -53,6 +53,8 @@ class SubkindSpec:
                        wants it cannot silently receive an empty tuple. It
                        costs a batched store read, and a run emitting no
                        subkind that wants it does not pay for one.
+        needs_parts:   Populate ``OnboardingSignals.parts`` (the top-level
+                       parts and their page summaries), on the same terms.
     """
 
     slot: str
@@ -62,6 +64,7 @@ class SubkindSpec:
     evidence_references: EvidenceReferences | None = None
     deterministic: bool = False
     needs_module_corroboration: bool = False
+    needs_parts: bool = False
 
 
 _REGISTRY: dict[str, SubkindSpec] = {}

@@ -67,6 +67,8 @@ _SOURCES_GLUED = re.compile(r"(?<=\S)[ \t]*\n(?=Sources: )")
 #: The front page's prose range under the default style: the first-time
 #: reader's tour, with room for the parts narrative.
 _OVERVIEW_WORDS = (700, ORIENTATION_PROSE_WORD_BUDGET)
+#: Marks an onboarding context the caller did not build.
+_BUILD_CONTEXT = object()
 
 
 def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
@@ -649,14 +651,28 @@ class PerTypeGenerationMixin:
         self,
         spec: _onboarding.SubkindSpec,
         signals: _onboarding.OnboardingSignals,
+        *,
+        ctx: Any = _BUILD_CONTEXT,
+        next_title: str | None = None,
     ) -> GeneratedPage | None:
         """Generate one onboarding page from a registered subkind spec.
 
         Returns ``None`` when the subkind's gate fails (``build_context``
-        returned ``None``) — the slot is silently skipped for this repo.
+        returned ``None``): the slot is silently skipped for this repo. *ctx*
+        is the context when the caller built it already; *next_title* is the
+        page a reader opens after this one, linked at the end.
         """
+        if ctx is _BUILD_CONTEXT:
+            ctx = spec.build_context(signals)
+        page = await self._onboarding_page(spec, signals, ctx)
+        if page is not None and (next_title or "\nNext: **" in page.content):
+            page.content = _onboarding.with_next_link(page.content, next_title)
+        return page
+
+    async def _onboarding_page(
+        self, spec: _onboarding.SubkindSpec, signals: _onboarding.OnboardingSignals, ctx: Any
+    ) -> GeneratedPage | None:
         page_key = f"onboarding/{spec.slot}"
-        ctx = spec.build_context(signals)
         if ctx is None:
             log.debug("onboarding.gate_skipped", slot=spec.slot)
             self._disabled_source_evidence(page_key, "page_not_generated")
@@ -700,6 +716,7 @@ class PerTypeGenerationMixin:
             template_name,
             ctx=ctx,
             slot=spec.slot,
+            word_budget=getattr(ctx, "word_budget", None),
             exact_source_available=any(item.symbol is not None for item in evidence.included),
         )
         if evidence.rendered:

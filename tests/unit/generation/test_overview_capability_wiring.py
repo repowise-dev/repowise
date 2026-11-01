@@ -141,7 +141,7 @@ class _Gen:
         self.overview_kwargs = kwargs
         return object()
 
-    def generate_onboarding_page(self, spec: Any, signals: Any) -> object:
+    def generate_onboarding_page(self, spec: Any, signals: Any, **_kw: Any) -> object:
         self.onboarding_signals.append(signals)
         return object()
 
@@ -365,12 +365,12 @@ async def test_the_corroboration_corpus_is_built_once_for_both_levels(tmp_path):
     assert store.asked == asked_after_overview, "level 8 read the store a second time"
 
 
-async def test_a_run_with_no_glossary_page_does_not_build_the_corpus(tmp_path):
+async def test_a_run_with_no_page_needing_it_does_not_build_the_corpus(tmp_path):
     """A scoped run that asked for one onboarding page should not pay for a
-    store read that only the glossary consumes."""
+    store read that only the vocabulary pages and How It Works consume."""
     store = _Store({"src": "Evaluates the blast radius of a change."})
     run = _run(tmp_path, store=store)
-    run._emit = lambda page_id: "glossary" not in page_id
+    run._emit = lambda page_id: "getting_started" in page_id
 
     await build_level8_coros(run)
 

@@ -20,15 +20,13 @@ from repowise.core.generation.context_assembler import (
     SymbolSpotlightContext,
 )
 from repowise.core.generation.models import GenerationConfig
+from repowise.core.generation.onboarding.docs import DocSection
 from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
     HotDir,
     HotFile,
 )
-from repowise.core.generation.onboarding.subkinds.getting_started import (
-    GettingStartedContext,
-    ReadmeSection,
-)
+from repowise.core.generation.onboarding.subkinds.getting_started import GettingStartedContext
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.generation.structural_labels import structural_page_title
 from repowise.core.providers.llm.template import TemplateProvider
@@ -70,7 +68,7 @@ def test_getting_started_renders(generator):
         package_managers=["uv"],
         runtime_dependencies=[{"name": "httpx", "version": "0.27"}],
         dev_dependencies=[{"name": "pytest", "version": "9.0"}],
-        readme_sections=[ReadmeSection(heading="Install", body="Run `uv sync`.")],
+        user_docs=[DocSection("README.md", "Install", 3, 5, "## Install\n\nRun `uv sync`.", ())],
         entry_points=["src/main.py"],
     )
     page = generator._stub_onboarding_page(

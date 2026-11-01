@@ -797,22 +797,59 @@ async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if not emitted:
         return coros
 
+    signals = await _onboarding_signals(run, [spec for _page_id, spec in emitted])
+    # Contexts are built here rather than per page, so each page knows which
+    # page follows it: a slot whose gate fails is skipped in the reading order.
+    contexts = {spec.slot: spec.build_context(signals) for _page_id, spec in emitted}
+    present = _present_slots(gen, specs, contexts)
+    for page_id, spec in emitted:
+        nxt = _onboarding.next_slot(spec.slot, present)
+        title = _onboarding.SLOT_TITLES[nxt] if nxt else None
+        page = gen.generate_onboarding_page(
+            spec, signals, ctx=contexts[spec.slot], next_title=title
+        )
+        coros.append((page_id, page))
+    return coros
+
+
+def _present_slots(gen: Any, specs: list[Any], contexts: dict[str, Any]) -> set[str]:
+    """Slots that will have a page: built this run, or kept from an earlier one."""
+    prior = getattr(gen, "_prior_pages", {}) or {}
+    present = {slot for slot, ctx in contexts.items() if ctx is not None}
+    present |= {
+        spec.slot
+        for spec in specs
+        if spec.slot not in contexts
+        and compute_page_id("onboarding", _onboarding.target_path(spec.slot)) in prior
+    }
+    return present
+
+
+async def _onboarding_signals(run: _GenerationRun, specs: list[Any]) -> Any:
+    """The shared inputs of the onboarding pages this run writes."""
+    from .front_page import run_journeys, top_parts
+
     kg_layers: tuple[dict, ...] = ()
     kg_tour_steps: tuple[dict, ...] = ()
     if run.kg_ctx and run.kg_ctx.available:
         kg_layers = tuple(run.kg_ctx.get_layers())
         kg_tour_steps = tuple(run.kg_ctx.get_tour())
 
-    # The corpus costs a batched store read, so only a run emitting a subkind
-    # that declared it wants one pays for it. Memoised, so a run that also
-    # emits the overview builds it once for both.
+    # The corpus and the parts cost a batched store read, so only a run
+    # emitting a subkind that declared it wants one pays for it. Memoised, so a
+    # run that also emits the overview builds them once for both.
     module_corroboration = (
         tuple(await _module_corroboration(run))
-        if any(spec.needs_module_corroboration for _page_id, spec in emitted)
+        if any(spec.needs_module_corroboration for spec in specs)
+        else ()
+    )
+    parts = (
+        tuple(top_parts(run.sel_module_groups, await _module_summaries(run), run.source_map))
+        if any(spec.needs_parts for spec in specs)
         else ()
     )
 
-    signals = _onboarding.OnboardingSignals(
+    return _onboarding.OnboardingSignals(
         repo_name=run.repo_name,
         repo_structure=run.repo_structure,
         parsed_files=tuple(run.parsed_files),
@@ -833,7 +870,8 @@ async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         layer_order=tuple(run.layer_order),
         house_terms=_mine_house_terms(run),
         module_corroboration=module_corroboration,
+        doc_sources=_doc_sources(run),
+        journeys=tuple(run_journeys(run)),
+        parts=parts,
+        surfaces=_surfaces(run),
     )
-    for page_id, spec in emitted:
-        coros.append((page_id, gen.generate_onboarding_page(spec, signals)))
-    return coros

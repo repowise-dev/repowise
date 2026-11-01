@@ -62,6 +62,18 @@ class OnboardingSignals:
     # independently. Empty on every run that emits no page needing it, because
     # building it costs a store read.
     module_corroboration: tuple[str, ...] = ()
+    # The repository's documentation files (parsed Markdown plus the
+    # reStructuredText ingestion does not parse), read once per run.
+    doc_sources: dict[str, bytes] = field(default_factory=dict)
+    # The walkthrough pages written for the run's main operations, in plan
+    # order. How It Works is told from them. Empty when none are written yet.
+    journeys: tuple[Any, ...] = ()
+    # Top-level parts with their own page's description. Empty unless an
+    # emitted subkind declared it needs them (a store read on a scoped run).
+    parts: tuple[Any, ...] = ()
+    # What a user types or calls (``surface.Surfaces``), read once per run.
+    # ``None`` when the run did not build it; subkinds treat that as empty.
+    surfaces: Any = None
 
 
 def file_layer_map(signals: OnboardingSignals) -> dict[str, str]:

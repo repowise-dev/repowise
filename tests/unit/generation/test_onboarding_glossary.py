@@ -18,6 +18,7 @@ from repowise.core.generation.house_vocabulary import cell
 from repowise.core.generation.onboarding import get_spec
 from repowise.core.generation.onboarding.signals import OnboardingSignals
 from repowise.core.generation.onboarding.slots import SLOT_GLOSSARY
+from repowise.core.generation.onboarding.subkinds import glossary
 from repowise.core.generation.onboarding.subkinds.glossary import _build
 from repowise.core.generation.page_generator.structural import oneline
 from repowise.core.ingestion.models import RepoStructure
@@ -89,6 +90,24 @@ def _signals(terms, modules=MODULES) -> OnboardingSignals:
     )
 
 
+@pytest.fixture(autouse=True)
+def _small_gate(monkeypatch):
+    """Row behaviour is tested on six terms; the real floor has its own test."""
+    monkeypatch.setattr(glossary, "_GATE_MIN_TERMS", 5)
+
+
+def test_a_thin_vocabulary_gets_no_page(monkeypatch):
+    """Eleven defined terms read as a gap, not a glossary: the page is hidden."""
+    monkeypatch.undo()
+    assert glossary._GATE_MIN_TERMS == 12
+    words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+    words += ["golf", "hotel", "india", "juliet", "kilo", "lima"]
+    terms = [_term(w.title(), definition=f"{w.title()} is a defined idea.") for w in words]
+    modules = [f"{w.title()} Module\nUses {w}." for w in words]
+    assert _build(_signals(terms[:11], modules=modules[:11])) is None
+    assert _build(_signals(terms, modules=modules)) is not None
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -114,7 +133,7 @@ def test_the_skip_is_logged_with_the_counts_that_explain_it():
     event = next(e for e in logs if e["event"] == "onboarding.glossary_gate_skipped")
     assert event["mined"] == 4
     assert event["corroborated"] == 4
-    assert event["required"] == 5
+    assert event["required"] == 5  # the fixture floor; the real one is tested above
 
 
 def test_a_repository_that_mined_nothing_gets_no_page():
@@ -375,7 +394,7 @@ def test_a_deterministic_subkind_reaches_the_no_provider_path():
 
     from repowise.core.generation.page_generator import pertype
 
-    source = inspect.getsource(pertype.PerTypeGenerationMixin.generate_onboarding_page)
+    source = inspect.getsource(pertype.PerTypeGenerationMixin._onboarding_page)
     assert "spec.deterministic" in source
     assert "_model_free_onboarding_page" in source
 

@@ -15,7 +15,7 @@ defining is left off rather than given a plausible sentence, and a repository
 whose documents define too few terms gets no page. Both are the correct answers
 to a question this page cannot answer from the code.
 
-Gate: at least five defined terms survive corroboration. Below that the page
+Gate: at least twelve defined terms survive corroboration. Below that the page
 is a handful of rows pretending to be a vocabulary.
 """
 
@@ -32,9 +32,9 @@ from ..slots import SLOT_GLOSSARY, SLOT_TITLES
 
 log = structlog.get_logger(__name__)
 
-#: Below this the page is not a vocabulary. Five is the floor the track set:
-#: enough rows that a reader consults it rather than reads it.
-_GATE_MIN_TERMS = 5
+#: Below this the page is not a vocabulary: a handful of defined rows reads as
+#: a gap, and Key Concepts already explains the head of the same list.
+_GATE_MIN_TERMS = 12
 #: A lookup surface can be long — a reader scans for one row and ignores the
 #: rest — but not unbounded. Forty is roughly two screens and is far above what
 #: any repository measured so far corroborates.

@@ -1,4 +1,41 @@
-You are writing the "How It Works" page for `{{ ctx.repo_name }}` — the
+{% if ctx.journeys %}You are writing the "How It Works" page for `{{ ctx.repo_name }}`: the system explained as the journeys a user triggers, so a new engineer knows what happens behind each command or request before reading any one module.
+
+## Material
+
+### Walkthrough pages already written for the main operations
+Each was written from the code of that operation. Use their stages; link to them by title.
+{% for j in ctx.journeys %}
+#### {{ j.title }}
+{{ j.opening }}
+
+Stages:
+{{ j.stages }}
+{% endfor %}{% if ctx.arch_docs %}
+### Documentation the maintainers wrote about these journeys (most related first)
+{% for s in ctx.arch_docs %}
+From `{{ s.cite }}`:
+{{ s.text }}
+{% endfor %}{% endif %}{% if ctx.parts %}
+### Top-level parts (page title, path: what its own page says)
+{% for p in ctx.parts %}- **{{ p.title }}** (`{{ p.path }}`){% if p.summary %}: {{ p.summary }}{% endif %}
+{% endfor %}{% endif %}
+---
+
+## What to write
+
+Start the page with the line `# How It Works`.
+
+1. One sentence on what the system does for its user, then at most 2 naming the journeys the page follows.
+2. One mermaid `flowchart LR` under a bold one-line title, showing the whole lifecycle: the journeys as paths through the parts and stores, every edge labelled with the data that moves.
+3. One `##` section per journey, in the order a user meets them, headed by what the user does. Each is ONE paragraph of at most 4 sentences and about 80 words: what the user types or what calls it, what it produces and where it is stored, and the one thing worth knowing (what is skipped, how it ends early). Do not restate the walkthrough's stage list. End the section with "Full walkthrough: **<page title>**".
+{% if ctx.parts %}4. `## Where the parts live`: a table `Part | Role in the journeys`, one row per part above that a journey crosses, its page title in bold. No prose.
+{% endif %}5. `## Why it is shaped this way`: at most 4 short bullets, only reasons the documentation above states about these journeys. Omit the section if it states none.
+6. `## Where to read next`: at most 4 bullets, wiki pages named above, each its title in bold and half a line on why, with no citation.
+{% if not (style_states_length | default(false)) and ctx.word_budget %}
+Length: about {{ ctx.word_budget[0] }} to {{ ctx.word_budget[1] }} words.
+{% endif %}
+{% else %}
+You are writing the "How It Works" page for `{{ ctx.repo_name }}`: the
 page that turns the static architecture into a movie. One concrete
 end-to-end trace through the system, narrated phase by phase.
 
@@ -43,12 +80,12 @@ entry points and the archetype hint above.*
 ## What to write
 Produce a How It Works markdown page. Required structure:
 
-1. **## What this system does in one sentence** — open with a single,
+1. **## What this system does in one sentence**: open with a single,
    concrete sentence that captures the system's job, adapted to the
    archetype above (service / cli / library / pipeline / module). Say what a
    user or caller gets from it, the way its README would; name no helper,
    utility or file in this sentence.
-2. **## A walk through one example** — the heart of the page. Pick one
+2. **## A walk through one example**: the heart of the page. Pick one
    concrete example matching the archetype:
    - service → "when a request hits `<a real entry point>`, …"
    - cli → "when you run `<the real CLI entry>`, …"
@@ -73,11 +110,11 @@ Produce a How It Works markdown page. Required structure:
    unfamiliar, narrate the transition generically rather than inventing what the
    file does internally.
 {% endif %}
-3. **## Why it's shaped this way** — 2–3 sentences linking the flow to
+3. **## Why it's shaped this way**: 2 to 3 sentences linking the flow to
    the archetype: why this structure makes sense for a service / cli /
    etc. Do not invent decisions; restrict yourself to observations the
    flow itself supports.
-4. **## Where to read next** — a short bulleted list of 2–4 file paths
+4. **## Where to read next**: a short bulleted list of 2 to 4 file paths
    the reader should open after this page, pulled from the flow hops
    above. Each bullet gets a half-sentence reason ("where a request becomes
    a domain object", etc.).
@@ -98,3 +135,4 @@ Hard rules:
   sentences without a chronological or causal bridge.
 {% endif %}
 - Output markdown only. No preamble, no apologies, no closing summary.
+{% endif %}

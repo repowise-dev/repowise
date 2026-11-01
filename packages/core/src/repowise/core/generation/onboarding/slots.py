@@ -29,13 +29,15 @@ that was built before the cut.
 
 from __future__ import annotations
 
+import re
+
 # Generation version for onboarding pages. Folded into every onboarding
 # page's source_hash, so bumping it forces a one-time regeneration of all
 # onboarding slots on an existing user's next docs update - even when the
 # rendered prompt is byte-identical. Bump when a builder or template change
 # should reach already-cached pages. (File pages have an equivalent in
 # ``_generation_fingerprint``; onboarding pages had none until this.)
-ONBOARDING_GENERATION_VERSION = "4"
+ONBOARDING_GENERATION_VERSION = "5"
 
 # ---- Slot identifiers ----
 
@@ -49,14 +51,16 @@ SLOT_GLOSSARY = "glossary"
 # Fixed reading order. Slots not yet implemented are silently skipped at
 # generation time and absent from the UI tree.
 #
-# The glossary is last on purpose: it is a lookup surface rather than a reading
-# step, and a reader who does not yet know the vocabulary is not helped by
-# meeting all of it at once.
+# How It Works comes before Key Concepts: a reader who has followed the main
+# journeys meets the concepts already knowing where they act. The glossary is
+# last on purpose: it is a lookup surface rather than a reading step, and a
+# reader who does not yet know the vocabulary is not helped by meeting all of
+# it at once.
 ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_PROJECT_OVERVIEW,
     SLOT_GETTING_STARTED,
-    SLOT_KEY_CONCEPTS,
     SLOT_HOW_IT_WORKS,
+    SLOT_KEY_CONCEPTS,
     SLOT_ACTIVE_LANDSCAPE,
     SLOT_GLOSSARY,
 )
@@ -83,3 +87,31 @@ SLOT_TITLES: dict[str, str] = {
 def target_path(slot: str) -> str:
     """Canonical wiki ``target_path`` for an onboarding slot."""
     return f"onboarding/{slot}"
+
+
+#: A trailing "Next:" line, matched so a reused page gets the current one.
+_NEXT_LINE = re.compile(r"\n*^Next: \*\*[^*\n]+\*\*[ \t]*$\n?", re.MULTILINE)
+#: The provenance footer a structure-only page ends with.
+_FOOTER = "\n---\n"
+
+
+def next_slot(slot: str, present: set[str]) -> str | None:
+    """The slot a reader opens after *slot*: the next one in reading order that exists."""
+    after = ONBOARDING_ORDER[ONBOARDING_ORDER.index(slot) + 1 :]
+    return next((s for s in after if s in present), None)
+
+
+def with_next_link(content: str, title: str | None) -> str:
+    """*content* ending with one ``Next: **<title>**`` line, above any provenance footer.
+
+    Idempotent: an earlier Next line is replaced, so a reused page carries the
+    current reading order rather than the one it was written under.
+    """
+    body = _NEXT_LINE.sub("\n", content).rstrip() + "\n"
+    if not title:
+        return body
+    line = f"\nNext: **{title}**\n"
+    cut = body.rfind(_FOOTER)
+    if cut == -1:
+        return body + line
+    return body[:cut].rstrip() + "\n" + line + body[cut:]

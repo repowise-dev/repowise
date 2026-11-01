@@ -157,7 +157,8 @@ def rank_sections(
     heading_words = [w.lower() for w in heading_words]
     scored: list[tuple[float, DocSection]] = []
     for s in sections:
-        if not path_filter(s.path):
+        # A heading with nothing under it says nothing a page can use.
+        if not path_filter(s.path) or "\n" not in s.text.strip():
             continue
         low, head = s.text.lower(), s.heading.lower()
         score = sum(low.count(p) for p in phrases) + 3 * sum(p in head for p in phrases)

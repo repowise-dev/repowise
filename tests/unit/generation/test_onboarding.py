@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -383,8 +384,7 @@ Run `pip install -e .`.
     sig = _signals(files=[_file("src/a.py")], source_map={"README.md": readme})
     ctx = spec.build_context(sig)
     assert ctx is not None
-    headings = {s.heading for s in ctx.readme_sections}
-    assert "Install" in headings
+    assert "Installation" in {s.heading for s in ctx.user_docs}
 
 
 def test_getting_started_reads_ranked_contributor_setup_documents() -> None:
@@ -402,13 +402,11 @@ def test_getting_started_reads_ranked_contributor_setup_documents() -> None:
 
     ctx = spec.build_context(sig)
 
+    # The user path comes from the README; contributing is the second block.
     assert ctx is not None
-    assert ctx.readme_sections[0].source_path == ".github/CONTRIBUTING.md"
-    assert "uv sync --all-packages" in ctx.readme_sections[0].body
-    assert {section.source_path for section in ctx.readme_sections} == {
-        ".github/CONTRIBUTING.md",
-        "README.md",
-    }
+    assert [d.path for d in ctx.user_docs] == ["README.md"]
+    assert ctx.dev_docs[0].path == ".github/CONTRIBUTING.md"
+    assert "uv sync --all-packages" in ctx.dev_docs[0].text
 
 
 def test_getting_started_keeps_root_readme_when_nested_guides_fill_cap() -> None:
@@ -425,25 +423,22 @@ def test_getting_started_keeps_root_readme_when_nested_guides_fill_cap() -> None
     ctx = spec.build_context(_signals(files=[_file("src/a.py")], source_map=source_map))
 
     assert ctx is not None
-    assert "README.md" in {section.source_path for section in ctx.readme_sections}
+    assert "README.md" in {section.path for section in ctx.user_docs}
 
 
-def test_getting_started_reserves_root_readme_section_when_guides_fill_section_cap() -> None:
+def test_getting_started_reads_a_quickstart_guide_in_rst() -> None:
     spec = onboarding.get_spec(SLOT_GETTING_STARTED)
     assert spec is not None
-    many_sections = "\n".join(
-        f"## Setup option {i}\n\nRun contributor setup {i}." for i in range(12)
-    ).encode()
-    source_map = {
-        "README.md": b"# Project\n\n## Usage\n\nRun the root tool.\n",
-        "CONTRIBUTING.md": many_sections,
-    }
+    guide = b"Quickstart\n==========\n\nInstall it with ``pip install cool``.\n"
+    sig = _signals(files=[_file("src/a.py")], source_map={})
+    sig = replace(sig, doc_sources={"docs/start/quickstart.rst": guide})
 
-    ctx = spec.build_context(_signals(files=[_file("src/a.py")], source_map=source_map))
+    ctx = spec.build_context(sig)
 
     assert ctx is not None
-    assert len(ctx.readme_sections) == 10
-    assert ctx.readme_sections[-1].source_path == "README.md"
+    assert [(d.path, d.heading) for d in ctx.user_docs] == [
+        ("docs/start/quickstart.rst", "Quickstart")
+    ]
 
 
 def test_getting_started_uses_exact_manifest_scripts_without_a_readme() -> None:
@@ -470,7 +465,7 @@ def test_getting_started_uses_exact_manifest_scripts_without_a_readme() -> None:
         ("lint", "npm run lint", "."),
         ("start", "npm run start", "packages/app"),
     ]
-    assert ctx.readme_sections == []
+    assert ctx.user_docs == [] and ctx.dev_docs == []
 
 
 def test_getting_started_prioritizes_root_manifest_and_setup_scripts() -> None:
@@ -569,11 +564,12 @@ async def test_getting_started_uses_shared_bounded_source_evidence_channel() -> 
 
     assert page is not None
     prompt = provider.calls[0]["user_prompt"]
-    assert '<repository-file path=".github/CONTRIBUTING.md">' in prompt
+    # The contributor guide is in the prompt once, as a cited section; only the
+    # manifest, whose script keys are untrusted, goes through the evidence channel.
+    assert "From `.github/CONTRIBUTING.md:" in prompt
     assert '<repository-file path="package.json">' in prompt
     assert prompt.count("uv sync --all-packages") == 1
     assert page.metadata["source_evidence"]["included"] == [
-        {"path": ".github/CONTRIBUTING.md", "truncated": False},
         {"path": "package.json", "truncated": False},
     ]
 
@@ -590,30 +586,47 @@ def test_key_concepts_skipped_when_too_few_concepts() -> None:
     assert spec.build_context(sig) is None
 
 
+_CONCEPTS = ("Blast radius", "Hotspot", "Change risk", "Dead code", "Wiki page")
+
+
+def _concept_signals(terms: tuple[str, ...] = _CONCEPTS) -> OnboardingSignals:
+    """Signals whose documents define *terms* and whose module groups name them."""
+    from repowise.core.generation.concept_tree.vocabulary import HouseTerm
+
+    house = tuple(
+        HouseTerm(
+            term=t,
+            definition=f"{t} is the idea number {i} this project is built around.",
+            definition_source="docs/concepts.md",
+            source_paths=("README.md", "docs/concepts.md"),
+            doc_frequency=5 - i,
+            code_frequency=3,
+            is_indexed_symbol=False,
+        )
+        for i, t in enumerate(terms)
+    )
+    return replace(
+        _signals(files=[_file("src/a.py")]),
+        house_terms=house,
+        module_corroboration=tuple(f"{t} Analysis\nHow {t.lower()} is computed." for t in terms),
+    )
+
+
 def test_key_concepts_fires_with_enough_concepts() -> None:
+    """Concepts are the project's own defined terms, not its most-called symbols."""
     spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
     assert spec is not None
-    files = [
-        _file("src/handler.py", symbols=["Handler"]),
-        _file("src/router.py", symbols=["Router"]),
-        _file("src/middleware.py", symbols=["Middleware"]),
-        _file("src/session.py", symbols=["Session"]),
-        _file("src/util.py", symbols=["Util"]),
-    ]
-    # Boost the first four files into the top decile.
-    pagerank = {
-        "src/handler.py": 0.9,
-        "src/router.py": 0.8,
-        "src/middleware.py": 0.7,
-        "src/session.py": 0.6,
-        "src/util.py": 0.05,
-    }
-    sig = _signals(files=files, pagerank=pagerank)
-    ctx = spec.build_context(sig)
+    ctx = spec.build_context(_concept_signals())
     assert ctx is not None
-    assert len(ctx.concept_symbols) >= 4
-    names = {c.name for c in ctx.concept_symbols}
-    assert {"Handler", "Router", "Middleware", "Session"}.issubset(names)
+    assert {c.term for c in ctx.concepts} == set(_CONCEPTS)
+    assert ctx.concepts[0].source_path == "docs/concepts.md"
+    assert ctx.concepts[0].used_in == ("Blast radius Analysis",)
+
+
+def test_key_concepts_skipped_without_enough_defined_terms() -> None:
+    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
+    assert spec is not None
+    assert spec.build_context(_concept_signals(_CONCEPTS[:3])) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1347,22 +1360,7 @@ def _jinja_env() -> jinja2.Environment:
         ),
         (
             SLOT_KEY_CONCEPTS,
-            lambda: onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(
-                _signals(
-                    files=[
-                        _file("src/handler.py", symbols=["Handler"]),
-                        _file("src/router.py", symbols=["Router"]),
-                        _file("src/middleware.py", symbols=["Middleware"]),
-                        _file("src/session.py", symbols=["Session"]),
-                    ],
-                    pagerank={
-                        "src/handler.py": 0.9,
-                        "src/router.py": 0.8,
-                        "src/middleware.py": 0.7,
-                        "src/session.py": 0.6,
-                    },
-                )
-            ),
+            lambda: onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(_concept_signals()),
         ),
         (
             SLOT_HOW_IT_WORKS,
@@ -1459,3 +1457,57 @@ def test_how_it_works_renders_legacy_tour_steps() -> None:
     assert ctx.kg_tour_steps[0]["nodeIds"] == ["file:src/main.py"]
     rendered = _jinja_env().get_template("onboarding/how_it_works.j2").render(ctx=ctx)
     assert "`src/main.py`" in rendered
+
+
+# ---------------------------------------------------------------------------
+# How It Works from the walkthroughs; the archetype hint; the reading order
+# ---------------------------------------------------------------------------
+
+
+def _journeys(n: int) -> tuple:
+    from repowise.core.generation.onboarding.surface import Journey
+
+    return tuple(
+        Journey(f"How `tool cmd{i}` works", f"`run_cmd{i}` builds the store.", "1. Parse.")
+        for i in range(n)
+    )
+
+
+def test_how_it_works_is_told_from_the_walkthroughs() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    docs = {
+        "docs/architecture.md": b"# Architecture\n\n## Building\n\n`run_cmd0` writes the store.\n",
+        "docs/other.md": b"# Other\n\n## Chat\n\nThe chat panel streams replies.\n",
+    }
+    sig = replace(_signals(files=[_file("src/a.py")]), journeys=_journeys(2), doc_sources=docs)
+
+    ctx = spec.build_context(sig)
+
+    assert ctx is not None
+    assert [j.title for j in ctx.journeys] == ["How `tool cmd0` works", "How `tool cmd1` works"]
+    assert [s.path for s in ctx.arch_docs] == ["docs/architecture.md"]
+    assert spec.build_context(replace(sig, journeys=_journeys(4))).word_budget > ctx.word_budget
+
+
+def test_an_application_with_entry_points_is_not_a_library() -> None:
+    from repowise.core.generation.onboarding.subkinds.how_it_works import _classify_archetype
+    from repowise.core.ingestion.models import PackageInfo
+
+    sig = _signals(files=[_file("src/app/main.py", is_entry_point=True)])
+    packages = [PackageInfo(name="app", path="src/app", language="python", manifest_file=None, entry_points=[])]
+    sig = replace(sig, repo_structure=replace(sig.repo_structure, packages=packages))
+    assert _classify_archetype(sig)[0] != "library"
+    from repowise.core.generation.onboarding.surface import Surfaces
+
+    assert _classify_archetype(replace(sig, surfaces=Surfaces(programs=["tool"])))[0] == "cli"
+
+
+def test_the_next_page_skips_a_gated_slot() -> None:
+    from repowise.core.generation.onboarding import next_slot, with_next_link
+
+    present = {SLOT_GETTING_STARTED, SLOT_KEY_CONCEPTS}
+    assert next_slot(SLOT_GETTING_STARTED, present) == SLOT_KEY_CONCEPTS
+    page = with_next_link("# Getting Started\n\nBody.\n", "Key Concepts")
+    assert page.endswith("\nNext: **Key Concepts**\n")
+    assert with_next_link(page, "How It Works").count("Next: **") == 1

@@ -32,7 +32,9 @@ from .slots import (
     SLOT_KEY_CONCEPTS,
     SLOT_PROJECT_OVERVIEW,
     SLOT_TITLES,
+    next_slot,
     target_path,
+    with_next_link,
 )
 
 __all__ = [
@@ -51,6 +53,8 @@ __all__ = [
     "check_grounding",
     "get_spec",
     "iter_specs",
+    "next_slot",
     "register",
     "target_path",
+    "with_next_link",
 ]

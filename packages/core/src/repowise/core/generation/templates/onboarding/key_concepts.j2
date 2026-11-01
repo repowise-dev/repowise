@@ -1,110 +1,25 @@
-You are writing the "Key Concepts" page for `{{ ctx.repo_name }}` — a
-narrative that gives the reader the mental model needed to read the
-code. Not a glossary dump. Identify 3–6 load-bearing concepts and
-explain how they fit together.
+You are writing the "Key Concepts" page for `{{ ctx.repo_name }}`: the few words this project has for its own ideas, which a new engineer meets on every other page.
 
-{% if ctx.purpose_terms %}
-## Repository purpose vocabulary
-These terms come from the repository's own authoritative prose. Use them to
-decide which candidate symbols explain the product's purpose rather than merely
-ranking highly in the graph: {{ ctx.purpose_terms | join(", ") }}
-{% endif %}
+## Material
 
-{% if ctx.lifecycle_entry_points %}
-## Lifecycle boundaries
-These repository-relative entry-point paths anchor where work enters the
-system. Prefer a concept set that helps explain the path from a boundary into
-the major architectural layers: {% for path in ctx.lifecycle_entry_points %}`{{ path }}`{% if not loop.last %}, {% endif %}{% endfor %}
+### The project's own terms (term: the repository's own sentence about it, where it is written; the parts of the code that name it)
+{% for c in ctx.concepts %}- **{{ c.term }}**: {{ c.definition }} (`{{ c.source_path }}`){% if c.used_in %}; named in: {{ c.used_in | join(", ") }}{% endif %}
+{% endfor %}{% if ctx.layer_order %}
+### Layers of the code, top to bottom
+{{ ctx.layer_order | join(", ") }}
 {% endif %}
-
-## Candidate concepts (the symbols the rest of the system depends on most —
-## ground every concept you name in this list; do not invent new ones)
-{% for c in ctx.concept_symbols %}
-- **`{{ c.name }}`** ({{ c.kind }}) — `{{ c.file_path }}`{% if c.cluster %}, in cluster *{{ c.cluster }}*{% endif %}{% if c.cross_file_callers %}, used from {{ c.cross_file_callers }} places in other files{% endif %}
-{% if c.signature %}
-  Declared as: `{{ c.signature }}`
-{% endif %}
-{% if c.members %}
-  Public members: {% for m in c.members %}`{{ m }}`{% if not loop.last %}, {% endif %}{% endfor %}
-{% endif %}
-{% if c.docstring %}
-  > {{ c.docstring }}
-{% endif %}
-{% endfor %}
-
-{% if ctx.relations %}
-## How these concepts actually connect (from the dependency graph)
-These are the real edges between the concepts above. Base "How they
-connect" on these; do not assert a relationship that is not listed here.
-{% for r in ctx.relations %}
-- `{{ r.source }}` {{ r.verb }} `{{ r.target }}`
-{% endfor %}
-{% endif %}
-
-{% if ctx.layer_order %}
-## Architectural layers (top → bottom by dependency direction)
-Group the concepts by which layer they belong to when it clarifies the mental
-model; higher layers depend on lower ones.
-{% for layer in ctx.layer_order %}
-{{ loop.index }}. {{ layer }}
-{% endfor %}
-{% endif %}
-
-{% if ctx.community_labels %}
-## Architectural clusters present
-The codebase organises into these clusters (detected via dependency
-analysis). Use them as the structural backbone for grouping concepts.
-{% for label in ctx.community_labels %}
-- {{ label }}
-{% endfor %}
-{% endif %}
-
-{% if ctx.decision_titles %}
-## Architectural decisions you can lean on
-These ADR titles were extracted from the codebase. Reference them by
-title only — do not invent the body of a decision.
-{% for t in ctx.decision_titles %}
-- {{ t }}
-{% endfor %}
-{% endif %}
+---
 
 ## What to write
-Produce a Key Concepts markdown page. Required structure:
 
-1. **## Overview** — two or three sentences setting up what the reader is
-   about to learn: roughly how many concepts matter, and what kind of
-   system this is (service / library / CLI / compiler / …). Anchor the
-   framing to the cluster labels if present.
-2. **## Core concepts** — one subsection per concept (heading: `### \`Name\``,
-   matching the candidate list above exactly). Aim for 3–6 subsections.
-   For each:
-   - one short paragraph (2–4 sentences) saying what the concept is and
-     what code does with it, written only from its docstring, declaration
-     and public members above. If those do not say what it is for, say
-     what its members let a caller do and stop; never assign it a role,
-     layer or pipeline stage they do not state, and never remark on what
-     the information above does or does not say,
-   - a `**Where it lives:**` line citing the file path,
-   - if a docstring was supplied, weave it in — don't quote verbatim if
-     it's awkward.
-3. **## How they connect** — one paragraph (4–7 sentences) tracing how
-   the concepts collaborate. This is the section that turns the list
-   into a mental model. Ground every "X depends on Y" claim in the
-   dependency edges listed above, using the verb given there; if two
-   concepts have no listed edge, describe their relationship structurally
-   (same layer, shared cluster) rather than asserting a direct call. If
-   no edges were listed, keep this to how the clusters relate, not
-   symbol-to-symbol calls.
+Start the page with the line `# Key Concepts`.
 
-Hard rules:
-- Every concept name must appear in the candidate list above. If a
-  concept feels missing, it isn't — say so explicitly rather than
-  fabricating it.
-- Do not include code listings. Names + file paths are enough.
-- The chosen set should represent the repository purpose and lifecycle above,
-  not six variations of one graph-dominant subsystem. Preserve structural
-  diversity across layers/clusters when the candidates permit it.
-- Cite files only as backticked repository-relative paths. Never emit local
-  checkout/worktree paths or Markdown file URLs; the wiki resolves inline code
-  to file pages.
-- Output markdown only. No preamble, no apologies, no closing summary.
+1. One or two sentences on what these concepts are together: the mental model a reader needs before changing the code.
+2. One `###` section per term above, in the order given, headed by the term. Each is one short paragraph: what it is in plain words (from the repository's own sentence, never a new definition), why a newcomer needs it, and where to look (the part of the code that names it). End with the source path in backticks.
+3. `## How they connect`: at most 4 sentences relating the terms to each other, only as the sentences above relate them. Omit the section if they do not.
+4. `## Where to read next`: at most 3 bullets naming the parts above, each in bold, with no citation.
+
+Rules:
+- Only these terms. Write a term in backticks only when it is also a name in the code; otherwise in bold or plain.
+{% if not (style_states_length | default(false)) %}- Length: about 450 to 700 words.
+{% endif %}

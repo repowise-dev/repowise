@@ -119,7 +119,7 @@ class _Gen:
     def __init__(self) -> None:
         self.seen: list[Any] = []
 
-    def generate_onboarding_page(self, spec: Any, signals: Any) -> object:
+    def generate_onboarding_page(self, spec: Any, signals: Any, **_kw: Any) -> object:
         self.seen.append(signals)
         return object()
 
@@ -145,6 +145,7 @@ def _run(*, repo_path: Path | None) -> SimpleNamespace:
         graph_builder=SimpleNamespace(
             community_info=lambda: {},
             execution_flows=lambda: SimpleNamespace(flows=[]),
+            graph=lambda: __import__("networkx").DiGraph(),
         ),
         pagerank={},
         betweenness={},
@@ -164,6 +165,7 @@ def _run(*, repo_path: Path | None) -> SimpleNamespace:
         layer_order=(),
         kg_ctx=None,
         on_subphase=None,
+        flow_plans=lambda: [],
         _emit=lambda page_id: True,
     )
 
