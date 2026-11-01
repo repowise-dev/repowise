@@ -181,6 +181,11 @@ export interface AffectedSignal {
   module: string | null;
   /** A test file: a test to run, never code the change reaches. Absent from older servers. */
   is_test?: boolean;
+  /**
+   * Whether the index has the file. False for a file new since the last
+   * index run (no graph, health or owner yet); absent from older servers.
+   */
+  indexed?: boolean | null;
 }
 
 /** Who owns some of the changed files, by primary authorship. */

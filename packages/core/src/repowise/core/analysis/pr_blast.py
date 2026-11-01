@@ -470,10 +470,15 @@ class PRBlastRadiusAnalyzer:
         scored; ``is_hotspot`` is ``None`` for a file with no git history row.
         A missing signal is never read as healthy or cold. ``is_test`` lets a
         screen count the tests a change reaches apart from the code it reaches.
+        ``indexed`` is whether the index knows the file at all (a graph node, a
+        git history row or a health row): a file new since the last index run
+        has none of them, and a screen says so rather than calling it untested
+        or unowned. A doc or config file the graph skips still has history.
         """
         if not paths:
             return []
         hotspot: dict[str, bool] = {}
+        indexed: set[str] = set()
         health: dict[str, tuple[float | None, str | None]] = {}
         # Chunked: a branch can reach thousands of files and SQLite caps bound
         # parameters per statement.
@@ -495,6 +500,16 @@ class PRBlastRadiusAnalyzer:
                 )
             ):
                 health[path] = (score, module)
+            indexed.update(
+                (
+                    await self._session.execute(
+                        select(GraphNode.node_id).where(
+                            GraphNode.repository_id == self._repo_id,
+                            GraphNode.node_id.in_(chunk),
+                        )
+                    )
+                ).scalars()
+            )
         return [
             {
                 "path": p,
@@ -502,6 +517,7 @@ class PRBlastRadiusAnalyzer:
                 "health_score": health.get(p, (None, None))[0],
                 "module": health.get(p, (None, None))[1],
                 "is_test": p in test_files,
+                "indexed": p in indexed or p in hotspot or p in health,
             }
             for p in paths
         ]

@@ -110,6 +110,7 @@ export interface AffectedSignal {
   health_score?: number | null;
   module?: string | null;
   is_test?: boolean;
+  indexed?: boolean | null;
 }
 
 export interface AgentPromptResponse {

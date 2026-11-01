@@ -123,6 +123,9 @@ async def test_analyzes_a_branch_with_reach_edges_and_signals(client, session, t
     assert signals["core.py"]["health_score"] is None
     assert body["recommended_reviewers"][0]["name"] == "Ann Lee"
     assert signals["app.py"]["is_test"] is False
+    # Both files are graph nodes in the index; a file new since the last index is not.
+    assert signals["app.py"]["indexed"] is True
+    assert signals["core.py"]["indexed"] is True
     # Owners of the changed file itself; core.py has no history row, so none.
     assert body["changed_owners"] == []
     assert body["test_commands"] == []

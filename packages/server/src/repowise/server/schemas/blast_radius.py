@@ -164,6 +164,9 @@ class AffectedSignal(BaseModel):
     module: str | None = None
     #: A test file: counted as a test to run, never as code the change reaches.
     is_test: bool = False
+    #: Whether the index has the file. A file new since the last index run has
+    #: no graph, health or owner yet; ``None`` from a server that does not say.
+    indexed: bool | None = None
 
 
 class ChangedOwner(BaseModel):
