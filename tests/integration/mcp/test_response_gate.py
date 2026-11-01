@@ -86,6 +86,12 @@ _CALLS: list[tuple[str, str, dict[str, Any], tuple[str, ...]]] = [
     ("search_path", "search_codebase", {"query": "python_pkg/models.py"}, ("results",)),
     ("risk", "get_risk", {"targets": ["python_pkg/calculator.py"]}, ("targets",)),
     ("change_risk", "get_change_risk", {"revspec": "HEAD"}, ("directive",)),
+    (
+        "change_risk_per_commit",
+        "get_change_risk",
+        {"revspec": "HEAD~1..HEAD", "per_commit": True},
+        ("commits", "review"),
+    ),
     ("why", "get_why", {"query": "why does the calculator keep a history"}, ("mode",)),
     (
         "why_targeted",
