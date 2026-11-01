@@ -16,7 +16,9 @@ import {
   getDecisionLaneCounts,
   listDecisions,
   patchDecision,
+  reaffirmDecision,
 } from "@/lib/api/decisions";
+import { reviewEach } from "@repowise-dev/ui/decisions";
 import { useTranslations } from "next-intl";
 import { stripMarkdown } from "@repowise-dev/ui/lib/format";
 
@@ -38,10 +40,6 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   const t = useTranslations("decisions");
   // Null until the reader picks a lane, so the section can open on the queue.
   const [picked, setPicked] = React.useState<DecisionLane | null>(null);
-  // A set, not one id: two accepts can be in flight, and a single value let
-  // the first to resolve re-enable the second row's buttons while its own
-  // write was still running, so a second click double-wrote.
-  const [pending, setPending] = React.useState<ReadonlySet<string>>(new Set());
   const [page, setPage] = React.useState(0);
   const [source, setSource] = React.useState("all");
 
@@ -101,47 +99,11 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
     setPage(0);
   }, []);
 
-  const review = React.useCallback(
-    async (d: DecisionRecord, status: "active" | "dismissed") => {
-      setPending((prev) => new Set(prev).add(d.id));
-      try {
-        await patchDecision(repoId, d.id, { status });
-        toast.success(
-          status === "active"
-            ? t("review.accepted")
-            : t("review.dismissed"),
-        );
-        // Both, and in parallel: a review action moves a record between lanes,
-        // so refreshing the rows without the badges leaves every tab count
-        // contradicting the list under it.
-        await Promise.all([mutate(), mutateCounts()]);
-      } catch (err) {
-        // The acceptance contract refuses a record with no reason, scope or
-        // evidence, and it names which. Surface that sentence rather than a
-        // generic failure: it is the whole instruction for what to do next.
-        // Titled, because the drawer has already moved to the next record
-        // and the reader needs to know which one did not take.
-        toast.error(
-          stripMarkdown(d.title),
-          {
-            description:
-              err instanceof Error
-            ? status === "active"
-              ? t("review.acceptFailed", { message: err.message })
-              : t("review.dismissFailed", { message: err.message })
-            : t("review.actionFailed"),
-          },
-        );
-      } finally {
-        setPending((prev) => {
-          const next = new Set(prev);
-          next.delete(d.id);
-          return next;
-        });
-      }
-    },
-    [repoId, mutate, mutateCounts, t],
+  const refresh = React.useCallback(
+    () => Promise.all([mutate(), mutateCounts()]),
+    [mutate, mutateCounts],
   );
+  const { pending, review, dismissMany } = useReviewWrites(repoId, refresh);
 
   const rows = data ?? [];
 
@@ -172,8 +134,10 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       {...(counts ? { counts } : {})}
       source={source}
       onSourceChange={changeSource}
-      onAccept={(d) => void review(d, "active")}
-      onDismiss={(d) => void review(d, "dismissed")}
+      onAccept={(d) => void review(d, "accept")}
+      onDismiss={(d) => void review(d, "dismiss")}
+      onReaffirm={(d) => void review(d, "reaffirm")}
+      onDismissMany={dismissMany}
       pendingIds={pending}
       repoId={repoId}
       LinkComponent={Link}
@@ -209,6 +173,88 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       )}
     </div>
   );
+}
+
+
+/**
+ * The review writes and their in-flight set: one record at a time for the
+ * row and drawer verbs, a capped loop for a selection.
+ */
+function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
+  const t = useTranslations("decisions");
+  // A set, not one id: two accepts can be in flight, and a single value let
+  // the first to resolve re-enable the second row's buttons while its own
+  // write was still running, so a second click double-wrote.
+  const [pending, setPending] = React.useState<ReadonlySet<string>>(new Set());
+  const review = React.useCallback(
+    async (d: DecisionRecord, verb: "accept" | "dismiss" | "reaffirm") => {
+      setPending((prev) => new Set(prev).add(d.id));
+      try {
+        if (verb === "reaffirm") {
+          await reaffirmDecision(repoId, d.id);
+        } else {
+          await patchDecision(repoId, d.id, {
+            status: verb === "accept" ? "active" : "dismissed",
+          });
+        }
+        toast.success(
+          verb === "accept"
+            ? t("review.accepted")
+            : verb === "dismiss"
+              ? t("review.dismissed")
+              : t("review.reaffirmed"),
+        );
+        // Both, and in parallel: a review action moves a record between lanes,
+        // so refreshing the rows without the badges leaves every tab count
+        // contradicting the list under it.
+        await refresh();
+      } catch (err) {
+        // The acceptance contract refuses a record with no reason, scope or
+        // evidence, and it names which. Surface that sentence: it is the whole
+        // instruction for what to do next. Titled, because the drawer has
+        // already moved to the next record and the reader needs to know which
+        // one did not take.
+        const message = err instanceof Error ? err.message : null;
+        toast.error(stripMarkdown(d.title), {
+          description:
+            message === null
+              ? t("review.actionFailed")
+              : verb === "accept"
+                ? t("review.acceptFailed", { message })
+                : verb === "dismiss"
+                  ? t("review.dismissFailed", { message })
+                  : t("review.reaffirmFailed", { message }),
+        });
+      } finally {
+        setPending((prev) => {
+          const next = new Set(prev);
+          next.delete(d.id);
+          return next;
+        });
+      }
+    },
+    [repoId, refresh, t],
+  );
+
+  // One dismiss per record through the same write as the row verb. There is
+  // no bulk endpoint, and a page holds at most fifty rows, so a capped loop
+  // is enough; the lane reports what went through and what was refused.
+  const dismissMany = React.useCallback(
+    async (decisions: DecisionRecord[], onProgress: (settled: number) => void) => {
+      const result = await reviewEach(
+        decisions,
+        (d) => patchDecision(repoId, d.id, { status: "dismissed" }),
+        onProgress,
+      );
+      if (result.done.length > 0) {
+        toast.success(t("review.bulkDismissed", { count: result.done.length }));
+      }
+      await refresh();
+      return result;
+    },
+    [repoId, refresh, t],
+  );
+  return { pending, review, dismissMany };
 }
 
 /**

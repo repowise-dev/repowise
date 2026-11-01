@@ -142,7 +142,7 @@ async def get_symbol(
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
-            live range, or an omission ref.
+            live range, or an omission ref. A bare file path is not an id.
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
         query: omission refs only, regex/substring filter on lines. With

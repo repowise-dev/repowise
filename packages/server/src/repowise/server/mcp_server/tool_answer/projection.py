@@ -989,7 +989,8 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
         )
         await _refresh_freshness(payload, repo)
-        await attach_pointers(payload, repo)
+        # The lean projection may drop flow_path; the raw reply still says it walked a chain.
+        await attach_pointers(payload, repo, question, chain=bool(raw.get("flow_path")))
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)

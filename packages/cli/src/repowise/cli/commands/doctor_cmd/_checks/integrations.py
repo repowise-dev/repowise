@@ -117,32 +117,44 @@ def _registered_mcp_entry() -> dict | None:
     bill of health to the broken thing.
     """
     from repowise.cli.editor_integrations.claude_config import (
-        _claude_code_settings_path,
+        _claude_code_user_config_path,
         _stored_repowise_entry,
     )
 
-    return _stored_repowise_entry(_claude_code_settings_path())
+    return _stored_repowise_entry(_claude_code_user_config_path())
 
 
-def _unregistered_detail() -> tuple[str, bool]:
-    """``(detail, unreadable)``: why there is no entry, absent or present but unreadable.
+def _unregistered_detail() -> tuple[str, bool, bool]:
+    """``(detail, warn, repair)``: why there is no entry in ~/.claude.json.
 
-    Those have different fixes, and collapsing them tells a user with a
-    hand-broken settings.json to run ``init``, which will fail on the same
-    file. Only reached when there is no entry, so it costs nothing normally.
+    An unreadable file and an entry left only in settings.json (which Claude
+    Code does not read) are worth a warning; the latter is repaired by
+    re-registering. Absent, or served by the plugin, is a choice. Only reached
+    when there is no entry, so it costs nothing normally.
     """
     from repowise.cli.editor_integrations.claude_config import (
         _claude_code_settings_path,
+        _claude_code_user_config_path,
+        _is_our_entry,
+        _stored_repowise_entry,
+        claude_code_plugin_installed,
         load_existing_config,
     )
 
-    settings_path = _claude_code_settings_path()
-    if settings_path.exists():
+    config_path = _claude_code_user_config_path()
+    if config_path.exists():
         try:
-            load_existing_config(settings_path)
+            load_existing_config(config_path)
         except Exception:
-            return f"could not parse {settings_path}", True
-    return "not registered (repowise init registers it)", False
+            return f"could not parse {config_path}", True, False
+    if claude_code_plugin_installed():
+        return "served by the repowise Claude Code plugin", False, False
+    settings_path = _claude_code_settings_path()
+    legacy = _stored_repowise_entry(settings_path)
+    if legacy is not None and _is_our_entry(legacy):
+        detail = f"only in {settings_path}, which Claude Code does not read (rerun with --repair)"
+        return detail, True, True
+    return "not registered (repowise init registers it)", False, False
 
 
 @_functools.cache
@@ -187,7 +199,7 @@ def _claude_registration_check(
 ) -> tuple[DoctorCheck, bool]:
     """Detect a wedged Claude Code MCP registration (stale paths).
 
-    The global ``~/.claude/settings.json`` entry can end up pointing at a
+    The user-scope ``~/.claude.json`` entry can end up pointing at a
     directory that no longer exists (a moved repo, or a leaked temp path) or
     at a pinned command binary from a deleted venv; either way the MCP
     server silently fails to start in every Claude Code session. Returns
@@ -206,10 +218,12 @@ def _claude_registration_check(
     try:
         entry = _registered_mcp_entry()
         if entry is None:
-            # An unparseable settings file is worth a look; no entry at all is
-            # a choice (another agent, or none).
-            detail, unreadable = _unregistered_detail()
-            return _check(name, True, detail, check_id=check_id, warn=unreadable), False
+            # An unparseable config or a stranded entry is worth a look; no
+            # entry at all is a choice (another agent, or none).
+            detail, warn, repair = _unregistered_detail()
+            fix = "repowise doctor --repair" if repair else None
+            row = _check(name, True, detail, check_id=check_id, warn=warn, fix=fix)
+            return row, repair
 
         problems: list[str] = []
         command = entry.get("command")
@@ -291,10 +305,11 @@ def _claude_json_entries(repo_path: _DoctorPath) -> list[object]:
     """
     import json
 
+    from repowise.cli.editor_integrations.claude_config import _claude_code_user_config_path
     from repowise.cli.helpers import _same_path
 
     try:
-        data = json.loads((_DoctorPath.home() / ".claude.json").read_text(encoding="utf-8"))
+        data = json.loads(_claude_code_user_config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(data, dict):

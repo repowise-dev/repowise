@@ -122,6 +122,7 @@ dev = [
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
     "pytest-xdist>=3.5,<4",
+    "pytest-timeout>=2.3,<3",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
     "ruff>=0.6,<1",
@@ -185,6 +186,7 @@ dev = [
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
     "pytest-xdist>=3.5,<4",
+    "pytest-timeout>=2.3,<3",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
     "ruff>=0.6,<1",
@@ -268,3 +270,9 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 pythonpath = ["."]
+# A hung test fails here and names itself, instead of holding its xdist worker
+# until the CI job times out. The slowest tests take about 60 s on CI. The
+# thread method works for a hang in C code or a fixture teardown: it dumps every
+# thread's stack and ends the worker, which xdist reports against the test.
+timeout = 300
+timeout_method = "thread"

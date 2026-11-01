@@ -484,8 +484,56 @@ def merge_json_object_member(
 
     if edited == original:
         return FileAction.UNCHANGED
-    atomic_write_text(config_path, edited)
+    atomic_write_text(config_path, edited, newline=_file_newline(config_path))
     return FileAction.UPDATED
+
+
+def _file_newline(config_path: Path) -> str | None:
+    """The line ending the file already uses: CRLF if it has any, else LF.
+
+    A minimal edit read with universal newlines would otherwise write it back
+    in the platform's ending (an LF file as CRLF on Windows, a CRLF file as
+    LF elsewhere), touching every line of it.
+    """
+    try:
+        return "\r\n" if b"\r\n" in config_path.read_bytes() else "\n"
+    except OSError:
+        return None
+
+
+def remove_json_object_member(config_path: Path, container_key: str, member: str) -> FileAction:
+    """Surgically drop ``container_key.member``; the counterpart of :func:`merge_json_object_member`.
+
+    Every byte outside the member and one separator stays as it was. Returns
+    ``NOT_FOUND`` when the member is absent and ``REMOVED`` otherwise; raises
+    like :func:`load_json_object` on a file that is not strict JSON.
+    """
+    if not config_path.exists():
+        return FileAction.NOT_FOUND
+    original = config_path.read_text(encoding="utf-8")
+    load_json_object(config_path)  # validate; raises on non-strict JSON
+    root_start = _skip_ws(original, 0, len(original))
+    span = _find_object_member(original, root_start, len(original), container_key)
+    if span is None or original[span[2]] != "{":
+        return FileAction.NOT_FOUND
+    cstart, cend = span[2], span[3]
+    inner = _find_object_member(original, cstart, cend, member)
+    if inner is None:
+        return FileAction.NOT_FOUND
+    kstart, _, _, vend = inner
+    after = _skip_ws(original, vend, cend)
+    if original[after] == ",":
+        # Not the last member: drop it through the comma up to the next key.
+        edited = original[:kstart] + original[_skip_ws(original, after + 1, cend) :]
+    else:
+        before = kstart - 1
+        while before > cstart and original[before] in " \t\r\n":
+            before -= 1
+        # The last member drops its leading comma; the only member leaves ``{}``.
+        cut = before if original[before] == "," else cstart + 1
+        edited = original[:cut] + original[vend if cut == before else after :]
+    atomic_write_text(config_path, edited, newline=_file_newline(config_path))
+    return FileAction.REMOVED
 
 
 def merge_server_entries(servers: dict, new_entry: dict) -> dict:

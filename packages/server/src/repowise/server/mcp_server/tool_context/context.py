@@ -81,6 +81,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._packages import is_package_target, package_cards
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     needs_routing,
     route_targets,
@@ -227,6 +228,9 @@ async def get_context(
     }
     if suspects is not None:
         response["suspects"] = suspects
+    # include=["decisions"] lists the titles on each card already.
+    if "decisions" not in include_set:
+        await attach_why_pointer(response, ctx, targets)
     _attach_whole_files(response, results)
     _attach_cross_repo(response, ctx.alias)
     drop_echoed_target(response.get("targets"))

@@ -302,7 +302,7 @@ async def _add_ungoverned_evidence(
     )
     # The "why" may live in a code comment.
     rationale = _mine_rationale(
-        repo_path, [path], None, max_results=1000, truncate_blocks=False
+        repo_path, [path], None, max_results=1000, for_why=True
     )
     if rationale:
         result_data["code_rationale"] = rationale
