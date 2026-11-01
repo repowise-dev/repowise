@@ -455,6 +455,25 @@ def _installed_rewrite_hooks(surfaces: list[tuple[str, object]]) -> tuple[list[s
     return installed_names, any_unmatched
 
 
+def _distill_off_path_note() -> str:
+    """Why an installed rewrite hook rewrites nothing, or "" when it can.
+
+    The hook runs from a pinned path, but it skips every rewrite when the bare
+    ``repowise`` it would emit is not on PATH.
+    """
+    import shutil
+
+    if shutil.which("repowise") is not None:
+        return ""
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    note = "; repowise is not on PATH, so no command is rewritten"
+    pinned = resolve_repowise_command()
+    if pinned != "repowise":
+        note += f". Add {_DoctorPath(pinned).parent.as_posix()} to PATH"
+    return note
+
+
 def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
     """Advisory: the rewrite hook is strictly opt-in. A matcher that misses a
     shell tool is a warn: installed but not firing there."""
@@ -467,6 +486,9 @@ def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
             detail = ", ".join(installed_names)
             detail += " (this repo opted out)" if opted_out else ""
             detail = f"installed: {detail}"
+            off_path = "" if opted_out else _distill_off_path_note()
+            if off_path:
+                return _check(name, True, detail + off_path, check_id=check_id, warn=True)
             if any_unmatched:
                 fix = "repowise hook rewrite install"
                 return _check(name, True, detail, check_id=check_id, warn=True, fix=fix)
