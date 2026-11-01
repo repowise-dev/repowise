@@ -81,12 +81,14 @@ class FileTests:
     ``state``: ``test`` (a test file itself), ``not_code`` (a manifest, a
     workflow), ``type_only`` (declares only types or nothing of its own),
     ``new`` (a file the index has not seen, which no index can vouch for
-    either way), ``tested`` or ``untested``.
+    either way), ``not_applicable`` (generated, vendored, build, tooling or
+    docs example code, or a migration: no test is owed,
+    :func:`~repowise.core.code_origin.owes_a_test`), ``tested`` or ``untested``.
     The three test tuples are the evidence, strongest first; any one makes
     the file ``tested``.
     """
 
-    state: Literal["test", "not_code", "type_only", "new", "tested", "untested"]
+    state: Literal["test", "not_code", "type_only", "new", "not_applicable", "tested", "untested"]
     #: Tests with a per-test coverage row for the file (execution proof).
     covered_by: tuple[str, ...] = ()
     #: Test files that reach it in the dependency graph (a recorded edge).
@@ -138,11 +140,31 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
         if known is not None:
             rows[p] = FileTests(known)
     candidates = [p for p in dict.fromkeys(paths) if p not in rows]
+    owed = await _owing_a_test(session, repo_id, candidates)
+    rows.update((p, FileTests("not_applicable")) for p in candidates if p not in owed)
+    candidates = [p for p in candidates if p in owed]
     if candidates:
         rows.update(
             await _code_file_tests(session, repo_id, candidates, test_files, indexed_files or ())
         )
     return {p: rows[p] for p in dict.fromkeys(paths)}
+
+
+async def _owing_a_test(session: AsyncSession, repo_id: str, paths: list[str]) -> set[str]:
+    """The *paths* whose origin owes a test: the stored ``code_origin`` (one read
+    per 500 paths), else the path's (:func:`~repowise.core.code_origin.owes_a_test`)."""
+    from repowise.core.code_origin import owes_a_test
+
+    stored: dict[str, str | None] = {}
+    for start in range(0, len(paths), 500):
+        res = await session.execute(
+            select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.file_path.in_(paths[start : start + 500]),
+            )
+        )
+        stored.update(res.tuples().all())
+    return {p for p in paths if owes_a_test(p, stored.get(p))}
 
 
 def _known_state(

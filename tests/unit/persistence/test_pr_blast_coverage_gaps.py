@@ -170,3 +170,29 @@ async def test_a_file_the_index_has_not_seen_is_new_never_a_gap(async_session):
     assert await untested_files(async_session, repo.id, ["src/old.py", "src/added.py"]) == [
         "src/old.py"
     ]
+
+
+async def test_generated_and_vendored_code_owes_no_test(async_session):
+    """No test is owed by code that does not ship, by its stored origin or, unscored, its path."""
+    from repowise.core.analysis.pr_blast import FileTests, file_tests, untested_files
+    from repowise.core.persistence.models import HealthFileMetric
+
+    repo = await insert_repo(async_session)
+    paths = ["src/app.py", "src/api_pb2.py", "vendor/lib/x.go", "src/client.ts"]
+    for p in paths:
+        await _node(async_session, repo.id, p)
+    await _node(async_session, repo.id, "tests/test_misc.py", is_test=True)
+    # The stored origin decides; the path alone would call this one production.
+    async_session.add(
+        HealthFileMetric(repository_id=repo.id, file_path="src/client.ts", code_origin="generated")
+    )
+    await async_session.commit()
+
+    rows = await file_tests(async_session, repo.id, paths)
+    assert rows == {
+        "src/app.py": FileTests("untested"),
+        "src/api_pb2.py": FileTests("not_applicable"),
+        "vendor/lib/x.go": FileTests("not_applicable"),
+        "src/client.ts": FileTests("not_applicable"),
+    }
+    assert await untested_files(async_session, repo.id, paths) == ["src/app.py"]

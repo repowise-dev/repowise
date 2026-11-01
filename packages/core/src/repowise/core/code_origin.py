@@ -44,6 +44,7 @@ __all__ = [
     "is_generated_header",
     "is_migration_path",
     "is_vendored_or_generated_path",
+    "owes_a_test",
     "path_origin",
     "ship_rank",
 ]
@@ -1043,6 +1044,18 @@ def path_origin(path: str) -> CodeOrigin:
     the stored ``code_origin`` reads that instead: it also saw the file's head.
     """
     return code_origin(path)
+
+
+def owes_a_test(path: str, origin: str | None = None) -> bool:
+    """Whether a missing test for *path* is a gap worth naming.
+
+    Only shipped code owes one. Generated, vendored, build, tooling and docs
+    example code, and a schema migration, read "no test" as noise: every
+    surface that says a file is untested (``pr_blast.file_tests``, the health
+    biomarkers, the inventory's "Untested" filter) asks this. *origin* is the
+    stored ``code_origin`` when there is one; without it the path decides.
+    """
+    return (origin or path_origin(path)) == "production" and not is_migration_path(path)
 
 
 def prefer_production(paths: list[str]) -> list[str]:

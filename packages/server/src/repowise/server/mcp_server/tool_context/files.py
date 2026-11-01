@@ -37,7 +37,8 @@ _BASIS = (
     "directory first, possibly elsewhere in the repo), a test reaches it through "
     "calls or imports (reached_by), or a per-test coverage row exists "
     "(covered_by); false when none does. type_only (only types or re-exports) and "
-    "test files need no test; new files are not indexed yet, so neither is claimed."
+    "test files need no test; test_owed false marks generated, vendored, build, tooling, "
+    "docs example or migration code; new files are not indexed yet, so neither is claimed."
 )
 
 
@@ -110,6 +111,8 @@ def _row(path: str, tests: FileTests) -> dict[str, Any]:
         return {"path": path, "code": False}
     if tests.state == "new":
         return {"path": path, "new": True}
+    if tests.state == "not_applicable":
+        return {"path": path, "test_owed": False}
     row: dict[str, Any] = {"path": path, "has_test": tests.state == "tested"}
     if tests.state == "type_only":
         row["type_only"] = True
