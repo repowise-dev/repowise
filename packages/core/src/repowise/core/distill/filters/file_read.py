@@ -20,6 +20,7 @@ from typing import ClassVar
 from repowise.core.distill.cat_target import (
     MIN_FILE_LINES,
     MIN_OUTPUT_CHARS,
+    index_mtime,
     indexed_symbols,
     locate_index,
     resolve_cat_path,
@@ -60,6 +61,12 @@ class FileReadFilter(OutputFilter):
         if located is None:
             raise ValueError("file is not in an indexed repository")
         db_path, rel = located
+        try:
+            edited_since_index = os.path.getmtime(path) > index_mtime(db_path)
+        except OSError:
+            edited_since_index = True
+        if edited_since_index:
+            raise ValueError("file changed after the last index")
         return render(rel, output, indexed_symbols(db_path, rel))
 
 
@@ -90,12 +97,16 @@ def render(rel: str, content: str, symbols: list[tuple[str, str, int, int]]) -> 
 
 
 def _still_there(lines: list[str], name: str, start: int, end: int) -> bool:
-    """True when *name* appears on the symbol's first lines and the range fits."""
+    """True when *name* is a whole word on the symbol's first lines and the range fits.
+
+    The first few lines, not only the first: a recorded start can sit on a
+    decorator or attribute above the name.
+    """
     if end > len(lines):
         return False
     short = name.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
-    window = lines[start - 1 : min(end, start + 5)]
-    return any(short in line for line in window)
+    word = re.compile(rf"(?<![\w$]){re.escape(short)}(?![\w$])")
+    return any(word.search(line) for line in lines[start - 1 : min(end, start + 3)])
 
 
 def _outline(symbols: list[tuple[str, str, int, int]]) -> list[str]:

@@ -48,9 +48,10 @@ rendering. These filters ship:
 | `infra_plan` | `terraform`/`tofu plan`, `helm diff`/`upgrade` | the plan summary and the resources that change. A no-op collapses to `plan: no changes` |
 | `git_status` | `git status` | porcelain-style compact status |
 | `git_log` | `git log` | recent subjects and counts |
-| `git_diff` | `git diff`/`show`, `gh pr diff` | stat plus the most relevant hunks (`--stat` output has its own `git_diff_stat` filter) |
+| `git_diff` | `git diff`/`show`, `git log -p`, `gh pr diff`, and any diff printed inside a `git log`/`git status` chain | every changed line and hunk header; unchanged context runs and lockfile or generated files fold to one line each. Over 14k characters, the files with the most change keep their hunks and the rest are listed with counts (`--stat` output has its own `git_diff_stat` filter) |
 | `search_results` | grep / rg floods | digest grouped by file, with per-file counts and anchors |
 | `file_listing` | ls / tree / find | grouped tree rendering |
+| `file_read` | `cat <file>` or `cd <dir> && cat <file>`, for an indexed source file of 300+ lines and 5 KB+ that has not changed since the last index | the file's outline (every indexed symbol with its line range) and its first lines, under 4 KB. The same `cat` again right after runs raw |
 | `logs` | anything log-shaped | template collapse with counts (timestamps and ids normalized) |
 
 Dropped content goes to the omission store and is referenced inline:

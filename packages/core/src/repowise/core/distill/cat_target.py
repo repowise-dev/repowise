@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import sqlite3
+from urllib.parse import quote
 
 _GIT_BASH_DRIVE_RE = re.compile(r"^/([a-zA-Z])/")
 
@@ -28,7 +29,7 @@ def resolve_cat_path(command: str, cwd: str) -> str | None:
         words = list(lexer)
     except ValueError:
         return None
-    base = cwd
+    base = _native(cwd)
     if len(words) == 5 and words[0] == "cd" and words[2] in ("&&", ";"):
         base = os.path.join(cwd, _native(words[1]))
         words = words[3:]
@@ -61,7 +62,7 @@ def locate_index(path: str) -> tuple[str, str] | None:
 def indexed_symbols(db_path: str, rel: str) -> list[tuple[str, str, int, int]]:
     """(name, kind, start_line, end_line) rows for one indexed file; [] on any error."""
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.5)
+        con = sqlite3.connect(_ro_uri(db_path), uri=True, timeout=0.5)
         try:
             rows = con.execute(
                 "SELECT name, kind, start_line, end_line FROM wiki_symbols WHERE file_path = ?",
@@ -78,10 +79,26 @@ def indexed_symbols(db_path: str, rel: str) -> list[tuple[str, str, int, int]]:
     ]
 
 
+def _ro_uri(db_path: str) -> str:
+    """A read-only sqlite URI for *db_path*, with ``#``, ``?`` and ``%`` escaped."""
+    return "file:" + quote(db_path.replace(os.sep, "/"), safe="/:") + "?mode=ro"
+
+
+def index_mtime(db_path: str) -> float:
+    """When the index last changed: the newest of the db and its WAL; 0 on error."""
+    times = []
+    for path in (db_path, db_path + "-wal"):
+        try:
+            times.append(os.path.getmtime(path))
+        except OSError:
+            continue
+    return max(times, default=0.0)
+
+
 def has_indexed_symbols(db_path: str, rel: str) -> bool:
     """True when the index holds at least one symbol for *rel*; False on any error."""
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.2)
+        con = sqlite3.connect(_ro_uri(db_path), uri=True, timeout=0.2)
         try:
             row = con.execute(
                 "SELECT 1 FROM wiki_symbols WHERE file_path = ? LIMIT 1", (rel,)

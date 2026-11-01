@@ -94,7 +94,7 @@ class GitDiffFilter(OutputFilter):
         # kept as it is: only the diff itself is folded.
         head = [f"diff: {len(blocks)} files changed, +{total_add} -{total_del}", *preamble]
         rendered = [(block, _fold_block(block)) for block in blocks]
-        body = [line for _, folded in rendered for line in folded]
+        body = [line for block, folded in rendered for line in (*folded, *block.tail)]
         if _size(head) + _size(body) > MAX_RENDER_CHARS:
             body = _fit(rendered, max(0, MAX_RENDER_CHARS - _size(head)))
         return "\n".join(head + body)
@@ -156,11 +156,15 @@ class GitDiffStatFilter(OutputFilter):
 
 
 class _FileBlock:
-    __slots__ = ("added", "deleted", "generated", "lines", "path")
+    __slots__ = ("added", "deleted", "generated", "lines", "path", "tail")
 
     def __init__(self, path: str) -> None:
         self.path = path
         self.lines: list[str] = []
+        # Lines after the last hunk that are not part of the diff (the next
+        # commit's header in `git log -p`, a chained command's output). They
+        # are always shown, whatever happens to the file's hunks.
+        self.tail: list[str] = []
         self.added = 0
         self.deleted = 0
         name = path.rsplit("/", 1)[-1]
@@ -168,22 +172,47 @@ class _FileBlock:
 
 
 def _split_file_blocks(output: str) -> tuple[list[str], list[_FileBlock]]:
-    """The lines before the first file header, and one block per file."""
+    """The lines before the first file header, and one block per file.
+
+    Hunk bodies are tracked by the counts in each ``@@`` header, so a changed
+    line that itself starts with ``---`` or ``+++`` is still counted, and the
+    first line after the last hunk that is not diff-shaped starts the tail.
+    """
     preamble: list[str] = []
     blocks: list[_FileBlock] = []
     current: _FileBlock | None = None
+    old_left = new_left = 0
+    seen_hunk = False
     for line in output.splitlines():
         if m := _FILE_HEADER_RE.match(line):
             current = _FileBlock(m.group("b"))
             blocks.append(current)
+            old_left = new_left = 0
+            seen_hunk = False
         if current is None:
             preamble.append(line)
             continue
-        current.lines.append(line)
-        if line.startswith("+") and not line.startswith("+++"):
-            current.added += 1
-        elif line.startswith("-") and not line.startswith("---"):
+        if current.tail:
+            current.tail.append(line)
+            continue
+        in_hunk = old_left > 0 or new_left > 0
+        if hunk := _HUNK_RE.match(line):
+            old_left = int(hunk.group("old") or 1)
+            new_left = int(hunk.group("new") or 1)
+            seen_hunk = True
+        elif in_hunk and (line.startswith(" ") or line == ""):
+            old_left -= 1
+            new_left -= 1
+        elif in_hunk and line.startswith("-"):
+            old_left -= 1
             current.deleted += 1
+        elif in_hunk and line.startswith("+"):
+            new_left -= 1
+            current.added += 1
+        elif seen_hunk and not in_hunk and not line.startswith("\\"):
+            current.tail.append(line)
+            continue
+        current.lines.append(line)
     return preamble, blocks
 
 
@@ -195,8 +224,7 @@ def _fold_block(block: _FileBlock) -> list[str]:
     """One file block with its context runs and redundant header lines folded.
 
     Hunk bodies are tracked by the counts in each ``@@`` header, so a line is
-    only treated as context while the hunk still owes lines; anything after a
-    hunk ends (a commit header in ``git log -p``) is kept as it is.
+    only treated as context while the hunk still owes lines.
     """
     if block.generated:
         return [block.lines[0], f"  ... lockfile or generated: +{block.added} -{block.deleted}"]
@@ -266,9 +294,10 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
     """Hunks for the files with the most change that fit *budget*; counts for the rest.
 
     Files keep their original order. Every file starts as its one-line count
-    and is upgraded to its hunks, most change first, while the whole still
-    fits. A file over the budget on its own is capped head and tail when no
-    other file has been kept.
+    and is upgraded to its hunks, most change first, wherever the whole still
+    fits. When the file with the most change is over the budget on its own it
+    is capped head and tail first: on a month of agent diffs that kept more
+    changed lines than skipping it for smaller files.
     """
     summary = {id(block): f"  {block.path} | +{block.added} -{block.deleted}" for block, _ in rendered}
     ranked = sorted(rendered, key=lambda item: item[0].added + item[0].deleted, reverse=True)
@@ -276,6 +305,7 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
     used = _size(["hunks omitted for 0000 files:", "  ... and 0000 more"])
     used += sum(len(summary[key]) + 1 for key in shown_counts)
     used += sum(_size(folded) for block, folded in rendered if block.generated)
+    used += sum(_size(block.tail) for block, _ in rendered)
     kept: dict[int, list[str]] = {}
     for block, folded in ranked:
         if block.generated:
@@ -285,7 +315,7 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
         if used + cost > budget:
             if kept:
                 continue
-            folded = _cap_to(folded, budget - used + refund)
+            folded = _cap_to(folded, max(0, budget - used + refund))
             cost = _size(folded) - refund
         kept[id(block)] = folded
         used += cost
@@ -298,6 +328,7 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
             out.extend(folded)
         elif id(block) in shown_counts:
             summarized.append(summary[id(block)])
+        out.extend(block.tail)
     hidden = sum(1 for b, _ in rendered if not b.generated and id(b) not in kept) - len(summarized)
     if summarized or hidden:
         out.append(f"hunks omitted for {len(summarized) + hidden} files:")

@@ -650,13 +650,14 @@ BAIL_FILE_READ = "file_read_skip"  # not a large file with indexed symbols
 BAIL_REPEAT = "repeat"  # same command again right after its rewrite: runs raw
 
 #: Families whose identical next command, right after a rewrite, runs raw: a
-#: re-run of the same read says the compact view was not enough.
-_REPEAT_RAW_FAMILIES = frozenset({"file_read", "git_diff"})
+#: re-read of the same file says the outline was not enough. Not diffs: the
+#: same `git diff` after an edit asks for the new state, not for raw bytes.
+_REPEAT_RAW_FAMILIES = frozenset({"file_read"})
 #: Sessions remembered in the repeat state file; older ones drop off.
 _REPEAT_STATE_SESSIONS = 64
 
 
-def _file_read_worth_it(command: str, cwd: str) -> bool:
+def _file_read_worth_it(command: str, cwd: str, repo_root: str) -> bool:
     """Whether a ``cat`` reads one large file the index holds symbols for.
 
     Imported here, not at module scope: only a ``cat`` candidate pays for it,
@@ -677,13 +678,28 @@ def _file_read_worth_it(command: str, cwd: str) -> bool:
     try:
         if os.path.getsize(path) < MIN_OUTPUT_CHARS:
             return False
+        newlines = 0
         with open(path, "rb") as fh:
-            if fh.read().count(b"\n") < MIN_FILE_LINES:
-                return False
+            while newlines < MIN_FILE_LINES:
+                chunk = fh.read(65536)
+                if not chunk:
+                    return False
+                newlines += chunk.count(b"\n")
     except OSError:
         return False
     located = locate_index(path)
-    return located is not None and has_indexed_symbols(*located)
+    # Only a file in this repo's own index: the rewrite runs under this repo's
+    # permission posture.
+    if located is None or not _same_dir(os.path.dirname(os.path.dirname(located[0])), repo_root):
+        return False
+    return has_indexed_symbols(*located)
+
+
+def _same_dir(a: str, b: str) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except OSError:
+        return False
 
 
 def _repeat_state_path(repo_root: str) -> str:
@@ -812,7 +828,7 @@ def _decide(
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
-    if family == "file_read" and not _file_read_worth_it(command, cwd):
+    if family == "file_read" and not _file_read_worth_it(command, cwd, repo_root):
         return None, BAIL_FILE_READ, repo_root
     if family in _REPEAT_RAW_FAMILIES and _is_repeat(repo_root, session_id, cwd, command):
         return None, BAIL_REPEAT, repo_root

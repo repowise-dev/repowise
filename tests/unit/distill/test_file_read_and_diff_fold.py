@@ -268,3 +268,57 @@ def test_identical_command_after_a_rewrite_runs_raw(indexed_repo, monkeypatch) -
     assert _run_main(monkeypatch, "cat src/mod.py", cwd)
     # Sessions do not share the rule.
     assert _run_main(monkeypatch, "cat src/mod.py", cwd, session="s-2")
+
+
+def test_commit_header_after_a_folded_lockfile_survives() -> None:
+    raw_lines = ["commit aaa", "    first message"]
+    raw_lines += _diff_block("src/app.py", hunks=8, context=5)
+    raw_lines += _diff_block("package-lock.json", hunks=40)
+    raw_lines += ["commit bbb", "Author: B <b@c>", "    second message"]
+    raw_lines += _diff_block("src/other.py", hunks=8, context=5)
+    out = GitDiffFilter().distill("\n".join(raw_lines), command="git log -p -2")
+    for line in ("commit bbb", "Author: B <b@c>", "    second message", "commit aaa"):
+        assert line in out.splitlines()
+
+
+def test_changed_lines_that_look_like_headers_are_counted() -> None:
+    raw_lines = _diff_block("a.sql", hunks=1, context=0)
+    raw_lines[-2:] = ["--- removed comment", "+++ added counter"]
+    filler = []
+    for n in range(10):
+        filler += _diff_block(f"b{n}.py", hunks=4, context=4)
+    out = GitDiffFilter().distill("\n".join(raw_lines + filler), command="git diff")
+    assert "--- removed comment" in out and "+++ added counter" in out
+
+
+@pytest.mark.parametrize(
+    ("command", "output_head", "expected"),
+    [
+        ("cat src/mod.py", "x = 1\n", "file_read"),
+        ("pytest -q", "FAILED test_x.py::test_a\n", "test_output"),
+    ],
+)
+def test_router_keeps_non_git_filters_for_text_that_contains_a_diff(
+    command, output_head, expected
+) -> None:
+    diff = "\n".join(_diff_block("a.py"))
+    assert select_filter(command, output_head + diff).name == expected
+
+
+def test_repeated_git_diff_stays_compact(indexed_repo, monkeypatch) -> None:
+    cwd = str(indexed_repo)
+    assert _run_main(monkeypatch, "git diff", cwd)
+    assert _run_main(monkeypatch, "git diff", cwd)
+
+
+def test_cat_of_a_file_edited_after_the_index_is_raw(indexed_repo, monkeypatch) -> None:
+    import os
+    import time
+
+    monkeypatch.chdir(indexed_repo)
+    path = indexed_repo / "src" / "mod.py"
+    later = time.time() + 60
+    os.utime(path, (later, later))
+    raw = path.read_text(encoding="utf-8")
+    result = distill_output(raw, command="cat src/mod.py")
+    assert not result.distilled

@@ -256,7 +256,7 @@ distill:
   disables rewrites here.
 - Filter names: `test_output`, `build_output`, `lint_output`, `install_output`,
   `infra_plan`, `git_status`, `git_log`, `git_diff`, `git_diff_stat`,
-  `search_results`, `file_listing`, `logs`. `repowise doctor` checks them
+  `search_results`, `file_listing`, `file_read`, `logs`. `repowise doctor` checks them
   against the live registry.
 - Declining the `repowise init` opt-in writes `commands.enabled: false`, so a
   rewrite hook installed globally from another repo stays inert here.
