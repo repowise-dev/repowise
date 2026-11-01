@@ -472,13 +472,14 @@ def record_rewrite(
         pass
 
 
-def ledger_session_ids(repo_path: Path | str) -> set[str]:
+def ledger_session_ids(repo_path: Path | str) -> set[str] | None:
     """Every session id either hook has counted in this repo's ledger.
 
     Read-only and never creates the file: ``repowise doctor`` asks this to
     tell an installed hook that fires from one that never runs, and a doctor
-    check must not leave a database behind. Empty when the ledger is missing
-    or unreadable.
+    check must not leave a database behind. Empty when there is no ledger,
+    None when it exists but cannot be read (locked, corrupt): an unread ledger
+    must not look like hooks that never ran.
     """
     import pathlib
     import sqlite3
@@ -490,13 +491,14 @@ def ledger_session_ids(repo_path: Path | str) -> set[str]:
     try:
         conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True, timeout=1)
     except sqlite3.Error:
-        return ids
+        return None
     try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table in ("hook_runs", "rewrite_runs"):
-            try:
+            if table in tables:  # a ledger written before this table existed lacks it
                 ids.update(r[0] for r in conn.execute(f"SELECT DISTINCT session_id FROM {table}"))
-            except sqlite3.Error:
-                continue  # a ledger written before this table existed
+    except sqlite3.Error:
+        return None
     finally:
         conn.close()
     return ids

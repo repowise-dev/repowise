@@ -199,3 +199,40 @@ def test_the_sentence_rides_on_the_freshness_line(home, repo, monkeypatch) -> No
     assert out.endswith("Codebase index is current (HEAD 11111111). " + session_start._DISTILL_OFF_PATH)
     _off_path(monkeypatch, "/usr/bin/repowise")
     assert "distilling" not in session_start._handle_claude_session_start(str(repo))
+
+
+def test_an_unreadable_ledger_never_warns(home, repo) -> None:
+    _install_hooks(home, at=_NOW - 20 * _DAY)
+    for i in range(3):
+        _session(repo, f"silent{i}", _NOW - (10 - i) * _DAY)
+    db = repo / ".repowise" / "sessions" / "sessions.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"not a sqlite database at all" * 10)
+    assert hook_ledger.ledger_session_ids(repo) is None
+    row = integrations._hooks_firing_row(repo)
+    assert row.level == "ok"
+    assert "could not read" in row.detail
+
+
+def test_runs_older_than_the_window_are_not_called_never(home, repo, monkeypatch) -> None:
+    monkeypatch.setattr(integrations, "_RECENT_SESSIONS", 3)
+    _install_hooks(home, at=_NOW - 40 * _DAY)
+    _session(repo, "ran", _NOW - 30 * _DAY)
+    _fired(repo, "ran")
+    for i in range(3):
+        _session(repo, f"silent{i}", _NOW - (10 - i) * _DAY)
+    row = integrations._hooks_firing_row(repo)
+    assert row.level == "warn"
+    assert "in the last 3 sessions" in row.detail
+    assert "any session" not in row.detail
+
+
+def test_subagent_and_undated_transcripts_do_not_count(home, repo) -> None:
+    _install_hooks(home, at=_NOW - 20 * _DAY)
+    for i in range(3):
+        _session(repo, f"agent-{i}", _NOW - (10 - i) * _DAY)
+    directory = transcript_dir_for(repo.resolve())
+    for i in range(3):
+        undated = directory / f"undated{i}.jsonl"
+        undated.write_text('{"type": "summary"}\n', encoding="utf-8")
+    assert integrations._hooks_firing_row(repo).level == "ok"

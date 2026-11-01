@@ -550,8 +550,11 @@ def _hooks_firing_row(repo_path: _DoctorPath) -> DoctorCheck | None:
             return None
         from repowise.cli.hook_ledger import ledger_session_ids
 
+        seen = ledger_session_ids(repo_path)
+        if seen is None:
+            return _check(name, True, "could not read the hook ledger", check_id=check_id)
         sessions = _recent_claude_sessions(repo_path)
-        detail, warn = _hooks_firing_detail(sessions, ledger_session_ids(repo_path), installed_at)
+        detail, warn = _hooks_firing_detail(sessions, seen, installed_at)
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
     fix = "repowise agents refresh" if warn else None
@@ -571,7 +574,11 @@ def _hooks_firing_detail(
     floor = max(installed_at, last_seen or 0.0)
     silent = [sid for sid, started, _ in sessions if started > floor and sid not in seen]
     if len(silent) >= _SILENT_SESSIONS_TO_WARN:
-        since = f"since {day(last_seen)}" if last_seen is not None else "in any session"
+        if last_seen is not None:
+            since = f"since {day(last_seen)}"
+        else:
+            # Older runs may sit outside the transcripts read here; never claim "never".
+            since = f"in the last {len(sessions)} sessions" if seen else "in any session"
         detail = (
             f"installed, but have not run {since}: {len(silent)} Claude Code sessions here "
             "left no hook record, so a hook command is not starting "
@@ -612,7 +619,9 @@ def _recent_claude_sessions(repo_path: _DoctorPath) -> list[tuple[str, float, fl
 
     The transcript's stem is the session id the hooks receive. Start time is
     the first timestamp in the file, since an mtime only says when it was
-    last written.
+    last written; a transcript without one is skipped, so a session that may
+    predate the install never counts against the hooks. ``agent-*`` files are
+    subagent transcripts, which no SessionStart hook sees.
     """
     import os
 
@@ -620,15 +629,19 @@ def _recent_claude_sessions(repo_path: _DoctorPath) -> list[tuple[str, float, fl
 
     directory = transcript_dir_for(repo_path.resolve())
     try:
-        entries = [e for e in os.scandir(directory) if e.name.endswith(".jsonl") and e.is_file()]
+        entries = [
+            e
+            for e in os.scandir(directory)
+            if e.name.endswith(".jsonl") and not e.name.startswith("agent-") and e.is_file()
+        ]
     except OSError:
         return []
     entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
     sessions = []
     for entry in entries[:_RECENT_SESSIONS]:
-        last = entry.stat().st_mtime
         started = _transcript_started(entry.path)
-        sessions.append((entry.name[: -len(".jsonl")], started if started is not None else last, last))
+        if started is not None:
+            sessions.append((entry.name[: -len(".jsonl")], started, entry.stat().st_mtime))
     return sessions
 
 
