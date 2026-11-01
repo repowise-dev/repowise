@@ -33,8 +33,9 @@ classifiers = [
 dependencies = [
     # HTTP client
     "httpx>=0.27,<1",
-    # AST parsing
-    "tree-sitter>=0.25,<1",
+    # AST parsing. 0.26.0 crashes the interpreter (access violation) when
+    # nodes captured by QueryCursor.matches are read, e.g. C++ receiver typing.
+    "tree-sitter>=0.25,<0.26",
     "tree-sitter-python>=0.23,<1",
     "tree-sitter-typescript>=0.23,<1",
     "tree-sitter-javascript>=0.23,<1",
