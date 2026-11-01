@@ -28,6 +28,7 @@ encode several years of shape changes; this module names it and calls it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -258,10 +259,12 @@ def retire_project_mcp_entry(repo_path: Path) -> FileWrite:
         )
     try:
         remove_json_object_member(config_path, "mcpServers", "repowise")
-        if load_json_object_or_value_error(config_path, ".mcp.json") == {"mcpServers": {}}:
-            config_path.unlink()
     except (OSError, ValueError) as exc:
         return FileWrite(config_path, FileAction.KEPT, f"could not edit it: {exc}")
+    # The entry is gone; failing to drop a now-empty file leaves it in place.
+    with contextlib.suppress(OSError, ValueError):
+        if load_json_object_or_value_error(config_path, ".mcp.json") == {"mcpServers": {}}:
+            config_path.unlink()
     return FileWrite(path=config_path, action=FileAction.REMOVED)
 
 
