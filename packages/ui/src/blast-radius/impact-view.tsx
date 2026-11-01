@@ -31,10 +31,11 @@ import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { FilePathPicker } from "../health/file-path-picker";
 import { ReviewDetails } from "./review-details";
-import { BlastRadiusMap } from "./blast-radius-map";
+import { BlastRadiusSteps } from "./blast-radius-steps";
 import { BlastRadiusVerdict } from "./blast-radius-verdict";
-import { AffectedByModule, ChangedFilesList } from "./affected-files";
-import { readReach } from "./blast-map-model";
+import { AffectedByModule, ChangedFilesList, type DependentsFocus } from "./affected-files";
+import { readReach, type Reach } from "./blast-map-model";
+import { blockFocusPaths, buildStepMap, defaultStepBlock, stepWords, type StepBlock } from "./blast-step-model";
 import { ChangePicker, changeName } from "./change-picker";
 import { HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
 import { count } from "./review-status";
@@ -63,6 +64,8 @@ const DEPTHS: { value: number; label: string }[] = [
 ];
 
 const SHA = /^[0-9a-f]{40}$/;
+/** A pull request's id and link value alike: `pr:123`. `:` never appears in a branch name. */
+const PR = /^pr:\d+$/;
 
 /**
  * A change's id in a shareable link: `wip`, a branch name, or a full sha.
@@ -70,6 +73,7 @@ const SHA = /^[0-9a-f]{40}$/;
  */
 export function changeLinkParam(changeId: string): string {
   if (changeId === "working-tree") return "wip";
+  if (PR.test(changeId)) return changeId;
   if (changeId.startsWith("commit:")) return changeId.slice("commit:".length);
   const branch = changeId.replace(/^branch:/, "");
   // A branch named like the other two forms keeps its prefix; `:` never
@@ -79,7 +83,7 @@ export function changeLinkParam(changeId: string): string {
 
 /** The change id a link's `change` value names. */
 export function changeIdFromLink(param: string): string {
-  if (param.startsWith("branch:")) return param;
+  if (param.startsWith("branch:") || PR.test(param)) return param;
   if (param === "wip") return "working-tree";
   return SHA.test(param) ? `commit:${param}` : `branch:${param}`;
 }
@@ -101,6 +105,8 @@ export function changeFor(id: string, listed: ChangeCandidate[]): ChangeCandidat
     return { ...base, id, kind: "branch", label: ref, head_sha: null, base: trunk };
   }
   if (kind === "commit") return { ...base, id, kind: "commit", label: ref.slice(0, 8), head_sha: ref, base: null };
+  if (kind === "pr" && /^\d+$/.test(ref))
+    return { ...base, id, kind: "pull_request", label: `#${ref}`, number: Number(ref), head_sha: null, base: null };
   return undefined;
 }
 
@@ -155,7 +161,7 @@ function FilesForm({
           ))}
         </div>
       )}
-      <Button size="sm" variant="outline" disabled={busy || selected.length === 0} onClick={() => onAnalyze(selected)}>
+      <Button size="sm" variant="outline" className="max-sm:h-10" disabled={busy || selected.length === 0} onClick={() => onAnalyze(selected)}>
         {busy ? "Analyzing..." : "Analyze these files"}
       </Button>
     </div>
@@ -184,7 +190,7 @@ function DepthSelect({ value, onChange }: { value: number; onChange: (depth: num
       <select
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
+        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 max-sm:min-h-10 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
       >
         {DEPTHS.map((d) => (
           <option key={d.value} value={d.value}>
@@ -217,6 +223,13 @@ interface ChangeCheck {
   onRun: () => void;
 }
 
+/** What a picked block narrows the dependents list to, and how the list names it. */
+function stepFocus(block: StepBlock, reach: Reach): DependentsFocus {
+  const label =
+    block.column === 0 ? `what ${block.label} reaches directly` : `${block.label}, ${stepWords(block.column)} away`;
+  return { label, paths: blockFocusPaths(block, reach) };
+}
+
 function ReviewBody({
   analysis,
   change,
@@ -234,12 +247,17 @@ function ReviewBody({
 }) {
   const { result, changedFiles, changedTotal } = analysis;
   const reach = useMemo(() => readReach(result, changedFiles), [result, changedFiles]);
+  const steps = useMemo(() => buildStepMap(reach), [reach]);
+  // Opens on the step-1 folder with the most poor-health files; picking it again shows every file.
+  const [pickedKey, setSelectedKey] = useState<string | null>(() => defaultStepBlock(steps)?.key ?? null);
+  // A new depth can drop the picked block; the default for the new layout stands in.
+  const selected =
+    pickedKey === null
+      ? undefined
+      : (steps.blocks.find((b) => b.key === pickedKey) ?? defaultStepBlock(steps));
+  const selectedKey = selected?.key ?? null;
+  const focus = useMemo(() => (selected ? stepFocus(selected, reach) : undefined), [selected, reach]);
   const [filter, setFilter] = useState("");
-  const dependents = useRef<HTMLDivElement>(null);
-  const pickModule = (name: string | null) => {
-    setFilter(name ?? "");
-    if (name) dependents.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
-  };
   return (
     <>
       <BlastRadiusVerdict
@@ -254,26 +272,35 @@ function ReviewBody({
       {check && <HealthCheckPanel state={check.state} onRun={check.onRun} fileHref={fileHref} />}
       <Section title="Where it reaches" action={<DepthSelect value={maxDepth} onChange={onDepth} />}>
         {reach.files.length > 0 ? (
-          <BlastRadiusMap reach={reach} fileHref={fileHref} selectedModule={filter || null} onSelectModule={pickModule} />
+          <BlastRadiusSteps
+            map={steps}
+            selectedKey={selectedKey}
+            onSelect={(b: StepBlock) => setSelectedKey(selectedKey === b.key ? null : b.key)}
+          />
         ) : (
           <NoReach depth={maxDepth} tests={reach.tests.length} />
         )}
       </Section>
+      {reach.files.length > 0 && (
+        <Section title="Files that depend on this" hint={reach.files.length.toLocaleString()}>
+          <AffectedByModule
+            reach={reach}
+            fileHref={fileHref}
+            query={filter}
+            onQueryChange={setFilter}
+            focus={focus}
+            onClearFocus={() => setSelectedKey(null)}
+          />
+          {reach.tests.length > 0 && (
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Not counted here: {count(reach.tests.length, "test file")} that import the change. They are tests to run.
+            </p>
+          )}
+        </Section>
+      )}
       <Section title="Changed files" hint={(changedTotal ?? changedFiles.length).toLocaleString()}>
         <ChangedFilesList result={result} reach={reach} fileHref={fileHref} />
       </Section>
-      {reach.files.length > 0 && (
-        <div ref={dependents} className="scroll-mt-4">
-          <Section title="Files that depend on this" hint={reach.files.length.toLocaleString()}>
-            <AffectedByModule reach={reach} fileHref={fileHref} query={filter} onQueryChange={setFilter} />
-            {reach.tests.length > 0 && (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                Not counted here: {count(reach.tests.length, "test file")} that import the change. They are tests to run.
-              </p>
-            )}
-          </Section>
-        </div>
-      )}
       <ReviewDetails result={result} reach={reach} fileHref={fileHref} />
     </>
   );
@@ -289,7 +316,7 @@ function AnalyzingNote({ name }: { name: string }) {
 }
 
 const QUIET_BUTTON =
-  "rounded-sm text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+  "rounded-sm text-xs max-sm:min-h-10 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 function selectionKeyOf(selection: Selection | null): string {
   if (!selection) return "";
@@ -507,9 +534,10 @@ export function ImpactView({
   const analyzed = state.analysis?.selection;
   const shownChange = analyzed?.kind === "change" ? changeFor(analyzed.id, listed) : undefined;
   const filesName = selection?.kind === "files" ? count(selection.files.length, "picked file") : "";
-  // A health check needs a checkout, which the listing reports as working-tree support.
+  // Offered only where the host can read both sides of a change (an older server reports a checkout instead).
+  const canCheck = changes?.health_check_supported ?? changes?.working_tree_supported ?? false;
   const check: ChangeCheck | undefined =
-    shownChange && adapter.checkHealth && changes?.working_tree_supported
+    shownChange && adapter.checkHealth && canCheck
       ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
       : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;

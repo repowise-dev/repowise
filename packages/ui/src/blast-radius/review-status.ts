@@ -4,7 +4,7 @@
  *
  * It never claims a change is safe; it says what to do first. "Needs tests"
  * when a changed file has no test, "Look first" when a changed file changes
- * often or has weak health, many files depend on the change, or files that
+ * often or has poor health, many files depend on the change, or files that
  * usually move with it were left out; otherwise "Small change" or
  * "Contained", with the size of it.
  */
@@ -46,7 +46,7 @@ export interface ReviewFacts {
 
 function lookReason(f: ReviewFacts): string | null {
   const risky = f.reach.changed.filter((m) => m.isHotspot || isWeak(m)).length;
-  if (risky > 0) return `${count(risky, "changed file")} ${risky === 1 ? "changes" : "change"} often or ${risky === 1 ? "has" : "have"} weak health.`;
+  if (risky > 0) return `${count(risky, "changed file")} ${risky === 1 ? "changes" : "change"} often or ${risky === 1 ? "has" : "have"} poor health.`;
   if (f.band === "broad" || f.reach.files.length > WIDE_REACH)
     return `${roughCount(f.reach.files.length)} source ${f.reach.files.length === 1 ? "file depends" : "files depend"} on it.`;
   if (f.missingPartners > 0)

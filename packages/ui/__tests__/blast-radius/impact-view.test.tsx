@@ -218,3 +218,97 @@ describe("shareable change links", () => {
     expect(onChangePicked).toHaveBeenCalledWith("wip");
   });
 });
+
+describe("the step map", () => {
+  it("opens on the weakest step-1 folder, narrows the dependents list, and clears from the keyboard", async () => {
+    const analyze = vi.fn(async () => ({
+      ...RESULT,
+      transitive_affected: [
+        { path: "packages/s/src/weak/a.py", depth: 1, via: "packages/s/src/core/x.py" },
+        { path: "packages/s/src/calm/b.py", depth: 1, via: "packages/s/src/core/x.py" },
+        { path: "packages/s/src/calm/c.py", depth: 1, via: "packages/s/src/core/x.py" },
+        { path: "tests/test_x.py", depth: 1, via: "packages/s/src/core/x.py" },
+      ],
+      affected_signals: [
+        { path: "packages/s/src/weak/a.py", is_hotspot: false, health_score: 3.1, module: "packages/s" },
+        { path: "tests/test_x.py", is_hotspot: false, health_score: 9, module: "tests", is_test: true },
+      ],
+    }));
+    renderView(<ImpactView adapter={makeAdapter({ analyze })} initialFiles={["packages/s/src/core/x.py"]} />);
+    const weak = await screen.findByRole("button", { name: /^s\/weak, 1 step away: 1 file, 1 with poor health/ });
+    expect(weak).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/Showing s\/weak, 1 step away/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /tests/ })).not.toBeInTheDocument();
+
+    const calm = screen.getByRole("button", { name: /^s\/calm, 1 step away: 2 files/ });
+    fireEvent.keyDown(calm, { key: "Enter" });
+    expect(calm).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/Showing s\/calm, 1 step away/)).toBeInTheDocument();
+
+    fireEvent.keyDown(calm, { key: " " });
+    expect(calm).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText(/Showing/)).not.toBeInTheDocument();
+  });
+});
+
+describe("pull request links", () => {
+  it("passes pr:<n> through both ways, never as a branch", () => {
+    expect(changeIdFromLink("pr:123")).toBe("pr:123");
+    expect(changeLinkParam("pr:123")).toBe("pr:123");
+    // A branch literally named like a PR number keeps the branch reading.
+    expect(changeIdFromLink("pr-123")).toBe("branch:pr-123");
+  });
+
+  it("names an unlisted PR from its id and renders a listed one as #n title with the author", async () => {
+    const { changeFor } = await import("../../src/blast-radius/impact-view.js");
+    const { changeName, changeMeta } = await import("../../src/blast-radius/change-picker.js");
+    const unlisted = changeFor("pr:7", [])!;
+    expect([unlisted.kind, unlisted.label]).toEqual(["pull_request", "#7"]);
+    const listed = {
+      ...unlisted,
+      id: "pr:123",
+      label: "#123",
+      number: 123,
+      title: "Fix the cache",
+      author: "Dev",
+      base: "main",
+      head_sha: "b".repeat(40),
+      files_changed: 4,
+    };
+    expect(changeName(listed)).toBe("#123 Fix the cache");
+    expect(changeMeta(listed)).toContain("Dev");
+    expect(changeMeta(listed)).toContain("4 files");
+  });
+});
+
+describe("a host with no checkout", () => {
+  it("offers pull requests, hides the working tree and the health check, and opens a PR", async () => {
+    const pr = {
+      id: "pr:123",
+      kind: "pull_request" as const,
+      label: "#123",
+      number: 123,
+      title: "Fix the cache",
+      author: "Dev",
+      committed_at: null,
+      head_sha: "b".repeat(40),
+      base: "main",
+      ahead: null,
+      files_changed: 3,
+      is_current: false,
+    };
+    const analyzeChange = vi.fn(async () => changeResult(["src/core.ts"]));
+    const checkHealth = vi.fn();
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => ({ working_tree_supported: false, default_id: "pr:123", changes: [pr] })),
+      analyzeChange,
+      checkHealth,
+    });
+    renderView(<ImpactView adapter={adapter} />);
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "pr:123", maxDepth: 3 }));
+    await openPicker(/Change under review: #123 Fix the cache/);
+    expect(screen.getByRole("radio", { name: /Pull requests/ })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /Working tree/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Run health check/ })).not.toBeInTheDocument();
+  });
+});

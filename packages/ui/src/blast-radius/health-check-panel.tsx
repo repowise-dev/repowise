@@ -3,7 +3,6 @@
 import { Loader2, ShieldCheck } from "lucide-react";
 import type { ChangeHealthCheckResponse, HealthCheckFinding } from "@repowise-dev/types/blast-radius";
 import { Button } from "../ui/button";
-import { MICRO } from "../health/tokens";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { CopyPathButton, FilePath } from "../shared/file-path";
@@ -37,7 +36,7 @@ function FindingRow({ f, fileHref }: { f: HealthCheckFinding; fileHref: ((path: 
       {f.severity && SEVERITIES.includes(f.severity) ? (
         <SeverityMark severity={f.severity as Severity} compact />
       ) : (
-        <span className="text-[10px] uppercase text-[var(--color-text-tertiary)]">{f.level}</span>
+        <span className="text-[11px] text-[var(--color-text-tertiary)]">{f.level}</span>
       )}
       <span className="flex min-w-0 items-center">
         {href ? (
@@ -83,8 +82,8 @@ function Result({ result, fileHref }: { result: ChangeHealthCheckResponse; fileH
       ) : (
         groups.map((g) => (
           <div key={g.title} className="space-y-1">
-            <p className={MICRO}>
-              {g.title} <span className="tabular-nums">{g.rows.length}</span>
+            <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+              {g.title} <span className="font-normal tabular-nums text-[var(--color-text-tertiary)]">{g.rows.length}</span>
             </p>
             <ul className="space-y-1">
               {g.rows.slice(0, 12).map((f, i) => (
@@ -119,8 +118,8 @@ export function HealthCheckPanel({
   return (
     <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5" aria-busy={running}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className={MICRO}>Health check</p>
-        <Button size="sm" variant="outline" onClick={onRun} disabled={running}>
+        <h3 className="text-[15px] font-medium text-[var(--color-text-primary)]">Health check</h3>
+        <Button size="sm" variant="outline" onClick={onRun} disabled={running} className="max-sm:h-10">
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
           {running ? "Checking..." : state?.status === "done" ? "Run again" : "Run health check"}
         </Button>

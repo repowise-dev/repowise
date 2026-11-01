@@ -11,7 +11,7 @@ import type {
 import { isWeak, riskySpots, type FileMarks, type Reach } from "./blast-map-model";
 import { blastPromptInput, missingPartners, ownerName, testsLimited } from "./blast-prompt-input";
 import { count, reviewStatus, roughCount, type ReviewStatus } from "./review-status";
-import { HealthBadge } from "../health/health-badge";
+import { HEALTH_BAND_LABEL, bandForScore, formatScore } from "@repowise-dev/types/health";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildBlastRadiusPrompt } from "../health/ai-prompts/blast-radius-prompt";
@@ -24,9 +24,23 @@ type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
 
 const NONE = "text-xs text-[var(--color-text-tertiary)]";
 const MORE =
-  "text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded-sm";
-export const CHIP =
-  "inline-flex h-[18px] items-center whitespace-nowrap rounded border border-[var(--color-border-default)] px-1.5 text-[10px] text-[var(--color-text-secondary)]";
+  "text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded-sm max-sm:min-h-10";
+/** A signal as quiet text: no fill and no box, so a dense row stays readable. */
+export const CHIP = "inline-flex items-center whitespace-nowrap text-[11px] text-[var(--color-text-tertiary)]";
+
+/** Weak health is the one signal with a colour: a dot and the score, never a filled badge. */
+function PoorHealth({ score }: { score: number }) {
+  const band = bandForScore(score);
+  return (
+    <span
+      className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] tabular-nums text-[var(--color-error)]"
+      title={`${HEALTH_BAND_LABEL[band]}: health ${formatScore(score)} of 10`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)]" aria-hidden />
+      health {formatScore(score)}
+    </span>
+  );
+}
 
 /** The words this page uses, once each, for whoever has not met them. */
 const GLOSSARY = (
@@ -41,7 +55,7 @@ const GLOSSARY = (
     </div>
     <div>
       <dt className="inline font-medium">Health:</dt>{" "}
-      <dd className="inline">the file's code health score out of 10; weak health means the Needs work or At risk band.</dd>
+      <dd className="inline">the file's code health score out of 10; poor health means the Needs work or At risk band, shown in red.</dd>
     </div>
     <div>
       <dt className="inline font-medium">Usually change together:</dt>{" "}
@@ -83,7 +97,7 @@ export function PathRef({ path, href, nameOnly = false }: { path: string; href: 
 /** Each signal a file carries as its own chip, in plain words. */
 export function SignalChips({ m, extra }: { m: FileMarks; extra?: ReactNode }) {
   return (
-    <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+    <span className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-0.5">
       {extra}
       {m.isHotspot && (
         <span className={CHIP} title="Among the files with the most recent commits">
@@ -91,21 +105,17 @@ export function SignalChips({ m, extra }: { m: FileMarks; extra?: ReactNode }) {
         </span>
       )}
       {m.untested && (
-        <span className={`${CHIP} border-dashed`} title="No coverage row, test import or named test reaches it">
+        <span className={CHIP} title="No coverage row, test import or named test reaches it">
           no test found
         </span>
       )}
-      {isWeak(m) && (
-        <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)]">
-          weak health <HealthBadge score={m.healthScore} />
-        </span>
-      )}
+      {isWeak(m) && m.healthScore !== null && <PoorHealth score={m.healthScore} />}
     </span>
   );
 }
 
 function Row({ children }: { children: ReactNode }) {
-  return <li className="flex min-w-0 items-center justify-between gap-3 text-xs">{children}</li>;
+  return <li className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">{children}</li>;
 }
 
 /** Shown only when something is marked; a calm change says so once, in the status line. */
@@ -280,7 +290,7 @@ function CopyTests({ result }: { result: Result }) {
     <button
       type="button"
       onClick={() => void copy()}
-      className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+      className="inline-flex h-7 max-sm:h-10 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {copied ? <Check className="h-3.5 w-3.5" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
       {copied ? "Copied" : label}
@@ -332,12 +342,17 @@ export function BlastRadiusVerdict({
         <StatusLine status={status} />
         <Stats reach={reach} total={total} analyzed={changedFiles.length} testsTotal={testsTotal} />
         <div className="flex flex-wrap items-center gap-2">
-          <AiPromptButton label="Copy review prompt" onClick={() => setPromptOpen(true)} />
+          {/* The page's one primary action: ink fill; everything else stays quiet. */}
+          <AiPromptButton
+            label="Copy review prompt"
+            onClick={() => setPromptOpen(true)}
+            className="max-sm:h-10 border-transparent bg-[var(--color-action-primary)] text-[var(--color-text-on-action)] hover:border-transparent hover:bg-[var(--color-action-primary-hover)]"
+          />
           <CopyTests result={result} />
         </div>
       </div>
 
-      <div className="grid gap-x-10 gap-y-6 border-t border-[var(--color-border-default)] pt-5 md:grid-cols-2">
+      <div className="grid gap-x-10 gap-y-6 border-t border-[var(--color-border-default)] pt-5 xl:grid-cols-2">
         {riskySpots(reach).length > 0 && (
           <Block title="Look at first">
             <LookFirst reach={reach} fileHref={fileHref} />

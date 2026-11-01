@@ -20,7 +20,7 @@ function folderOf(path: string): string {
 
 function FileRow({ m, href, extra, nameOnly }: { m: FileMarks; href: string | undefined; extra?: React.ReactNode; nameOnly?: boolean | undefined }) {
   return (
-    <li className="flex min-w-0 items-center justify-between gap-3 text-xs">
+    <li className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">
       <PathRef path={m.path} href={href} nameOnly={nameOnly} />
       <SignalChips m={m} extra={extra} />
     </li>
@@ -119,7 +119,7 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
         type="button"
         aria-expanded={expanded}
         onClick={onToggle}
-        className="flex w-full min-w-0 items-center gap-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+        className="flex w-full min-w-0 items-center gap-2 py-1.5 max-sm:min-h-10 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <ChevronRight
           className={cn("h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-transform", expanded && "rotate-90")}
@@ -130,9 +130,9 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
           {g.files.length.toLocaleString()} {g.files.length === 1 ? "file" : "files"}
         </span>
         <span className="hidden w-16 shrink-0 text-right text-[var(--color-text-tertiary)] sm:inline">{steps(g.depth)}</span>
-        <span className="hidden shrink-0 justify-end gap-1 sm:flex sm:w-44">
+        <span className="hidden shrink-0 justify-end gap-3 sm:flex sm:w-44">
           {often > 0 && <span className={CHIP}>{often} changed often</span>}
-          {untested > 0 && <span className={`${CHIP} border-dashed`}>{untested} no test</span>}
+          {untested > 0 && <span className={CHIP}>{untested} no test</span>}
         </span>
       </button>
       {expanded && (
@@ -151,7 +151,7 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
             <button
               type="button"
               onClick={() => setAll((v) => !v)}
-              className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+              className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] max-sm:min-h-10"
             >
               {all ? "Show fewer" : `+${(g.files.length - PER_MODULE).toLocaleString()} more`}
             </button>
@@ -162,25 +162,38 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
   );
 }
 
+/** A picked block on the map: the list narrows to its files and says so. */
+export interface DependentsFocus {
+  label: string;
+  paths: Set<string>;
+}
+
 /**
  * Every source file that depends on the change, by module: each module a
  * row with its count, how far it sits and its marks, opening to its nearest
- * files first. A filter narrows modules and files by path; picking a module
- * on the map fills it in.
+ * files first. A filter narrows modules and files by path; picking a block
+ * on the map narrows the list to that folder and step.
  */
 export function AffectedByModule({
   reach,
   fileHref,
   query,
   onQueryChange,
+  focus,
+  onClearFocus,
 }: {
   reach: Reach;
   fileHref: Href;
   query: string;
   onQueryChange: (q: string) => void;
+  focus?: DependentsFocus | undefined;
+  onClearFocus?: (() => void) | undefined;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const groups = useMemo(() => groupByModule(reach.files), [reach]);
+  const groups = useMemo(
+    () => groupByModule(focus ? reach.files.filter((f) => focus.paths.has(f.path)) : reach.files),
+    [reach, focus],
+  );
   const q = query.trim().toLowerCase();
   const shown = q
     ? groups
@@ -197,20 +210,37 @@ export function AffectedByModule({
 
   return (
     <div className="space-y-2">
+      {focus && (
+        <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-[var(--color-text-secondary)]">
+          <span>
+            Showing {focus.label}: <span className="tabular-nums">{focus.paths.size.toLocaleString()}</span>{" "}
+            {focus.paths.size === 1 ? "file" : "files"}
+          </span>
+          {onClearFocus && (
+            <button
+              type="button"
+              onClick={onClearFocus}
+              className="rounded-sm text-[var(--color-text-tertiary)] underline-offset-2 max-sm:min-h-10 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+            >
+              Show all {reach.files.length.toLocaleString()}
+            </button>
+          )}
+        </p>
+      )}
       <input
         type="search"
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
         placeholder="Filter by path or module"
         aria-label="Filter files that depend on the change"
-        className="w-full max-w-xs rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
+        className="w-full max-w-xs rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1 max-sm:min-h-10 max-sm:max-w-none text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
       />
       <ul className="divide-y divide-[var(--color-border-default)]">
         {shown.map((g) => (
           <ModuleRow
             key={g.name}
             g={g}
-            expanded={open.has(g.name) || (q !== "" && shown.length <= 3)}
+            expanded={open.has(g.name) || ((q !== "" || focus !== undefined) && shown.length <= 3)}
             onToggle={() => toggle(g.name)}
             fileHref={fileHref}
           />
