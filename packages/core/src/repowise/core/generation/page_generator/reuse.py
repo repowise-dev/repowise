@@ -45,16 +45,25 @@ def files_digest(paths: Iterable[str], source_map: Mapping[str, bytes]) -> str:
 
 
 def group_material(
-    structural_key: str, members: Iterable[str] | None, source_map: Mapping[str, bytes] | None
+    structural_key: str,
+    members: Iterable[str] | None,
+    source_map: Mapping[str, bytes] | None,
+    parts: Iterable[Mapping[str, Any]] = (),
 ) -> str:
     """A module page's subject: its membership key plus its members' bytes.
 
-    Empty without a ``structural_key``, which keeps the page on the
-    prompt-hash gate.
+    A map page is also written from how its parts' pages open, so those
+    openings are part of its subject: a rewritten part regenerates the map
+    instead of leaving it describing the old part. Empty without a
+    ``structural_key``, which keeps the page on the prompt-hash gate.
     """
     if not structural_key:
         return ""
-    return f"{structural_key}|{files_digest(members or (), source_map or {})}"
+    material = f"{structural_key}|{files_digest(members or (), source_map or {})}"
+    openings = "\x00".join(f"{p.get('path', '')}\x01{p.get('summary', '')}" for p in parts)
+    if openings:
+        material += "|parts:" + hashlib.sha256(openings.encode("utf-8")).hexdigest()
+    return material
 
 
 def model_reuse_key(generator: Any, material: str, page_type: str, template: str) -> str:

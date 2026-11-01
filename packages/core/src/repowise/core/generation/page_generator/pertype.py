@@ -398,7 +398,7 @@ class PerTypeGenerationMixin:
         # prompt/template/style upgrade still forces a one-time regen.
         reuse_key = model_reuse_key(
             self,
-            group_material(structural_key, members, source_map),
+            group_material(structural_key, members, source_map, ctx.child_pages),
             "module_page",
             "module_page.j2",
         )

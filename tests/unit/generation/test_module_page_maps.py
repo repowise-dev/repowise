@@ -15,6 +15,7 @@ from repowise.core.generation.page_generator.levels import (
     module_waves,
 )
 from repowise.core.generation.page_generator.pertype import _SOURCES_GLUED
+from repowise.core.generation.page_generator.reuse import group_material
 
 
 def _g(key: str, rollup: bool = False, files: tuple[str, ...] = ()) -> SimpleNamespace:
@@ -67,6 +68,16 @@ def test_a_part_row_carries_how_its_page_opens_and_what_others_import():
         compute_page_id("module_page", "pkg/io"): SimpleNamespace(content="# Io\n\nStored opening.\n")
     }
     assert _part_rows(run, top, heads)[0]["summary"] == "Stored opening."
+
+
+def test_a_rewritten_part_changes_the_map_pages_subject():
+    parts = [{"path": "pkg/io", "summary": "Reads files."}]
+    before = group_material("k", [], {}, parts)
+    assert group_material("k", [], {}, parts) == before
+    assert group_material("k", [], {}, [{**parts[0], "summary": "Reads sockets."}]) != before
+    # A page with no parts keeps the subject it always had.
+    assert group_material("k", [], {}) == group_material("k", [], {}, [])
+    assert group_material("", [], {}, parts) == ""
 
 
 def test_an_empty_module_gets_no_page():
