@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 
+from repowise.core.generation.nav_titles import NAV_TITLE_KEY, page_nav_title
 from repowise.core.persistence.models import Page
 from repowise.server.mcp_server._budget import OmissionCollector
 
@@ -28,6 +29,10 @@ async def _load_tree_rows(session: Any, repository: Any) -> list[Any]:
             Page.parent_page_id,
             Page.display_order,
             Page.section_number,
+            # Only the blobs naming a chosen sidebar label; the rest stay put.
+            case(
+                (Page.metadata_json.contains(NAV_TITLE_KEY), Page.metadata_json), else_=None
+            ).label("metadata_json"),
         ).where(
             Page.repository_id == repository.id,
             Page.freshness_status != "tombstone",
@@ -86,7 +91,9 @@ def _outline_node(
     node: dict[str, Any] = {
         "section": row.section_number,
         "page_id": row.id,
-        "title": row.title,
+        # The outline's own label ("CLI", not "Cli Overview"); the page keeps
+        # its full title when opened.
+        "title": page_nav_title(row.page_type, row.title or "", row.metadata_json),
         "page_type": row.page_type,
     }
     if row.target_path:

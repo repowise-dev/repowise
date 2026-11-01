@@ -19,6 +19,8 @@ Structural facts about **{{ ctx.title }}**, read from the code, its import graph
 
 Write the page in Markdown with this shape.
 
+Nav: <the name of this code in the wiki's sidebar: 1 to 4 words, Title Case, the capability it provides ("Ingestion Pipeline", "Dead Code Detection", "MCP Server"); no path, no "Overview", "Module" or "Components", and not the directory name respelled when the code does something you can name>
+
 # {{ ctx.title }}
 
 Open with one sentence saying what this code does, in the words its users would use, then a paragraph of at most 3 sentences: who calls it{% if parent %} and how work moves through it{% else %}, what comes in and what goes out{% endif %}. Write it the way an engineer on the team would explain it to a new colleague, starting with the thing itself. No file paths or numbers in the opening. Do not open with a frame: "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are banned, because two pages that open with the same first five words read as one.

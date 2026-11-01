@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.generation.entry_points import orientation_entry_points_view
+from repowise.core.generation.nav_titles import page_nav_title
 from repowise.core.persistence.crud import (
     get_kg_project_meta as _get_kg_project_meta,
 )
@@ -118,7 +119,8 @@ async def _load_module_pages(
     rows = []
     for head in heads:
         path = head.target_path or ""
-        row = {"name": head.title, "path": head.target_path}
+        name = page_nav_title("module_page", head.title or "", head.metadata_json)
+        row = {"name": name, "path": head.target_path}
         if head.section_number is not None:
             row["section"] = head.section_number
         package = next((r for r in roots if _under(path, r)), path)

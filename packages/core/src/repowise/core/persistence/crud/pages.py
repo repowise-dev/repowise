@@ -735,7 +735,7 @@ _SUMMARY_COLUMNS = (
     Page.updated_at,
 )
 # The metadata keys a summary row promotes; only blobs that mention one are read.
-SUMMARY_METADATA_KEYS = ("layer_id", "is_chapter")
+SUMMARY_METADATA_KEYS = ("layer_id", "is_chapter", "nav_title")
 
 
 async def list_page_summaries(

@@ -21,6 +21,7 @@ from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
 
 from ..agent_digest import rejoin_questions
 from ..models import compute_source_hash
+from ..nav_titles import NAV_TITLE_KEY
 from .prompts import SYSTEM_PROMPTS
 
 if TYPE_CHECKING:
@@ -131,10 +132,12 @@ def reuse_prior_response(
         matched = prior.source_hash == compute_source_hash(prompt)
     if not matched:
         return None
+    # The stored body lost its questions to the digest and its ``Nav:`` line
+    # to the page's metadata; the response it was split from carried both.
+    content = rejoin_questions(prior.content, prior.digest)
+    nav = prior.metadata.get(NAV_TITLE_KEY) if prior.metadata else None
     return GeneratedResponse(
-        # The stored body lost its questions to the digest; the response it
-        # was split from carried them.
-        content=rejoin_questions(prior.content, prior.digest),
+        content=f"Nav: {nav}\n\n{content}" if isinstance(nav, str) and nav else content,
         input_tokens=0,
         output_tokens=0,
         cached_tokens=0,

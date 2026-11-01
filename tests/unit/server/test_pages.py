@@ -221,6 +221,34 @@ async def test_list_pages_summary_carries_a_nav_title_for_outline_pages(
 
 
 @pytest.mark.asyncio
+async def test_a_page_s_own_chosen_name_is_its_nav_title(client: AsyncClient, app) -> None:
+    """The name a module page's generation chose wins over the derived label."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_page(
+            session,
+            page_id="module_page:packages/core/ingestion",
+            repository_id=repo_id,
+            page_type="module_page",
+            title="Ingestion",
+            content="body",
+            target_path="packages/core/ingestion",
+            source_hash="abc123",
+            model_name="mock",
+            provider_name="mock",
+            metadata={"nav_title": "Ingestion Pipeline"},
+        )
+
+    for fields in ("summary", None):
+        params = {"repo_id": repo_id, **({"fields": fields} if fields else {})}
+        resp = await client.get("/api/pages", params=params)
+        (row,) = resp.json()
+        assert row["nav_title"] == "Ingestion Pipeline"
+        assert row["title"] == "Ingestion"
+
+
+@pytest.mark.asyncio
 async def test_full_page_row_also_carries_the_chapter_flag(client: AsyncClient, app) -> None:
     """The two response models share ``_summary_fields``, so this cannot drift."""
     repo = await create_test_repo(client)

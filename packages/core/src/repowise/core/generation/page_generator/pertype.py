@@ -43,6 +43,7 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..nav_titles import NAV_TITLE_KEY, split_nav_title
 from ..overview_tables import (
     Capability,
     build_capability_table,
@@ -454,6 +455,12 @@ class PerTypeGenerationMixin:
         except Exception as exc:
             stub = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(_stub_fallback(stub, "module_page", exc)))
+        # The sidebar name the page picked for itself, in the same call. Off
+        # the body before anything reads its opening.
+        # A copy: the provider cache holds this response, and a later hit must
+        # still carry the line.
+        nav_title, body = split_nav_title(response.content)
+        response = replace(response, content=body)
         page = self._build_generated_page(
             "module_page",
             page_target,
@@ -480,6 +487,8 @@ class PerTypeGenerationMixin:
         )
         if cited:
             page.metadata["sources"] = cited
+        if nav_title:
+            page.metadata[NAV_TITLE_KEY] = nav_title
         page.content = _SOURCES_GLUED.sub("\n\n", page.content)
         page.content = embed_section(
             page.content, CONNECTIONS_HEADING, connections_markdown(ctx.facts or {})

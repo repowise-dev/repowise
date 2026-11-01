@@ -14,6 +14,7 @@ single page being regenerated.
 
 from __future__ import annotations
 
+import json
 import re
 
 # Lower-cased word -> how it is spelled. Words whose standard spelling is not
@@ -158,3 +159,64 @@ def _strip_kind_words(label: str) -> str:
         if label.startswith(prefix) and len(rest.split()) == 1 and rest not in _KEPT_AFTER_PREFIX:
             label = rest
     return label
+
+
+# ---------------------------------------------------------------------------
+# The short name a module page's own generation writes for itself
+# ---------------------------------------------------------------------------
+
+#: Metadata key holding the name the page's own generation chose.
+NAV_TITLE_KEY = "nav_title"
+# Tolerates the decoration a model adds to a label: "**Nav:** X", "Nav : X".
+_NAV_LINE = re.compile(r"\A\s*\**Nav\**[ \t]*:\**[ \t]*(?P<name>[^\n]*)\n+")
+_MAX_NAV_WORDS = 4
+_MAX_NAV_CHARS = 40
+_NAV_BANNED = re.compile(r"\b(overview|module|components)\b", re.IGNORECASE)
+
+
+def split_nav_title(content: str) -> tuple[str | None, str]:
+    """``(name, body)``: the ``Nav:`` line a module page opens with, and the rest.
+
+    The line is the page's own pick of a sidebar name, written in the same
+    call as the page. It is checked here rather than retried: a name that
+    breaks a rule is dropped and the row falls back to :func:`nav_label`.
+    A reply with no such line comes back unchanged.
+    """
+    match = _NAV_LINE.match(content or "")
+    if not match:
+        return None, content
+    return clean_nav_title(match.group("name")), content[match.end() :]
+
+
+def clean_nav_title(raw: object) -> str | None:
+    """*raw* as a sidebar name, or ``None`` when it breaks a rule.
+
+    One to four words, no path or code, no word naming the page's kind.
+    """
+    if not isinstance(raw, str) or "`" in raw:
+        return None
+    name = raw.strip().strip("*_`\"'").strip().rstrip(".")
+    words = name.split()
+    if not words or len(words) > _MAX_NAV_WORDS or len(name) > _MAX_NAV_CHARS:
+        return None
+    if any(ch in name for ch in "/\\_()[]{}<>#|:") or _NAV_BANNED.search(name):
+        return None
+    return recase(name)
+
+
+def page_nav_title(page_type: str, title: str, metadata: object = None) -> str:
+    """What a navigation row calls a page: its own chosen name, else the rule.
+
+    *metadata* is the page's metadata dict, or its raw JSON text (a listing
+    that never decodes the blob passes the text; it is only decoded when it
+    mentions the key).
+    """
+    chosen = None
+    if isinstance(metadata, str) and NAV_TITLE_KEY in metadata:
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            metadata = None
+    if isinstance(metadata, dict):
+        chosen = clean_nav_title(metadata.get(NAV_TITLE_KEY))
+    return chosen or nav_label(title, page_type)
