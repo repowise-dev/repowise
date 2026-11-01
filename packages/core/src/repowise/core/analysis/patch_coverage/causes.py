@@ -100,15 +100,15 @@ async def read_indirect_causes(
         return {}
     try:
         found = await _read(session, repository_id, files[:MAX_TARGETS], changed, deleted)
+        from ..test_reachability import cached_file_paths
+
+        by_name = name_causes(
+            files, changed, deleted, await cached_file_paths(session, repository_id)
+        )
     except Exception:
         # Advice never breaks the caller: any failure is logged and reads as unassessed.
         log.warning("indirect_coverage_causes_failed", exc_info=True)
         return None
-    from ..test_reachability import cached_file_paths
-
-    by_name = name_causes(
-        files, changed, deleted, await cached_file_paths(session, repository_id)
-    )
     return {f: _merge(found.get(f, ()), by_name[f]) for f in files}
 
 
