@@ -221,6 +221,45 @@ async def test_list_pages_summary_carries_a_nav_title_for_outline_pages(
 
 
 @pytest.mark.asyncio
+async def test_a_row_is_named_in_its_place_whichever_window_lists_it(
+    client: AsyncClient, app
+) -> None:
+    """"UI Zoom" under UI reads "Zoom", even when its parent is in another page."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        for page_id, title, parent in (
+            ("module_page:ui", "Ui Overview", None),
+            ("module_page:ui/zoom", "Ui Zoom", "module_page:ui"),
+        ):
+            await crud.upsert_page(
+                session,
+                page_id=page_id,
+                repository_id=repo_id,
+                page_type="module_page",
+                title=title,
+                content="body",
+                target_path=page_id.split(":", 1)[1],
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+            )
+            if parent:
+                row = await crud.get_page(session, page_id)
+                row.parent_page_id = parent
+
+    labels = {}
+    for offset in (0, 1):
+        resp = await client.get(
+            "/api/pages",
+            params={"repo_id": repo_id, "fields": "summary", "limit": 1, "offset": offset},
+        )
+        for row in resp.json():
+            labels[row["id"]] = row["nav_title"]
+    assert labels == {"module_page:ui": "UI", "module_page:ui/zoom": "Zoom"}
+
+
+@pytest.mark.asyncio
 async def test_full_page_row_also_carries_the_chapter_flag(client: AsyncClient, app) -> None:
     """The two response models share ``_summary_fields``, so this cannot drift."""
     repo = await create_test_repo(client)

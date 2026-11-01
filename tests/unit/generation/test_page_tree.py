@@ -697,3 +697,47 @@ def test_a_page_stamped_as_project_activity_closes_the_outline():
     stamped = _by_id(pages)["onboarding:onboarding/recent_work"]
     assert stamped.section_number is None
     assert stamped.display_order == 3
+
+
+def test_a_part_named_as_its_section_takes_no_number():
+    """It folds into the section's row, so the parts after it count from 1."""
+    pages = [
+        _page("repo_overview", "acme"),
+        _page("module_page", "pkg/core", is_chapter=True, file_paths=["pkg/core/setup.py"]),
+        _page("module_page", "pkg/core/src/acme/core", is_chapter=True, file_paths=["pkg/core/src/acme/core/m.py"]),
+        _page("module_page", "pkg/core/src/acme/core/ingest", file_paths=[f"pkg/core/src/acme/core/ingest/a{i}.py" for i in range(5)]),
+        _page("module_page", "pkg/core/src/acme/core/ingest/langs", file_paths=[f"pkg/core/src/acme/core/ingest/langs/l{i}.py" for i in range(5)]),
+    ]
+    titles = {"module_page:pkg/core": "Core Overview", "module_page:pkg/core/src/acme/core": "Acme Core Overview"}
+    for p in pages:
+        p.title = titles.get(p.page_id, p.title)
+    pages += [
+        _page("file_page", f, layer_id="layer:service")
+        for p in list(pages)
+        if p.page_type == "module_page"
+        for f in p.metadata["file_paths"]
+    ]
+    assign_page_tree(pages, [])
+    by_id = _by_id(pages)
+    assert by_id["module_page:pkg/core/src/acme/core"].section_number is None
+    assert by_id["module_page:pkg/core/src/acme/core/ingest"].section_number == "1.1"
+
+
+def test_what_a_folded_part_holds_is_numbered_as_the_section_s_parts():
+    pages = [
+        _page("repo_overview", "acme"),
+        _page("module_page", "web", is_chapter=True, file_paths=["web/next.config.js"]),
+        _page("module_page", "web/src", is_chapter=True, file_paths=["web/src/i.ts"]),
+        _page("module_page", "web/src/hooks", file_paths=["web/src/hooks/h.ts"]),
+        _page("module_page", "web/src/views", file_paths=["web/src/views/v.ts"]),
+        _page("module_page", "web/pages", file_paths=[f"web/pages/p{i}.ts" for i in range(12)]),
+    ]
+    for p in pages:
+        if p.page_id == "module_page:web/src":
+            p.title = "Web Source"
+    assign_page_tree(pages, [])
+    numbers = sorted(
+        p.section_number for p in pages if p.page_type == "module_page" and p.section_number
+    )
+    # web/src folds into Web; its two parts take numbers beside web/pages.
+    assert numbers == ["1", "1.1", "1.2", "1.3"]
