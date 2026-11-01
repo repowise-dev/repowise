@@ -7,9 +7,10 @@ exists at all:
   slash commands together, and repowise cannot rewrite it; only ``/plugin
   update`` can. A version skew here is something to *report*, never to repair
   by writing.
-* **direct** — repowise owns the files. ``init`` writes the MCP registration
-  and the augment hooks into ``~/.claude/settings.json`` plus a repo-local
-  ``.mcp.json``. No skills, no commands.
+* **direct** — repowise owns the files. ``init`` writes the user-scope MCP
+  registration into ``~/.claude.json`` (the only place Claude Code reads user
+  MCP servers from), the augment hooks into ``~/.claude/settings.json``, and a
+  repo-local ``.mcp.json``. No skills, no commands.
 
 Both routes register ``mcpServers.repowise`` and the same augment hook
 commands, and Claude Code merges them without complaint, so a user on both
@@ -89,6 +90,13 @@ def settings_path() -> Path:
     from repowise.cli.editor_integrations.claude_config import _claude_code_settings_path
 
     return _claude_code_settings_path()
+
+
+def user_mcp_config_path() -> Path:
+    """The file holding Claude Code's user-scope MCP servers (``~/.claude.json``)."""
+    from repowise.cli.editor_integrations.claude_config import _claude_code_user_config_path
+
+    return _claude_code_user_config_path()
 
 
 def desktop_config_path() -> Path | None:
@@ -310,7 +318,7 @@ def _has_repowise_server(config_path: Path) -> bool:
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    servers = data.get("mcpServers")
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
     return isinstance(servers, dict) and "repowise" in servers
 
 
@@ -335,10 +343,14 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
             )
         )
 
-    settings = settings_path()
-    if settings.exists() and _has_repowise_server(settings):
+    # settings.json too: older releases wrote the entry there, and refresh and
+    # uninstall must still find it to move or remove it.
+    user_config, legacy = user_mcp_config_path(), settings_path()
+    if user_config.exists() and _has_repowise_server(user_config):
+        found.append(Registration(method="direct", scope=Scope.USER, config_path=user_config))
+    if legacy.exists() and _has_repowise_server(legacy):
         found.append(
-            Registration(method="direct", scope=Scope.USER, config_path=settings),
+            Registration(method="direct", scope=Scope.USER, config_path=legacy, detail="legacy")
         )
 
     desktop = desktop_config_path()
@@ -355,6 +367,21 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
             )
 
     return found
+
+
+def _uninstall_user_mcp_entry(result: WriteResult) -> None:
+    """Drop the user-scope entry from ~/.claude.json and record it as that file's own row."""
+    from repowise.cli.editor_integrations.claude_config import (
+        claude_code_user_config_leftover_reason,
+        uninstall_claude_code_mcp_entry,
+    )
+
+    removed = uninstall_claude_code_mcp_entry()
+    leftover = claude_code_user_config_leftover_reason()
+    if leftover is not None:
+        result.record(user_mcp_config_path(), FileAction.KEPT, leftover)
+    elif removed:
+        result.record(user_mcp_config_path(), FileAction.REMOVED)
 
 
 class ClaudeCodeTarget:
@@ -422,8 +449,10 @@ class ClaudeCodeTarget:
         from ..formats.observe import observed_action, read_bytes
 
         settings = settings_path()
+        user_config = user_mcp_config_path()
         desktop_path = desktop_config_path()
         settings_before = read_bytes(settings)
+        user_config_before = read_bytes(user_config)
         desktop_before = read_bytes(desktop_path) if desktop_path is not None else None
 
         retarget = isinstance(options, InstallOptions) and options.retarget
@@ -436,6 +465,9 @@ class ClaudeCodeTarget:
         # write settings.json, and reporting it three times says nothing a
         # reader can act on.
         result.record(settings, observed_action(settings_before, read_bytes(settings)))
+        user_config_after = read_bytes(user_config)
+        if not (user_config_before is None and user_config_after is None):
+            result.record(user_config, observed_action(user_config_before, user_config_after))
         if desktop_path is not None:
             after = read_bytes(desktop_path)
             if not (desktop_before is None and after is None):
@@ -462,8 +494,8 @@ class ClaudeCodeTarget:
             claude_desktop_leftover_reason,
             uninstall_claude_code_augment_hooks,
             uninstall_claude_code_distill_allow_rules,
-            uninstall_claude_code_mcp_entry,
             uninstall_claude_code_rewrite_hook,
+            uninstall_claude_code_settings_mcp_entry,
             uninstall_claude_desktop_mcp_entry,
         )
 
@@ -492,7 +524,8 @@ class ClaudeCodeTarget:
         removed = uninstall_claude_code_rewrite_hook()
         removed = uninstall_claude_code_augment_hooks() or removed
         removed = uninstall_claude_code_distill_allow_rules() or removed
-        removed = uninstall_claude_code_mcp_entry() or removed
+        removed = uninstall_claude_code_settings_mcp_entry() or removed
+        _uninstall_user_mcp_entry(result)
         # The Desktop config too, because `install` writes it and `detect` reads
         # it. Leaving it made a removed Claude Code still look wired, so the
         # next `doctor --repair` reinstalled everything this had just removed.
@@ -541,7 +574,7 @@ class ClaudeCodeTarget:
                 str(project_mcp_config_path(root)),
                 str(claude_code_local_settings_path(root)),
             ]
-        paths = [str(settings_path())]
+        paths = [str(settings_path()), str(user_mcp_config_path())]
         desktop = desktop_config_path()
         if desktop is not None:
             paths.append(str(desktop))
@@ -569,13 +602,13 @@ class ClaudeCodeTarget:
         # registration from one inside a file it could not parse — and
         # reporting "not installed" for a settings file with a trailing comma
         # sends the user to run an install that refuses for the same reason.
-        settings = settings_path()
-        if is_damaged(settings):
+        damaged = [p for p in (settings_path(), user_mcp_config_path()) if is_damaged(p)]
+        if damaged:
             return DoctorReport(
                 target_id=ID,
                 status=DoctorStatus.BROKEN,
                 issues=(
-                    f"{settings} is not valid JSON, so Claude Code ignores all of it. "
+                    f"{damaged[0]} is not valid JSON, so Claude Code ignores all of it. "
                     "Fix or remove it, then re-register.",
                 ),
                 # `add`, not `refresh`. A file this damaged makes detection
@@ -612,7 +645,9 @@ class ClaudeCodeTarget:
             )
 
         duplicates = [r for r in registrations if r.method == "plugin"] and [
-            r for r in registrations if r.method == "direct" and r.detail != "desktop"
+            r
+            for r in registrations
+            if r.method == "direct" and r.detail not in ("desktop", "legacy")
         ]
         if duplicates:
             issues.append(

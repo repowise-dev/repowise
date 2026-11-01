@@ -83,7 +83,7 @@ default; add a model whenever you like from the dashboard or with
 |---|---|---|
 | MCP server entry | `.mcp.json`, `.vscode/mcp.json` (plus `.vscode/extensions.json`) | by default |
 | Agent context files | `.claude/CLAUDE.md`, `AGENTS.md`, Copilot instructions under `.github/` | by default |
-| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude/settings.json` and the Claude Desktop config | by default; when it points at another repo the plan screen shows the move and `s` keeps it; `--yes` points it here and prints the old and new repo |
+| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude.json` and the Claude Desktop config | by default; when it points at another repo the plan screen shows the move and `s` keeps it; `--yes` points it here and prints the old and new repo |
 | Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` | with the global entry |
 | Post-commit hook that runs `repowise update` | the repo's git `post-commit` hook | by default; `e` turns it off, `--no-hook` skips it |
 

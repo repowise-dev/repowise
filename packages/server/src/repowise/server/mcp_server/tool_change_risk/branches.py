@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._call_tasks import start_call_task
 
 #: Ceiling on the branch scan, bounded so a repository with hundreds of refs
 #: cannot hold the response.
@@ -110,7 +111,7 @@ def _start_overlap_scan(
     """
     if not changed:
         return None
-    return asyncio.create_task(
+    return start_call_task(
         asyncio.wait_for(
             _pkg._scan_overlap(ctx, sorted(changed), current),
             timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS,

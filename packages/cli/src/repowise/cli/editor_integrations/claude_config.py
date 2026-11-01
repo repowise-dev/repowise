@@ -37,8 +37,21 @@ def _claude_desktop_config_path() -> Path | None:
 
 
 def _claude_code_settings_path() -> Path:
-    """Return the global Claude Code settings path (~/.claude/settings.json)."""
+    """Return the global Claude Code settings path (~/.claude/settings.json).
+
+    Hooks and ``env`` live here. MCP servers do not: Claude Code ignores
+    ``mcpServers`` in this file (see :func:`_claude_code_user_config_path`).
+    """
     return Path.home() / ".claude" / "settings.json"
+
+
+def _claude_code_user_config_path() -> Path:
+    """Where Claude Code reads user-scope MCP servers: top-level ``mcpServers`` in ~/.claude.json.
+
+    Claude Code owns this file and rewrites it often, so repowise only ever
+    edits its own ``repowise`` member and leaves every other byte alone.
+    """
+    return Path.home() / ".claude.json"
 
 
 def _resolve_mcp_target(repo_path: Path) -> Path:
@@ -161,18 +174,104 @@ def register_with_claude_desktop(repo_path: Path, *, retarget: bool = False) -> 
 
 
 def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Path | None:
-    """Add repowise MCP server to global Claude Code settings (~/.claude/settings.json).
+    """Add the repowise MCP server to Claude Code's user scope (~/.claude.json).
 
     A new entry names no repo: Claude Code starts it in the project it opens,
     so one entry serves every repo. See :func:`planned_global_entry` for when
-    an existing entry is kept.
+    an existing entry is kept. Nothing is written when the repowise plugin is
+    installed, since its server is the same path-less entry.
 
-    Returns the settings path when it was written, None when the entry was
-    kept or the write failed.
+    Returns the config path when it was written, None when the entry was
+    kept, the plugin serves it, or the write failed.
     """
-    return _register_global(
-        _claude_code_settings_path(), repo_path, follows_launch_dir=True, retarget=retarget
+    migrate_claude_code_mcp_entry()
+    if claude_code_plugin_installed():
+        return None
+    config_path = _claude_code_user_config_path()
+    entry = planned_global_entry(
+        _stored_repowise_entry(config_path),
+        repo_path,
+        follows_launch_dir=True,
+        retarget=retarget,
     )
+    if entry is None:
+        return None
+    return config_path if _upsert_user_entry(config_path, entry) else None
+
+
+def claude_code_plugin_installed() -> bool:
+    """Whether the repowise Claude Code plugin is installed and not disabled.
+
+    It ships its own path-less ``repowise`` MCP server.
+    """
+    import click
+
+    from repowise.cli.agent_targets.targets.claude_code import PLUGIN_KEY, _plugin_installs
+
+    if not _plugin_installs():
+        return False
+    try:
+        enabled = load_existing_config(_claude_code_settings_path()).get("enabledPlugins")
+    except click.ClickException:  # absent or unreadable settings: no opt-out
+        enabled = None
+    return not (isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False)
+
+
+def _upsert_user_entry(config_path: Path, entry: dict) -> bool:
+    """Write *entry* as ``mcpServers.repowise`` in ~/.claude.json, touching nothing else.
+
+    A minimal edit with an atomic replace. A file that does not parse is left
+    as it is and the write reports failure.
+    """
+    import click
+
+    from repowise.cli.agent_targets.formats.json_merge import merge_json_object_member
+    from repowise.cli.agent_targets.types import FileAction
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        action = merge_json_object_member(config_path, "mcpServers", "repowise", entry)
+    except (OSError, ValueError, TypeError, click.ClickException):
+        # ValueError/TypeError: a stored member that is not an object.
+        return False
+    return action is not FileAction.KEPT
+
+
+def _is_our_entry(entry: dict) -> bool:
+    """``repowise mcp ...`` under a bare or pinned ``repowise`` command: the shape init writes."""
+    import re
+
+    command = entry.get("command")
+    args = entry.get("args")
+    if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
+        return False
+    name = re.split(r"[\\/]", command)[-1].lower()
+    return name in ("repowise", "repowise.exe")
+
+
+def migrate_claude_code_mcp_entry() -> None:
+    """Move a repowise entry from settings.json to ~/.claude.json, where Claude Code reads it.
+
+    Earlier releases wrote ``mcpServers.repowise`` into settings.json, which
+    Claude Code never loads. Only an entry of the shape repowise writes moves.
+    It was never live, so it moves path-less with the running install's
+    command; its extra flags and keys (``env``) are kept. An entry already in
+    ~/.claude.json, or the plugin, wins, and the old one is just dropped. The
+    old entry stays when the new one could not be written.
+    """
+    settings = _claude_code_settings_path()
+    legacy = _stored_repowise_entry(settings)
+    if legacy is None or not _is_our_entry(legacy):
+        return
+    user_config = _claude_code_user_config_path()
+    if _stored_repowise_entry(user_config) is None and not claude_code_plugin_installed():
+        args = list(legacy["args"])
+        if _entry_repo_target(legacy) is not None:
+            del args[1]
+        moved = {**legacy, "command": resolve_repowise_command(), "args": args}
+        if not _upsert_user_entry(user_config, moved):
+            return
+    _drop_repowise_server(settings)
 
 
 def _stored_repowise_entry(config_path: Path | None) -> dict | None:
@@ -1121,44 +1220,35 @@ def uninstall_claude_code_augment_hooks() -> bool:
 
 
 def uninstall_claude_code_mcp_entry() -> bool:
-    """Drop ``mcpServers.repowise`` from settings.json, sparing sibling servers.
+    """Drop the user-scope ``mcpServers.repowise`` from ~/.claude.json, sparing sibling servers.
 
     Keyed on our exact server name, never on a prefix or on the entry's shape.
-    The wrapper goes when it empties; the file never does. ``settings.json`` is
-    the user's, it long predates us, and an empty object there is still their
-    file rather than a stub we left.
+    A minimal edit: Claude Code owns the rest of the file.
     """
-    settings_path = _claude_code_settings_path()
-    if not settings_path.exists():
-        return False
+    import click
+
+    from repowise.cli.agent_targets.formats.json_merge import remove_json_object_member
+    from repowise.cli.agent_targets.types import FileAction
+
     try:
-        existing = load_existing_config(settings_path)
-    except Exception:
+        action = remove_json_object_member(_claude_code_user_config_path(), "mcpServers", "repowise")
+    except (OSError, click.ClickException):
         return False
-
-    servers = existing.get("mcpServers")
-    if not isinstance(servers, dict) or "repowise" not in servers:
-        return False
-    servers.pop("repowise")
-    if not servers:
-        existing.pop("mcpServers", None)
-
-    return _write_settings(settings_path, existing)
+    return action is FileAction.REMOVED
 
 
-def uninstall_claude_desktop_mcp_entry() -> bool:
-    """Drop ``mcpServers.repowise`` from Claude Desktop's config.
+def uninstall_claude_code_settings_mcp_entry() -> bool:
+    """Drop the ``mcpServers.repowise`` older releases wrote into settings.json."""
+    return _drop_repowise_server(_claude_code_settings_path())
 
-    The sibling of :func:`uninstall_claude_code_mcp_entry`, and easy to miss
-    because the two live in different files on different platforms.
-    ``install`` writes both (:func:`register_with_claude_desktop` and
-    :func:`register_with_claude_code`), and leaving this one behind did more
-    than leave a stale entry: ``detect`` reads it, so a removed Claude Code
-    still reported a user-scope registration, ``refresh_wired_agents`` counted
-    it as wired, and the next ``repowise doctor --repair`` silently reinstalled
-    everything the uninstall had just removed.
+
+def _drop_repowise_server(config_path: Path | None) -> bool:
+    """Drop top-level ``mcpServers.repowise`` from *config_path*. True when the file changed.
+
+    The wrapper goes when it empties; the file never does. These files are the
+    user's or their client's, and an empty object there is still their file
+    rather than a stub we left.
     """
-    config_path = _claude_desktop_config_path()
     if config_path is None or not config_path.exists():
         return False
     try:
@@ -1174,6 +1264,36 @@ def uninstall_claude_desktop_mcp_entry() -> bool:
         existing.pop("mcpServers", None)
 
     return _write_settings(config_path, existing)
+
+
+def uninstall_claude_desktop_mcp_entry() -> bool:
+    """Drop ``mcpServers.repowise`` from Claude Desktop's config.
+
+    The sibling of :func:`uninstall_claude_code_mcp_entry`, and easy to miss
+    because the two live in different files on different platforms.
+    ``install`` writes both (:func:`register_with_claude_desktop` and
+    :func:`register_with_claude_code`), and leaving this one behind did more
+    than leave a stale entry: ``detect`` reads it, so a removed Claude Code
+    still reported a user-scope registration, ``refresh_wired_agents`` counted
+    it as wired, and the next ``repowise doctor --repair`` silently reinstalled
+    everything the uninstall had just removed.
+    """
+    return _drop_repowise_server(_claude_desktop_config_path())
+
+
+def claude_code_user_config_leftover_reason() -> str | None:
+    """Whether ~/.claude.json still holds the user-scope repowise entry. None when clean or absent."""
+    config_path = _claude_code_user_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        existing = load_existing_config(config_path)
+    except Exception:
+        return "the file could not be read, so whether our MCP entry is gone is unknown"
+    servers = existing.get("mcpServers")
+    if isinstance(servers, dict) and "repowise" in servers:
+        return "our MCP registration was still present after the write"
+    return None
 
 
 def claude_code_leftover_reason() -> str | None:

@@ -169,8 +169,8 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   inert.
 - **`--hook`.** Asked interactively; `--yes` and non-interactive runs install it, printing the undo (`repowise hook uninstall`).
 - **Workspace.** `--distill-hook` and `--hook` apply to every selected repo.
-- **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP entry, Claude Code
-  PostToolUse/SessionStart hooks. Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
+- **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude.json`) and Claude Desktop MCP entry, Claude Code
+  PostToolUse/SessionStart hooks (`~/.claude/settings.json`). Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
 - **`--no-editor-setup`.** Writes only `.repowise/` (scratch checkouts, throwaway venvs, worktrees, CI); skips the post-commit hook (git hooks dir) and `--distill-hook` offer (user-level hook).
   - One `repowise` MCP key per config, so a second `init` repoints it; `repowise mcp .` prints config for manual setup.
   - `--no-distill-hook`, `--no-claude-md`, `--no-agents` still save to repo config: they mean "never".

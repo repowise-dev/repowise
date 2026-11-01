@@ -141,7 +141,7 @@ Every path reaches this step. It is about the repo, not the provider.
 
 By default `init` writes project files into this repo (`.mcp.json`,
 `.claude/CLAUDE.md`, `AGENTS.md`, `.vscode/mcp.json`) and adds the global
-repowise MCP entry (in `~/.claude/settings.json` and Claude Desktop's config)
+repowise MCP entry (in `~/.claude.json` and Claude Desktop's config)
 when there is none. The Claude Code entry serves whichever repo Claude Code is
 started in. Claude Desktop has no project scope, so its one entry names the
 repo it serves. init never moves an entry that serves another repo; it only
