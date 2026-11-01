@@ -199,3 +199,20 @@ async def test_a_body_cut_at_the_index_cap_is_read_whole_from_the_clone(
     monkeypatch.setattr(commit_bodies, "_live_bodies", fake_live)
     await attach_body_excerpts(result, tmp_path, {"src/router.ts": meta}, result["query"])
     assert calls == [["8a0b18fd"]]
+
+
+async def test_a_live_body_keeps_its_first_paragraph(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("x")
+    _git(tmp_path, "add", "a.txt")
+    first = "The cache is keyed by index state because every selection reloaded the import graph."
+    _git(
+        tmp_path,
+        "-c", "user.name=t", "-c", "user.email=t@t",
+        "commit", "-q", "-m", "perf: cache the graph (#9)", "-m", first, "-m", "Unrelated second paragraph here.",
+    )
+    sha = _git(tmp_path, "rev-parse", "HEAD")[:12]
+    rows = [{"sha": sha, "message": "perf: cache the graph (#9)"}]
+    result = {"mode": "search", "git_archaeology": {"git_log": rows}}
+    await attach_body_excerpts(result, tmp_path, {}, "why is the cache keyed by index state")
+    assert rows[0]["body_excerpt"] == first
