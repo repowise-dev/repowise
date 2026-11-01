@@ -136,7 +136,7 @@ const NO_DATE = "—";
 /** `parseDate` for a value that may be absent: null for a missing or
  *  unparseable one. `Intl.DateTimeFormat.format` throws a RangeError on an
  *  Invalid Date, so a single bad row would otherwise take down a whole table. */
-function parseDateOrNull(date: Timestamp | null | undefined): Date | null {
+export function parseDateOrNull(date: Timestamp | null | undefined): Date | null {
   if (date == null || date === "") return null;
   const d = parseDate(date);
   return Number.isNaN(d.getTime()) ? null : d;

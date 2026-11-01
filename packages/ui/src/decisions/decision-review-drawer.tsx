@@ -10,7 +10,7 @@ import {
   type DecisionRecord,
 } from "@repowise-dev/types/decisions";
 import { cn } from "../lib/cn";
-import { formatDate, stripMarkdown } from "../lib/format";
+import { formatDate, parseDateOrNull, stripMarkdown } from "../lib/format";
 import { Button } from "../ui/button";
 import { describeRecordStaleness } from "./decision-staleness";
 import { VerificationBadge } from "./verification-badge";
@@ -142,7 +142,7 @@ function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers
       <div className="min-w-0 space-y-1.5">
         <p className={MICRO_LABEL}>
           {decisionSourceLabel(d.source)}
-          {d.created_at ? ` · recorded ${formatDate(d.created_at)}` : ""}
+          {parseDateOrNull(d.created_at) ? ` · recorded ${formatDate(d.created_at)}` : ""}
         </p>
         <DialogPrimitive.Title className="break-words text-base font-medium leading-snug text-[var(--color-text-primary)]">
           {stripMarkdown(d.title)}

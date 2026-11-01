@@ -606,8 +606,11 @@ describe("a record with no recorded date", () => {
     for (const mark of marks) expect(mark).not.toHaveAttribute("title");
   });
 
-  it("leaves the recorded date out of the drawer header", () => {
-    renderLanes("candidates", { decisions: [undated()] });
+  it.each([
+    ["missing", null as unknown as string],
+    ["unparseable", "not a date"],
+  ])("leaves the recorded date out of the drawer header when it is %s", (_, createdAt) => {
+    renderLanes("candidates", { decisions: [record({ created_at: createdAt })] });
 
     fireEvent.click(screen.getByText("Use JWT for authentication"));
     const drawer = within(screen.getByRole("dialog"));

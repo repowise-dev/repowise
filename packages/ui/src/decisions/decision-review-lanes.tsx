@@ -33,6 +33,7 @@ import { useBulkSelection, type BulkState, type Selection } from "./use-bulk-sel
 import {
   formatDate,
   formatRelativeTimeOrNull,
+  parseDateOrNull,
   stripMarkdown,
 } from "../lib/format";
 
@@ -486,7 +487,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       render: (d) => (
         <span
           className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
-          title={d.created_at ? formatDate(d.created_at) : undefined}
+          title={parseDateOrNull(d.created_at) ? formatDate(d.created_at) : undefined}
         >
           {formatRelativeTimeOrNull(d.created_at)}
         </span>
