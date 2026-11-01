@@ -76,6 +76,21 @@ def join_notices(*notices: str | None) -> str | None:
 _elapsed_ms = _hook_ledger._elapsed_ms
 emitting_build = _hook_ledger.emitting_build
 
+#: Total time one hook process may spend waiting on a locked index (wiki.db).
+#: A busy timeout applies per statement, so a locked index used to cost one
+#: wait per query, 30s each on the ORM path, and ran past the agent's 10s
+#: hook timeout. A read in WAL mode never waits, so this only bounds the
+#: contended case. The savings ledger writes keep their own timeouts: they
+#: contend with sibling hook processes, and a lost write is lost data.
+_SQLITE_WAIT_BUDGET_MS = 1500
+
+
+def sqlite_wait_s(cap_s: float) -> float:
+    """Busy timeout for the next index connection: *cap_s*, or what is left
+    of this process's :data:`_SQLITE_WAIT_BUDGET_MS`, whichever is smaller."""
+    left_s = (_SQLITE_WAIT_BUDGET_MS - _elapsed_ms()) / 1000
+    return max(0.0, min(cap_s, left_s))
+
 
 def _ledger_key(surface: str, category: str, text: str) -> str:
     """Efficacy-ledger id for one emission, keyed on the text itself.

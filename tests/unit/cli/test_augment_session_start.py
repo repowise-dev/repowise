@@ -43,6 +43,19 @@ def test_current_index(repo, monkeypatch) -> None:
     assert "prefer" not in out
 
 
+def test_locked_index_skips_the_decision_queries(repo, monkeypatch) -> None:
+    """Each decision query would wait out its own busy timeout and fail."""
+    monkeypatch.setattr(session_start, "_git_head", lambda p: _INDEXED)
+    unlocked = _handle(repo)
+    monkeypatch.setattr(session_start, "index_locked", lambda p: True)
+    monkeypatch.setattr(
+        session_start,
+        "_session_decision_block",
+        lambda *a: pytest.fail("decision queries ran against a locked index"),
+    )
+    assert _handle(repo) == unlocked
+
+
 def test_behind_head_with_changed_count(repo, monkeypatch) -> None:
     monkeypatch.setattr(session_start, "_git_head", lambda p: _LIVE)
     monkeypatch.setattr(session_start, "_read_in_flight_marker", lambda p: None)

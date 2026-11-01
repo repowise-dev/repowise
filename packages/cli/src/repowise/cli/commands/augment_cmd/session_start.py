@@ -26,11 +26,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from repowise.cli.helpers import as_commit_id
+# The leaf module, not the ``helpers`` facade: the facade imports rich and
+# asyncio, which every hook call would pay at import.
+from repowise.cli._helpers.git import as_commit_id
 
 from ._shared import _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
 from .decision_inject import _session_decision_block
+from .fast_lookup import index_locked
 
 #: The tools this block points a fresh session at. **Entry points only.**
 #:
@@ -65,10 +68,14 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
 
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
-    try:
-        decisions = _session_decision_block(repo_path, session_id)
-    except Exception:
-        decisions = None
+    # A locked index fails every decision query anyway, each after its own
+    # busy wait (nine seconds in all); one probe answers the same in one.
+    decisions = None
+    if not index_locked(repo_path):
+        try:
+            decisions = _session_decision_block(repo_path, session_id)
+        except Exception:
+            decisions = None
     return f"{freshness}\n{decisions}" if decisions else freshness
 
 

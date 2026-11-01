@@ -27,7 +27,7 @@ import sqlite3
 from pathlib import Path
 
 from . import fast_lookup
-from ._shared import HookResult, _extract_output_text, _find_repo_root
+from ._shared import HookResult, _extract_output_text, _find_repo_root, sqlite_wait_s
 
 # NOTE: repowise.core.persistence.sql is imported inside _rescue/_triage, not
 # here. At module scope it costs ~790ms on every single hook invocation — it
@@ -366,7 +366,7 @@ async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] |
 
     normalized = _as_node_ids(repo_path, paths)
 
-    engine = create_engine(resolve_db_url(repo_path))
+    engine = create_engine(resolve_db_url(repo_path), busy_timeout_ms=_orm_busy_timeout_ms())
     try:
         from sqlalchemy import select
 
@@ -419,6 +419,11 @@ def _order_by_pagerank(
 _ORM = object()
 
 
+def _orm_busy_timeout_ms() -> int:
+    """The ORM's busy timeout, inside the hook's wait budget (default 30s)."""
+    return int(sqlite_wait_s(30) * 1000)
+
+
 def _wiki_db_exists(repo_path: Path) -> bool:
     """Whether this repo has a local index at all.
 
@@ -456,12 +461,9 @@ def _fast_search_enrich(
     result_count: int,
     matched: dict[str, int] | None,
 ) -> str | object | None:
-    """Triage and the widened rescue without the ORM. ``_ORM`` to fall back.
-
-    The zero-result rescue is not served here on purpose: 45% of its queries
-    fall through to ``FullTextSearch``, so it stays on the shared retrieval
-    code and pays the import it actually uses.
-    """
+    """Triage and both rescues without the ORM. ``_ORM`` to fall back."""
+    if mode == "rescue":
+        return _fast_rescue(repo_path, pattern)
     if mode not in ("triage", "rescue_wide") or not matched:
         return _ORM
     clean = _clean_pattern(pattern)
@@ -496,6 +498,39 @@ def _fast_search_enrich(
         return _ORM
     finally:
         conn.close()
+
+
+def _fast_rescue(repo_path: Path, pattern: str) -> str | object | None:
+    """The zero-result rescue's symbol leg without the ORM. ``_ORM`` to fall back.
+
+    Only a symbol hit is answered here. No hit means the FTS leg, 45% of
+    rescues, which is shared retrieval code and stays on the ORM path; that
+    path repeats the symbol query, so the answer cannot differ.
+    """
+    clean = _clean_pattern(pattern)
+    if not clean:
+        return None
+    variants = _name_variants(clean)
+    if not variants:
+        # The ORM spells this as an empty OR; leave that edge to it.
+        return _ORM
+    if not _wiki_db_exists(repo_path):
+        return None
+    conn = fast_lookup.connect(repo_path)
+    if conn is None:
+        return _ORM
+    try:
+        repository_id = fast_lookup.repo_id(conn, repo_path)
+        if repository_id is None:
+            return None
+        rows = fast_lookup.symbols_like(conn, repository_id, variants, _RESCUE_TOP_N)
+    except sqlite3.Error:
+        return _ORM
+    finally:
+        conn.close()
+    if not rows:
+        return _ORM
+    return _rescue_symbol_text(pattern, rows, {v.lower() for v in variants})
 
 
 def _looks_like_path_lookup(pattern: str) -> bool:
@@ -686,7 +721,7 @@ async def _search_enrich(
         return None
 
     url = resolve_db_url(repo_path)
-    engine = create_engine(url)
+    engine = create_engine(url, busy_timeout_ms=_orm_busy_timeout_ms())
 
     try:
         sf = create_session_factory(engine)
@@ -791,16 +826,7 @@ async def _rescue(
     if matched is not None:
         return _rescue_wide_text(pattern, clean, matched, rows)
     if rows:
-        rows = _rescue_rank(rows, lowered)
-        first = rows[0]
-        line = f":{first[3]}" if first[3] else ""
-        extras = ""
-        if len(rows) > 1:
-            extras = f" (+{len(rows) - 1} more)"
-        return (
-            f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
-            f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
-        )
+        return _rescue_symbol_text(pattern, rows, lowered)
 
     # Fall back to FTS on wiki content.
     fts = FullTextSearch(engine)
@@ -809,6 +835,18 @@ async def _rescue(
     except Exception:
         fts_rows = []
     return _rescue_fts_text(pattern, fts_rows)
+
+
+def _rescue_symbol_text(pattern: str, rows: list, lowered: set[str]) -> str:
+    """The zero-result rescue's closest-symbol line, from its ``LIMIT``-ed rows."""
+    rows = _rescue_rank(rows, lowered)
+    first = rows[0]
+    line = f":{first[3]}" if first[3] else ""
+    extras = f" (+{len(rows) - 1} more)" if len(rows) > 1 else ""
+    return (
+        f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
+        f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
+    )
 
 
 def _rescue_fts_text(pattern: str, fts_rows: list) -> str | None:
