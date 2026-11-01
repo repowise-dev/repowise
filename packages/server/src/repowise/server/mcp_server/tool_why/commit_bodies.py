@@ -79,29 +79,32 @@ def _paragraphs(body: str, subject: str) -> list[str]:
 def _prose_blocks(body: str) -> Iterator[list[str]]:
     """Blank-line separated runs of prose lines, markup stripped."""
     block: list[str] = []
+    for line in _prose_lines(body):
+        if line:
+            block.append(line)
+        elif block:
+            yield block
+            block = []
+    if block:
+        yield block
+
+
+def _prose_lines(body: str) -> Iterator[str]:
+    """Each line of *body* as prose, or ``""`` where a paragraph breaks or markup sits."""
     skipping = in_fence = False
     for raw in body.splitlines():
         line = raw.strip()
         if line.startswith("```"):
             in_fence = not in_fence
-            continue
-        if line.startswith("#"):
+            line = ""
+        elif line.startswith("#"):
             skipping = bool(_SKIPPED_SECTION_RE.search(line.lstrip("#").strip()))
             line = ""
-        if in_fence or skipping or _is_markup(line):
-            line = ""
-        if not line:
-            if block:
-                yield block
-            block = []
-            continue
         bare = _BULLET_RE.sub("", line)
         # A squash body lists its commits' subjects; a subject restates, it does not explain.
-        if _SUBJECT_LINE_RE.match(bare):
-            continue
-        block.append(bare)
-    if block:
-        yield block
+        if in_fence or skipping or _is_markup(line) or _SUBJECT_LINE_RE.match(bare):
+            bare = ""
+        yield bare
 
 
 def _is_markup(line: str) -> bool:
@@ -138,12 +141,16 @@ async def attach_body_excerpts(
     missing = [_sha(r) for r in rows if _sha(r) not in stored]
     live = await _live_bodies(repo_root, missing) if missing else {}
     for row in rows:
-        body, pr = stored.get(_sha(row)) or live.get(_sha(row)) or ("", None)
-        excerpt = body_excerpt(body, str(row.get("message") or ""), query) if body else None
-        if excerpt:
-            row["body_excerpt"] = excerpt
-            if pr and not row.get("pr_number"):
-                row["pr_number"] = pr
+        _annotate(row, stored.get(_sha(row)) or live.get(_sha(row)), query)
+
+
+def _annotate(row: dict, found: tuple[str, int | None] | None, query: str) -> None:
+    body, pr = found or ("", None)
+    excerpt = body_excerpt(body, str(row.get("message") or ""), query) if body else None
+    if excerpt:
+        row["body_excerpt"] = excerpt
+        if pr and not row.get("pr_number"):
+            row["pr_number"] = pr
 
 
 def keep_one_excerpt(result: dict[str, Any]) -> None:
@@ -172,13 +179,16 @@ def _commit_rows(result: dict[str, Any]) -> list[dict]:
 
 
 def _lane_rows(result: dict[str, Any], *, with_key_commits: bool = False) -> Iterator[dict]:
-    cards = [c for c in (result.get("target_context") or {}).values() if isinstance(c, dict)]
     if with_key_commits:
-        yield from (r for r in result.get("key_commits") or [] if isinstance(r, dict))
-    for block in [result.get("git_archaeology"), *(c.get("git_archaeology") for c in cards)]:
-        if isinstance(block, dict):
-            for lane in _COMMIT_LANES:
-                yield from (r for r in block.get(lane) or [] if isinstance(r, dict))
+        yield from _dicts(result.get("key_commits"))
+    cards = _dicts((result.get("target_context") or {}).values())
+    for block in _dicts([result.get("git_archaeology"), *(c.get("git_archaeology") for c in cards)]):
+        for lane in _COMMIT_LANES:
+            yield from _dicts(block.get(lane))
+
+
+def _dicts(rows: Any) -> list[dict]:
+    return [r for r in rows or [] if isinstance(r, dict)]
 
 
 def _sha(row: dict) -> str:
