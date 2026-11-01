@@ -791,9 +791,8 @@ class PerTypeGenerationMixin:
             content_hash=reuse_key,
         )
         # Subkind discriminator lives in metadata; page_type alone is shared
-        # across all six generated onboarding slots.
-        page.metadata["subkind"] = spec.slot
-        page.metadata["onboarding_slot"] = spec.slot
+        # across every generated onboarding slot.
+        page.metadata.update(_onboarding.slot_metadata(spec.slot))
         return self._attach_source_evidence(page, page_key, evidence)
 
     @staticmethod

@@ -31,11 +31,13 @@ from ..page_sources import (
     ground_span_citations,
     source_entry,
 )
-from .flow_material import FlowMaterial, build_material
+from .flow_material import CODE_TOKEN_CAP, FlowMaterial, build_material
 from .pertype import _stub_fallback
 from .reuse import files_digest, model_reuse_key
 
 _DIAGRAM_MARKER = "<!-- flow-diagram -->"
+# A flow prompt's size when its excerpts fill CODE_TOKEN_CAP.
+_PROMPT_AT_CODE_CAP = 13_000
 _H2_RE = re.compile(r"(?m)^## ")
 # The diagram this module draws, and only it: its first box is always ``S1``.
 _PRIOR_DIAGRAM_RE = re.compile(r"```mermaid\nflowchart TD\n  S1\[.*?```\n", re.DOTALL)
@@ -251,7 +253,11 @@ class FlowPageMixin:
             ctx = flow_context(plan, graph, modules, source_map)
             return self._stamp_flow(self._flow_stub(plan, ctx), plan, diagram)
         material = build_material(
-            plan, graph, line_reader(repo_path, source_map), doc_sections(repo_path)
+            plan,
+            graph,
+            line_reader(repo_path, source_map),
+            doc_sections(repo_path),
+            code_cap=self._config.material_budget(CODE_TOKEN_CAP, _PROMPT_AT_CODE_CAP),
         )
         ctx = flow_context(
             plan,

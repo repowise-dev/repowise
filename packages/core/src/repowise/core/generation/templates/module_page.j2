@@ -17,42 +17,30 @@ Structural facts about **{{ ctx.title }}**, read from the code, its import graph
 {{ ctx.facts_json }}
 ```
 
-Write the page in Markdown with this shape.
+## What to write
 
-# {{ ctx.title }}
+Every item below is an instruction about the page, never text to copy into it. Start the page with the line `# {{ ctx.title }}`.
 
-Open with one sentence saying what this code does, in the words its users would use, then a paragraph of at most 3 sentences: who calls it{% if parent %} and how work moves through it{% else %}, what comes in and what goes out{% endif %}. Write it the way an engineer on the team would explain it to a new colleague, starting with the thing itself. No file paths or numbers in the opening. Do not open with a frame: "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are banned, because two pages that open with the same first five words read as one.
+- Opening: one sentence saying what this code does, in the words its users would use, then a paragraph of at most 3 sentences: who calls it{% if parent %} and how work moves through it{% else %}, what comes in and what goes out{% endif %}. Write it the way an engineer on the team would explain it to a new colleague, starting with the thing itself. No file paths or numbers in the opening. Do not open with a frame: "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are banned, because two pages that open with the same first five words read as one.
 {% if parent %}
-
-## How the parts fit
-A bold one-line title, then one `flowchart LR` in a fenced `mermaid` block: each part in `parts` declared once as a node under its plain name, edges taken from `imports_between_parts` and labelled with the names imported (`-->|ParsedFile|`), at most 12 edges. Then ONE paragraph of at most 5 sentences on how one real run moves across the parts and what data passes between them. Do not describe each part here; the table does that.
-
-## The parts
-A table `Part | Owns | Open it when`, one row per entry in `child_pages` (its title in bold) and one per notable group of the files in `key_files` (its path in backticks). "Owns" is what the part is responsible for; "Open it when" is the change or question that sends a reader there. No prose after the table.
-
-Then 2 or 3 `##` sections on what spans the parts: conventions they share, configuration and state they read or write, and rules or decisions a newcomer must know before changing any of them. Each is one or two paragraphs of at most 4 sentences. Never re-explain a part's internals; that is what its own page is for.
+- `## How the parts fit`: a bold one-line title, then one `flowchart LR` in a fenced `mermaid` block: each part in `parts` declared once as a node under its plain name, edges taken from `imports_between_parts` and labelled with the names imported (`-->|ParsedFile|`), at most 12 edges. Then ONE paragraph of at most 5 sentences on how one real run moves across the parts and what data passes between them. Do not describe each part here; the table does that.
+- `## The parts`: a table `Part | Owns | Open it when`, one row per entry in `child_pages` (its title in bold) and one per notable group of the files in `key_files` (its path in backticks). "Owns" is what the part is responsible for; "Open it when" is the change or question that sends a reader there. No prose after the table.
+- Sections on what spans the parts: two or three, each with its own `##` heading, on conventions they share, configuration and state they read or write, and rules or decisions a newcomer must know before changing any of them. Each is ONE paragraph of at most 4 sentences (about 60 to 100 words). Never re-explain a part's internals; that is what its own page is for.
 {% else %}
-
-Then one diagram in a fenced `mermaid` block, under a bold one-line title, of the type the facts' `diagram` field names:
-- `sequenceDiagram`: draw `traced_flow` as one operation, with 4 to 6 participants and 6 to 10 messages. Participants are the parts involved under plain names, declared with one-word ids (`participant Store as Result store`); an outside caller or callee may be one participant. Messages follow the traced calls in order, each a short plain-English phrase for what the call does ("resolve call targets"), never the function's name.
-- `flowchart`: `flowchart LR` with 4 to 9 nodes for the parts in `imports_between_parts`, under plain names, the directory in small text on a second line (`Resolvers["Resolvers<br/><small>resolvers/</small>"]`). At most 10 edges, each taken from `imports_between_parts`, pointing the way data flows and labelled with the names imported (`-->|ParsedFile|`). At most 2 outside nodes from `depends_on` or `used_by`, marked `:::ext`, with `classDef ext stroke-dasharray:4 3;`.
-- `none`: draw how data moves through the main operation the excerpts show, as a `flowchart LR` of 4 to 8 nodes, or leave the diagram out when the excerpts show no such operation.
-
-Then 3 to 5 `##` sections in the order the work happens. Each is ONE paragraph of at most 4 sentences: what goes in, what the code decides, what comes out or is stored, and why when a decision, docstring or comment says so. When 3 or more parallel items matter (formats, modes, options, record types), give them one short table instead of a list in prose. Group files by what they do together; never walk file by file.
+- Diagram: one diagram in a fenced `mermaid` block, under a bold one-line title, of the type the facts' `diagram` field names:
+  - `sequenceDiagram`: draw `traced_flow` as one operation, with 4 to 6 participants and 6 to 10 messages. Participants are the parts involved under plain names, declared with one-word ids (`participant Store as Result store`); an outside caller or callee may be one participant. Messages follow the traced calls in order, each a short plain-English phrase for what the call does ("resolve call targets"), never the function's name.
+  - `flowchart`: `flowchart LR` with 4 to 9 nodes for the parts in `imports_between_parts`, under plain names, the directory in small text on a second line (`Resolvers["Resolvers<br/><small>resolvers/</small>"]`). At most 10 edges, each taken from `imports_between_parts`, pointing the way data flows and labelled with the names imported (`-->|ParsedFile|`). At most 2 outside nodes from `depends_on` or `used_by`, marked `:::ext`, with `classDef ext stroke-dasharray:4 3;`.
+  - `none`: draw how data moves through the main operation the excerpts show, as a `flowchart LR` of 4 to 8 nodes, or leave the diagram out when the excerpts show no such operation.
+- Sections in the order the work happens: three to five, each with its own `##` heading. Each is ONE paragraph of at most 4 sentences (about 60 to 100 words): what goes in, what the code decides, what comes out or is stored, and why when a decision, docstring or comment says so. When 3 or more parallel items matter (formats, modes, options, record types), give them one short table instead of a list in prose. Group files by what they do together; never walk file by file.
 {% endif %}
+
 Node and participant ids are short CamelCase words (`GraphViews`), never a mermaid keyword such as `end`, `graph` or `style`. `classDef`, `class` and `style` lines belong in flowcharts only.
 
 Each `##` heading names a step or an idea in how the code works ("From a file to parsed symbols"), never a generic name such as Overview, Architecture, Key files, Public API, Dependencies or Summary. Put an identifier in backticks only where a reader would search for it. End each section written in prose (every one but the parts table, the reading list and the questions) with a blank line and then one line, `Sources: ` followed by 1 to 3 file paths in backticks, written as in the facts, naming only files that section talks about.
 {% if ctx.tests or ctx.git_activity or ctx.decision_records %}
-
-## Changing it safely
-At most 4 sentences from `tests`, `change_history` and `decisions`: which tests guard which behaviour, where changes and bug fixes have clustered, and any recorded decision a change must respect. Name the test files in backticks.
+- `## Changing it safely`: at most 4 sentences from `tests`, `change_history` and `decisions`: which tests guard which behaviour, where changes and bug fixes have clustered, and any recorded decision a change must respect. Name the test files in backticks.
 {% endif %}
-
-## Where to start reading
-2 to 4 bullets in the order to open them: `path` (a bare path, no line span) - one sentence on what reading it first explains. This is a reading order, not a list of sources: no citations here. What depends on this code and what it depends on is added after you write, so do not describe its neighbours in a section of their own.
-
-## Questions this page answers
-3 to 6 questions a developer or an agent would ask that this page answers, as a list. They are kept with the page for search, not shown in its body.
+- `## Where to start reading`: 2 to 4 bullets in the order to open them: `path` (a bare path, no line span) - one sentence on what reading it first explains. This is a reading order, not a list of sources: no citations here. What depends on this code and what it depends on is added after you write, so do not describe its neighbours in a section of their own.
+- `## Questions this page answers`: 3 to 6 questions a developer or an agent would ask that this page answers, as a list. They are kept with the page for search, not shown in its body.
 
 Rules: {% if not (style_states_length | default(false)) %}about {{ ctx.words[0] }} to {{ ctx.words[1] }} words of prose before the questions; tables, diagrams and lists do not count. {% endif %}Never use these words: subsystem, boundary, layer (unless the code names one), "takes in", "hands on", "turns X into Y"; never talk about pages, the wiki or its structure, and never about what the facts above leave out: a point with no fact behind it is simply not made. Never write markdown links: name a file or directory by its path in backticks and the wiki links it. A style note at the top of this request changes voice and density; it does not change this shape. Describe what a symbol does only when its excerpt shows it; a symbol seen only as a signature is named, not explained. A commit subject is history, not current behaviour: if you cite one, label it (historical, <date>).

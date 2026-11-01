@@ -401,8 +401,7 @@ def _check_folder_coverage(
     default=True,
     help=(
         "Generate the curated Onboarding collection (Project Overview, "
-        "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
-        "How It Works, Development Guide, Active Landscape). Default: on. "
+        "Getting Started, How It Works, Active Landscape). Default: on. "
         "Slots with insufficient signal are skipped automatically."
     ),
 )

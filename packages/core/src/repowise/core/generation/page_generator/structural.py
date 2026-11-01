@@ -36,6 +36,7 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..onboarding.slots import slot_metadata
 from ..public_api import is_public_api
 from .helpers import _extract_summary, _now_iso
 
@@ -936,8 +937,7 @@ class StructuralRenderMixin:
             ctx=ctx,
             slot=spec.slot,
         )
-        page.metadata["subkind"] = spec.slot
-        page.metadata["onboarding_slot"] = spec.slot
+        page.metadata.update(slot_metadata(spec.slot))
         return page
 
     def _model_free_onboarding_page(self, spec: Any, ctx: Any, target_path: str) -> GeneratedPage:
@@ -964,8 +964,7 @@ class StructuralRenderMixin:
             ctx=ctx,
             slot=spec.slot,
         )
-        page.metadata["subkind"] = spec.slot
-        page.metadata["onboarding_slot"] = spec.slot
+        page.metadata.update(slot_metadata(spec.slot))
         page.metadata["model_free"] = True
         return page
 

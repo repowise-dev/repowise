@@ -91,7 +91,7 @@ def test_selection_is_deterministic():
 
 
 def test_the_page_budget_grows_with_the_repo():
-    assert [flow_page_limit(n) for n in (10, 500, 2000, 9000)] == [3, 4, 5, 6]
+    assert [flow_page_limit(n) for n in (10, 500, 2000, 9000)] == [4, 6, 8, 10]
 
 
 def test_an_edit_to_any_step_file_marks_the_flow_page_stale():

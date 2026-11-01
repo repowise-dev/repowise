@@ -452,20 +452,10 @@ async def _module_corroboration(run: _GenerationRun) -> list[str]:
     on a full run. Never raises — a store that cannot answer costs reach, not
     a page.
 
-    Memoised on the run. Two levels want it — the overview at 6 and the
-    glossary at 8 — and it costs a batched store read, so the second caller
-    reuses the first's answer rather than paying it again. A run that emits
-    neither page never reaches this.
+    Read only for the overview, and only by a run that emits it.
     """
-    cached = getattr(run, "_module_corroboration_corpus", None)
-    if cached is not None:
-        return cached
-
-    groups = run.sel_module_groups
     summaries = await _module_summaries(run)
-    corpus = [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
-    run._module_corroboration_corpus = corpus
-    return corpus
+    return [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in run.sel_module_groups]
 
 
 async def _module_summaries(run: _GenerationRun) -> dict[str, str]:
@@ -587,10 +577,10 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             # Said out loud: a front page that quietly loses its diagram is the
             # failure shape worth hearing about.
             log.warning("generation.overview_system_map_empty", repo_name=run.repo_name)
-        # What the repository calls its own capabilities, in its own words.
-        # Mined once per run and shared with level 8. A term reaches the page
-        # only when the structural side names it too, so the front page never
-        # carries a word the documents used and the graph never confirmed.
+        # What the repository calls its own capabilities, in its own words. A
+        # term reaches the page only when the structural side names it too, so
+        # the front page never carries a word the documents used and the graph
+        # never confirmed.
         #
         # Module *groups*, not written module pages: a group is cut and named
         # on every run, so a scoped run that regenerates the overview alone
@@ -713,14 +703,10 @@ def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
-    """The repository's own vocabulary, read once per run.
+    """The repository's own vocabulary, read for the overview's terms.
 
-    Mined here rather than inside a subkind because reading it walks the
-    repository: once per run is a cost, once per slot is the same cost eight
-    times over for the same answer. Two levels want it now — the overview at
-    6 and onboarding at 8 — so the result is memoised on the run rather than
-    the walk being paid twice. A run that emits neither still pays nothing,
-    because neither caller reaches this.
+    Reading it walks the repository, so a run that does not emit the overview
+    never reaches this.
 
     ``repo_path`` is optional on every generation entry point, and a run
     without one has nothing to read. That is reported rather than absorbed —
@@ -731,10 +717,6 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
     from ..concept_tree.vocabulary import extract_house_terms
     from ..report import record_house_terms
 
-    cached = getattr(run, "_house_terms", None)
-    if cached is not None:
-        return cached
-
     if not run.repo_path:
         log.warning(
             "onboarding.house_terms_skipped",
@@ -742,20 +724,14 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
             reason="no_repo_path",
         )
         record_house_terms(None)
-        run._house_terms = ()
         return ()
 
-    # The names the codebase defines. A term matching one may be rendered in
-    # backticks; a coined term may not, because the grounding pass strips
-    # backticks off any token it cannot resolve to a symbol.
-    known_symbols = {sym.name for pf in run.parsed_files for sym in pf.symbols if sym.name}
-    terms = tuple(extract_house_terms(Path(run.repo_path), known_symbols=known_symbols))
+    terms = tuple(extract_house_terms(Path(run.repo_path)))
     record_house_terms(terms)
     if not terms:
         log.warning(
             "onboarding.house_terms_empty",
             repo_name=run.repo_name,
-            known_symbols=len(known_symbols),
         )
     else:
         log.info(
@@ -764,7 +740,6 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
             terms=len(terms),
             top=[t.term for t in terms[:8]],
         )
-    run._house_terms = terms
     return terms
 
 
@@ -813,15 +788,18 @@ async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def _present_slots(gen: Any, specs: list[Any], contexts: dict[str, Any]) -> set[str]:
-    """Slots that will have a page: built this run, or kept from an earlier one."""
+    """Slots that will have a page: built this run, or kept from an earlier one.
+
+    A tombstoned row is not a kept page: a Next link to it leads nowhere.
+    """
     prior = getattr(gen, "_prior_pages", {}) or {}
     present = {slot for slot, ctx in contexts.items() if ctx is not None}
-    present |= {
-        spec.slot
-        for spec in specs
-        if spec.slot not in contexts
-        and compute_page_id("onboarding", _onboarding.target_path(spec.slot)) in prior
-    }
+    for spec in specs:
+        if spec.slot in contexts:
+            continue
+        kept = prior.get(compute_page_id("onboarding", _onboarding.target_path(spec.slot)))
+        if kept is not None and getattr(kept, "freshness_status", "") != "tombstone":
+            present.add(spec.slot)
     return present
 
 
@@ -835,14 +813,9 @@ async def _onboarding_signals(run: _GenerationRun, specs: list[Any]) -> Any:
         kg_layers = tuple(run.kg_ctx.get_layers())
         kg_tour_steps = tuple(run.kg_ctx.get_tour())
 
-    # The corpus and the parts cost a batched store read, so only a run
-    # emitting a subkind that declared it wants one pays for it. Memoised, so a
-    # run that also emits the overview builds them once for both.
-    module_corroboration = (
-        tuple(await _module_corroboration(run))
-        if any(spec.needs_module_corroboration for spec in specs)
-        else ()
-    )
+    # The parts cost a batched store read, so only a run emitting a subkind
+    # that declared it wants them pays for it. The summaries are memoised, so
+    # a run that also emits the overview reads them once for both.
     parts = (
         tuple(top_parts(run.sel_module_groups, await _module_summaries(run), run.source_map))
         if any(spec.needs_parts for spec in specs)
@@ -867,9 +840,6 @@ async def _onboarding_signals(run: _GenerationRun, specs: list[Any]) -> Any:
         kg_layers=kg_layers,
         kg_tour_steps=kg_tour_steps,
         tour_stops=tuple(run.tour_stops),
-        layer_order=tuple(run.layer_order),
-        house_terms=_mine_house_terms(run),
-        module_corroboration=module_corroboration,
         doc_sources=_doc_sources(run),
         journeys=tuple(run_journeys(run)),
         parts=parts,

@@ -40,10 +40,11 @@ another is generated after it.
 | 7 | `infra_page` | Dockerfile, Makefile, Terraform file or container entrypoint script | structure |
 | 8 | `onboarding` | slot | model, structure when keyless |
 
-The onboarding slots are Project Overview, Getting Started, Key Concepts, How It
-Works, Active Landscape and Glossary. Project Overview is not generated
-separately, the repository overview is tagged into that slot, and Glossary is
-rendered from mined terms with no model in every run, keyed or not.
+The onboarding reading order is Project Overview, Getting Started and How It
+Works. Project Overview is not generated separately: the repository overview is
+tagged into that slot. Active Landscape sits outside the reading order, in the
+project activity section, and is rendered from git history with no model in
+every run, keyed or not.
 
 A flow page follows one operation, such as a CLI command, a route handler or
 an MCP tool, from the function that starts it through the calls that carry it.

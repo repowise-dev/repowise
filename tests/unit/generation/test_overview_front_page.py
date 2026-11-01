@@ -80,7 +80,6 @@ def capabilities():
                 source_paths=("README.md",),
                 doc_frequency=1,
                 code_frequency=5,
-                is_indexed_symbol=False,
             )
         ],
         ["Dead Code and Reachability Analysis"],

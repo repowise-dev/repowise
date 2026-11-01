@@ -124,7 +124,8 @@ class TestStructure:
     def test_node_cap_counts_omitted_parts(self):
         sm = _monorepo(extra_packages=12)
         assert len(sm.nodes) <= MAX_NODES
-        assert sm.omitted > 0
+        assert sm.omitted
+        assert all(name for name in sm.omitted)
 
     def test_heavy_edge_is_drawn_thick_and_the_rest_are_capped(self):
         files = {f"p{i}/m.py": "python" for i in range(8)}
@@ -351,6 +352,14 @@ class TestCompile:
         assert 'subgraph tier_service["Server"]' in body
         assert "classDef engine" in body and "#" not in body  # no hardcoded colors
 
+    def test_a_lone_box_named_like_its_tier_does_not_repeat_the_name(self):
+        sm = _monorepo()
+        lone = next(n for n in sm.nodes if n.tier == "service")
+        renamed = apply_names(sm, {"nodes": [{"id": lone.id, "label": "Server", "role": "x"}]})
+        body = compile_mermaid(renamed)
+        assert 'subgraph tier_service[" "]' in body
+        assert _compiler_problems(body) == []
+
     def test_click_goes_to_the_module_page(self):
         body = compile_mermaid(_monorepo())
         assert 'click n_libs_core "?page=module_page%3Alibs%2Fcore%2Fsrc%2Fcore"' in body
@@ -451,8 +460,10 @@ class TestEmbed:
         assert out.count("```mermaid") == 1
 
     def test_caption_names_what_was_cut(self):
-        section = system_map_section(_monorepo(extra_packages=12), "demo")
-        assert "more parts are not shown" in section
+        sm = _monorepo(extra_packages=12)
+        section = system_map_section(sm, "demo")
+        assert f"Not drawn here: {sm.omitted[0]}" in section
+        assert "more parts are not shown" not in section
 
     def test_no_map_removes_a_stale_one(self):
         page = embed_system_map("## A\n\nx\n\n## B\n", system_map_section(_monorepo(), "demo"))

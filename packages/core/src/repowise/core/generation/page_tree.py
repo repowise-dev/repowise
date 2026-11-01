@@ -190,14 +190,14 @@ def is_project_activity(page: TreeNode | GeneratedPage) -> bool:
 
 
 def _onboarding_rank(page: GeneratedPage) -> int:
-    """Position of an onboarding page in the canonical reading order."""
-    from .onboarding.slots import ONBOARDING_ORDER
+    """Position of an onboarding page in display order."""
+    from .onboarding.slots import ONBOARDING_SLOTS
 
     slot = onboarding_slot(page)
     try:
-        return ONBOARDING_ORDER.index(slot)
+        return ONBOARDING_SLOTS.index(slot)
     except ValueError:
-        return len(ONBOARDING_ORDER)
+        return len(ONBOARDING_SLOTS)
 
 
 def _sort_key(page: GeneratedPage, reader_rank: dict[str, tuple[int, ...]]) -> tuple:

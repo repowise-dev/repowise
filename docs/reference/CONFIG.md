@@ -67,6 +67,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedding_model` | provider default | Embedding model id. |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; see [below](#reasoning). |
 | `max_tokens` | `16384` | Most output tokens per model-written documentation page. |
+| `context_window` | from the provider | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: none for hosted models, 16384 for a local one. |
 | `commit_limit` | `5000` | Newest commits walked for git analysis and stored as commit rows, clamped 1-10000. |
 | `follow_renames` | `false` | Track file renames through git history. |
 | `exclude_patterns` | `[]` | Gitignore-style patterns on top of `.gitignore`; see [Exclude patterns](#exclude-patterns). |
@@ -101,7 +102,7 @@ run and are not stored here; `--include-submodules` is recorded in `state.json`
 
 Applies to documentation-generation calls on reasoning-capable chat models.
 
-- `auto` keeps provider defaults.
+- `auto` keeps provider defaults, except on Ollama, where it turns thinking off.
 - `off` / `none` disable Qwen3-style thinking on OpenAI-compatible vLLM/SGLang
   (sends `extra_body.chat_template_kwargs.enable_thinking=false`) and map to
   OpenRouter's `reasoning.effort=none` for effort-capable families.
@@ -174,13 +175,12 @@ generation_context:
 | `files` | none | Page key to an ordered list of repo-relative paths. |
 
 - Page keys: `repo_overview`, or `onboarding/` plus `getting_started`,
-  `key_concepts`, `how_it_works` or `active_landscape`.
+  `how_it_works` or `active_landscape`.
 - `onboarding/project_overview` is invalid (that slot is `repo_overview`).
-  `onboarding/glossary` is accepted but has no effect: that page is rendered
-  from mined vocabulary with no model.
-- `onboarding/guided_tour`, `onboarding/codebase_map` and
-  `onboarding/development_guide` name pages Repowise does not generate: they
-  are ignored with a warning naming the key, so upgrades never break a config.
+- `onboarding/guided_tour`, `onboarding/codebase_map`,
+  `onboarding/development_guide`, `onboarding/key_concepts` and
+  `onboarding/glossary` name pages Repowise does not generate: they are
+  ignored with a warning naming the key, so upgrades never break a config.
 - Other unknown page keys and malformed values fail generation. Keys other than
   `token_budget` and `files` directly under the block are ignored.
 - Eligible files are in the indexed source map with non-empty UTF-8 text.
@@ -877,8 +877,15 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
-- `num_ctx` is sized to each prompt, so pages are not cut to Ollama's small
-  default; `REPOWISE_OLLAMA_NUM_CTX` pins it (e.g. to fit memory).
+- The window is the model's own `num_ctx` if its Modelfile sets one, else
+  16384, never above its trained context length. Page material (code
+  excerpts, source evidence) shrinks to fit it, least important first, so a
+  4B model on a laptop writes a page in seconds instead of minutes.
+- `REPOWISE_OLLAMA_NUM_CTX` pins `num_ctx` and sizes material to it, which
+  gives a bigger model more to read; `context_window` in `config.yaml` sizes
+  material only, and `num_ctx` grows to hold the prompt.
+- `reasoning: auto` turns thinking off for page generation; `low`, `medium` or
+  `high` turn it on, and the window grows to hold the longer answer.
 - Requests go one at a time; with server `OLLAMA_NUM_PARALLEL` above 1, set the
   same value where Repowise runs.
 
@@ -932,6 +939,10 @@ model and base URL the same way; first match wins:
   CLI uses it too.
 - A local OpenAI-compatible server such as LM Studio: `provider: openai` with
   `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
+  Page material is sized for a 16384-token window, since the server does not
+  report its own; start the server with at least that context, or set
+  `context_window` to the context length it runs with. A
+  local backend behind LiteLLM is sized the same way.
 - Since `config.yaml` may be committed, a non-local base URL there gets a key
   not in `.repowise/.env` only after you confirm in Settings or `repowise init`.
 - The repo's Settings page sets all this: the model field lists live models
@@ -1001,7 +1012,7 @@ Keys resolve in order:
 | `ANTHROPIC_BASE_URL`, `GEMINI_BASE_URL`, `DEEPSEEK_BASE_URL`, `KIMI_BASE_URL`, `LITELLM_BASE_URL` | Override that provider's API base URL |
 | `OPENAI_BASE_URL` | Override the OpenAI base URL (vLLM/SGLang, 9router, other compatible endpoints) |
 | `OLLAMA_BASE_URL` | Ollama server (default `http://localhost:11434`) |
-| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it per prompt |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; page material is sized to it. Unset: the Modelfile's `num_ctx`, else 16384 |
 | `OLLAMA_NUM_PARALLEL` | Ollama requests sent at once (default 1) |
 
 ### Provider and model overrides

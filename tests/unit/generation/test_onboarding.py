@@ -28,11 +28,11 @@ from repowise.core.generation.models import GENERATION_LEVELS, GeneratedPage, Ge
 from repowise.core.generation.onboarding.signals import OnboardingSignals
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
+    ONBOARDING_SLOTS,
     PROMOTED_SLOTS,
     SLOT_ACTIVE_LANDSCAPE,
     SLOT_GETTING_STARTED,
     SLOT_HOW_IT_WORKS,
-    SLOT_KEY_CONCEPTS,
     target_path,
 )
 from repowise.core.generation.page_generator import PageGenerator
@@ -115,7 +115,6 @@ def _signals(
     community: dict[str, int] | None = None,
     entry_points: list[str] | None = None,
     tour_stops: tuple[dict, ...] = (),
-    layer_order: tuple[str, ...] = (),
     completed_page_summaries: dict[str, str] | None = None,
     flows: tuple[object, ...] = (),
 ) -> OnboardingSignals:
@@ -152,7 +151,6 @@ def _signals(
         external_systems=external_systems,
         completed_page_summaries=completed_page_summaries or {},
         tour_stops=tour_stops,
-        layer_order=layer_order,
     )
 
 
@@ -166,15 +164,12 @@ def test_subkinds_registered_in_canonical_order() -> None:
     slots = [s.slot for s in specs]
     # Promoted slots are excluded from iter_specs even though they're in
     # ONBOARDING_ORDER.
-    expected = [s for s in ONBOARDING_ORDER if s not in PROMOTED_SLOTS.values()]
+    expected = [s for s in ONBOARDING_SLOTS if s not in PROMOTED_SLOTS.values()]
     assert slots == expected
-    # Four templated subkinds plus the glossary, which is rendered without a
-    # model at all. The promoted overview brings orientation to six pages.
-    assert len(slots) == 5
-    assert len(ONBOARDING_ORDER) == 6
-    # Last, and it must stay last: a glossary is a lookup surface, not a
-    # reading step.
-    assert slots[-1] == "glossary"
+    # The reading order is the overview, Getting Started and How It Works;
+    # Active Landscape is generated but sits outside it.
+    assert ONBOARDING_ORDER == ("project_overview", "getting_started", "how_it_works")
+    assert slots == ["getting_started", "how_it_works", "active_landscape"]
 
 
 def test_onboarding_level_is_eight() -> None:
@@ -182,7 +177,7 @@ def test_onboarding_level_is_eight() -> None:
 
 
 def test_target_path_format() -> None:
-    assert target_path("key_concepts") == "onboarding/key_concepts"
+    assert target_path("how_it_works") == "onboarding/how_it_works"
 
 
 def test_promoted_slots_map() -> None:
@@ -572,61 +567,6 @@ async def test_getting_started_uses_shared_bounded_source_evidence_channel() -> 
     assert page.metadata["source_evidence"]["included"] == [
         {"path": "package.json", "truncated": False},
     ]
-
-
-# ---------------------------------------------------------------------------
-# Key concepts — gated on ≥4 high-PageRank public symbols
-# ---------------------------------------------------------------------------
-
-
-def test_key_concepts_skipped_when_too_few_concepts() -> None:
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
-    assert spec is not None
-    sig = _signals(files=[_file("src/a.py", symbols=["A"])])
-    assert spec.build_context(sig) is None
-
-
-_CONCEPTS = ("Blast radius", "Hotspot", "Change risk", "Dead code", "Wiki page")
-
-
-def _concept_signals(terms: tuple[str, ...] = _CONCEPTS) -> OnboardingSignals:
-    """Signals whose documents define *terms* and whose module groups name them."""
-    from repowise.core.generation.concept_tree.vocabulary import HouseTerm
-
-    house = tuple(
-        HouseTerm(
-            term=t,
-            definition=f"{t} is the idea number {i} this project is built around.",
-            definition_source="docs/concepts.md",
-            source_paths=("README.md", "docs/concepts.md"),
-            doc_frequency=5 - i,
-            code_frequency=3,
-            is_indexed_symbol=False,
-        )
-        for i, t in enumerate(terms)
-    )
-    return replace(
-        _signals(files=[_file("src/a.py")]),
-        house_terms=house,
-        module_corroboration=tuple(f"{t} Analysis\nHow {t.lower()} is computed." for t in terms),
-    )
-
-
-def test_key_concepts_fires_with_enough_concepts() -> None:
-    """Concepts are the project's own defined terms, not its most-called symbols."""
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
-    assert spec is not None
-    ctx = spec.build_context(_concept_signals())
-    assert ctx is not None
-    assert {c.term for c in ctx.concepts} == set(_CONCEPTS)
-    assert ctx.concepts[0].source_path == "docs/concepts.md"
-    assert ctx.concepts[0].used_in == ("Blast radius Analysis",)
-
-
-def test_key_concepts_skipped_without_enough_defined_terms() -> None:
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
-    assert spec is not None
-    assert spec.build_context(_concept_signals(_CONCEPTS[:3])) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1242,13 +1182,13 @@ async def test_missing_onboarding_evidence_is_visible_in_page_provenance() -> No
 
 
 async def test_evidence_for_a_gated_page_is_reported_as_not_generated() -> None:
-    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
     assert spec is not None
-    # One symbol is below the concept gate, so the page is never generated.
-    signals = _signals(files=[_file("src/one.py", symbols=["One"])])
+    # No git history, so the page is never generated.
+    signals = _signals(files=[_file("src/one.py", symbols=["One"])], git_meta=None)
     config = GenerationConfig(
         source_evidence_files={
-            "onboarding/key_concepts": ("docs/concepts.md",),
+            "onboarding/active_landscape": ("docs/concepts.md",),
         },
     )
     generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
@@ -1357,10 +1297,6 @@ def _jinja_env() -> jinja2.Environment:
                     ),
                 )
             ),
-        ),
-        (
-            SLOT_KEY_CONCEPTS,
-            lambda: onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(_concept_signals()),
         ),
         (
             SLOT_HOW_IT_WORKS,
@@ -1506,8 +1442,51 @@ def test_an_application_with_entry_points_is_not_a_library() -> None:
 def test_the_next_page_skips_a_gated_slot() -> None:
     from repowise.core.generation.onboarding import next_slot, with_next_link
 
-    present = {SLOT_GETTING_STARTED, SLOT_KEY_CONCEPTS}
-    assert next_slot(SLOT_GETTING_STARTED, present) == SLOT_KEY_CONCEPTS
-    page = with_next_link("# Getting Started\n\nBody.\n", "Key Concepts")
-    assert page.endswith("\nNext: **Key Concepts**\n")
+    assert next_slot("project_overview", {SLOT_HOW_IT_WORKS}) == SLOT_HOW_IT_WORKS
+    assert next_slot(SLOT_GETTING_STARTED, {SLOT_GETTING_STARTED}) is None
+    page = with_next_link("# Getting Started\n\nBody.\n", "How It Works")
+    assert page.endswith("\nNext: **How It Works**\n")
     assert with_next_link(page, "How It Works").count("Next: **") == 1
+
+
+def test_active_landscape_is_outside_the_reading_order() -> None:
+    """No Next link leads to or from it, and its pages carry the activity flag."""
+    from repowise.core.generation.onboarding import next_slot, slot_metadata
+
+    every = set(ONBOARDING_SLOTS)
+    assert next_slot(SLOT_HOW_IT_WORKS, every) is None
+    assert next_slot(SLOT_ACTIVE_LANDSCAPE, every) is None
+    assert slot_metadata(SLOT_ACTIVE_LANDSCAPE)["nav_section"] == "project_activity"
+    assert "nav_section" not in slot_metadata(SLOT_HOW_IT_WORKS)
+
+
+def test_active_landscape_counts_code_only() -> None:
+    """Tests and documentation never fill the activity tables."""
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
+    assert spec is not None
+    code = [f"src/f{i}.py" for i in range(12)]
+    noise = ["tests/test_a.py", "docs/guide.md", "src/test_b.py"]
+    git_meta = {p: {"commit_count_90d": 10} for p in code}
+    git_meta.update({p: {"commit_count_90d": 99} for p in noise})
+    ctx = spec.build_context(_signals(files=[_file(p) for p in code], git_meta=git_meta))
+    assert ctx is not None
+    assert {h.path for h in ctx.hot_files} <= set(code)
+    assert all(not d.path.startswith(("tests", "docs")) for d in ctx.hot_dirs)
+    assert ctx.files_touched_90d == 12
+
+
+def test_a_tombstoned_page_is_not_a_next_link_target() -> None:
+    """A slot this run did not build counts as present only when its kept row is live."""
+    from repowise.core.generation.page_generator.levels import _present_slots
+
+    how = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    started = onboarding.get_spec(SLOT_GETTING_STARTED)
+    page_id = "onboarding:onboarding/how_it_works"
+
+    def gen(status: str) -> SimpleNamespace:
+        prior = PriorPage(source_hash="h", model_name="m", content="x", freshness_status=status)
+        return SimpleNamespace(_prior_pages={page_id: prior})
+
+    contexts = {SLOT_GETTING_STARTED: object()}
+    assert SLOT_HOW_IT_WORKS in _present_slots(gen("fresh"), [started, how], contexts)
+    assert SLOT_HOW_IT_WORKS not in _present_slots(gen("tombstone"), [started, how], contexts)

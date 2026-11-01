@@ -54,7 +54,6 @@ def _term(
         source_paths=source_paths,
         doc_frequency=doc_frequency,
         code_frequency=code_frequency,
-        is_indexed_symbol=False,
     )
 
 

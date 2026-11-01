@@ -135,8 +135,12 @@ def _child_lines(plan: FlowPlan) -> list[list[int]]:
     return children
 
 
-def excerpts(plan: FlowPlan, read: LineReader) -> list[str]:
-    """Excerpt every step; shrink the heads together until the total fits the cap."""
+def excerpts(plan: FlowPlan, read: LineReader, cap: int = CODE_TOKEN_CAP) -> list[str]:
+    """Excerpt every step; shrink the heads together until the total fits *cap*.
+
+    When even the smallest heads overflow (a small model's window), the last
+    steps, the deepest in the walk, lose their code first.
+    """
     children = _child_lines(plan)
     texts: list[str] = []
     for head in _HEADS:
@@ -144,8 +148,14 @@ def excerpts(plan: FlowPlan, read: LineReader) -> list[str]:
             excerpt(step, read(step.path), children[i], head + (_ROOT_EXTRA if i == 0 else 0))[0]
             for i, step in enumerate(plan.steps)
         ]
-        if sum(map(_tokens, texts)) <= CODE_TOKEN_CAP:
+        if sum(map(_tokens, texts)) <= cap:
+            return texts
+    total = sum(map(_tokens, texts))
+    for i in range(len(texts) - 1, 0, -1):
+        if total <= cap:
             break
+        total -= _tokens(texts[i])
+        texts[i] = ""
     return texts
 
 
@@ -273,7 +283,11 @@ def relevant_docs(plan: FlowPlan, sections: Collection[DocSection]) -> tuple[Doc
 
 
 def build_material(
-    plan: FlowPlan, graph: Any, read: LineReader, sections: Collection[DocSection]
+    plan: FlowPlan,
+    graph: Any,
+    read: LineReader,
+    sections: Collection[DocSection],
+    code_cap: int = CODE_TOKEN_CAP,
 ) -> FlowMaterial:
     if not plan.steps:
         return FlowMaterial((), "", (), "")
@@ -283,7 +297,7 @@ def build_material(
     if m := re.fullmatch(r"(.+):(\d+)-(\d+)", root_cite):
         spans.append((m.group(1), int(m.group(2)), int(m.group(3)), plan.steps[0].name))
     return FlowMaterial(
-        excerpts=tuple(excerpts(plan, read)),
+        excerpts=tuple(excerpts(plan, read, code_cap)),
         surface=_surface(plan, graph, read),
         docs=docs,
         root_cite=root_cite,
