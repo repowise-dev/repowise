@@ -10,7 +10,8 @@ exists at all:
 * **direct** — repowise owns the files. ``init`` writes the user-scope MCP
   registration into ``~/.claude.json`` (the only place Claude Code reads user
   MCP servers from), the augment hooks into ``~/.claude/settings.json``, and a
-  repo-local ``.mcp.json``. No skills, no commands.
+  repo-local ``.mcp.json`` when no user-scope entry serves the repo. No skills,
+  no commands.
 
 Both routes register ``mcpServers.repowise`` and the same augment hook
 commands, and Claude Code merges them without complaint, so a user on both
@@ -27,6 +28,7 @@ encode several years of shape changes; this module names it and calls it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -208,6 +210,62 @@ def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str 
 
     write_json_config(config_path, existing)
     return config_path, FileAction.REMOVED, None
+
+
+def sync_project_mcp_config(repo_path: Path) -> FileWrite:
+    """The ``.mcp.json`` write for ``init`` and ``agents refresh``.
+
+    Skipped when Claude Code already loads a user-scope repowise server here
+    (the ``~/.claude.json`` entry or the plugin): the two scopes share the
+    ``repowise`` name and Claude Code reports them as conflicting. An entry an
+    older release wrote is then retired. Written as before otherwise, so a
+    declined or failed user-scope write still leaves the repo connected.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_user_scope_serves
+
+    if claude_code_user_scope_serves(repo_path):
+        return retire_project_mcp_entry(repo_path)
+    return write_project_mcp_config(repo_path)
+
+
+def retire_project_mcp_entry(repo_path: Path) -> FileWrite:
+    """Drop the ``.mcp.json`` entry init wrote, when a user-scope entry serves the repo.
+
+    Only our own ``repowise`` key goes, as a minimal edit; other servers and
+    the file's formatting stay. The file goes only when nothing else is left.
+    A file git tracks is left alone: it is shared, and contributors without
+    the user-scope entry rely on it. A file that is not strict JSON, or a
+    hand-shaped entry, is left alone too.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _is_our_entry,
+        _stored_repowise_entry,
+    )
+    from repowise.cli.git_exclude import is_tracked
+
+    from ..formats.json_merge import load_json_object_or_value_error, remove_json_object_member
+
+    config_path = project_mcp_config_path(repo_path)
+    entry = _stored_repowise_entry(config_path)
+    if entry is None:
+        return FileWrite(path=config_path, action=FileAction.NOT_FOUND)
+    if not _is_our_entry(entry):
+        return FileWrite(config_path, FileAction.KEPT, "the repowise entry is hand-shaped")
+    if is_tracked(repo_path, config_path.name):
+        return FileWrite(
+            config_path,
+            FileAction.KEPT,
+            "tracked in git, so contributors without the user-scope entry rely on it",
+        )
+    try:
+        remove_json_object_member(config_path, "mcpServers", "repowise")
+    except (OSError, ValueError) as exc:
+        return FileWrite(config_path, FileAction.KEPT, f"could not edit it: {exc}")
+    # The entry is gone; failing to drop a now-empty file leaves it in place.
+    with contextlib.suppress(OSError, ValueError):
+        if load_json_object_or_value_error(config_path, ".mcp.json") == {"mcpServers": {}}:
+            config_path.unlink()
+    return FileWrite(path=config_path, action=FileAction.REMOVED)
 
 
 # ---------------------------------------------------------------------------
@@ -436,10 +494,14 @@ class ClaudeCodeTarget:
         )
 
         result = WriteResult()
+        retarget = isinstance(options, InstallOptions) and options.retarget
         if scope is Scope.PROJECT:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
-            written = write_project_mcp_config(repo_path)
+            # An explicit `agents add` writes the entry it was asked for;
+            # `refresh` (and doctor --repair) follow init's rule.
+            write = write_project_mcp_config if retarget else sync_project_mcp_config
+            written = write(repo_path)
             result.record(written.path, written.action, written.reason)
             return result
 
@@ -455,7 +517,6 @@ class ClaudeCodeTarget:
         user_config_before = read_bytes(user_config)
         desktop_before = read_bytes(desktop_path) if desktop_path is not None else None
 
-        retarget = isinstance(options, InstallOptions) and options.retarget
         register_with_claude_desktop(repo_path, retarget=retarget)
         register_with_claude_code(repo_path, retarget=retarget)
         install_claude_code_hooks()

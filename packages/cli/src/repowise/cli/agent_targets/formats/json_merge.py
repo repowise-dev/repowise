@@ -282,21 +282,22 @@ def _find_object_member(
 
 
 def _container_indent(text: str, obj_start: int, obj_end: int) -> str:
-    """Return the whitespace prefix indenting the object's members.
+    """Return the indent of the object's closing brace; members sit two spaces deeper.
 
-    Derived from the whitespace preceding the matching closing brace, so a
-    member inserted into the object is indented to sit with its siblings no
-    matter the file's formatting. Falls back to ``"  "`` for one-line objects.
+    Read from the line the closing brace is on, so the root object of a file
+    with or without a trailing newline yields the same ``""``. When the brace
+    does not start its own line (``{}``, one-line objects) it falls back to
+    ``""`` for the root and ``"  "`` for a nested object.
     """
-    i = obj_end - 1
-    j = i
-    while j > obj_start and text[j] in " \t\r\n":
-        j -= 1
-    if j != i:
-        _, after_newline = text[j:obj_end].rsplit("\n", 1)
-        if after_newline.strip() == "":
-            return after_newline
-    return "  "
+    close = obj_end - 1
+    while close > obj_start and text[close] in " \t\r\n":
+        close -= 1
+    start = close
+    while start > obj_start and text[start - 1] in " \t":
+        start -= 1
+    if start > obj_start and text[start - 1] in "\r\n":
+        return text[start:close]
+    return "" if not text[:obj_start].strip() else "  "
 
 
 def _render_indented(value_text: str, base_indent: str) -> str:

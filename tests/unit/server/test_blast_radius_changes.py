@@ -6,6 +6,8 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
 from repowise.core.persistence.models import (
     GitCommit,
@@ -16,6 +18,25 @@ from repowise.core.persistence.models import (
     HealthFileMetric,
 )
 from tests.unit.server.conftest import create_test_repo
+
+
+@pytest.fixture(autouse=True)
+async def _finish_warm_ups():
+    """Listing changes starts a warm-up task; let this test's finish before its database closes."""
+    import asyncio
+
+    from repowise.server.routers import blast_radius as route
+
+    yield
+    await asyncio.gather(*_warming_here(route), return_exceptions=True)
+
+
+def _warming_here(route) -> list:
+    """The warm-up tasks this test's event loop started; other tests' loops own the rest."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    return [t for t in route._WARMING.values() if t.get_loop() is loop]
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -67,7 +88,11 @@ async def test_lists_work_in_progress_branches_and_commits(client, session, tmp_
         ("commit", "aaaaaaaa"),
     ]
     branch = body["changes"][1]
-    assert (branch["ahead"], branch["files_changed"], branch["title"]) == (1, 1, "feat: change core")
+    assert (branch["ahead"], branch["files_changed"], branch["title"]) == (
+        1,
+        1,
+        "feat: change core",
+    )
     # Never pushed: the picker shows it as local scratch work.
     assert branch["pushed"] is False
     # Uncommitted work opens first.
@@ -82,7 +107,11 @@ async def test_analyzes_a_branch_with_reach_edges_and_signals(client, session, t
         session.add(GraphNode(id=f"n{i}", repository_id=rid, node_id=path, node_type="file"))
     session.add(
         GraphEdge(
-            id="e0", repository_id=rid, source_node_id="app.py", target_node_id="core.py", edge_type="imports"
+            id="e0",
+            repository_id=rid,
+            source_node_id="app.py",
+            target_node_id="core.py",
+            edge_type="imports",
         )
     )
     session.add(
@@ -115,6 +144,9 @@ async def test_analyzes_a_branch_with_reach_edges_and_signals(client, session, t
     assert signals["core.py"]["health_score"] is None
     assert body["recommended_reviewers"][0]["name"] == "Ann Lee"
     assert signals["app.py"]["is_test"] is False
+    # Both files are graph nodes in the index; a file new since the last index is not.
+    assert signals["app.py"]["indexed"] is True
+    assert signals["core.py"]["indexed"] is True
     # Owners of the changed file itself; core.py has no history row, so none.
     assert body["changed_owners"] == []
     assert body["test_commands"] == []
@@ -126,7 +158,13 @@ async def test_counts_tests_apart_and_names_the_changed_files_owner(client, sess
     rid = repo["id"]
     for i, path in enumerate(("core.py", "tests/test_core.py")):
         session.add(
-            GraphNode(id=f"n{i}", repository_id=rid, node_id=path, node_type="file", is_test=path.startswith("tests/"))
+            GraphNode(
+                id=f"n{i}",
+                repository_id=rid,
+                node_id=path,
+                node_type="file",
+                is_test=path.startswith("tests/"),
+            )
         )
     session.add(
         GraphEdge(
@@ -149,7 +187,9 @@ async def test_counts_tests_apart_and_names_the_changed_files_owner(client, sess
     await session.commit()
 
     body = (
-        await client.post(f"/api/repos/{rid}/blast-radius/change", json={"change_id": "branch:feat/x"})
+        await client.post(
+            f"/api/repos/{rid}/blast-radius/change", json={"change_id": "branch:feat/x"}
+        )
     ).json()
 
     signals = {s["path"]: s for s in body["affected_signals"]}
@@ -177,7 +217,9 @@ async def test_commit_resolves_from_the_index_without_a_checkout(client, session
     session.add(GitCommitFile(repository_id=rid, sha=sha, file_path="src/y.py"))
     await session.commit()
 
-    resp = await client.post(f"/api/repos/{rid}/blast-radius/change", json={"change_id": f"commit:{sha}"})
+    resp = await client.post(
+        f"/api/repos/{rid}/blast-radius/change", json={"change_id": f"commit:{sha}"}
+    )
 
     assert resp.status_code == 200
     assert resp.json()["changed_files"] == ["src/y.py"]
@@ -205,7 +247,9 @@ async def test_paths_are_relative_to_a_checkout_below_the_git_root(client, tmp_p
     (tmp_path / "test-repo" / "a.py").write_text("x = 2\n", encoding="utf-8")
     repo = await create_test_repo(client, tmp_path)
 
-    resp = await client.post(f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": "working-tree"})
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": "working-tree"}
+    )
 
     assert resp.status_code == 200
     assert resp.json()["changed_files"] == ["a.py"]
@@ -251,6 +295,12 @@ async def test_branch_listing_is_reused_until_head_moves(client, tmp_path, monke
     assert again == first
     assert reads == 1
 
+    # The listing warms the default change, which reads the checkout; let it finish first.
+    import asyncio
+
+    from repowise.server.routers import blast_radius as route
+
+    await asyncio.gather(*_warming_here(route))
     # A commit moves HEAD, so the branches are read again.
     _git(repo_dir, "commit", "-q", "-am", "main moves")
     await client.get(url)
@@ -289,3 +339,37 @@ async def test_health_check_judges_a_listed_change_from_git(client, tmp_path):
     assert branch.json()["revspec"].endswith("...feat/x")
 
     assert (await client.post(url, json={"change_id": "branch:--output=x"})).status_code == 404
+
+
+async def test_listing_warms_the_default_change_and_repeats_reuse_it(client, tmp_path, monkeypatch):
+    """The page asks for the list, then the default change: the second finds it ready."""
+    import asyncio
+
+    from repowise.server.routers import blast_radius as route
+
+    _git_repo(tmp_path)
+    repo = await create_test_repo(client, tmp_path)
+    runs = 0
+    real = PRBlastRadiusAnalyzer.analyze_files
+
+    async def counted(self, **kwargs):
+        nonlocal runs
+        runs += 1
+        return await real(self, **kwargs)
+
+    monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", counted)
+    listing = (await client.get(f"/api/repos/{repo['id']}/blast-radius/changes")).json()
+    await asyncio.gather(*_warming_here(route))
+    assert runs == 1
+
+    url = f"/api/repos/{repo['id']}/blast-radius/change"
+    body = {"change_id": listing["default_id"], "max_depth": 3}
+    first = await client.post(url, json=body)
+    again = await client.post(url, json=body)
+    assert first.status_code == 200, first.text
+    assert again.json() == first.json()
+    assert runs == 1
+
+    # Another depth is another analysis.
+    await client.post(url, json={**body, "max_depth": 1})
+    assert runs == 2

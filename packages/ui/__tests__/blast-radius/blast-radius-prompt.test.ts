@@ -32,13 +32,13 @@ describe("buildBlastRadiusPrompt", () => {
     const p = buildBlastRadiusPrompt({
       input: {
         ...INPUT,
-        status: "Look first: 1 changed file changes often or has weak health.",
+        status: "Look first: 1 changed file changes often or has poor health.",
         reach: { ...INPUT.reach, tests: 30 },
         testCommands: ["pytest tests/test_a.py", "npm --prefix packages/ui test -- b.test.tsx"],
         owners: [{ name: "Ann", email: "ann@example.com", files: 1, of: 2 }],
       },
     });
-    expect(p).toContain("Screen verdict: Look first: 1 changed file changes often or has weak health.");
+    expect(p).toContain("Screen verdict: Look first: 1 changed file changes often or has poor health.");
     expect(p).toContain("30 test files also import it (tests to run, not reach)");
     expect(p).toContain(["pytest tests/test_a.py", "npm --prefix packages/ui test -- b.test.tsx"].join("\n"));
     expect(p).toContain("## Owners of the changed files");
@@ -77,5 +77,18 @@ describe("buildBlastRadiusPrompt with a health check", () => {
     expect(p).toContain("## Health check: fail (`repowise health check origin/main...feat/x`)");
     expect(p).toContain("introduced high: `packages/core/src/a.py:12` Deep nesting");
     expect(buildBlastRadiusPrompt({ input: INPUT })).not.toContain("## Health check");
+  });
+});
+
+describe("buildBlastRadiusPrompt for a pull request", () => {
+  it("names the PR and diffs base against head", () => {
+    const p = buildBlastRadiusPrompt({
+      input: {
+        ...INPUT,
+        change: { kind: "pull_request", label: "#123", number: 123, title: "Fix the cache", base: "main", head_sha: "b".repeat(40) },
+      },
+    });
+    expect(p).toContain("Pull request #123: Fix the cache");
+    expect(p).toContain(`git diff main...${"b".repeat(40)}`);
   });
 });

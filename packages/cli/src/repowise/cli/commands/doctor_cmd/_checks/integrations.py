@@ -406,20 +406,35 @@ def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCh
         db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
         if not db_path.is_file():
             return _check("Omission store", True, "not created yet", check_id="omission-store")
-        size_bytes = db_path.stat().st_size
-        wal = db_path.with_name(db_path.name + "-wal")
-        if wal.is_file():
-            size_bytes += wal.stat().st_size
-        size_mb = size_bytes / (1024 * 1024)
-        ok = size_mb <= max_mb * 1.5  # WAL slack before checkpointing
-        detail = f"{size_mb:.1f} MB (cap {max_mb:g} MB)"
+        size_mb = _store_bytes_in_use(db_path) / (1024 * 1024)
+        ok = size_mb <= max_mb * 1.5  # slack for the ledger tables pruning leaves alone
+        detail = f"{size_mb:.1f} MB in use (cap {max_mb:g} MB)"
         if not ok:
-            detail += " — over cap; pruning happens on the next distill write"
+            detail += "; over cap, pruning happens on the next distill write"
         return _check("Omission store", ok, detail, check_id="omission-store")
     except Exception as exc:
         return _check(
             "Omission store", True, f"Could not check: {exc}", check_id="omission-store", warn=True
         )
+
+
+def _store_bytes_in_use(db_path: _DoctorPath) -> int:
+    """Bytes the store's live pages hold, WAL included.
+
+    Pruning deletes rows, and SQLite keeps the freed pages in the file for
+    reuse rather than shrinking it, so the file size stays at its high-water
+    mark. Measuring the file would report a pruned store as over cap forever.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        conn.close()
+    return (pages - free) * page_size
 
 
 def _rewrite_hook_surfaces() -> list[tuple[str, object]]:

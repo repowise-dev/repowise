@@ -3,40 +3,46 @@
 import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { CochangeTable } from "./cochange-table";
-import { CHIP, PathRef } from "./blast-radius-verdict";
+import { PathRef } from "./blast-radius-verdict";
 import type { Reach } from "./blast-map-model";
 
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
 
 /**
- * The details a review rarely needs first, collapsed and last: every file
- * with no test found (the changed ones on top), and every pair history says
- * usually changes together where this change leaves one out. Each section
- * stays out when it has nothing in it.
+ * The details a review rarely needs first, collapsed and last: changed files
+ * with no test, and the files history says
+ * usually change with these that this change leaves out. Each section stays
+ * out when it has nothing in it.
  */
+function UntestedList({ paths, fileHref }: { paths: string[]; fileHref: ((path: string) => string) | undefined }) {
+  return (
+    <ul className="space-y-1.5">
+      {paths.map((path) => (
+        <li key={path} className="flex min-w-0 items-center justify-between gap-x-3 gap-y-0.5 text-xs max-sm:flex-wrap">
+          <PathRef path={path} href={fileHref?.(path)} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ReviewDetails({ result, reach, fileHref }: { result: Result; reach: Reach; fileHref: ((path: string) => string) | undefined }) {
+  // One meaning per number: changed files with no test. Tests and files the
+  // index does not have yet are not in it.
   const changed = reach.changed.filter((m) => m.untested).map((m) => m.path);
-  const dependents = reach.files.filter((f) => f.untested).map((f) => f.path);
-  const untested = [...changed, ...dependents];
-  if (untested.length === 0 && result.cochange_warnings.length === 0) return null;
+  const partners = new Set(result.cochange_warnings.map((w) => w.missing_partner)).size;
+  if (changed.length === 0 && partners === 0) return null;
   return (
     <div>
-      {untested.length > 0 && (
-        <CollapsibleSection title="Files with no test found" hint={untested.length.toLocaleString()}>
-          <ul className="space-y-1.5">
-            {untested.map((path, i) => (
-              <li key={path} className="flex min-w-0 items-center justify-between gap-3 text-xs">
-                <PathRef path={path} href={fileHref?.(path)} />
-                <span className={CHIP}>{i < changed.length ? "changed" : "depends on it"}</span>
-              </li>
-            ))}
-          </ul>
+      {changed.length > 0 && (
+        <CollapsibleSection title="Changed files with no test" hint={changed.length.toLocaleString()}>
+          <UntestedList paths={changed} fileHref={fileHref} />
         </CollapsibleSection>
       )}
-      {result.cochange_warnings.length > 0 && (
+      {partners > 0 && (
         <CollapsibleSection
           title="Usually change together, not in this change"
-          hint={result.cochange_warnings.length.toLocaleString()}
+          hint={`${partners.toLocaleString()} ${partners === 1 ? "file" : "files"}`}
         >
           <CochangeTable rows={result.cochange_warnings} />
         </CollapsibleSection>

@@ -1,16 +1,11 @@
 /**
- * The facts a change review reads from one blast-radius result, and the
- * picture drawn from them. Pure: the same result always reads, and lays out,
- * the same way.
+ * The facts a change review reads from one blast-radius result. Pure: the
+ * same result always reads the same way. The picture is laid out from these
+ * in `blast-step-model.ts`.
  *
  * Tests are counted apart: a test that imports the changed code is a test to
  * run, never code the change reaches. Counting them as reach made a one-file
  * change read as "2,295 files reached", 2,095 of them tests.
- *
- * The picture is file by file when the reach is small enough to read that
- * way, and module by module otherwise: past a dozen or so files, per-file
- * dots are a hairball that says nothing, and a module bubble keeps the count
- * and the one mark that matters (files that change often with no test).
  */
 
 import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
@@ -25,6 +20,10 @@ export interface FileMarks {
   isHotspot: boolean | null;
   /** Listed by the analysis as having no test evidence at all. */
   untested: boolean;
+  /** The file is itself a test (only ever set for changed files; reach keeps tests apart). */
+  isTest?: boolean;
+  /** New since the last index run: no graph, health or owner yet, so none is claimed. */
+  notIndexed?: boolean;
 }
 
 /** A file the change reaches: how many imports away, through which file, in which module. */
@@ -74,11 +73,6 @@ export function attention(m: FileMarks): number {
   return (m.isHotspot ? 1 : 0) + (isWeak(m) ? 1 : 0) + (m.untested ? 1 : 0);
 }
 
-/** Changed often and nothing tests it: the one mark the map draws. */
-export function needsLook(m: FileMarks): boolean {
-  return Boolean(m.isHotspot) && m.untested;
-}
-
 /** Every mark a file carries, in words, for tooltips and the review prompt. */
 export function describeMarks(m: FileMarks): string[] {
   const words: string[] = [];
@@ -87,6 +81,7 @@ export function describeMarks(m: FileMarks): string[] {
   else words.push("Health not scored");
   if (m.isHotspot) words.push("Changed often");
   if (m.untested) words.push("No test found");
+  if (m.notIndexed) words.push("New since the last index: health, owners and importers not known yet");
   return words;
 }
 
@@ -110,7 +105,10 @@ function marksReader(result: Result): (path: string) => FileMarks {
       isHotspot: s ? s.is_hotspot : (hotspotFallback.get(path) ?? null),
       // A test is what tests the code, and a package's `__init__.py` is
       // tested through the modules it gathers: neither needs a test of its own.
-      untested: gaps.has(path) && !isTestFile(path, s) && !PACKAGE_INIT.test(path),
+      // A file the index does not have yet has no test evidence either way.
+      untested: gaps.has(path) && !isTestFile(path, s) && !PACKAGE_INIT.test(path) && s?.indexed !== false,
+      isTest: isTestFile(path, s),
+      notIndexed: s?.indexed === false,
     };
   };
 }
@@ -124,7 +122,10 @@ export function readReach(result: Result, changedFiles: string[]): Reach {
   for (const t of result.transitive_affected) {
     const signal = signals.get(t.path);
     if (isTestFile(t.path, signal)) tests.push(t.path);
-    else files.push({ ...marks(t.path), depth: t.depth, via: t.via ?? null, module: moduleOf(t.path, signal) });
+    // "No test" is said of changed files only: whether a dependent is tested is
+    // not about this change, and the direct-import rule behind it undercounts.
+    else
+      files.push({ ...marks(t.path), untested: false, depth: t.depth, via: t.via ?? null, module: moduleOf(t.path, signal) });
   }
   return {
     changed: changedFiles.map(marks).sort(byAttentionThenPath),
@@ -148,175 +149,4 @@ export function riskySpots(reach: Reach, limit = 5): (FileMarks & { changed: boo
     .filter((n) => attention(n) > 0)
     .sort((a, b) => Number(b.changed) - Number(a.changed) || attention(b) - attention(a) || a.path.localeCompare(b.path))
     .slice(0, limit);
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// The picture
-// ─────────────────────────────────────────────────────────────────────
-
-interface MapNode {
-  key: string;
-  x: number;
-  y: number;
-  r: number;
-  /** The drawn node this one hangs from; `null` hangs from the centre. */
-  parentKey: string | null;
-}
-
-export interface MapFileNode extends MapNode, FileMarks {
-  /** 0 for a changed file. */
-  hop: number;
-}
-
-export interface MapModuleNode extends MapNode {
-  name: string;
-  /** The nearest hop any of its files sits at. */
-  hop: number;
-  files: number;
-  /** Files in it that change often and have no test. */
-  flagged: number;
-  /** Drawn with its name; the smaller ones name themselves on hover. */
-  labelled: boolean;
-}
-
-export interface BlastMap {
-  width: number;
-  height: number;
-  cx: number;
-  cy: number;
-  ringRadii: number[];
-  mode: "files" | "modules";
-  changed: MapFileNode[];
-  files: MapFileNode[];
-  modules: MapModuleNode[];
-  hiddenChanged: number;
-  hiddenModules: number;
-  hiddenModuleFiles: number;
-  maxHop: number;
-}
-
-const WIDTH = 640;
-const HEIGHT = 480;
-export const CX = WIDTH / 2;
-export const CY = HEIGHT / 2;
-const RINGS = [0, 100, 160, 205];
-export const MAX_CHANGED = 8;
-/** At or under this many reached files, each is drawn; over it, modules are. */
-export const MAX_FILE_NODES = 15;
-export const MAX_MODULES = 14;
-const LABELLED_MODULES = 8;
-
-function polar(angle: number, radius: number): { x: number; y: number } {
-  return { x: CX + Math.cos(angle) * radius, y: CY + Math.sin(angle) * radius };
-}
-
-/** Evenly spaced angles from the top, clockwise. */
-function spread(n: number, offset = 0): number[] {
-  return Array.from({ length: n }, (_, i) => (i / Math.max(1, n)) * 2 * Math.PI - Math.PI / 2 + offset);
-}
-
-/** Rings for one hop, two hops, and three or more. */
-function ringOf(hop: number): 1 | 2 | 3 {
-  return hop <= 1 ? 1 : hop === 2 ? 2 : 3;
-}
-
-function centre(reach: Reach): MapFileNode[] {
-  const shown = reach.changed.slice(0, MAX_CHANGED);
-  const r = shown.length <= 1 ? 0 : Math.min(44, 12 + shown.length * 5);
-  const angles = spread(shown.length);
-  return shown.map((m, i) => ({ ...m, ...polar(angles[i] ?? 0, r), key: `c:${m.path}`, r: 8, hop: 0, parentKey: null }));
-}
-
-/** Each reached file on the ring of its hop, siblings (same `via`) side by side. */
-function fileNodes(reach: Reach, changed: MapFileNode[]): MapFileNode[] {
-  const keyOf = new Map(changed.map((n) => [n.path, n.key]));
-  const out: MapFileNode[] = [];
-  for (const ring of [1, 2, 3] as const) {
-    const onRing = reach.files
-      .filter((f) => ringOf(f.depth) === ring)
-      .sort((a, b) => (a.via ?? "").localeCompare(b.via ?? "") || a.path.localeCompare(b.path));
-    const angles = spread(onRing.length, 0.15 * ring);
-    for (const [i, f] of onRing.entries()) {
-      const key = `f:${f.path}`;
-      const parentKey = (f.via && keyOf.get(f.via)) || null;
-      out.push({ ...f, ...polar(angles[i] ?? 0, RINGS[ring]!), key, r: 6, hop: f.depth, parentKey });
-      keyOf.set(f.path, key);
-    }
-  }
-  return out;
-}
-
-interface Group {
-  name: string;
-  files: ReachedFile[];
-  hop: number;
-}
-
-function groupsOf(reach: Reach): Group[] {
-  const byName = new Map<string, Group>();
-  for (const f of reach.files) {
-    const g = byName.get(f.module) ?? { name: f.module, files: [], hop: f.depth };
-    g.files.push(f);
-    g.hop = Math.min(g.hop, f.depth);
-    byName.set(f.module, g);
-  }
-  return [...byName.values()].sort((a, b) => b.files.length - a.files.length || a.name.localeCompare(b.name));
-}
-
-/** The drawn module most of *g*'s files are reached through, when it sits nearer the change. */
-function parentModule(g: Group, moduleOfPath: Map<string, string>, hopOf: Map<string, number>): string | null {
-  const votes = new Map<string, number>();
-  for (const f of g.files) {
-    const m = f.via ? moduleOfPath.get(f.via) : undefined;
-    if (m && m !== g.name && (hopOf.get(m) ?? Infinity) < g.hop) votes.set(m, (votes.get(m) ?? 0) + 1);
-  }
-  return [...votes.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? null;
-}
-
-function moduleNodes(reach: Reach): { nodes: MapModuleNode[]; hidden: Group[] } {
-  const groups = groupsOf(reach);
-  const shown = groups.slice(0, MAX_MODULES);
-  const moduleOfPath = new Map(reach.files.map((f) => [f.path, f.module]));
-  const hopOf = new Map(shown.map((g) => [g.name, g.hop]));
-  const maxCount = Math.max(1, ...shown.map((g) => g.files.length));
-  const labelled = new Set(shown.slice(0, LABELLED_MODULES).map((g) => g.name));
-  // Around the ring by hop then name, so modules at one distance sit together.
-  const placed = [...shown].sort((a, b) => a.hop - b.hop || a.name.localeCompare(b.name));
-  const angles = spread(placed.length, 0.2);
-  const nodes = placed.map((g, i): MapModuleNode => {
-    const parent = parentModule(g, moduleOfPath, hopOf);
-    return {
-      key: `m:${g.name}`,
-      name: g.name,
-      ...polar(angles[i] ?? 0, RINGS[ringOf(g.hop)]!),
-      r: 6 + 14 * Math.sqrt(g.files.length / maxCount),
-      hop: g.hop,
-      files: g.files.length,
-      flagged: g.files.filter(needsLook).length,
-      labelled: labelled.has(g.name),
-      parentKey: parent ? `m:${parent}` : null,
-    };
-  });
-  return { nodes, hidden: groups.slice(MAX_MODULES) };
-}
-
-export function buildBlastMap(reach: Reach): BlastMap {
-  const changed = centre(reach);
-  const mode = reach.files.length <= MAX_FILE_NODES ? "files" : "modules";
-  const { nodes, hidden } = mode === "modules" ? moduleNodes(reach) : { nodes: [], hidden: [] as Group[] };
-  return {
-    width: WIDTH,
-    height: HEIGHT,
-    cx: CX,
-    cy: CY,
-    ringRadii: RINGS.slice(1),
-    mode,
-    changed,
-    files: mode === "files" ? fileNodes(reach, changed) : [],
-    modules: nodes,
-    hiddenChanged: reach.changed.length - changed.length,
-    hiddenModules: hidden.length,
-    hiddenModuleFiles: hidden.reduce((n, g) => n + g.files.length, 0),
-    maxHop: reach.maxHop,
-  };
 }

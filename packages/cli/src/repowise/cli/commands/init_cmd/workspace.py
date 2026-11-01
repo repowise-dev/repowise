@@ -9,6 +9,7 @@ same helpers as the single-repo flow.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -1050,6 +1051,14 @@ def _save_workspace(
         no_editor_setup=not editor_setup,
     ):
         register_editor_clients(console, primary_path)
+        # The repos' .mcp.json files were written before the user-scope entry
+        # existed; drop each one that entry now serves, as single-repo init does.
+        from repowise.cli.agent_targets.targets.claude_code import sync_project_mcp_config
+
+        for repo in selected:
+            # Best effort: a malformed .mcp.json was already reported when written.
+            with contextlib.suppress(Exception):
+                sync_project_mcp_config(Path(repo.path))
 
 
 def _resolve_workspace_provider(

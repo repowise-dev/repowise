@@ -9,6 +9,16 @@ export type BlastPromptChange =
   | { kind: "working_tree"; label: string }
   | { kind: "branch"; label: string; base: string; head_sha?: string | null }
   | { kind: "commit"; label: string; sha: string; title?: string | null }
+  | {
+      kind: "pull_request";
+      label: string;
+      number: number | null;
+      title?: string | null;
+      /** The base branch, and the base commit when the host knows it. */
+      base?: string | null;
+      base_sha?: string | null;
+      head_sha?: string | null;
+    }
   | { kind: "files"; label: string };
 
 export interface BlastPromptInput {
@@ -58,6 +68,9 @@ function diffCommand(c: BlastPromptChange, files: string[]): string {
       return `git diff ${c.base}...${c.label}`;
     case "commit":
       return `git show ${c.sha}`;
+    case "pull_request":
+      if ((c.base_sha || c.base) && c.head_sha) return `git diff ${c.base_sha ?? c.base}...${c.head_sha}`;
+      return `gh pr diff ${c.number ?? c.label.replace(/^#/, "")}`;
     case "files":
       return `git diff HEAD -- ${files.slice(0, 5).join(" ")}${files.length > 5 ? " ..." : ""}`;
   }
@@ -71,6 +84,8 @@ function changeLine(c: BlastPromptChange): string {
       return `Branch \`${c.label}\` against \`${c.base}\` (merge-base diff)${c.head_sha ? `, head \`${c.head_sha.slice(0, 12)}\`` : ""}`;
     case "commit":
       return `Commit \`${c.sha}\`${c.title ? `: ${c.title}` : ""}`;
+    case "pull_request":
+      return `Pull request ${c.label}${c.title ? `: ${c.title}` : ""}${c.head_sha ? `, head \`${c.head_sha.slice(0, 12)}\`` : ""}`;
     case "files":
       return "A hand-picked set of files (not a commit)";
   }

@@ -30,9 +30,7 @@ class ClaudeCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> list[Path]:
-        from repowise.cli.mcp_config import save_root_mcp_config
-
-        written = [Path(save_root_mcp_config(repo_path))]
+        written = _sync_project_mcp(console_obj, repo_path)
         claude_md = maybe_generate_claude_md(
             console_obj,
             repo_path,
@@ -92,6 +90,23 @@ class ClaudeCodeSetup:
         if not _claude_md_enabled(repo_path):
             return
         run_async(_write_claude_md_async(repo_path))
+
+
+def _sync_project_mcp(console_obj: Any, repo_path: Path) -> list[Path]:
+    """Write ``.mcp.json`` unless a user-scope entry serves the repo; the manifest rows."""
+    from repowise.cli.agent_targets.types import FileAction
+
+    result = claude_target.sync_project_mcp_config(repo_path)
+    if result.action is FileAction.REMOVED:
+        console_obj.print(
+            "  [dim]Removed repowise from .mcp.json: Claude Code already loads it "
+            "for this repo from user scope.[/dim]"
+        )
+    elif result.action is FileAction.KEPT and result.reason:
+        console_obj.print(f"  [dim].mcp.json left as is: {result.reason}.[/dim]")
+    if result.action in (FileAction.REMOVED, FileAction.NOT_FOUND):
+        return []
+    return [result.path]
 
 
 def _uses_lean_tool_surface(repo_path: Path) -> bool:

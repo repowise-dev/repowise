@@ -164,6 +164,9 @@ class AffectedSignal(BaseModel):
     module: str | None = None
     #: A test file: counted as a test to run, never as code the change reaches.
     is_test: bool = False
+    #: Whether the index has the file. A file new since the last index run has
+    #: no graph, health or owner yet; ``None`` from a server that does not say.
+    indexed: bool | None = None
 
 
 class ChangedOwner(BaseModel):
@@ -196,9 +199,24 @@ class BlastRadiusResponse(BaseModel):
     overall_risk_score_compatibility: RiskCompatibilityField
 
 
+class PrReviewSummary(BaseModel):
+    """What the PR bot stored for a pull request: code health before and after, and new findings.
+
+    A host that runs the bot fills it; a local server never does.
+    """
+
+    health_before: float | None = None
+    health_after: float | None = None
+    #: Findings the pull request introduced.
+    introduced: int | None = None
+    #: The bot's review of the pull request.
+    url: str | None = None
+
+
 class ChangeCandidateModel(BaseModel):
     id: str
-    kind: Literal["working_tree", "branch", "commit"]
+    #: ``pr`` is listed by a host that knows pull requests; a local server never lists one.
+    kind: Literal["working_tree", "branch", "commit", "pull_request"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -211,6 +229,12 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
+    #: For a pull request: its number.
+    number: int | None = None
+    #: For a pull request: the base commit it is compared against.
+    base_sha: str | None = None
+    #: For a pull request: the PR bot's stored health before and after, when a host has one.
+    pr_review: PrReviewSummary | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):
@@ -220,6 +244,10 @@ class ChangeCandidatesResponse(BaseModel):
     default_id: str | None = None
     #: False on a server without a checkout: only indexed commits are offered.
     working_tree_supported: bool
+    #: Whether ``POST /blast-radius/health-check`` can judge a listed change.
+    #: A local server needs its checkout; a host that reads blobs another way
+    #: can say true without a working tree.
+    health_check_supported: bool = False
 
 
 class ChangeBlastRadiusRequest(BaseModel):

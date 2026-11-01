@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BlastRadiusResponse, TransitiveEntry } from "@repowise-dev/types/blast-radius";
-import { MAX_FILE_NODES, buildBlastMap, isTestFile, moduleOf, readReach, riskySpots } from "./blast-map-model";
+import { isTestFile, moduleOf, readReach, riskySpots } from "./blast-map-model";
 import { reviewStatus, roughCount } from "./review-status";
 
 function result(
@@ -71,50 +71,6 @@ describe("readReach", () => {
   });
 });
 
-describe("buildBlastMap", () => {
-  it("draws a small reach file by file, each hanging from what it imports", () => {
-    const map = buildBlastMap(
-      readReach(
-        result([
-          { path: "src/api/a.py", depth: 1, via: "src/core.py" },
-          { path: "src/web/x.py", depth: 2, via: "src/api/a.py" },
-        ]),
-        ["src/core.py"],
-      ),
-    );
-    expect(map.mode).toBe("files");
-    expect(map.files.map((n) => n.path)).toEqual(["src/api/a.py", "src/web/x.py"]);
-    expect(map.files[0]!.parentKey).toBe(map.changed[0]!.key);
-    expect(map.files[1]!.parentKey).toBe(map.files[0]!.key);
-  });
-
-  it("draws a large reach by module, marking modules with untested files that change often", () => {
-    const transitive = Array.from({ length: MAX_FILE_NODES + 4 }, (_, i) => ({
-      path: `${i < 10 ? "src/api" : "src/web"}/f${i}.py`,
-      depth: i < 10 ? 1 : 2,
-      via: i < 10 ? "src/core.py" : "src/api/f0.py",
-    }));
-    const map = buildBlastMap(
-      readReach(
-        result(transitive, {
-          test_gaps: ["src/web/f12.py"],
-          affected_signals: [{ path: "src/web/f12.py", is_hotspot: true, health_score: 9, module: "src/web" }],
-        }),
-        ["src/core.py"],
-      ),
-    );
-    expect(map.mode).toBe("modules");
-    expect(map.files).toEqual([]);
-    const api = map.modules.find((m) => m.name === "src/api")!;
-    const web = map.modules.find((m) => m.name === "src/web")!;
-    expect([api.files, api.hop, api.flagged]).toEqual([10, 1, 0]);
-    expect([web.files, web.hop, web.flagged]).toEqual([9, 2, 1]);
-    // src/web is reached through src/api, so it hangs from it.
-    expect(web.parentKey).toBe(api.key);
-    expect(api.parentKey).toBeNull();
-  });
-});
-
 describe("riskySpots", () => {
   it("lists changed files before their importers, and only marked ones", () => {
     const reach = readReach(
@@ -148,7 +104,7 @@ describe("reviewStatus", () => {
   });
 
   it("calls a small, calm change small, with its size", () => {
-    expect(reviewStatus(facts())).toEqual({ tone: "calm", word: "Small change", reason: "1 file changed, 2 tests to run." });
+    expect(reviewStatus(facts())).toMatchObject({ tone: "calm", word: "Small change", reason: "1 file changed, 2 tests to run." });
   });
 
   it("asks for tests first when a changed file has none", () => {
@@ -161,7 +117,7 @@ describe("reviewStatus", () => {
       result([], { affected_signals: [{ path: "src/a.py", is_hotspot: true, health_score: 9, module: null }] }),
       ["src/a.py"],
     );
-    expect(reviewStatus(facts({ reach: hot })).reason).toBe("1 changed file changes often or has weak health.");
+    expect(reviewStatus(facts({ reach: hot })).reason).toBe("1 changed file changes often or has poor health.");
     const wide = readReach(
       result(Array.from({ length: 2400 }, (_, i) => ({ path: `src/m/f${i}.py`, depth: 2 }))),
       ["src/a.py"],

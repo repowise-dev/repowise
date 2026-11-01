@@ -181,6 +181,11 @@ export interface AffectedSignal {
   module: string | null;
   /** A test file: a test to run, never code the change reaches. Absent from older servers. */
   is_test?: boolean;
+  /**
+   * Whether the index has the file. False for a file new since the last
+   * index run (no graph, health or owner yet); absent from older servers.
+   */
+  indexed?: boolean | null;
 }
 
 /** Who owns some of the changed files, by primary authorship. */
@@ -191,7 +196,20 @@ export interface ChangedOwner {
   files: number;
 }
 
-export type ChangeCandidateKind = "working_tree" | "branch" | "commit";
+/** `pr` is listed by a host that knows pull requests; a local server never lists one. */
+export type ChangeCandidateKind = "working_tree" | "branch" | "commit" | "pull_request";
+
+/**
+ * What the PR bot stored for a pull request: code health before and after,
+ * and the findings it introduced. A host that runs the bot fills it; a local
+ * server never does.
+ */
+export interface PrReviewSummary {
+  health_before?: number | null;
+  health_after?: number | null;
+  introduced?: number | null;
+  url?: string | null;
+}
 
 /** One change a reviewer can pick. `id` is what the analysis call takes back. */
 export interface ChangeCandidate {
@@ -211,6 +229,12 @@ export interface ChangeCandidate {
   is_current: boolean;
   /** For a branch: whether it exists on the remote; local-only is often scratch work. */
   pushed?: boolean | null;
+  /** For a pull request: its number. */
+  number?: number | null;
+  /** For a pull request: the base commit it is compared against. */
+  base_sha?: string | null;
+  /** For a pull request: the PR bot's stored health before and after, when a host has one. */
+  pr_review?: PrReviewSummary | null;
 }
 
 export interface ChangeCandidatesResponse {
@@ -218,6 +242,12 @@ export interface ChangeCandidatesResponse {
   default_id: string | null;
   /** False where the server has no checkout: only indexed commits are offered. */
   working_tree_supported: boolean;
+  /**
+   * Whether the health check can judge a listed change. A local server needs
+   * its checkout; a host that reads blobs another way says true without one.
+   * Missing on an older server: read `working_tree_supported` instead.
+   */
+  health_check_supported?: boolean;
 }
 
 export interface ChangeBlastRadiusRequest {
