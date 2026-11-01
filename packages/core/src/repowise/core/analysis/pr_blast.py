@@ -123,8 +123,6 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     it is ``new``, since its tests and callers are not in the graph yet.
     """
     from repowise.core.analysis.test_reachability import cached_file_paths, cached_test_files
-    from repowise.core.analysis.test_selection import is_code_file
-    from repowise.core.test_paths import in_test_tree
 
     rows: dict[str, FileTests] = {}
     if not paths:
@@ -135,19 +133,32 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     except Exception:
         indexed_files = None
     for p in dict.fromkeys(paths):
-        # A test the index has not seen yet (one the change adds) is still a test.
-        if p in test_files or in_test_tree(p):
-            rows[p] = FileTests("test")
-        elif not is_code_file(p):
-            rows[p] = FileTests("not_code")
-        elif indexed_files is not None and p not in indexed_files:
-            rows[p] = FileTests("new")
+        known = _known_state(p, test_files, indexed_files)
+        if known is not None:
+            rows[p] = FileTests(known)
     candidates = [p for p in dict.fromkeys(paths) if p not in rows]
     if candidates:
         rows.update(
             await _code_file_tests(session, repo_id, candidates, test_files, indexed_files or ())
         )
     return {p: rows[p] for p in dict.fromkeys(paths)}
+
+
+def _known_state(
+    path: str, test_files: frozenset[str], indexed_files: frozenset[str] | None
+) -> Literal["test", "not_code", "new"] | None:
+    """The state a path has by what it is, before any walk; ``None`` for indexed code."""
+    from repowise.core.analysis.test_selection import is_code_file
+    from repowise.core.test_paths import in_test_tree
+
+    # A test the index has not seen yet (one the change adds) is still a test.
+    if path in test_files or in_test_tree(path):
+        return "test"
+    if not is_code_file(path):
+        return "not_code"
+    if indexed_files is not None and path not in indexed_files:
+        return "new"
+    return None
 
 
 async def _code_file_tests(

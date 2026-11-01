@@ -373,11 +373,7 @@ def _join_symbols(
     already looked for those. The walk reads one level past *max_depth*, so
     every join's own fan-in is known and a hub join can be dropped.
     """
-    origins: dict[str, set[str]] = {s: {s} for s in seeds if "::" in s}
-    files = tuple(s for s in seeds if "::" not in s)
-    if files:
-        for seed, symbol in (yield Need("declared", files)):
-            origins.setdefault(symbol, set()).add(seed)
+    origins = yield from _seed_symbols(seeds)
     joins: dict[str, set[str]] = {}
     hubs: set[str] = set()
     frontier = sorted(origins)
@@ -394,6 +390,16 @@ def _join_symbols(
         for seed, symbols in joins.items()
         if any(s not in hubs for s in symbols)
     }
+
+
+def _seed_symbols(seeds: list[str]) -> Walk[dict[str, set[str]]]:
+    """``{symbol: seeds}``: a symbol-id seed enters at itself, a file at every symbol it declares."""
+    origins: dict[str, set[str]] = {s: {s} for s in seeds if "::" in s}
+    files = tuple(s for s in seeds if "::" not in s)
+    if files:
+        for seed, symbol in (yield Need("declared", files)):
+            origins.setdefault(symbol, set()).add(seed)
+    return origins
 
 
 def _callers_of(symbols: list[str]) -> Walk[dict[str, list[str]]]:
@@ -422,9 +428,9 @@ def _carry_to_callers(
                 continue
             origins.setdefault(caller, set()).update(fresh)
             queued[caller] = None
-            for seed in fresh:
-                if owner != seed.split("::", 1)[0]:
-                    joins.setdefault(seed, set()).add(caller)
+            # A caller in another file than the seed is where its tests may join.
+            for seed in (s for s in fresh if owner != s.split("::", 1)[0]):
+                joins.setdefault(seed, set()).add(caller)
     return list(queued)
 
 
