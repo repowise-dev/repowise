@@ -78,7 +78,10 @@ async def list_blast_radius_changes(
     the default branch, and recent indexed commits. Without a checkout on this
     server, only the commits."""
     candidates = await list_change_candidates(session, repo_id, await _checkout(session, repo_id))
-    return ChangeCandidatesResponse(**candidates.to_dict())
+    # The health check reads both sides of a change from git, so it needs the checkout.
+    return ChangeCandidatesResponse(
+        **candidates.to_dict(), health_check_supported=candidates.working_tree_supported
+    )
 
 
 @router.post("/{repo_id}/blast-radius/change", response_model=ChangeBlastRadiusResponse)
@@ -142,7 +145,9 @@ async def check_change_health(
 
     root = await _checkout(session, repo_id)
     if root is None:
-        raise HTTPException(status_code=404, detail="This server has no checkout to read the change from.")
+        raise HTTPException(
+            status_code=404, detail="This server has no checkout to read the change from."
+        )
     try:
         return await asyncio.to_thread(_health_check, root, body.change_id)
     except UnknownChangeError as exc:
@@ -151,5 +156,6 @@ async def check_change_health(
         raise HTTPException(status_code=422, detail=f"{exc} ({exc.code})") from exc
     except Exception as exc:  # git timeouts, unreadable blobs: say so, as the CLI does
         raise HTTPException(
-            status_code=500, detail=f"The health check failed unexpectedly: {exc!r} (internal_error)"
+            status_code=500,
+            detail=f"The health check failed unexpectedly: {exc!r} (internal_error)",
         ) from exc

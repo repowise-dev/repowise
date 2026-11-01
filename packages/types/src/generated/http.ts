@@ -569,7 +569,7 @@ export interface ChangeBlastRadiusResponse {
 
 export interface ChangeCandidateModel {
   id: string;
-  kind: "working_tree" | "branch" | "commit";
+  kind: "working_tree" | "branch" | "commit" | "pull_request";
   label: string;
   title?: string | null;
   author?: string | null;
@@ -580,6 +580,8 @@ export interface ChangeCandidateModel {
   files_changed?: number | null;
   is_current?: boolean;
   pushed?: boolean | null;
+  number?: number | null;
+  base_sha?: string | null;
 }
 
 /** The changes a reviewer can pick, and the one to open first. */
@@ -587,6 +589,7 @@ export interface ChangeCandidatesResponse {
   changes: ChangeCandidateModel[];
   default_id?: string | null;
   working_tree_supported: boolean;
+  health_check_supported?: boolean;
 }
 
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */

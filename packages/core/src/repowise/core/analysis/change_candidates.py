@@ -28,7 +28,9 @@ from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
 from repowise.core.persistence.models import GitCommit, GitCommitFile
 
-ChangeKind = Literal["working_tree", "branch", "commit"]
+#: ``pr`` is never listed here (a local checkout knows no pull requests); a
+#: host that does lists them with ``number``, ``base_sha`` and ``head_sha``.
+ChangeKind = Literal["working_tree", "branch", "commit", "pull_request"]
 
 WORKING_TREE_ID = "working-tree"
 #: Listed commits carry the full sha; a prefix could name two commits at once.
@@ -57,6 +59,10 @@ class ChangeCandidate:
     #: For a branch: whether it exists on the remote (a local-only branch is
     #: often scratch work).
     pushed: bool | None = None
+    #: For a pull request: its number.
+    number: int | None = None
+    #: For a pull request: the base commit it is compared against.
+    base_sha: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -115,7 +121,11 @@ def _branch_subjects(repo_path: str, refs: list[str]) -> dict[str, tuple[str, st
         return {}
     try:
         out = _git(
-            ["for-each-ref", "--format=%(refname:short)%09%(contents:subject)%09%(authorname)", *refs],
+            [
+                "for-each-ref",
+                "--format=%(refname:short)%09%(contents:subject)%09%(authorname)",
+                *refs,
+            ],
             cwd=repo_path,
             check=False,
         )
@@ -220,7 +230,9 @@ def _branch_diffs(
     base_sha = git_refs.resolve(repo_path, base)
     refs = [r for r, _ in kept]
     with ThreadPoolExecutor(max_workers=6) as pool:
-        files = list(pool.map(lambda r: _diff_files(repo_path, base, base_sha, r.name, r.sha), refs))
+        files = list(
+            pool.map(lambda r: _diff_files(repo_path, base, base_sha, r.name, r.sha), refs)
+        )
     return {r.name: f for r, f in zip(refs, files, strict=True)}
 
 
@@ -309,7 +321,9 @@ def _git_candidates(
     return wip, _cached_branches(repo_path, base, current, max_branches)
 
 
-async def _commit_candidates(session: AsyncSession, repo_id: str, limit: int) -> list[ChangeCandidate]:
+async def _commit_candidates(
+    session: AsyncSession, repo_id: str, limit: int
+) -> list[ChangeCandidate]:
     """The newest indexed commits; the index holds their files, so no checkout is needed."""
     rows = (
         await session.execute(
@@ -351,12 +365,16 @@ async def list_change_candidates(
     """
     # git runs off the event loop: a branch walk on a large repository is not instant.
     wip, branches = (
-        await asyncio.to_thread(_git_candidates, repo_path, max_branches) if repo_path else (None, [])
+        await asyncio.to_thread(_git_candidates, repo_path, max_branches)
+        if repo_path
+        else (None, [])
     )
     commits = await _commit_candidates(session, repo_id, max_commits)
     changes = [*([wip] if wip else []), *branches, *commits]
     current = next((b for b in branches if b.is_current), None)
-    first = wip or current or (branches[0] if branches else None) or (commits[0] if commits else None)
+    first = (
+        wip or current or (branches[0] if branches else None) or (commits[0] if commits else None)
+    )
     return ChangeCandidates(
         changes=changes,
         default_id=first.id if first else None,

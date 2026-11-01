@@ -198,7 +198,8 @@ class BlastRadiusResponse(BaseModel):
 
 class ChangeCandidateModel(BaseModel):
     id: str
-    kind: Literal["working_tree", "branch", "commit"]
+    #: ``pr`` is listed by a host that knows pull requests; a local server never lists one.
+    kind: Literal["working_tree", "branch", "commit", "pull_request"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -211,6 +212,10 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
+    #: For a pull request: its number.
+    number: int | None = None
+    #: For a pull request: the base commit it is compared against.
+    base_sha: str | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):
@@ -220,6 +225,10 @@ class ChangeCandidatesResponse(BaseModel):
     default_id: str | None = None
     #: False on a server without a checkout: only indexed commits are offered.
     working_tree_supported: bool
+    #: Whether ``POST /blast-radius/health-check`` can judge a listed change.
+    #: A local server needs its checkout; a host that reads blobs another way
+    #: can say true without a working tree.
+    health_check_supported: bool = False
 
 
 class ChangeBlastRadiusRequest(BaseModel):

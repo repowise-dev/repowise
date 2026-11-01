@@ -191,7 +191,8 @@ export interface ChangedOwner {
   files: number;
 }
 
-export type ChangeCandidateKind = "working_tree" | "branch" | "commit";
+/** `pr` is listed by a host that knows pull requests; a local server never lists one. */
+export type ChangeCandidateKind = "working_tree" | "branch" | "commit" | "pull_request";
 
 /** One change a reviewer can pick. `id` is what the analysis call takes back. */
 export interface ChangeCandidate {
@@ -211,6 +212,10 @@ export interface ChangeCandidate {
   is_current: boolean;
   /** For a branch: whether it exists on the remote; local-only is often scratch work. */
   pushed?: boolean | null;
+  /** For a pull request: its number. */
+  number?: number | null;
+  /** For a pull request: the base commit it is compared against. */
+  base_sha?: string | null;
 }
 
 export interface ChangeCandidatesResponse {
@@ -218,6 +223,12 @@ export interface ChangeCandidatesResponse {
   default_id: string | null;
   /** False where the server has no checkout: only indexed commits are offered. */
   working_tree_supported: boolean;
+  /**
+   * Whether the health check can judge a listed change. A local server needs
+   * its checkout; a host that reads blobs another way says true without one.
+   * Missing on an older server: read `working_tree_supported` instead.
+   */
+  health_check_supported?: boolean;
 }
 
 export interface ChangeBlastRadiusRequest {
