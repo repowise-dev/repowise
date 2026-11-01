@@ -347,3 +347,48 @@ describe("a change that fails to open", () => {
     expect(await screen.findByText("1 file changed, no test found to run.")).toBeInTheDocument();
   });
 });
+
+describe("the PR bot line", () => {
+  it("shows the bot's health before and after for a PR that carries it, and nothing otherwise", async () => {
+    const { PrReviewLine } = await import("../../src/blast-radius/blast-radius-verdict.js");
+    const { container, unmount } = render(
+      <PrReviewLine review={{ health_before: 7.8, health_after: 4.9, introduced: 2, url: "https://example.test/pr/9" }} />,
+    );
+    expect(container.textContent).toContain("PR bot:");
+    expect(container.textContent).toContain("health 7.8");
+    expect(container.textContent).toContain("4.9");
+    expect(container.textContent).toContain("2 new findings");
+    expect(screen.getByRole("link", { name: "View" })).toHaveAttribute("href", "https://example.test/pr/9");
+    unmount();
+    // A non-web link is dropped, and a review with nothing to say renders nothing.
+    const bad = render(<PrReviewLine review={{ introduced: 1, url: "javascript:alert(1)" }} />);
+    expect(bad.container.textContent).toContain("1 new finding");
+    expect(bad.container.querySelector("a")).toBeNull();
+    bad.unmount();
+    expect(render(<PrReviewLine review={{}} />).container).toBeEmptyDOMElement();
+
+    const pr = {
+      id: "pr:9",
+      kind: "pull_request" as const,
+      label: "#9",
+      number: 9,
+      title: "Tidy",
+      author: null,
+      committed_at: null,
+      head_sha: null,
+      base: "main",
+      ahead: null,
+      files_changed: 1,
+      is_current: false,
+    };
+    const listChanges = vi.fn(async () => ({
+      working_tree_supported: false,
+      default_id: "pr:9",
+      changes: [{ ...pr, pr_review: { health_before: 8, health_after: 8, introduced: 0 } }, { ...pr, id: "pr:10", label: "#10", number: 10 }],
+    }));
+    const analyzeChange = vi.fn(async () => changeResult(["src/core.ts"]));
+    renderView(<ImpactView adapter={makeAdapter({ listChanges, analyzeChange })} />);
+    expect(await screen.findByText(/no new findings/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "View" })).not.toBeInTheDocument();
+  });
+});

@@ -582,6 +582,7 @@ export interface ChangeCandidateModel {
   pushed?: boolean | null;
   number?: number | null;
   base_sha?: string | null;
+  pr_review?: PrReviewSummary | null;
 }
 
 /** The changes a reviewer can pick, and the one to open first. */
@@ -3548,6 +3549,18 @@ export interface PopulationBreakdown {
   include_tests?: boolean;
   include_examples?: boolean;
   include_docs?: boolean;
+}
+
+/**
+ * What the PR bot stored for a pull request: code health before and after, and new findings.
+ *
+ * A host that runs the bot fills it; a local server never does.
+ */
+export interface PrReviewSummary {
+  health_before?: number | null;
+  health_after?: number | null;
+  introduced?: number | null;
+  url?: string | null;
 }
 
 /** One provider in the catalog, as the settings picker renders it. */

@@ -194,6 +194,18 @@ export interface ChangedOwner {
 /** `pr` is listed by a host that knows pull requests; a local server never lists one. */
 export type ChangeCandidateKind = "working_tree" | "branch" | "commit" | "pull_request";
 
+/**
+ * What the PR bot stored for a pull request: code health before and after,
+ * and the findings it introduced. A host that runs the bot fills it; a local
+ * server never does.
+ */
+export interface PrReviewSummary {
+  health_before?: number | null;
+  health_after?: number | null;
+  introduced?: number | null;
+  url?: string | null;
+}
+
 /** One change a reviewer can pick. `id` is what the analysis call takes back. */
 export interface ChangeCandidate {
   id: string;
@@ -216,6 +228,8 @@ export interface ChangeCandidate {
   number?: number | null;
   /** For a pull request: the base commit it is compared against. */
   base_sha?: string | null;
+  /** For a pull request: the PR bot's stored health before and after, when a host has one. */
+  pr_review?: PrReviewSummary | null;
 }
 
 export interface ChangeCandidatesResponse {
