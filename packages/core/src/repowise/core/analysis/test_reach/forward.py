@@ -105,6 +105,11 @@ def files_with_paired_tests(
     file have a test", and against this repository's stored line coverage
     direct-import pairing finds 71.6% of covered files at 98.9% precision
     where names alone found 34.6% at 100%.
+
+    Last, a file a test loads through its own package pairs too
+    (:func:`~.walk.package_walk`): the same bar ``pr_blast.file_tests``
+    clears before it calls a file untested, so the health surfaces and the
+    review surfaces agree about which files have no test.
     """
     barrel_deps: dict[str, set[str]] = {}
 
@@ -142,4 +147,31 @@ def files_with_paired_tests(
         candidates = (c for name in paired_test_names(path) for c in by_name.get(name, ()))
         if any(c != path and named_pair_holds(c, path) for c in candidates):
             paired.add(path)
+    rest = [p for p in paths if p not in paired]
+    if graph is not None and rest:
+        paired |= _package_reached(graph, rest, test_files)
     return paired
+
+
+def _package_reached(graph: Any, paths: list[str], test_files: Collection[str]) -> set[str]:
+    """The *paths* a test loads through their own package, over the in-memory graph."""
+    from .maps import ImportGraph, WalkMaps, is_legacy_conftest_hint, run
+    from .walk import package_walk
+
+    importers: dict[str, list[str]] = {}
+    try:
+        for src, dst, data in graph.edges(data=True):
+            if data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES and not is_legacy_conftest_hint(
+                data.get("edge_type"), data.get("hint_source")
+            ):
+                importers.setdefault(dst, []).append(src)
+    except Exception:
+        return set()
+    maps = WalkMaps(
+        declares={},
+        callers={},
+        imports=ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()}),
+        files=frozenset(),
+        test_files=frozenset(test_files),
+    )
+    return set(run(package_walk(paths, test_files, rank=False), maps))

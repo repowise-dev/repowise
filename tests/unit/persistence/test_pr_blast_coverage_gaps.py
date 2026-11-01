@@ -109,3 +109,48 @@ async def test_file_tests_names_the_evidence_per_file(async_session):
         "tests/test_foo.py": FileTests("test"),
         "pyproject.toml": FileTests("not_code"),
     }
+
+
+async def test_a_module_a_test_loads_through_its_package_is_not_a_gap(async_session):
+    """``test_why`` imports the ``tool_why`` package; its ``__init__`` imports
+    ``tool.py``, which imports ``workspace.py``. A file only an untested page
+    imports stays a gap, and a test the index has not seen yet is a test."""
+    from repowise.core.analysis.pr_blast import FileTests, file_tests
+    from repowise.core.persistence.models import GraphEdge
+
+    repo = await insert_repo(async_session)
+    nodes = {
+        "tests/test_why.py": True,
+        "src/server.py": False,
+        "src/tool_why/__init__.py": False,
+        "src/tool_why/tool.py": False,
+        "src/tool_why/workspace.py": False,
+        "web/app/page.tsx": False,
+        "web/components/view.tsx": False,
+    }
+    for node, is_test in nodes.items():
+        await _node(async_session, repo.id, node, is_test=is_test)
+    for src, dst in [
+        ("tests/test_why.py", "src/tool_why/__init__.py"),
+        ("src/server.py", "src/tool_why/__init__.py"),
+        ("src/tool_why/__init__.py", "src/tool_why/tool.py"),
+        ("src/tool_why/tool.py", "src/tool_why/workspace.py"),
+        ("web/app/page.tsx", "web/components/view.tsx"),
+    ]:
+        async_session.add(
+            GraphEdge(
+                repository_id=repo.id, source_node_id=src, target_node_id=dst, edge_type="imports"
+            )
+        )
+    await async_session.commit()
+
+    rows = await file_tests(
+        async_session,
+        repo.id,
+        ["src/tool_why/workspace.py", "web/components/view.tsx", "tests/unit/test_new.py"],
+    )
+    assert rows == {
+        "src/tool_why/workspace.py": FileTests("tested", reached_by=("tests/test_why.py",)),
+        "web/components/view.tsx": FileTests("untested"),
+        "tests/unit/test_new.py": FileTests("test"),
+    }

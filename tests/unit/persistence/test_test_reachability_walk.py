@@ -764,9 +764,10 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     found = await any_tests_reaching(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
     assert found["src/core/Ky.ts"].reached.tests == ["test/x.test.ts"]
     assert found["src/core/Ky.ts"].reached.via == "import-graph"
-    # The helper hop stops at pool.ts (source imports it too), but the import
-    # closure does not: a test importing pool.ts runs retry.ts, so it is not unreached.
-    assert found["src/retry.ts"].reached.entries == {"test/x.test.ts": frozenset({"src/pool.ts"})}
+    # The helper hop stops at pool.ts (source imports it too), but the package
+    # walk does not: pool.ts sits beside retry.ts, and a test importing it runs retry.ts.
+    assert found["src/retry.ts"].reached.tests == ["test/x.test.ts"]
+    assert found["src/retry.ts"].reached.via == "import-graph"
 
     rank_free = await any_reached(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
     assert rank_free.keys() == found.keys()

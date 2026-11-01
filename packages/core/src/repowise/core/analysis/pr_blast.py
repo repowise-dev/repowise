@@ -103,6 +103,9 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     2. A test file reaching it in the dependency graph is evidence, not proof,
        but a recorded edge, not a guess, and it finds the suites that
        name their tests for behaviour instead of for the file under test.
+       That covers a test loading it through its own package (an
+       ``__init__`` re-export, a registry beside it), never one reaching it
+       only through a hub (:func:`~repowise.core.analysis.test_reach.walk.package_walk`).
     3. A test named for it by convention (``tests_matching_by_name``, also
        tried with a dispatch-role prefix stripped), an honest "unknown",
        never asserted as untested.
@@ -114,13 +117,15 @@ async def file_tests(session: AsyncSession, repo_id: str, paths: list[str]) -> d
     """
     from repowise.core.analysis.test_reachability import cached_test_files
     from repowise.core.analysis.test_selection import is_code_file
+    from repowise.core.test_paths import in_test_tree
 
     rows: dict[str, FileTests] = {}
     if not paths:
         return rows
     test_files = await cached_test_files(session, repo_id)
     for p in dict.fromkeys(paths):
-        if p in test_files:
+        # A test the index has not seen yet (one the change adds) is still a test.
+        if p in test_files or in_test_tree(p):
             rows[p] = FileTests("test")
         elif not is_code_file(p):
             rows[p] = FileTests("not_code")
@@ -137,16 +142,21 @@ async def _code_file_tests(
     from repowise.core.analysis.test_reachability import (
         read_under,
         tests_matching_by_name,
-        tests_reaching,
+        tests_reaching_by_tier,
         type_only_files,
     )
     from repowise.core.persistence.crud import covered_source_files
 
     covered = await covered_source_files(session, repo_id, set(candidates))
-    # Degrades to "no signal" and never raises: a failed walk must not
-    # turn into a false accusation.
+    # With the helper, barrel and package hops: silence here is about to
+    # become "untested", so every tier that can show a test loads the file
+    # runs first. Degrades to "no signal" and never raises: a failed walk
+    # must not turn into a false accusation.
     try:
-        reached = await tests_reaching(session, repo_id, candidates, test_files=test_files)
+        found = await tests_reaching_by_tier(
+            session, repo_id, candidates, test_files=set(test_files), helpers=True
+        )
+        reached = {p: by.tests for p, by in found.items()}
     except Exception:
         reached = {}
     subjects = {p: _subject_names(p) for p in candidates}

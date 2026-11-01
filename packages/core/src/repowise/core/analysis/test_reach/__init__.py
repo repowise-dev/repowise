@@ -86,6 +86,19 @@ through ``__init__.py`` (3 recovered, 5 added) and ``conftest.py`` transitivity
 transitive *execution*, which import edges structurally cannot see, which is
 what the call graph is for.
 
+Those numbers rank tests for a file. Saying a file has *no* test is a different
+claim, and the default depth over-made it: on a 63-file change to this
+repository, 224 dependents read as untested, and in a hand-labelled sample
+only 41% of the flagged files were. A caller about to make that claim passes
+``helpers`` (``pr_blast.file_tests``; the health pass's pairing does the same),
+which adds the helper or barrel hop and :func:`~.walk.package_walk`: a test
+loading the file through its own package (an ``__init__`` re-export chain, a
+registry beside the modules it imports), never through a hub, never from
+another package. Flagged-and-truly-untested rose from 41% to 71% with every
+real gap in the sample kept; 32 of 35 sampled files it newly calls tested
+were. The import tier's default stays 1, so test ranking and selection are
+unchanged.
+
 Why recall reads low, and why that is not the graph's fault
 -----------------------------------------------------------
 27.7% looks poor for a graph this dense, and the reason is what the ground truth

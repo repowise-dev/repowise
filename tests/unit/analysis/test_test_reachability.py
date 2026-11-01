@@ -183,14 +183,27 @@ def test_a_test_importing_a_barrel_pairs_what_it_re_exports() -> None:
     g = _dep_graph(
         ("test/router.test.ts", "src/index.ts", "imports"),
         ("src/index.ts", "src/router.ts", "imports"),
-        ("src/router.ts", "src/util.ts", "imports"),
+        ("src/router.ts", "src/lib/util.ts", "imports"),
         ("test/leaf.test.ts", "src/leaf.ts", "imports"),
-        ("src/leaf.ts", "src/deep.ts", "imports"),
+        ("src/leaf.ts", "src/lib/deep.ts", "imports"),
     )
-    paths = {"src/index.ts", "src/router.ts", "src/util.ts", "src/leaf.ts", "src/deep.ts"}
+    paths = {"src/index.ts", "src/router.ts", "src/lib/util.ts", "src/leaf.ts", "src/lib/deep.ts"}
     paired = files_with_paired_tests(g, paths, {"test/router.test.ts", "test/leaf.test.ts"})
-    # The barrel and what it re-exports; one hop only, never the whole closure.
+    # The barrel and what it re-exports; never the whole closure into another package.
     assert paired == {"src/index.ts", "src/router.ts", "src/leaf.ts"}
+
+
+def test_a_module_a_test_loads_through_its_package_pairs() -> None:
+    """The health pass clears the same bar ``pr_blast.file_tests`` does (the package walk)."""
+    g = _dep_graph(
+        ("tests/test_why.py", "src/tool_why/__init__.py", "imports"),
+        ("src/server.py", "src/tool_why/__init__.py", "imports"),
+        ("src/tool_why/__init__.py", "src/tool_why/tool.py", "imports"),
+        ("src/tool_why/tool.py", "src/tool_why/workspace.py", "imports"),
+        ("web/app/page.tsx", "web/components/view.tsx", "imports"),
+    )
+    paths = {"src/tool_why/workspace.py", "web/components/view.tsx"}
+    assert files_with_paired_tests(g, paths, {"tests/test_why.py"}) == {"src/tool_why/workspace.py"}
 
 
 def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:

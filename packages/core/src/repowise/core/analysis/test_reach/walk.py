@@ -16,9 +16,10 @@ from typing import TypeVar
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import file_of_symbol
-from repowise.core.analysis.test_selection import is_runnable_test
+from repowise.core.analysis.test_selection import is_code_file, is_runnable_test
 from repowise.core.test_paths import names_test_for
 
+from .hubs import HUB_MIN_FAN_IN
 from .inline import inline_tests
 from .maps import Need, Walk, WalkMaps, run
 from .model import (
@@ -237,8 +238,13 @@ def helper_walk(
     for dependent, middle in (yield Need("importers", tuple(sorted(middles)))):
         importers.setdefault(middle, set()).add(dependent)
     reached: dict[str, set[str]] = {}
+    all_tests = frozenset(test_files)
     for middle, who in importers.items():
-        tests = who & set(test_files)
+        # Test support is code. A manifest a test reads (``package.json``,
+        # whose ``exports`` point at every entry of the package) runs nothing.
+        if not is_code_file(middle):
+            continue
+        tests = who & all_tests
         if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
             for target in middles[middle]:
                 reached.setdefault(target, set()).update(tests)
@@ -247,6 +253,80 @@ def helper_walk(
         target: capped(target, tests, "import-graph", changed=targets, edited=edited, rank=rank)
         for target, tests in reached.items()
     }
+
+
+def package_walk(
+    targets: list[str],
+    test_files: Collection[str],
+    *,
+    rank: bool = True,
+) -> Walk[dict[str, ReachedBy]]:
+    """Tests that load each target through the target's own package.
+
+    A reverse import walk with no depth limit whose every step stays inside
+    the package: a module in the target's directory, or the barrel
+    (``__init__.py``, ``index.ts``) of that directory or of its parent. A test
+    importing ``tool_why`` runs its ``__init__``, which imports ``tool.py``,
+    which imports and calls ``workspace.py``; a registry beside the detectors
+    it imports is how tests run each detector. A blanket second import hop
+    misses the first and is not needed for the second, and neither route
+    leaves the package, so the rest of the repository cannot carry a test in.
+
+    A module with more than ``HUB_MIN_FAN_IN`` importers passes on only
+    itself: a hub inside the package reaches the target the way every test
+    importing the hub does, which says nothing about this file.
+
+    Targets are files: import edges join files, so a symbol id finds nothing.
+    """
+    seeds = [t for t in dict.fromkeys(targets) if t]
+    tests = frozenset(test_files)
+    home = {s: _directory(s) for s in seeds}
+    origins: dict[str, set[str]] = {s: {s} for s in seeds}
+    reached: dict[str, set[str]] = {}
+    frontier = list(seeds)
+    while frontier:
+        start = {f: frozenset(origins[f]) for f in frontier}
+        importers: dict[str, list[str]] = {}
+        for dependent, dependency in (yield Need("importers", tuple(frontier))):
+            importers.setdefault(dependency, []).append(dependent)
+        frontier = []
+        queued: set[str] = set()
+        for node, who in importers.items():
+            carried = start.get(node, frozenset())
+            if len(who) > HUB_MIN_FAN_IN:
+                carried &= {node}
+            for dependent in who:
+                if dependent in tests:
+                    for seed in carried:
+                        reached.setdefault(seed, set()).add(dependent)
+                    continue
+                if not is_code_file(dependent):
+                    continue
+                # Beside the target, or the barrel of its directory or its parent's.
+                where = _directory(dependent)
+                barrel = PurePosixPath(dependent).name in BARREL_FILENAMES
+                fresh = {
+                    s
+                    for s in carried
+                    if home[s] == where or (barrel and _directory(home[s]) == where)
+                }
+                fresh -= origins.get(dependent, set())
+                if not fresh:
+                    continue
+                origins.setdefault(dependent, set()).update(fresh)
+                if dependent not in queued:
+                    queued.add(dependent)
+                    frontier.append(dependent)
+    edited = frozenset(c.split("::", 1)[0] for c in seeds)
+    return {
+        target: capped(target, found, "import-graph", changed=seeds, edited=edited, rank=rank)
+        for target, found in reached.items()
+    }
+
+
+def _directory(path: str) -> str:
+    """The directory part of a file path or a directory, ``""`` at the root."""
+    return path.split("::", 1)[0].rpartition("/")[0]
 
 
 def tier_walk(
@@ -261,7 +341,7 @@ def tier_walk(
     hubs: Collection[str] = frozenset(),
     rank: bool = True,
 ) -> Walk[dict[str, ReachedBy]]:
-    """The call walk, then the import walk for what it left, then (*helpers*) the helper hop.
+    """The call walk, the import walk for what it left, then (*helpers*) the helper and package hops.
 
     Each tier is seeded with only the targets the stronger ones left
     unanswered, so a weaker tier never speaks over a stronger one. The targets
@@ -317,6 +397,9 @@ def tier_walk(
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and helpers:
         out |= yield from helper_walk(unanswered, test_files, rank=rank)
+        unanswered = [seed for seed in seeds if seed not in out]
+        if unanswered:
+            out |= yield from package_walk(unanswered, test_files, rank=rank)
     return out
 
 
@@ -427,7 +510,7 @@ def states_walk(
     adds or edits (*changed_tests*) that is named for the path or imports it
     and does not replace it, then by the path's own inline tests; ``new`` for
     a path the index lacks; ``no_signal`` when the index holds no test; ``reached`` by the call walk,
-    the import walk or the helper and barrel hop; ``reached`` through the whole
+    the import walk, the helper and barrel hop or the package walk; ``reached`` through the whole
     import closure; ``mocked_only`` when every test those found replaces the
     path (*masks*, ``{test: files it replaces}``, :func:`~.mocks.replaced_files`);
     else ``unreached``. A path whose walked tiers find only replacing tests

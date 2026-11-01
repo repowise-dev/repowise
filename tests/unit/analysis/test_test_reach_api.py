@@ -15,6 +15,7 @@ from repowise.core.analysis.test_reach import (
     reaching_by_tier,
     rust_has_inline_tests,
 )
+from repowise.core.analysis.test_reach.hubs import HUB_MIN_FAN_IN
 
 
 def _graph(files: dict[str, bool], edges: list[tuple]) -> nx.MultiDiGraph:
@@ -161,34 +162,162 @@ def test_a_module_behind_its_package_barrel_is_reached_not_unreached() -> None:
     assert row.reached.total == 77
 
 
+def test_a_manifest_only_tests_read_is_not_test_support() -> None:
+    """``package.json`` points at every entry of a package; reading it runs none of them."""
+    g = _graph(
+        {"pkg/__tests__/a.test.ts": True, "pkg/package.json": False, "pkg/src/git/index.ts": False},
+        [
+            ("pkg/__tests__/a.test.ts", "pkg/package.json", "imports"),
+            ("pkg/package.json", "pkg/src/git/index.ts", "imports"),
+        ],
+    )
+    target = "pkg/src/git/index.ts"
+    assert target not in reaching_by_tier(build_walk_maps(g), [target])
+
+
+# ---------------------------------------------------------------------------
+# The package walk: a test loading the target through its own package
+# ---------------------------------------------------------------------------
+
+
+def test_a_test_importing_the_package_reaches_a_module_two_hops_behind_its_init() -> None:
+    """``tool_why/__init__`` imports ``tool.py``, which imports ``workspace.py``."""
+    g = _graph(
+        {
+            "tests/test_why.py": True,
+            "src/tool_why/__init__.py": False,
+            "src/tool_why/tool.py": False,
+            "src/tool_why/workspace.py": False,
+            "src/server.py": False,
+        },
+        [
+            ("tests/test_why.py", "src/tool_why/__init__.py", "imports"),
+            ("src/server.py", "src/tool_why/__init__.py", "imports"),
+            ("src/tool_why/__init__.py", "src/tool_why/tool.py", "imports"),
+            ("src/tool_why/tool.py", "src/tool_why/workspace.py", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    target = "src/tool_why/workspace.py"
+    assert target not in reaching_by_tier(maps, [target], helpers=False)
+    found = reaching_by_tier(maps, [target])[target]
+    assert found.tests == ["tests/test_why.py"]
+    assert found.via == "import-graph"
+
+
+def test_a_registry_beside_its_detectors_carries_the_tests_that_import_it() -> None:
+    g = _graph(
+        {
+            "tests/test_markers.py": True,
+            "src/biomarkers/registry.py": False,
+            "src/biomarkers/lazy_load.py": False,
+            "src/health/engine.py": False,
+        },
+        [
+            ("tests/test_markers.py", "src/biomarkers/registry.py", "imports"),
+            ("src/health/engine.py", "src/biomarkers/registry.py", "imports"),
+            ("src/biomarkers/registry.py", "src/biomarkers/lazy_load.py", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    target = "src/biomarkers/lazy_load.py"
+    assert target not in reaching_by_tier(maps, [target], helpers=False)
+    assert reaching_by_tier(maps, [target])[target].tests == ["tests/test_markers.py"]
+
+
+def test_a_hub_inside_the_package_does_not_carry_its_importers_tests() -> None:
+    """``models.py`` is imported by most of the repo; a test importing it says nothing of ``leaf``."""
+    importers = [f"src/feature_{i:02}.py" for i in range(HUB_MIN_FAN_IN)]
+    g = _graph(
+        {
+            "tests/test_feature.py": True,
+            "src/pkg/models.py": False,
+            "src/pkg/leaf.py": False,
+            **dict.fromkeys(importers, False),
+        },
+        [
+            ("tests/test_feature.py", "src/pkg/models.py", "imports"),
+            *[(f, "src/pkg/models.py", "imports") for f in importers],
+            ("src/pkg/models.py", "src/pkg/leaf.py", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    assert "src/pkg/leaf.py" not in reaching_by_tier(maps, ["src/pkg/leaf.py"])
+    # The hub's own test still reaches the hub.
+    hub = reaching_by_tier(maps, ["src/pkg/models.py"])["src/pkg/models.py"]
+    assert hub.tests == ["tests/test_feature.py"]
+
+
+def test_a_component_no_test_renders_stays_unreached_beside_tested_siblings() -> None:
+    """A tested sibling does not lend its tests to a file that imports it."""
+    queue = "web/src/components/commits/commit-queue.tsx"
+    view = "web/src/components/commits/commits-view.tsx"
+    g = _graph(
+        {
+            "web/__tests__/commit-queue.test.tsx": True,
+            queue: False,
+            view: False,
+            "web/src/app/commits/page.tsx": False,
+        },
+        [
+            ("web/__tests__/commit-queue.test.tsx", queue, "imports"),
+            ("web/src/app/commits/page.tsx", view, "imports"),
+            (view, queue, "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    assert view not in reaching_by_tier(maps, [view])
+    assert reach_states(maps, [view])[view].state == "unreached"
+
+
+def test_the_package_walk_does_not_leave_the_package() -> None:
+    g = _graph(
+        {
+            "tests/test_other.py": True,
+            "src/other/x.py": False,
+            "src/pkg/a.py": False,
+            "src/server.py": False,
+        },
+        [
+            ("tests/test_other.py", "src/other/x.py", "imports"),
+            ("src/server.py", "src/other/x.py", "imports"),
+            ("src/other/x.py", "src/pkg/a.py", "imports"),
+        ],
+    )
+    assert "src/pkg/a.py" not in reaching_by_tier(build_walk_maps(g), ["src/pkg/a.py"])
+
+
 # ---------------------------------------------------------------------------
 # reach_states: the negative claim, and the states beside it
 # ---------------------------------------------------------------------------
 
 
 def test_unreached_needs_the_whole_import_closure_to_miss() -> None:
+    # Each module in its own package, so the package walk does not answer either.
     g = _graph(
         {
             "tests/test_top.py": True,
-            "src/top.py": False,
-            "src/mid.py": False,
-            "src/leaf.py": False,
-            "src/alone.py": False,
+            "src/a/top.py": False,
+            "src/b/mid.py": False,
+            "src/c/leaf.py": False,
+            "src/d/alone.py": False,
         },
         [
-            ("tests/test_top.py", "src/top.py", "imports"),
-            ("src/top.py", "src/mid.py", "imports"),
-            ("src/mid.py", "src/leaf.py", "imports"),
+            ("tests/test_top.py", "src/a/top.py", "imports"),
+            ("src/a/top.py", "src/b/mid.py", "imports"),
+            ("src/b/mid.py", "src/c/leaf.py", "imports"),
             # Source imports top.py too, so the helper hop does not pass through it.
-            ("src/alone.py", "src/top.py", "imports"),
+            ("src/d/alone.py", "src/a/top.py", "imports"),
         ],
     )
     maps = build_walk_maps(g)
-    assert "src/leaf.py" not in reaching_by_tier(maps, ["src/leaf.py"])
-    rows = reach_states(maps, ["src/leaf.py", "src/alone.py"])
-    assert rows["src/leaf.py"].state == "reached"
-    assert rows["src/leaf.py"].reached.entries == {"tests/test_top.py": frozenset({"src/top.py"})}
-    assert rows["src/alone.py"].state == "unreached"
+    assert "src/c/leaf.py" not in reaching_by_tier(maps, ["src/c/leaf.py"])
+    rows = reach_states(maps, ["src/c/leaf.py", "src/d/alone.py"])
+    assert rows["src/c/leaf.py"].state == "reached"
+    assert rows["src/c/leaf.py"].reached.entries == {
+        "tests/test_top.py": frozenset({"src/a/top.py"})
+    }
+    assert rows["src/d/alone.py"].state == "unreached"
 
 
 def test_a_closure_route_through_another_target_still_reaches() -> None:

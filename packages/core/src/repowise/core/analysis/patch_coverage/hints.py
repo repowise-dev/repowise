@@ -362,9 +362,16 @@ async def _walk_tests(
         if any(s is None or s.symbol_id not in reached for s in placed[path])
     ][:MAX_SEEDS]
     if unanswered:
+        # With the package hops: a range no tier answers reads "no test
+        # reaches this", the claim ``pr_blast.file_tests`` makes on the same bar.
         reached.update(
             await tests_reaching_by_tier(
-                session, repository_id, unanswered, call_depth=0, test_files=test_files
+                session,
+                repository_id,
+                unanswered,
+                call_depth=0,
+                test_files=test_files,
+                helpers=True,
             )
         )
     return reached

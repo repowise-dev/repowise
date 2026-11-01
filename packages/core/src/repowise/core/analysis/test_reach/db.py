@@ -469,8 +469,14 @@ async def tests_reaching_by_tier(
     avoid: Collection[str] = frozenset(),
     import_graph: ImportGraph | None = None,
     hubs: Collection[str] = frozenset(),
+    helpers: bool = False,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *helpers* adds the helper or barrel hop and the package walk
+    (:func:`~.walk.package_walk`) for the targets both tiers leave
+    unanswered: the bar a caller must clear before it says "no test
+    reaches this" (``pr_blast.file_tests``).
 
     *hubs* (:func:`cached_hub_files`) tags the call-tier tests that reach a
     target only through a hub, and lists them last (``ReachedBy.transitive``).
@@ -492,7 +498,7 @@ async def tests_reaching_by_tier(
     *import_graph* (:func:`load_import_graph`) answers the import tier's
     levels from memory, for a caller that walks deep or more than once.
 
-    The walk is :func:`~.walk.tier_walk` without the helper hop: the call walk
+    The walk is :func:`~.walk.tier_walk`, by default without those: the call walk
     first, then the import walk seeded with only the targets it left
     unanswered, so the weaker tier never speaks over the stronger one and
     costs nothing where the stronger one already spoke.
@@ -516,6 +522,7 @@ async def tests_reaching_by_tier(
         import_depth=import_depth,
         symbol_seeds=symbol_seeds,
         avoid=avoid,
+        helpers=helpers,
         hubs=hubs,
     )
     return await drive(walk, session, repo_id, import_graph=import_graph)

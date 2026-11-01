@@ -462,7 +462,8 @@ async def _assess_one_target(
     """Assess risk for a single target file.
 
     Enriches each result with:
-    - test_gap: bool — True when no test file matching this file's basename exists.
+    - test_gap: bool, True when nothing shows a test reaches this file
+      (``pr_blast.untested_files``: coverage, the reach walk, or a test named for it).
     - security_signals: list of {kind, severity, snippet} from security_findings.
     """
     repo_id = repository.id
