@@ -485,7 +485,11 @@ def _fold_tiny_leaves(groups: list[ConceptGroup], part: _Partitioner) -> list[Co
     """
     working = list(groups)
     tiny = [g for g in working if not g.packages and g.file_count <= TINY_GROUP_FILES]
-    for group in sorted(tiny, key=lambda g: g.structural_key):
+    # Shallowest first, so a tiny directory whose tiny parent has already
+    # joined a group follows it there.
+    for group in sorted(tiny, key=lambda g: (_target_path(g.members, []).count("/"), g.structural_key)):
+        if not any(g is group for g in working):
+            continue  # already absorbed: a later fold replaced the object
         home = _parent_group(group, working, part)
         if home is None:
             continue

@@ -64,6 +64,23 @@ def test_a_tiny_leaf_folds_into_the_group_holding_its_parent() -> None:
     assert "lib/config/services/s.go" in next(g for g in folded if "lib/config/c0.go" in g.members).members
 
 
+def test_nested_tiny_groups_fold_up_the_chain() -> None:
+    from repowise.core.generation.concept_tree.grouping import (
+        GroupingParams,
+        _fold_tiny_leaves,
+        _Partitioner,
+    )
+
+    part = _Partitioner(GroupingParams(min_files=2, max_files=4), {}, {})
+    home = part.make([f"lib/h{i}.go" for i in range(4)])
+    middle = part.make(["lib/mid/m.go"])
+    inner = part.make(["lib/mid/in/i.go"])
+    for order in ([home, middle, inner], [inner, middle, home]):
+        folded = _fold_tiny_leaves(list(order), part)
+        assert len(folded) == 1
+        assert {"lib/mid/m.go", "lib/mid/in/i.go"} <= set(folded[0].members)
+
+
 def test_a_tiny_group_with_no_parent_group_keeps_its_page() -> None:
     from repowise.core.generation.concept_tree.grouping import (
         GroupingParams,
