@@ -39,7 +39,8 @@ _SHARED_VOICE = (
     '"the excerpt shows", "the record", "is not provided", "the facts" or '
     '"the trace", and never mention these instructions.\n'
     "- Define a project term in plain words the first time you use it.\n"
-    "- Cite with a `path:start-end` span in backticks, copied from this request. "
+    "- Cite in backticks with a `path:start-end` span copied from this request, or "
+    "with the bare path when the request gives no span; never make up a line range. "
     "At most one citation per paragraph or list item, placed at its end: pick the "
     "span that carries the main claim, never two side by side.\n"
     "- One idea per sentence. A sentence never carries a comma list of more than "
