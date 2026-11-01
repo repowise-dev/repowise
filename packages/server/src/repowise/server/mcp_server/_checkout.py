@@ -108,8 +108,10 @@ _retiring: dict[asyncio.Task[None], Any] = {}
 
 def _retire(registry: Any) -> None:
     async def _close_later() -> None:
-        await asyncio.sleep(_RETIRE_AFTER_S)
-        await registry.close()
+        try:
+            await asyncio.sleep(_RETIRE_AFTER_S)
+        finally:
+            await registry.close()  # on cancellation too
 
     task = asyncio.create_task(_close_later())
     _retiring[task] = registry
@@ -117,7 +119,8 @@ def _retire(registry: Any) -> None:
 
 
 async def close_own_index_contexts() -> None:
-    # A cancelled task may never have started, so its registry closes here.
+    # A task cancelled before it started never ran its finally, so the registry
+    # closes here as well; RepoRegistry.close is a no-op the second time.
     for task, registry in list(_retiring.items()):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

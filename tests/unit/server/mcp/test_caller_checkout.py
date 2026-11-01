@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import subprocess
@@ -220,6 +221,27 @@ def test_own_index_contexts_are_kept_then_retired(tmp_path, monkeypatch) -> None
         # The oldest is evicted but not closed while a call may hold it.
         assert closed == [] and len(_checkout._retiring) == 1
         await _checkout.close_own_index_contexts()
-        assert sorted(closed) == sorted(roots)
+        assert set(closed) == set(roots)
+
+    asyncio.run(scenario())
+
+
+def test_a_retired_index_closes_when_its_timer_is_cancelled(monkeypatch) -> None:
+    closed: list[str] = []
+
+    class _Registry:
+        async def close(self):
+            closed.append("x")
+
+    monkeypatch.setattr(_checkout, "_RETIRE_AFTER_S", 3600.0)
+
+    async def scenario() -> None:
+        _checkout._retire(_Registry())
+        (task,) = list(_checkout._retiring)
+        await asyncio.sleep(0)  # the timer is running
+        task.cancel()  # e.g. the loop shutting down without the lifespan teardown
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert closed == ["x"] and not _checkout._retiring
 
     asyncio.run(scenario())
