@@ -130,28 +130,20 @@ async def get_symbol(
 ) -> dict:
     """Follow-up read of one symbol whose id another response already gave you.
 
-    **Not an entry point.** ``get_answer`` already ships ``symbol_bodies``, and
-    for a whole file ``get_context(include=["skeleton"])`` or a plain Read is
-    one call instead of many. Reach here for a body that was elided, or for a
-    ``continuation`` / omission ref. Never walk a file symbol by symbol.
-
-    Returns verified, line-numbered source for one indexed symbol, live range,
-    or omission ref. Ambiguity returns every candidate; an index miss returns
-    live fallback lines. A truncated result carries the exact continuation to
-    pass straight back.
+    **Not an entry point.** ``get_answer`` ships ``symbol_bodies``; for a
+    whole file ``get_context(include=["skeleton"])`` or a Read is one call.
+    Never walk a file symbol by symbol. Returns verified, line-numbered
+    source; a truncated result carries the ``continuation`` to pass back.
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
             live range, or an omission ref. A bare file path is not an id.
-        context_lines: extra lines before/after (0-50).
-        repo: usually omitted.
-        query: omission refs only, regex/substring filter on lines. With
-            no id given, it is read as ``symbol_id``.
-        id: accepted alias for ``symbol_id``.
         depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
             it calls, transitively, in ``callee_bodies``.
-        reference: structured source reference emitted by this tool. Its id
-            and repository are accepted together without caller translation.
+        context_lines: extra lines before/after (0-50).
+        query: regex/substring filter on an omission ref's lines.
+        id, reference: aliases for ``symbol_id``.
+        repo: usually omitted.
     """
     symbol_id, repo = _reference_arguments(reference, symbol_id, id, repo)
     if repo == "all":

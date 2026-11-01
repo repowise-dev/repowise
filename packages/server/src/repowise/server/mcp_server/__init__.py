@@ -294,6 +294,22 @@ def registered_tool(fn: Any) -> Any:
     return wrapped
 
 
+def _slim_input_schemas(server: Any) -> None:
+    """Drop pydantic's ``title`` keys and ``default: null`` from advertised schemas.
+
+    They restate each parameter's name and optionality, and hosts re-send the
+    tool list on every turn. Arguments are still validated against the
+    function signature, not this dict.
+    """
+    for tool in server._tool_manager._tools.values():
+        params = tool.parameters
+        params.pop("title", None)
+        for prop in params.get("properties", {}).values():
+            prop.pop("title", None)
+            if "default" in prop and prop["default"] is None:
+                del prop["default"]
+
+
 def ensure_full_surface() -> Any:
     """Import every tool module and attach the registry to the FastMCP server.
 
@@ -344,6 +360,7 @@ def ensure_full_surface() -> Any:
         middleware=registered_tool,
         annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
     )
+    _slim_input_schemas(_mcp)
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.

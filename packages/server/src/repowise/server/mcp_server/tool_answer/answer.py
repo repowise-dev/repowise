@@ -914,24 +914,18 @@ async def get_answer(
 ) -> dict:
     """Answer a how, where, or why question in one evidence-grounded call.
 
-    High confidence is content-grounded and may be used directly. Medium
-    confidence keeps the smallest verification evidence; low confidence leads
-    with an actionable local conclusion and ranked evidence. ``candidate_files``
-    ranks the files worth opening that the citations do not name. Without a
-    provider key or network it answers from local evidence.
-
-    Responses fit 24,000 serialized characters. Pass ``include=["evidence"]``
-    for the deduplicated expanded projection, capped at 32,000. Reductions carry
-    totals, emitted counts, reasons, and a recovery: the same call with that include.
+    High confidence may be used directly; medium and low lead with the
+    evidence to verify. ``candidate_files`` ranks files worth opening that
+    the citations do not name.
 
     Args:
         question: One question about one subject. Split "where is X and
             when does Y run" into two calls; do not paste a whole
             multi-part task.
-        scope: Optional repository-relative path prefix.
-        repo: Usually omitted; a workspace alias when needed.
-        include: Optional ``["evidence"]`` expanded projection;
-            ``["diagnostics"]`` adds ``retrieval_quality``.
+        scope: repository-relative path prefix.
+        repo: usually omitted.
+        include: ``["evidence"]`` expanded evidence; ``["diagnostics"]``
+            adds ``retrieval_quality``.
     """
     return await _projected_get_answer(
         question=question,
