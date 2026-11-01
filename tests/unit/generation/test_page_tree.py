@@ -684,3 +684,16 @@ def test_tests_and_tooling_give_up_their_section_before_runtime_packages():
     pages += [_page("file_page", f, layer_id="layer:docs-tooling") for f in big_docs]
     assign_page_tree(pages, [])
     assert "." in _by_id(pages)["module_page:docs"].section_number
+
+
+def test_a_page_stamped_as_project_activity_closes_the_outline():
+    pages = [
+        _page("repo_overview", "demo"),
+        _page("onboarding", "onboarding/getting_started"),
+        _page("onboarding", "onboarding/recent_work", nav_section="project_activity"),
+        _page("module_page", "src/a", file_paths=["src/a/x.py"]),
+    ]
+    assign_page_tree(pages, [])
+    stamped = _by_id(pages)["onboarding:onboarding/recent_work"]
+    assert stamped.section_number is None
+    assert stamped.display_order == 3

@@ -300,7 +300,8 @@ describe("DocsTree", () => {
       page_type: "onboarding",
       title: "Active Landscape",
       target_path: "onboarding/active_landscape",
-      metadata: { onboarding_slot: "active_landscape" },
+      // Stamped the way a page written by the current generator is.
+      metadata: { nav_section: "project_activity" },
       parent_page_id: ROOT.id,
       display_order: 9,
     });

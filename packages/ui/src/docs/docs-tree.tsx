@@ -550,6 +550,8 @@ const pagesOfType = (pages: DocPageSummary[], type: string): DocPageSummary[] =>
 const PROJECT_ACTIVITY_SLOTS = new Set<string>(["active_landscape"]);
 
 const isProjectActivity = (page: DocPageSummary): boolean => {
+  // Stamped on pages written since the stamp existed; older ones by slot.
+  if (page.metadata?.["nav_section"] === "project_activity") return true;
   if (page.page_type !== "onboarding") return false;
   const slot = getOnboardingSlot(page) ?? page.target_path.split("/").pop() ?? "";
   return PROJECT_ACTIVITY_SLOTS.has(slot);

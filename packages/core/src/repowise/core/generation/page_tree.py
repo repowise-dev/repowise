@@ -173,8 +173,16 @@ def onboarding_slot(page: TreeNode | GeneratedPage) -> str:
     return slot or page.target_path.rsplit("/", 1)[-1]
 
 
+# The stamp a page carries when it belongs under "Project activity". A page
+# written before the stamp existed is recognised by its slot.
+NAV_SECTION_KEY = "nav_section"
+NAV_SECTION_ACTIVITY = "project_activity"
+
+
 def is_project_activity(page: TreeNode | GeneratedPage) -> bool:
     """Whether *page* belongs under "Project activity" rather than the reading path."""
+    if page.metadata.get(NAV_SECTION_KEY) == NAV_SECTION_ACTIVITY:
+        return True
     return page.page_type == "onboarding" and onboarding_slot(page) in PROJECT_ACTIVITY_SLOTS
 
 
