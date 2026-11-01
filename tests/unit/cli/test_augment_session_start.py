@@ -50,7 +50,7 @@ def test_locked_index_skips_the_decision_queries(repo, monkeypatch) -> None:
     monkeypatch.setattr(session_start, "index_locked", lambda p: True)
     monkeypatch.setattr(
         session_start,
-        "_session_decision_block",
+        "_decision_block",
         lambda *a: pytest.fail("decision queries ran against a locked index"),
     )
     assert _handle(repo) == unlocked
