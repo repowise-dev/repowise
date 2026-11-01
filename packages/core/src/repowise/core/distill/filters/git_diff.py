@@ -326,12 +326,17 @@ def _fit(rendered: list[tuple[_FileBlock, list[str]]], budget: int) -> list[str]
             summarized.append(_count_row(block))
         out.extend(block.tail)
     hidden = sum(1 for b, _ in rendered if not b.generated and id(b) not in kept) - len(summarized)
-    if summarized or hidden:
-        out.append(f"hunks omitted for {len(summarized) + hidden} files:")
-        out.extend(summarized)
-        if hidden:
-            out.append(f"  ... and {hidden} more")
-    return out
+    return out + _omitted_rows(summarized, hidden)
+
+
+def _omitted_rows(summarized: list[str], hidden: int) -> list[str]:
+    """The count rows for files shown without hunks, and how many were not listed."""
+    if not summarized and not hidden:
+        return []
+    rows = [f"hunks omitted for {len(summarized) + hidden} files:", *summarized]
+    if hidden:
+        rows.append(f"  ... and {hidden} more")
+    return rows
 
 
 def _count_row(block: _FileBlock) -> str:
