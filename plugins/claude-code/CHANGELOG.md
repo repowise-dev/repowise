@@ -2,6 +2,28 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.60.0
+
+### Added
+- A `PreToolUse` hook on shell commands runs `repowise-rewrite`, which wraps
+  noisy commands (tests, builds, git, searches) in `repowise distill` so the
+  agent sees errors first (#5082). It does nothing when `repowise-rewrite` is
+  not installed.
+
+### Changed
+- `/repowise:decision` shows the signed forms an agent uses to record
+  (`--agent <slug> --evidence-commit`) and accept (`--agent <slug> --evidence`)
+  decisions, and the architectural-decisions skill matches (#5015).
+- `/repowise:init` describes the MCP entry as one that serves whichever repo
+  Claude Code starts in, written to `~/.claude.json`, and never moved off
+  another repo (#5094, #5145).
+- The codebase-exploration skill routes an exact identifier, string or file
+  name to Grep, Glob and Read, and flow, callers, impact, rationale and change
+  review each to one named Repowise tool, matching the generated CLAUDE.md
+  (#5168).
+- The Lens panel reads the leaner MCP replies, so staleness, completeness and
+  degraded reasons still show (#4981).
+
 ## 0.59.0
 
 ### Added
