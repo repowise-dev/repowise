@@ -117,10 +117,32 @@ def local_refs_from_tree(
     return frozenset(referenced)
 
 
+_TYPE_ALIAS_TYPES: tuple[type[ast.AST], ...] = (
+    (ast.TypeAlias,) if hasattr(ast, "TypeAlias") else ()
+)
+
+
+def _is_type_alias_annotation(annotation: ast.expr) -> bool:
+    """Whether *annotation* is ``TypeAlias`` or ``<mod>.TypeAlias``."""
+    if isinstance(annotation, ast.Name):
+        return annotation.id == "TypeAlias"
+    if isinstance(annotation, ast.Attribute):
+        return annotation.attr == "TypeAlias"
+    return False
+
+
 def _bound_name(stmt: ast.stmt) -> str | None:
-    """Return the symbol name a top-level def/class binds, else ``None``."""
+    """Return the symbol name a top-level def/class/type-alias binds, else ``None``."""
     if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return stmt.name
+    if isinstance(stmt, _TYPE_ALIAS_TYPES):
+        return stmt.name.id  # type: ignore[attr-defined]
+    if (
+        isinstance(stmt, ast.AnnAssign)
+        and isinstance(stmt.target, ast.Name)
+        and _is_type_alias_annotation(stmt.annotation)
+    ):
+        return stmt.target.id
     return None
 
 
@@ -148,18 +170,66 @@ def _collect_refs(
         # constants in the AST; their inner names are invisible to the
         # ``Name`` walk above. Re-parse each annotation's string literals
         # and collect any defined name they reference.
-        annotation = _annotation_of(sub)
-        if annotation is not None:
+        for annotation in _type_expressions_of(sub):
             _collect_forward_refs(annotation, defined_names, owner, out)
 
 
 def _annotation_of(node: ast.AST) -> ast.expr | None:
-    """Return the annotation expression carried by *node*, if any."""
+    """Return the single annotation expression carried by *node*, if any."""
     if isinstance(node, (ast.AnnAssign, ast.arg)):
         return node.annotation
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return node.returns
+    if isinstance(node, _TYPE_ALIAS_TYPES):
+        return node.value  # type: ignore[attr-defined]
     return None
+
+
+def _type_param_expressions(node: ast.AST) -> Iterator[ast.expr]:
+    """Yield bound and default expressions on PEP 695 ``type_params``, if any."""
+    for param in getattr(node, "type_params", ()):
+        for attr in ("bound", "default_value"):
+            expr = getattr(param, attr, None)
+            if isinstance(expr, ast.expr):
+                yield expr
+
+
+def _type_expressions_of(node: ast.AST) -> Iterator[ast.expr]:
+    """Yield annotation, TypeAlias RHS, type-param, and generic base expressions on *node*."""
+    yield from _type_param_expressions(node)
+    annotation = _annotation_of(node)
+    if annotation is not None:
+        yield annotation
+        if (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and _is_type_alias_annotation(annotation)
+        ):
+            yield node.value
+        return
+    if isinstance(node, ast.ClassDef):
+        for base in node.bases:
+            if isinstance(base, ast.Subscript):
+                yield base.slice
+
+
+def _is_literal_subscript(node: ast.AST) -> bool:
+    """Whether *node* is a ``Literal[...]`` subscript whose slice holds values, not types."""
+    if not isinstance(node, ast.Subscript):
+        return False
+    target = node.value
+    name = target.id if isinstance(target, ast.Name) else getattr(target, "attr", None)
+    return name == "Literal"
+
+
+def _iter_non_literal_nodes(root: ast.AST) -> Iterator[ast.AST]:
+    """Walk *root* without descending into ``Literal[...]`` value slices."""
+    stack: list[ast.AST] = [root]
+    while stack:
+        cur = stack.pop()
+        yield cur
+        if not _is_literal_subscript(cur):
+            stack.extend(ast.iter_child_nodes(cur))
 
 
 def _collect_forward_refs(
@@ -183,14 +253,14 @@ def _collect_forward_refs(
 
 def _forward_ref_nodes(annotation: ast.expr) -> Iterator[tuple[ast.AST, int]]:
     """Each node of each quoted forward ref in *annotation*, with the quote's line."""
-    for sub in ast.walk(annotation):
+    for sub in _iter_non_literal_nodes(annotation):
         if not (isinstance(sub, ast.Constant) and isinstance(sub.value, str)):
             continue
         try:
             inner = parse_python(sub.value, mode="eval")
         except (SyntaxError, ValueError):
             continue
-        for ref in ast.walk(inner):
+        for ref in _iter_non_literal_nodes(inner):
             yield ref, sub.lineno
 
 
@@ -234,8 +304,7 @@ def _loaded_refs(tree: ast.Module) -> Iterator[tuple[ast.AST, int]]:
     for sub in ast.walk(tree):
         if isinstance(sub, (ast.Name, ast.Attribute)) and isinstance(sub.ctx, ast.Load):
             yield sub, sub.lineno
-        annotation = _annotation_of(sub)
-        if annotation is not None:
+        for annotation in _type_expressions_of(sub):
             yield from _forward_ref_nodes(annotation)
 
 
