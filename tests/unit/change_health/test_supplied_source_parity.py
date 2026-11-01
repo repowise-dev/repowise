@@ -305,3 +305,19 @@ def test_directive_renders_at_most_three_tests_in_one_run_command():
 
     tests = {"tests_to_run": [f"t{i}" for i in range(9)], "basis": "measured"}
     assert directive(_clean_delta(), tests)["next_actions"] == ["Run: t0 t1 t2"]
+
+
+def test_health_check_judges_the_same_through_a_supplied_source_with_no_checkout(make_repo):
+    """A host with no checkout passes its own source and no root; the verdict matches git's."""
+    from repowise.core.analysis.change_health.check import run_health_check
+
+    repo: Repo = make_repo("parity")
+    repo.commit("base", {"app/a.py": python_complex("run", 2)})
+    repo.commit("head", {"app/a.py": python_complex("run", 12)})
+
+    via_git = run_health_check(str(repo.path), "HEAD")
+    supplied = _mirror(GitRevisionSource(str(repo.path)), "HEAD")
+    via_supplied = run_health_check(None, "HEAD", source=supplied)
+
+    assert via_supplied.result.verdict == via_git.result.verdict
+    assert via_supplied.as_json()["gate"] == via_git.as_json()["gate"]

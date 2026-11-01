@@ -1,8 +1,10 @@
 """One change's health check: the comparison and the diff-risk rules, judged by the gate.
 
 What ``repowise health check <revspec>`` runs, as a function the CLI and the
-server share. Git only: both sides are read from blobs (or the working tree),
-so no index is needed.
+server share. Both sides are read as blobs (or from the working tree) through a
+``RevisionSource``, so no index is needed. Locally that source is git; a host
+with no checkout passes its own (``MappingRevisionSource`` over fetched blobs,
+or one that reads a forge's API).
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from repowise.core.analysis.change_health.models import ChangeHealthDelta
-    from repowise.core.analysis.change_health.sources import GitRevisionSource
+    from repowise.core.analysis.change_health.sources import RevisionSource
     from repowise.core.analysis.health.config import HealthConfig
     from repowise.core.analysis.health_gate import GateResult
 
@@ -39,7 +41,7 @@ class HealthCheck:
         return as_json(self.result, self.delta, label=self.label)
 
 
-def base_rules(source: GitRevisionSource, base: str) -> HealthConfig:
+def base_rules(source: RevisionSource, base: str) -> HealthConfig:
     """``.repowise/health-rules.json`` at the change's *base*; defaults when absent.
 
     Read at the base so a change cannot loosen its own gate.
@@ -59,9 +61,10 @@ def base_rules(source: GitRevisionSource, base: str) -> HealthConfig:
 
 
 def run_health_check(
-    root: str,
+    root: str | None,
     revspec: str | None,
     *,
+    source: RevisionSource | None = None,
     fail_on: str = "introduced",
     fail_at: str = "high",
     levels: Mapping[str, str] | None = None,
@@ -71,19 +74,34 @@ def run_health_check(
     The defaults are the CLI's: fail on introduced findings at high or above.
     Raises :class:`HealthCheckUnavailable` when the change cannot be read or
     judged.
+
+    *source* reads both sides; omitted, it is git over the checkout at *root*.
+    With an injected source *root* may be ``None``: nothing then scans a
+    checkout or writes a cache under it, and *revspec* means whatever the
+    source's ``resolve`` makes of it.
     """
     from repowise.core.analysis.change_health.service import ChangeHealthDeltaService, DeltaRequest
     from repowise.core.analysis.change_health.sources import GitRevisionSource
     from repowise.core.analysis.diff_risk import diff_risk_for_change
     from repowise.core.analysis.health_gate import NotEvaluatedError, diff_risk_findings, evaluate
 
-    source = GitRevisionSource(root)
+    injected = source is not None
+    if source is None:
+        if root is None:
+            raise ValueError("run_health_check needs a checkout root or a RevisionSource")
+        source = GitRevisionSource(root)
     try:
         pair = source.resolve(revspec)
     except ValueError as exc:
         raise HealthCheckUnavailable("unsupported_range", str(exc)) from exc
     rules = base_rules(source, pair.base_sha)
-    service = ChangeHealthDeltaService(source, repo_path=root, health_config=rules)
+    # An injected source has no checkout behind it: no package-root scan, no on-disk cache.
+    service = ChangeHealthDeltaService(
+        source,
+        repo_path=None if injected else root,
+        health_config=rules,
+        cache_dir=False if injected else None,
+    )
     label = revspec or "working tree"
     # One resolution serves the comparison and the diff-risk rules.
     delta = service.compare(DeltaRequest(root, revspec), pair=pair)
