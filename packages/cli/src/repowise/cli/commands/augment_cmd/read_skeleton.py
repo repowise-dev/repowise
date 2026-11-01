@@ -144,12 +144,13 @@ def skeleton_replacement(
         return None
     if not source.strip():
         return None
-    if not _bounds_current(source.splitlines(), symbols):
+    source_lines = source.splitlines()
+    if not _bounds_current(source_lines, symbols):
         return None
 
     from repowise.core.distill.skeleton import build_skeleton
 
-    total_lines = len(source.splitlines())
+    total_lines = len(source_lines)
     # "smart" over "signatures" for the docstring summary line it keeps under
     # each signature. Its body-budget machinery is inert here on purpose: no
     # PageRank is persisted on wiki_symbols, so every importance is 0.0 and no
@@ -272,7 +273,9 @@ def _rank_for_outline(symbols: list[SkeletonSymbol]) -> list[SkeletonSymbol]:
 
 #: Names a declaration line can carry. Anything else (``<anonymous>``,
 #: ``default``) is indexed under a name the source does not spell out there.
-_CHECKABLE_NAME_RE = re.compile(r"^[A-Za-z_$#][\w$]*$")
+_CHECKABLE_NAME_RE = re.compile(r"^#?[A-Za-z_$][\w$]*$")
+#: Whole words on a declaration line, ``#private`` members included.
+_WORD_RE = re.compile(r"#?[\w$]+")
 #: Most leading lines (decorators, attributes) skipped before the declaration
 #: line that has to carry the symbol's name.
 _MAX_LEAD_LINES = 40
@@ -297,21 +300,28 @@ def _bounds_current(lines: list[str], symbols: list[SkeletonSymbol]) -> bool:
         name = re.split(r"[.:]+", sym.name)[-1]
         if name == "default" or not _CHECKABLE_NAME_RE.match(name):
             continue
-        word = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])")
-        if not word.search(_declaration_line(lines, sym.start_line - 1)):
+        if not 1 <= sym.start_line <= len(lines):
+            return False
+        text = _declaration_line(lines, sym.start_line - 1)
+        words = set(_WORD_RE.findall(text))
+        if name not in words and name not in {w.lstrip("#") for w in words}:
             return False
     return True
 
 
 def _declaration_line(lines: list[str], start: int) -> str:
-    """The lines from *start* through the first that is not decorator lead-in."""
+    """The lines from *start* through the first that is not decorator lead-in.
+
+    '' when no declaration turns up in the window (a bracket in a decorator's
+    string can keep the depth open): unknown counts as moved.
+    """
     window = lines[start : start + _MAX_LEAD_LINES]
     depth = 0  # open brackets of a multi-line decorator or attribute
     for i, line in enumerate(window):
         if depth <= 0 and not _LEAD_RE.match(line):
             return "\n".join(window[: i + 1])
         depth += line.count("(") + line.count("[") - line.count(")") - line.count("]")
-    return "\n".join(window)
+    return ""
 
 
 #: The elision marker ``_render`` in distill.skeleton emits: indent, then
