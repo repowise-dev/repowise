@@ -161,3 +161,18 @@ def test_a_named_definition_and_its_call_survive() -> None:
     assert result["defined_in"][0]["path"] == _TARGET
     assert result["next_call"].startswith("get_why(")
     assert "more" not in result
+
+
+def test_a_bridged_cli_call_keeps_the_full_card() -> None:
+    """``repowise why`` budgets through the bridge with an empty signature; the hook needs the call."""
+    import inspect
+
+    from repowise.server.mcp_server._budget import enforce_response_budget
+
+    def _bridged() -> None:
+        pass
+
+    cli = enforce_response_budget(
+        "get_why", _unanswered(), signature=inspect.signature(_bridged), args=(), kwargs={}
+    )
+    assert "target_context" in cli and "key_commits" not in cli
