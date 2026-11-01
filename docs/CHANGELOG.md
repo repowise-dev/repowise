@@ -127,6 +127,7 @@ Thank you to everyone who built this release with us.
 ### Dependencies
 
 - The lockfiles take pyasn1 0.6.5, litellm 1.95.1 (wheels for Linux, macOS and Windows on every supported Python) and, for development tooling, qs 6.17.1 (#5185).
+- `tree-sitter` is capped below 0.26: 0.26.0 crashes the interpreter when the C++ receiver typing reads a node a query captured, so a fresh `pip install` stays on 0.25 (#5213).
 
 ### Upgrading
 
