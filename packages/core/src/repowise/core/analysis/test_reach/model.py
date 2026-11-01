@@ -48,7 +48,9 @@ ReachedVia = Literal["call-graph", "import-graph", "name-match", "changed-test",
 # ``type_only``  it declares only types: there is nothing for a test to run;
 # ``mocked_only`` every test that reaches it replaces it with a double, so
 #                none is shown to run it, and nothing says none could.
-ReachState = Literal["reached", "unreached", "new", "no_signal", "type_only", "mocked_only"]
+ReachState = Literal[
+    "reached", "unreached", "new", "no_signal", "type_only", "mocked_only", "not_applicable"
+]
 
 
 class ReachDistance(NamedTuple):

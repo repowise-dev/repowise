@@ -158,19 +158,12 @@ async def _indexed_files(session: AsyncSession, repo_id: str) -> frozenset[str] 
 
 
 async def _owing_a_test(session: AsyncSession, repo_id: str, paths: list[str]) -> set[str]:
-    """The *paths* whose origin owes a test: the stored ``code_origin`` (one read
-    per 500 paths), else the path's (:func:`~repowise.core.code_origin.owes_a_test`)."""
+    """The *paths* whose origin owes a test: the stored ``code_origin``, else the path's
+    (:func:`~repowise.core.code_origin.owes_a_test`)."""
+    from repowise.core.analysis.test_reach.db import stored_origins
     from repowise.core.code_origin import owes_a_test
 
-    stored: dict[str, str | None] = {}
-    for start in range(0, len(paths), 500):
-        res = await session.execute(
-            select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
-                HealthFileMetric.repository_id == repo_id,
-                HealthFileMetric.file_path.in_(paths[start : start + 500]),
-            )
-        )
-        stored.update(res.tuples().all())
+    stored = await stored_origins(session, repo_id, paths)
     return {p for p in paths if owes_a_test(p, stored.get(p))}
 
 

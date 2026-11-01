@@ -378,6 +378,25 @@ def test_a_dispatcher_with_many_callers_lends_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_code_that_owes_no_test_is_not_applicable_never_unreached() -> None:
+    """The origin gate: stored origin first, else the path; the walk itself is unchanged."""
+    g = _graph(
+        {"src/a.py": False, "src/api_pb2.py": False, "src/client.ts": False, "tests/t.py": True},
+        [],
+    )
+    maps = build_walk_maps(g)
+    paths = ["src/a.py", "src/api_pb2.py", "src/client.ts", "tests/t.py"]
+    rows = reach_states(maps, paths, origins={"src/client.ts": "generated"})
+    assert {p: r.state for p, r in rows.items()} == {
+        "src/a.py": "unreached",
+        "src/api_pb2.py": "not_applicable",
+        "src/client.ts": "not_applicable",
+        "tests/t.py": "unreached",
+    }
+    # Without origins the gate is off, as before.
+    assert reach_states(maps, ["src/api_pb2.py"])["src/api_pb2.py"].state == "unreached"
+
+
 def test_unreached_needs_the_whole_import_closure_to_miss() -> None:
     # Each module in its own package, so the package walk does not answer either.
     g = _graph(

@@ -21,7 +21,7 @@ from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
-from repowise.core.persistence.models import GraphNode, Repository
+from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
 
 from .forward import CallGraphView, files_reached_by_tests
@@ -314,12 +314,39 @@ async def reach_states_from_db(
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachRow]:
-    """:func:`~.walk.reach_states` over the stored graph."""
+    """:func:`~.walk.reach_states` over the stored graph, with the origin gate on.
+
+    Code that owes no test (generated, vendored, build, tooling, docs example,
+    migration; the stored ``code_origin``, else the path) reads
+    ``not_applicable``.
+    """
     test_files = set(await cached_test_files(session, repo_id))
     walk = states_walk(
-        list(paths), test_files, changed_tests=changed_tests, contents=contents, masks=masks
+        list(paths),
+        test_files,
+        changed_tests=changed_tests,
+        contents=contents,
+        masks=masks,
+        origins=await stored_origins(session, repo_id, list(paths)),
     )
     return await drive(walk, session, repo_id)
+
+
+async def stored_origins(
+    session: AsyncSession, repo_id: str, paths: list[str]
+) -> dict[str, str | None]:
+    """The stored ``health_file_metrics.code_origin`` of *paths*, one read per batch; unscored paths are absent."""
+    out: dict[str, str | None] = {}
+    paths = list(dict.fromkeys(paths))
+    for start in range(0, len(paths), _IN_BATCH):
+        res = await session.execute(
+            select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.file_path.in_(paths[start : start + _IN_BATCH]),
+            )
+        )
+        out.update(res.tuples().all())
+    return out
 
 
 async def tests_reaching_through_helpers(

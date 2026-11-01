@@ -667,10 +667,13 @@ def states_walk(
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
     rank: bool = True,
+    origins: Mapping[str, str | None] | None = None,
 ) -> Walk[dict[str, ReachRow]]:
     """A :class:`~.model.ReachRow` per path, the negative claim made only when it holds.
 
-    In order: ``type_only`` (from *contents*); ``reached`` by a test the change
+    In order: ``not_applicable`` when *origins* is given and the path owes no
+    test (:func:`~repowise.core.code_origin.owes_a_test`; a path *origins*
+    lacks is judged by its path; test files are never gated); ``type_only`` (from *contents*); ``reached`` by a test the change
     adds or edits (*changed_tests*) that is named for the path or imports it
     and does not replace it, then by the path's own inline tests; ``new`` for
     a path the index lacks; ``no_signal`` when the index holds no test; ``reached`` by the call walk,
@@ -695,6 +698,9 @@ def states_walk(
     )
     imported_by = yield from _touched_imports(paths, touched)
     for path in dict.fromkeys(paths):
+        if origins is not None and path not in test_files and _owes_no_test(path, origins):
+            rows[path] = ReachRow("not_applicable")
+            continue
         content = contents.get(path)
         if content is not None and is_type_only(
             path, content, is_test=(path in test_files) or None
@@ -737,6 +743,14 @@ def states_walk(
         else:
             rows[path] = ReachRow("unreached")
     return {path: rows[path] for path in dict.fromkeys(paths)}
+
+
+def _owes_no_test(path: str, origins: Mapping[str, str | None]) -> bool:
+    """Generated, vendored, build, tooling, docs example or migration code; test code is not gated."""
+    from repowise.core.code_origin import owes_a_test, path_origin
+
+    origin = origins.get(path) or path_origin(path)
+    return origin != "test" and not owes_a_test(path, origin)
 
 
 def _unmasked(
@@ -797,13 +811,16 @@ def reach_states(
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
     rank: bool = True,
+    origins: Mapping[str, str | None] | None = None,
 ) -> dict[str, ReachRow]:
     """:func:`states_walk` over *maps*: whether tests reach each path, as a typed claim.
 
     *changed_tests* are test files the change adds or edits, indexed or not.
     *contents* maps a path to its bytes, for the type-only and Rust inline
     checks; a path without them skips both. *masks* maps a test to the files
-    it replaces outright (:func:`~.mocks.replaced_files`).
+    it replaces outright (:func:`~.mocks.replaced_files`). *origins* (stored
+    ``code_origin`` per path) turns on the origin gate: code that owes no test
+    reads ``not_applicable``, never ``unreached``.
     """
     return run(
         states_walk(
@@ -813,6 +830,7 @@ def reach_states(
             contents=contents,
             masks=masks,
             rank=rank,
+            origins=origins,
         ),
         maps,
     )

@@ -72,7 +72,7 @@ export function InferredTestsView({
   const points = useMemo(
     () =>
       map.files
-        .filter((f) => f.health_score != null)
+        .filter((f) => f.health_score != null && !f.not_applicable)
         .map((f) => ({
           file_path: f.file_path,
           health_score: f.health_score!,
@@ -89,7 +89,8 @@ export function InferredTestsView({
   const atRisk = useMemo(
     () =>
       map.files.filter(
-        (f) => !f.reached && f.health_score != null && f.health_score < AT_RISK_SCORE,
+        (f) =>
+          !f.reached && !f.not_applicable && f.health_score != null && f.health_score < AT_RISK_SCORE,
       ).length,
     [map.files],
   );
@@ -99,7 +100,7 @@ export function InferredTestsView({
   const ranked = useMemo(() => {
     const rank = new Map(untestedFindings.map((f, i) => [f.file_path, i]));
     return map.files
-      .filter((f) => !f.reached)
+      .filter((f) => !f.reached && !f.not_applicable)
       .sort((a, b) => {
         const ra = rank.get(a.file_path);
         const rb = rank.get(b.file_path);
@@ -174,6 +175,16 @@ export function InferredTestsView({
           </strong>
           . The graph finds no test for the other{" "}
           {formatNumber(map.files_not_reached)}.
+          {map.files_not_applicable ? (
+            <>
+              {" "}
+              {formatNumber(map.files_not_applicable)}{" "}
+              {map.files_not_applicable === 1 ? "is" : "are"} generated, vendored,
+              build, tooling, example or migration code, which owes no test, so
+              {map.files_not_applicable === 1 ? " it is" : " they are"} not
+              counted as unreached.
+            </>
+          ) : null}
         </p>
 
         <p className="mt-2.5">
