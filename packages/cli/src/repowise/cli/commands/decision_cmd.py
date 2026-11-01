@@ -340,7 +340,18 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         if stored.blockers:
             payload["blockers"] = stored.blockers
             agent_flag = f" --agent {stored.agent}" if stored.agent else ""
-            payload["next"] = f"confirm {stored.id}{agent_flag} --evidence <commit|file>"
+            needed: list[str] = []
+            if any(b == NO_DECISION_BLOCKER for b in stored.blockers):
+                needed.append("--decision <text>")
+            if any(b == NO_RATIONALE_BLOCKER for b in stored.blockers):
+                needed.append("--reason <rationale>")
+            if any(b == NO_SCOPE_BLOCKER for b in stored.blockers):
+                needed.append("--scope <path>")
+            if any(b == NO_EVIDENCE_BLOCKER for b in stored.blockers):
+                needed.append("--evidence <commit|file>")
+            if not needed:
+                needed.append("--evidence <commit|file>")
+            payload["next"] = f"confirm {stored.id}{agent_flag} {' '.join(needed)}"
         emit_json({"repo": str(repo_path), "decision": payload})
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"

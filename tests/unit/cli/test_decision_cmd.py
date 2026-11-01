@@ -1094,3 +1094,30 @@ def test_decision_add_json_reports_blockers_and_next(indexed_repo: Path) -> None
     payload_ok = json.loads(result_ok.output)["decision"]
     assert "blockers" not in payload_ok
     assert "next" not in payload_ok
+
+    # Adding without scope and evidence includes both flags in next command
+    result_multi = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags no scope",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_multi.exit_code == 0, result_multi.output
+    payload_multi = json.loads(result_multi.output)["decision"]
+    assert "blockers" in payload_multi
+    assert any("scope" in b for b in payload_multi["blockers"])
+    assert any("evidence" in b for b in payload_multi["blockers"])
+    assert "--scope <path>" in payload_multi["next"]
+    assert "--evidence <commit|file>" in payload_multi["next"]
