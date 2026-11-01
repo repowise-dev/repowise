@@ -75,7 +75,7 @@ def _rate_limit_hint(
 def _auth_hint(
     chain: list[BaseException], error: ProviderError | None, model: str | None
 ) -> ProviderErrorHint | None:
-    if _status(error) not in (401, 403):
+    if _status(error) not in (401, 403) and not _is_invalid_key_400(error):
         return None
     known, name = _provider(error)
     return ProviderErrorHint(
@@ -126,6 +126,11 @@ def _exception_chain(exc: BaseException) -> list[BaseException]:
 
 def _status(exc: ProviderError | None) -> int | None:
     return exc.status_code if exc is not None else None
+
+
+def _is_invalid_key_400(error: ProviderError | None) -> bool:
+    """Gemini answers a rejected key with 400, not 401; only that reason counts."""
+    return _status(error) == 400 and "API_KEY_INVALID" in str(error)
 
 
 def _is_connect_error(exc: BaseException) -> bool:

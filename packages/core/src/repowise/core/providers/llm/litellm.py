@@ -284,6 +284,14 @@ def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ..
     return tuple(options)
 
 
+def _litellm_error(exc: BaseException, message: str) -> ProviderError:
+    """Wrap a LiteLLM failure, keeping the HTTP status the SDK carried."""
+    status_code = getattr(exc, "status_code", None)
+    return ProviderError(
+        "litellm", message, status_code=status_code if isinstance(status_code, int) else None
+    )
+
+
 class LiteLLMProvider(BaseProvider):
     """LiteLLM proxy provider — 100+ LLMs through a single interface.
 
@@ -408,10 +416,10 @@ class LiteLLMProvider(BaseProvider):
         except litellm.RateLimitError as exc:
             raise rate_limit_error_from("litellm", exc) from exc
         except litellm.APIError as exc:
-            raise ProviderError("litellm", str(exc)) from exc
+            raise _litellm_error(exc, str(exc)) from exc
         except Exception as exc:
             log.error("litellm.generate.error", model=self._model, error=str(exc))
-            raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc
+            raise _litellm_error(exc, f"{type(exc).__name__}: {exc}") from exc
 
         usage = response.usage
         choice = response.choices[0]
@@ -493,7 +501,7 @@ class LiteLLMProvider(BaseProvider):
         except litellm.RateLimitError as exc:
             raise rate_limit_error_from("litellm", exc) from exc
         except litellm.APIError as exc:
-            raise ProviderError("litellm", str(exc)) from exc
+            raise _litellm_error(exc, str(exc)) from exc
 
         try:
             async for event in iter_chat_stream_events(stream, emit_usage=False):
@@ -501,4 +509,4 @@ class LiteLLMProvider(BaseProvider):
         except litellm.RateLimitError as exc:
             raise rate_limit_error_from("litellm", exc) from exc
         except Exception as exc:
-            raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc
+            raise _litellm_error(exc, f"{type(exc).__name__}: {exc}") from exc
