@@ -6,7 +6,27 @@ import json
 
 from pydantic import BaseModel
 
+from repowise.core.generation.nav_titles import nav_label
 from repowise.server.schemas._datetime import UTCDateTime
+
+# Page types that are rows of the reading outline. The rest are reference
+# pages a tree names by their path, so they carry no navigation label.
+_OUTLINE_TYPES = frozenset(
+    {"repo_overview", "onboarding", "module_page", "flow_page", "architecture_diagram"}
+)
+
+
+def _nav_title(obj: object) -> str | None:
+    """The label a navigation row shows for this page, from its stored title.
+
+    Computed when a page is listed rather than stored, so a wiki written before
+    the rule existed shows "CLI" instead of "Cli Overview" without a page being
+    regenerated.
+    """
+    page_type = getattr(obj, "page_type", "")
+    if page_type not in _OUTLINE_TYPES:
+        return None
+    return nav_label(getattr(obj, "title", "") or "", page_type)
 
 
 def _layer_stamp(obj: object, metadata: dict | None) -> tuple[str | None, str | None]:
@@ -83,6 +103,7 @@ def _summary_fields(
         repository_id=obj.repository_id,  # type: ignore[attr-defined]
         page_type=obj.page_type,  # type: ignore[attr-defined]
         title=obj.title,  # type: ignore[attr-defined]
+        nav_title=_nav_title(obj),
         target_path=obj.target_path,  # type: ignore[attr-defined]
         source_hash=obj.source_hash,  # type: ignore[attr-defined]
         model_name=obj.model_name,  # type: ignore[attr-defined]
@@ -128,6 +149,10 @@ class PageSummaryResponse(BaseModel):
     repository_id: str
     page_type: str
     title: str
+    # What a navigation row calls the page: short, correctly cased, no
+    # "Overview" or path. ``None`` for reference pages, which are named by path.
+    # The page's own heading stays ``title``.
+    nav_title: str | None = None
     target_path: str
     source_hash: str
     model_name: str

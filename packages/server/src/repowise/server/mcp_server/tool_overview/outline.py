@@ -74,6 +74,12 @@ def _count_descendants(row: Any, children: dict[str, list[Any]], seen: set[str])
     return sum(1 + _count_descendants(c, children, seen) for c in children.get(row.id, []))
 
 
+def _omitted_line(row: Any) -> str:
+    """One dropped outline entry, numbered when the page has a number."""
+    head = f"{row.section_number} " if row.section_number else ""
+    return f"{head}{row.title}: {row.target_path}"
+
+
 def _outline_node(
     row: Any, children: dict[str, list[Any]], depth: int, collector: OmissionCollector
 ) -> dict[str, Any]:
@@ -93,7 +99,7 @@ def _outline_node(
         if len(kids) > cap:
             collector.add(
                 f"outline children of {row.id} beyond cap={cap} ({len(kids) - cap} dropped)",
-                "\n".join(f"{k.section_number} {k.title}: {k.target_path}" for k in kids[cap:]),
+                "\n".join(_omitted_line(k) for k in kids[cap:]),
             )
         node["children"] = [_outline_node(k, children, depth - 1, collector) for k in kids[:cap]]
     return node
@@ -103,10 +109,10 @@ def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) ->
     """The stored page tree, rooted at the repo overview.
 
     This is the same hierarchy the web app and the editor extension render:
-    onboarding pages, then the architecture diagram, then the dependency spine
-    of layers with their modules, files and cycles underneath. Each entry
-    carries the dotted ``section`` it was assigned at generation time, so a
-    page id quoted anywhere else in this response can be located in it.
+    onboarding pages, then the sections with their parts, files and cycles
+    underneath, then the walkthroughs. Each entry carries the dotted
+    ``section`` it was assigned at generation time: "4" or "4.2" on the
+    outline, ``None`` on reference pages and rows deeper than two levels.
     """
     root, children = _outline_index(rows)
     if root is None:
@@ -117,9 +123,7 @@ def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) ->
         collector.add(
             f"outline top-level entries beyond cap={_OUTLINE_TOP_CAP} "
             f"({len(top) - _OUTLINE_TOP_CAP} dropped)",
-            "\n".join(
-                f"{r.section_number} {r.title}: {r.target_path}" for r in top[_OUTLINE_TOP_CAP:]
-            ),
+            "\n".join(_omitted_line(r) for r in top[_OUTLINE_TOP_CAP:]),
         )
     outline: dict[str, Any] = {
         "root": {"page_id": root.id, "title": root.title},

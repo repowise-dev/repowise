@@ -14,14 +14,18 @@ exactly the rows it did before.
 The shape follows what the readers were already doing:
 
     repo overview
-      onboarding, flow pages    (canonical reading order)
-      module pages              (foundations first; stamped with their layer)
+      onboarding pages          (canonical reading order)
+      module pages              (reading order; stamped with their layer)
         module pages            (under the module heading their directory)
         file pages              (under the nearest module, by member or path)
         api contracts, infra pages (under the module for their directory)
           symbol spotlights     (under the file they document)
+      flow pages                (the walkthroughs, after the sections)
       cycle pages               (stamped with the layer they belong to)
+      project activity          (closes the outline)
       anything unplaced
+
+Only the outline is numbered, two levels deep (see :func:`_number`).
 
 A rung only appears when the pages for it exist.
 
@@ -42,7 +46,8 @@ from collections.abc import Container, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .layers import import_balance, is_support_layer
+from ..ids import is_external
+from .layers import import_balance, is_support_layer, reading_bucket
 from .models import GeneratedPage
 
 
@@ -69,11 +74,11 @@ class TreeNode:
 # Onboarding is ranked by its slot rather than this table.
 _TYPE_RANK: dict[str, int] = {
     "onboarding": 0,
-    # End-to-end walkthroughs read right after orientation and before the
-    # chapters they cross.
-    "flow_page": 1,
-    "architecture_diagram": 2,
-    "module_page": 3,
+    "architecture_diagram": 1,
+    "module_page": 2,
+    # Walkthroughs follow the sections they cross: a reader meets "what happens
+    # when you run init" after the parts it walks through have names.
+    "flow_page": 3,
     "scc_page": 4,
     "api_contract": 5,
     "infra_page": 6,
@@ -81,11 +86,25 @@ _TYPE_RANK: dict[str, int] = {
     "symbol_spotlight": 8,
 }
 
+# Onboarding slots that describe the project's recent activity rather than how
+# it works. They close the outline as "Project activity" instead of opening it.
+PROJECT_ACTIVITY_SLOTS: frozenset[str] = frozenset({"active_landscape"})
+
+# Page types that form the numbered outline. Everything else (files, symbols,
+# contracts, infra, cycles) is reference material and carries no number.
+_NUMBERED_TYPES: frozenset[str] = frozenset(
+    {"onboarding", "architecture_diagram", "module_page", "flow_page"}
+)
+# Numbers go two levels deep ("4", "4.2"). Deeper rows are reachable in the
+# tree but unnumbered: "14.2.1.5.1" is noise, not a reference a page can cite.
+_MAX_NUMBER_DEPTH = 2
+
 _UNRANKED = len(_TYPE_RANK)
 _UNRANKED_READER = (2,)
 
-# Page types that sit directly under the overview, ahead of every chapter: what
-# a reader opens first. A reader-facing tree can group them as "Start here".
+# Page types that sit directly under the overview whatever their files say: the
+# reading path, and the walkthroughs a reader-facing tree groups after the
+# sections.
 _START_HERE_TYPES: tuple[str, ...] = ("onboarding", "flow_page", "architecture_diagram")
 
 
@@ -148,14 +167,22 @@ def measure_layer_grouping(
     return LayerGroupingReport(grouped=grouped, ungrouped=ungrouped)
 
 
+def onboarding_slot(page: TreeNode | GeneratedPage) -> str:
+    """The onboarding slot a page fills: stamped, or the tail of its target."""
+    slot = str(page.metadata.get("onboarding_slot") or "")
+    return slot or page.target_path.rsplit("/", 1)[-1]
+
+
+def is_project_activity(page: TreeNode | GeneratedPage) -> bool:
+    """Whether *page* belongs under "Project activity" rather than the reading path."""
+    return page.page_type == "onboarding" and onboarding_slot(page) in PROJECT_ACTIVITY_SLOTS
+
+
 def _onboarding_rank(page: GeneratedPage) -> int:
     """Position of an onboarding page in the canonical reading order."""
     from .onboarding.slots import ONBOARDING_ORDER
 
-    slot = str(page.metadata.get("onboarding_slot") or "")
-    if not slot:
-        # The slot is the tail of the target path for dedicated onboarding pages.
-        slot = page.target_path.rsplit("/", 1)[-1]
+    slot = onboarding_slot(page)
     try:
         return ONBOARDING_ORDER.index(slot)
     except ValueError:
@@ -180,7 +207,8 @@ def _sort_key(page: GeneratedPage, reader_rank: dict[str, tuple[int, ...]]) -> t
     else:
         rank = 0
     return (
-        _TYPE_RANK.get(page.page_type, _UNRANKED),
+        # Project activity closes the outline, after every other rung.
+        _UNRANKED + 1 if is_project_activity(page) else _TYPE_RANK.get(page.page_type, _UNRANKED),
         # Unranked pages share one value, after every ranked top-level chapter.
         reader_rank.get(page.page_id, _UNRANKED_READER),
         rank,
@@ -328,12 +356,15 @@ def _chapter_balances(
     pages: dict[str, TreeNode | GeneratedPage],
     import_edges: Iterable[tuple[str, str]] | None,
 ) -> dict[str, int]:
-    """Each runtime top-level chapter's import balance, measured or stored.
+    """Each runtime sibling's import balance among *top*, measured or stored.
 
     With *import_edges*, measured and stamped on the page. Without, read back
     from the stamp; a page that never had one counts as balanced (zero).
     """
     runtime = {pid: files for pid, (files, layer) in top.items() if not is_support_layer(layer)}
+    if len(runtime) < 2:
+        # One sibling has no other to import or be imported by.
+        return dict.fromkeys(runtime, 0)
     if import_edges is None:
         return {pid: int(pages[pid].metadata.get(_BALANCE_KEY) or 0) for pid in runtime}
     balance = import_balance(
@@ -345,24 +376,131 @@ def _chapter_balances(
 
 
 def _reader_ranks(
-    top: dict[str, tuple[list[str], str]], balance: dict[str, int]
+    top: dict[str, tuple[list[str], str]],
+    balance: dict[str, int],
+    entry_files: Container[str] = (),
 ) -> dict[str, tuple[int, ...]]:
-    """Sort keys for the top-level chapters, in the order a reader wants them.
+    """Sort keys for sibling module pages, in the order a reader wants them.
 
-    *top* maps each top-level module page to its files and its layer;
-    *balance* holds the runtime ones' import balance (see
-    :func:`_chapter_balances`). The path order this replaces read a
-    repository's engine fifteenth, after its editor extension. A reader wants
-    the opposite of a dependency diagram: what everything else is built on
-    first, then what is built on it, then support material (tests, docs,
-    tooling) last. "Built on" is the import balance between these chapters'
-    files, the same measure the layer spine is ordered by. Within a tie the
-    larger chapter comes first, since it is the one a newcomer meets most.
+    *top* maps each sibling to its files and its layer; *balance* holds the
+    runtime ones' import balance (see :func:`_chapter_balances`). The path
+    order this replaces read a repository's engine fifteenth, after its editor
+    extension. A reader wants the opposite of a dependency diagram:
+
+    1. support material (tests, docs, tooling) last;
+    2. a sibling holding an entry point (a walkthrough starts in it) first,
+       when *entry_files* are given: that is where a reader enters the section;
+    3. the layer's reading bucket: engine, then storage, then the surfaces
+       people use it through, then shared types and utilities;
+    4. what the others are built on before what is built on it (the import
+       balance between the siblings' files, the measure the layer spine is
+       ordered by), so inputs read before the stages that consume them;
+    5. the larger sibling, the one a newcomer meets most.
     """
     return {
-        pid: (int(pid not in balance), -balance.get(pid, 0), -len(files))
-        for pid, (files, _layer) in top.items()
+        pid: (
+            int(pid not in balance),
+            int(not any(f in entry_files for f in files)),
+            reading_bucket(layer),
+            -balance.get(pid, 0),
+            -len(files),
+        )
+        for pid, (files, layer) in top.items()
     }
+
+
+def _sibling_ranks(
+    siblings: dict[str | None, dict[str, tuple[list[str], str]]],
+    by_id: dict[str, TreeNode | GeneratedPage],
+    import_edges: Iterable[tuple[str, str]] | None,
+    flows: list[GeneratedPage] | list[TreeNode],
+    root_id: str | None,
+) -> dict[str, tuple[int, ...]]:
+    """Reading-order keys for every module page, among its siblings."""
+    # Measured once per parent, so external edges are dropped once here.
+    edges = (
+        [(s, d) for s, d in import_edges if not (is_external(s) or is_external(d))]
+        if import_edges is not None
+        else None
+    )
+    # A walkthrough's entry file marks where a reader enters a section. Not at
+    # the top rung, where it would put the CLI ahead of the engine it drives.
+    entry_files = {p.target_path.split("::", 1)[0] for p in flows}
+    reader_rank: dict[str, tuple[int, ...]] = {}
+    for parent_id, group in siblings.items():
+        reader_rank.update(
+            _reader_ranks(
+                group,
+                _chapter_balances(group, by_id, edges),
+                entry_files if parent_id != root_id else (),
+            )
+        )
+    for pid in _supporting_sections(siblings.get(root_id, {}), siblings):
+        # After every section a reader is meant to scan; see _number.
+        reader_rank[pid] = (_SUPPORTING_RANK, *reader_rank[pid])
+    return reader_rank
+
+
+def _lift_through_dominant_chapters(
+    module_pages: list[GeneratedPage] | list[TreeNode],
+    placed: dict[str, tuple[list[str], str]],
+    root_id: str | None,
+) -> None:
+    """Give a section the parts of a chapter that is most of it.
+
+    A package's chapter (``packages/core``) usually heads one chapter for its
+    source tree (``packages/core/src/pkg/core``) that holds nearly everything,
+    so every real part of the section sat one rung further down than the
+    section's own parts: "Core > Pkg Core > Ingestion". When a chapter holds
+    at least four fifths of its parent's files, its module children are
+    re-parented onto that parent. The chapter keeps its row, beside them.
+    """
+    children: dict[str | None, list[GeneratedPage | TreeNode]] = {}
+    for page in module_pages:
+        children.setdefault(page.parent_page_id, []).append(page)
+    by_id = {page.page_id: page for page in module_pages}
+    # Shallow first, so a chain of such chapters folds all the way up.
+    for page in sorted(module_pages, key=lambda p: (p.target_path.count("/"), p.page_id)):
+        parent = by_id.get(page.parent_page_id or "")
+        kids = children.get(page.page_id, [])
+        if parent is None or parent.page_id == root_id or not kids:
+            continue
+        if len(placed[page.page_id][0]) * 5 < len(placed[parent.page_id][0]) * 4:
+            continue
+        for kid in kids:
+            kid.parent_page_id = parent.page_id
+        children.setdefault(parent.page_id, []).extend(kids)
+        children[page.page_id] = []
+
+
+# More top-level sections than this and the small leaf ones are listed as one
+# "Supporting packages" section, so the outline stays a table of contents.
+_MAX_SECTIONS = 12
+_SUPPORTING_RANK = 3
+
+
+def _supporting_sections(
+    top: dict[str, tuple[list[str], str]],
+    siblings: dict[str | None, dict[str, tuple[list[str], str]]],
+) -> set[str]:
+    """Top-level module pages read as one "Supporting packages" section.
+
+    A repository of many small top-level packages (Go's convention) put forty
+    rows on the top rung, most of them a page about one directory. Sections
+    with parts of their own always stay; of the rest, the largest stay until
+    there are :data:`_MAX_SECTIONS`, and the others are numbered together after
+    the sections (``11.1``, ``11.2``), which a reader-facing tree draws as one
+    folder.
+    """
+    if len(top) <= _MAX_SECTIONS:
+        return set()
+    leaves = [pid for pid in top if not siblings.get(pid)]
+    room = max(0, _MAX_SECTIONS - (len(top) - len(leaves)))
+    # Runtime packages keep a section before tests, docs and tooling do.
+    kept = sorted(
+        leaves, key=lambda pid: (is_support_layer(top[pid][1]), -len(top[pid][0]), pid)
+    )[:room]
+    return set(leaves) - set(kept)
 
 
 def _subtree_files(target_path: str, members: list[str], file_targets: list[str]) -> list[str]:
@@ -492,7 +630,9 @@ def assign_page_tree(
         for page in module_pages
     }
     head_at = _module_heads(module_pages, owned)
-    top: dict[str, tuple[list[str], str]] = {}
+    # Each module page's files and layer, then the same grouped by parent.
+    placed: dict[str, tuple[list[str], str]] = {}
+    siblings: dict[str | None, dict[str, tuple[list[str], str]]] = {}
 
     for page in module_pages:
         members = owned[page.page_id] or _borrowed_members(page, module_pages, owned)
@@ -507,10 +647,14 @@ def assign_page_tree(
         stamp_layer(page, module_layer)
         head = nearest_head(page.target_path, head_at)
         page.parent_page_id = head_at[head] if head else root_id
-        if page.parent_page_id == root_id:
-            top[page.page_id] = (members, module_layer)
+        placed[page.page_id] = (members, module_layer)
     by_id = {page.page_id: page for page in module_pages}
-    reader_rank = _reader_ranks(top, _chapter_balances(top, by_id, import_edges))
+    _lift_through_dominant_chapters(module_pages, placed, root_id)
+    for page in module_pages:
+        siblings.setdefault(page.parent_page_id, {})[page.page_id] = placed[page.page_id]
+    reader_rank = _sibling_ranks(
+        siblings, by_id, import_edges, by_type.get("flow_page", []), root_id
+    )
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a
@@ -552,12 +696,60 @@ def assign_page_tree(
     _number(pages, root_id, reader_rank)
 
 
+def _grouped_at_top(page: TreeNode | GeneratedPage, reader_rank: dict[str, tuple[int, ...]]) -> bool:
+    """Whether a top-level page is numbered inside a group rather than as a section."""
+    if page.page_type == "flow_page":
+        return True
+    rank = reader_rank.get(page.page_id, ())
+    return page.page_type == "module_page" and bool(rank) and rank[0] == _SUPPORTING_RANK
+
+
+def _takes_number(
+    page: TreeNode | GeneratedPage,
+    depth: int,
+    prefix: str,
+    reader_rank: dict[str, tuple[int, ...]],
+) -> bool:
+    """Whether *page* is numbered where it sits: an outline page, two levels
+    deep at most, under a numbered parent, and not one numbered in a group."""
+    if depth > _MAX_NUMBER_DEPTH or page.page_type not in _NUMBERED_TYPES:
+        return False
+    if is_project_activity(page):
+        return False
+    if depth == 1:
+        return not _grouped_at_top(page, reader_rank)
+    return bool(prefix)
+
+
+def _number_top_groups(
+    top: list[GeneratedPage] | list[TreeNode],
+    counter: int,
+    reader_rank: dict[str, tuple[int, ...]],
+) -> None:
+    """Number the supporting packages, then the walkthroughs: each a group
+    after the sections, its pages numbered inside it ("11.1", "12.1")."""
+    for kind in ("module_page", "flow_page"):
+        grouped = [p for p in top if p.page_type == kind and _grouped_at_top(p, reader_rank)]
+        if grouped:
+            counter += 1
+        for index, page in enumerate(grouped, start=1):
+            page.section_number = f"{counter}.{index}"
+
+
 def _number(
     pages: list[GeneratedPage] | list[TreeNode],
     root_id: str | None,
     reader_rank: dict[str, tuple[int, ...]],
 ) -> None:
-    """Assign sibling order and dotted section numbers by walking the tree."""
+    """Assign sibling order and dotted section numbers by walking the tree.
+
+    Every placed page gets a ``display_order``. Only the outline is numbered,
+    and only two levels deep: the reading path and the sections ("1", "4"),
+    the parts of a section ("4.2"), and the walkthroughs as one more section
+    after the last ("12.1", "12.2"), which is how a reader-facing tree groups
+    them. Reference pages (files, symbols, contracts, infra, cycles), project
+    activity and anything deeper carry no number.
+    """
     children: dict[str | None, list[GeneratedPage]] = {}
     for page in pages:
         children.setdefault(page.parent_page_id, []).append(page)
@@ -566,19 +758,29 @@ def _number(
 
     numbered: set[str] = set()
 
-    def walk(parent_id: str | None, prefix: str) -> None:
+    def walk(parent_id: str | None, prefix: str, depth: int) -> None:
+        counter = 0
         for index, page in enumerate(children.get(parent_id, []), start=1):
             page.display_order = index
-            page.section_number = f"{prefix}{index}" if prefix else str(index)
+            page.section_number = None
             numbered.add(page.page_id)
-            walk(page.page_id, f"{page.section_number}.")
+            if _takes_number(page, depth, prefix, reader_rank):
+                counter += 1
+                page.section_number = f"{prefix}{counter}"
+            walk(
+                page.page_id,
+                f"{page.section_number}." if page.section_number else "",
+                depth + 1,
+            )
+        if depth == 1:
+            _number_top_groups(children.get(parent_id, []), counter, reader_rank)
 
     if root_id is not None:
         root = next(p for p in pages if p.page_id == root_id)
         root.display_order = 0
         root.section_number = None
         numbered.add(root_id)
-        walk(root_id, "")
+        walk(root_id, "", 1)
 
     # Anything the walk did not reach: an incremental run holding pages whose
     # parent was not regenerated, or a page the tree has no place for. Number

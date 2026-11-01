@@ -1319,12 +1319,16 @@
       "noMatches": "没有匹配的页面",
       "showMore": "再显示 {next} 个（还剩 {remaining} 个）",
       "stubTitle": "由索引构建，模型尚未撰写此页面。",
-      "startHere": "从这里开始",
       "onboarding": "入门",
       "walkthroughs": "流程讲解（{count}）",
-      "otherModules": "其他模块（{count}）",
-      "codeReference": "代码参考",
-      "codeReferenceMeta": "{files} 个文件 · {symbols} 个符号{other, plural, =0 {} other { · 其他 # 个}}"
+      "supportingPackages": "辅助包（{count}）",
+      "codeReference": "参考",
+      "codeReferenceMeta": "{files} 个文件 · {symbols} 个符号{other, plural, =0 {} other { · 其他 # 个}}",
+      "referenceApi": "API",
+      "referenceFiles": "文件",
+      "referenceInfrastructure": "基础设施",
+      "referenceCycles": "依赖循环",
+      "projectActivity": "项目动态"
     },
     "reader": {
       "selectPageTitle": "选择一个页面",

@@ -3249,6 +3249,7 @@ export interface PageResponse {
   repository_id: string;
   page_type: string;
   title: string;
+  nav_title?: string | null;
   target_path: string;
   source_hash: string;
   model_name: string;

@@ -1319,12 +1319,16 @@
       "noMatches": "No matching pages",
       "showMore": "Show {next} more ({remaining} left)",
       "stubTitle": "Built from the index. A model has not written this page yet.",
-      "startHere": "Start here",
       "onboarding": "Onboarding",
       "walkthroughs": "Walkthroughs ({count})",
-      "otherModules": "Other modules ({count})",
-      "codeReference": "Code reference",
-      "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}"
+      "supportingPackages": "Supporting packages ({count})",
+      "codeReference": "Reference",
+      "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}",
+      "referenceApi": "API",
+      "referenceFiles": "Files",
+      "referenceInfrastructure": "Infrastructure",
+      "referenceCycles": "Dependency cycles",
+      "projectActivity": "Project activity"
     },
     "reader": {
       "selectPageTitle": "Select a page",

@@ -467,6 +467,53 @@ def _absorb_thin(groups: list[ConceptGroup], part: _Partitioner) -> list[Concept
     return working
 
 
+# At or below this many files a group is a table row, not a page.
+TINY_GROUP_FILES = 3
+
+
+def _fold_tiny_leaves(groups: list[ConceptGroup], part: _Partitioner) -> list[ConceptGroup]:
+    """Fold a group of a few files into the group holding its parent directory.
+
+    :func:`_absorb_thin` only merges path-order neighbours under the ceiling,
+    so a three-file directory between two full siblings keeps a page of its
+    own: a model call and a sidebar row for what its parent's page can say in
+    a sentence. Here it joins the group owning its nearest ancestor directory,
+    which may take that group a few files over the ceiling (the ceiling is a
+    size target; this is at most :data:`TINY_GROUP_FILES` files). A group with
+    no ancestor group, or one across a package root, stays: there is no parent
+    page for it to be part of.
+    """
+    working = list(groups)
+    tiny = [g for g in working if not g.packages and g.file_count <= TINY_GROUP_FILES]
+    for group in sorted(tiny, key=lambda g: g.structural_key):
+        home = _parent_group(group, working, part)
+        if home is None:
+            continue
+        working[working.index(home)] = part.make(home.members + group.members)
+        working.remove(group)
+    return working
+
+
+def _parent_group(
+    tiny: ConceptGroup, working: list[ConceptGroup], part: _Partitioner
+) -> ConceptGroup | None:
+    """The group owning the nearest directory above *tiny*'s, largest on a tie."""
+    home = _target_path(tiny.members, [])
+    best: ConceptGroup | None = None
+    best_rank = (-1, 0)
+    for other in working:
+        if other is tiny or other.packages:
+            continue
+        depth = max(
+            (d.count("/") + 1 for d in other.dirs if d and home.startswith(d + "/")),
+            default=-1,
+        )
+        rank = (depth, other.file_count)
+        if depth >= 0 and rank > best_rank and part.may_merge(other.members, tiny.members):
+            best, best_rank = other, rank
+    return best
+
+
 def _assign_targets(groups: list[ConceptGroup]) -> None:
     """Give every group a distinct ``target_path`` that is still a real directory.
 
@@ -582,7 +629,7 @@ def group_files(
         # The whole repository fits under the ceiling: one group, which is the
         # honest answer for a tiny repository.
         part.groups.append(part.make(leftover))
-    final = _absorb_thin(part.groups, part)
+    final = _fold_tiny_leaves(_absorb_thin(part.groups, part), part)
     _assign_targets(final)
     final.sort(key=lambda g: (g.target_path, g.structural_key))
     return final

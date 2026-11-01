@@ -184,6 +184,43 @@ async def test_list_pages_summary_keeps_the_chapter_flag(client: AsyncClient, ap
 
 
 @pytest.mark.asyncio
+async def test_list_pages_summary_carries_a_nav_title_for_outline_pages(
+    client: AsyncClient, app
+) -> None:
+    """A wiki written before the label rule reads "CLI", not "Cli Overview".
+
+    Derived from the stored title when the page is listed, so no page has to
+    be regenerated; the title itself, the page's heading, is untouched.
+    """
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        for page_id, page_type, title, target in (
+            ("module_page:packages/cli", "module_page", "Cli Overview", "packages/cli"),
+            ("file_page:packages/cli/main.py", "file_page", "File: main.py", "packages/cli/main.py"),
+        ):
+            await crud.upsert_page(
+                session,
+                page_id=page_id,
+                repository_id=repo_id,
+                page_type=page_type,
+                title=title,
+                content="body",
+                target_path=target,
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+            )
+
+    resp = await client.get("/api/pages", params={"repo_id": repo_id, "fields": "summary"})
+    by_id = {row["id"]: row for row in resp.json()}
+    assert by_id["module_page:packages/cli"]["nav_title"] == "CLI"
+    assert by_id["module_page:packages/cli"]["title"] == "Cli Overview"
+    # A reference page is named by its path, so it carries no label.
+    assert by_id["file_page:packages/cli/main.py"]["nav_title"] is None
+
+
+@pytest.mark.asyncio
 async def test_full_page_row_also_carries_the_chapter_flag(client: AsyncClient, app) -> None:
     """The two response models share ``_summary_fields``, so this cannot drift."""
     repo = await create_test_repo(client)
