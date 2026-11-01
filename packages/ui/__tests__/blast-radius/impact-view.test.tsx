@@ -392,3 +392,110 @@ describe("the PR bot line", () => {
     expect(screen.queryByRole("link", { name: "View" })).not.toBeInTheDocument();
   });
 });
+
+describe("drawing interactions", () => {
+  const CORE = "packages/s/src/core/x.py";
+  const analyze = () =>
+    vi.fn(async () => ({
+      ...RESULT,
+      transitive_affected: [
+        { path: "packages/s/src/a/1.py", depth: 1, via: CORE },
+        { path: "packages/s/src/b/1.py", depth: 1, via: CORE },
+        { path: "packages/s/src/c/1.py", depth: 2, via: "packages/s/src/a/1.py" },
+        ...Array.from({ length: 7 }, (_, i) => ({ path: `packages/s/src/z${i}/1.py`, depth: 2, via: "packages/s/src/b/1.py" })),
+      ],
+      affected_signals: [{ path: "packages/s/src/a/1.py", is_hotspot: false, health_score: 3, module: "packages/s" }],
+    }));
+  const block = (name: RegExp) => screen.getByRole("button", { name });
+
+  it("lights a hovered block's path and names it, and links list rows back to the drawing", async () => {
+    renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    const a = await screen.findByRole("button", { name: /^s\/a, 1 step away/ });
+    fireEvent.mouseEnter(a);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("s/a");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("1.py");
+    expect(block(/^s\/b, 1 step away/)).toHaveAttribute("opacity", "0.25");
+    expect(block(/^s\/c, 2 steps away/)).toHaveAttribute("opacity", "1");
+    fireEvent.mouseLeave(a);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    // Hovering a file in the list lights its block's path.
+    // The dependents list is last on the page; its rows carry the hover link.
+    fireEvent.mouseEnter(screen.getAllByText("1.py").at(-1)!.closest("li")!);
+    expect(document.querySelectorAll('g[role="button"][opacity="0.25"]').length).toBeGreaterThan(0);
+  });
+
+  it("is one tab stop with arrow keys, opens a folded step, and Escape clears", async () => {
+    renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    await screen.findByRole("button", { name: /^s\/a, 1 step away/ });
+    const tabbable = document.querySelectorAll('g[role="button"][tabindex="0"]');
+    expect(tabbable).toHaveLength(1);
+
+    const a = block(/^s\/a, 1 step away/);
+    a.focus();
+    fireEvent.keyDown(a, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(block(/^s\/b, 1 step away/));
+
+    fireEvent.click(block(/more folders.*Show every folder/));
+    // Focus follows to the new control, so the keyboard never drops to the page.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Show fewer folders in this step" }));
+    expect(block(/^s\/z6, 2 steps away/)).toBeInTheDocument();
+
+    expect(screen.getByText(/^Showing s\/a, 1 step away/)).toBeInTheDocument();
+    fireEvent.keyDown(block(/^s\/b, 1 step away/), { key: "Escape" });
+    expect(screen.queryByText(/^Showing/)).not.toBeInTheDocument();
+  });
+
+  it("filters the list to a band's files with a removable token", async () => {
+    renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    await screen.findByRole("button", { name: /^s\/a, 1 step away/ });
+    const band = [...document.querySelectorAll("svg path")].find((p) => p.querySelector("title")?.textContent?.startsWith("1 file reached"));
+    fireEvent.click(band!);
+    expect(screen.getByText(/^Showing reached through/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Clear the filter/ }));
+    expect(screen.queryByText(/^Showing/)).not.toBeInTheDocument();
+  });
+
+  it("on touch, the first tap only highlights and the second picks", async () => {
+    // jsdom has no PointerEvent; a MouseEvent that carries pointerType stands in.
+    class TouchPointer extends MouseEvent {
+      pointerType: string;
+      constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
+        super(type, init);
+        this.pointerType = init.pointerType ?? "mouse";
+      }
+    }
+    vi.stubGlobal("PointerEvent", TouchPointer);
+    renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    const b = await screen.findByRole("button", { name: /^s\/b, 1 step away/ });
+    fireEvent.pointerDown(b, { pointerType: "touch" });
+    fireEvent.click(b);
+    expect(b).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("s/b");
+    fireEvent.click(b);
+    expect(b).toHaveAttribute("aria-pressed", "true");
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("what the page counts", () => {
+  it("never calls a file new since the last index untested, says so once, and splits the no-test lists", async () => {
+    const analyze = vi.fn(async () => ({
+      ...RESULT,
+      transitive_affected: [{ path: "src/dep.py", depth: 1, via: "src/old.py" }],
+      test_gaps: ["src/new.py", "src/old.py", "src/dep.py"],
+      affected_signals: [
+        { path: "src/new.py", is_hotspot: null, health_score: null, module: null, indexed: false },
+        { path: "src/old.py", is_hotspot: false, health_score: 8, module: "src", indexed: true },
+        { path: "src/dep.py", is_hotspot: false, health_score: 8, module: "src", indexed: true },
+      ],
+      changed_owners: [{ email: "a@x.dev", name: "Ann", files: 1 }],
+    }));
+    renderView(<ImpactView adapter={makeAdapter({ analyze })} initialFiles={["src/new.py", "src/old.py"]} />);
+    expect(await screen.findByText(/1 changed file is new since the last index/)).toBeInTheDocument();
+    expect(screen.getByText(/That is 1 of the 2 changed files; the rest have no owner on record/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Changed files with no test/ })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: /Dependent files with no test/ })).toHaveTextContent("1");
+    expect(screen.getByText("1 changed file with no test found.")).toBeInTheDocument();
+  });
+});

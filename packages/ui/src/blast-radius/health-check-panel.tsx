@@ -115,8 +115,9 @@ function Result({ result, fileHref }: { result: ChangeHealthCheckResponse; fileH
   );
 }
 
+/** A secondary action: outlined, the height of Copy review prompt, never filled. */
 const ACTION =
-  "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-60 max-sm:h-10";
+  "inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--color-border-hover)] bg-transparent px-2.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-60 max-sm:h-10";
 
 /**
  * The quiet action beside Copy review prompt that runs the health check: the
@@ -124,17 +125,26 @@ const ACTION =
  */
 export function HealthCheckButton({ state, onRun }: { state: HealthCheckState | undefined; onRun: () => void }) {
   const running = state?.status === "running";
+  const verdict = state?.status === "done" ? VERDICT[state.result.gate.verdict] : null;
   return (
-    <button
-      type="button"
-      onClick={onRun}
-      disabled={running}
-      className={ACTION}
-      title="Compares code health before and after this change, plus added suppressions, weakened tests and test-only branches, the way repowise health check does in CI."
-    >
-      {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
-      {running ? "Checking..." : state?.status === "done" ? "Run health check again" : "Run health check"}
-    </button>
+    <span className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onRun}
+        disabled={running}
+        className={ACTION}
+        title="Compares code health before and after this change, plus added suppressions, weakened tests and test-only branches, the way repowise health check does in CI."
+      >
+        {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
+        {running ? "Checking..." : verdict ? "Run again" : "Run health check"}
+      </button>
+      {verdict && (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: verdict.color }}>
+          <span className="h-2 w-2 rounded-full" style={{ background: verdict.color }} aria-hidden />
+          Health check: {verdict.word}
+        </span>
+      )}
+    </span>
   );
 }
 

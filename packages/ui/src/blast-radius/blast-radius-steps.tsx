@@ -1,24 +1,47 @@
 "use client";
 
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { STEP_LAYOUT, stepWords, type StepBand, type StepBlock, type StepMap } from "./blast-step-model";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import {
+  STEP_LAYOUT,
+  neighborBlock,
+  pathThrough,
+  stepWords,
+  type StepBand,
+  type StepBlock,
+  type StepDirection,
+  type StepMap,
+  type StepPath,
+} from "./blast-step-model";
 
-const CHANGED = "var(--color-accent-primary)";
+// The change in plum, the product's second accent: orange reads as an alert next to red.
+const CHANGED = "var(--color-accent-secondary)";
 const REACHED = "var(--color-node-neutral)";
 const POOR = "var(--color-error)";
 const BAND_REACHED = "var(--color-text-tertiary)";
+/** What is off the highlighted path fades to this. */
+const DIM = 0.25;
+const FADE = "transition-opacity duration-150 motion-reduce:transition-none";
 
 /** Characters a label fits in one column at 11.5px; the drawing never scales, so this holds. */
 const LABEL_CHARS = 31;
+
+const ARROWS: Record<string, StepDirection> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+};
 
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text;
 }
 
 function blockSummary(b: StepBlock): string {
+  if (b.less) return "Show fewer folders in this step";
   const where = b.column === 0 ? "changed" : `${stepWords(b.column)} away`;
   const poor = b.poor ? `, ${b.poor.toLocaleString()} with poor health` : "";
-  return `${b.label}, ${where}: ${b.files.toLocaleString()} ${b.files === 1 ? "file" : "files"}${poor}`;
+  const what = `${b.label}, ${where}: ${b.files.toLocaleString()} ${b.files === 1 ? "file" : "files"}${poor}`;
+  return b.other ? `${what}. Show every folder in this step` : `${what}. Show these files in the list`;
 }
 
 function bandPath(b: StepBand): string {
@@ -32,27 +55,140 @@ function bandPath(b: StepBand): string {
   ].join(" ");
 }
 
-function Block({ b, selected, onSelect }: { b: StepBlock; selected: boolean; onSelect: () => void }) {
+/**
+ * Hover, focus and touch for blocks and rows: a mouse highlights on hover; on
+ * touch the first tap highlights and the second picks. Keyboard focus
+ * highlights, arrows move, Enter or Space picks, Escape clears.
+ */
+function useStepInteraction(map: StepMap, onActivate: (b: StepBlock) => void, onClear: () => void) {
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const pointer = useRef<string>("mouse");
+  // Decided on pointer down, before focus moves: a first tap on touch only highlights.
+  const firstTap = useRef(false);
+  // After a step opens or folds, focus lands on its new control instead of the page.
+  const pendingFocus = useRef<string | null>(null);
+  const refs = useRef(new Map<string, HTMLElement | SVGGElement>());
+
+  useEffect(() => {
+    // A rebuilt map can drop the hovered block (a step folded); its highlight goes with it.
+    if (hoverKey && !map.blocks.some((b) => b.key === hoverKey)) setHoverKey(null);
+    const target = pendingFocus.current;
+    if (target) {
+      pendingFocus.current = null;
+      refs.current.get(target)?.focus();
+    }
+  }, [map, hoverKey]);
+
+  const activate = (b: StepBlock) => {
+    if (b.other) pendingFocus.current = `${b.column}:less`;
+    if (b.less) pendingFocus.current = `${b.column}:other`;
+    onActivate(b);
+  };
+
+  const tabKey =
+    (activeKey && map.blocks.some((b) => b.key === activeKey) && activeKey) || map.blocks[0]?.key || null;
+
+  const props = (b: StepBlock) => ({
+    ref: (el: HTMLElement | SVGGElement | null) => {
+      if (el) refs.current.set(b.key, el);
+      else refs.current.delete(b.key);
+    },
+    tabIndex: b.key === tabKey ? 0 : -1,
+    onPointerDown: (e: { pointerType: string }) => {
+      pointer.current = e.pointerType;
+      firstTap.current = e.pointerType === "touch" && hoverKey !== b.key && !b.less && !b.other;
+    },
+    onPointerMove: (e: { pointerType: string }) => {
+      pointer.current = e.pointerType;
+    },
+    onMouseEnter: () => {
+      if (pointer.current !== "touch") setHoverKey(b.key);
+    },
+    onMouseLeave: () => {
+      if (pointer.current !== "touch") setHoverKey(null);
+    },
+    onFocus: () => {
+      setActiveKey(b.key);
+      if (pointer.current !== "touch") setHoverKey(b.key);
+    },
+    onBlur: () => {
+      // The mouse may still be over it; only a keyboard or touch highlight ends on blur.
+      if (pointer.current !== "mouse") setHoverKey(null);
+    },
+    onClick: () => {
+      // On touch the first tap shows the path and the tooltip; the second picks.
+      if (firstTap.current) {
+        firstTap.current = false;
+        setHoverKey(b.key);
+        return;
+      }
+      activate(b);
+    },
+    onKeyDown: (e: KeyboardEvent) => {
+      const dir = ARROWS[e.key];
+      if (dir) {
+        e.preventDefault();
+        const next = neighborBlock(map, b.key, dir);
+        if (next) refs.current.get(next.key)?.focus();
+        return;
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        activate(b);
+      } else if (e.key === "Escape") {
+        setHoverKey(null);
+        onClear();
+      }
+    },
+  });
+  return { hoverKey, props };
+}
+
+function Block({
+  b,
+  selected,
+  dimmed,
+  bind,
+}: {
+  b: StepBlock;
+  selected: boolean;
+  dimmed: boolean;
+  bind: ReturnType<ReturnType<typeof useStepInteraction>["props"]>;
+}) {
   const L = STEP_LAYOUT;
+  const labelY = b.y + Math.min(b.height / 2, L.minBlock / 2) + 4;
+  const { ref, ...handlers } = bind;
+  if (b.less) {
+    return (
+      <g
+        ref={ref}
+        role="button"
+        aria-label={blockSummary(b)}
+        className={`cursor-pointer focus:outline-none ${FADE}`}
+        opacity={dimmed ? DIM : 1}
+        {...handlers}
+      >
+        <rect x={b.x - 4} y={b.y - 2} width={L.colPitch - 8} height={b.height + 4} fill="transparent" />
+        <text x={b.x} y={labelY} style={{ fontSize: 11.5 }} className="fill-[var(--color-text-tertiary)] underline">
+          {b.label}
+        </text>
+      </g>
+    );
+  }
   const poorHeight = b.files ? (b.height * b.poor) / b.files : 0;
   const suffix = `${b.files.toLocaleString()}${b.poor ? ` · ${b.poor.toLocaleString()} poor` : ""}`;
   const name = clip(b.label, LABEL_CHARS - suffix.length - 1);
-  const labelY = b.y + Math.min(b.height / 2, L.minBlock / 2) + 4;
   return (
     <g
+      ref={ref}
       role="button"
-      tabIndex={0}
-      aria-pressed={selected}
-      aria-label={`${blockSummary(b)}. Show these files in the list`}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        e.preventDefault();
-        onSelect();
-      }}
-      className="group cursor-pointer focus:outline-none"
+      aria-pressed={b.other ? undefined : selected}
+      aria-label={blockSummary(b)}
+      className={`group cursor-pointer focus:outline-none ${FADE}`}
+      opacity={dimmed ? DIM : 1}
+      {...handlers}
     >
-      <title>{blockSummary(b)}</title>
       {/* The hit area covers the label too, so the whole row is the target. */}
       <rect x={b.x - 4} y={b.y - 2} width={L.colPitch - 8} height={b.height + 4} fill="transparent" />
       <rect
@@ -62,9 +198,13 @@ function Block({ b, selected, onSelect }: { b: StepBlock; selected: boolean; onS
         height={b.height + 6}
         rx={4}
         fill="none"
-        stroke={selected ? "var(--color-text-primary)" : "var(--color-focus-ring)"}
-        strokeWidth={selected ? 1.25 : 2}
-        className={selected ? "opacity-100 group-focus-visible:[stroke:var(--color-focus-ring)] group-focus-visible:[stroke-width:2]" : "opacity-0 group-hover:opacity-40 group-focus-visible:opacity-100"}
+        stroke={CHANGED}
+        strokeWidth={selected ? 1.5 : 2}
+        className={
+          selected
+            ? "opacity-100 group-focus-visible:[stroke-width:2]"
+            : "opacity-0 group-hover:opacity-40 group-focus-visible:opacity-100"
+        }
       />
       <rect x={b.x} y={b.y} width={L.blockWidth} height={b.height} rx={2} fill={b.column === 0 ? CHANGED : REACHED} />
       {poorHeight > 0 && (
@@ -91,6 +231,36 @@ function Block({ b, selected, onSelect }: { b: StepBlock; selected: boolean; onS
   );
 }
 
+/** A block named on hover or focus: its folder, its count at this step, its poor health and three files. */
+function Tooltip({ b, map }: { b: StepBlock; map: StepMap }) {
+  if (b.less) return null;
+  const L = STEP_LAYOUT;
+  const left = Math.min(b.x + L.blockWidth + L.labelGap, map.width - 232);
+  const top = b.y + Math.max(b.height, L.minBlock) + 6;
+  return (
+    <div
+      role="tooltip"
+      className="pointer-events-none absolute z-10 w-56 space-y-1 rounded-md border border-[var(--color-border-hover)] bg-[var(--color-bg-root)] px-2.5 py-2 text-xs"
+      style={{ left, top }}
+    >
+      <p className="font-medium text-[var(--color-text-primary)]">{b.label}</p>
+      <p className="tabular-nums text-[var(--color-text-secondary)]">
+        {b.files.toLocaleString()} {b.files === 1 ? "file" : "files"} {b.column === 0 ? "changed" : `${stepWords(b.column)} away`}
+        {b.poor > 0 && <span className="text-[var(--color-error)]"> · {b.poor.toLocaleString()} poor health</span>}
+      </p>
+      {b.top.length > 0 && (
+        <ul className="space-y-0.5 font-mono text-[11px] text-[var(--color-text-tertiary)]">
+          {b.top.map((name) => (
+            <li key={name} className="truncate">
+              {name}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function Legend() {
   const swatch = "inline-block h-2 w-2 rounded-[2px]";
   return (
@@ -108,6 +278,15 @@ function Legend() {
   );
 }
 
+function notDrawn(map: StepMap): string {
+  const parts: string[] = [];
+  if (map.testsNotDrawn)
+    parts.push(`${map.testsNotDrawn.toLocaleString()} test ${map.testsNotDrawn === 1 ? "file" : "files"} that import the change`);
+  if (map.changedTestsNotDrawn)
+    parts.push(`${map.changedTestsNotDrawn.toLocaleString()} changed test ${map.changedTestsNotDrawn === 1 ? "file" : "files"}`);
+  return parts.join(" and ");
+}
+
 /** The container's width once measured; `null` before (and where ResizeObserver is missing). */
 function useWidth<T extends HTMLElement>(): [RefObject<T | null>, number | null] {
   const ref = useRef<T>(null);
@@ -122,13 +301,23 @@ function useWidth<T extends HTMLElement>(): [RefObject<T | null>, number | null]
   return [ref, width];
 }
 
+interface ViewProps {
+  map: StepMap;
+  selectedKey: string | null;
+  selectedBand: string | null;
+  path: StepPath | null;
+  hoverBlock: StepBlock | undefined;
+  bind: ReturnType<typeof useStepInteraction>["props"];
+  onSelectBand: (band: StepBand) => void;
+}
+
 /**
  * The same steps stacked top to bottom, for a box too narrow for the
  * drawing: each step a heading, each folder a row with a bar sized by its
- * files and the poor-health share in red. Bands are left out; the order
- * still reads changed, then 1, 2 and 3 steps away.
+ * files and the poor-health share in red. Bands are left out; the highlight
+ * dims the rows off the hovered row's path.
  */
-function StepStack({ map, selectedKey, onSelect }: { map: StepMap; selectedKey: string | null; onSelect: (b: StepBlock) => void }) {
+function StepStack({ map, selectedKey, path, bind }: ViewProps) {
   const most = Math.max(1, ...map.blocks.map((b) => b.files));
   return (
     <div className="space-y-4">
@@ -144,32 +333,40 @@ function StepStack({ map, selectedKey, onSelect }: { map: StepMap; selectedKey: 
               {blocks.map((b) => {
                 const selected = b.key === selectedKey;
                 const width = Math.max(4, (b.files / most) * 100);
+                const { ref, ...handlers } = bind(b);
                 return (
                   <li key={b.key}>
                     <button
+                      ref={ref as (el: HTMLButtonElement | null) => void}
                       type="button"
-                      aria-pressed={selected}
-                      aria-label={`${blockSummary(b)}. Show these files in the list`}
-                      onClick={() => onSelect(b)}
-                      className={`flex min-h-10 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
+                      aria-pressed={b.other || b.less ? undefined : selected}
+                      aria-label={blockSummary(b)}
+                      {...handlers}
+                      className={`flex min-h-10 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${FADE} ${
                         selected ? "bg-[var(--color-bg-selected)]" : "hover:bg-[var(--color-bg-elevated)]"
-                      }`}
+                      } ${path && !path.blocks.has(b.key) ? "opacity-25" : ""}`}
                     >
-                      <span className="flex h-2 w-16 shrink-0 overflow-hidden rounded-[2px]" aria-hidden>
-                        <span className="flex h-full" style={{ width: `${width}%` }}>
-                          <span className="h-full" style={{ flex: b.files - b.poor, background: ci === 0 ? CHANGED : REACHED }} />
-                          <span className="h-full" style={{ flex: b.poor, background: POOR }} />
-                        </span>
-                      </span>
-                      <span
-                        className={`min-w-0 flex-1 truncate ${b.other ? "text-[var(--color-text-tertiary)]" : "text-[var(--color-text-primary)]"} ${selected ? "font-medium" : ""}`}
-                      >
-                        {b.label}
-                      </span>
-                      <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
-                        {b.files.toLocaleString()}
-                        {b.poor > 0 && <span className="text-[var(--color-error)]"> · {b.poor.toLocaleString()} poor</span>}
-                      </span>
+                      {b.less ? (
+                        <span className="text-[var(--color-text-tertiary)] underline">{b.label}</span>
+                      ) : (
+                        <>
+                          <span className="flex h-2 w-16 shrink-0 overflow-hidden rounded-[2px]" aria-hidden>
+                            <span className="flex h-full" style={{ width: `${width}%` }}>
+                              <span className="h-full" style={{ flex: b.files - b.poor, background: ci === 0 ? CHANGED : REACHED }} />
+                              <span className="h-full" style={{ flex: b.poor, background: POOR }} />
+                            </span>
+                          </span>
+                          <span
+                            className={`min-w-0 flex-1 truncate ${b.other ? "text-[var(--color-text-tertiary)]" : "text-[var(--color-text-primary)]"} ${selected ? "font-medium" : ""}`}
+                          >
+                            {b.label}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
+                            {b.files.toLocaleString()}
+                            {b.poor > 0 && <span className="text-[var(--color-error)]"> · {b.poor.toLocaleString()} poor</span>}
+                          </span>
+                        </>
+                      )}
                     </button>
                   </li>
                 );
@@ -182,74 +379,118 @@ function StepStack({ map, selectedKey, onSelect }: { map: StepMap; selectedKey: 
   );
 }
 
+function StepDrawing({ map, selectedKey, selectedBand, path, hoverBlock, bind, onSelectBand }: ViewProps) {
+  const selected = map.blocks.find((b) => b.key === selectedKey);
+  const reached = map.columns.slice(1).reduce((n, c) => n + c.files, 0);
+  return (
+    <div className="relative">
+      <svg
+        width={map.width}
+        height={map.height}
+        viewBox={`0 0 ${map.width} ${map.height}`}
+        className="block max-w-full"
+        role="group"
+        aria-label={`What depends on the change, by step: ${map.columns[0]!.files.toLocaleString()} changed source files reach ${reached.toLocaleString()} source files. Arrow keys move between folders; Enter shows a folder's files; Escape clears.`}
+      >
+        {map.columns.map((c) => (
+          <text key={c.title} x={c.x} y={14} style={{ fontSize: 12 }} className="fill-[var(--color-text-secondary)]">
+            {c.title}
+            <tspan dx={6} className="fill-[var(--color-text-tertiary)] tabular-nums">
+              {c.files.toLocaleString()}
+            </tspan>
+          </text>
+        ))}
+        <g>
+          {map.bands.map((b) => {
+            const onPath = path ? path.bands.has(b.key) : false;
+            const lit = b.key === selectedBand || onPath || (!path && selected && (b.from === selected.key || b.to === selected.key));
+            return (
+              <path
+                key={b.key}
+                d={bandPath(b)}
+                fill={b.fromChanged ? CHANGED : BAND_REACHED}
+                fillOpacity={lit ? 0.34 : 0.14}
+                opacity={path && !onPath ? DIM : 1}
+                onClick={() => onSelectBand(b)}
+                className={`cursor-pointer ${FADE}`}
+              >
+                <title>{`${b.files.toLocaleString()} ${b.files === 1 ? "file" : "files"} reached through this link. Show them in the list`}</title>
+              </path>
+            );
+          })}
+        </g>
+        {map.blocks.map((b) => (
+          <Block
+            key={b.key}
+            b={b}
+            selected={b.key === selectedKey}
+            dimmed={Boolean(path && !path.blocks.has(b.key))}
+            bind={bind(b)}
+          />
+        ))}
+      </svg>
+      {hoverBlock && <Tooltip b={hoverBlock} map={map} />}
+    </div>
+  );
+}
+
 /**
  * The blast radius as steps, left to right: changed folders, then the
  * folders one, two and three imports away. A block's height is its file
  * count and its red share the files with poor health; bands show which
- * folder reaches which. Picking a block narrows the file list to it.
+ * folder reaches which.
  *
- * Drawn at a fixed size so labels stay legible. A box narrower than the
- * drawing gets the same steps stacked top to bottom instead, so the page
- * never scrolls sideways.
+ * Hovering or focusing a block lights its whole path through the bands and
+ * names it; picking a block or a band narrows the file list to it; picking
+ * "N more folders" opens that step in place. The drawing is one tab stop,
+ * with arrow keys between folders. A box narrower than the drawing gets the
+ * same steps stacked top to bottom, so the page never scrolls sideways.
  */
 export function BlastRadiusSteps({
   map,
   selectedKey,
+  selectedBand = null,
+  highlightKey = null,
   onSelect,
+  onSelectBand = () => {},
+  onToggleColumn = () => {},
+  onClear = () => {},
 }: {
   map: StepMap;
   selectedKey: string | null;
+  /** A picked band's key, lit while it filters the list. */
+  selectedBand?: string | null;
+  /** A block to light from outside, e.g. the list row under the pointer. */
+  highlightKey?: string | null;
   onSelect: (block: StepBlock) => void;
+  onSelectBand?: (band: StepBand) => void;
+  /** Open or fold a step's "N more folders". */
+  onToggleColumn?: (column: number) => void;
+  /** Escape: drop the selection. */
+  onClear?: () => void;
 }) {
   const [box, width] = useWidth<HTMLDivElement>();
-  const selected = map.blocks.find((b) => b.key === selectedKey);
-  const reached = map.columns.slice(1).reduce((n, c) => n + c.files, 0);
+  const { hoverKey, props } = useStepInteraction(
+    map,
+    (b) => (b.other || b.less ? onToggleColumn(b.column) : onSelect(b)),
+    onClear,
+  );
+  const emphasis = hoverKey ?? highlightKey;
+  const path = useMemo(
+    () => (emphasis && map.blocks.some((b) => b.key === emphasis) ? pathThrough(map, emphasis) : null),
+    [map, emphasis],
+  );
+  const hoverBlock = hoverKey ? map.blocks.find((b) => b.key === hoverKey) : undefined;
   const tests = map.testsNotDrawn + map.changedTestsNotDrawn;
   const stacked = width !== null && width < map.width;
+  const view: ViewProps = { map, selectedKey, selectedBand, path, hoverBlock, bind: props, onSelectBand };
   return (
     <div ref={box} className="min-w-0 space-y-3">
       <Legend />
-      {stacked ? (
-        <StepStack map={map} selectedKey={selectedKey} onSelect={onSelect} />
-      ) : (
-        <svg
-          width={map.width}
-          height={map.height}
-          viewBox={`0 0 ${map.width} ${map.height}`}
-          className="block max-w-full"
-          role="group"
-          aria-label={`What depends on the change, by step: ${map.columns[0]!.files.toLocaleString()} changed source files reach ${reached.toLocaleString()} source files`}
-        >
-          {map.columns.map((c) => (
-            <text key={c.title} x={c.x} y={14} style={{ fontSize: 12 }} className="fill-[var(--color-text-secondary)]">
-              {c.title}
-              <tspan dx={6} className="fill-[var(--color-text-tertiary)] tabular-nums">
-                {c.files.toLocaleString()}
-              </tspan>
-            </text>
-          ))}
-          <g aria-hidden>
-            {map.bands.map((b) => {
-              const lit = selected && (b.from === selected.key || b.to === selected.key);
-              return (
-                <path
-                  key={b.key}
-                  d={bandPath(b)}
-                  fill={b.fromChanged ? CHANGED : BAND_REACHED}
-                  fillOpacity={lit ? 0.32 : selected ? 0.08 : 0.14}
-                />
-              );
-            })}
-          </g>
-          {map.blocks.map((b) => (
-            <Block key={b.key} b={b} selected={b.key === selectedKey} onSelect={() => onSelect(b)} />
-          ))}
-        </svg>
-      )}
+      {stacked ? <StepStack {...view} /> : <StepDrawing {...view} />}
       {tests > 0 && (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          {tests.toLocaleString()} test {tests === 1 ? "file is" : "files are"} not drawn: a test that imports the change is
-          a test to run, not reach.
+          Not drawn: {notDrawn(map)}. A test is a test to run, not reach.
         </p>
       )}
     </div>

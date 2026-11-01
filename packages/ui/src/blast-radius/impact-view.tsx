@@ -36,7 +36,14 @@ import { BlastRadiusSteps } from "./blast-radius-steps";
 import { BlastRadiusVerdict } from "./blast-radius-verdict";
 import { AffectedByModule, ChangedFilesList, type DependentsFocus } from "./affected-files";
 import { readReach, type Reach } from "./blast-map-model";
-import { blockFocusPaths, buildStepMap, defaultStepBlock, stepWords, type StepBlock } from "./blast-step-model";
+import {
+  blockFocusPaths,
+  buildStepMap,
+  defaultStepBlock,
+  stepWords,
+  type StepBand,
+  type StepBlock,
+} from "./blast-step-model";
 import { ChangePicker, changeName } from "./change-picker";
 import { HealthCheckButton, HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
 import { count } from "./review-status";
@@ -238,6 +245,12 @@ function stepFocus(block: StepBlock, reach: Reach): DependentsFocus {
   return { label, paths: blockFocusPaths(block, reach) };
 }
 
+/** A picked band narrows the list to the files it pulls in. */
+function bandFocus(band: StepBand, map: { blocks: StepBlock[] }): DependentsFocus {
+  const name = (key: string) => map.blocks.find((b) => b.key === key)?.label ?? key;
+  return { label: `reached through ${name(band.from)} to ${name(band.to)}`, paths: new Set(band.paths) };
+}
+
 function ReviewBody({
   analysis,
   change,
@@ -255,16 +268,44 @@ function ReviewBody({
 }) {
   const { result, changedFiles, changedTotal } = analysis;
   const reach = useMemo(() => readReach(result, changedFiles), [result, changedFiles]);
-  const steps = useMemo(() => buildStepMap(reach), [reach]);
+  // Steps whose "N more folders" the reader opened.
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
+  const steps = useMemo(() => buildStepMap(reach, expanded), [reach, expanded]);
+  const toggleColumn = (column: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(column)) next.delete(column);
+      else next.add(column);
+      return next;
+    });
+  // A picked band narrows the list to the files it pulls in; it replaces a picked block.
+  const [bandKey, setBandKey] = useState<string | null>(null);
+  const band = bandKey ? steps.bands.find((b) => b.key === bandKey) : undefined;
+  // A band gone from the rebuilt map stays gone, rather than relighting if the map flips back.
+  useEffect(() => {
+    if (bandKey && !band) setBandKey(null);
+  }, [bandKey, band]);
+  // The list row under the pointer lights its block in the drawing.
+  const [hoverPath, setHoverPath] = useState<string | null>(null);
+  const blockByPath = useMemo(() => {
+    const byPath = new Map<string, string>();
+    for (const b of steps.blocks) for (const p of b.paths) byPath.set(p, b.key);
+    return byPath;
+  }, [steps]);
+  const highlightKey = hoverPath ? (blockByPath.get(hoverPath) ?? null) : null;
   // Opens on the step-1 folder with the most poor-health files; picking it again shows every file.
   const [pickedKey, setSelectedKey] = useState<string | null>(() => defaultStepBlock(steps)?.key ?? null);
-  // A new depth can drop the picked block; the default for the new layout stands in.
-  const selected =
-    pickedKey === null
-      ? undefined
-      : (steps.blocks.find((b) => b.key === pickedKey) ?? defaultStepBlock(steps));
+  // A new depth or a folded step can drop the picked block; the list then shows every file.
+  const selected = pickedKey === null ? undefined : steps.blocks.find((b) => b.key === pickedKey);
   const selectedKey = selected?.key ?? null;
-  const focus = useMemo(() => (selected ? stepFocus(selected, reach) : undefined), [selected, reach]);
+  const focus = useMemo(
+    () => (band ? bandFocus(band, steps) : selected ? stepFocus(selected, reach) : undefined),
+    [band, steps, selected, reach],
+  );
+  const clear = () => {
+    setSelectedKey(null);
+    setBandKey(null);
+  };
   const [filter, setFilter] = useState("");
   return (
     <>
@@ -283,8 +324,16 @@ function ReviewBody({
         {reach.files.length > 0 ? (
           <BlastRadiusSteps
             map={steps}
-            selectedKey={selectedKey}
-            onSelect={(b: StepBlock) => setSelectedKey(selectedKey === b.key ? null : b.key)}
+            selectedKey={band ? null : selectedKey}
+            selectedBand={band?.key ?? null}
+            highlightKey={highlightKey}
+            onSelect={(b: StepBlock) => {
+              setBandKey(null);
+              setSelectedKey(!band && selectedKey === b.key ? null : b.key);
+            }}
+            onSelectBand={(b: StepBand) => setBandKey(bandKey === b.key ? null : b.key)}
+            onToggleColumn={toggleColumn}
+            onClear={clear}
           />
         ) : (
           <NoReach depth={maxDepth} tests={reach.tests.length} />
@@ -298,7 +347,8 @@ function ReviewBody({
             query={filter}
             onQueryChange={setFilter}
             focus={focus}
-            onClearFocus={() => setSelectedKey(null)}
+            onClearFocus={clear}
+            onHoverPath={setHoverPath}
           />
           {reach.tests.length > 0 && (
             <p className="text-xs text-[var(--color-text-tertiary)]">

@@ -234,3 +234,65 @@ describe("blockFocusPaths", () => {
     expect([...blockFocusPaths(b, reach)]).toEqual(["packages/s/src/b/1.py"]);
   });
 });
+
+describe("interaction model", () => {
+  const chain = () =>
+    readReach(
+      result([
+        { path: "packages/s/src/a/1.py", depth: 1, via: CORE },
+        { path: "packages/s/src/b/1.py", depth: 1, via: CORE },
+        { path: "packages/s/src/c/1.py", depth: 2, via: "packages/s/src/a/1.py" },
+        { path: "packages/s/src/d/1.py", depth: 3, via: "packages/s/src/c/1.py" },
+      ]),
+      [CORE],
+    );
+
+  it("lights a block's whole path, upstream to the change and downstream to the last step", async () => {
+    const { pathThrough } = await import("./blast-step-model");
+    const map = buildStepMap(chain());
+    const path = pathThrough(map, "2:s/c");
+    expect([...path.blocks].sort()).toEqual(["0:core/persistence", "1:s/a", "2:s/c", "3:s/d"]);
+    expect(path.blocks.has("1:s/b")).toBe(false);
+    expect(path.bands.size).toBe(3);
+  });
+
+  it("keeps the files each band pulls in, and finds a file's block", async () => {
+    const { blockOfPath } = await import("./blast-step-model");
+    const map = buildStepMap(chain());
+    expect(map.bands.find((b) => b.key === "1:s/a>2:s/c")?.paths).toEqual(["packages/s/src/c/1.py"]);
+    expect(blockOfPath(map, "packages/s/src/d/1.py")?.key).toBe("3:s/d");
+  });
+
+  it("moves with arrow keys within a step and to the nearest block across steps", async () => {
+    const { neighborBlock } = await import("./blast-step-model");
+    const map = buildStepMap(chain());
+    expect(neighborBlock(map, "1:s/a", "down")?.key).toBe("1:s/b");
+    expect(neighborBlock(map, "1:s/b", "down")).toBeUndefined();
+    expect(neighborBlock(map, "1:s/a", "right")?.key).toBe("2:s/c");
+    expect(neighborBlock(map, "1:s/b", "left")?.key).toBe("0:core/persistence");
+  });
+
+  it("opens a folded step in place, with a control to fold it again", () => {
+    const transitive = Array.from({ length: TOP_FOLDERS + 2 }, (_, i) => ({ path: `packages/p/src/f${i}/m.py`, depth: 1, via: CORE }));
+    const reach = readReach(result(transitive), [CORE]);
+    const folded = buildStepMap(reach).blocks.filter((b) => b.column === 1);
+    expect(folded.at(-1)?.other).toBe(true);
+    const open = buildStepMap(reach, new Set([1]));
+    const step1 = open.blocks.filter((b) => b.column === 1);
+    expect(step1.filter((b) => !b.less)).toHaveLength(TOP_FOLDERS + 2);
+    expect(step1.at(-1)?.less).toBe(true);
+    expect(open.columns[1]?.expanded).toBe(true);
+    expect(defaultStepBlock(open)?.less).toBe(false);
+  });
+
+  it("names a block by three files, poor health first", () => {
+    const reach = readReach(
+      result(
+        ["z", "b", "a", "c"].map((n) => ({ path: `packages/s/src/x/${n}.py`, depth: 1, via: CORE })),
+        [sig("packages/s/src/x/z.py", 2)],
+      ),
+      [CORE],
+    );
+    expect(buildStepMap(reach).blocks.find((b) => b.key === "1:s/x")?.top).toEqual(["z.py", "a.py", "b.py"]);
+  });
+});

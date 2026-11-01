@@ -22,6 +22,8 @@ export interface FileMarks {
   untested: boolean;
   /** The file is itself a test (only ever set for changed files; reach keeps tests apart). */
   isTest?: boolean;
+  /** New since the last index run: no graph, health or owner yet, so none is claimed. */
+  notIndexed?: boolean;
 }
 
 /** A file the change reaches: how many imports away, through which file, in which module. */
@@ -79,6 +81,7 @@ export function describeMarks(m: FileMarks): string[] {
   else words.push("Health not scored");
   if (m.isHotspot) words.push("Changed often");
   if (m.untested) words.push("No test found");
+  if (m.notIndexed) words.push("New since the last index: health, owners and importers not known yet");
   return words;
 }
 
@@ -102,8 +105,10 @@ function marksReader(result: Result): (path: string) => FileMarks {
       isHotspot: s ? s.is_hotspot : (hotspotFallback.get(path) ?? null),
       // A test is what tests the code, and a package's `__init__.py` is
       // tested through the modules it gathers: neither needs a test of its own.
-      untested: gaps.has(path) && !isTestFile(path, s) && !PACKAGE_INIT.test(path),
+      // A file the index does not have yet has no test evidence either way.
+      untested: gaps.has(path) && !isTestFile(path, s) && !PACKAGE_INIT.test(path) && s?.indexed !== false,
       isTest: isTestFile(path, s),
+      notIndexed: s?.indexed === false,
     };
   };
 }

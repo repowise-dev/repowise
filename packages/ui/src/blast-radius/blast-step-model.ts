@@ -64,19 +64,24 @@ export function stepFolderOf(path: string): string {
 const CONTAINERS = new Set(["packages", "apps", "libs", "services", "crates", "modules", "plugins"]);
 
 export interface StepBlock {
-  /** Stable id: `${column}:${folder}`, or `${column}:other`. */
+  /** Stable id: `${column}:${folder}`, `${column}:other` or `${column}:less`. */
   key: string;
   column: number;
-  /** The folder, or "N more folders" for the folded block. */
+  /** The folder, "N more folders" for the folded block, or "Show fewer folders". */
   label: string;
   /** The folders this block stands for: one, or every folded one. */
   folders: string[];
+  /** The folded "N more folders" block: picking it opens the column. */
   other: boolean;
+  /** The "Show fewer folders" control at the foot of an opened column. */
+  less: boolean;
   files: number;
   /** Files with weak health (Needs work or At risk). */
   poor: number;
   /** Paths in this block, so a selection can narrow the file list. */
   paths: string[];
+  /** Up to three file names to name it by: poor health first, then by name. */
+  top: string[];
   x: number;
   y: number;
   height: number;
@@ -89,6 +94,8 @@ export interface StepBand {
   files: number;
   /** Leaves the changed column: drawn in the change's colour. */
   fromChanged: boolean;
+  /** The files this link pulls in: reached at the right end through a file at the left end. */
+  paths: string[];
   /** The band's left end (top and bottom) and right end, normalized to fit each block. */
   x0: number;
   y0: number;
@@ -101,7 +108,8 @@ export interface StepBand {
 export interface StepMap {
   width: number;
   height: number;
-  columns: { title: string; x: number; files: number }[];
+  /** Each column's title, x, file count, and whether its folded folders are open. */
+  columns: { title: string; x: number; files: number; expanded: boolean }[];
   blocks: StepBlock[];
   bands: StepBand[];
   /** Reached test files, counted for the stats and never drawn. */
@@ -120,7 +128,20 @@ interface Member {
   weak: boolean;
 }
 
-function folderBlocks(column: number, members: Member[]): Omit<StepBlock, "x" | "y" | "height">[] {
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function topNames(ms: Member[]): string[] {
+  return [...ms]
+    .sort((a, b) => Number(b.weak) - Number(a.weak) || baseName(a.path).localeCompare(baseName(b.path)))
+    .slice(0, 3)
+    .map((m) => baseName(m.path));
+}
+
+type RawBlock = Omit<StepBlock, "x" | "y" | "height">;
+
+function folderBlocks(column: number, members: Member[], expanded: boolean): RawBlock[] {
   const byFolder = new Map<string, Member[]>();
   for (const m of members) {
     const f = stepFolderOf(m.path);
@@ -131,36 +152,56 @@ function folderBlocks(column: number, members: Member[]): Omit<StepBlock, "x" | 
   const ranked = [...byFolder.entries()]
     .map(([folder, ms]) => ({ folder, ms }))
     .sort((a, b) => b.ms.length - a.ms.length || a.folder.localeCompare(b.folder));
-  const head = ranked.slice(0, TOP_FOLDERS).map(({ folder, ms }) => ({
+  const folder = ({ folder, ms }: { folder: string; ms: Member[] }): RawBlock => ({
     key: `${column}:${folder}`,
     column,
     label: folder,
     folders: [folder],
     other: false,
+    less: false,
     files: ms.length,
     poor: ms.filter((m) => m.weak).length,
     paths: ms.map((m) => m.path),
-  }));
+    top: topNames(ms),
+  });
   const rest = ranked.slice(TOP_FOLDERS);
-  if (rest.length === 0) return head;
+  if (rest.length === 0) return ranked.map(folder);
+  if (expanded)
+    return [
+      ...ranked.map(folder),
+      {
+        key: `${column}:less`,
+        column,
+        label: "Show fewer folders",
+        folders: [],
+        other: false,
+        less: true,
+        files: 0,
+        poor: 0,
+        paths: [],
+        top: [],
+      },
+    ];
   const ms = rest.flatMap((r) => r.ms);
   return [
-    ...head,
+    ...ranked.slice(0, TOP_FOLDERS).map(folder),
     {
       key: `${column}:other`,
       column,
       label: `${rest.length} more ${rest.length === 1 ? "folder" : "folders"}`,
       folders: rest.map((r) => r.folder),
       other: true,
+      less: false,
       files: ms.length,
       poor: ms.filter((m) => m.weak).length,
       paths: ms.map((m) => m.path),
+      top: topNames(ms),
     },
   ];
 }
 
-/** Lay the reach out in step columns. */
-export function buildStepMap(reach: Reach): StepMap {
+/** Lay the reach out in step columns; *expanded* columns show every folder instead of folding the rest. */
+export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new Set()): StepMap {
   const L = STEP_LAYOUT;
   const changed = reach.changed.filter((m) => !m.isTest);
   const perColumn: Member[][] = [changed.map((m) => ({ path: m.path, weak: isWeak(m) })), [], [], []];
@@ -171,7 +212,7 @@ export function buildStepMap(reach: Reach): StepMap {
     fileColumn.set(f.path, c);
   }
 
-  const raw = perColumn.map((ms, c) => folderBlocks(c, ms));
+  const raw = perColumn.map((ms, c) => folderBlocks(c, ms, expanded.has(c)));
   const totals = raw.map((col) => col.reduce((n, b) => n + b.files, 0));
   const maxBlocks = Math.max(1, ...raw.map((col) => col.length));
   // One scale for every column, so a block's height means the same everywhere.
@@ -194,15 +235,16 @@ export function buildStepMap(reach: Reach): StepMap {
   for (const b of blocks) for (const p of b.paths) blockOf.set(p, b);
 
   // A file reached at step h joins folder(via) at step h-1 to its own folder.
-  const flows = new Map<string, { from: StepBlock; to: StepBlock; files: number }>();
+  const flows = new Map<string, { from: StepBlock; to: StepBlock; files: number; paths: string[] }>();
   for (const f of reach.files) {
     if (!f.via) continue;
     const to = blockOf.get(f.path);
     const from = blockOf.get(f.via);
     if (!to || !from || from.column !== to.column - 1) continue;
     const key = `${from.key}>${to.key}`;
-    const flow = flows.get(key) ?? { from, to, files: 0 };
+    const flow = flows.get(key) ?? { from, to, files: 0, paths: [] };
     flow.files += 1;
+    flow.paths.push(f.path);
     flows.set(key, flow);
   }
   const ordered = [...flows.values()].sort(
@@ -237,6 +279,7 @@ export function buildStepMap(reach: Reach): StepMap {
       from: f.from.key,
       to: f.to.key,
       files: f.files,
+      paths: f.paths,
       fromChanged: f.from.column === 0,
       x0: f.from.x + L.blockWidth,
       y0: f.from.y + o0,
@@ -250,7 +293,12 @@ export function buildStepMap(reach: Reach): StepMap {
   return {
     width: STEP_COLUMNS * L.colPitch,
     height: bottom + L.bottom,
-    columns: totals.map((files, c) => ({ title: stepWords(c, reach.maxHop), x: c * L.colPitch, files })),
+    columns: totals.map((files, c) => ({
+      title: stepWords(c, reach.maxHop),
+      x: c * L.colPitch,
+      files,
+      expanded: raw[c]!.some((b) => b.less),
+    })),
     blocks,
     bands,
     testsNotDrawn: reach.tests.length,
@@ -258,10 +306,10 @@ export function buildStepMap(reach: Reach): StepMap {
   };
 }
 
-/** The block to open on: the step-1 block with the most poor-health files, then the most files. */
+/** The block to open on: the step-1 folder with the most poor-health files, then the most files (never a folded block). */
 export function defaultStepBlock(map: StepMap): StepBlock | undefined {
   return map.blocks
-    .filter((b) => b.column === 1)
+    .filter((b) => b.column === 1 && !b.less && !b.other)
     .sort((a, b) => b.poor - a.poor || b.files - a.files || a.label.localeCompare(b.label))[0];
 }
 
@@ -278,4 +326,71 @@ export function stepWords(column: number, maxHop = 0): string {
   if (column === 0) return "Changed";
   if (column === 1) return "1 step";
   return column === STEP_COLUMNS - 1 && maxHop > column ? `${column}+ steps` : `${column} steps`;
+}
+
+export interface StepPath {
+  blocks: Set<string>;
+  bands: Set<string>;
+}
+
+/**
+ * Everything a block is joined to through the bands: upstream back to the
+ * changed folders and downstream to the last step, so a highlight shows how
+ * the change reaches it and what it passes on.
+ */
+export function pathThrough(map: StepMap, key: string): StepPath {
+  const blocks = new Set<string>([key]);
+  const bands = new Set<string>();
+  const walk = (start: string, side: "from" | "to") => {
+    const next = side === "to" ? "from" : "to";
+    const queue = [start];
+    const seen = new Set<string>([start]);
+    while (queue.length > 0) {
+      const at = queue.shift()!;
+      for (const b of map.bands) {
+        if (b[side] !== at) continue;
+        bands.add(b.key);
+        const other = b[next];
+        blocks.add(other);
+        if (!seen.has(other)) {
+          seen.add(other);
+          queue.push(other);
+        }
+      }
+    }
+  };
+  walk(key, "to"); // upstream: bands that arrive here
+  walk(key, "from"); // downstream: bands that leave here
+  return { blocks, bands };
+}
+
+/** The block a file sits in, for linking a list row back to the drawing. */
+export function blockOfPath(map: StepMap, path: string): StepBlock | undefined {
+  return map.blocks.find((b) => b.paths.includes(path));
+}
+
+export type StepDirection = "up" | "down" | "left" | "right";
+
+/**
+ * The block an arrow key moves to: up and down within a column, left and
+ * right to the block nearest in height in the next column that has any.
+ */
+export function neighborBlock(map: StepMap, key: string, dir: StepDirection): StepBlock | undefined {
+  const at = map.blocks.find((b) => b.key === key);
+  if (!at) return map.blocks[0];
+  if (dir === "up" || dir === "down") {
+    const col = map.blocks.filter((b) => b.column === at.column);
+    const i = col.indexOf(at) + (dir === "down" ? 1 : -1);
+    return col[i];
+  }
+  const step = dir === "right" ? 1 : -1;
+  const mid = at.y + at.height / 2;
+  for (let c = at.column + step; c >= 0 && c < STEP_COLUMNS; c += step) {
+    const col = map.blocks.filter((b) => b.column === c);
+    if (col.length === 0) continue;
+    return col.reduce((best, b) =>
+      Math.abs(b.y + b.height / 2 - mid) < Math.abs(best.y + best.height / 2 - mid) ? b : best,
+    );
+  }
+  return undefined;
 }

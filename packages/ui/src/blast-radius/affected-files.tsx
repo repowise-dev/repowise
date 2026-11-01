@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, X } from "lucide-react";
 import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { cn } from "../lib/cn";
 import { attention, type FileMarks, type Reach, type ReachedFile } from "./blast-map-model";
@@ -18,9 +18,24 @@ function folderOf(path: string): string {
   return i < 0 ? "(root)" : path.slice(0, i);
 }
 
-function FileRow({ m, href, extra, nameOnly }: { m: FileMarks; href: string | undefined; extra?: React.ReactNode; nameOnly?: boolean | undefined }) {
+function FileRow({
+  m,
+  href,
+  extra,
+  nameOnly,
+  onHover,
+}: {
+  m: FileMarks;
+  href: string | undefined;
+  extra?: React.ReactNode;
+  nameOnly?: boolean | undefined;
+  onHover?: ((path: string | null) => void) | undefined;
+}) {
   return (
-    <li className="flex min-w-0 items-center justify-between gap-x-3 gap-y-0.5 text-xs max-sm:flex-wrap">
+    <li
+      onMouseEnter={onHover && (() => onHover(m.path))}
+      onMouseLeave={onHover && (() => onHover(null))}
+      className="flex min-w-0 items-center justify-between gap-x-3 gap-y-0.5 text-xs max-sm:flex-wrap">
       <PathRef path={m.path} href={href} nameOnly={nameOnly} />
       <SignalChips m={m} extra={extra} />
     </li>
@@ -108,7 +123,19 @@ function steps(depth: number): string {
   return depth === 1 ? "direct" : `${depth} steps`;
 }
 
-function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: boolean; onToggle: () => void; fileHref: Href }) {
+function ModuleRow({
+  g,
+  expanded,
+  onToggle,
+  fileHref,
+  onHover,
+}: {
+  g: Group;
+  expanded: boolean;
+  onToggle: () => void;
+  fileHref: Href;
+  onHover?: ((path: string | null) => void) | undefined;
+}) {
   const [all, setAll] = useState(false);
   const often = g.files.filter((f) => f.isHotspot).length;
   const untested = g.files.filter((f) => f.untested).length;
@@ -147,6 +174,7 @@ function ModuleRow({ g, expanded, onToggle, fileHref }: { g: Group; expanded: bo
                 m={f}
                 href={fileHref?.(f.path)}
                 extra={<span className={CHIP}>{steps(f.depth)}</span>}
+                onHover={onHover}
               />
             ))}
           </ul>
@@ -184,6 +212,7 @@ export function AffectedByModule({
   onQueryChange,
   focus,
   onClearFocus,
+  onHoverPath,
 }: {
   reach: Reach;
   fileHref: Href;
@@ -191,6 +220,8 @@ export function AffectedByModule({
   onQueryChange: (q: string) => void;
   focus?: DependentsFocus | undefined;
   onClearFocus?: (() => void) | undefined;
+  /** The file row under the pointer, so the drawing can light its block. */
+  onHoverPath?: ((path: string | null) => void) | undefined;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const groups = useMemo(
@@ -214,20 +245,24 @@ export function AffectedByModule({
   return (
     <div className="space-y-2">
       {focus && (
-        <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-[var(--color-text-secondary)]">
-          <span>
-            Showing {focus.label}: <span className="tabular-nums">{focus.paths.size.toLocaleString()}</span>{" "}
-            {focus.paths.size === 1 ? "file" : "files"}
+        // The active filter as a token with a hairline border, removed with its own button.
+        <p className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--color-border-hover)] py-0.5 pl-2.5 pr-1 text-[var(--color-text-secondary)]">
+            <span className="min-w-0 truncate">
+              Showing {focus.label}: <span className="tabular-nums">{focus.paths.size.toLocaleString()}</span>{" "}
+              {focus.paths.size === 1 ? "file" : "files"}
+            </span>
+            {onClearFocus && (
+              <button
+                type="button"
+                onClick={onClearFocus}
+                aria-label={`Clear the filter and show all ${reach.files.length.toLocaleString()} files`}
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] pointer-coarse:h-10 pointer-coarse:w-10"
+              >
+                <X className="h-3 w-3" aria-hidden />
+              </button>
+            )}
           </span>
-          {onClearFocus && (
-            <button
-              type="button"
-              onClick={onClearFocus}
-              className="rounded-sm text-[var(--color-text-tertiary)] underline-offset-2 max-sm:min-h-10 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
-            >
-              Show all {reach.files.length.toLocaleString()}
-            </button>
-          )}
         </p>
       )}
       <input
@@ -246,6 +281,7 @@ export function AffectedByModule({
             expanded={open.has(g.name) || ((q !== "" || focus !== undefined) && shown.length <= 3)}
             onToggle={() => toggle(g.name)}
             fileHref={fileHref}
+            onHover={onHoverPath}
           />
         ))}
       </ul>

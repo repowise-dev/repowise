@@ -103,6 +103,12 @@ export function PathRef({ path, href, nameOnly = false }: { path: string; href: 
 export function SignalChips({ m, extra }: { m: FileMarks; extra?: ReactNode }) {
   const items: ReactNode[] = [];
   if (extra) items.push(extra);
+  if (m.notIndexed)
+    items.push(
+      <span className={CHIP} title="Added since the last index run: no graph, health or owner yet">
+        new, not indexed yet
+      </span>,
+    );
   if (m.isHotspot)
     items.push(
       <span className={CHIP} title="Among the files with the most recent commits">
@@ -236,6 +242,7 @@ function Owners({ result, changed }: { result: Result; changed: number }) {
     ? ofChanged.map((o) => ({ email: o.email, name: ownerName(o), why: `owns ${o.files.toLocaleString()} of the ${count(changed, "changed file")}` }))
     : result.recommended_reviewers.slice(0, 3).map((r) => ({ email: r.email, name: ownerName(r), why: "owns code that depends on this" }));
   if (people.length === 0) return <p className={NONE}>No one owns the changed files yet: they are new or have no history.</p>;
+  const owned = ofChanged ? ofChanged.slice(0, 3).reduce((n, o) => n + o.files, 0) : 0;
   return (
     <ul className="space-y-1.5">
       {people.slice(0, 3).map((p) => (
@@ -247,6 +254,13 @@ function Owners({ result, changed }: { result: Result; changed: number }) {
           <span className="truncate text-[var(--color-text-tertiary)]">{p.why}</span>
         </li>
       ))}
+      {/* Never imply full coverage: say how many changed files these people own between them. */}
+      {ofChanged && owned < changed && (
+        <li className={NONE}>
+          {people.length === 1 ? "That is" : "Together,"} {owned.toLocaleString()} of the {count(changed, "changed file")}; the
+          rest have no owner on record.
+        </li>
+      )}
     </ul>
   );
 }
@@ -265,6 +279,18 @@ function MissingPartners({ result, fileHref }: { result: Result; fileHref: Href 
       ))}
       {partners.length > 3 && <li className={NONE}>{partners.length} in all, under the details below.</li>}
     </ul>
+  );
+}
+
+/** Said once, quietly: changed files the index does not have yet, so what the page knows about them is partial. */
+function NotIndexedNote({ reach }: { reach: Reach }) {
+  const fresh = reach.changed.filter((m) => m.notIndexed).length;
+  if (fresh === 0) return null;
+  return (
+    <p className={NONE}>
+      {count(fresh, "changed file")} {fresh === 1 ? "is" : "are"} new since the last index, so {fresh === 1 ? "its" : "their"}{" "}
+      health, owners and importers are not known yet. Reach uses the last index.
+    </p>
   );
 }
 
@@ -436,6 +462,7 @@ export function BlastRadiusVerdict({
         <StatusLine status={status} />
         <Stats reach={reach} total={total} analyzed={changedFiles.length} testsTotal={testsTotal} />
         {change?.pr_review && <PrReviewLine review={change.pr_review} />}
+        <NotIndexedNote reach={reach} />
         <div className="flex flex-wrap items-center gap-2">
           {/* The page's one primary action: ink fill; everything else stays quiet. */}
           <AiPromptButton
@@ -443,8 +470,8 @@ export function BlastRadiusVerdict({
             onClick={() => setPromptOpen(true)}
             className="max-sm:h-10 border-transparent bg-[var(--color-action-primary)] text-[var(--color-text-on-action)] hover:border-transparent hover:bg-[var(--color-action-primary-hover)]"
           />
-          <CopyTests result={result} />
           {extraActions}
+          <CopyTests result={result} />
         </div>
       </div>
 
