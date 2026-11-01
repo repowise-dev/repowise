@@ -106,9 +106,11 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     """
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES), "framework"]
     edge_rows = await _call_edge_rows(session, repo_id, wanted)
-    registrations = _framework_registrations(edge_rows)
+    file_paths = await cached_file_paths(session, repo_id)
+    registrations = _framework_registrations(edge_rows, file_paths)
     for src, dst in await _registration_rows(session, repo_id):
-        registrations.setdefault(src, set()).add(dst)
+        if _is_file_registration(src, dst, file_paths):
+            registrations.setdefault(src, set()).add(dst)
     return ExecutionGraphIndex(
         edge_rows=_execution_edge_rows(edge_rows),
         registrations=registrations,
@@ -133,16 +135,28 @@ async def _call_edge_rows(
     return list(rows)
 
 
-def _framework_registrations(edge_rows: list[Any]) -> dict[str, set[str]]:
+def _framework_registrations(
+    edge_rows: list[Any], file_paths: Collection[str]
+) -> dict[str, set[str]]:
     registrations: dict[str, set[str]] = {}
     for src, dst, edge_type, _origin in edge_rows:
-        if _is_framework_registration(src, edge_type):
+        if _is_framework_registration(src, dst, edge_type, file_paths):
             registrations.setdefault(src, set()).add(dst)
     return registrations
 
 
-def _is_framework_registration(src: str, edge_type: str | None) -> bool:
-    return edge_type == "framework" and not src.startswith("framework:")
+def _is_framework_registration(
+    src: str, dst: str, edge_type: str | None, file_paths: Collection[str]
+) -> bool:
+    return (
+        edge_type == "framework"
+        and not src.startswith("framework:")
+        and _is_file_registration(src, dst, file_paths)
+    )
+
+
+def _is_file_registration(src: str, dst: str, file_paths: Collection[str]) -> bool:
+    return src in file_paths and dst in file_paths
 
 
 async def _registration_rows(session: AsyncSession, repo_id: str) -> Any:

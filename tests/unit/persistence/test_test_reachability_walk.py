@@ -119,6 +119,39 @@ async def test_framework_registered_module_is_reached_in_the_call_tier(async_ses
     }
 
 
+async def test_db_call_graph_only_keeps_file_to_file_registration_edges(async_session):
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"src/app.py": False, "src/router.py": False},
+        edges=[
+            ("src/app.py", "src/router.py", "framework"),
+            ("src/app.py::run", "src/router.py::route", "framework"),
+            ("src/app.py", "src/router.py::route", "framework"),
+            ("src/app.py::run", "src/router.py", "framework"),
+        ],
+    )
+    async_session.add_all(
+        [
+            GraphNode(repository_id=repo.id, node_id="src/app.py::run", node_type="symbol"),
+            GraphNode(repository_id=repo.id, node_id="src/router.py::route", node_type="symbol"),
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id="src/app.py::run",
+                target_node_id="src/router.py::route",
+                edge_type="calls",
+                hint_source=MODULE_REGISTRATION_HINT,
+            ),
+        ]
+    )
+    await async_session.flush()
+
+    graph = await call_graph_from_db(async_session, repo.id)
+
+    assert graph.registrations == {"src/app.py": ("src/router.py",)}
+
+
 async def test_registration_edges_are_batched_without_dropping_targets(async_session):
     repo = await insert_repo(async_session)
     targets = [f"src/target_{index}.py" for index in range(501)]

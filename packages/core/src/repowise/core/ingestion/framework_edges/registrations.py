@@ -335,20 +335,7 @@ def _is_registration_attribute(expression: ast.expr) -> bool:
 
 
 def _is_registry_receiver(receiver: ast.expr, registry_locals: set[str]) -> bool:
-    if isinstance(receiver, ast.Name):
-        return receiver.id in registry_locals
-    if isinstance(receiver, ast.Attribute):
-        return _is_registry_attribute(receiver.attr)
-    return False
-
-
-def _is_registry_attribute(name: str) -> bool:
-    lowered = name.lower()
-    return (
-        lowered == "registry"
-        or lowered.endswith("_registry")
-        or lowered in _REGISTRY_NAMES
-    )
+    return isinstance(receiver, ast.Name) and receiver.id in registry_locals
 
 
 def _call_relationships(

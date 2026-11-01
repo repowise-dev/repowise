@@ -130,7 +130,7 @@ def test_unrelated_register_calls_and_function_imports_stay_at_import_tier(
     assert call_graph_from_graph(graph).registrations.get("caller.py") is None
 
 
-def test_attribute_registry_receivers_create_registration_edges(tmp_path: Path):
+def test_registry_named_instance_attributes_do_not_create_registration_edges(tmp_path: Path):
     sources = {
         "handlers.py": "def handler():\n    pass\n",
         "caller.py": (
@@ -151,7 +151,5 @@ def test_attribute_registry_receivers_create_registration_edges(tmp_path: Path):
 
     add_framework_edges(graph, parsed, context, tech_stack=[])
 
-    assert graph.edges["caller.py", "handlers.py"]["hint_source"] == (MODULE_REGISTRATION_HINT)
-    assert call_graph_from_graph(graph).registrations == {
-        "caller.py": ("handlers.py",),
-    }
+    assert graph.edges["caller.py", "handlers.py"].get("hint_source") is None
+    assert call_graph_from_graph(graph).registrations.get("caller.py") is None
