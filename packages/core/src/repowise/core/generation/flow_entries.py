@@ -24,7 +24,6 @@ page can quote the sections that mention it.
 from __future__ import annotations
 
 import json
-import os
 import re
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
@@ -33,7 +32,8 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from repowise.core.support_paths import is_support_path
+from repowise.core.fs_walk import walk_repo
+from repowise.core.support_paths import DOC_EXTENSIONS, is_support_path
 from repowise.core.test_paths import is_test_path
 
 #: ``path -> lines`` of a repository file, empty when it cannot be read.
@@ -369,7 +369,8 @@ def program_name(repo_root: Path | str | None, graph: Any) -> str:
 # ---------------------------------------------------------------------------
 
 _DOC_DIRS = ("docs", "doc", "documentation")
-_DOC_EXTS = (".md", ".rst")
+# The documentation formats whose headings the section reader below understands.
+_SECTION_EXTS = tuple(sorted(DOC_EXTENSIONS & {".md", ".rst"}))
 _SKIP_DOC_DIRS = frozenset({"node_modules", "tests", "test", "fixtures", "vendor"})
 _MAX_DOC_FILES = 3000
 _RST_UNDERLINE = re.compile(r"([=\-~^\"'`#*+])\1+")
@@ -390,20 +391,20 @@ class DocSection:
 
 
 def _is_root_doc(p: Path) -> bool:
-    return p.is_file() and p.suffix.lower() in _DOC_EXTS and p.stem.lower() in ("readme", "contributing")
+    return p.is_file() and p.suffix.lower() in _SECTION_EXTS and p.stem.lower() in ("readme", "contributing")
 
 
 def _is_doc_page(name: str) -> bool:
     low = name.lower()
-    return low.endswith(_DOC_EXTS) and "changelog" not in low
+    return low.endswith(_SECTION_EXTS) and "changelog" not in low
 
 
 def _walk_docs(root: Path, base: Path) -> Iterable[str]:
-    for dirpath, dirnames, filenames in os.walk(base):
+    for dirpath, dirnames, filenames in walk_repo(base):
         dirnames[:] = sorted(
             d for d in dirnames if d.lower() not in _SKIP_DOC_DIRS and not d.startswith(".")
         )
-        rel = Path(dirpath).relative_to(root).as_posix()
+        rel = dirpath.relative_to(root).as_posix()
         yield from (f"{rel}/{f}" for f in sorted(filenames) if _is_doc_page(f))
 
 
