@@ -23,7 +23,6 @@ from repowise.cli.editor_integrations import claude_config
 
 logger = logging.getLogger(__name__)
 
-NOT_SET = "not set"
 #: Writes the user-level entries for this repo, moving any that serve another.
 REGISTER_LATER_COMMAND = "repowise agents add --target=claude-code --scope=user"
 
@@ -94,8 +93,14 @@ class GlobalMcpTarget:
         for e in self.entries:
             if not e.moves:
                 continue
-            now = (e.target or NOT_SET) if e.present else NOT_SET
-            if e.present and e.target and not Path(e.target).is_dir():
+            if not e.present:
+                lines.append(
+                    f"{e.client} repowise MCP entry added, "
+                    f"will serve {_serves(e.planned_target)}"
+                )
+                continue
+            now = _serves(e.target)
+            if e.target and not Path(e.target).is_dir():
                 now += " (missing)"
             lines.append(
                 f"{e.client} repowise MCP entry now points at {now}, "
