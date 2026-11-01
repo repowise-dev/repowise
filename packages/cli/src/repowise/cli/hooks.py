@@ -77,21 +77,33 @@ _HOOK_SCRIPT = """\
 # Auto-syncs repowise wiki after each commit (background, non-blocking).
 # Installed by: repowise hook install
 {
-  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-  [ -f "$ROOT/.repowise/state.json" ] || exit 0
-  HEAD=$(git rev-parse HEAD 2>/dev/null) || HEAD=""
-  TS=$(date +%s 2>/dev/null) || TS=""
-  if [ -n "$TS" ]; then
-    printf '{"target_commit":"%s","queued_at":%s}\\n' "$HEAD" "$TS" \\
-      > "$ROOT/.repowise/.update.queued" 2>/dev/null || true
+  ROOT=$(git rev-parse --show-toplevel --revs-only HEAD 2>/dev/null) || ROOT=""
+  HEAD="${ROOT#*
+}"
+  ROOT="${ROOT%%
+*}"
+  if [ "$HEAD" = "$ROOT" ]; then
+    HEAD=""
   fi
-  LOG="$ROOT/.repowise/.update.log"
-  {
-    printf '\\n--- post-commit hook fired at %s for HEAD %s ---\\n' \\
-      "$(date 2>/dev/null)" "$HEAD"
-  } >> "$LOG" 2>/dev/null || true
-  (
-    cd "$ROOT" || exit 1
+  if [ -n "$ROOT" ] && [ -f "$ROOT/.repowise/state.json" ]; then
+    DATE=$(date '+%s %a %b %e %H:%M:%S %Z %Y' 2>/dev/null) || DATE=""
+    TS="${DATE%% *}"
+    DATE="${DATE#* }"
+    if [ "$TS" = "$DATE" ]; then
+      TS=""
+      DATE=""
+    fi
+    if [ -n "$TS" ]; then
+      printf '{"target_commit":"%s","queued_at":%s}\\n' "$HEAD" "$TS" \\
+        > "$ROOT/.repowise/.update.queued" 2>/dev/null || true
+    fi
+    LOG="$ROOT/.repowise/.update.log"
+    {
+      printf '\\n--- post-commit hook fired at %s for HEAD %s ---\\n' \\
+        "$DATE" "$HEAD"
+    } >> "$LOG" 2>/dev/null || true
+    (
+      cd "$ROOT" || exit 1
     if command -v repowise >/dev/null 2>&1; then
       repowise update >> "$LOG" 2>&1
     elif [ -x "$ROOT/.venv/bin/repowise" ]; then
@@ -99,7 +111,8 @@ _HOOK_SCRIPT = """\
     elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
       "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
     fi
-  ) &
+    ) &
+  fi
 } >/dev/null 2>&1
 # repowise-hook-end
 """
