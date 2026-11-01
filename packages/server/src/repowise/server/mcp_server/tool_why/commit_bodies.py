@@ -3,7 +3,7 @@
 A squash or merge commit's subject restates the change; the reason is in the
 body the forge wrote under it. The indexer already keeps the bodies that carry
 decision words on each file's significant commits, so those cost no git call;
-any other body is one local ``git log`` over the few commits served. Nothing
+any other body is one local ``git cat-file`` over the few commits served. Nothing
 here touches the network: a description the forge never wrote into git is not
 read (ceiling: a forge API fetch at index time).
 """
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.changes.reconstruct import _is_trailer
+from repowise.core.ingestion.git_indexer._constants import _MAX_COMMIT_BODY_BYTES
 from repowise.server.mcp_server._why_relevance import (
     question_terms,
     relevance,
@@ -36,8 +37,10 @@ _MIN_TERMS = 2
 
 _COMMIT_LANES = ("file_commits", "cross_references", "git_log")
 _SUBJECT_LINE_RE = re.compile(r"^[a-z]+(\([^)]*\))?!?:\s")
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$")
+#: Headings whose section never states the reason: how it was checked, not why.
 _SKIPPED_SECTION_RE = re.compile(
-    r"verif|test|checklist|screenshot|how to|reviewer|notes?$|related|changelog", re.I
+    r"^(?:verif|test|checklist|screenshot|how to test|reviewer|related|changelog)", re.I
 )
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _SEPARATOR_RE = re.compile(r"^\s*(?:-{3,}|={3,}|\*{3,})\s*$")
@@ -97,8 +100,8 @@ def _prose_lines(body: str) -> Iterator[str]:
         if line.startswith("```"):
             in_fence = not in_fence
             line = ""
-        elif line.startswith("#"):
-            skipping = bool(_SKIPPED_SECTION_RE.search(line.lstrip("#").strip()))
+        elif heading := _HEADING_RE.match(line):
+            skipping = bool(_SKIPPED_SECTION_RE.match(heading.group(1)))
             line = ""
         bare = _BULLET_RE.sub("", line)
         # A squash body lists its commits' subjects; a subject restates, it does not explain.
@@ -205,7 +208,9 @@ def _stored_bodies(target_git: dict[str, Any]) -> dict[str, tuple[str, int | Non
         except ValueError:
             continue
         for e in entries:
-            if isinstance(e, dict) and e.get("body") and e.get("sha"):
+            # A body at the indexer's cap was cut; the clone has it whole.
+            body = e.get("body") if isinstance(e, dict) else None
+            if body and e.get("sha") and len(body.encode()) < _MAX_COMMIT_BODY_BYTES - 4:
                 out.setdefault(str(e["sha"])[:8].lower(), (e["body"], e.get("pr_number")))
     return out
 
@@ -223,29 +228,50 @@ async def _live_bodies(repo_root: Any, shas: list[str]) -> dict[str, tuple[str, 
 
 
 def _git_bodies(repo_root: str, shas: list[str]) -> dict[str, tuple[str, int | None]]:
+    """``{sha8: (body, pr number)}`` from one ``git cat-file --batch``.
+
+    The batch answers each name on its own, so a sha the clone lacks (a shallow
+    clone, rewritten history, an ambiguous prefix) loses only its own body.
+    """
     from repowise.core.forges.changes import change_number
     from repowise.core.forges.detect import detect_forge
 
-    shas = [s for s in shas if re.fullmatch(r"[0-9a-f]{4,40}", s)]
-    if not shas:
+    names = [s for s in shas if re.fullmatch(r"[0-9a-f]{4,40}", s)]
+    if not names:
         return {}
     proc = subprocess.run(
-        ["git", "log", "--no-walk=unsorted", "--format=%H%x1f%s%x1f%b%x1e", *shas, "--"],
+        ["git", "cat-file", "--batch"],
         cwd=repo_root,
+        input="".join(f"{n}^{{commit}}\n" for n in names).encode(),
         capture_output=True,
-        encoding="utf-8",
-        errors="replace",
         timeout=_GIT_TIMEOUT_S,
-        # A git child inheriting the JSON-RPC stdin can wedge the session.
-        stdin=subprocess.DEVNULL,
     )
     if proc.returncode != 0:
         return {}
-    forge = detect_forge(repo_root)
+    messages = dict(zip(names, _batch_messages(proc.stdout), strict=False))
+    forge = detect_forge(repo_root) if messages else None
     out: dict[str, tuple[str, int | None]] = {}
-    for record in proc.stdout.split("\x1e"):
-        parts = record.strip("\n").split("\x1f")
-        if len(parts) == 3 and parts[2].strip():
-            sha, subject, body = parts
-            out[sha[:8].lower()] = (body, change_number(subject, body, forge))
+    for name, message in messages.items():
+        subject, _, body = message.partition("\n\n")
+        if body.strip():
+            subject = " ".join(subject.split())
+            out[name[:8].lower()] = (body.strip(), change_number(subject, body, forge))
     return out
+
+
+def _batch_messages(raw: bytes) -> Iterator[str]:
+    """Each object's commit message, ``""`` for a name git reported missing."""
+    pos = 0
+    while pos < len(raw):
+        eol = raw.find(b"\n", pos)
+        if eol < 0:
+            return
+        header = raw[pos:eol].split()
+        pos = eol + 1
+        if len(header) != 3 or header[1] != b"commit":
+            yield ""
+            continue
+        size = int(header[2])
+        commit = raw[pos : pos + size].decode("utf-8", errors="replace")
+        pos += size + 1
+        yield commit.partition("\n\n")[2]

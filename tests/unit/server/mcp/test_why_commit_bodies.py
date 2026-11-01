@@ -149,3 +149,57 @@ def test_keep_one_excerpt_walks_cards_and_top_level() -> None:
     assert result["git_archaeology"]["git_log"][0]["body_excerpt"] == "c"
     rows = result["target_context"]["src/router.ts"]["git_archaeology"]["file_commits"]
     assert all("body_excerpt" not in r for r in rows)
+
+
+async def test_a_sha_the_clone_lacks_loses_only_its_own_body(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("x")
+    _git(tmp_path, "add", "a.txt")
+    _git(
+        tmp_path,
+        "-c", "user.name=t", "-c", "user.email=t@t",
+        "commit", "-q", "-m", "feat(router): throw during route registration (#51)", "-m", _SQUASH_BODY,
+    )
+    sha = _git(tmp_path, "rev-parse", "HEAD")[:12]
+    lanes = [{"sha": "deadbeef", "message": "gone"}, {"sha": sha, "message": "feat(router): x"}]
+    result = {"mode": "search", "git_archaeology": {"git_log": lanes}}
+    await attach_body_excerpts(result, tmp_path, {}, _card_result()["query"])
+    assert "body_excerpt" not in lanes[0]
+    assert lanes[1]["body_excerpt"].startswith("Insert paths")
+
+
+def test_only_a_real_heading_opens_a_skipped_section() -> None:
+    body = (
+        "#51 moved the check to registration because the first match came too late for unsupported paths.\n\n"
+        "## Why registration time\n\n"
+        "Unsupported path combinations surface at registration, not at the first match a user sends.\n\n"
+        "## Test plan\n\n"
+        "Registration and first match unsupported paths tested."
+    )
+    query = "why are unsupported paths rejected at registration instead of the first match"
+    excerpt = body_excerpt(body, "feat: x", query)
+    assert excerpt is not None
+    assert not excerpt.startswith("Registration and first match")
+
+
+async def test_a_body_cut_at_the_index_cap_is_read_whole_from_the_clone(tmp_path: Path) -> None:
+    cut = "x" * 2000
+    meta = SimpleNamespace(
+        significant_commits_json=json.dumps([{"sha": "8a0b18fd", "message": "m", "body": cut}])
+    )
+    result = _card_result({"sha": "8a0b18fd", "message": "m"})
+    calls: list[list[str]] = []
+
+    async def fake_live(_root: Any, shas: list[str]) -> dict[str, tuple[str, int | None]]:
+        calls.append(shas)
+        return {}
+
+    import repowise.server.mcp_server.tool_why.commit_bodies as mod
+
+    original = mod._live_bodies
+    mod._live_bodies = fake_live  # type: ignore[assignment]
+    try:
+        await attach_body_excerpts(result, tmp_path, {"src/router.ts": meta}, result["query"])
+    finally:
+        mod._live_bodies = original  # type: ignore[assignment]
+    assert calls == [["8a0b18fd"]]
