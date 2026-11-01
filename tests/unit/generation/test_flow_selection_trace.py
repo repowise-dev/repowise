@@ -224,3 +224,15 @@ def test_a_command_is_named_after_the_script_that_reaches_it():
     scripts = {"acme-admin": "acme/admin", "acme-cli": "acme/cli"}
     (plan,) = select_flow_plans(g, program="acme-admin", scripts=scripts)
     assert plan.public == "acme-cli init"
+
+
+def test_the_reuse_subject_ignores_other_walkthroughs_but_follows_the_docs():
+    from repowise.core.generation.page_generator.flow import _subject
+
+    g = _traced_graph()
+    (plan,) = select_flow_plans(g, read=_read)
+    plain = build_material(plan, g, _read, ())
+    doc = DocSection("README.md", "Run", 1, 3, "Use `run` to start.", ("run",))
+    with_doc = build_material(plan, g, _read, (doc,))
+    assert _subject(plan, {}, plain) == _subject(plan, {}, build_material(plan, g, _read, ()))
+    assert _subject(plan, {}, plain) != _subject(plan, {}, with_doc)

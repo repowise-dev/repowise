@@ -198,21 +198,18 @@ def _step_sources(plan: FlowPlan) -> list[dict[str, object]]:
     ]
 
 
-def _subject(
-    plan: FlowPlan, source_map: Mapping[str, bytes], material: FlowMaterial, related: Sequence[str]
-) -> str:
+def _subject(plan: FlowPlan, source_map: Mapping[str, bytes], material: FlowMaterial) -> str:
     """The page's subject: the steps, their files' bytes, and the rest of what the prompt reads.
 
-    The docs, options summary, call kinds and neighbouring walkthroughs feed
-    the prompt too, so an edit to a doc section or an option's help text
-    regenerates the page instead of reusing it.
+    The docs, options summary and call kinds feed the prompt too, so an edit
+    to a doc section or an option's help text regenerates the page. The other
+    walkthroughs' titles are left out: one operation added or renamed would
+    otherwise rewrite every flow page for the sake of a "read next" link.
     """
     steps = "|".join(
         f"{s.symbol_id}@{s.start_line}-{s.end_line}:{s.context}" for s in plan.steps
     )
-    extra = "\x00".join(
-        [material.surface, *(d.text for d in material.docs), *sorted(related)]
-    )
+    extra = "\x00".join([material.surface, *(d.text for d in material.docs)])
     digest = hashlib.sha256(extra.encode()).hexdigest()[:16]
     return f"{plan.entry_id}|{steps}|{files_digest(plan.files, source_map)}|{digest}"
 
@@ -265,7 +262,7 @@ class FlowPageMixin:
             related=related,
         )
         user_prompt = self._render("flow_page.j2", ctx=ctx, word_budget=_WORD_BUDGET)
-        subject = _subject(plan, source_map, material, related)
+        subject = _subject(plan, source_map, material)
         reuse_key = model_reuse_key(self, subject, FLOW_PAGE_TYPE, "flow_page.j2")
         try:
             response = await self._call_provider(
