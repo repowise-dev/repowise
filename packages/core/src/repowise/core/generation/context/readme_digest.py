@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 #: Root-anchored, and only these two. A ``docs/*.md`` glob matches a path tail,
-#: which is how vendored and scratch documents reached the glossary once
+#: which is how vendored and scratch documents reached the mined terms once
 #: already; see ``concept_tree/vocabulary.py``.
 _DIGEST_DOCS = ("README.md", "docs/README.md")
 

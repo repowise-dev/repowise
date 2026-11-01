@@ -40,11 +40,11 @@ Also called but not shown as steps (presentation, logging or context setup): {{ 
 {% endfor %}{% endif %}
 ## What to write
 
-`# {{ ctx.title }}`
+Every item below is an instruction about the page, never text to copy into it. Start the page with the line `# {{ ctx.title }}`.
 
 1. Opening paragraph, at most 4 sentences: what the user runs or calls and what they get back; what it produces or changes; the main ways it ends early. Name `{{ ctx.steps[0].name }}` once as where the code starts. Then a short scope paragraph: what this page follows{% if ctx.neighbours %}, and for neighbouring topics "for <topic>, see **<Page title>**" with titles from the pages listed above{% endif %}.
-2. `## At a glance`: a numbered list of 4 to 7 stages in processing order, one line each (at most 20 words): what the stage does and what it hands on. Stages are phases of work, not function names.
+2. `## At a glance`: a numbered list of 4 to 6 stages in processing order, one line each (at most 20 words): what the stage does and what it hands on. Stages are phases of work, not function names.
 3. One mermaid `flowchart LR` with a bold title line above it: 5 to 8 nodes for the stages and the stores or outputs they touch; every edge labelled with the object passed or written.
-4. One `##` section per stage, in the same order, headed by what happens in plain words (no numbers), each ONE paragraph of at most 4 sentences (about 60 to 90 words) ending with one citation. Do not repeat the At a glance line: add how and why. Say which object comes in and goes out, what is written and where, and the condition that picks a branch. Name an option only if it changes which stages run; when 3 or more modes or options matter, put them in one short table in that section instead of prose.
-5. `## Other ways it ends`: a table with columns When | What happens | Where (one citation per row), at most 8 rows, for early returns, errors, interrupts and alternative modes. No prose around it.
+4. One `##` section per stage, in the same order, headed by what happens in plain words (no numbers), each ONE paragraph of at most 3 sentences (about 50 to 80 words) ending with one citation. Do not repeat the At a glance line: add how and why. Say which object comes in and goes out, what is written and where, and the condition that picks a branch. Name an option only if it changes which stages run; when 3 or more modes or options matter, put them in one short table in that section instead of prose.
+5. `## Other ways it ends`: a table with columns When | What happens | Where (one citation per row), at most 6 rows, for early returns, errors, interrupts and alternative modes. No prose around it.
 6. `## Where to read next`{% if ctx.neighbours %} from the pages listed above{% endif %}, at most 4 bullets, each a page title in bold and why to open it.

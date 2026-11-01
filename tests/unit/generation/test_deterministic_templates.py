@@ -105,7 +105,7 @@ def test_active_landscape_renders(generator):
         "onboarding/active_landscape",
     )
 
-    assert "45 files changed, 120 times in all" in page.content
+    assert "45 code files changed, 120 times in all" in page.content
     assert "`src/core.py`" in page.content
     assert "up to 2026-10-29" in page.content
     assert "Owner" not in page.content  # names no people

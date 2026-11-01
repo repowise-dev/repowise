@@ -361,6 +361,7 @@ async def load_prior_pages(
             cached_tokens=row.cached_tokens,
             metadata=metadata,
             provider_name=row.provider_name,
+            freshness_status=row.freshness_status or "",
         )
     return prior
 

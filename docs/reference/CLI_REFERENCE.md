@@ -156,7 +156,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Model set: subsystem (concept) tree, repo overview, architecture diagram, onboarding. `--prose` writes it (key needed); `--no-prose` leaves stubs.
   - `--no-prose` makes no model calls even with a key, so decision extraction from PRs, commits and comments waits; [`repowise generate`](#repowise-generate-path) fills both later.
   - Full-text search always; semantic search needs an embedder.
-- **`--onboarding`.** Slots: Project Overview, Architecture Guide, Getting Started, Codebase Map, Key Concepts, How It Works, Development Guide, Active Landscape; thin ones skipped.
+- **`--onboarding`.** Slots: Project Overview, Getting Started, How It Works, Active Landscape; thin ones skipped.
 - **`--resume`.** No-op when fully indexed. Skips done phases (indexing, analysis), keeps the git tier, writes only
   missing pages, never paying twice: for interrupted runs or failed pages (outage, rate limits). Per-page matching
   survives provider switches.

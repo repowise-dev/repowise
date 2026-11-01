@@ -23,10 +23,10 @@ From `{{ s.cite }}`:
 
 ## What to write
 
-Start the page with the line `# How It Works`.
+Every item below is an instruction about the page, never text to copy into it. Start the page with the line `# How It Works`.
 
 1. One sentence on what the system does for its user, then at most 2 naming the journeys the page follows.
-2. One mermaid `flowchart LR` under a bold one-line title, showing the whole lifecycle: the journeys as paths through the parts and stores, every edge labelled with the data that moves.
+2. One mermaid `flowchart LR` under a bold one-line title, showing the whole lifecycle at a glance in at most 8 nodes: where the journeys start (one node may stand for several journeys that enter the same way), the parts they cross, and the main stores they read or write. Leave out per-journey outputs. Every edge is labelled with what moves, in 1 to 3 words.
 3. One `##` section per journey, in the order a user meets them, headed by what the user does. Each is ONE paragraph of at most 4 sentences and about 80 words: what the user types or what calls it, what it produces and where it is stored, and the one thing worth knowing (what is skipped, how it ends early). Do not restate the walkthrough's stage list. End the section with "Full walkthrough: **<page title>**".
 {% if ctx.parts %}4. `## Where the parts live`: a table `Part | Role in the journeys`, one row per part above that a journey crosses, its page title in bold. No prose.
 {% endif %}5. `## Why it is shaped this way`: at most 4 short bullets, only reasons the documentation above states about these journeys. Omit the section if it states none.

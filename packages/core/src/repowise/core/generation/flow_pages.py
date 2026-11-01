@@ -13,7 +13,10 @@ pages with the same steps:
    it reaches (symbols, files, directories and packages within a bounded walk),
    and the best are taken with two diversity rules so one hub does not fill the
    group: at most two per package and no root whose reach is mostly another
-   pick's.
+   pick's. Declared entries (commands, tools, routes, public API) come first,
+   the ones the README's first example shows ahead of the rest; one
+   implementation reached through two doors (a command and a tool) gets one
+   page, under the better documented name.
 2. **Which steps.** The walk from a root keeps the callees that lead furthest,
    a few at the top and fewer deeper down, so a step list reads as a story and
    not a dump of every helper. Every step carries its file and line span, which
@@ -34,6 +37,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -67,6 +71,7 @@ from .flow_entries import (
     line_reader,
     program_name,
     python_scripts,
+    quickstart_entries,
 )
 from .flow_trace import FlowStep, trace
 from .models import compute_page_id
@@ -86,6 +91,9 @@ _MIN_FILES = 3
 # from a different door.
 _MAX_OVERLAP = 0.8
 _MAX_PER_PACKAGE = 2  # when the repo has packages enough to spread over
+# A callee at most this many declared entries reach is their own implementation,
+# not shared plumbing: two entries of different kinds running one are one operation.
+_MAX_CORE_SHARERS = 3
 # A UI component's render tree is not an operation a walkthrough tells well.
 _UI_PENALTY = 0.3
 # Tier of a graph root no framework declares; declared entries are tiers 0 and 1.
@@ -145,14 +153,24 @@ class _CallIndex:
 
 
 def flow_page_limit(code_file_count: int) -> int:
-    """How many flow pages a repository of this size gets (3 to 6)."""
+    """How many flow pages a repository of this size gets at most (4 to 10).
+
+    Only declared entries fill the top half: a large repo with many commands
+    and tools gets more walkthroughs, one with few is not padded out with
+    internal functions (see :func:`_undeclared_limit`).
+    """
     if code_file_count < 200:
-        return 3
-    if code_file_count < 800:
         return 4
+    if code_file_count < 800:
+        return 6
     if code_file_count < 2500:
-        return 5
-    return 6
+        return 8
+    return 10
+
+
+def _undeclared_limit(limit: int) -> int:
+    """Picks after which an undeclared graph root no longer gets a page (3 to 6)."""
+    return limit // 2 + 1
 
 
 def _called_in_production(index: _CallIndex, node: str) -> bool:
@@ -247,6 +265,9 @@ class _Candidate:
     reach: frozenset[str]
     score: float
     rank: float
+    mentions: int = 0
+    # Shown in the README's first example: what a newcomer runs first.
+    featured: bool = False
 
 
 def _tier(reach: frozenset[str], files: int) -> int | None:
@@ -267,16 +288,19 @@ def _rank(index: _CallIndex, node: str, score: float, mentions: int) -> float:
 def _declared_candidates(
     index: _CallIndex, roots: set[str], entries: Iterable[Entry], docs: Collection[DocSection]
 ) -> list[_Candidate]:
+    entries = [e for e in entries if e.node in index.graph]
+    featured = quickstart_entries(entries, docs)
     out: list[_Candidate] = []
     for entry in entries:
-        if entry.node not in index.graph:
-            continue
         reach = _reach(index, entry.node)
         score, files = _score(reach, roots)
         tier = _tier(reach, files)
         if tier is not None:
-            rank = _rank(index, entry.node, score, doc_mentions(entry, docs))
-            out.append(_Candidate(tier, entry, reach, score, rank))
+            mentions = doc_mentions(entry, docs)
+            rank = _rank(index, entry.node, score, mentions)
+            out.append(
+                _Candidate(tier, entry, reach, score, rank, mentions, entry.node in featured)
+            )
     return out
 
 
@@ -301,41 +325,105 @@ def _candidates(
         if node not in declared:
             entry = _root_entry(node, index.attrs(node), program)
             out.append(_Candidate(_UNDECLARED, entry, reach, score, _rank(index, node, score, 0)))
-    out.sort(key=lambda c: (c.tier, -c.rank, c.entry.node))
+    out.sort(key=lambda c: (c.tier, not c.featured, -c.rank, c.entry.node))
     return out
 
 
-def _same_operation(cand: _Candidate, other: _Candidate) -> bool:
-    """Inside a picked one, wrapping it, mostly its reach, or the same public name."""
-    return (
-        cand.entry.node in other.reach
-        or other.entry.node in cand.reach
-        or len(cand.reach & other.reach) / max(1, len(cand.reach)) > _MAX_OVERLAP
-        or (cand.entry.kind != FUNCTION and cand.entry.public == other.entry.public)
-    )
+@dataclass
+class _Sameness:
+    """Whether two candidates walk the same operation."""
+
+    index: _CallIndex
+    roots: set[str]
+    # ``symbol -> declared entries reaching it``: how shared a callee is.
+    sharers: Counter[str]
+
+    def __call__(self, cand: _Candidate, other: _Candidate) -> bool:
+        """Inside a picked one, wrapping it, mostly its reach, the same public
+        name, or one implementation behind two doors."""
+        return (
+            cand.entry.node in other.reach
+            or other.entry.node in cand.reach
+            or len(cand.reach & other.reach) / max(1, len(cand.reach)) > _MAX_OVERLAP
+            or (cand.entry.kind != FUNCTION and cand.entry.public == other.entry.public)
+            or self._one_core(cand, other)
+        )
+
+    def _one_core(self, a: _Candidate, b: _Candidate) -> bool:
+        """A command and a tool (any two kinds of declared entry) that both run
+        an operation-sized callee hardly any other entry reaches.
+
+        Two doors to one implementation share their core, not their front
+        code, so their reaches overlap too little for the overlap rule.
+        """
+        if _UNDECLARED in (a.tier, b.tier) or a.entry.kind == b.entry.kind:
+            return False
+        ends = {a.entry.node, b.entry.node}
+        for node in a.reach & b.reach:
+            # A callee calling fewer than two others cannot be operation-sized.
+            if (
+                node in ends
+                or self.sharers[node] > _MAX_CORE_SHARERS
+                or self.index.out_deg.get(node, 0) < 2
+            ):
+                continue
+            reach = _reach(self.index, node)
+            if _tier(reach, _score(reach, self.roots)[1]) == 0:
+                return True
+        return False
 
 
-def _pick_diverse(cands: list[_Candidate], roots: set[str], limit: int) -> list[_Candidate]:
+def _sameness(index: _CallIndex, roots: set[str], cands: Iterable[_Candidate]) -> _Sameness:
+    sharers: Counter[str] = Counter()
+    for cand in cands:
+        if cand.tier != _UNDECLARED:
+            sharers.update(cand.reach)
+    return _Sameness(index, roots, sharers)
+
+
+def _swap_for_better_documented(
+    picked: list[_Candidate], cand: _Candidate, twin: _Candidate, same: _Sameness
+) -> None:
+    """Give *twin*'s slot to *cand* when both are declared and *cand* is documented more."""
+    if _UNDECLARED in (cand.tier, twin.tier) or cand.mentions <= twin.mentions:
+        return
+    if any(same(cand, other) for other in picked if other is not twin):
+        return
+    picked[picked.index(twin)] = cand
+
+
+def _pick_diverse(
+    cands: list[_Candidate], roots: set[str], limit: int, same: _Sameness
+) -> list[_Candidate]:
     """The best candidates that are not the same operation twice."""
     picked: list[_Candidate] = []
-    per_package: dict[str, int] = {}
     # Undeclared roots spread across packages when there are several, so one
-    # hub does not fill the group. Declared entries are what the project
-    # exposes, so they are not capped: capping them let a minor route in a
-    # small package beat the second most documented command.
+    # hub does not fill the group, and only fill the lower half of the budget.
+    # Declared entries are what the project exposes, so they are not capped:
+    # capping them let a minor route in a small package beat the second most
+    # documented command.
+    undeclared = _undeclared_limit(limit)
     packages = {package_root_of(_file_of(c.entry.node), roots) for c in cands}
-    cap = max(_MAX_PER_PACKAGE, math.ceil(limit / max(1, len(packages))))
+    cap = max(_MAX_PER_PACKAGE, math.ceil(undeclared / max(1, len(packages))))
     for cand in cands:
-        package = package_root_of(_file_of(cand.entry.node), roots)
-        if cand.tier == _UNDECLARED and per_package.get(package, 0) >= cap:
+        if cand.tier == _UNDECLARED and (
+            len(picked) >= undeclared or _in_package(picked, cand, roots) >= cap
+        ):
             continue
-        if any(_same_operation(cand, other) for other in picked):
+        twin = next((other for other in picked if same(cand, other)), None)
+        if twin is not None:
+            _swap_for_better_documented(picked, cand, twin, same)
             continue
         picked.append(cand)
-        per_package[package] = per_package.get(package, 0) + 1
         if len(picked) >= limit:
             break
     return picked
+
+
+def _in_package(picked: list[_Candidate], cand: _Candidate, roots: set[str]) -> int:
+    """Picks in *cand*'s package."""
+    package = package_root_of(_file_of(cand.entry.node), roots)
+    return sum(package_root_of(_file_of(p.entry.node), roots) == package for p in picked)
 
 
 def _step_weight(index: _CallIndex, node: str) -> float:
@@ -447,7 +535,8 @@ def select_flow_plans(
         code_file_count = _code_file_count(graph)
     entries = declared_entries(graph, read or _no_lines, program, scripts)
     cands = _candidates(index, roots, entries, docs, program)
-    picked = _pick_diverse(cands, roots, flow_page_limit(code_file_count))
+    same = _sameness(index, roots, cands)
+    picked = _pick_diverse(cands, roots, flow_page_limit(code_file_count), same)
     traced = [trace_steps(index, c.entry.node, read) for c in picked]
     titles = _titles([c.entry for c in picked], [steps[0] for steps, _ in traced])
     return [

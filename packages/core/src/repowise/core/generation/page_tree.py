@@ -50,6 +50,7 @@ from ..ids import is_external
 from .layers import import_balance, is_support_layer, reading_bucket
 from .models import GeneratedPage
 from .nav_titles import contextual_label, nav_label
+from .onboarding.slots import NAV_SECTION_ACTIVITY, SLOT_ACTIVE_LANDSCAPE
 
 
 @dataclass
@@ -91,7 +92,7 @@ _TYPE_RANK: dict[str, int] = {
 
 # Onboarding slots that describe the project's recent activity rather than how
 # it works. They close the outline as "Project activity" instead of opening it.
-PROJECT_ACTIVITY_SLOTS: frozenset[str] = frozenset({"active_landscape"})
+PROJECT_ACTIVITY_SLOTS: frozenset[str] = frozenset({SLOT_ACTIVE_LANDSCAPE})
 
 # Page types that form the numbered outline. Everything else (files, symbols,
 # contracts, infra, cycles) is reference material and carries no number.
@@ -176,10 +177,10 @@ def onboarding_slot(page: TreeNode | GeneratedPage) -> str:
     return slot or page.target_path.rsplit("/", 1)[-1]
 
 
-# The stamp a page carries when it belongs under "Project activity". A page
-# written before the stamp existed is recognised by its slot.
+# The stamp a page carries when it belongs under "Project activity"
+# (``onboarding.slots.slot_metadata``). A page written before the stamp existed
+# is recognised by its slot.
 NAV_SECTION_KEY = "nav_section"
-NAV_SECTION_ACTIVITY = "project_activity"
 
 
 def is_project_activity(page: TreeNode | GeneratedPage) -> bool:
@@ -190,14 +191,14 @@ def is_project_activity(page: TreeNode | GeneratedPage) -> bool:
 
 
 def _onboarding_rank(page: GeneratedPage) -> int:
-    """Position of an onboarding page in the canonical reading order."""
-    from .onboarding.slots import ONBOARDING_ORDER
+    """Position of an onboarding page in display order."""
+    from .onboarding.slots import ONBOARDING_SLOTS
 
     slot = onboarding_slot(page)
     try:
-        return ONBOARDING_ORDER.index(slot)
+        return ONBOARDING_SLOTS.index(slot)
     except ValueError:
-        return len(ONBOARDING_ORDER)
+        return len(ONBOARDING_SLOTS)
 
 
 def _sort_key(page: GeneratedPage, reader_rank: dict[str, tuple[int, ...]]) -> tuple:

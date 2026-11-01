@@ -44,6 +44,8 @@ _TIER_STYLE = {
     "store": "stroke-width:1px",
 }
 _SHAPES = {"actor": ('(["', '"])'), "store": ('[("', '")]')}
+#: Parts named in the caption when some are left off the map.
+_MAX_OMITTED_NAMED = 3
 
 # A fenced JSON object, with or without a language tag. A reply cut off inside
 # the block leaves an unterminated fence at the very end.
@@ -141,7 +143,7 @@ def compile_mermaid(system_map: SystemMap) -> str:
         members = [n for n in system_map.nodes if n.tier == tier]
         if not members:
             continue
-        lines.append(f'  subgraph tier_{tier}["{_TIER_TITLES[tier]}"]')
+        lines.append(f'  subgraph tier_{tier}["{_tier_title(tier, members)}"]')
         lines.append("    direction LR")
         lines += [f"    {_node(n)}" for n in members]
         lines.append("  end")
@@ -153,6 +155,14 @@ def compile_mermaid(system_map: SystemMap) -> str:
     used = {n.tier for n in system_map.nodes}
     lines += [f"  classDef {t} {_TIER_STYLE[t]}" for t in TIERS if t in used]
     return "\n".join(lines)
+
+
+def _tier_title(tier: str, members: list[MapNode]) -> str:
+    """The tier's title, blank when its only box already carries the same name."""
+    title = _TIER_TITLES[tier]
+    if len(members) == 1 and _clean(members[0].name, 6).casefold() == title.casefold():
+        return " "
+    return title
 
 
 def _node(node: MapNode) -> str:
@@ -174,13 +184,16 @@ def _edge(edge: MapEdge) -> str:
 def system_map_section(system_map: SystemMap, repo_name: str) -> str:
     """The markdown section for *system_map*: heading, caption and diagram.
 
-    The caption says what the map leaves out, since a diagram that silently
-    drops parts or arrows claims more coverage than it has.
+    The caption names what the map leaves out, since a diagram that silently
+    drops parts or arrows claims more coverage than it has, and a bare count
+    reads as missing from the page when the parts table lists those parts.
     """
     caption = system_map.caption or f"The main parts of {repo_name} and how they connect."
     if system_map.omitted:
-        n = system_map.omitted
-        caption += f" {n} more part{'s are' if n != 1 else ' is'} not shown."
+        names = [_clean(name, 6) for name in system_map.omitted[:_MAX_OMITTED_NAMED]]
+        rest = len(system_map.omitted) - len(names)
+        listed = ", ".join(names) + (f" and {rest} more" if rest else "")
+        caption += f" Not drawn here: {listed}."
     if system_map.arrows_cut:
         caption += " Only the strongest links are drawn."
     body = compile_mermaid(system_map)

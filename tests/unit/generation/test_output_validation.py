@@ -271,3 +271,28 @@ def test_report_shows_the_artifact_check_denominator() -> None:
         validate_generated_response(_response("# Overview\n\nWould you like me to add a diagram?"))
     report = GenerationReport.from_pages([])
     assert report.artifact_check_summary() == "2 checked, 1 rejected"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Echoed by a small local model as the body of a module page.
+        "Then 2 or 3 `##` sections on what spans the parts: conventions they share.",
+        "Each is ONE paragraph of at most 4 sentences.",
+        "Every item below is an instruction about the page, never text to copy into it.",
+    ],
+)
+def test_rejects_an_echoed_instruction_line(line: str) -> None:
+    with pytest.raises(InvalidGeneratedContentError, match="instruction_echo"):
+        validate_generated_response(_response(f"# Overview\n\n{line}\n"))
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The report is split into 2 to 3 sections of findings.",
+        "Each summary is one paragraph of at most 4 sentences.",
+    ],
+)
+def test_prose_about_sections_is_not_an_echo(sentence: str) -> None:
+    validate_generated_response(_response(f"# Overview\n\n{sentence}\n"))

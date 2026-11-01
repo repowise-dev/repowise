@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from .signals import OnboardingSignals
-from .slots import ONBOARDING_ORDER, PROMOTED_SLOTS
+from .slots import ONBOARDING_SLOTS, PROMOTED_SLOTS
 
 # A builder returns either a context object the template can render, or None
 # to indicate the gate failed and the slot should be skipped for this repo.
@@ -46,15 +46,11 @@ class SubkindSpec:
                        renders of one unchanged repository then differ. Such a
                        subkind needs only its ``stub/`` template, because that
                        is the only one that ever renders.
-        needs_module_corroboration: Populate
-                       ``OnboardingSignals.module_corroboration`` for this
-                       subkind. Declared here rather than tested for by slot
-                       name in the level builder, so a second subkind that
-                       wants it cannot silently receive an empty tuple. It
-                       costs a batched store read, and a run emitting no
-                       subkind that wants it does not pay for one.
         needs_parts:   Populate ``OnboardingSignals.parts`` (the top-level
-                       parts and their page summaries), on the same terms.
+                       parts and their page summaries) for this subkind.
+                       Declared here rather than tested for by slot name in
+                       the level builder; it costs a batched store read, and a
+                       run emitting no subkind that wants it does not pay.
     """
 
     slot: str
@@ -63,7 +59,6 @@ class SubkindSpec:
     build_context: BuildContext
     evidence_references: EvidenceReferences | None = None
     deterministic: bool = False
-    needs_module_corroboration: bool = False
     needs_parts: bool = False
 
 
@@ -79,9 +74,9 @@ def register(spec: SubkindSpec) -> None:
         )
     if spec.slot in _REGISTRY:
         raise ValueError(f"Duplicate onboarding subkind: {spec.slot}")
-    if spec.slot not in ONBOARDING_ORDER:
+    if spec.slot not in ONBOARDING_SLOTS:
         raise ValueError(
-            f"Unknown onboarding slot '{spec.slot}'. Add it to ONBOARDING_ORDER in slots.py first."
+            f"Unknown onboarding slot '{spec.slot}'. Add it to ONBOARDING_SLOTS in slots.py first."
         )
     _REGISTRY[spec.slot] = spec
 
@@ -92,12 +87,12 @@ def get_spec(slot: str) -> SubkindSpec | None:
 
 
 def iter_specs() -> list[SubkindSpec]:
-    """Return registered specs in canonical reading order.
+    """Return registered specs in display order.
 
     The promoted slot (project_overview) is not generated
     through this path and are excluded here.
     """
     promoted = set(PROMOTED_SLOTS.values())
     return [
-        _REGISTRY[slot] for slot in ONBOARDING_ORDER if slot not in promoted and slot in _REGISTRY
+        _REGISTRY[slot] for slot in ONBOARDING_SLOTS if slot not in promoted and slot in _REGISTRY
     ]

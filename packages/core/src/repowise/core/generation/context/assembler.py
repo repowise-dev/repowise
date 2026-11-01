@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -67,6 +68,9 @@ from .token_budget import (
 )
 
 log = structlog.get_logger(__name__)
+
+# A module prompt's size besides its code excerpts: facts, parts, readme, instructions.
+_MODULE_FRAME_TOKENS = 5000
 
 
 # Maximum imports to include before truncating
@@ -300,6 +304,11 @@ class ContextAssembler:
         # Checkout root, used to read package boundaries and module READMEs off disk.
         self._repo_path = repo_path
         self._package_roots: set[str] | None = None
+
+    def use_context_window(self, window: int | None) -> None:
+        """Size material for the window the generating model runs with."""
+        if window and window != self._config.context_window:
+            self._config = replace(self._config, context_window=window)
 
     # ------------------------------------------------------------------
     # Token utilities
@@ -660,6 +669,10 @@ class ContextAssembler:
 
         own = _not_under(files, child_pages)
         budget = module_budget(len(files), len(own), full_material)
+        cap = budget.excerpt_tokens
+        budget = budget._replace(
+            excerpt_tokens=self._config.material_budget(cap, cap + _MODULE_FRAME_TOKENS)
+        )
         api_rows, api_cost = self._excerpt_public_api(public_api or [], budget.excerpt_tokens)
         excerpts, declared_files = _own_excerpts(
             own,
