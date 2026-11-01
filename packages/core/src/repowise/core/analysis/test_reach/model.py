@@ -196,13 +196,17 @@ def tests_matching_by_name(
     by_name: dict[str, list[str]] = {}
     for path in test_files:
         by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+    files_by_dir: dict[str, list[str]] = {}
+    for path in all_files:
+        dir_path, _, _ = path.rpartition("/")
+        files_by_dir.setdefault(dir_path, []).append(path)
+
     owned_by: dict[str, set[str]] = {}
-    for source in all_files - set(test_files):
-        directory, _, _name = source.rpartition("/")
-        for test_name in paired_test_names(source):
-            for test in by_name.get(test_name, ()):
-                if test.rpartition("/")[0] == directory:
-                    owned_by.setdefault(test, set()).add(source)
+    for test in test_files:
+        dir_path, _, test_name = test.rpartition("/")
+        for source in files_by_dir.get(dir_path, ()):
+            if source != test and test_name in paired_test_names(source):
+                owned_by.setdefault(test, set()).add(source)
     out: dict[str, ReachedBy] = {}
     for target in targets:
         found = [

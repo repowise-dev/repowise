@@ -21,6 +21,8 @@ from repowise.core.analysis.test_reachability import (
     files_reached_by_tests,
     files_with_paired_tests,
     rank_reaching,
+)
+from repowise.core.analysis.test_reachability import (
     tests_matching_by_name as name_match,
 )
 

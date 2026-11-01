@@ -151,10 +151,14 @@ async def _code_file_tests(
     except Exception:
         reached = {}
     subjects = {p: _subject_names(p) for p in candidates}
+    try:
+        indexed_files = await cached_file_paths(session, repo_id)
+    except Exception:
+        indexed_files = ()
     named = tests_matching_by_name(
         sorted({n for ns in subjects.values() for n in ns}),
         test_files,
-        await cached_file_paths(session, repo_id),
+        indexed_files,
     )
     rows: dict[str, FileTests] = {}
     for p in candidates:
