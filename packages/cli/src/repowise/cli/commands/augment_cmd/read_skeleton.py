@@ -284,6 +284,8 @@ _MAX_LEAD_LINES = 40
 #: grammars start the decorated symbol). Never a blank: a start that lands on
 #: one means the symbol moved.
 _LEAD_RE = re.compile(r"^\s*(?:@|#\[|[)\]]+[,;]?\s*$)")
+#: Comment or blank lines allowed between a decorator and its declaration.
+_BETWEEN_RE = re.compile(r"^\s*(?:#(?:[\s!]|$)|//|/\*|\*|$)")
 
 
 def _bounds_current(lines: list[str], symbols: list[SkeletonSymbol]) -> bool:
@@ -318,7 +320,10 @@ def _declaration_line(lines: list[str], start: int) -> str:
     window = lines[start : start + _MAX_LEAD_LINES]
     depth = 0  # open brackets of a multi-line decorator or attribute
     for i, line in enumerate(window):
-        if depth <= 0 and not _LEAD_RE.match(line):
+        # Past a decorator, a comment or blank line is still lead-in; the start
+        # itself never is, or a one-line shift would land on one and pass.
+        between = i > 0 and _BETWEEN_RE.match(line)
+        if depth <= 0 and not between and not _LEAD_RE.match(line):
             return "\n".join(window[: i + 1])
         depth += line.count("(") + line.count("[") - line.count(")") - line.count("]")
     return ""

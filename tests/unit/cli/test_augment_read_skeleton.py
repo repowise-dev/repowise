@@ -418,6 +418,9 @@ def test_one_moved_symbol_is_enough_to_count_as_stale() -> None:
     decorated = ["@pytest.mark.parametrize(", "    'x',", "    [1, 2],", ")", "def test_x(x):", "    pass"]
     tail = [SkeletonSymbol(name="test_x", kind="function", start_line=4, end_line=6)]
     assert _bounds_current(decorated, tail) is True
+    # A comment between a decorator and its declaration is still lead-in.
+    noted = ["@cached", "# note", "def f():", "    pass"]
+    assert _bounds_current(noted, [SkeletonSymbol(name="f", kind="function", start_line=1, end_line=4)]) is True
     # One line inserted above a symbol lands its start on the blank line.
     shifted = ["def a():", "    pass", "", "", "def b():", "    pass"]
     assert _bounds_current(shifted, [SkeletonSymbol(name="b", kind="function", start_line=4, end_line=5)]) is False
