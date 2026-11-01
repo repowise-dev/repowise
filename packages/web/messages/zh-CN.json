@@ -564,7 +564,7 @@
       "coChangeNoticeTitle": "本次发布中健康分数发生了变化。",
       "coChangeNoticeMore": "有哪些变化",
       "coChangeNoticeLess": "收起",
-      "coChangeNoticeBody": "部分文件的代码类型已重新归类。仓库根目录以下的 tools/ 文件夹现在算作产品代码并参与评分；只有根目录或工程用的 tools/ 文件夹仍算作工具代码。Python 的 _vendor/ 文件夹和 Salesforce 静态资源库算作第三方代码，db/ 下带前缀的迁移文件夹算作迁移代码，因此不再参与评分。JavaScript 或 TypeScript 的 src 目录内的 tests/ 文件夹算作产品代码，其中的文件参与评分。Apex 和 COBOL 文件参与评分，Scala 提供数据流相关的问题，switch 代码块内的注释不计入所在函数的评分。含有这些文件的仓库分数可能升高或降低；其他仓库分数不变。",
+      "coChangeNoticeBody": "部分问题和分数有所变化。抽象方法、接口方法和 extern 方法不再计为函数；switch 只增加一层嵌套，其 case 分支不再增加嵌套；Java、C、C++、C#、Dart、Objective-C 和 PHP 中的三元分派链不再增加嵌套；扁平的布尔条件链和 TSX 样式对象不再计入复杂度或代码。C++ 的运算符、析构函数和通过宏声明的函数，以及 Dart 构造函数，都有了各自的名称。多项性能和可维护性问题现在只在其描述的模式出现时才会触发，重复嵌套改为建议级别，C 和 C++ 的 #if 代码块按其最大的分支计算，COBOL 的 GO TO DEPENDING ON 也能正确计数。仓库平均分在所有界面上都排除工具、第三方和生成的文件，健康度条在各处使用相同的五个等级，重构收益通过重新为文件评分来估算。含有这些模式的仓库分数可能升高或降低；其他仓库分数不变。",
       "tabs": {
         "performance": "性能",
         "findings": "发现",
