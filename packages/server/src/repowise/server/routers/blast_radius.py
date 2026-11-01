@@ -91,8 +91,9 @@ async def _warm_default(factory: Any, repo_id: str, checkout: str | None, change
         async with get_session(factory) as session:
             files = await resolve_change_files(session, repo_id, checkout, change_id)
             await _analyze_cached(session, repo_id, files[:MAX_CHANGED_FILES], DEFAULT_DEPTH)
-    except Exception:  # a warm-up never fails anything; the real request reports errors
+    except Exception:  # best-effort warm-up: any failure here is the real request's to report
         log.debug("blast radius warm-up failed", exc_info=True)
+        return
 
 
 router = APIRouter(

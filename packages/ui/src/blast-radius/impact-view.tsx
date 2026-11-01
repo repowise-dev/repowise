@@ -43,6 +43,7 @@ import {
   stepWords,
   type StepBand,
   type StepBlock,
+  type StepMap,
 } from "./blast-step-model";
 import { ChangePicker, changeName } from "./change-picker";
 import { HealthCheckButton, HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
@@ -251,6 +252,103 @@ function bandFocus(band: StepBand, map: { blocks: StepBlock[] }): DependentsFocu
   return { label: `reached through ${name(band.from)} to ${name(band.to)}`, paths: new Set(band.paths) };
 }
 
+/** Steps whose "N more folders" the reader opened, and how to open or fold one. */
+function useExpandedColumns() {
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
+  const toggle = useCallback(
+    (column: number) =>
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(column)) next.delete(column);
+        else next.add(column);
+        return next;
+      }),
+    [],
+  );
+  return { expanded, toggle };
+}
+
+/** The list row under the pointer, read back as the block it sits in. */
+function useListHighlight(steps: StepMap) {
+  const [hoverPath, setHoverPath] = useState<string | null>(null);
+  const blockByPath = useMemo(() => {
+    const byPath = new Map<string, string>();
+    for (const b of steps.blocks) for (const p of b.paths) byPath.set(p, b.key);
+    return byPath;
+  }, [steps]);
+  return { highlightKey: hoverPath ? (blockByPath.get(hoverPath) ?? null) : null, setHoverPath };
+}
+
+/**
+ * What the drawing narrows the dependents list to: a picked block (by
+ * default the step-1 folder with the most poor-health files) or a picked
+ * band, never both. A rebuilt map that drops either shows every file.
+ */
+function useStepSelection(steps: StepMap, reach: Reach) {
+  const [pickedKey, setPickedKey] = useState<string | null>(() => defaultStepBlock(steps)?.key ?? null);
+  const [bandKey, setBandKey] = useState<string | null>(null);
+  const band = bandKey ? steps.bands.find((b) => b.key === bandKey) : undefined;
+  // A band gone from the rebuilt map stays gone, rather than relighting if the map flips back.
+  useEffect(() => {
+    if (bandKey && !band) setBandKey(null);
+  }, [bandKey, band]);
+  const selected = pickedKey === null ? undefined : steps.blocks.find((b) => b.key === pickedKey);
+  const selectedKey = band ? null : (selected?.key ?? null);
+  const focus = useMemo(
+    () => (band ? bandFocus(band, steps) : selected ? stepFocus(selected, reach) : undefined),
+    [band, steps, selected, reach],
+  );
+  return {
+    selectedKey,
+    bandKey: band?.key ?? null,
+    focus,
+    // Picking the picked block again shows every file.
+    pickBlock: (b: StepBlock) => {
+      setBandKey(null);
+      setPickedKey(selectedKey === b.key ? null : b.key);
+    },
+    pickBand: (b: StepBand) => setBandKey(bandKey === b.key ? null : b.key),
+    clear: () => {
+      setPickedKey(null);
+      setBandKey(null);
+    },
+  };
+}
+
+function DependentsSection({
+  reach,
+  fileHref,
+  focus,
+  onClearFocus,
+  onHoverPath,
+}: {
+  reach: Reach;
+  fileHref: ((path: string) => string) | undefined;
+  focus: DependentsFocus | undefined;
+  onClearFocus: () => void;
+  onHoverPath: (path: string | null) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  return (
+    <Section title="Files that depend on this" hint={reach.files.length.toLocaleString()}>
+      <AffectedByModule
+        reach={reach}
+        fileHref={fileHref}
+        query={filter}
+        onQueryChange={setFilter}
+        focus={focus}
+        onClearFocus={onClearFocus}
+        onHoverPath={onHoverPath}
+      />
+      {reach.tests.length > 0 && (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          Not counted here: {count(reach.tests.length, "test file")} that import the change. They are tests to run.
+        </p>
+      )}
+    </Section>
+  );
+}
+
 function ReviewBody({
   analysis,
   change,
@@ -268,45 +366,11 @@ function ReviewBody({
 }) {
   const { result, changedFiles, changedTotal } = analysis;
   const reach = useMemo(() => readReach(result, changedFiles), [result, changedFiles]);
-  // Steps whose "N more folders" the reader opened.
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
-  const steps = useMemo(() => buildStepMap(reach, expanded), [reach, expanded]);
-  const toggleColumn = (column: number) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(column)) next.delete(column);
-      else next.add(column);
-      return next;
-    });
-  // A picked band narrows the list to the files it pulls in; it replaces a picked block.
-  const [bandKey, setBandKey] = useState<string | null>(null);
-  const band = bandKey ? steps.bands.find((b) => b.key === bandKey) : undefined;
-  // A band gone from the rebuilt map stays gone, rather than relighting if the map flips back.
-  useEffect(() => {
-    if (bandKey && !band) setBandKey(null);
-  }, [bandKey, band]);
-  // The list row under the pointer lights its block in the drawing.
-  const [hoverPath, setHoverPath] = useState<string | null>(null);
-  const blockByPath = useMemo(() => {
-    const byPath = new Map<string, string>();
-    for (const b of steps.blocks) for (const p of b.paths) byPath.set(p, b.key);
-    return byPath;
-  }, [steps]);
-  const highlightKey = hoverPath ? (blockByPath.get(hoverPath) ?? null) : null;
-  // Opens on the step-1 folder with the most poor-health files; picking it again shows every file.
-  const [pickedKey, setSelectedKey] = useState<string | null>(() => defaultStepBlock(steps)?.key ?? null);
-  // A new depth or a folded step can drop the picked block; the list then shows every file.
-  const selected = pickedKey === null ? undefined : steps.blocks.find((b) => b.key === pickedKey);
-  const selectedKey = selected?.key ?? null;
-  const focus = useMemo(
-    () => (band ? bandFocus(band, steps) : selected ? stepFocus(selected, reach) : undefined),
-    [band, steps, selected, reach],
-  );
-  const clear = () => {
-    setSelectedKey(null);
-    setBandKey(null);
-  };
-  const [filter, setFilter] = useState("");
+  const columns = useExpandedColumns();
+  const steps = useMemo(() => buildStepMap(reach, columns.expanded), [reach, columns.expanded]);
+  const pick = useStepSelection(steps, reach);
+  const { highlightKey, setHoverPath } = useListHighlight(steps);
+  const reaches = reach.files.length > 0;
   return (
     <>
       <BlastRadiusVerdict
@@ -321,41 +385,29 @@ function ReviewBody({
       />
       {check && <HealthCheckPanel state={check.state} fileHref={fileHref} />}
       <Section title="Where it reaches" action={<DepthSelect value={maxDepth} onChange={onDepth} />}>
-        {reach.files.length > 0 ? (
+        {reaches ? (
           <BlastRadiusSteps
             map={steps}
-            selectedKey={band ? null : selectedKey}
-            selectedBand={band?.key ?? null}
+            selectedKey={pick.selectedKey}
+            selectedBand={pick.bandKey}
             highlightKey={highlightKey}
-            onSelect={(b: StepBlock) => {
-              setBandKey(null);
-              setSelectedKey(!band && selectedKey === b.key ? null : b.key);
-            }}
-            onSelectBand={(b: StepBand) => setBandKey(bandKey === b.key ? null : b.key)}
-            onToggleColumn={toggleColumn}
-            onClear={clear}
+            onSelect={pick.pickBlock}
+            onSelectBand={pick.pickBand}
+            onToggleColumn={columns.toggle}
+            onClear={pick.clear}
           />
         ) : (
           <NoReach depth={maxDepth} tests={reach.tests.length} />
         )}
       </Section>
-      {reach.files.length > 0 && (
-        <Section title="Files that depend on this" hint={reach.files.length.toLocaleString()}>
-          <AffectedByModule
-            reach={reach}
-            fileHref={fileHref}
-            query={filter}
-            onQueryChange={setFilter}
-            focus={focus}
-            onClearFocus={clear}
-            onHoverPath={setHoverPath}
-          />
-          {reach.tests.length > 0 && (
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              Not counted here: {count(reach.tests.length, "test file")} that import the change. They are tests to run.
-            </p>
-          )}
-        </Section>
+      {reaches && (
+        <DependentsSection
+          reach={reach}
+          fileHref={fileHref}
+          focus={pick.focus}
+          onClearFocus={pick.clear}
+          onHoverPath={setHoverPath}
+        />
       )}
       <ChangedFilesSection total={changedTotal ?? changedFiles.length}>
         <ChangedFilesList result={result} reach={reach} fileHref={fileHref} />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MutableRefObject, type RefObject } from "react";
 import {
   STEP_LAYOUT,
   neighborBlock,
@@ -55,6 +55,94 @@ function bandPath(b: StepBand): string {
   ].join(" ");
 }
 
+/** What the per-block handlers share: the map, the refs and the hover state. */
+interface Interaction {
+  map: StepMap;
+  hoverKey: string | null;
+  setHoverKey: (key: string | null) => void;
+  setActiveKey: (key: string) => void;
+  pointer: MutableRefObject<string>;
+  firstTap: MutableRefObject<boolean>;
+  refs: MutableRefObject<Map<string, HTMLElement | SVGGElement>>;
+  activate: (b: StepBlock) => void;
+  onClear: () => void;
+}
+
+/** The block keyboard focus enters on: the last one focused, else the first. */
+function tabStop(map: StepMap, activeKey: string | null): string | null {
+  if (activeKey && map.blocks.some((b) => b.key === activeKey)) return activeKey;
+  return map.blocks[0]?.key ?? null;
+}
+
+/** Where focus goes after a step opens (its "Show fewer" control) or folds (its "N more"). */
+function focusAfterToggle(b: StepBlock): string | null {
+  if (b.other) return `${b.column}:less`;
+  if (b.less) return `${b.column}:other`;
+  return null;
+}
+
+/** Mouse hover and touch: a mouse highlights on hover; a first touch tap is marked to only highlight. */
+function pointerHandlers(b: StepBlock, x: Interaction) {
+  const notTouch = () => x.pointer.current !== "touch";
+  return {
+    onPointerDown: (e: { pointerType: string }) => {
+      x.pointer.current = e.pointerType;
+      x.firstTap.current = e.pointerType === "touch" && x.hoverKey !== b.key && !b.less && !b.other;
+    },
+    onPointerMove: (e: { pointerType: string }) => {
+      x.pointer.current = e.pointerType;
+    },
+    onMouseEnter: () => notTouch() && x.setHoverKey(b.key),
+    onMouseLeave: () => notTouch() && x.setHoverKey(null),
+  };
+}
+
+/** Focus highlights for the keyboard; a blur ends it unless the mouse is still over the block. */
+function focusHandlers(b: StepBlock, x: Interaction) {
+  return {
+    onFocus: () => {
+      x.setActiveKey(b.key);
+      if (x.pointer.current !== "touch") x.setHoverKey(b.key);
+    },
+    onBlur: () => {
+      if (x.pointer.current !== "mouse") x.setHoverKey(null);
+    },
+  };
+}
+
+/** A click picks, except a first tap on touch, which shows the path and the tooltip. */
+function clickHandler(b: StepBlock, x: Interaction) {
+  return () => {
+    if (!x.firstTap.current) return x.activate(b);
+    x.firstTap.current = false;
+    x.setHoverKey(b.key);
+  };
+}
+
+/** Arrows move between blocks, Enter or Space picks, Escape clears. */
+function keyHandler(b: StepBlock, x: Interaction) {
+  const keys: Record<string, () => void> = {
+    Enter: () => x.activate(b),
+    " ": () => x.activate(b),
+    Escape: () => {
+      x.setHoverKey(null);
+      x.onClear();
+    },
+  };
+  return (e: KeyboardEvent) => {
+    const dir = ARROWS[e.key];
+    const run = dir ? () => moveFocus(b, dir, x) : keys[e.key];
+    if (!run) return;
+    if (e.key !== "Escape") e.preventDefault();
+    run();
+  };
+}
+
+function moveFocus(b: StepBlock, dir: StepDirection, x: Interaction) {
+  const next = neighborBlock(x.map, b.key, dir);
+  if (next) x.refs.current.get(next.key)?.focus();
+}
+
 /**
  * Hover, focus and touch for blocks and rows: a mouse highlights on hover; on
  * touch the first tap highlights and the second picks. Keyboard focus
@@ -74,20 +162,25 @@ function useStepInteraction(map: StepMap, onActivate: (b: StepBlock) => void, on
     // A rebuilt map can drop the hovered block (a step folded); its highlight goes with it.
     if (hoverKey && !map.blocks.some((b) => b.key === hoverKey)) setHoverKey(null);
     const target = pendingFocus.current;
-    if (target) {
-      pendingFocus.current = null;
-      refs.current.get(target)?.focus();
-    }
+    pendingFocus.current = null;
+    if (target) refs.current.get(target)?.focus();
   }, [map, hoverKey]);
 
-  const activate = (b: StepBlock) => {
-    if (b.other) pendingFocus.current = `${b.column}:less`;
-    if (b.less) pendingFocus.current = `${b.column}:other`;
-    onActivate(b);
+  const x: Interaction = {
+    map,
+    hoverKey,
+    setHoverKey,
+    setActiveKey,
+    pointer,
+    firstTap,
+    refs,
+    activate: (b) => {
+      pendingFocus.current = focusAfterToggle(b);
+      onActivate(b);
+    },
+    onClear,
   };
-
-  const tabKey =
-    (activeKey && map.blocks.some((b) => b.key === activeKey) && activeKey) || map.blocks[0]?.key || null;
+  const tabKey = tabStop(map, activeKey);
 
   const props = (b: StepBlock) => ({
     ref: (el: HTMLElement | SVGGElement | null) => {
@@ -95,52 +188,10 @@ function useStepInteraction(map: StepMap, onActivate: (b: StepBlock) => void, on
       else refs.current.delete(b.key);
     },
     tabIndex: b.key === tabKey ? 0 : -1,
-    onPointerDown: (e: { pointerType: string }) => {
-      pointer.current = e.pointerType;
-      firstTap.current = e.pointerType === "touch" && hoverKey !== b.key && !b.less && !b.other;
-    },
-    onPointerMove: (e: { pointerType: string }) => {
-      pointer.current = e.pointerType;
-    },
-    onMouseEnter: () => {
-      if (pointer.current !== "touch") setHoverKey(b.key);
-    },
-    onMouseLeave: () => {
-      if (pointer.current !== "touch") setHoverKey(null);
-    },
-    onFocus: () => {
-      setActiveKey(b.key);
-      if (pointer.current !== "touch") setHoverKey(b.key);
-    },
-    onBlur: () => {
-      // The mouse may still be over it; only a keyboard or touch highlight ends on blur.
-      if (pointer.current !== "mouse") setHoverKey(null);
-    },
-    onClick: () => {
-      // On touch the first tap shows the path and the tooltip; the second picks.
-      if (firstTap.current) {
-        firstTap.current = false;
-        setHoverKey(b.key);
-        return;
-      }
-      activate(b);
-    },
-    onKeyDown: (e: KeyboardEvent) => {
-      const dir = ARROWS[e.key];
-      if (dir) {
-        e.preventDefault();
-        const next = neighborBlock(map, b.key, dir);
-        if (next) refs.current.get(next.key)?.focus();
-        return;
-      }
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        activate(b);
-      } else if (e.key === "Escape") {
-        setHoverKey(null);
-        onClear();
-      }
-    },
+    ...pointerHandlers(b, x),
+    ...focusHandlers(b, x),
+    onClick: clickHandler(b, x),
+    onKeyDown: keyHandler(b, x),
   });
   return { hoverKey, props };
 }

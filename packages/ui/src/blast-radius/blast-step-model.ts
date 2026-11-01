@@ -10,7 +10,7 @@
  * test files are dropped here.
  */
 
-import { isWeak, type Reach } from "./blast-map-model";
+import { isWeak, type FileMarks, type Reach } from "./blast-map-model";
 
 /** Columns: changed, then 1, 2 and 3 steps away. Deeper files fold into the last. */
 export const STEP_COLUMNS = 4;
@@ -200,24 +200,22 @@ function folderBlocks(column: number, members: Member[], expanded: boolean): Raw
   ];
 }
 
-/** Lay the reach out in step columns; *expanded* columns show every folder instead of folding the rest. */
-export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new Set()): StepMap {
-  const L = STEP_LAYOUT;
-  const changed = reach.changed.filter((m) => !m.isTest);
+/** Each column's files: the changed sources first, then the reached files by step. */
+function columnMembers(reach: Reach, changed: FileMarks[]): Member[][] {
   const perColumn: Member[][] = [changed.map((m) => ({ path: m.path, weak: isWeak(m) })), [], [], []];
-  const fileColumn = new Map<string, number>(changed.map((m) => [m.path, 0]));
-  for (const f of reach.files) {
-    const c = columnOf(f.depth);
-    perColumn[c]!.push({ path: f.path, weak: isWeak(f) });
-    fileColumn.set(f.path, c);
-  }
+  for (const f of reach.files) perColumn[columnOf(f.depth)]!.push({ path: f.path, weak: isWeak(f) });
+  return perColumn;
+}
 
-  const raw = perColumn.map((ms, c) => folderBlocks(c, ms, expanded.has(c)));
-  const totals = raw.map((col) => col.reduce((n, b) => n + b.files, 0));
+/**
+ * Blocks placed top to bottom in their columns. One scale for every column,
+ * so a block's height means the same everywhere; every block starts at the
+ * label's height and grows with its files, so the tallest column never
+ * passes the body height, however lopsided the reach.
+ */
+function placeBlocks(raw: RawBlock[][], totals: number[]): { blocks: StepBlock[]; bottom: number } {
+  const L = STEP_LAYOUT;
   const maxBlocks = Math.max(1, ...raw.map((col) => col.length));
-  // One scale for every column, so a block's height means the same everywhere.
-  // Every block starts at the label's height and grows with its files, so the
-  // tallest column never passes the body height, however lopsided the reach.
   const scale = Math.max(0, L.bodyHeight - L.gap * (maxBlocks - 1) - L.minBlock * maxBlocks) / Math.max(1, ...totals);
   const blocks: StepBlock[] = [];
   let bottom: number = L.top;
@@ -230,16 +228,24 @@ export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new S
     }
     bottom = Math.max(bottom, y - L.gap);
   });
+  return { blocks, bottom };
+}
 
+interface Flow {
+  from: StepBlock;
+  to: StepBlock;
+  files: number;
+  paths: string[];
+}
+
+/** A file reached at step h joins folder(via) at step h-1 to its own folder; one flow per pair of blocks. */
+function collectFlows(reach: Reach, blocks: StepBlock[]): Flow[] {
   const blockOf = new Map<string, StepBlock>();
   for (const b of blocks) for (const p of b.paths) blockOf.set(p, b);
-
-  // A file reached at step h joins folder(via) at step h-1 to its own folder.
-  const flows = new Map<string, { from: StepBlock; to: StepBlock; files: number; paths: string[] }>();
+  const flows = new Map<string, Flow>();
   for (const f of reach.files) {
-    if (!f.via) continue;
     const to = blockOf.get(f.path);
-    const from = blockOf.get(f.via);
+    const from = f.via ? blockOf.get(f.via) : undefined;
     if (!to || !from || from.column !== to.column - 1) continue;
     const key = `${from.key}>${to.key}`;
     const flow = flows.get(key) ?? { from, to, files: 0, paths: [] };
@@ -247,31 +253,33 @@ export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new S
     flow.paths.push(f.path);
     flows.set(key, flow);
   }
-  const ordered = [...flows.values()].sort(
-    (a, b) => a.from.column - b.from.column || a.from.y - b.from.y || a.to.y - b.to.y,
-  );
-  const outSum = new Map<string, number>();
-  const inSum = new Map<string, number>();
-  for (const f of ordered) {
-    outSum.set(f.from.key, (outSum.get(f.from.key) ?? 0) + f.files);
-    inSum.set(f.to.key, (inSum.get(f.to.key) ?? 0) + f.files);
-  }
-  // Each end is normalized to its block: a block's outgoing bands fill its
-  // height top to bottom, and so do its incoming ones.
-  const outOff = new Map<string, number>();
+  return [...flows.values()].sort((a, b) => a.from.column - b.from.column || a.from.y - b.from.y || a.to.y - b.to.y);
+}
+
+function sumBy(flows: Flow[], end: (f: Flow) => StepBlock): Map<string, number> {
+  const sums = new Map<string, number>();
+  for (const f of flows) sums.set(end(f).key, (sums.get(end(f).key) ?? 0) + f.files);
+  return sums;
+}
+
+/**
+ * Bands from flows, each end normalized to its block: a block's outgoing
+ * bands fill its height top to bottom, and so do its incoming ones.
+ */
+function shapeBands(ordered: Flow[]): StepBand[] {
+  const outSum = sumBy(ordered, (f) => f.from);
+  const inSum = sumBy(ordered, (f) => f.to);
   const inOff = new Map<string, number>();
-  const inOrder = [...ordered].sort((a, b) => a.to.y - b.to.y || a.from.y - b.from.y);
   const inStart = new Map<string, number>();
-  for (const f of inOrder) {
-    const k = `${f.from.key}>${f.to.key}`;
+  for (const f of [...ordered].sort((a, b) => a.to.y - b.to.y || a.from.y - b.from.y)) {
     const off = inOff.get(f.to.key) ?? 0;
-    inStart.set(k, off);
+    inStart.set(`${f.from.key}>${f.to.key}`, off);
     inOff.set(f.to.key, off + (f.to.height * f.files) / inSum.get(f.to.key)!);
   }
-  const bands: StepBand[] = ordered.map((f) => {
+  const outOff = new Map<string, number>();
+  return ordered.map((f) => {
     const key = `${f.from.key}>${f.to.key}`;
     const h0 = (f.from.height * f.files) / outSum.get(f.from.key)!;
-    const h1 = (f.to.height * f.files) / inSum.get(f.to.key)!;
     const o0 = outOff.get(f.from.key) ?? 0;
     outOff.set(f.from.key, o0 + h0);
     return {
@@ -281,15 +289,23 @@ export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new S
       files: f.files,
       paths: f.paths,
       fromChanged: f.from.column === 0,
-      x0: f.from.x + L.blockWidth,
+      x0: f.from.x + STEP_LAYOUT.blockWidth,
       y0: f.from.y + o0,
       h0,
       x1: f.to.x,
       y1: f.to.y + inStart.get(key)!,
-      h1,
+      h1: (f.to.height * f.files) / inSum.get(f.to.key)!,
     };
   });
+}
 
+/** Lay the reach out in step columns; *expanded* columns show every folder instead of folding the rest. */
+export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new Set()): StepMap {
+  const L = STEP_LAYOUT;
+  const changed = reach.changed.filter((m) => !m.isTest);
+  const raw = columnMembers(reach, changed).map((ms, c) => folderBlocks(c, ms, expanded.has(c)));
+  const totals = raw.map((col) => col.reduce((n, b) => n + b.files, 0));
+  const { blocks, bottom } = placeBlocks(raw, totals);
   return {
     width: STEP_COLUMNS * L.colPitch,
     height: bottom + L.bottom,
@@ -300,7 +316,7 @@ export function buildStepMap(reach: Reach, expanded: ReadonlySet<number> = new S
       expanded: raw[c]!.some((b) => b.less),
     })),
     blocks,
-    bands,
+    bands: shapeBands(collectFlows(reach, blocks)),
     testsNotDrawn: reach.tests.length,
     changedTestsNotDrawn: reach.changed.length - changed.length,
   };
