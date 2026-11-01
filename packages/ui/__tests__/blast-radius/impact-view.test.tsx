@@ -258,6 +258,9 @@ describe("pull request links", () => {
       expect(changeIdFromLink(id)).toBe(id);
       expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
     }
+    // A branch named like a picker id keeps its prefix both ways.
+    expect(changeLinkParam("branch:working-tree")).toBe("branch:working-tree");
+    expect(changeIdFromLink(changeLinkParam("branch:working-tree"))).toBe("branch:working-tree");
     // A malformed commit id stays a branch name rather than a bad commit.
     expect(changeIdFromLink("commit:abc")).toBe("branch:commit:abc");
   });

@@ -15,7 +15,7 @@ export function changeLinkParam(changeId: string): string {
   const branch = changeId.replace(/^branch:/, "");
   // A branch named like the other two forms keeps its prefix; `:` never
   // appears in a git branch name, so the prefixed form is unambiguous.
-  return branch === "wip" || SHA.test(branch) ? `branch:${branch}` : branch;
+  return branch === "wip" || branch === "working-tree" || SHA.test(branch) ? `branch:${branch}` : branch;
 }
 
 /**
