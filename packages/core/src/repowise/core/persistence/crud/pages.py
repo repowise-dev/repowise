@@ -773,6 +773,33 @@ async def list_outline_labels(session: AsyncSession, repository_id: str) -> list
     ]
 
 
+async def list_outline_labels(session: AsyncSession, repository_id: str) -> list[Any]:
+    """Every outline page's id, parent and navigation label, for naming rows in place.
+
+    The outline is the overview, onboarding, module and walkthrough pages: a
+    few hundred rows at most.
+    """
+    from types import SimpleNamespace
+
+    from repowise.core.generation.nav_titles import nav_label
+
+    rows = await session.execute(
+        select(Page.id, Page.parent_page_id, Page.page_type, Page.title).where(
+            Page.repository_id == repository_id,
+            Page.page_type.in_(("repo_overview", "onboarding", "module_page", "flow_page")),
+            Page.freshness_status != "tombstone",
+        )
+    )
+    return [
+        SimpleNamespace(
+            id=pid,
+            parent_page_id=parent,
+            nav_title=nav_label(title or "", page_type),
+        )
+        for pid, parent, page_type, title in rows.tuples().all()
+    ]
+
+
 async def list_page_summaries(
     session: AsyncSession, repository_id: str, listing: PageListing
 ) -> list[Any]:
