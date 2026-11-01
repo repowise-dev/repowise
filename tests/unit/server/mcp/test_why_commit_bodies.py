@@ -182,7 +182,9 @@ def test_only_a_real_heading_opens_a_skipped_section() -> None:
     assert not excerpt.startswith("Registration and first match")
 
 
-async def test_a_body_cut_at_the_index_cap_is_read_whole_from_the_clone(tmp_path: Path) -> None:
+async def test_a_body_cut_at_the_index_cap_is_read_whole_from_the_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cut = "x" * 2000
     meta = SimpleNamespace(
         significant_commits_json=json.dumps([{"sha": "8a0b18fd", "message": "m", "body": cut}])
@@ -194,12 +196,6 @@ async def test_a_body_cut_at_the_index_cap_is_read_whole_from_the_clone(tmp_path
         calls.append(shas)
         return {}
 
-    import repowise.server.mcp_server.tool_why.commit_bodies as mod
-
-    original = mod._live_bodies
-    mod._live_bodies = fake_live  # type: ignore[assignment]
-    try:
-        await attach_body_excerpts(result, tmp_path, {"src/router.ts": meta}, result["query"])
-    finally:
-        mod._live_bodies = original  # type: ignore[assignment]
+    monkeypatch.setattr(commit_bodies, "_live_bodies", fake_live)
+    await attach_body_excerpts(result, tmp_path, {"src/router.ts": meta}, result["query"])
     assert calls == [["8a0b18fd"]]
