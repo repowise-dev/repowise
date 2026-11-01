@@ -216,7 +216,7 @@ def build_system_map(
         for a in programs
     ]
     for unit in sorted(kept, key=lambda u: (TIERS.index(tiers[u]), -len(units[u]), u)):
-        name = labels.get(unit) or package_names.get(unit) or _last_segment(unit, repo_name)
+        name = _display_name(unit, labels.get(unit) or package_names.get(unit), repo_name)
         nodes.append(
             _unit_node(unit, ids[unit], tiers[unit], name, units[unit], files, starts, pages)
         )
@@ -240,7 +240,7 @@ def build_system_map(
     ]
     drawn, cut = _dependency_edges(graph.rolled, ids, graph.runtime)
     return SystemMap(
-        nodes=tuple(nodes),
+        nodes=_connected_actors(nodes, map_edges),
         edges=tuple(map_edges + drawn),
         omitted=len(units) - len(kept),
         arrows_cut=cut,
@@ -415,8 +415,10 @@ def _units(
     owner, _ = assign_containers(manifests, files)
     units: dict[str, list[str]] = defaultdict(list)
     for path in sorted(files):
-        if path in owner:
-            units[owner[path]].append(path)
+        # A file no manifest claims belongs to the repository root. Dropping it
+        # lost whole codebases whose manifest is not a parsed file (a Go
+        # module's go.mod), leaving the map to a side package's few scripts.
+        units[owner.get(path, "")].append(path)
     opened = False
     while len(units) < _MIN_UNITS:
         splits = {u: _split(u, members) for u, members in units.items()}
@@ -433,10 +435,13 @@ def _units(
 
 
 def _split(root: str, members: list[str]) -> dict[str, list[str]]:
-    """Children of *root*: each subdirectory, and each loose file, one level down.
+    """Children of *root*: each subdirectory one level down, and its loose files as one.
 
     Directory chains every member shares (``src/pkg``) are walked through, so a
-    split lands on the first level where the files actually diverge.
+    split lands on the first level where the files actually diverge. The files
+    sitting directly in that directory stay together as one part named for it:
+    a box per loose file drew single files (a lone script, one module) as if
+    each were a part of the system.
     """
     base = root
     while True:
@@ -449,7 +454,7 @@ def _split(root: str, members: list[str]) -> dict[str, list[str]]:
     parts: dict[str, list[str]] = defaultdict(list)
     for path, r in zip(members, rel, strict=True):
         head = r.split("/", 1)[0]
-        child = path if "/" not in r else (f"{base}/{head}" if base else head)
+        child = base if "/" not in r else (f"{base}/{head}" if base else head)
         parts[child].append(path)
     return dict(parts)
 
@@ -514,8 +519,25 @@ def _unit_node(
     )
 
 
-def _last_segment(unit: str, repo_name: str) -> str:
-    return unit.rsplit("/", 1)[-1] if unit else repo_name
+def _connected_actors(nodes: list[MapNode], edges: list[MapEdge]) -> tuple[MapNode, ...]:
+    """*nodes* without an actor whose way in did not make the map: it would float."""
+    linked = {e.source for e in edges}
+    return tuple(n for n in nodes if n.tier != "actor" or n.id in linked)
+
+
+def _display_name(unit: str, declared: str | None, repo_name: str) -> str:
+    """The box's name: its label or package name, else its directory.
+
+    Never the product's own name: a package published under the repository's
+    name (an editor extension, the main package) would read as the whole
+    system. Such a box falls back to its directory, and a box at the root or in
+    a directory named for the product is the main package.
+    """
+    product = repo_name.strip().lower()
+    for name in (declared, unit.rsplit("/", 1)[-1] if unit else ""):
+        if name and name.strip().lower() != product:
+            return name
+    return "Main package"
 
 
 def _page_for(unit: str, members: list[str], pages: Sequence[tuple[str, Collection[str]]]) -> str:

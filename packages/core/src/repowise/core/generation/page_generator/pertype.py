@@ -53,6 +53,7 @@ from ..overview_tables import (
 )
 from ..page_sources import lint_sources, module_page_sources
 from ..prose import unwrap_markdown_links
+from ..report import ORIENTATION_PROSE_WORD_BUDGET
 from ..structural_labels import structural_page_title
 from ..styles.registry import DEFAULT_STYLE
 from .reuse import files_digest, group_material, model_reuse_key
@@ -62,6 +63,10 @@ log = structlog.get_logger(__name__)
 #: A ``Sources:`` line written straight under its paragraph renders as part of
 #: it; a blank line keeps it on its own.
 _SOURCES_GLUED = re.compile(r"(?<=\S)[ \t]*\n(?=Sources: )")
+
+#: The front page's prose range under the default style: the first-time
+#: reader's tour, with room for the parts narrative.
+_OVERVIEW_WORDS = (700, ORIENTATION_PROSE_WORD_BUDGET)
 
 
 def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
@@ -486,7 +491,7 @@ class PerTypeGenerationMixin:
         source_map: dict[str, bytes] | None = None,
         parsed_files: list[ParsedFile] | None = None,
         capabilities: Sequence[Capability] = (),
-        prose_digest: str = "",
+        material: Any = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -498,7 +503,7 @@ class PerTypeGenerationMixin:
             external_systems=external_systems,
             decision_records=decision_records,
             parsed_files=parsed_files,
-            prose_digest=prose_digest,
+            material=material,
         )
         repo_git_summary = None
         if git_meta_map:
@@ -536,7 +541,7 @@ class PerTypeGenerationMixin:
         user_prompt = self._render(
             "repo_overview.j2",
             ctx=ctx,
-            repo_git_summary=repo_git_summary,
+            word_budget=_OVERVIEW_WORDS,
             system_map_payload=naming_payload(system_map) if system_map else "",
         )
         user_prompt, evidence = self._append_source_evidence(
@@ -545,8 +550,11 @@ class PerTypeGenerationMixin:
         # The overview's subject is the repository: its name, the system map it
         # names, and the source evidence it quotes. RAG drift alone reuses the
         # prose; a changed map or evidence file regenerates it (issue #1089).
+        # The walkthroughs and part summaries it is written from count too: a
+        # rewritten flow page changes what the front page says about it.
         map_digest = hashlib.sha256(
             (naming_payload(system_map) if system_map else "").encode()
+            + (material.digest_text() if material else "").encode()
         ).hexdigest()
         evidence_files = files_digest((item.path for item in evidence.included), source_map or {})
         reuse_key = model_reuse_key(
@@ -607,22 +615,9 @@ class PerTypeGenerationMixin:
                 count=len(ungrounded),
                 tokens=ungrounded[:20],
             )
-        # The overview carries its own enumerable facts: the tables and the
-        # system map are built from the run, not by the model. The table embeds
-        # are idempotent, so a reused page picks them up too.
-        # Unconditional: content reused from an earlier run keeps that run's
-        # rows, and an empty selection has to remove them.
-        response = replace(
-            response,
-            content=embed_capability_table(response.content, build_capability_table(capabilities)),
-        )
-        if ctx.package_stats:
-            response = replace(
-                response,
-                content=embed_package_table(
-                    response.content, build_package_table(ctx.package_stats)
-                ),
-            )
+        # The written page carries its own parts table and defined terms, from
+        # the same facts, so only the system map is embedded after it. The
+        # capability and package tables stay on the keyless page.
         page = self._build_generated_page(
             "repo_overview",
             repo_name,

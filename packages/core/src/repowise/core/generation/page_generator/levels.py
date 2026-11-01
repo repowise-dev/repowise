@@ -462,36 +462,34 @@ async def _module_corroboration(run: _GenerationRun) -> list[str]:
         return cached
 
     groups = run.sel_module_groups
+    summaries = await _module_summaries(run)
+    corpus = [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
+    run._module_corroboration_corpus = corpus
+    return corpus
+
+
+async def _module_summaries(run: _GenerationRun) -> dict[str, str]:
+    """``group key -> summary`` of each module page, this run's first, else the store's.
+
+    Memoised on the run: the corroboration corpus and the overview's parts
+    table both read it, and it costs a batched store read.
+    """
+    cached = getattr(run, "_module_summaries_cache", None)
+    if cached is not None:
+        return cached
+    groups = run.sel_module_groups
     if not groups:
-        run._module_corroboration_corpus = []
-        return []
+        run._module_summaries_cache = {}
+        return {}
 
-    summaries: dict[str, str] = {}
-    missing: list[str] = []
-    for mg in groups:
-        written = run.completed_page_summaries.get(mg.key)
-        if written:
-            summaries[mg.key] = written
-        else:
-            missing.append(mg.key)
-
+    summaries = {
+        mg.key: run.completed_page_summaries[mg.key]
+        for mg in groups
+        if run.completed_page_summaries.get(mg.key)
+    }
+    missing = [mg.key for mg in groups if mg.key not in summaries]
     if missing and run.vector_store is not None:
-        try:
-            batch = await run.vector_store.get_page_summaries_by_paths(missing)
-        except Exception as exc:
-            # Reach, not correctness. Said out loud because a quietly thinner
-            # corpus reads downstream as "the structure does not name this".
-            log.warning(
-                "generation.overview_corroboration_store_read_failed",
-                repo_name=run.repo_name,
-                wanted=len(missing),
-                error=str(exc),
-            )
-        else:
-            for path, payload in batch.items():
-                summary = (payload or {}).get("summary")
-                if summary:
-                    summaries[path] = summary
+        summaries.update(await _stored_summaries(run, missing))
 
     log.info(
         "generation.overview_corroboration_corpus",
@@ -499,9 +497,76 @@ async def _module_corroboration(run: _GenerationRun) -> list[str]:
         from_this_run=sum(1 for mg in groups if run.completed_page_summaries.get(mg.key)),
         with_summary=len(summaries),
     )
-    corpus = [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
-    run._module_corroboration_corpus = corpus
-    return corpus
+    run._module_summaries_cache = summaries
+    return summaries
+
+
+async def _stored_summaries(run: _GenerationRun, missing: list[str]) -> dict[str, str]:
+    """Summaries the store holds for pages this run did not write. Never raises."""
+    try:
+        batch = await run.vector_store.get_page_summaries_by_paths(missing)
+    except Exception as exc:
+        # Reach, not correctness. Said out loud because a quietly thinner
+        # corpus reads downstream as "the structure does not name this".
+        log.warning(
+            "generation.overview_corroboration_store_read_failed",
+            repo_name=run.repo_name,
+            wanted=len(missing),
+            error=str(exc),
+        )
+        return {}
+    return {
+        path: summary
+        for path, payload in batch.items()
+        if (summary := (payload or {}).get("summary"))
+    }
+
+
+def _doc_sources(run: _GenerationRun) -> dict[str, bytes]:
+    """The repository's documentation files, read once per run for levels 6 and 8."""
+    from ..onboarding.docs import doc_sources
+
+    cached = getattr(run, "_doc_sources_cache", None)
+    if cached is None:
+        root = Path(run.repo_path) if run.repo_path else None
+        cached = run._doc_sources_cache = doc_sources(root, run.source_map)
+    return cached
+
+
+def _surfaces(run: _GenerationRun) -> Any:
+    """What a user types or calls, read once per run for levels 6 and 8."""
+    from ..flow_entries import line_reader
+    from ..onboarding.docs import doc_sections
+    from ..onboarding.surface import surfaces
+
+    cached = getattr(run, "_surfaces_cache", None)
+    if cached is None:
+        sections = doc_sections(_doc_sources(run))
+        read = line_reader(run.repo_path, run.source_map)
+        cached = surfaces(run.graph_builder.graph(), read, run.repo_path, sections)
+        run._surfaces_cache = cached
+    return cached
+
+
+async def _overview_material(run: _GenerationRun, capabilities: list[Any]) -> Any:
+    """The front page's material; ``None`` when building it fails (the page keeps its map)."""
+    from .front_page import overview_material, part_edges, run_journeys, top_parts
+
+    try:
+        parts = top_parts(run.sel_module_groups, await _module_summaries(run), run.source_map)
+        return overview_material(
+            _doc_sources(run),
+            surfaces=_surfaces(run),
+            journeys=run_journeys(run),
+            parts=parts,
+            edges=part_edges(run.graph_builder.graph(), run.sel_module_groups, parts),
+            terms=capabilities,
+        )
+    except Exception as exc:
+        # The page still renders, with its map; said out loud because a front
+        # page without its README and parts is the failure worth hearing about.
+        log.warning("generation.overview_material_failed", error=str(exc))
+        return None
 
 
 async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
@@ -511,7 +576,6 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     used to sit on a page of its own that described the same repository at the
     same altitude; that page retired and its id redirects here.
     """
-    from ..context.readme_digest import readme_digest
     from ..overview_tables import select_capabilities
     from .system_map import build_run_system_map
 
@@ -564,11 +628,13 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # going unmentioned.
                     parsed_files=run.parsed_files,
                     capabilities=capabilities,
-                    # The only natural-language input the front page gets.
-                    # Framing and vocabulary; the structural fields above stay
-                    # the authority on paths, counts and package names.
-                    prose_digest=(
-                        readme_digest(Path(run.repo_path)) if run.repo_path else ""
+                    # What a first-time reader needs: the README, the commands
+                    # and walkthroughs, the parts. Only a model writes from it,
+                    # so a keyless run does not build it.
+                    material=(
+                        None
+                        if getattr(getattr(gen, "_config", None), "deterministic", False)
+                        else await _overview_material(run, capabilities)
                     ),
                 ),
             )

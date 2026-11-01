@@ -882,7 +882,7 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
         parsed_files: list[ParsedFile] | None = None,
-        prose_digest: str = "",
+        material: Any = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -1014,7 +1014,7 @@ class ContextAssembler:
             external_systems=external_systems or [],
             decision_records=decision_records or [],
             package_stats=package_stats,
-            prose_digest=prose_digest,
+            material=material,
         )
 
     # ------------------------------------------------------------------

@@ -189,6 +189,7 @@ def _run(
         layer_order=(),
         kg_ctx=KnowledgeGraphContext(None),
         on_subphase=None,
+        flow_plans=lambda: [],
         _emit=lambda page_id: True,
     )
 
@@ -378,18 +379,15 @@ async def test_a_run_with_no_glossary_page_does_not_build_the_corpus(tmp_path):
 
 
 async def test_the_overview_is_handed_the_repositorys_own_prose(tmp_path):
-    """The front page's only natural-language input, wired at the level.
-
-    Structure keeps every path and count; this supplies the words. Without it
-    the payload is entirely structural and nothing in the prompt says what the
-    product is for.
-    """
+    """The README reaches the front page in cited sections, wired at the level."""
     run = _run(tmp_path)
     await build_level6_coros(run)
 
-    digest = run.gen.overview_kwargs["prose_digest"]
-    assert "## Blast radius" in digest
-    assert "Blast radius is the set of files a change can reach" in digest
+    readme = run.gen.overview_kwargs["material"].readme
+    text = "\n".join(s.text for s in readme)
+    assert "## Blast radius" in text
+    assert "Blast radius is the set of files a change can reach" in text
+    assert all(s.path == "README.md" and s.start <= s.end for s in readme)
 
 
 async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
@@ -397,4 +395,4 @@ async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
     run = _run(tmp_path)
     run.repo_path = None
     assert await build_level6_coros(run)
-    assert run.gen.overview_kwargs["prose_digest"] == ""
+    assert run.gen.overview_kwargs["material"].readme == []

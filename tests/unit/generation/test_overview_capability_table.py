@@ -424,7 +424,7 @@ async def test_the_deterministic_page_carries_the_table(structure, parsed_files,
     assert page.content.count(CAPABILITY_TABLE_HEADING) == 1
 
 
-async def test_the_model_written_page_carries_the_same_bytes(structure, parsed_files, capabilities):
+async def test_only_the_keyless_page_carries_the_table(structure, parsed_files, capabilities):
     from repowise.core.generation.models import GenerationConfig
     from repowise.core.generation.page_generator import PageGenerator
     from repowise.core.providers.llm.mock import MockProvider
@@ -440,9 +440,11 @@ async def test_the_model_written_page_carries_the_same_bytes(structure, parsed_f
         MockProvider(), ContextAssembler(prose), prose
     ).generate_repo_overview(structure, {}, [], {}, **args)
 
+    # The keyless page carries the table; the written page states the same
+    # defined terms in its own section, so the table is not embedded there.
     table = build_capability_table(capabilities)
     assert table in stub_page.content
-    assert table in model_page.content
+    assert table not in model_page.content
 
 
 async def test_a_provider_outage_costs_the_prose_not_the_table(
@@ -538,27 +540,3 @@ def test_embedding_nothing_removes_a_section_an_earlier_run_left():
     out = embed_capability_table(reused, None)
     assert CAPABILITY_TABLE_HEADING not in out
     assert out.startswith("# Overview\n\nProse.\n\n## Packages")
-
-
-async def test_a_reused_model_page_loses_rows_the_selection_no_longer_has(
-    structure, parsed_files
-):
-    from repowise.core.generation.models import GenerationConfig
-    from repowise.core.generation.page_generator import PageGenerator
-    from repowise.core.providers.llm.base import GeneratedResponse
-    from repowise.core.providers.llm.mock import MockProvider
-
-    earlier = (
-        "## Project Summary\n\nProse.\n\n## What it does\n\n"
-        "| Capability | What it is | Where it is written |\n|---|---|---|\n"
-        "| Dead code | — | `README.md` |\n"
-    )
-    provider = MockProvider(
-        responses=[GeneratedResponse(content=earlier, input_tokens=0, output_tokens=0)]
-    )
-    config = GenerationConfig()
-    page = await PageGenerator(provider, ContextAssembler(config), config).generate_repo_overview(
-        structure, {}, [], {}, repo_name="testrepo", parsed_files=parsed_files
-    )
-    assert CAPABILITY_TABLE_HEADING not in page.content
-    assert "| Dead code | — |" not in page.content

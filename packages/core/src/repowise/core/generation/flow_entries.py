@@ -99,6 +99,34 @@ _REEXPORT = re.compile(r"^from \.([\w.]*) import (?:\(([^)]*)\)|([^\n(]+))$", re
 _re_comment = re.compile(r"#[^\n]*")
 _INIT = re.compile(r"(?:src/)?\w+/__init__\.py")
 _CALLABLE = ("function", "method")
+_PROGRAM = re.compile(r"[\w.-]+")
+# Commands no decorator declares: argparse sub-parsers and JS/TS commander.
+_ARGPARSE = re.compile(r"\.add_parser\(\s*[\"']([\w-]+)[\"']")
+_COMMANDER = re.compile(r"\.command\(\s*['\"]([\w-]+)")
+
+
+def text_commands(paths: Iterable[str], read: LineReader, program: str = "") -> list[Entry]:
+    """CLI commands declared by a call rather than a decorator, one per declaration.
+
+    The node is ``path:line``: these are listed for readers, not walked, since
+    the handler a sub-parser dispatches to is not named at the declaration.
+    """
+    out: list[Entry] = []
+    for path in sorted(p for p in paths if _production(p)):
+        rx = _ARGPARSE if path.endswith(".py") else _COMMANDER
+        if not path.endswith((".py", ".js", ".mjs", ".ts")):
+            continue
+        for i, line in enumerate(read(path)):
+            if m := rx.search(line):
+                out.append(Entry(f"{path}:{i + 1}", CLI, _cli_public(program, m.group(1))))
+    return out
+
+
+def entry_cite(graph: Any, entry: Entry) -> str:
+    """``path:line`` where *entry* is declared: its symbol's first line, or its own node."""
+    attrs = graph.nodes.get(entry.node, {}) if entry.node in graph else {}
+    path, line = attrs.get("file_path"), attrs.get("start_line")
+    return f"{path}:{line}" if path and line else entry.node.split("::", 1)[0]
 
 
 def _cli_public(program: str, command: str) -> str:
@@ -110,6 +138,8 @@ def _decorator_entry(node: str, attrs: Mapping[str, Any], program: str) -> Entry
     name = attrs.get("name") or ""
     for text in attrs.get("decorators") or ():
         if m := _CLI_DECO.match(text):
+            if not m.group(1) and re.search(r"\bgroup\s*\(", text):
+                continue  # an unnamed top-level group is the program, not a command
             command = m.group(1) or re.sub(r"_(command|cmd)$", "", name).replace("_", "-")
             return Entry(node, CLI, _cli_public(program, command))
         if _TOOL_DECO.match(text):
@@ -303,16 +333,22 @@ def _npm_bin(root: Path) -> str:
     except ValueError:
         return ""
     binaries = data.get("bin") if isinstance(data, dict) else None
-    if isinstance(binaries, dict) and binaries:
-        return sorted(binaries)[0]
-    if isinstance(binaries, str) and data.get("name"):
-        return str(data["name"]).split("/")[-1]
-    return ""
+    names: list[str] = []
+    if isinstance(binaries, dict):
+        names = sorted(str(k) for k in binaries)
+    elif isinstance(binaries, str) and data.get("name"):
+        names = [str(data["name"]).split("/")[-1]]
+    # Manifest keys are untrusted text that reaches prompts: names only.
+    return next((n for n in names if _PROGRAM.fullmatch(n)), "")
 
 
 def _go_program(root: Path, graph: Any) -> str:
     m = re.search(r"^module\s+(\S+)", _read_text(root / "go.mod"), re.M)
-    return m.group(1).rstrip("/").split("/")[-1] if m and "main.go" in graph else ""
+    if not m or "main.go" not in graph:
+        return ""
+    # A major-version suffix (``.../hugo/v2``) is not the program's name.
+    segments = [s for s in m.group(1).rstrip("/").split("/") if not re.fullmatch(r"v\d+", s)]
+    return segments[-1] if segments and _PROGRAM.fullmatch(segments[-1]) else ""
 
 
 def program_name(repo_root: Path | str | None, graph: Any) -> str:
@@ -348,6 +384,10 @@ class DocSection:
     text: str
     spans: tuple[str, ...]  # code a reader types: inline spans and code-block lines
 
+    @property
+    def cite(self) -> str:
+        return f"{self.path}:{self.start}-{self.end}"
+
 
 def _is_root_doc(p: Path) -> bool:
     return p.is_file() and p.suffix.lower() in _DOC_EXTS and p.stem.lower() in ("readme", "contributing")
@@ -367,9 +407,12 @@ def _walk_docs(root: Path, base: Path) -> Iterable[str]:
         yield from (f"{rel}/{f}" for f in sorted(filenames) if _is_doc_page(f))
 
 
-def _doc_files(root: Path) -> list[str]:
-    """The root README and CONTRIBUTING plus every page under a top-level docs dir."""
+def doc_files(root: Path) -> list[str]:
+    """The root README and CONTRIBUTING (or ``.github``'s) plus every page under a docs dir."""
     out = [p.name for p in sorted(root.iterdir()) if _is_root_doc(p)]
+    github = root / ".github"
+    if github.is_dir():
+        out += [f".github/{p.name}" for p in sorted(github.iterdir()) if _is_root_doc(p)]
     for top in _DOC_DIRS:
         if (root / top).is_dir():
             out += _walk_docs(root, root / top)
@@ -409,7 +452,7 @@ def _code_spans(text: str, rst: bool) -> tuple[str, ...]:
     return tuple(re.sub(r"^\$\s*", "", s.strip()) for s in spans if s.strip())
 
 
-def _split_sections(path: str, lines: list[str]) -> list[DocSection]:
+def split_sections(path: str, lines: list[str]) -> list[DocSection]:
     rst = path.lower().endswith(".rst")
     heads = (_rst_heads(lines) if rst else _md_heads(lines)) or [0]
     if heads[0] != 0:
@@ -430,7 +473,7 @@ def _sections_cached(root: str, stamp: tuple[tuple[str, int, int], ...]) -> tupl
             text = (Path(root) / path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        out += _split_sections(path, text.splitlines())
+        out += split_sections(path, text.splitlines())
     return tuple(out)
 
 
@@ -440,7 +483,7 @@ def doc_sections(repo_root: Path | str | None) -> tuple[DocSection, ...]:
         return ()
     root = Path(repo_root)
     stamp = []
-    for path in _doc_files(root):
+    for path in doc_files(root):
         try:
             st = (root / path).stat()
         except OSError:

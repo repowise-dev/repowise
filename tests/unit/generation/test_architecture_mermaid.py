@@ -158,8 +158,29 @@ class TestStructure:
             entry_points=["src/pkg/cli.py"],
         )
         paths = {n.path for n in sm.nodes if n.path}
-        assert {"src/pkg/sub", "src/pkg/app.py"} <= paths
-        assert _tier_of(sm)["src/pkg/cli.py"] == "surface"
+        assert paths == {"src/pkg", "src/pkg/sub"}
+        assert _tier_of(sm)["src/pkg"] == "surface"
+
+    def test_loose_files_stay_one_part_and_never_name_the_product(self):
+        """A box per loose file drew single scripts as parts of the system."""
+        files = {f"src/demo/{n}.py": "python" for n in ("app", "cli", "helpers")}
+        files.update({f"src/demo/{d}/x.py": "python" for d in ("json", "web")})
+        edges = [
+            ("src/demo/cli.py", "src/demo/app.py", "imports"),
+            ("src/demo/app.py", "src/demo/json/x.py", "imports"),
+            ("src/demo/web/x.py", "src/demo/app.py", "imports"),
+        ]
+        sm = build_system_map(files, edges, repo_name="demo", manifests=["pyproject.toml"])
+        assert not any(n.path.endswith(".py") for n in sm.nodes)
+        assert {n.name for n in sm.nodes if n.path == "src/demo"} == {"Main package"}
+
+    def test_files_no_manifest_claims_are_not_dropped(self):
+        """A Go module's go.mod is not a parsed file; its code still makes the map."""
+        files = {f"{d}/f{i}.go": "go" for d in ("cmd", "core", "store") for i in range(3)}
+        files["tools/js/a.js"] = "javascript"
+        edges = [("cmd/f0.go", "core/f0.go", "imports"), ("core/f0.go", "store/f0.go", "imports")]
+        sm = build_system_map(files, edges, repo_name="demo", manifests=["tools/js/package.json"])
+        assert {"cmd", "core", "store"} <= {n.path for n in sm.nodes}
 
     def test_a_setup_module_in_a_package_is_not_a_box_but_a_subproject_setup_py_is(self):
         files = dict.fromkeys(
@@ -232,9 +253,9 @@ class TestStructure:
             route_files={"app/routes/users.js", "app/routes/posts.js"},
         )
         tiers = _tier_of(sm)
-        assert tiers["app/routes/users.js"] == tiers["app/routes/posts.js"] == "service"
+        assert tiers["app/routes"] == "service"
         drawn = {(e.source, e.target) for e in sm.edges}
-        assert ("n_app_routes_users_js", "n_app_lib") in drawn
+        assert ("n_app_routes", "n_app_lib") in drawn
 
     def test_a_stray_route_does_not_make_a_large_library_the_server(self):
         files = {f"lib/m{i}.py": "python" for i in range(40)}
@@ -292,14 +313,15 @@ class TestStructure:
         assert _tier_of(sm)["core"] == "engine"
 
     def test_re_exports_are_not_flow(self):
-        files = {f"src/pkg/{n}.py": "python" for n in ("__init__", "app", "cli", "a", "b", "c")}
-        edges = [("src/pkg/__init__.py", f"src/pkg/{n}.py", "imports") for n in "abc"]
+        files = {f"src/pkg/{n}/m.py": "python" for n in ("app", "cli", "a", "b", "c")}
+        files["src/pkg/__init__.py"] = "python"
+        edges = [("src/pkg/__init__.py", f"src/pkg/{n}/m.py", "imports") for n in "abc"]
         edges += [
-            ("src/pkg/__main__.py", "src/pkg/cli.py", "imports"),
-            ("src/pkg/cli.py", "src/pkg/app.py", "imports"),
-            ("src/pkg/app.py", "src/pkg/a.py", "imports"),
-            ("src/pkg/a.py", "src/pkg/b.py", "imports"),
-            ("src/pkg/b.py", "src/pkg/c.py", "imports"),
+            ("src/pkg/__main__.py", "src/pkg/cli/m.py", "imports"),
+            ("src/pkg/cli/m.py", "src/pkg/app/m.py", "imports"),
+            ("src/pkg/app/m.py", "src/pkg/a/m.py", "imports"),
+            ("src/pkg/a/m.py", "src/pkg/b/m.py", "imports"),
+            ("src/pkg/b/m.py", "src/pkg/c/m.py", "imports"),
         ]
         files["src/pkg/__main__.py"] = "python"
         sm = build_system_map(
@@ -307,17 +329,17 @@ class TestStructure:
             edges,
             repo_name="pkg",
             manifests=["pyproject.toml"],
-            entry_points=["src/pkg/__main__.py", "src/pkg/app.py"],
+            entry_points=["src/pkg/__main__.py", "src/pkg/app/m.py"],
             barrels={"src/pkg/__init__.py", "src/pkg/__main__.py"},
         )
         paths = {n.path for n in sm.nodes if n.path}
-        assert "src/pkg/__init__.py" not in paths
-        assert not any(e.source == "n_src_pkg_init_py" for e in sm.edges)
+        assert "src/pkg" not in paths
+        assert not any(e.source == "n_src_pkg" for e in sm.edges)
         # The launcher hands its CLI role to the file it runs. app.py serves no
         # route and the CLI already calls it, so it is not a second way in.
         verbs = {(e.source, e.target): e.verb for e in sm.edges}
-        assert verbs[("n_actor_user", "n_src_pkg_cli_py")] == "runs"
-        assert _tier_of(sm)["src/pkg/app.py"] == "engine"
+        assert verbs[("n_actor_user", "n_src_pkg_cli")] == "runs"
+        assert _tier_of(sm)["src/pkg/app"] == "engine"
         assert len(sm.nodes) <= 7
 
 

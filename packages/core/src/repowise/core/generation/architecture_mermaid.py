@@ -118,7 +118,7 @@ def apply_names(system_map: SystemMap, raw: dict[str, Any] | None) -> SystemMap:
         if not isinstance(item, dict):
             continue
         pair = (item.get("from"), item.get("to"))
-        verb = _clean(item.get("verb"), 3)
+        verb = _clean(item.get("verb"), 4)
         if pair in pairs and verb:
             verbs[pair] = verb
     text = " ".join(_CAPTION_UNSAFE_RE.sub("", str(raw.get("caption") or "")).split())
