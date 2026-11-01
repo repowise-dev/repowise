@@ -82,7 +82,7 @@ Fix first:
 {% if data.keyless %}
 - No model on this index: `get_answer` is low confidence by design, so open its top `candidate_files`; search is full-text only. A model needs a provider key and `{{ data.model_command }}`; suggest it, do not run it.
 {% endif %}
-- Noisy commands (tests, builds, `git log`/`diff`): `repowise distill <cmd>`; `repowise expand <ref>` restores omitted lines.
+- Noisy commands (tests, builds, `git log`/`diff`): `repowise distill <cmd>`. A `[repowise#<ref>: N lines omitted]` marker is restored by `repowise expand <ref>`; never re-run the command.
 - Record a decision you reasoned out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why>' --affects <path> --evidence-commit <sha>`; accept a candidate with `repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`.
 {% endif %}
 {% if 'tools' in s %}
