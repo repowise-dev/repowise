@@ -541,7 +541,7 @@ async def test_python_alias_value_use_leaves_the_file(session, repo_id, tmp_path
 
 @pytest.mark.asyncio
 async def test_local_alias_references_share_the_per_file_cap(session, repo_id, tmp_path):
-    spec = "import { pick as choose } from './a'\n" + "choose.mockReturnValue(1)\n" * 10
+    spec = "import { pick as choose } from './a'\n" + "choose.mockReturnValue(1)\n" * 30
     node = await _seed_js(
         session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/a.test.ts": spec}
     )
@@ -549,7 +549,7 @@ async def test_local_alias_references_share_the_per_file_cap(session, repo_id, t
     out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
 
     assert out["sites_omitted_by_file"] == {
-        "web/a.test.ts": 10 - _edit_sites.MAX_REFERENCES_PER_FILE
+        "web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE
     }
     assert not any(r.startswith("renamed") for r in out["reasons"])
 
@@ -581,6 +581,28 @@ async def test_small_list_is_unchanged_by_the_per_file_cap(session, repo_id, tmp
     capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
 
     assert json.dumps(capped) == json.dumps(bare)
+
+
+@pytest.mark.asyncio
+async def test_a_small_set_keeps_every_reference_in_one_file(
+    session, repo_id, tmp_path, monkeypatch
+):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write("spies = [\n" + "    backend_of,\n" * 6 + "]\n")
+
+    bare = await reference_edit_set(session, repo_id, tmp_path, node)
+    size = len(bare["sites"])
+    assert size <= _edit_sites.SMALL_SET_LINES
+    whole = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+    assert json.dumps(whole) == json.dumps(bare)
+    assert whole["complete"] is True
+
+    # One row over the bound and the per-file cap applies again.
+    monkeypatch.setattr(_edit_sites, "SMALL_SET_LINES", size - 1)
+    capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+    assert capped["sites_omitted_by_file"]
+    assert capped["complete"] is False
 
 
 @pytest.mark.asyncio

@@ -484,6 +484,23 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
 
 
 @pytest.mark.asyncio
+async def test_a_small_reference_set_is_served_whole(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n" + "mock(backend_of)\n" * 6, encoding="utf-8"
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    refs = [r for r in _rows(out) if r[0] == "tests/test_widget.py" and r[2] == "reference"]
+    assert len(refs) == 6
+    assert out["complete"] is True
+    assert "lines_omitted_by_file" not in out
+
+
+@pytest.mark.asyncio
 async def test_mock_heavy_typescript_test_sorts_after_the_real_user(tree, session, setup_mcp):
     files = {
         "web/a.ts": "export function pick(x: number): number { return x }\n",
