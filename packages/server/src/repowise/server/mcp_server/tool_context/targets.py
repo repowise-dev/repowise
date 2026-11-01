@@ -45,6 +45,7 @@ from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
+from repowise.server.mcp_server.tool_context.files import files_section
 from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
     _NO_SYMBOL_SUMMARY_SUFFIX,
     _file_preview_async,
@@ -378,6 +379,10 @@ def _cap_file_rows(card: CardState, docs: dict[str, Any], rows: list[dict[str, A
         card.query.collector,
         label=f"{card.target} :: docs.files beyond cap={_SYMBOL_CAP}",
     )
+    # Agents asking "which files here lack tests" miss the opt-in from the
+    # tool description alone, so a cut list names it.
+    if len(rows) > _SYMBOL_CAP and not card.wants("files"):
+        docs["files_all"] = 'include=["files"]'
 
 
 async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
@@ -682,6 +687,7 @@ _DOCS_BY_TYPE = {"file": _file_docs, "module": _module_docs, "symbol": _symbol_d
 _CARD_SECTIONS: tuple[CardSection, ...] = (
     _parent_page_section,
     _docs_section,
+    files_section,
     _triage_section,
     _ownership_section,
     _last_change_section,

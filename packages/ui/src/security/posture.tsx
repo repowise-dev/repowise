@@ -2,6 +2,7 @@ import * as React from "react";
 import { PageLede } from "../shared/page-lede";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import type { SecurityFinding, SecuritySummary } from "@repowise-dev/types";
+import { formatNumber } from "../lib/format";
 
 export type { SecurityPathClass } from "@repowise-dev/types";
 
@@ -61,7 +62,7 @@ export interface SecurityPostureLabels {
   scanTimeUnknown: string;
 }
 
-const n = (v: number) => v.toLocaleString();
+const n = (v: number) => formatNumber(v);
 const plural = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
 export const DEFAULT_SECURITY_POSTURE_LABELS: SecurityPostureLabels = {

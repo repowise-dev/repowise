@@ -236,6 +236,16 @@ async def _send_json(send: Send, status: int, body: dict, headers: list) -> None
 # ---------------------------------------------------------------------------
 
 
+def _served_checkout_path(repo: str, served: str | None) -> bool:
+    """Whether *repo* is a path the single-repo server resolves to its own repo:
+    inside the served checkout or another worktree of it (same rule as tools)."""
+    if not served or not Path(repo).is_absolute():
+        return False
+    from repowise.core.git_head import match_checkout
+
+    return match_checkout(repo, served) is not None
+
+
 def _call_targets(arguments: dict[str, Any]) -> list[tuple[str | None, ...]]:
     """The repos one tool call would read, each as its accepted identifiers:
     the repo id (None when it cannot be read) and the alias or name."""
@@ -250,7 +260,7 @@ def _call_targets(arguments: dict[str, Any]) -> list[tuple[str | None, ...]]:
             return [(repo,)]
         aliases = resolved if isinstance(resolved, list) else [resolved]
         return [(registry.repo_id(alias), alias) for alias in aliases]
-    if repo is not None:
+    if repo is not None and not _served_checkout_path(repo, _state._repo_path):
         return [(repo,)]
     name = Path(_state._repo_path).name if _state._repo_path else None
     return [(_state._served_repo_id, name)]

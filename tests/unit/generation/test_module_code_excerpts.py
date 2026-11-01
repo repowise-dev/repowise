@@ -15,6 +15,7 @@ import networkx as nx
 import pytest
 
 from repowise.core.generation.context import assembler as assembler_mod
+from repowise.core.generation.context import module_facts as facts_mod
 from repowise.core.generation.context.evidence import select_symbol_evidence
 from repowise.core.generation.context.module_excerpts import excerpt_candidates, module_excerpts
 from repowise.core.generation.context.token_budget import estimate_tokens
@@ -79,7 +80,7 @@ async def test_prompt_snapshot_has_public_api_excerpts_and_declarations(tmp_path
         source_map=_sources(tmp_path, parsed),
     )
     prompt = provider._calls[-1]["user_prompt"]
-    assert "State behaviour only when an excerpt shows it" in prompt
+    assert "Describe what a symbol does only when its excerpt shows it" in prompt
     assert "(historical, <date>)" in prompt
     facts = _facts(prompt)
     # Nothing is left over at this size, so every candidate has its body.
@@ -119,7 +120,7 @@ async def test_budget_drops_bodies_first_and_keeps_every_public_name(
     parsed = _index(tmp_path, files)
     api = _api(parsed, "pkg/")
     budget = 1_500
-    monkeypatch.setattr(assembler_mod, "_MODULE_EXCERPT_BUDGET", budget)
+    monkeypatch.setattr(facts_mod, "_FIXED_BUDGET", facts_mod.ModuleBudget(budget, 3, (500, 800)))
     ctx = ContextAssembler(sample_config).assemble_module_page(
         "Pkg",
         "python",

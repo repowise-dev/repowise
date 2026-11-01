@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   DECISION_LANES,
   DecisionReviewLanes,
@@ -437,6 +437,133 @@ describe("the queue is a table with a drawer", () => {
   });
 });
 
+describe("reaffirming a decision whose files moved", () => {
+  const drifted = () => record({ currency: "needs_review", staleness_score: 0.9 });
+
+  it("offers Reaffirm on the row and hands the record back", () => {
+    const onReaffirm = vi.fn();
+    renderLanes("needs_review", { decisions: [drifted()], onReaffirm });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reaffirm" }));
+
+    expect(onReaffirm).toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers it in the drawer too", () => {
+    const onReaffirm = vi.fn();
+    renderLanes("needs_review", { decisions: [drifted()], onReaffirm });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reaffirm" }));
+
+    expect(onReaffirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not offered in any other lane", () => {
+    renderLanes("active", { decisions: [record({ currency: "active" })], onReaffirm: vi.fn() });
+
+    expect(screen.queryByRole("button", { name: "Reaffirm" })).toBeNull();
+  });
+});
+
+describe("dismissing a selection of candidates", () => {
+  const two = () => [record({ id: "d1" }), record({ id: "d2", title: "Second record" })];
+
+  it("draws no selection without a bulk handler", () => {
+    renderLanes("candidates", { decisions: two() });
+
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("offers dismiss for the selection and never accept", async () => {
+    const onDismissMany = vi.fn(async (ds: DecisionRecord[], onProgress: (n: number) => void) => {
+      onProgress(ds.length);
+      return { done: ds, failed: [] };
+    });
+    renderLanes("candidates", { decisions: two(), onDismissMany });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Second record" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Accept 1/ })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss 1" }));
+    });
+
+    expect(onDismissMany).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "d2" })],
+      expect.any(Function),
+    );
+    expect(screen.getByText("Dismissed 1 of 1.")).toBeInTheDocument();
+  });
+
+  it("names what was refused and keeps it selected for a retry", async () => {
+    const onDismissMany = vi.fn(async (ds: DecisionRecord[]) => ({
+      done: ds.slice(1),
+      failed: [{ decision: ds[0] as DecisionRecord, message: "locked store" }],
+    }));
+    renderLanes("candidates", { decisions: two(), onDismissMany });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select every candidate on this page" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss 2" }));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/1 refused and still selected: Use JWT for authentication \(locked store\)/))
+        .toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Dismiss 1" })).toBeInTheDocument();
+  });
+
+  it("does not select refused rows that left the screen while it ran", async () => {
+    let finish: (r: { done: DecisionRecord[]; failed: { decision: DecisionRecord; message: string }[] }) => void =
+      () => {};
+    const onDismissMany = vi.fn(
+      (ds: DecisionRecord[]) =>
+        new Promise<{ done: DecisionRecord[]; failed: { decision: DecisionRecord; message: string }[] }>(
+          (resolve) => {
+            finish = resolve;
+            void ds;
+          },
+        ),
+    );
+    const view = renderLanes("candidates", { decisions: two(), onDismissMany });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select every candidate on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss 2" }));
+    // The reader pages on before the run settles.
+    view.rerender(
+      <DecisionReviewLanes
+        lane="candidates"
+        onLaneChange={vi.fn()}
+        decisions={[record({ id: "d9", title: "Next page" })]}
+        repoId="r1"
+        onDismissMany={onDismissMany}
+      />,
+    );
+    await act(async () => {
+      finish({ done: [], failed: [{ decision: record({ id: "d1" }), message: "locked" }] });
+    });
+
+    expect(screen.queryByText(/selected$/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Dismiss \d/ })).toBeNull();
+  });
+
+  it("is off where the surface cannot write", () => {
+    renderLanes("candidates", {
+      decisions: two(),
+      onDismissMany: vi.fn(),
+      readOnlyReason: "Read-only snapshot",
+    });
+
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+});
+
 describe("empty and failed lanes", () => {
   it("says what will fill the lane", () => {
     renderLanes("candidates", { decisions: [] });
@@ -462,5 +589,39 @@ describe("empty and failed lanes", () => {
     // that would read as "there is nothing here".
     expect(screen.queryByText(/No candidates are waiting/)).not.toBeInTheDocument();
     expect(screen.getByText(/Couldn't load this lane/)).toBeInTheDocument();
+  });
+});
+
+describe("a record with no recorded date", () => {
+  // The shared type says `string`, but a host whose schema allows a null
+  // timestamp sends one, and a single such row must not take down the queue.
+  const undated = () => record({ created_at: null as unknown as string });
+
+  it("renders the row with an empty-date mark and no date tooltip", () => {
+    renderLanes("candidates", { decisions: [undated()] });
+
+    expect(screen.getByText("Use JWT for authentication")).toBeInTheDocument();
+    const marks = screen.getAllByText("—");
+    expect(marks.length).toBeGreaterThan(0);
+    for (const mark of marks) expect(mark).not.toHaveAttribute("title");
+  });
+
+  it.each([
+    ["missing", null as unknown as string],
+    ["unparseable", "not a date"],
+  ])("leaves the recorded date out of the drawer header when it is %s", (_, createdAt) => {
+    renderLanes("candidates", { decisions: [record({ created_at: createdAt })] });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
+    expect(drawer.queryByText(/recorded/)).not.toBeInTheDocument();
+  });
+
+  it("shows the recorded date in the drawer header when there is one", () => {
+    renderLanes("candidates");
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
+    expect(drawer.getByText(/recorded Jan 1, 2026/)).toBeInTheDocument();
   });
 });

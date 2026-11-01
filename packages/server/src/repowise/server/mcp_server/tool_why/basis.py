@@ -93,8 +93,10 @@ def _stamp_answer_basis(result: dict) -> dict:
         result["answer_basis"] = "episode"
     elif result.get("code_rationale"):
         result["answer_basis"] = "rationale"
-    elif _has_archaeology(result.get("git_archaeology")) or any(
-        _has_archaeology(e.get("git_archaeology")) for e in entries
+    elif (
+        _has_archaeology(result.get("git_archaeology"))
+        or result.get("key_commits")
+        or any(_has_archaeology(e.get("git_archaeology")) for e in entries)
     ):
         result["answer_basis"] = "archaeology"
     elif result.get("related_documentation"):

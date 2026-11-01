@@ -304,14 +304,43 @@ def test_it_never_exceeds_the_output_cap(repo: Path) -> None:
     assert len(replacement) <= _MAX_OUTPUT_CHARS
 
 
-def test_a_skeleton_too_large_for_the_cap_is_skipped_not_truncated(repo: Path) -> None:
-    """Cutting a skeleton would drop its trailing ranges — so we do not cut."""
+def test_an_outline_too_large_for_the_cap_lists_the_symbols_that_fit(repo: Path) -> None:
+    """Cutting a render would drop its trailing ranges, so the outline drops
+    whole symbols instead: every elided span still names its range."""
+    import re
+
     source = _source(bodies=400, body_lines=8)
     (repo / "pkg" / "big.py").write_text(source, encoding="utf-8")
     (repo / ".repowise" / "wiki.db").unlink()
     _write_index(repo, "pkg/big.py", source)
 
-    assert _read(repo).replacement is None
+    served = _served(_read(repo))
+    assert served is not None
+    assert len(served) <= _MAX_OUTPUT_CHARS
+    listed = re.search(r"Only (\d+) of its 400 symbols fit", served)
+    assert listed is not None
+    assert 0 < int(listed.group(1)) < 400
+    # The last line of the file is still accounted for by a range or a line.
+    total = len(source.splitlines())
+    assert re.search(rf"\(\d+-{total}\)|^\s*{total}\t", served, re.MULTILINE)
+
+
+def test_a_partial_outline_keeps_top_level_symbols_before_nested_ones() -> None:
+    from repowise.cli.commands.augment_cmd.read_skeleton import _rank_for_outline
+    from repowise.core.distill.skeleton import SkeletonSymbol
+
+    symbols = [
+        SkeletonSymbol(name="CONST", kind="constant", start_line=1, end_line=1),
+        SkeletonSymbol(name="method", kind="method", start_line=4, end_line=40),
+        SkeletonSymbol(name="Klass", kind="class", start_line=3, end_line=60),
+        SkeletonSymbol(name="helper", kind="function", start_line=62, end_line=70),
+    ]
+    assert [s.name for s in _rank_for_outline(symbols)] == [
+        "Klass",
+        "helper",
+        "CONST",
+        "method",
+    ]
 
 
 def _long_signature_source(funcs: int = 70) -> str:
@@ -362,6 +391,45 @@ def test_it_is_off_unless_the_repo_opted_in(repo: Path) -> None:
     (repo / ".repowise" / "config.yaml").unlink()
     assert _read(repo).replacement is None
     assert enabled(repo) is False
+
+
+def test_a_file_edited_since_the_index_is_left_alone(repo: Path) -> None:
+    """Lines inserted above the symbols move them off their indexed bounds."""
+    path = repo / "pkg" / "big.py"
+    path.write_text("# added\n" * 3 + path.read_text("utf-8"), encoding="utf-8")
+    assert _read(repo).replacement is None
+
+
+def test_one_moved_symbol_is_enough_to_count_as_stale() -> None:
+    """An edit in the second-to-last body moves only the last symbol."""
+    from repowise.cli.commands.augment_cmd.read_skeleton import _bounds_current
+    from repowise.core.distill.skeleton import SkeletonSymbol
+
+    lines = ["def a():", "    pass", "def b():", "    x = 1", "    y = 2", "def c():", "    pass"]
+    indexed = [
+        SkeletonSymbol(name="a", kind="function", start_line=1, end_line=2),
+        SkeletonSymbol(name="b", kind="function", start_line=3, end_line=4),
+        SkeletonSymbol(name="c", kind="function", start_line=5, end_line=6),
+    ]
+    assert _bounds_current(lines, indexed) is False
+    indexed[2] = SkeletonSymbol(name="c", kind="function", start_line=6, end_line=7)
+    assert _bounds_current(lines, indexed) is True
+    # A symbol indexed from the tail of a multi-line decorator is still in place.
+    decorated = ["@pytest.mark.parametrize(", "    'x',", "    [1, 2],", ")", "def test_x(x):", "    pass"]
+    tail = [SkeletonSymbol(name="test_x", kind="function", start_line=4, end_line=6)]
+    assert _bounds_current(decorated, tail) is True
+    # A comment between a decorator and its declaration is still lead-in.
+    noted = ["@cached", "# note", "def f():", "    pass"]
+    assert _bounds_current(noted, [SkeletonSymbol(name="f", kind="function", start_line=1, end_line=4)]) is True
+    # One line inserted above a symbol lands its start on the blank line.
+    shifted = ["def a():", "    pass", "", "", "def b():", "    pass"]
+    assert _bounds_current(shifted, [SkeletonSymbol(name="b", kind="function", start_line=4, end_line=5)]) is False
+    # A short name inside a longer word is not a match.
+    moved = ["def get_user(uid):", "    return get_user_row(uid)"]
+    assert _bounds_current(moved, [SkeletonSymbol(name="get", kind="function", start_line=2, end_line=2)]) is False
+    # A name the declaration does not spell out is not held against the file.
+    indexed.append(SkeletonSymbol(name="<anonymous>", kind="function", start_line=7, end_line=7))
+    assert _bounds_current(lines, indexed) is True
 
 
 def test_a_ranged_read_is_left_alone(repo: Path) -> None:

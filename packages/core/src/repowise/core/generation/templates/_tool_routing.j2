@@ -1,0 +1,12 @@
+{#- Which task goes to which tool. Each including template sets `client` ("claude" or "agents"). -#}
+{% if client == "claude" %}
+Repowise tools are MCP tools: call them as `mcp__repowise__<tool>` (`mcp__plugin_repowise_repowise__<tool>` when Repowise is installed as a Claude Code plugin).
+{% else %}
+Repowise tools come from the `repowise` MCP server.
+{% endif %}
+- Exact identifier, string or file name: Grep, Glob and Read are faster.
+- How X works or flows end to end: `get_answer(question="how does ...")`, one question per call.
+- Callers before a rename or signature change: `get_context(targets=["<symbol>"], include=["references"])`.
+- What breaks if X changes: `get_risk(targets=["<file>"])`.
+- Why X is shaped this way, before changing a pattern: `get_why(query="why ...", targets=["<file>"])`.
+- Before finishing a multi-file change: `get_change_risk(revspec="<base>..HEAD")`, then `get_health(targets=["<files you touched>"])`.

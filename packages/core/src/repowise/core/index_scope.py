@@ -457,15 +457,14 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def compact_index_scope(
-    scope: Mapping[str, Any] | None, *, full_hint: str = 'get_overview(include=["scope"])'
-) -> dict[str, Any] | None:
+def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """The routine-response projection of a canonical scope.
 
     Keeps what changes how an answer should be read — the run mode, where the
     prose came from, how much git there is, and whether the index is whole —
-    plus a fingerprint identifying the full object and the call that returns
-    it. Everything else is a diagnostic, and a diagnostic that rides on every
+    plus a fingerprint identifying the full object. The call that returns it
+    (``get_overview(include=["scope"])``) is documented, not repeated on every
+    response: agents did not follow it. Everything else is a diagnostic, and a diagnostic that rides on every
     response is a tax, not a disclosure.
 
     The one exception is ``degraded_analyses``, carried only when non-empty:
@@ -483,7 +482,6 @@ def compact_index_scope(
         "git_tier": scope.get("git_tier", "unknown"),
         "status": _scope_status(scope),
         "fingerprint": index_scope_fingerprint(scope),
-        "full": full_hint,
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:

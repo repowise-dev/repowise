@@ -25,7 +25,7 @@ from repowise.core.ingestion.models import (
     MODULE_REGISTRATION_HINT,
 )
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
-from repowise.core.persistence.models import GraphNode, Repository
+from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
 
 from .forward import CallGraphView, files_reached_by_tests
@@ -198,6 +198,19 @@ async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[st
     return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
 
 
+async def cached_file_paths(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """Every indexed file path, read once per index state."""
+    key = await _cache.key(session, repo_id, "file_paths")
+    if key in _cache:
+        return _cache.get(key)
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
+        )
+    )
+    return _cache.remember(key, frozenset(row[0] for row in res.all()))
+
+
 async def cached_hub_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
     """:func:`~.hubs.call_hub_files` by the stored call edges, read once per index state."""
     key = await _cache.key(session, repo_id, "hubs")
@@ -351,12 +364,39 @@ async def reach_states_from_db(
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachRow]:
-    """:func:`~.walk.reach_states` over the stored graph."""
+    """:func:`~.walk.reach_states` over the stored graph, with the origin gate on.
+
+    Code that owes no test (generated, vendored, build, tooling, docs example,
+    migration; the stored ``code_origin``, else the path) reads
+    ``not_applicable``.
+    """
     test_files = set(await cached_test_files(session, repo_id))
     walk = states_walk(
-        list(paths), test_files, changed_tests=changed_tests, contents=contents, masks=masks
+        list(paths),
+        test_files,
+        changed_tests=changed_tests,
+        contents=contents,
+        masks=masks,
+        origins=await stored_origins(session, repo_id, list(paths)),
     )
     return await drive(walk, session, repo_id)
+
+
+async def stored_origins(
+    session: AsyncSession, repo_id: str, paths: list[str]
+) -> dict[str, str | None]:
+    """The stored ``health_file_metrics.code_origin`` of *paths*, one read per batch; unscored paths are absent."""
+    out: dict[str, str | None] = {}
+    paths = list(dict.fromkeys(paths))
+    for start in range(0, len(paths), _IN_BATCH):
+        res = await session.execute(
+            select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.file_path.in_(paths[start : start + _IN_BATCH]),
+            )
+        )
+        out.update(res.tuples().all())
+    return out
 
 
 async def tests_reaching_through_helpers(
@@ -519,8 +559,14 @@ async def tests_reaching_by_tier(
     avoid: Collection[str] = frozenset(),
     import_graph: ImportGraph | None = None,
     hubs: Collection[str] = frozenset(),
+    helpers: bool = False,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *helpers* adds the helper or barrel hop and the package walk
+    (:func:`~.walk.package_walk`) for the targets both tiers leave
+    unanswered: the bar a caller must clear before it says "no test
+    reaches this" (``pr_blast.file_tests``).
 
     *hubs* (:func:`cached_hub_files`) tags the call-tier tests that reach a
     target only through a hub, and lists them last (``ReachedBy.transitive``).
@@ -542,7 +588,7 @@ async def tests_reaching_by_tier(
     *import_graph* (:func:`load_import_graph`) answers the import tier's
     levels from memory, for a caller that walks deep or more than once.
 
-    The walk is :func:`~.walk.tier_walk` without the helper hop: the call walk
+    The walk is :func:`~.walk.tier_walk`, by default without those: the call walk
     first, then the import walk seeded with only the targets it left
     unanswered, so the weaker tier never speaks over the stronger one and
     costs nothing where the stronger one already spoke.
@@ -566,6 +612,7 @@ async def tests_reaching_by_tier(
         import_depth=import_depth,
         symbol_seeds=symbol_seeds,
         avoid=avoid,
+        helpers=helpers,
         hubs=hubs,
     )
     return await drive(walk, session, repo_id, import_graph=import_graph)

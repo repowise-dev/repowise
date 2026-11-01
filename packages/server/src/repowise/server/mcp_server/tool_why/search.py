@@ -9,7 +9,10 @@ import re
 from collections.abc import Callable, Collection
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
+from repowise.core.analysis.next_call import render_call
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
@@ -40,8 +43,10 @@ from repowise.server.mcp_server.tool_why.caps import (
     _cap_target_context,
     _serve_episodes,
 )
+from repowise.server.mcp_server.tool_why.commit_bodies import attach_body_excerpts
 from repowise.server.mcp_server.tool_why.lineage import _lineage_for_matches
 from repowise.server.mcp_server.tool_why.loading import (
+    _defining_files,
     _hydrate_response_decision_evidence,
     _load_corpus,
 )
@@ -342,13 +347,15 @@ async def _why_no_match(
             targets,
             query,
             max_results=1000,
-            truncate_blocks=False,
             rarity_corpus=[word_set(_record_text(d)) for d in all_decisions],
+            for_why=True,
         )
         if rationale:
             result["code_rationale"] = rationale
     else:
         result.update(await _question_lanes(ctx.path, query, plain=not accepted))
+        if not _served_lanes(result):
+            result.update(await _definition_pointer(ctx, repository, query))
     await _hydrate_response_decision_evidence(ctx, result, all_decisions)
     await annotate_response_evidence_async(
         result, ctx.alias, all_decisions, repo_root=ctx.path
@@ -359,6 +366,7 @@ async def _why_no_match(
         )
         _cap_supporting_lanes(result, collector, label=query)
         _cap_target_context(result["target_context"], collector)
+    await attach_body_excerpts(result, ctx.path, target_git, query)
     # Don't redirect away from evidence this response is already serving.
     served = _served_lanes(result)
     if served:
@@ -401,6 +409,24 @@ async def _question_lanes(repo_root: Any, query: str, *, plain: bool) -> dict[st
             ),
         }
     }
+
+
+async def _definition_pointer(ctx: Any, repository: Any, query: str) -> dict[str, Any]:
+    """Where the code a refused question names is defined, and the call that reads it.
+
+    A question naming no file is searched by its words alone. When those find
+    nothing, the file defining a name it uses still has comments and history a
+    targeted call reads. Empty when the question names no indexed code.
+    """
+    try:
+        defined = await _defining_files(ctx, repository.id, query)
+    except SQLAlchemyError:
+        return {}
+    if not defined:
+        return {}
+    paths = list(dict.fromkeys(d["path"] for d in defined))
+    call = render_call("get_why", {"query": query, "targets": paths})
+    return {"defined_in": defined, "next_call": call}
 
 
 def _served_lanes(result: dict[str, Any]) -> list[str]:

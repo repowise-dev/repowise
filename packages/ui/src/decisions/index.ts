@@ -13,3 +13,4 @@ export * from "./decision-create-form";
 export * from "./decision-governance";
 export * from "./decision-staleness";
 export * from "./checkout-facts";
+export * from "./bulk-review";

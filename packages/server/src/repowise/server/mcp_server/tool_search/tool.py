@@ -212,34 +212,21 @@ async def search_codebase(
 ) -> dict:
     """Find code by concept, symbol, or path — hybrid codebase search.
 
-    For questions (how/where/why), call get_answer instead: it runs this
-    retrieval internally and returns a cited answer. Use this for raw
-    ranked hits: enumerating matches, resolving an identifier to a symbol_id,
-    or scoping get_context.
-
-    mode="auto" routes by query shape: identifiers search symbols (symbol_id,
-    path, line bounds for get_symbol), paths resolve files (for get_context),
-    prose runs wiki-semantic search, and mixed queries run hybrid (symbol hits,
-    then file-backed pages only). Decision records rank below file pages
-    unless the query is why-shaped.
-
-    Rows naming a file carry `path`; concept pages add `symbols`
-    (name:line) the query matches; the top 3 add `matched_lines`
-    (line, text), sample lines sharing its words. `candidates` lists up to `limit`
-    distinct files to Read, best first. Identifier or literal queries also
-    return `lines` (path, line, kind, text; definitions first) read from live
-    files; when `complete` is true they are every match, so no grep is needed.
+    For a how/where/why question call get_answer. Use this to enumerate
+    matches, resolve an identifier to a symbol_id, or find files for
+    get_context. Identifier or literal queries return `lines` (path, line,
+    kind, text; definitions first) read from live files; when `complete` is
+    true they are every match, so no grep is needed. `candidates` lists
+    distinct files to Read, best first.
 
     Args:
         query: identifier, path, or natural language.
-        limit: max results (default 5); distinct files outside mode="symbol"
-            (same-file symbols in `symbols`).
-        page_type: file_page (per-file docs) or module_page (subsystem
-            pages); any stored page type filters.
-        kind: implementation | test | config | doc (concept/symbol modes).
+        limit: max results (default 5).
+        mode: auto (by query shape) | symbol | path | concept | hybrid.
+        kind: implementation | test | config | doc.
+        symbol_kind: function | class | method | ...
+        page_type: file_page | module_page.
         repo: alias, or "all" for workspace-wide.
-        mode: auto | concept | symbol | path | hybrid.
-        symbol_kind: filter symbol hits (function|class|method|...).
         pattern: alias for query.
     """
     ignored: list[dict[str, Any]] = []

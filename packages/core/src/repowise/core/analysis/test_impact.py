@@ -121,7 +121,7 @@ async def _read_coverage(
     session: AsyncSession, repository_id: str, changed: list[str]
 ) -> tuple[Mapping[str, Any], dict[str, list[Mapping[str, Any]]], str | None]:
     """The coverage summary, each changed path's measured rows, and the last read error."""
-    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering_files
 
     try:
         summary = await get_test_coverage_summary(session, repository_id)
@@ -132,13 +132,12 @@ async def _read_coverage(
 
     measured: dict[str, list[Mapping[str, Any]]] = {}
     if summary.get("pair_count", 0) > 0:
-        for path in changed:
-            try:
-                measured[path] = await tests_covering(
-                    session, repository_id, path, lines=None
-                )
-            except Exception as exc:
-                coverage_error = type(exc).__name__
+        # One bounded query per batch of paths, not one per changed file.
+        try:
+            rows = await tests_covering_files(session, repository_id, set(changed))
+            measured = {path: rows.get(path, []) for path in changed}
+        except Exception as exc:
+            coverage_error = type(exc).__name__
     return summary, measured, coverage_error
 
 

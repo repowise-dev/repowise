@@ -6,6 +6,7 @@ import { Input } from "../ui/input";
 import { Segmented } from "../shared/segmented";
 import { ActiveFilterChips, MoreFilters, type ActiveFilterChip } from "../shared/more-filters";
 import { cn } from "../lib/cn";
+import { formatNumber } from "../lib/format";
 
 /** What a commit or change did to health, as the quick filter names it. */
 export type HealthImpact = "all" | "better" | "worse" | "none";
@@ -106,7 +107,10 @@ export function HistoryFilters({
   className,
 }: HistoryFiltersProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
-  const count = (k: HealthImpact) => counts?.[k]?.toLocaleString();
+  const count = (k: HealthImpact) => {
+    const n = counts?.[k];
+    return n == null ? undefined : formatNumber(n);
+  };
   const pending = impactPending ? l.impactPending : undefined;
   return (
     <div className={cn("flex flex-col gap-2.5", className)}>

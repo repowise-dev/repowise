@@ -301,7 +301,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
           <MetaItem label="Source" value={decisionSourceLabel(decision.source)} />
-          <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
+          <MetaItem label="Recorded" value={formatDate(decision.created_at)} />
         </dl>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -407,7 +407,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           <div className="space-y-2 text-sm">
             {decision.last_code_change && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                Affected files last changed {formatDateOrDash(decision.last_code_change)}.
+                Affected files last changed {formatDate(decision.last_code_change)}.
               </p>
             )}
             <div className="flex flex-col gap-1.5">
@@ -594,20 +594,6 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       </dd>
     </div>
   );
-}
-
-/** Older/hosted backends can omit decision timestamps — render "—" instead of
- *  "Invalid Date" for a missing or unparseable value.
- *
- *  Uses `formatDate`, which pins the locale, rather than
- *  `toLocaleDateString()`. The latter formats against the *runtime's* locale,
- *  so the server rendered "23/06/2026" and the browser "23/6/2026" — a
- *  hydration mismatch that made React throw away and re-render the tree on
- *  every visit to a decision. */
-function formatDateOrDash(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : formatDate(d);
 }
 
 function PrevNextLink({

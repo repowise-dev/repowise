@@ -24,6 +24,9 @@ from repowise.core.analysis.test_reachability import (
     rank_reaching,
     reaching_by_tier,
 )
+from repowise.core.analysis.test_reachability import (
+    tests_matching_by_name as name_match,
+)
 from repowise.core.ingestion.models import MODULE_REGISTRATION_HINT
 
 
@@ -245,14 +248,27 @@ def test_a_test_importing_a_barrel_pairs_what_it_re_exports() -> None:
     g = _dep_graph(
         ("test/router.test.ts", "src/index.ts", "imports"),
         ("src/index.ts", "src/router.ts", "imports"),
-        ("src/router.ts", "src/util.ts", "imports"),
+        ("src/router.ts", "src/lib/util.ts", "imports"),
         ("test/leaf.test.ts", "src/leaf.ts", "imports"),
-        ("src/leaf.ts", "src/deep.ts", "imports"),
+        ("src/leaf.ts", "src/lib/deep.ts", "imports"),
     )
-    paths = {"src/index.ts", "src/router.ts", "src/util.ts", "src/leaf.ts", "src/deep.ts"}
+    paths = {"src/index.ts", "src/router.ts", "src/lib/util.ts", "src/leaf.ts", "src/lib/deep.ts"}
     paired = files_with_paired_tests(g, paths, {"test/router.test.ts", "test/leaf.test.ts"})
-    # The barrel and what it re-exports; one hop only, never the whole closure.
+    # The barrel and what it re-exports; never the whole closure into another package.
     assert paired == {"src/index.ts", "src/router.ts", "src/leaf.ts"}
+
+
+def test_a_module_a_test_loads_through_its_package_pairs() -> None:
+    """The health pass clears the same bar ``pr_blast.file_tests`` does (the package walk)."""
+    g = _dep_graph(
+        ("tests/test_why.py", "src/tool_why/__init__.py", "imports"),
+        ("src/server.py", "src/tool_why/__init__.py", "imports"),
+        ("src/tool_why/__init__.py", "src/tool_why/tool.py", "imports"),
+        ("src/tool_why/tool.py", "src/tool_why/workspace.py", "imports"),
+        ("web/app/page.tsx", "web/components/view.tsx", "imports"),
+    )
+    paths = {"src/tool_why/workspace.py", "web/components/view.tsx"}
+    assert files_with_paired_tests(g, paths, {"tests/test_why.py"}) == {"src/tool_why/workspace.py"}
 
 
 def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
@@ -262,6 +278,30 @@ def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
     paired = files_with_paired_tests(g, paths, {"tests/distill/test_engine.py"})
     assert "src/distill/engine.py" in paired
     assert "src/health/engine.py" not in paired
+
+
+def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
+    files = {
+        "src/utils/jwt/index.ts",
+        "src/middleware/jwt/index.ts",
+        "src/middleware/jwt/index.test.ts",
+    }
+    found = name_match(
+        ["src/utils/jwt/index.ts", "src/middleware/jwt/index.ts"],
+        {"src/middleware/jwt/index.test.ts"},
+        files,
+    )
+
+    assert "src/utils/jwt/index.ts" not in found
+    assert found["src/middleware/jwt/index.ts"].tests == ["src/middleware/jwt/index.test.ts"]
+
+
+def test_a_test_without_a_sibling_source_still_matches_across_directories() -> None:
+    found = name_match(
+        ["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"}
+    )
+
+    assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
 
 
 def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> None:

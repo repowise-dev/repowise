@@ -12,6 +12,8 @@ No ``git`` subprocess and no GitPython. The callers are hot paths.
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -122,3 +124,124 @@ def _resolve_symbolic_ref(git_dir: Path, ref_rel: str) -> str | None:
         if name.strip() == ref_rel:
             return sha.strip() or None
     return None
+
+
+@dataclass(frozen=True)
+class Checkout:
+    """A git working tree: its root and the git directory it shares."""
+
+    root: Path
+    common_dir: Path
+
+
+def find_checkout(path: str | Path) -> Checkout | None:
+    """The git checkout that holds *path*, or ``None``.
+
+    Walks up to the nearest ``.git``. A linked worktree counts only when its
+    repository registered it (see :func:`_registered_worktree`), so a
+    hand-written pointer cannot claim a repository's history. Submodules are
+    not registered worktrees and do not resolve. Paths come back resolved,
+    so case and separators compare equal under :func:`os.path.normcase`.
+    """
+    try:
+        start = Path(path).resolve()
+    except (OSError, ValueError):
+        return None
+    for candidate in (start, *start.parents):
+        if not (candidate / ".git").exists():
+            continue
+        git_dir = resolve_git_dir(candidate)
+        if git_dir is None or not git_dir.is_dir():
+            return None
+        common = _common_dir(git_dir)
+        linked = (candidate / ".git").is_file() or common != git_dir
+        if linked and not _registered_worktree(git_dir, common, candidate):
+            return None
+        try:
+            return Checkout(candidate, common.resolve())
+        except OSError:
+            return None
+    return None
+
+
+def _registered_worktree(git_dir: Path, common: Path, root: Path) -> bool:
+    """Whether *root* is a worktree its repository registered.
+
+    Git keeps each linked worktree's state in ``<common>/worktrees/<name>``,
+    whose ``gitdir`` file names the worktree's ``.git``. Both halves are
+    checked, so neither a pointer file nor a copied git dir can claim a
+    repository by itself.
+    """
+    try:
+        registered = same_path(git_dir.parent, common / "worktrees")
+    except (OSError, ValueError):
+        return False
+    return registered and _points_back(git_dir, root)
+
+
+def _points_back(git_dir: Path, root: Path) -> bool:
+    """Whether a linked worktree's git dir names *root*'s ``.git`` as its own."""
+    try:
+        raw = (git_dir / "gitdir").read_text(encoding="utf-8").strip()
+        named = Path(raw) if Path(raw).is_absolute() else git_dir / raw
+        return same_path(named.resolve(), (root / ".git").resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def same_path(a: str | Path, b: str | Path) -> bool:
+    """Equal paths after resolving, ignoring case where the OS does."""
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+@dataclass(frozen=True)
+class CheckoutMatch:
+    """How a requested path relates to an indexed directory of the same repository.
+
+    ``checkout`` is the requested path's counterpart of the indexed directory:
+    the indexed directory itself, or the same place in another worktree.
+    ``same_checkout`` is True when it is the indexed directory. ``depth`` ranks
+    nested indexed directories; the deepest one that holds the path wins.
+    """
+
+    checkout: Path
+    same_checkout: bool
+    depth: int
+
+
+def match_checkout(requested: str | Path, indexed: str | Path) -> CheckoutMatch | None:
+    """Match *requested* to the indexed directory *indexed*, or ``None``.
+
+    A match needs the same git repository (one common git dir), never a name:
+    the path is inside *indexed*, or at the same place inside another worktree
+    of it. Outside git, only a path inside *indexed* matches.
+    """
+    try:
+        wanted = Path(requested).resolve()
+        base = Path(indexed).resolve()
+    except (OSError, ValueError):
+        return None
+    wanted_co, base_co = find_checkout(wanted), find_checkout(base)
+    if wanted_co is None or base_co is None:
+        if wanted_co is None and base_co is None and _within(wanted, base):
+            return CheckoutMatch(base, True, len(base.parts))
+        return None
+    if os.path.normcase(str(wanted_co.common_dir)) != os.path.normcase(str(base_co.common_dir)):
+        return None
+    # Both come from one resolve, so their case already agrees.
+    inner = base.relative_to(base_co.root)
+    if not _within(wanted, wanted_co.root / inner):
+        return None
+    same = same_path(wanted_co.root, base_co.root)
+    return CheckoutMatch(base if same else wanted_co.root / inner, same, len(inner.parts))
+
+
+def _relative(path: Path, root: Path) -> Path | None:
+    try:
+        return Path(os.path.normcase(str(path))).relative_to(os.path.normcase(str(root)))
+    except ValueError:
+        return None
+
+
+def _within(path: Path, root: Path) -> bool:
+    return _relative(path, root) is not None

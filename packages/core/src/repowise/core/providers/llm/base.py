@@ -222,6 +222,13 @@ class GeneratedResponse:
         return self.input_tokens + self.output_tokens
 
 
+#: Window a local model is run with when nothing names one. On qwen3.5:4b a
+#: 16k window held 3.5 GB against 4.1 GB at 32k and 5.0 GB at 64k, and a page
+#: prompt cut to fit it still read as a whole page; on a CPU, prompt
+#: evaluation time grows with every token kept.
+LOCAL_CONTEXT_WINDOW = 16_384
+
+
 class BaseProvider(ABC):
     """Abstract base class that all LLM providers must implement.
 
@@ -332,6 +339,15 @@ class BaseProvider(ABC):
         """
 
         return ("auto",)
+
+    def context_window(self) -> int | None:
+        """Tokens (prompt plus answer) this model runs with; None means no practical limit.
+
+        Hosted models take far more than any page prompt, so the default is
+        None and page material keeps its full budgets. A local model reports
+        its window, and page material shrinks to fit it.
+        """
+        return None
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         """Return model options available for interactive provider setup."""

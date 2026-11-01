@@ -48,7 +48,9 @@ ReachedVia = Literal["call-graph", "import-graph", "name-match", "changed-test",
 # ``type_only``  it declares only types: there is nothing for a test to run;
 # ``mocked_only`` every test that reaches it replaces it with a double, so
 #                none is shown to run it, and nothing says none could.
-ReachState = Literal["reached", "unreached", "new", "no_signal", "type_only", "mocked_only"]
+ReachState = Literal[
+    "reached", "unreached", "new", "no_signal", "type_only", "mocked_only", "not_applicable"
+]
 
 
 class ReachDistance(NamedTuple):
@@ -180,19 +182,41 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
-def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> dict[str, ReachedBy]:
+def tests_matching_by_name(
+    targets: list[str], test_files: Collection[str], indexed_files: Collection[str] = ()
+) -> dict[str, ReachedBy]:
     """Tests named for each target by convention: the fallback when no edge answered.
 
     An unresolved graph (dynamic client, unindexed framework) leaves
     ``tests/test_x.py`` with no edge to ``x.py``; "unknown" there argues
-    against a change a test guards.
+    against a change a test guards.  A test beside a source file it names is
+    owned by that sibling, though: ``a/index.test.ts`` is not evidence for
+    every other ``index.ts`` in the repository.  Tests outside their subject
+    directory retain the cross-directory fallback.
     """
+    all_files = set(targets) | set(test_files) | set(indexed_files)
     by_name: dict[str, list[str]] = {}
     for path in test_files:
         by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+    files_by_dir: dict[str, list[str]] = {}
+    for path in all_files:
+        dir_path, _, _ = path.rpartition("/")
+        files_by_dir.setdefault(dir_path, []).append(path)
+
+    owned_by: dict[str, set[str]] = {}
+    for test in test_files:
+        dir_path, _, test_name = test.rpartition("/")
+        for source in files_by_dir.get(dir_path, ()):
+            if source != test and test_name in paired_test_names(source):
+                owned_by.setdefault(test, set()).add(source)
     out: dict[str, ReachedBy] = {}
     for target in targets:
-        found = [path for name in paired_test_names(target) for path in by_name.get(name, ())]
+        found = [
+            path
+            for name in paired_test_names(target)
+            for path in by_name.get(name, ())
+            if path not in owned_by or target in owned_by[path]
+        ]
         if found:
             out[target] = capped(target, found, "name-match")
     return out

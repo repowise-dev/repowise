@@ -15,6 +15,7 @@ drift.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -497,7 +498,9 @@ def refresh_editor_project_files(
 ) -> None:
     """Refresh editor-managed project files without rewriting common MCP config.
 
-    A repo initialised with ``--no-editor-setup`` gets nothing written.
+    Also re-pins an installed git post-commit hook that no live install owns
+    (``hooks.heal``). A repo initialised with ``--no-editor-setup`` gets
+    nothing written.
     """
     if _editor_setup_declined(repo_path):
         return
@@ -505,6 +508,10 @@ def refresh_editor_project_files(
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)
+    from repowise.cli.hooks import heal
+
+    with contextlib.suppress(Exception):
+        heal(repo_path)
 
 
 def unresolved_hook_scripts(repo_path: Path | None = None) -> list[tuple[str, str]]:

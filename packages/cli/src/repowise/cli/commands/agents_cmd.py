@@ -174,7 +174,7 @@ def _run_writes(
 ) -> list[dict]:
     """The per-target loop of :func:`_write_payload`. See its docstring."""
     from repowise.cli.agent_targets.registry import select_install_method
-    from repowise.cli.agent_targets.types import InstallOptions, Scope
+    from repowise.cli.agent_targets.types import FileAction, InstallOptions, Scope
 
     agents: list[dict] = []
     for target in targets:
@@ -221,11 +221,16 @@ def _run_writes(
                 # serves another repo; `refresh` (and doctor --repair) keep it.
                 options = InstallOptions(retarget=not refresh_only)
                 result = target.install(target_scope, options, repo_path=repo_path)
-                if host_scopes and result.changed:
+                wrote = any(
+                    f.action in (FileAction.CREATED, FileAction.UPDATED) for f in result.files
+                )
+                if host_scopes and wrote:
                     # Writing a scope the host does not cover is right — the
                     # repo file is for other contributors' checkouts — but this
                     # machine now loads repowise from both, so say so instead of
                     # quietly handing them the duplicate the skip above avoids.
+                    # Gated on a write, not ``changed``: a retired entry is a
+                    # change too, and after it nothing loads from both.
                     result.note(
                         f"{target.display_name} also has a host-managed install, so this "
                         "machine will load repowise from both. The file is written for "

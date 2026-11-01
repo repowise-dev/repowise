@@ -206,6 +206,8 @@ class _GenerationRun:
         self.timings = timings
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
+        # Module pages written this run, by target, for the map pages above them.
+        self.module_page_content: dict[str, str] = {}
         self.completed_ids: set[str] = set()
         self.job_id: str | None = None
         self.file_page_contexts: dict[str, FilePageContext] = {}
@@ -228,6 +230,9 @@ class _GenerationRun:
         self.sel_module_groups: list[Any] = []
         self.sel_scc_groups: list[Any] = []
         self._flow_plans: list[Any] | None = None
+        #: ``page id -> content`` of the walkthroughs this run wrote, read by
+        #: the front page and How It Works.
+        self.flow_page_contents: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Setup
@@ -865,8 +870,14 @@ class _GenerationRun:
         # Level 3 (scc_page).
         all_pages.extend(await self.run_level(_levels.build_level3_coros(self), 3))
 
-        # Level 4 (module_page).
-        all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
+        # Level 4 (module_page), in waves: a map page reads how the pages of
+        # its parts open, so the parts are written first.
+        for wave in _levels.module_waves(list(self.sel_module_groups)):
+            pages = await self.run_level(_levels.build_level4_coros(self, wave), 4)
+            self.module_page_content.update(
+                {p.target_path: p.content for p in pages if STUB_FALLBACK_ERROR not in p.metadata}
+            )
+            all_pages.extend(pages)
 
         # Level 4 is the last reader of the per-file contexts, and there is one
         # per code file. Dropping them here rather than at the end of the run
@@ -880,15 +891,22 @@ class _GenerationRun:
         # page belongs to is stamped on the page itself, so the docs tree can
         # group by it without a page to hang the group off.
         #
-        # Levels 5 (flow_page), 6 (repo_overview), 7 (infra_page) and 8
-        # (onboarding) share no data dependencies — run merged. Flow pages
-        # need only the module groups' names, which naming settled above.
-        final = (
-            _levels.build_flow_coros(self)
-            + await _levels.build_level6_coros(self)
-            + _levels.build_level7_coros(self)
-            + await _levels.build_level8_coros(self)
+        # Levels 5 (flow_page) and 7 (infra_page) run first, merged: flow
+        # pages need only the module groups' names, which naming settled above.
+        # The front page and How It Works are written from the walkthroughs,
+        # so levels 6 (repo_overview) and 8 (onboarding) wait for them.
+        walkthroughs = await self.run_level(
+            _levels.build_flow_coros(self) + _levels.build_level7_coros(self), 5
         )
+        all_pages.extend(walkthroughs)
+        # Model-written walkthroughs only: a template stub's step list is not
+        # a journey a reader can be told about.
+        self.flow_page_contents = {
+            p.page_id: p.content
+            for p in walkthroughs
+            if p.page_type == "flow_page" and p.provider_name != "template"
+        }
+        final = await _levels.build_level6_coros(self) + await _levels.build_level8_coros(self)
         final_pages = await self.run_level(final, 8)
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).
         self.gen._tag_promoted_pages(final_pages)

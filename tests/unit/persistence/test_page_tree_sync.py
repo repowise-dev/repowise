@@ -81,6 +81,61 @@ class TestRebuild:
         assert await _placement(async_session, wiki) == before
 
 
+class TestLayerMetadata:
+    @pytest.mark.parametrize("page_type", ["module_page", "scc_page"])
+    @pytest.mark.parametrize(
+        "stored_layer",
+        [
+            {},
+            {"layer_id": "layer:api", "layer_name": "API"},
+            {"layer_id": "layer:service", "layer_name": "Old service name"},
+        ],
+        ids=["missing", "stale-layer", "stale-name"],
+    )
+    async def test_layer_only_changes_are_persisted_once(
+        self, async_session, wiki, page_type, stored_layer
+    ):
+        paths = ["src/ingest/a.py", "src/ingest/b.py"]
+        for path in paths:
+            file = await async_session.get(Page, f"file_page:{path}")
+            file_metadata = json.loads(file.metadata_json)
+            file_metadata["layer_name"] = "Services"
+            file.metadata_json = json.dumps(file_metadata)
+        if page_type == "scc_page":
+            await _add(async_session, wiki, page_type, "cycle", files=paths)
+        await rebuild_page_tree(async_session, wiki)
+        await async_session.commit()
+
+        target = "src/ingest" if page_type == "module_page" else "cycle"
+        page = await async_session.get(Page, f"{page_type}:{target}")
+        metadata = {
+            "file_paths": paths,
+            "concept_order": 4,
+            "custom": {"labels": ["keep", 7], "enabled": True},
+            **stored_layer,
+        }
+        page.metadata_json = json.dumps(metadata)
+        await async_session.commit()
+        placement = await _placement(async_session, wiki)
+
+        changed = await rebuild_page_tree(async_session, wiki)
+        await async_session.commit()
+
+        assert changed == 1
+        assert await _placement(async_session, wiki) == placement
+        stored = await async_session.scalar(select(Page.metadata_json).where(Page.id == page.id))
+        assert json.loads(stored) == {
+            **metadata,
+            "layer_id": "layer:service",
+            "layer_name": "Services",
+        }
+        assert await rebuild_page_tree(async_session, wiki) == 0
+        await async_session.commit()
+        assert await async_session.scalar(
+            select(Page.metadata_json).where(Page.id == page.id)
+        ) == stored
+
+
 class TestUpdateDoesNotFlattenTheTree:
     async def test_re_upserting_one_page_with_no_placement_is_repaired(
         self, async_session, wiki

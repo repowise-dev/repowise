@@ -6,6 +6,7 @@ import type { PerformanceScope } from "@repowise-dev/types/health";
 import { PageLede } from "../../shared/page-lede";
 import { areaLabel } from "./area-groups";
 import type { PerformanceAreaGroup } from "./grouping";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The lede: the count in the selected scope, named for that scope, then
@@ -64,7 +65,7 @@ export function PerformanceVerdict({
     <PageLede
       label="Performance"
       labelHint="Static, high-precision signals read from the code's shape, not measured latency. Repeated call paths fold into one cause, one place to edit, so a row answers what to change once and every observation stays readable as evidence. Evidence confidence, actionability and fix safety are separate judgements."
-      value={verdict.value.toLocaleString()}
+      value={formatNumber(verdict.value)}
       unit={verdict.unit}
     >
       {children}

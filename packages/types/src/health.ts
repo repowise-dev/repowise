@@ -1376,6 +1376,11 @@ export type ReachedVia = "call-graph" | "import-graph" | "indirect-import" | "mo
 export interface ReachedFileRow {
   file_path: string;
   reached: boolean;
+  /**
+   * Generated, vendored, build, tooling, docs example or migration code: no
+   * test is owed, so it is never listed as unreached. Absent means owed.
+   */
+  not_applicable?: boolean;
   health_score?: number | null;
   nloc?: number;
 }
@@ -1394,6 +1399,8 @@ export interface InferredTestMap {
   files_total: number;
   files_reached: number;
   files_not_reached: number;
+  /** Files that owe no test (see `ReachedFileRow.not_applicable`); counted in neither of the two above. */
+  files_not_applicable?: number;
   test_file_count: number;
   /**
    * Present only when `basis` is `measured` (the hybrid shape): how many files

@@ -291,6 +291,111 @@ def score_live_change(
     return replace(result, history_ref=history, owned_excludes=owned, baseline_as_of=as_of)
 
 
+@dataclass(frozen=True)
+class RangeCommits:
+    """Each commit of a range scored on its own, oldest first, up to a limit."""
+
+    results: list[ChangeRiskResult]
+    #: Non-merge commits in the range; more than ``len(results)`` when capped.
+    total: int
+    #: Merge commits left out: their first-parent diff repeats the merged commits.
+    merges: int
+    #: The resolved anchor every commit is ranked and fix-weighted at.
+    history_ref: str
+    baseline_as_of: str | None
+
+
+def _range_commit_shas(repo_path: str, base: str, head: str) -> tuple[list[str], int]:
+    """``(non-merge shas oldest first, merge count)`` for the commits *head* adds to *base*.
+
+    Topological order puts every ancestor of a commit before it, so the commits
+    after a cut are all in ``<last kept>..head``: a continuation never misses one.
+    On a branchy range it can repeat a kept commit that is not an ancestor of the cut.
+    """
+    out = _git(["rev-list", "--reverse", "--topo-order", "--parents", f"{base}..{head}"], repo_path)
+    rows = [line.split() for line in out.splitlines() if line.strip()]
+    shas = [row[0] for row in rows if len(row) <= 2]
+    return shas, len(rows) - len(shas)
+
+
+def score_range_commits(
+    repo_path: str,
+    revspec: str,
+    *,
+    extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
+    baseline: int = 200,
+    limit: int = 30,
+) -> RangeCommits:
+    """Score every non-merge commit of a ``base..head`` range as its own change.
+
+    One fix-history walk and one baseline sample serve every commit: both are
+    read at the range's anchor (its merge-base), so the commits rank against
+    the same history the whole range does. A commit scored alone ranks
+    against history up to its own parent instead, so its percentile can
+    differ slightly; reading N walks for N commits is what this avoids.
+    """
+    if baseline < 0:
+        raise ValueError("baseline must be non-negative")
+    parts = split_revspec(revspec)
+    if parts is None:
+        raise ValueError(f"Per-commit scoring needs a base..head range, got {revspec!r}.")
+    if any(p.startswith("-") for p in parts):
+        raise ValueError(f"Invalid revspec {revspec!r}: a ref cannot start with '-'.")
+    base, _, head = parts
+    extensions = normalize_extensions(extensions)
+    ignores = riskignore_patterns(repo_path)
+    excludes = ignores + exclude_patterns
+    history = range_anchor(repo_path, base, head)
+    shas, merges = _range_commit_shas(repo_path, base, head)
+    pool = ThreadPoolExecutor(max_workers=5)  # the walk holds one worker throughout
+    try:
+        walk = pool.submit(_pressure_or_none, repo_path, history)
+        # Each commit costs a few short git calls, so they overlap.
+        features = list(
+            pool.map(
+                lambda sha: extract_commit_features(
+                    repo_path,
+                    sha,
+                    extensions=extensions,
+                    exclude_patterns=excludes,
+                    include_paths=include_paths,
+                ),
+                shas[:limit],
+            )
+        )
+        samples: list[BaselineSample] = []
+        as_of = None
+        if baseline:
+            as_of = resolve_anchor_sha(repo_path, history)
+            samples = baseline_samples_cached(
+                repo_path, history, baseline, extensions, excludes, include_paths
+            )
+        pressure = walk.result()
+    finally:
+        # A failed read stops the queued commits instead of leaving them spawning git.
+        pool.shutdown(wait=False, cancel_futures=True)
+    scores = scores_excluding(samples, "")
+    densities = densities_excluding(samples, "", pressure or {})
+    results = [
+        replace(
+            assess_change(
+                feats,
+                fix_pressure=pressure,
+                baseline_scores=scores,
+                baseline_fix_densities=densities,
+                riskignore_excludes=ignores,
+                request_excludes=exclude_patterns,
+            ),
+            history_ref=history,
+            baseline_as_of=as_of,
+        )
+        for feats in features
+    ]
+    return RangeCommits(results, len(shas), merges, history, as_of)
+
+
 def assess_change(
     features: ChangeFeatures,
     *,

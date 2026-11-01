@@ -129,6 +129,12 @@ class TestMain:
         assert out["updated_input"]["command"] == "repowise distill --source hook-cursor pytest -x"
         assert out["updated_input"]["working_directory"] == str(tmp_path)
 
+    def test_passes_through_when_repowise_is_not_on_path(self, monkeypatch, tmp_path) -> None:
+        (tmp_path / ".repowise").mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+        payload = _payload(tool_input={"command": "pytest -x", "working_directory": str(tmp_path)})
+        assert _run_main(monkeypatch, payload) == ""
+
     def test_ask_passes_through(self, monkeypatch, tmp_path) -> None:
         # preToolUse does not enforce "ask", so an ask family runs unrewritten.
         (tmp_path / ".repowise").mkdir()

@@ -17,10 +17,9 @@ goes through ``resolve_style``.
 Cache contract (the load-bearing detail — see WIKI_STYLES_PLAN.md §2):
 the per-style ``fingerprint`` is woven into the rendered user prompt for active
 styles, so a style change flows into each page's ``source_hash`` and the existing
-incremental-update machinery regenerates exactly the affected pages. The
-``comprehensive`` style is inert (empty directive + note) and therefore produces
-byte-identical prompts to the pre-feature behaviour — existing wikis never
-regenerate spuriously when the feature lands.
+incremental-update machinery regenerates exactly the affected pages. Every
+built-in style, ``comprehensive`` included, carries a directive; a spec with no
+directive and no note is inert and leaves prompts and hashes untouched.
 """
 
 from __future__ import annotations
@@ -43,11 +42,14 @@ class StyleSpec:
         description:          One-line, user-facing summary (shown in selectors).
         is_builtin:           True for shipped styles; False for ``.repowise/styles``.
         user_directive:       Constant block prepended to every LLM user prompt.
-                              Empty string = inert (the ``comprehensive`` baseline).
+                              Empty directive and note = inert.
         system_note:          Constant block appended to every system prompt.
         onboarding_condenses: When False, the onboarding collection keeps the
                               baseline narrative voice even under this style (D9).
-        template_dir:         Optional per-style template directory (Layer 2 /
+        length_note:          Format string with ``{lo}`` and ``{hi}``, added to
+                              the user-prompt block when a renderer passes the
+                              page's word range. Built-in only.
+        template_dir:        Optional per-style template directory (Layer 2 /
                               custom styles). ``None`` = use the base templates.
         style_version:        Bump to force regeneration when a style's text
                               changes in a way the fingerprint must capture.
@@ -59,6 +61,7 @@ class StyleSpec:
     user_directive: str = ""
     system_note: str = ""
     onboarding_condenses: bool = False
+    length_note: str = ""
     template_dir: Path | None = None
     style_version: int = 1
 
@@ -86,6 +89,7 @@ class StyleSpec:
         h.update(str(self.style_version).encode())
         h.update(self.user_directive.encode())
         h.update(self.system_note.encode())
+        h.update(self.length_note.encode())
         return h.hexdigest()[:16]
 
     def _applies_to(self, *, is_onboarding: bool) -> bool:
@@ -94,19 +98,29 @@ class StyleSpec:
             return False
         return not (is_onboarding and not self.onboarding_condenses)
 
-    def user_prompt_prefix(self, *, is_onboarding: bool) -> str:
+    def states_length(self, *, is_onboarding: bool) -> bool:
+        """Whether this style's prefix states the page's word range when given one."""
+        return bool(self.length_note) and self._applies_to(is_onboarding=is_onboarding)
+
+    def user_prompt_prefix(
+        self, *, is_onboarding: bool, word_budget: tuple[int, int] | None = None
+    ) -> str:
         """Block to prepend to a page's user prompt (``""`` to leave it untouched).
 
         The leading marker comment carries the fingerprint so that *any* change to
         the style — including a ``system_note``-only change that wouldn't otherwise
         alter the user prompt — flows into ``source_hash`` and triggers regen.
+        *word_budget* is the page's ``(lo, hi)`` prose range; only a style with a
+        ``length_note`` states it.
         """
         if not self._applies_to(is_onboarding=is_onboarding):
             return ""
         marker = f"<!-- repowise-style:{self.name} fp:{self.fingerprint} -->"
-        body = self.user_directive.strip()
-        block = marker if not body else f"{marker}\n{body}"
-        return f"{block}\n\n"
+        parts = [marker, self.user_directive.strip()]
+        if word_budget is not None and self.length_note:
+            lo, hi = word_budget
+            parts.append(self.length_note.format(lo=lo, hi=hi))
+        return "\n".join(part for part in parts if part) + "\n\n"
 
     def system_prompt_suffix(self, *, is_onboarding: bool) -> str:
         """Block to append to a page's system prompt (``""`` to leave it untouched)."""

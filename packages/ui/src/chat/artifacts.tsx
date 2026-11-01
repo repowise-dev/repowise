@@ -38,6 +38,7 @@ import type { Severity } from "../health/tokens";
 import { Markdown } from "../shared/markdown";
 import { MermaidDiagram } from "../wiki/mermaid-diagram";
 import { getPageTypeLabel } from "../lib/page-types";
+import { formatNumber } from "../lib/format";
 
 // ---------------------------------------------------------------------------
 // Shared atoms
@@ -91,9 +92,9 @@ export function OverviewRenderer({ data }: { data: OverviewArtifactData }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-2">
-        <StatRow label="Files" value={data.total_files.toLocaleString()} />
-        <StatRow label="Symbols" value={data.total_symbols.toLocaleString()} />
-        <StatRow label="Hotspots" value={data.hotspot_count.toLocaleString()} />
+        <StatRow label="Files" value={formatNumber(data.total_files)} />
+        <StatRow label="Symbols" value={formatNumber(data.total_symbols)} />
+        <StatRow label="Hotspots" value={formatNumber(data.hotspot_count)} />
         <StatRow label="Monorepo" value={data.is_monorepo ? "yes" : "no"} />
       </div>
 
@@ -105,7 +106,7 @@ export function OverviewRenderer({ data }: { data: OverviewArtifactData }) {
               <StatRow
                 key={lang}
                 label={lang}
-                value={(count as number).toLocaleString()}
+                value={typeof count === "number" ? formatNumber(count) : String(count)}
               />
             ))}
           </div>
@@ -786,18 +787,18 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
           <p className="text-xs text-[var(--color-text-secondary)]">{data.summary}</p>
         )}
         <div className="grid grid-cols-2 gap-2">
-          <StatRow label="Active" value={Number(active).toLocaleString()} />
+          <StatRow label="Active" value={formatNumber(Number(active))} />
           <StatRow
             label="Stale"
-            value={Number(counts.stale ?? stale.length).toLocaleString()}
+            value={formatNumber(Number(counts.stale ?? stale.length))}
           />
           <StatRow
             label="Proposed"
-            value={Number(counts.proposed ?? proposed.length).toLocaleString()}
+            value={formatNumber(Number(counts.proposed ?? proposed.length))}
           />
           <StatRow
             label="Ungoverned"
-            value={hotspots.length.toLocaleString()}
+            value={formatNumber(hotspots.length)}
           />
         </div>
         {data.by_source && Object.keys(data.by_source).length > 0 && (
@@ -808,7 +809,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
                 <StatRow
                   key={source}
                   label={source}
-                  value={(count as number).toLocaleString()}
+                  value={typeof count === "number" ? formatNumber(count) : String(count)}
                 />
               ))}
             </div>
@@ -930,11 +931,11 @@ export function DeadCodeRenderer({ data }: { data: DeadCodeArtifactData }) {
       <div className="grid grid-cols-2 gap-2">
         <StatRow
           label="Findings"
-          value={data.summary.total_findings.toLocaleString()}
+          value={formatNumber(data.summary.total_findings)}
         />
         <StatRow
           label="Candidate lines"
-          value={data.summary.deletable_lines.toLocaleString()}
+          value={formatNumber(data.summary.deletable_lines)}
         />
       </div>
 
@@ -951,7 +952,7 @@ export function DeadCodeRenderer({ data }: { data: DeadCodeArtifactData }) {
             </div>
             {tier.truncated && (
               <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
-                {tier.findings.length} of {tier.count.toLocaleString()} shown
+                {tier.findings.length} of {formatNumber(tier.count)} shown
               </p>
             )}
           </div>
