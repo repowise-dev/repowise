@@ -93,7 +93,9 @@ def render_cascade_budget_warning(
         "dependent files were skipped and their pages marked stale.[/yellow]"
     )
     if split is None:
-        console.print(f"[yellow]  Pass `{full}` to regenerate them all.[/yellow]\n")
+        console.print(
+            f"[yellow]  Pass `{full}` on the update that brings these changes.[/yellow]\n"
+        )
         return
     model, structural = split
     if structural:
@@ -105,10 +107,10 @@ def render_cascade_budget_warning(
         console.print(
             f"  {model} pages written by a model: run [cyan]repowise generate --stale[/cyan] "
             f"to rewrite them (it estimates the cost first), or pass `{full}` "
-            "to regenerate everything in this run."
+            "on the update that brings these changes."
         )
     else:
-        console.print(f"  Pass `{full}` to regenerate them in this run.")
+        console.print(f"  Pass `{full}` on the update that brings these changes.")
     console.print()
 
 

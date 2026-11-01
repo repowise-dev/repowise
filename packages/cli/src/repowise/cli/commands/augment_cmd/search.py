@@ -13,10 +13,11 @@ something".
 The digest is the exception and stays index-free by design: it summarizes the
 flood rather than reasoning about it, so it works on an unindexed repo.
 
-Rescue, triage and the appended digest are **advisory**: they add context
-next to the tool output, they do not replace it. They therefore spend tokens
-and are not billed to the savings ledger; only the *served* digest
-(:mod:`search_digest`) replaces bytes and records a saving.
+Rescue and triage are **advisory**: they add context next to the tool output,
+they do not replace it. They therefore spend tokens and are not billed to the
+savings ledger. The digest is only ever *served* in place of the flood
+(:mod:`search_digest`), which replaces bytes and records a saving; when it is
+not served it says nothing.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import sqlite3
 from pathlib import Path
 
 from . import fast_lookup
-from ._shared import HookResult, _extract_output_text, _find_repo_root
+from ._shared import HookResult, _extract_output_text, _find_repo_root, sqlite_wait_s
 
 # NOTE: repowise.core.persistence.sql is imported inside _rescue/_triage, not
 # here. At module scope it costs ~790ms on every single hook invocation — it
@@ -96,23 +97,24 @@ def _handle_search_post(
         return HookResult()
     output_text = _extract_output_text(tool_output)
 
-    # A genuine flood gets a compact per-file digest regardless of what the
-    # pattern looks like — it summarizes the actual results, not the concept.
+    # A genuine multi-file flood belongs to the digest surface regardless of
+    # what the pattern looks like: it is served in place of the flood or not
+    # at all. Triage never runs on it.
     if result_count >= _DIGEST_THRESHOLD:
-        digest = _grep_flood_digest(repo_path, output_text)
-        if digest:
+        groups = _flood_groups(output_text)
+        if groups is not None:
             return _digest_result(
                 repo_path,
                 tool_name,
                 tool_input,
                 tool_output,
                 output_text,
-                digest,
+                groups,
                 session_id,
                 adapter=adapter,
             )
         # Unparseable output (e.g. Glob path lists, or a single-file context
-        # grep, see search_digest): fall through to triage.
+        # grep, see search_digest), or one or two files: fall through to triage.
 
     pattern = tool_input.get("pattern")
     if not isinstance(pattern, str) or not pattern.strip():
@@ -179,23 +181,26 @@ def _digest_result(
     tool_input: dict,
     tool_output: object,
     output_text: str,
-    digest: str,
+    groups: dict,
     session_id: str,
     *,
     adapter,
 ) -> HookResult:
-    """Serve the digest in place of the flood, or append it as before.
+    """Serve the digest in place of the flood, or say nothing.
 
-    Two ledger categories on purpose. A *served* digest and an *appended* one
-    are different products. One costs the agent tokens to gain a ranking, the
-    other saves them, and pooling both under ``digest`` would average a cost
-    and a saving into a number that describes neither. ``digest_served`` is
-    scored as no-action-expected for the same structural reason
-    ``skeleton_served`` is: its text leaves as ``updatedToolOutput`` and never
-    appears in the transcript the classifier reads.
+    The digest used to be appended beside the flood when it was not served.
+    That added 1-2 KB on top of output the agent had already been billed for,
+    and agents searched again after it as often as without it. So an unserved
+    digest is never emitted. ``digest_served`` is scored as
+    no-action-expected for the same structural reason ``skeleton_served`` is:
+    its text leaves as ``updatedToolOutput`` and never appears in the
+    transcript the classifier reads.
 
-    Every gate between "there is a digest" and "the agent got it" belongs to
-    :func:`replacement.offer`, which the Read surfaces use too.
+    The digest is rendered inside *build*, so a client that cannot replace
+    pays nothing for it and an opted-out repo pays only after its response
+    is out (the forgone-saving write). Every gate between "there is a digest"
+    and "the agent got it" belongs to :func:`replacement.offer`, which the
+    Read surfaces use too.
     """
     from .replacement import offer
     from .search_digest import CONFIG_FLAG, SAVINGS_SOURCE, digest_replacement
@@ -209,17 +214,16 @@ def _digest_result(
         tool_name=tool_name,
         tool_response=tool_output,
         build=lambda: digest_replacement(
-            pattern if isinstance(pattern, str) else "", output_text, digest
+            pattern if isinstance(pattern, str) else "",
+            output_text,
+            _grep_flood_digest(repo_path, groups),
         ),
     )
     if served is not None:
         _log_search_firing(repo_path, session_id, served.category, served.text)
         return HookResult(replacement=served.payload, on_emitted=on_emitted)
-
-    # Nothing was replaced, so the digest rides alongside as it always did.
-    # ``on_emitted`` here is the forgone-saving write, when there was one.
-    _log_search_firing(repo_path, session_id, "digest", digest)
-    return HookResult(context=digest, on_emitted=on_emitted)
+    # ``on_emitted`` is the forgone-saving write, when there was one.
+    return HookResult(on_emitted=on_emitted)
 
 
 def _log_search_firing(
@@ -250,24 +254,28 @@ def _log_search_firing(
     )
 
 
-def _grep_flood_digest(repo_path: Path, output_text: str) -> str | None:
-    """Compact per-file digest of a Grep flood, index-ranked when possible.
+def _flood_groups(output_text: str) -> dict | None:
+    """Matches grouped per file, or None when the output is not a digestible flood.
 
-    Cannot replace the tool output (PostToolUse is additionalContext only),
-    so this is positioned as a digest the agent can navigate by instead of
-    scanning hundreds of match lines. Grouping is pure text work from the
-    shared distill filter; PageRank ordering is attempted against the index
-    and silently skipped when there is no graph (plain count order then).
+    Pure text work from the shared distill filter, cheap enough to decide on
+    before the response; the ranking in :func:`_grep_flood_digest` is not.
     """
-    from repowise.core.distill.filters.search_results import (
-        group_search_matches,
-        render_search_digest,
-    )
+    from repowise.core.distill.filters.search_results import group_search_matches
 
     groups = group_search_matches(output_text)
     if groups is None or len(groups) < 3:
         # One or two files: the raw output is already navigable.
         return None
+    return groups
+
+
+def _grep_flood_digest(repo_path: Path, groups: dict) -> str:
+    """Compact per-file digest of a grouped Grep flood, index-ranked when possible.
+
+    PageRank ordering is attempted against the index and silently skipped
+    when there is no graph (plain count order then).
+    """
+    from repowise.core.distill.filters.search_results import render_search_digest
 
     paths = list(groups.keys())
     file_order = _fast_pagerank_file_order(repo_path, paths)
@@ -358,7 +366,7 @@ async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] |
 
     normalized = _as_node_ids(repo_path, paths)
 
-    engine = create_engine(resolve_db_url(repo_path))
+    engine = create_engine(resolve_db_url(repo_path), busy_timeout_ms=_orm_busy_timeout_ms())
     try:
         from sqlalchemy import select
 
@@ -411,6 +419,11 @@ def _order_by_pagerank(
 _ORM = object()
 
 
+def _orm_busy_timeout_ms() -> int:
+    """The ORM's busy timeout, inside the hook's wait budget (default 30s)."""
+    return int(sqlite_wait_s(30) * 1000)
+
+
 def _wiki_db_exists(repo_path: Path) -> bool:
     """Whether this repo has a local index at all.
 
@@ -448,12 +461,9 @@ def _fast_search_enrich(
     result_count: int,
     matched: dict[str, int] | None,
 ) -> str | object | None:
-    """Triage and the widened rescue without the ORM. ``_ORM`` to fall back.
-
-    The zero-result rescue is not served here on purpose: 45% of its queries
-    fall through to ``FullTextSearch``, so it stays on the shared retrieval
-    code and pays the import it actually uses.
-    """
+    """Triage and both rescues without the ORM. ``_ORM`` to fall back."""
+    if mode == "rescue":
+        return _fast_rescue(repo_path, pattern)
     if mode not in ("triage", "rescue_wide") or not matched:
         return _ORM
     clean = _clean_pattern(pattern)
@@ -488,6 +498,39 @@ def _fast_search_enrich(
         return _ORM
     finally:
         conn.close()
+
+
+def _fast_rescue(repo_path: Path, pattern: str) -> str | object | None:
+    """The zero-result rescue's symbol leg without the ORM. ``_ORM`` to fall back.
+
+    Only a symbol hit is answered here. No hit means the FTS leg, 45% of
+    rescues, which is shared retrieval code and stays on the ORM path; that
+    path repeats the symbol query, so the answer cannot differ.
+    """
+    clean = _clean_pattern(pattern)
+    if not clean:
+        return None
+    variants = _name_variants(clean)
+    if not variants:
+        # The ORM spells this as an empty OR; leave that edge to it.
+        return _ORM
+    if not _wiki_db_exists(repo_path):
+        return None
+    conn = fast_lookup.connect(repo_path)
+    if conn is None:
+        return _ORM
+    try:
+        repository_id = fast_lookup.repo_id(conn, repo_path)
+        if repository_id is None:
+            return None
+        rows = fast_lookup.symbols_like(conn, repository_id, variants, _RESCUE_TOP_N)
+    except sqlite3.Error:
+        return _ORM
+    finally:
+        conn.close()
+    if not rows:
+        return _ORM
+    return _rescue_symbol_text(pattern, rows, {v.lower() for v in variants})
 
 
 def _looks_like_path_lookup(pattern: str) -> bool:
@@ -678,7 +721,7 @@ async def _search_enrich(
         return None
 
     url = resolve_db_url(repo_path)
-    engine = create_engine(url)
+    engine = create_engine(url, busy_timeout_ms=_orm_busy_timeout_ms())
 
     try:
         sf = create_session_factory(engine)
@@ -783,16 +826,7 @@ async def _rescue(
     if matched is not None:
         return _rescue_wide_text(pattern, clean, matched, rows)
     if rows:
-        rows = _rescue_rank(rows, lowered)
-        first = rows[0]
-        line = f":{first[3]}" if first[3] else ""
-        extras = ""
-        if len(rows) > 1:
-            extras = f" (+{len(rows) - 1} more)"
-        return (
-            f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
-            f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
-        )
+        return _rescue_symbol_text(pattern, rows, lowered)
 
     # Fall back to FTS on wiki content.
     fts = FullTextSearch(engine)
@@ -801,6 +835,18 @@ async def _rescue(
     except Exception:
         fts_rows = []
     return _rescue_fts_text(pattern, fts_rows)
+
+
+def _rescue_symbol_text(pattern: str, rows: list, lowered: set[str]) -> str:
+    """The zero-result rescue's closest-symbol line, from its ``LIMIT``-ed rows."""
+    rows = _rescue_rank(rows, lowered)
+    first = rows[0]
+    line = f":{first[3]}" if first[3] else ""
+    extras = f" (+{len(rows) - 1} more)" if len(rows) > 1 else ""
+    return (
+        f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
+        f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
+    )
 
 
 def _rescue_fts_text(pattern: str, fts_rows: list) -> str | None:

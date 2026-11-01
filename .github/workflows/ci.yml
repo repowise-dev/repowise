@@ -51,9 +51,12 @@ jobs:
       # One worker per core. loadfile keeps each module on one worker, so a
       # module-scoped fixture (an indexed sample repo, say) is built once, not
       # once per worker that draws a test from it.
+      # --max-worker-restart=0: a worker the per-test timeout ended stops the
+      # run with that test named. With restarts, loadfile hands the unfinished
+      # tests of that file back, and the run can wait with every worker idle.
       - name: Run unit tests
         if: matrix.python-version != '3.12'
-        run: uv run pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25
+        run: uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
 
       # One leg measures coverage for the pull request bot's checks comment.
       # sysmon (Python 3.12+) measures lines with far less overhead than the
@@ -62,7 +65,7 @@ jobs:
         if: matrix.python-version == '3.12'
         env:
           COVERAGE_CORE: sysmon
-        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml
+        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report=xml
 
       # The Repowise coverage job below gates the pull request on this report.
       - name: Keep coverage.xml for the coverage gate

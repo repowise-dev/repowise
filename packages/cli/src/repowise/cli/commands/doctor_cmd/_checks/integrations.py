@@ -25,6 +25,9 @@ def integration_checks(ctx: CheckContext) -> list[DoctorCheck]:
     # 13. Per-agent health, reported by each agent's own descriptor.
     agent_checks, ctx.agents_need_refresh = _agent_target_checks(ctx.repo_path)
     checks.extend(agent_checks)
+    firing_row = _hooks_firing_row(ctx.repo_path)
+    if firing_row is not None:
+        checks.append(firing_row)
     return checks
 
 
@@ -539,3 +542,146 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         _rewrite_hook_row(distill_cfg),
         _hook_scripts_row(repo_path),
     ]
+
+
+#: Claude Code sessions in a row, all started after the hooks were installed,
+#: with no hook ledger row before the firing row warns. One missing session
+#: can be a session the hooks were disabled for; several in a row cannot.
+_SILENT_SESSIONS_TO_WARN = 3
+
+#: Transcripts read per doctor run, newest first. Bounds the cost on a repo
+#: with thousands of sessions; the warning only needs the recent ones.
+_RECENT_SESSIONS = 20
+
+
+def _hooks_firing_row(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """Warn when Claude Code ran sessions here that the installed hooks never saw.
+
+    A hook whose command cannot start is a silent no-op (the shell guard exits
+    0), so "installed" alone says nothing about whether it runs. Every hook
+    run lands in the repo's hook ledger keyed by session id, and Claude Code
+    keeps one transcript per session, so a session with a transcript and no
+    ledger row is one the hooks did not run in. Only sessions that started
+    after the hooks were last written count: a fresh install, or a machine
+    with no Claude Code use here, has none and stays quiet. None when no
+    repowise hook is installed for Claude Code.
+    """
+    name, check_id = "Agent hooks firing", "agent-hooks-firing"
+    try:
+        installed_at = _claude_hooks_installed_at()
+        if installed_at is None:
+            return None
+        from repowise.cli.hook_ledger import ledger_session_ids
+
+        seen = ledger_session_ids(repo_path)
+        if seen is None:
+            return _check(name, True, "could not read the hook ledger", check_id=check_id)
+        sessions = _recent_claude_sessions(repo_path)
+        detail, warn = _hooks_firing_detail(sessions, seen, installed_at)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+    fix = "repowise agents refresh" if warn else None
+    return _check(name, True, detail, check_id=check_id, warn=warn, fix=fix)
+
+
+def _hooks_firing_detail(
+    sessions: list[tuple[str, float, float]], seen: set[str], installed_at: float
+) -> tuple[str, bool]:
+    """``(detail, warn)`` from ``(session_id, started, last_active)``, newest first."""
+    import datetime
+
+    def day(ts: float) -> str:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    last_seen = max((last for sid, _, last in sessions if sid in seen), default=None)
+    floor = max(installed_at, last_seen or 0.0)
+    silent = [sid for sid, started, _ in sessions if started > floor and sid not in seen]
+    if len(silent) >= _SILENT_SESSIONS_TO_WARN:
+        if last_seen is not None:
+            since = f"since {day(last_seen)}"
+        else:
+            # Older runs may sit outside the transcripts read here; never claim "never".
+            since = f"in the last {len(sessions)} sessions" if seen else "in any session"
+        detail = (
+            f"installed, but have not run {since}: {len(silent)} Claude Code sessions here "
+            "left no hook record, so a hook command is not starting "
+            "(run: repowise agents refresh)"
+        )
+        return detail, True
+    if last_seen is not None:
+        return f"last ran {day(last_seen)}", False
+    return "installed; no Claude Code session here has run them yet", False
+
+
+def _claude_hooks_installed_at() -> float | None:
+    """When the Claude Code hook config was last written, or None if no hook is.
+
+    The newest mtime of the files carrying a repowise hook (user settings, the
+    plugin's hooks.json). An mtime bumped by an unrelated edit only moves the
+    floor later, which can hide a warning but never invent one.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        CLAUDE_SETTINGS_LABEL,
+        _claude_code_settings_path,
+        _plugin_hook_entries,
+        claude_code_hook_commands,
+    )
+
+    rows = claude_code_hook_commands()
+    if not rows:
+        return None
+    files = [_claude_code_settings_path()] if any(w == CLAUDE_SETTINGS_LABEL for w, _ in rows) else []
+    if any(w != CLAUDE_SETTINGS_LABEL for w, _ in rows):
+        files += [path for path, _ in _plugin_hook_entries("SessionStart")]
+    mtimes = [f.stat().st_mtime for f in files if f.is_file()]
+    return max(mtimes) if mtimes else None
+
+
+def _recent_claude_sessions(repo_path: _DoctorPath) -> list[tuple[str, float, float]]:
+    """``(session_id, started, last_active)`` for this repo's newest Claude Code sessions.
+
+    The transcript's stem is the session id the hooks receive. Start time is
+    the first timestamp in the file, since an mtime only says when it was
+    last written; a transcript without one is skipped, so a session that may
+    predate the install never counts against the hooks. ``agent-*`` files are
+    subagent transcripts, which no SessionStart hook sees.
+    """
+    import os
+
+    from repowise.core.sessions import transcript_dir_for
+
+    directory = transcript_dir_for(repo_path.resolve())
+    try:
+        entries = [
+            e
+            for e in os.scandir(directory)
+            if e.name.endswith(".jsonl") and not e.name.startswith("agent-") and e.is_file()
+        ]
+    except OSError:
+        return []
+    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+    sessions = []
+    for entry in entries[:_RECENT_SESSIONS]:
+        started = _transcript_started(entry.path)
+        if started is not None:
+            sessions.append((entry.name[: -len(".jsonl")], started, entry.stat().st_mtime))
+    return sessions
+
+
+def _transcript_started(path: str) -> float | None:
+    """The first ``timestamp`` in a transcript's head, as epoch seconds."""
+    import datetime
+    import re
+
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(16384)
+    except OSError:
+        return None
+    match = re.search(r'"timestamp":\s*"([^"]+)"', head)
+    if match is None:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(match.group(1).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
