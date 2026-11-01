@@ -238,6 +238,31 @@ def test_doctor_reports_codex_surface_when_installed(repo: Path, monkeypatch) ->
     assert rows["Distill rewrite hook"][1] == "installed: claude-code, codex"
 
 
+def test_doctor_warns_when_repowise_is_not_on_path(repo: Path, monkeypatch) -> None:
+    # The hook still fires from its pinned path, but it skips every rewrite.
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+    _live_hook(monkeypatch, ClaudeCodeAdapter)
+    monkeypatch.setenv("PATH", str(repo / "empty-bin"))
+    rows = _rows(repo)
+    assert rows["Distill rewrite hook"][1].startswith(
+        "installed: claude-code; repowise is not on PATH, so no command is rewritten"
+    )
+
+
+def test_doctor_keeps_the_matcher_fix_when_repowise_is_not_on_path(
+    repo: Path, monkeypatch
+) -> None:
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+    from repowise.cli.commands.doctor_cmd._checks.integrations import _rewrite_hook_row
+
+    _live_hook(monkeypatch, ClaudeCodeAdapter, unmatched=("PowerShell",))
+    monkeypatch.setenv("PATH", str(repo / "empty-bin"))
+    row = _rewrite_hook_row({})
+    assert "not on PATH" in row.detail
+    assert row.fix == "repowise hook rewrite install"
+
+
 def test_doctor_names_what_a_narrowed_matcher_misses(repo: Path, monkeypatch) -> None:
     # An entry left behind by a tool rename is registered and rewrites only
     # some of what the agent runs. Reporting it as plain "installed" is the

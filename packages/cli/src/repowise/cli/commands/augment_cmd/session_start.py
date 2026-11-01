@@ -76,6 +76,9 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     freshness = _freshness_block(repo_path, last_sync)
     if freshness is None:
         return None
+    off_path = _distill_off_path_note()
+    if off_path:
+        freshness = f"{freshness} {off_path}"
 
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
@@ -84,6 +87,31 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     except Exception:
         decisions = None
     return f"{freshness}\n{decisions}" if decisions else freshness
+
+
+#: Said when the rewrite hook is installed but every command it would rewrite
+#: passes through, because the ``repowise distill`` it emits would not start.
+_DISTILL_OFF_PATH = "Command distilling is off: repowise is not on PATH."
+
+
+def _distill_off_path_note() -> str:
+    """:data:`_DISTILL_OFF_PATH` when the rewrite hook cannot rewrite, else "".
+
+    The rewrite hook runs from a pinned path but emits a bare ``repowise``, so
+    it passes every command through when that name is not on PATH. This
+    process has the same PATH as the hook. Only the user settings are read:
+    a plugin's hooks use bare names, so off PATH this hook would not be
+    running either. The common path pays one PATH lookup.
+    """
+    import shutil
+
+    if shutil.which("repowise") is not None:
+        return ""
+    try:
+        settings = (Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return _DISTILL_OFF_PATH if "repowise-rewrite" in settings else ""
 
 
 def _freshness_block(repo_path: Path, last_sync: str) -> str | None:

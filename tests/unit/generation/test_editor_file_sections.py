@@ -163,17 +163,33 @@ def test_the_opt_in_sections_bring_the_detail_back(gen):
     assert "never re-read them" in full
 
 
-@pytest.mark.parametrize("variant", ["how_to_work", "how_to_work_full"])
-def test_how_to_work_names_the_pre_edit_and_finish_calls(gen, variant):
-    rendered = gen.render(_full_data(sections=frozenset({variant})))
+def test_full_how_to_work_names_the_pre_edit_and_finish_calls(gen):
+    rendered = gen.render(_full_data(sections=frozenset({"how_to_work_full"})))
     assert rendered.count("**Before an edit:**") == 1
     assert 'get_risk(targets=["<file>"])' in rendered
     assert 'get_change_risk(revspec="<base>..HEAD")' in rendered
     assert 'get_health(targets=["<each file you touched>"])' in rendered
 
 
+def test_how_to_work_routes_each_task_kind(gen):
+    rendered = gen.render(_full_data(sections=frozenset({"how_to_work"})))
+    # Exact names go to the text tools; the rest name one call with arguments.
+    assert "Exact identifier, string or file name: Grep, Glob and Read are faster." in rendered
+    assert 'get_answer(question="how does ...")' in rendered
+    assert 'get_context(targets=["<symbol>"], include=["references"])' in rendered
+    assert 'get_risk(targets=["<file>"])' in rendered
+    assert 'get_why(query="why ...", targets=["<file>"])' in rendered
+    assert 'get_change_risk(revspec="<base>..HEAD")' in rendered
+    assert 'get_health(targets=["<files you touched>"])' in rendered
+
+
+def test_the_tool_table_is_opt_in(gen):
+    assert "| Tool | When and why |" not in gen.render(_full_data())
+    assert "tools" in OPT_IN_SECTIONS
+
+
 def test_repo_facts_lead_the_block(gen):
-    rendered = gen.render(_full_data())
+    rendered = gen.render(_full_data(sections=DEFAULT_SECTIONS | {"tools"}))
     order = [rendered.index(_HEADINGS[s]) for s in ("hotspots", "health", "how_to_work", "tools")]
     assert order == sorted(order)
 
@@ -217,13 +233,25 @@ def test_fix_first_alone_keeps_its_heading(gen):
     assert "### Code health\n\nFix first:" in rendered
 
 
-def test_the_shared_body_differs_only_in_the_read_note():
-    data = _full_data(sections=ALL_SECTIONS)
+_CLAUDE_NAMES = (
+    "Repowise tools are MCP tools: call them as `mcp__repowise__<tool>` "
+    "(`mcp__plugin_repowise_repowise__<tool>` when Repowise is installed as a Claude Code plugin)."
+)
+_AGENTS_NAMES = "Repowise tools come from the `repowise` MCP server."
+
+
+@pytest.mark.parametrize("sections", [None, ALL_SECTIONS], ids=["default", "all"])
+def test_the_shared_body_differs_only_in_tool_names_and_the_read_note(sections):
+    data = _full_data(sections=sections) if sections else _full_data()
     claude = ClaudeMdGenerator().render(data)
     agents = AgentsMdGenerator().render(data)
-    assert "raw Read of any file you will Edit" in claude
-    assert "Reading a file before you edit it is correct and expected." in agents
+    if sections is None:
+        assert _CLAUDE_NAMES in claude and _AGENTS_NAMES in agents
+    claude = claude.replace(_CLAUDE_NAMES, _AGENTS_NAMES)
     assert claude.replace(
+        "Read a file before you Edit it; Claude Code requires that Read.",
+        "Read a file before you edit it.",
+    ).replace(
         "Claude Code requires a raw Read of any file you will Edit, and that Read is correct and expected.",
         "Reading a file before you edit it is correct and expected.",
     ) == agents

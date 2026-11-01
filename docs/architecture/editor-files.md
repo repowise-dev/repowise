@@ -119,22 +119,25 @@ The block is read into the agent's context on every turn, so it is lean by
 default. `editor_files.sections` picks the sections (see
 [CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
 only the queries the chosen sections render. Both templates include the shared
-`_editor_block.j2` and differ only in the pre-edit sentence.
+`_editor_block.j2` and differ only in the pre-edit sentence and in how tools
+are named: CLAUDE.md says Claude Code calls them `mcp__repowise__<tool>`
+(`mcp__plugin_repowise_repowise__<tool>` under the plugin), AGENTS.md names the
+`repowise` MCP server and leaves the naming to the client.
 
 | Section | Default | Source | Cap |
 |---------|---------|--------|-----|
 | Header | always | Date and commit; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
-| `architecture` | on | First 4 sentences from the `repo_overview` wiki page | 4 sentences |
-| `key_modules` | on | `module_page` pages by PageRank desc | Top 10 |
+| `architecture` | on | Lead sentence of the `repo_overview` wiki page | 1 sentence |
+| `key_modules` | on | `module_page` pages by PageRank desc | Top 6 |
 | `entry_points` | on | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
 | `hotspots` | on | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
 | `health` | on | Health score, band and worst file | 1 line |
 | `code_health` | off | Every health signal (replaces `health`) | 1 line |
 | `fix_first` | off | The Fix-first queue | Top 3 |
 | `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
-| `how_to_work` | on | Static: pre-edit, distill, decision capture; a keyless bullet when the index has no model | 3-4 bullets |
+| `how_to_work` | on | Static: task routing (exact names to Grep/Read; flow, callers, risk, why and finishing checks to one Repowise call each), distill, decision capture; a keyless bullet when the index has no model | 10-11 lines |
 | `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
-| `tools` | on | `tool_table.py`, the MCP tool table | All tools |
+| `tools` | off | `tool_table.py`, the MCP tool table | All tools |
 | `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
 
 ---
@@ -282,7 +285,7 @@ EditorFileDataFetcher.fetch()
     │  AsyncSession + repo_id + repo_path
     │
     ├── crud.get_repository()          → repo.name
-    ├── _get_architecture_summary()    → str (2-4 sentences)
+    ├── _get_architecture_summary()    → str (lead sentence)
     ├── _get_key_modules()             → list[KeyModule]
     ├── _get_entry_points()            → list[str]
     ├── detect_tech_stack()            → list[TechStackItem]

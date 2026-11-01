@@ -624,6 +624,20 @@ BAIL_NO_REPO = "no_repo"  # cwd is not inside a repowise repo
 BAIL_DISABLED = "disabled"  # this repo turned command rewriting off
 BAIL_FAMILY_OFF = "family_off"  # this family specifically is off
 BAIL_PERMISSION = "permission"  # agent cannot honour the decided posture
+BAIL_NO_DISTILL = "distill_not_on_path"  # `repowise` is not on PATH to run the rewrite
+
+
+def _distill_on_path() -> bool:
+    """Whether the bare ``repowise`` in a rewrite resolves on PATH.
+
+    The hook itself runs from a pinned absolute path, so it fires even when
+    the install lives only in a venv that is not on PATH; the rewritten
+    command does not, and would fail with ``command not found``. Imported
+    lazily so commands that never reach a rewrite skip it.
+    """
+    import shutil
+
+    return shutil.which("repowise") is not None
 
 
 def decide(
@@ -686,6 +700,13 @@ def _decide(
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
+    # Pass through when the rewrite could not run. Ceiling: an install that is
+    # only in an off-PATH venv gets no distill; the upgrade path is emitting
+    # the absolute script path, quoted per shell dialect and agent. This reads
+    # the hook's PATH; a shell profile that adds repowise only for the agent's
+    # shell reads as missing, which costs the savings, never the command.
+    if not _distill_on_path():
+        return None, BAIL_NO_DISTILL, repo_root
 
     # The --source tag lands in the savings ledger so `repowise saved
     # --by source` can tell hook surfaces apart from direct CLI use — and,

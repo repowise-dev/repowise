@@ -43,27 +43,18 @@ async def get_why(
 ) -> dict:
     """Why this code is shaped this way — decision records + evidence commits.
 
-    Call before refactors or pattern divergences. Query modes: a question
-    ("why is auth using JWT?"), a file path (governing decisions + origin
-    story + alignment score), a question anchored to targets, or no query
-    (decision health dashboard). Falls back to git archaeology when no
-    decisions exist for a path — never empty. Evidence-bearing rows carry an
-    explicit ``provenance`` and ``evidence_refs`` whose ids ``id=`` resolves in
-    full; matching ids mean shared evidence, not independent corroboration. Every decision row
-    carries ``authority``: ``accepted`` means somebody signed it, ``candidate``
-    means nobody has yet. ``answer_basis`` names the strongest lane the response
-    rests on (decision, episode, rationale, archaeology, documentation,
-    candidate); only ``decision`` is a ruling, and ``candidate`` is the weakest
-    -- it means nothing cleared that bar.
+    Call before a refactor or pattern divergence. Query: a question, a file
+    path, a question with ``targets``, or nothing (decision dashboard).
+    Falls back to git archaeology, never empty. ``authority: accepted``
+    means somebody signed the decision; ``answer_basis`` names the strongest
+    evidence lane, and only ``decision`` is a ruling.
 
     Args:
         query: question, file/module path, or omit for the dashboard.
-        targets: optional file paths to anchor the search, or to ask about on
-            their own when there is no query.
+        targets: file paths to anchor the search.
+        id: decision or ``ev_...`` evidence id from any tool.
+        reference: structured evidence reference.
         repo: usually omitted.
-        id: decision or ``ev_...`` evidence id emitted by this or another tool.
-        reference: structured evidence reference. Its id and repository are
-            accepted together without caller translation.
     """
     if reference:
         id, repo = _reference_coordinates(reference, id, repo)

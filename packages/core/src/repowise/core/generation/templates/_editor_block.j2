@@ -1,4 +1,4 @@
-{#- Shared body of claude_md.j2 and agents_md.j2; each sets `read_note` first. -#}
+{#- Shared body of claude_md.j2 and agents_md.j2; each sets `read_note` and `client` first. -#}
 {% set s = data.sections %}
 {% set checks = '- **Before an edit:** `get_risk(targets=["<file>"])`, plus `get_why(query="why ...", targets=["<file>"])` before changing a pattern. **Before finishing:** `get_change_risk(revspec="<base>..HEAD")` once for the whole range, then `get_health(targets=["<each file you touched>"])`.' %}
 ## Codebase Intelligence for {{ data.repo_name }} (Repowise)
@@ -30,7 +30,7 @@ Scope: {{ data.scope_gaps | join(' · ') }}. Missing evidence is not a negative 
 {% endif %}
 {% if 'hotspots' in s and data.hotspots %}
 
-### Files that need care (bug-fix history first, then churn; check `get_risk` before editing)
+### Files that need care (by bug-fix history, then churn)
 {% for h in data.hotspots %}
 - `{{ h.path }}`: {% if h.fix_count and h.last_fix_date %}{{ h.fix_count }} bug fix{{ 'es' if h.fix_count != 1 else '' }} in {{ h.fix_window }}, last fix {{ h.last_fix_date }}{% if h.bug_magnet %} (bug magnet){% endif %}; {% endif %}{{ h.commit_count_90d }} commits/90d
 {% endfor %}
@@ -77,13 +77,13 @@ Fix first:
 
 ### How to work in this repo
 
-- **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. {{ read_note }} Bytes marked `verified: true` need no re-read; re-read only what `bounds: "approximate"` names. An empty `callers`/`used_by` comes with a `*_basis`: read it before concluding nothing calls a symbol.
-{{ checks }}
+{% include "_tool_routing.j2" %}
+- {{ read_note }} An empty `callers` list comes with a `*_basis`: read it before concluding nothing calls a symbol.
 {% if data.keyless %}
-- **No model on this index.** `get_answer` replies are low confidence by design, so open its top `best_guesses` / `candidate_files` rows; `search_codebase` is full-text only, so `[fts]` hits are normal. The user adds a model with a provider key and `{{ data.model_command }}`; suggest it, do not run it.
+- No model on this index: `get_answer` is low confidence by design, so open its top `candidate_files`; search is full-text only. A model needs a provider key and `{{ data.model_command }}`; suggest it, do not run it.
 {% endif %}
-- **Noisy commands** (tests, builds, `git log`/`diff`): prefer `repowise distill <cmd>`, same exit code, errors first. Recover a `[repowise#<ref>: N lines omitted]` marker with `repowise expand <ref>` (`-q <regex>` filters); never re-run the command.
-- **Record a decision** you reasoned out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why>' --affects <path> --evidence-commit <sha>` (lands as a candidate; accept candidates with `repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`).
+- Noisy commands (tests, builds, `git log`/`diff`): `repowise distill <cmd>`. A `[repowise#<ref>: N lines omitted]` marker is restored by `repowise expand <ref>`; never re-run the command.
+- Record a decision you reasoned out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why>' --affects <path> --evidence-commit <sha>`; accept a candidate with `repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`.
 {% endif %}
 {% if 'tools' in s %}
 

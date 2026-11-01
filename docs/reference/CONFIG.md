@@ -345,9 +345,10 @@ editor_files:
 
 - Default sections: `architecture`, `key_modules`, `entry_points`,
   `hotspots`, `health` (score and worst file), `decisions` (top three titles),
-  `how_to_work` (three bullets), `tools`.
+  `how_to_work` (which task goes to Grep and which to a Repowise call).
 - Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
-  `commands` (build, test and lint from manifests), `how_to_work_full`.
+  `commands` (build, test and lint from manifests), `how_to_work_full`,
+  `tools` (the MCP tool table).
 
 ## The `decisions:` block
 

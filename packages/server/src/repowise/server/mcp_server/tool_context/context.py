@@ -143,32 +143,23 @@ async def get_context(
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns title, summary, signatures with lines, hotspot bit and
-    decision_record titles. A symbol row without symbol_id is path::name.
-    fix_history appears only on files with counted bug fixes; hotspot is
-    churn; either cues get_risk. episodes counts the dated records bound to
-    a target (absent at zero); get_why serves the bodies. A symbol target counts as its file; a module aggregates all
-    beneath it. Batch targets in one call. No source bytes by default:
-    include=["skeleton"] gives the whole file body-elided and line-verified in
-    ONE call, or Read it. Do not call get_symbol per signature.
-    For a rename, include=["references"] is the whole edit set when
-    complete. Which files in a directory lack tests: include=["files"] on it.
-
-    Defaults fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
-    ``_meta.recovery_unavailable`` names a storage failure.
-    Include-gated blocks are projections, not omissions.
+    Returns summary, signatures with lines, hotspot, fix_history and
+    decision titles; either risk cue means get_risk. Batch targets in one
+    call. Whole file, body-elided and line-verified: include=["skeleton"]
+    in ONE call, or Read it; do not call get_symbol per signature. Rename:
+    include=["references"] is the whole edit set when ``complete``. Which
+    files in a directory lack tests: include=["files"] on it.
 
     Args:
-        targets: paths, "path::Symbol" ids, "component:<name>",
+        targets: paths, "path::Symbol", "component:<name>",
             "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | references | metrics | community | decisions | skeleton
-            | skeleton+ | health | doc_drift | symbols (all, not top 15)
-            | changes | provenance | suspects | files.
-        compact: False adds structure+imports+docstrings.
+        include: callers | callees | references | skeleton | skeleton+
+            | files | symbols (all, not top 15) | decisions | full_doc
+            | ownership | last_change | metrics | community | health
+            | doc_drift | changes | provenance | suspects.
+        compact: False adds structure, imports, docstrings.
+        symptom: issue text or stack trace to rank ``suspects`` on.
         repo: usually omitted.
-        symptom: issue text, error or stack trace suspects ranks on.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")

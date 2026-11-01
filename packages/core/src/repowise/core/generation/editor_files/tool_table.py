@@ -35,12 +35,12 @@ character here roughly fifty times more expensive than a character in a tool
 response. It was 3,402 characters and bought a repowise MCP call before ~1.0%
 of edits under Claude Code.
 
-It is kept, and kept short, because the table is what reaches an agent under a
-harness that defers MCP schemas. Claude Code defers, so an agent there must
-issue a ``ToolSearch`` before a tool is even a candidate, and this table in
-CLAUDE.md is the only description it sees until then. Codex loads the schemas
-up front and needs the table least, but reads the same AGENTS.md block, so the
-rows must stay accurate for both. Adding a sentence here is a real cost; spend
+So the table is the opt-in ``tools`` section. By default the block carries
+``_tool_routing.j2`` instead: one line per task kind naming the call with its
+arguments, which is what an agent under a harness that defers MCP schemas
+(Claude Code) reads before its first ``ToolSearch``. When the table is opted
+in, its rows must stay accurate for CLAUDE.md and AGENTS.md alike. Adding a
+sentence here is a real cost; spend
 it in the tool's own schema description instead, which is paid only on use.
 Budgets in ``tests/unit/server/mcp/test_tool_table_drift.py``.
 """

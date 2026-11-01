@@ -782,24 +782,20 @@ _INSTRUCTIONS = (
     "repowise indexes this repository's code graph, git history and "
     "decisions. One call here often replaces several text searches and "
     "file reads.\n"
-    "- Use search_codebase(query) to find an identifier or literal: it "
-    "returns `lines` (path, line, kind, text; definitions first) read from "
-    "live files, and `complete: true` means that is every match. Path "
-    "and concept queries rank files.\n"
+    "- Use search_codebase(query) to find an identifier or literal: `lines` "
+    "(path, line, kind, text) are read from live files; `complete: true` "
+    "means every match.\n"
     '- Use get_context(targets=[symbol], include=["references"]) before a '
-    "rename or an update-all-callers change: it lists the definition, "
-    "imports and calls, and a `complete` list is the whole edit set. On a "
-    'directory, include=["files"] lists its files and tests.\n'
-    "- Use get_answer(question) for one how/where/why question per call; "
-    "split a compound question.\n"
-    "- Use get_risk before a non-trivial edit to a widely imported file, "
-    "get_change_risk before committing a multi-file change, and get_why "
-    "before changing an established pattern. Skip them for one-line fixes.\n"
+    "rename: a `complete` list is the whole edit set. On a directory, "
+    'include=["files"] lists its files and tests.\n'
+    "- Use get_answer(question) for one how/where/why question per call.\n"
+    "- Use get_risk before editing a widely imported file, get_change_risk "
+    "before committing a multi-file change, get_why before changing an "
+    "established pattern. Skip them for one-line fixes.\n"
     "- Targets with uncommitted edits are flagged: index facts for them "
     "predate the edit.\n"
-    "If the tools report that the repo has no index, tell the user to run "
-    "'repowise init --yes --no-prose' in the repo root; it needs no API key "
-    "or model calls. Suggest it, do not run it yourself."
+    "No index: tell the user to run 'repowise init --yes --no-prose' (no "
+    "API key or model calls). Suggest it, do not run it yourself."
 )
 
 #: Opt-in workspace tools, named only once the selected surface has them.

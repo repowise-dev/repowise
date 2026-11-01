@@ -309,34 +309,23 @@ async def get_change_risk(
 ) -> dict:
     """Review a commit, ``base..head`` range, or uncommitted work.
 
-    Leads with ``directive`` (what to do) and ``health_delta`` (what this
-    change newly made worse). Findings are reported only when the diff explains
-    them, name their ``attribution`` basis, and sort change-written above
-    pre-existing.
-
-    ``directive.status`` is the verdict; ``partial`` health means code files
-    were skipped. ``risk_percentile`` and ``diff_shape`` measure diff size
-    only, not danger.
-
-    ``impacted_tests`` is the ``impacted-tests`` selection; read ``status``.
-    ``patch_coverage`` is the share of changed executable lines stored coverage
-    ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
-    bug-fix record, ``overlap`` the past fixes on these exact lines,
-    ``branch_overlap`` other branches editing them.
+    Leads with ``directive`` (verdict in ``status``) and ``health_delta``
+    (what this change newly made worse). ``risk_percentile`` and
+    ``diff_shape`` measure diff size, not danger. ``impacted_tests`` names
+    the tests to run.
 
     Args:
-        revspec: Commit or ``base..head`` range. Omit to review uncommitted
-            work, or ``HEAD`` when the tree is clean.
-        repo: Repository alias in workspace mode; omit for the default.
-        extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
-        exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
-        include_paths: Gitignore-style paths to keep, as a list or one
-            comma-separated string. Omit for all.
-        baseline: Recent commits sampled for percentile ranking; 0 disables it.
-        include: ``"findings"``, ``"diagnostics"`` (raw mechanics),
-            ``"scales"``, ``"evidence"`` or ``"tests"`` (why each runs).
-        finding_id: Expand one ``health_delta`` finding by its id.
-        per_commit: With a range, one compact row per commit (up to 30).
+        revspec: commit or ``base..head``. Omit for uncommitted work, or
+            ``HEAD`` when the tree is clean.
+        per_commit: with a range, one compact row per commit (up to 30).
+        include: ``"findings"``, ``"diagnostics"``, ``"scales"``,
+            ``"evidence"``, ``"tests"`` (why each runs).
+        finding_id: expand one ``health_delta`` finding.
+        extensions: file suffixes to count, e.g. ``[".py"]``.
+        exclude_patterns, include_paths: gitignore-style paths to omit, keep
+        (include_paths also takes one comma-separated string).
+        baseline: commits sampled for the percentile; 0 disables it.
+        repo: usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
