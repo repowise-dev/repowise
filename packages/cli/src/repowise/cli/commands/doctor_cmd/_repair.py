@@ -158,7 +158,7 @@ async def _repair_stores(ctx: CheckContext) -> int:
     return repaired
 
 
-def _report_store_repair(ctx: CheckContext) -> None:
+def _report_store_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
     has_mismatches = ctx.drift.has_mismatches()
     if has_mismatches:
         console.print("\n[bold]Repairing store mismatches...[/bold]")
@@ -172,8 +172,13 @@ def _report_store_repair(ctx: CheckContext) -> None:
                 f"[yellow]No store drift to repair. "
                 f"{_stale_page_guidance(ctx.stale_counts)}[/yellow]"
             )
-        else:
+        elif repo_ok:
             console.print("[green]Nothing to repair.[/green]")
+        else:
+            console.print(
+                "[yellow]Nothing here for --repair to fix; see the FAIL rows "
+                "above and run the fix each one names.[/yellow]"
+            )
 
 
 def _refresh_agents(repo_path: _DoctorPath) -> None:
@@ -208,9 +213,14 @@ def _reregister_claude(repo_path: _DoctorPath) -> None:
         )
 
 
-def run_repair(ctx: CheckContext) -> None:
-    """Store drift first, then agent integrations, then the Claude Code entry."""
-    _report_store_repair(ctx)
+def run_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
+    """Store drift first, then agent integrations, then the Claude Code entry.
+
+    *repo_ok* is the repo's overall health. When it is False, the
+    "nothing to do" branch points at the failing rows instead of
+    reporting the repo clean.
+    """
+    _report_store_repair(ctx, repo_ok=repo_ok)
     if ctx.agents_need_refresh:
         _refresh_agents(ctx.repo_path)
     if ctx.registration_wedged:
