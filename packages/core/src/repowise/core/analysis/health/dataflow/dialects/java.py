@@ -309,7 +309,12 @@ def _switch_loop_targets(switch: Node) -> list[Node]:
         if node.type in _JUMP_KINDS:
             label = _jump_label(node)
             if node.type == "continue_statement":
-                target = nearest_loop if label is None else _label_target_loop(_matching_label(node, label))
+                if label is None:
+                    target = _enclosing_loop(node)
+                    if target is None or target.id != nearest_loop.id:
+                        continue
+                else:
+                    target = _label_target_loop(_matching_label(node, label))
                 if target is not None:
                     targets[target.id] = target
             elif label is not None:
@@ -317,7 +322,7 @@ def _switch_loop_targets(switch: Node) -> list[Node]:
                 for target in _loops_until_label(node, label_node):
                     targets[target.id] = target
             continue
-        if node.type in _LOOP_KINDS | _FUNCTION_KINDS:
+        if node.type in _FUNCTION_KINDS:
             continue
         stack.extend(node.named_children)
     return [targets[key] for key in sorted(targets)]
@@ -367,10 +372,17 @@ def _matching_label(node: Node, name: str) -> Node | None:
 def _label_target_loop(label: Node | None) -> Node | None:
     if label is None:
         return None
-    body = label.child_by_field_name("body")
+    body = _labeled_body(label)
     while body is not None and body.type == "labeled_statement":
-        body = body.child_by_field_name("body")
+        body = _labeled_body(body)
     return body if body is not None and body.type in _LOOP_KINDS else None
+
+
+def _labeled_body(label: Node) -> Node | None:
+    body = label.child_by_field_name("body")
+    if body is not None:
+        return body
+    return label.named_children[1] if len(label.named_children) > 1 else None
 
 
 def _loops_until_label(jump: Node, label: Node | None) -> list[Node]:

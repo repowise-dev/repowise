@@ -714,6 +714,41 @@ def test_java_labeled_break_from_nested_loop_preserves_outer_loop_state():
     assert any(use.name == "outerBest" for use in sdu.uses)
 
 
+@pytest.mark.parametrize("jump", ["break outer;", "continue outer;"])
+def test_java_labeled_jump_inside_nested_loop_in_switch_preserves_outer_loop_state(jump):
+    src = """
+    class Demo {
+        int f(int[] xs, int best) {
+            outer: for (int x : xs) {
+                best = x;
+                switch (x) {
+                    case 0:
+                        for (int k = 0; k < 2; k++) {
+                            {jump}
+                        }
+                    default: break;
+                }
+                best = 0;
+            }
+            return best;
+        }
+    }
+    """.replace("{jump}", jump)
+    fn = _first("java", src)
+    lmap = get_language_map("java")
+    stack = [fn.fn_node]
+    switch = None
+    while stack:
+        node = stack.pop()
+        if node.type == "switch_expression":
+            switch = node
+            break
+        stack.extend(node.named_children)
+    assert switch is not None
+    sdu = get_defuse_dialect("java").statement_def_use(switch, lmap, head_only=False)
+    assert any(use.name == "best" for use in sdu.uses)
+
+
 # A long Java method whose compute-average tail is a clean extraction.
 _JAVA_PROCESS = """
 class Demo {
