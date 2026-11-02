@@ -201,6 +201,17 @@ def run_partial_analysis(
                     for row in partial_health_report.function_blame_rows
                     if row.get("file_path") in _health_changed
                 ]
+                # The writer replaces facts only for the re-scored files, so a
+                # sink file's rows would land on top of its stored ones.
+                if partial_health_report.function_facts is not None:
+                    from repowise.core.analysis.execution_graph import file_of_symbol
+
+                    _rescored = _health_changed | _performance_changed
+                    partial_health_report.function_facts = [
+                        row
+                        for row in partial_health_report.function_facts
+                        if file_of_symbol(row["symbol_id"]) in _rescored
+                    ]
                 log(
                     f"Health analysis (partial): [cyan]{len(_health_changed)} changed[/cyan], "
                     f"[cyan]{len(_performance_changed)} performance-affected[/cyan], "
