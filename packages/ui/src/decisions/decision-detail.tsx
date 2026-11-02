@@ -53,7 +53,7 @@ import type {
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 import { GapList, ReasonField, isKnownGap, isReasonGap, refusedGaps } from "./decision-confirm";
-import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+import { DecisionAcceptedLine, DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -328,7 +328,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <DecisionStatusMark status={status} />
-            <DecisionOrigin decision={{ ...decision, status }} />
+            {/* Who accepted it is said beside Undo, below. */}
+            <DecisionOrigin decision={{ ...decision, status }} accepter={false} />
             {decision.verification && (
               <VerificationBadge verification={decision.verification} />
             )}
@@ -525,7 +526,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             disabled={loading}
           />
         )}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {status === "proposed" && (
             <>
               <button
@@ -573,6 +574,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               >
                 Deprecate
               </button>
+              <DecisionAcceptedLine decision={{ ...decision, status }} className="ml-1" />
             </>
           )}
         </div>

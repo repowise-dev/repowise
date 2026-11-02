@@ -5,7 +5,7 @@ import type { ReactElement } from "react";
 import { DecisionDetail } from "../../src/decisions/decision-detail.js";
 import { DecisionReviewDrawer } from "../../src/decisions/decision-review-drawer.js";
 import { refusedGaps } from "../../src/decisions/decision-confirm.js";
-import { appliedLine, githubAcceptedLine } from "../../src/decisions/decision-origin.js";
+import { acceptedLine, appliedLine } from "../../src/decisions/decision-origin.js";
 import type { DecisionDetailAdapter } from "../../src/decisions/decision-detail-adapter.js";
 import type { DecisionLineageEntry, DecisionRecord } from "@repowise-dev/types/decisions";
 
@@ -160,6 +160,51 @@ describe("a refused confirm", () => {
   });
 });
 
+describe("a decision an agent accepted", () => {
+  const byAgent = (over: Partial<DecisionRecord> = {}) =>
+    prReview({
+      source: "commit",
+      status: "active",
+      currency: "active",
+      rationale: "Because.",
+      accepter: "claude_code",
+      accepter_kind: "agent",
+      ...over,
+    });
+
+  it("says your agent accepted it, with the session when one was recorded", () => {
+    expect(acceptedLine(byAgent())).toBe("Accepted by your agent");
+    expect(acceptedLine(byAgent({ accepter_session: " CI key " }))).toBe("Accepted by your agent (CI key)");
+    // An agent signing through a GitHub identity is still an agent.
+    expect(acceptedLine(byAgent({ accepter: "github:octocat" }))).toBe("Accepted by your agent");
+    expect(acceptedLine(byAgent({ currency: "dismissed" }))).toBeNull();
+    expect(acceptedLine(byAgent({ currency: null, status: "proposed" }))).toBeNull();
+  });
+
+  it("names the agent beside Undo on the page, for any source, and only there", () => {
+    renderView(
+      <DecisionDetail decision={byAgent({ accepter_session: "sess-7" })} adapter={makeAdapter()} />,
+    );
+    const line = screen.getByText("Accepted by your agent (sess-7)");
+    expect(line.parentElement).toContainElement(screen.getByRole("button", { name: "Undo" }));
+    expect(screen.getAllByText(/Accepted by your agent/)).toHaveLength(1);
+    expect(screen.queryByText(/From PR review/)).not.toBeInTheDocument();
+  });
+
+  it("names the agent in the review drawer", () => {
+    render(
+      <DecisionReviewDrawer
+        decision={byAgent()}
+        reviewable={false}
+        onClose={() => undefined}
+        href="/d/x"
+        Link="a"
+      />,
+    );
+    expect(within(screen.getByRole("dialog")).getByText("Accepted by your agent")).toBeInTheDocument();
+  });
+});
+
 describe("a decision from a PR review", () => {
   it("links to the thread and names who accepted it", () => {
     renderView(
@@ -193,9 +238,9 @@ describe("a decision from a PR review", () => {
 
   it("words the accepter and applied facts", () => {
     const base = prReview();
-    expect(githubAcceptedLine({ ...base, status: "active", accepter: "github:a-b" })).toBe("Accepted by @a-b");
-    expect(githubAcceptedLine({ ...base, status: "active", accepter: "web" })).toBeNull();
-    expect(githubAcceptedLine({ ...base, accepter: "github:a" })).toBeNull();
+    expect(acceptedLine({ ...base, status: "active", accepter: "github:a-b" })).toBe("Accepted by @a-b");
+    expect(acceptedLine({ ...base, status: "active", accepter: "web" })).toBeNull();
+    expect(acceptedLine({ ...base, accepter: "github:a" })).toBeNull();
     expect(appliedLine({ ...base, applied_count: 1, may_be_stale: true })).toBe(
       "Applied in 1 review · may be out of date, its code changed since",
     );

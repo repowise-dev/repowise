@@ -29,7 +29,7 @@ import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import { DecisionReviewDrawer } from "./decision-review-drawer";
 import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
-import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+import { DecisionAppliedLine, DecisionOrigin, acceptedLine } from "./decision-origin";
 
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -708,9 +708,11 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
  * Provenance and nothing else: it names the signer and the session without
  * sorting signers into kinds, so it reads the same whoever signed. A candidate
  * has no signer and renders nothing; its source is already in the header.
+ * Nor does a record whose accepter the drawer body already names ("Accepted
+ * by your agent", "Accepted by @x"), so the signer is said once.
  */
 function Provenance({ decision }: { decision: DecisionRecord }) {
-  if (decision.currency == null) return null;
+  if (decision.currency == null || acceptedLine(decision) !== null) return null;
   const who = decision.accepter?.trim();
   const session = decision.accepter_session?.trim();
   return (
