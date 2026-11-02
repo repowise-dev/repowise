@@ -771,3 +771,57 @@ async def test_summary_window_matches_the_full_listing(client: AsyncClient, app)
             assert s_row["content_chars"] == len(f_row["content"])
         seen += [r["id"] for r in summary]
     assert sorted(seen) == sorted(set(seen)) and len(seen) == 5
+
+
+async def _regenerate_job_config(session_factory, job_id: str) -> dict:
+    import json
+
+    async with get_session(session_factory) as session:
+        job = await crud.get_generation_job(session, job_id)
+        return json.loads(job.config_json) if job.config_json else {}
+
+
+@pytest.mark.asyncio
+async def test_regenerate_page_carries_steering_into_the_job(client: AsyncClient, app) -> None:
+    """The one-shot instruction reaches the job the executor reads (#2289)."""
+    _, page_id = await _create_page(client, app.state.session_factory)
+    with patch("repowise.server.routers.repos._launch_job_task"):
+        resp = await client.post(
+            "/api/pages/lookup/regenerate",
+            params={"page_id": page_id, "steering": "  focus on the CLI entry point  "},
+        )
+    assert resp.status_code == 202
+
+    cfg = await _regenerate_job_config(app.state.session_factory, resp.json()["job_id"])
+    assert cfg["steering"] == "focus on the CLI entry point"
+    assert cfg["mode"] == "single_page"
+    assert cfg["page_id"] == page_id
+
+
+@pytest.mark.asyncio
+async def test_regenerate_page_drops_blank_steering(client: AsyncClient, app) -> None:
+    """A whitespace-only instruction is the same request as no instruction."""
+    _, page_id = await _create_page(client, app.state.session_factory)
+    with patch("repowise.server.routers.repos._launch_job_task"):
+        resp = await client.post(
+            "/api/pages/lookup/regenerate",
+            params={"page_id": page_id, "steering": "   "},
+        )
+    assert resp.status_code == 202
+
+    cfg = await _regenerate_job_config(app.state.session_factory, resp.json()["job_id"])
+    assert "steering" not in cfg
+
+
+@pytest.mark.asyncio
+async def test_regenerate_page_rejects_overlong_steering(client: AsyncClient, app) -> None:
+    from repowise.core.generation.models import MAX_STEERING_CHARS
+
+    _, page_id = await _create_page(client, app.state.session_factory)
+    with patch("repowise.server.routers.repos._launch_job_task") as launch:
+        resp = await client.post(
+            "/api/pages/lookup/regenerate",
+            params={"page_id": page_id, "steering": "x" * (MAX_STEERING_CHARS + 1)},
+        )
+    assert resp.status_code == 422
+    launch.assert_not_called()

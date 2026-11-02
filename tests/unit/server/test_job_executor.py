@@ -1134,3 +1134,26 @@ async def test_stale_structure_lookup_degrades_only_on_a_store_failure(session_f
         AsyncMock(return_value=([], {"scc_page:scc-1"})),
     ):
         assert await _stale_structure_ids(session_factory, "repo-id") == {"scc_page:scc-1"}
+
+
+def test_server_generation_config_keys_steering_on_the_job_page(tmp_path):
+    """A regenerate job's instruction is keyed on the page id it names (#2289).
+
+    The generator matches on ``compute_page_id(page_type, target_path)``, so the
+    key has to be the same page id the route accepted, not a page type or a
+    bare target path.
+    """
+    config = _build_generation_config(
+        tmp_path,
+        {"mode": "single_page", "page_id": "module_page:src/core", "steering": " focus on X "},
+        "comprehensive",
+    )
+
+    assert dict(config.steering) == {"module_page:src/core": "focus on X"}
+
+
+def test_server_generation_config_has_no_steering_without_an_instruction(tmp_path):
+    """Every other job builds a config that steers nothing."""
+    config = _build_generation_config(tmp_path, {"mode": "generate"}, "comprehensive")
+
+    assert dict(config.steering) == {}

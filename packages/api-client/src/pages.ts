@@ -133,10 +133,15 @@ export async function updatePageNotes(
  * touches only this page, `dependents` also refreshes its module/layer/overview
  * containers, `full` refreshes repo-wide. Pass `style` for a per-page wiki-style
  * override; omit it to use the repo's style.
+ *
+ * `steering` is an instruction for this regeneration only, such as which part of
+ * the code the page should focus on. It is appended to this page's prompt and
+ * dropped afterwards; the page's stored notes are a separate field and this
+ * never rewrites them.
  */
 export async function regeneratePage(
   pageId: string,
-  opts?: { cascade?: GenerateCascade; style?: string; repoId?: string },
+  opts?: { cascade?: GenerateCascade; style?: string; repoId?: string; steering?: string },
 ): Promise<JobLaunchResponse> {
   return apiPost<JobLaunchResponse>(
     "/api/pages/lookup/regenerate",
@@ -147,6 +152,7 @@ export async function regeneratePage(
       ...(opts?.repoId ? { repo_id: opts.repoId } : {}),
       ...(opts?.cascade ? { cascade: opts.cascade } : {}),
       ...(opts?.style ? { style: opts.style } : {}),
+      ...(opts?.steering?.trim() ? { steering: opts.steering.trim() } : {}),
     },
   );
 }

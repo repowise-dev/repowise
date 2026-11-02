@@ -91,4 +91,17 @@ describe("regeneratePage", () => {
       repo_id: "repo1",
     });
   });
+
+  it("sends a trimmed steering instruction", async () => {
+    await regeneratePage("module_page:src/core", { steering: "  focus on the CLI  " });
+    expect(apiPost.mock.calls[0]![3]).toEqual({
+      page_id: "module_page:src/core",
+      steering: "focus on the CLI",
+    });
+  });
+
+  it("omits the steering param when it is blank", async () => {
+    await regeneratePage("module_page:src/core", { steering: "   " });
+    expect(apiPost.mock.calls[0]![3]).toEqual({ page_id: "module_page:src/core" });
+  });
 });
