@@ -453,14 +453,16 @@ async def get_change_risk(
     declare_replaced(payload, change_risk_replaced_tokens(result.features.nf))
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
-    if scored_entry is not None:
+    overlap = await _scan_answer(scan)
+    # A failed or timed-out scan may succeed next time, so the payload is not kept.
+    if scored_entry is not None and (overlap is not None or scan is None):
         # Stored before the pointer: an acceptance moves no git state, so a
         # cached pointer would outlive it. ``_served`` reads it afresh.
         scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
             copy.deepcopy(payload),
             sorted(changed) or None,
             branches,
-            await _scan_answer(scan),
+            overlap,
         )
     await attach_why_pointer(payload, ctx, sorted(changed))
     return payload
@@ -505,7 +507,7 @@ async def _revalidated(
     before it, to the full rebuild.
     """
     branches = await asyncio.to_thread(_cache.branch_inputs, str(ctx.path))
-    if branches is None or branches != stored.branches:
+    if branches is None or branches != stored.branches or (stored.overlap is None and stored.targets):
         scan = _start_overlap_scan(
             ctx, dict.fromkeys(stored.targets or ()), revspec_head(revspec)
         )
