@@ -140,14 +140,16 @@ async def _read_stale_counts(repo_path: _DoctorPath) -> dict[str, int]:
     from repowise.core.persistence import get_repository_by_path, get_session
 
     engine, sf = await open_store(repo_path)
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo:
-            counts = await _stale_page_counts(session, repo.id)
-            await engine.dispose()
-            return counts
-    await engine.dispose()
-    return {}
+    try:
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo:
+                return await _stale_page_counts(session, repo.id)
+        return {}
+    finally:
+        # As in _count_pages: a session failure must not skip the dispose,
+        # or the aiosqlite worker thread keeps doctor alive on a broken store.
+        await engine.dispose()
 
 
 def _stale_pages_row(ctx: CheckContext) -> DoctorCheck:

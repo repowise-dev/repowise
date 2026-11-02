@@ -80,11 +80,27 @@ async def run_generation_with_persistence(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
-    await init_db(engine)
-    sf = create_session_factory(engine)
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
 
-    async with get_session(sf) as session:
-        repo_id = (await upsert_repository(session, name=repo_name, local_path=str(repo_path))).id
+        async with get_session(sf) as session:
+            repo_id = (await upsert_repository(session, name=repo_name, local_path=str(repo_path))).id
+    except Exception as exc:
+        # A store that cannot be opened used to surface here as a traceback
+        # while the undisposed engine's aiosqlite worker thread kept init
+        # alive. Dispose first, then fail with the recovery instead: remove
+        # the broken store files and run init again.
+        await engine.dispose()
+        import sqlite3
+
+        from sqlalchemy.exc import DatabaseError
+
+        from repowise.cli._repo_session import unopenable_store_error
+
+        if isinstance(exc, (DatabaseError, sqlite3.Error)):
+            raise unopenable_store_error(url, exc) from exc
+        raise
 
     resume = bool(generation_kwargs.get("resume"))
     prior_pages: dict[str, Any] = {}

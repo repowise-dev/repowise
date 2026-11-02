@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from repowise.cli.commands.doctor_cmd import repo_checks
 from repowise.cli.commands.doctor_cmd._checks import stores
 
@@ -222,3 +224,104 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
     out = " ".join(" ".join(printed).split())
     assert "2 page(s) need embedding with openai" in out
     assert "repowise reindex" in out
+
+
+def _garbage_repo(tmp_path: Path) -> Path:
+    """A git repo whose wiki.db is garbage, not sqlite."""
+    import git as gitpython
+
+    repo_path = (tmp_path / "repo").resolve()
+    repo_path.mkdir()
+    gitpython.Repo.init(repo_path)
+    repowise_dir = repo_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "wiki.db").write_bytes(b"not a sqlite database" * 64)
+    return repo_path
+
+
+def test_garbage_wiki_db_database_row_names_the_recovery(tmp_path: Path) -> None:
+    """A corrupt wiki.db fails the Database row with the recovery, not a raw error."""
+    repo_path = _garbage_repo(tmp_path)
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    db = next(c for c in checks if c.name == "Database")
+
+    assert db.ok is False
+    assert "cannot be opened" in db.detail
+    assert str(repo_path / ".repowise" / "wiki.db") in db.detail
+    assert db.fix is not None
+    assert "Remove wiki.db" in db.fix
+    assert "repowise init" in db.fix
+
+
+class _RecordingEngine:
+    """An engine that records whether dispose ran."""
+
+    def __init__(self) -> None:
+        self.disposed = False
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
+def _broken_open(engine: _RecordingEngine):
+    async def _open(_repo_path: Path):
+        return engine, object()
+
+    return _open
+
+
+def _broken_session(*_args: object, **_kwargs: object):
+    raise RuntimeError("session boom")
+
+
+@pytest.mark.parametrize(
+    "site",
+    ["count", "stale", "reconcile", "coordinator", "repair"],
+)
+def test_store_helpers_dispose_the_engine_when_the_session_fails(
+    tmp_path: Path, monkeypatch, site: str
+) -> None:
+    """Every store opener disposes on failure, or the worker thread hangs doctor."""
+    from repowise.cli.commands.doctor_cmd import _repair
+    from repowise.cli.commands.doctor_cmd._checks import core, providers, stores
+    from repowise.cli.commands.doctor_cmd._checks.context import (
+        CheckContext,
+        StoreDrift,
+    )
+
+    engine = _RecordingEngine()
+    repo_path = tmp_path.resolve()
+    if site == "count":
+        monkeypatch.setattr(core, "open_store", _broken_open(engine))
+        monkeypatch.setattr("repowise.core.persistence.get_session", _broken_session)
+        coro = core._count_pages(repo_path)
+    elif site == "stale":
+        monkeypatch.setattr(providers, "open_store", _broken_open(engine))
+        monkeypatch.setattr("repowise.core.persistence.get_session", _broken_session)
+        coro = providers._read_stale_counts(repo_path)
+    elif site == "reconcile":
+        monkeypatch.setattr(stores, "open_store", _broken_open(engine))
+        monkeypatch.setattr("repowise.core.persistence.get_session", _broken_session)
+        coro = stores._reconcile(repo_path, repo_path)
+    elif site == "coordinator":
+        monkeypatch.setattr(stores, "open_store", _broken_open(engine))
+        monkeypatch.setattr("repowise.core.persistence.get_session", _broken_session)
+        coro = stores._coordinator_health(repo_path, repo_path)
+    else:
+        monkeypatch.setattr(_repair, "open_store", _broken_open(engine))
+
+        async def _boom(*_args: object, **_kwargs: object):
+            raise RuntimeError("repair boom")
+
+        monkeypatch.setattr(_repair, "_repair_fts", _boom)
+        ctx = CheckContext(
+            repo_path=repo_path,
+            repowise_dir=repo_path,
+            drift=StoreDrift(missing_from_fts={"x"}),
+        )
+        coro = _repair._repair_stores(ctx)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(coro)
+    assert engine.disposed is True

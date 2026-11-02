@@ -199,3 +199,27 @@ def test_configure_cli_logging_verbose_shows_repowise_debug() -> None:
 
 def test_repo_session_exposes_open_repo_db() -> None:
     assert callable(_repo_session.open_repo_db)
+
+
+def test_open_repo_db_on_unopenable_store_fails_with_the_recovery(
+    tmp_path, monkeypatch
+) -> None:
+    """A garbage wiki.db fails open_repo_db with the recovery, not a traceback."""
+    import asyncio
+
+    import click
+
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "wiki.db").write_bytes(b"not a sqlite database" * 64)
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{(repowise_dir / 'wiki.db').as_posix()}"
+    )
+
+    with pytest.raises(click.ClickException) as exc:
+        asyncio.run(_repo_session.open_repo_db(tmp_path))
+
+    assert "Cannot open the index" in str(exc.value)
+    assert "Remove wiki.db" in str(exc.value)
+    assert "repowise init" in str(exc.value)
+    assert getattr(exc.value, "reason", None) == "store-unreadable"

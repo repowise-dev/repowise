@@ -193,13 +193,17 @@ async def _count_pages(repo_path: _DoctorPath) -> int:
     from repowise.core.persistence import get_repository_by_path, get_session
 
     engine, sf = await open_store(repo_path)
-    count = 0
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo:
-            count = await _page_count(session, repo.id)
-    await engine.dispose()
-    return count
+    try:
+        count = 0
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo:
+                count = await _page_count(session, repo.id)
+        return count
+    finally:
+        # A session failure used to skip the dispose, leaving the aiosqlite
+        # worker thread alive so doctor never exited on a broken store.
+        await engine.dispose()
 
 
 def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
@@ -213,7 +217,19 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
         ctx.page_count = run_async(_count_pages(ctx.repo_path))
         ctx.db_ok = True
     except Exception as e:
-        return [_check("Database", False, str(e), check_id="database")]
+        db_path = ctx.repowise_dir / "wiki.db"
+        return [
+            _check(
+                "Database",
+                False,
+                f"{db_path} cannot be opened: {e}",
+                check_id="database",
+                fix=(
+                    "Remove wiki.db, wiki.db-wal and wiki.db-shm, "
+                    "then run repowise init"
+                ),
+            )
+        ]
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 

@@ -438,3 +438,20 @@ def test_run_repo_generation_prints_partial_failure_warning_after_progress(monke
     assert "module_page: 1" in text
     assert "The documentation is incomplete" in text
     assert "repowise init --resume" in text
+
+
+def test_unopenable_store_fails_init_with_the_recovery(repo_dir, monkeypatch):
+    """A garbage wiki.db fails init with the recovery, not a traceback."""
+    import click
+
+    (repo_dir / ".repowise" / "wiki.db").write_bytes(b"not a sqlite database" * 64)
+
+    with pytest.raises(click.ClickException) as exc:
+        asyncio.run(
+            run_generation_with_persistence(repo_path=repo_dir, repo_name="repo")
+        )
+
+    assert "Cannot open the index" in str(exc.value)
+    assert "Remove wiki.db" in str(exc.value)
+    assert "repowise init" in str(exc.value)
+    assert getattr(exc.value, "reason", None) == "store-unreadable"
