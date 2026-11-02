@@ -295,9 +295,7 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
     return rows
 
 
-async def _decision_aware_drift(
-    session, repo_path: _DoctorPath, result: dict, vector_store, *, store_present: bool = True
-):
+async def _decision_aware_drift(session, repo_path: _DoctorPath, result: dict, vector_store):
     """Recompute the coordinator's drift with decisions counted on the SQL side.
 
     The vector store also holds decision embeddings ("decision:<id>"), so
@@ -311,7 +309,7 @@ async def _decision_aware_drift(
     if repo is None:
         return
     dec_ids = await _decision_vector_ids(session, repo.id)
-    decision_count = len(dec_ids) if store_present else 0
+    decision_count = 0
     if vector_store is not None:
         with contextlib.suppress(Exception):
             store_ids = await vector_store.list_page_ids()
@@ -325,7 +323,9 @@ async def _decision_aware_drift(
             result["drift"] = abs(adjusted_sql - vector_count) / max(adjusted_sql, 1)
 
 
-async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath) -> dict:
+async def _coordinator_health(
+    repo_path: _DoctorPath, repowise_dir: _DoctorPath, *, empty_vector_store: bool = False
+) -> dict:
     from repowise.core.persistence import get_session
     from repowise.core.persistence.coordinator import AtomicStorageCoordinator
     from repowise.core.persistence.vector_store import LanceDBVectorStore
@@ -341,20 +341,11 @@ async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath)
     async with get_session(sf) as session:
         coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
         result = await coord.health_check()
-        if vector_store is None and not lance_dir.exists() and _real_embedder_configured(repo_path):
-            from repowise.core.persistence import get_repository_by_path
-
-            repo = await get_repository_by_path(session, str(repo_path))
-            if repo is not None and (await _sql_side(session, repo_path, repo.id)).vector_indexable_ids:
-                result["vector_count"] = 0
-                result["vector_page_count"] = 0
-                sql_pages = result.get("sql_pages")
-                if sql_pages is not None:
-                    result["page_drift"] = abs(sql_pages) / max(sql_pages, 1)
-                    result["drift"] = result["page_drift"]
-            await _decision_aware_drift(session, repo_path, result, vector_store, store_present=False)
-        else:
-            await _decision_aware_drift(session, repo_path, result, vector_store)
+        if vector_store is None and empty_vector_store:
+            # A real embedder is configured and indexable pages exist, so a
+            # missing directory holds 0 vectors rather than an unknown count.
+            result["vector_count"] = 0
+        await _decision_aware_drift(session, repo_path, result, vector_store)
 
     if vector_store is not None:
         with contextlib.suppress(Exception):
@@ -376,7 +367,13 @@ def _drift_color(drift: float | None) -> str:
 def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
     """Sets ``ctx.coord_drift_color``/``pct``, which the table highlights."""
     try:
-        result = run_async(_coordinator_health(ctx.repo_path, ctx.repowise_dir))
+        result = run_async(
+            _coordinator_health(
+                ctx.repo_path,
+                ctx.repowise_dir,
+                empty_vector_store=ctx.drift.vector_store_empty,
+            )
+        )
         sql_pages = result.get("sql_pages")
         vector_count = result.get("vector_count")
         drift = result.get("drift")
