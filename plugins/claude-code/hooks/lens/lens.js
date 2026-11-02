@@ -23,17 +23,30 @@ function requestHeaders(extra) {
   return headers;
 }
 var ApiClientError = class extends Error {
-  constructor(status, detail) {
+  constructor(status, detail, blockers = []) {
     super(`API error ${status}: ${detail}`);
     this.status = status;
     this.detail = detail;
+    this.blockers = blockers;
     this.name = "ApiClientError";
   }
   status;
   detail;
+  blockers;
 };
+function blockersOf(detail) {
+  const list2 = detail?.blockers;
+  return Array.isArray(list2) ? list2.filter((b) => typeof b === "string") : [];
+}
 function stringifyDetail(detail) {
   if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = detail.message;
+    const blockers = blockersOf(detail);
+    if (typeof message === "string" && message) {
+      return blockers.length ? `${message} ${blockers.join("; ")}` : message;
+    }
+  }
   if (Array.isArray(detail)) {
     const msgs = detail.map(
       (d) => d && typeof d === "object" && "msg" in d ? String(d.msg) : null
@@ -45,12 +58,14 @@ function stringifyDetail(detail) {
 async function handleResponse(res) {
   if (!res.ok) {
     let detail = res.statusText;
+    let blockers = [];
     try {
       const json = await res.json();
       detail = stringifyDetail(json.detail) ?? detail;
+      blockers = blockersOf(json.detail);
     } catch {
     }
-    throw new ApiClientError(res.status, detail);
+    throw new ApiClientError(res.status, detail, blockers);
   }
   if (res.status === 204) return void 0;
   return res.json();

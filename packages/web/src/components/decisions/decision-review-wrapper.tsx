@@ -134,7 +134,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       {...(counts ? { counts } : {})}
       source={source}
       onSourceChange={changeSource}
-      onAccept={(d) => void review(d, "accept")}
+      onAccept={(d, options) => void review(d, "accept", options?.reason)}
       onDismiss={(d) => void review(d, "dismiss")}
       onReaffirm={(d) => void review(d, "reaffirm")}
       onDismissMany={dismissMany}
@@ -187,7 +187,7 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
   // write was still running, so a second click double-wrote.
   const [pending, setPending] = React.useState<ReadonlySet<string>>(new Set());
   const review = React.useCallback(
-    async (d: DecisionRecord, verb: "accept" | "dismiss" | "reaffirm") => {
+    async (d: DecisionRecord, verb: "accept" | "dismiss" | "reaffirm", reason?: string) => {
       setPending((prev) => new Set(prev).add(d.id));
       try {
         if (verb === "reaffirm") {
@@ -195,6 +195,7 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
         } else {
           await patchDecision(repoId, d.id, {
             status: verb === "accept" ? "active" : "dismissed",
+            ...(verb === "accept" && reason ? { reason } : {}),
           });
         }
         toast.success(

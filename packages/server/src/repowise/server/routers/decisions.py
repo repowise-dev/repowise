@@ -697,8 +697,13 @@ async def _transition_status(
     decision_id: str,
     status: str,
     superseded_by: str | None,
+    reason: str = "",
 ):
-    """Move a decision to *status* as a person on the web, or 400/404."""
+    """Move a decision to *status* as a person on the web, or 400/404.
+
+    A refused confirm answers 400 with ``{"message", "blockers"}`` so the page
+    can name each thing the record is missing.
+    """
     # The successor is a caller-supplied id too, and storing a retired one
     # would record a pointer that no longer resolves.
     if superseded_by is not None:
@@ -717,7 +722,16 @@ async def _transition_status(
             superseded_by=superseded_by,
             accepter="web",
             kind="person",
+            reason=reason,
         )
+    except crud.AcceptanceRefusedError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "This decision cannot be confirmed as it stands.",
+                "blockers": exc.blockers,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if rec is None:
@@ -748,7 +762,12 @@ async def patch_decision(
 
     if body.status is not None:
         rec = await _transition_status(
-            session, repo_id, decision_id, body.status, body.superseded_by
+            session,
+            repo_id,
+            decision_id,
+            body.status,
+            body.superseded_by,
+            body.reason or "",
         )
     elif body.superseded_by is not None:
         raise HTTPException(

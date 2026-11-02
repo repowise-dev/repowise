@@ -28,6 +28,12 @@ import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import { DecisionReviewDrawer } from "./decision-review-drawer";
+import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
+import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 import type { BulkReviewResult } from "./bulk-review";
 import { useBulkSelection, type BulkState, type Selection } from "./use-bulk-selection";
 import {
@@ -123,8 +129,11 @@ export interface DecisionReviewLanesProps {
    */
   source?: string;
   onSourceChange?: (source: string) => void;
-  /** Accepts the candidate. Omit where the surface cannot write. */
-  onAccept?: (decision: DecisionRecord) => void;
+  /**
+   * Accepts the candidate. Omit where the surface cannot write. `options`
+   * carries a reason typed in the drawer; send it as `reason` on the write.
+   */
+  onAccept?: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void;
   /** Dismisses the candidate as a tombstone. Omit where the surface cannot write. */
   onDismiss?: (decision: DecisionRecord) => void;
   /**
@@ -213,12 +222,14 @@ export function DecisionReviewLanes({
   // the drawer a queue and not a detour. Read before the host refreshes
   // the rows, because the record acted on is about to leave them.
   const actAndAdvance = (
-    act: (decision: DecisionRecord) => void,
+    act: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void,
     d: DecisionRecord,
+    options?: DecisionAcceptOptions,
   ) => {
     const at = rows.findIndex((r) => r.id === d.id);
     const next = rows[at + 1] ?? null;
-    act(d);
+    if (options) act(d, options);
+    else act(d);
     setOpenId(next?.id ?? null);
   };
 
@@ -333,7 +344,7 @@ export function DecisionReviewLanes({
           reaffirmable && onReaffirm ? (d) => actAndAdvance(onReaffirm, d) : undefined
         }
         onClose={() => setOpenId(null)}
-        onAccept={onAccept ? (d) => actAndAdvance(onAccept, d) : undefined}
+        onAccept={onAccept ? (d, options) => actAndAdvance(onAccept, d, options) : undefined}
         onDismiss={onDismiss ? (d) => actAndAdvance(onDismiss, d) : undefined}
         readOnlyReason={readOnlyReason}
         pending={open ? (pendingIds?.has(open.id) ?? false) : false}
@@ -385,7 +396,7 @@ type LinkLike = React.ElementType<{
 interface ColumnContext {
   lane: DecisionLane;
   showHotspots: boolean;
-  onAccept?: ((decision: DecisionRecord) => void) | undefined;
+  onAccept?: ((decision: DecisionRecord, options?: DecisionAcceptOptions) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
   onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
   readOnlyReason?: string | undefined;
@@ -527,10 +538,12 @@ function renderDecisionCell(d: DecisionRecord) {
         {d.verification && d.verification !== "exact" && (
           <VerificationBadge verification={d.verification} iconOnly />
         )}
+        <DecisionOrigin decision={d} />
       </div>
       <p className="line-clamp-2 text-xs text-[var(--color-text-secondary)]">
         {stripMarkdown(d.decision || d.title)}
       </p>
+      <DecisionAppliedLine decision={d} />
     </div>
   );
 }
@@ -669,7 +682,7 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
           <Button
             size="sm"
             disabled={pending || blockers.length > 0}
-            title={blockers.length ? blockers.join("; ") : undefined}
+            title={blockers.length ? blockers.map(shortGap).join("; ") : undefined}
             onClick={() => onAccept(d)}
           >
             {pending ? "Accepting…" : "Accept"}
@@ -681,7 +694,8 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
           exactly the one worth tombstoning. The drawer says how to fill it. */}
       {onAccept && blockers.length > 0 && (
         <p className="max-w-[24ch] text-right text-xs text-[var(--color-text-tertiary)]">
-          Cannot accept: {blockers.join("; ")}.
+          {/* The drawer holds the fix, including the reason field. */}
+          {capitalize(blockers.map(shortGap).join("; "))}. Open it to fix.
         </p>
       )}
     </div>
