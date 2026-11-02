@@ -1333,3 +1333,38 @@ def test_ts_chained_call_on_a_typed_result_still_binds(tmp_path: Path) -> None:
         "function load() {\n  return make().execute('x');\n}\n"
     )
     assert ("load", "execute") in _ts_js_edges(tmp_path, "q.ts", "typescript", source)
+
+
+def test_repeated_method_in_call_chain_resolves_correctly(tmp_path: Path) -> None:
+    src = (
+        "class B { C tag(int a, int b) { return null; } void close() {} }\n"
+        "class C { B tag(int a) { return null; } void close() {} }\n"
+        "class Z {\n"
+        "    B head() { return null; }\n"
+        "    void go() { head().tag(1, 2).tag(1).close(); }\n"
+        "}\n"
+    )
+    pf = _parse(tmp_path, "Z.java", "java", src)
+    resolver = CallResolver(pf, {})
+    edges = resolver.resolve_file("Z.java", pf["Z.java"].calls)
+    resolved_pairs = [(e.caller_id, e.callee_id) for e in edges]
+    assert ("Z.java::Z::go", "Z.java::C::tag") in resolved_pairs
+    assert ("Z.java::Z::go", "Z.java::B::close") in resolved_pairs
+
+
+def test_two_chains_on_one_line_resolve_independently(tmp_path: Path) -> None:
+    src = (
+        "class B { C tag(int a, int b) { return null; } void close() {} }\n"
+        "class C { B tag(int a) { return null; } void close() {} }\n"
+        "class Z {\n"
+        "    B head() { return null; }\n"
+        "    void go() { head().tag(1, 2).close(); head().tag(1, 2).tag(1).close(); }\n"
+        "}\n"
+    )
+    pf = _parse(tmp_path, "Z.java", "java", src)
+    resolver = CallResolver(pf, {})
+    edges = resolver.resolve_file("Z.java", pf["Z.java"].calls)
+    resolved_pairs = [(e.caller_id, e.callee_id) for e in edges]
+    assert ("Z.java::Z::go", "Z.java::C::close") in resolved_pairs
+    assert ("Z.java::Z::go", "Z.java::B::close") in resolved_pairs
+

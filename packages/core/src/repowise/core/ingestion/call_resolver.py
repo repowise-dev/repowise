@@ -1494,6 +1494,7 @@ class CallResolver(
         language: str,
     ) -> ResolvedCall | None:
         """Resolve a chain's inner call, remembered unless a cycle cut it short."""
+        nested = self._nested_receiver_call(file_path, call, inner, language)
         link = (file_path, call.line, inner.receiver_name, inner.target_name)
         inner_call = CallSite(
             target_name=inner.target_name,
@@ -1501,7 +1502,8 @@ class CallResolver(
             caller_symbol_id=caller_id,
             line=call.line,
             argument_count=inner.argument_count,
-            receiver_call=self._nested_receiver_call(file_path, call.line, inner, language),
+            receiver_call=nested,
+            start_byte=call.start_byte,
         )
         cycles = self._chain_cycle_hits
         self._chain_links_in_flight.add(link)
@@ -1527,7 +1529,7 @@ class CallResolver(
         if language == "java" and self._returns_java_self_type(callee_id):
             # A self-bounded ``B`` is the type of whatever the call was made on.
             # Ceiling: only a chained receiver is typed; ``b.name(x).w(1)`` stops.
-            nested = self._nested_receiver_call(file_path, call.line, inner, language)
+            nested = self._nested_receiver_call(file_path, call, inner, language)
             if nested is None:
                 return None
             nested_callee = self._chain_inner_callee(file_path, call, nested, caller_id, language)
@@ -1537,7 +1539,7 @@ class CallResolver(
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
     def _nested_receiver_call(
-        self, file_path: str, line: int, inner: CallReceiver, language: str
+        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
     ) -> CallReceiver | None:
         """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
 
@@ -1545,20 +1547,39 @@ class CallResolver(
         as its own site on the chain's first line, so the hop below is read
         off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
         builder chain types each link from the one before; elsewhere an inner call
-        is still typed as if nothing were chained under it. A name repeated in
-        one chain (``a().b().b()``) keeps its first link, the innermost.
+        is still typed as if nothing were chained under it.
         """
         if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
-        sites = self._chained_sites.get(file_path)
-        if sites is None:
-            parsed = self._parsed_files.get(file_path)
-            sites = {}
-            for c in parsed.calls if parsed else ():
-                if c.receiver_call is not None:
-                    sites.setdefault((c.line, c.receiver_name, c.target_name), c.receiver_call)
-            _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
-        return sites.get((line, inner.receiver_name, inner.target_name))
+        parsed = self._parsed_files.get(file_path)
+        calls = parsed.calls if parsed else ()
+
+        idx = None
+        for i, c in enumerate(calls):
+            if c is call:
+                idx = i
+                break
+        if idx is None:
+            for i, c in enumerate(calls):
+                if (
+                    c.target_name == call.target_name
+                    and c.receiver_name == call.receiver_name
+                    and (c.argument_count == call.argument_count or call.argument_count is None)
+                    and c.start_byte == call.start_byte
+                    and c.line == call.line
+                ):
+                    idx = i
+                    break
+
+        candidate_calls = calls if idx is None else calls[:idx]
+        for c in reversed(candidate_calls):
+            if (
+                c.target_name == inner.target_name
+                and c.receiver_name == inner.receiver_name
+                and (inner.argument_count is None or c.argument_count == inner.argument_count)
+            ):
+                return c.receiver_call
+        return None
 
     def _callee_return_type(
         self, callee_id: str, argument_count: int | None, language: str
