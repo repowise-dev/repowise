@@ -1,6 +1,7 @@
 import type { ElementType, ReactNode } from "react";
 import type {
   DecisionEvidence,
+  DecisionRecord,
   DecisionLineageEntry,
   DecisionStatusUpdate,
 } from "@repowise-dev/types/decisions";
@@ -53,4 +54,10 @@ export interface DecisionDetailAdapter {
   LinkComponent?: DecisionLinkComponent;
   /** Optional linked-issues panel (e.g. Jira). Host supplies or omits. */
   renderLinkedIssues?(): ReactNode;
+  /**
+   * The prompt that hands this one candidate to the reader's agent to check
+   * and then accept or dismiss. Given, a candidate's page offers "Copy prompt"
+   * in place of the generic verification prompt.
+   */
+  reviewPrompt?(decision: DecisionRecord): string;
 }

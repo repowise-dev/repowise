@@ -352,6 +352,31 @@ describe("who signed is provenance, read in the drawer", () => {
   });
 });
 
+describe("reviewing the candidates with an agent", () => {
+  it("copies the host's prompt from the candidates lane", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderLanes("candidates", { reviewPrompt: () => "review them" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Review with your agent" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("review them"));
+  });
+
+  it("is offered only where there are candidates and a prompt", () => {
+    const first = renderLanes("candidates");
+    expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
+    first.unmount();
+
+    const second = renderLanes("candidates", { reviewPrompt: () => "x", decisions: [] });
+    expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
+    second.unmount();
+
+    renderLanes("active", { reviewPrompt: () => "x" });
+    expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
+  });
+});
+
 describe("the source filter is a second axis, not a second lane control", () => {
   it("offers every live source and no retired one", () => {
     renderLanes("candidates", { onSourceChange: vi.fn() });

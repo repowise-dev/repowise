@@ -354,10 +354,18 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         <DecisionAppliedLine decision={decision} />
 
         <div className="flex flex-wrap items-center gap-2">
-          <AiPromptButton
-            label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
-            onClick={() => setPromptMode("verify")}
-          />
+          {/* One agent action per page: a candidate the host can write a
+              review prompt for gets that, copied in one click; otherwise the
+              shared verification prompt. */}
+          {status === "proposed" && adapter.reviewPrompt ? (
+            // The button's own label for a copy: "Copy prompt".
+            <AiPromptButton copyText={() => adapter.reviewPrompt!(decision)} />
+          ) : (
+            <AiPromptButton
+              label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
+              onClick={() => setPromptMode("verify")}
+            />
+          )}
           {status === "active" && (
             <AiPromptButton
               label="Enforce this decision"

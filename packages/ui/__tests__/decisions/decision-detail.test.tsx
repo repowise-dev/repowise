@@ -237,6 +237,31 @@ describe("DecisionDetail", () => {
     ).toBeInTheDocument();
   });
 
+  it("copies the host's review prompt for a candidate, in place of the generic one", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const reviewPrompt = vi.fn((d: DecisionRecord) => `review ${d.id}`);
+    renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter({ reviewPrompt })} />);
+
+    expect(screen.queryByRole("button", { name: /Verify/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("review d1"));
+  });
+
+  it("keeps the verification prompt where no review prompt applies", () => {
+    const reviewPrompt = vi.fn(() => "x");
+    const first = renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
+    expect(screen.getByRole("button", { name: "Verify & confirm with AI" })).toBeInTheDocument();
+    first.unmount();
+
+    renderView(
+      <DecisionDetail decision={makeDecision({ status: "active" })} adapter={makeAdapter({ reviewPrompt })} />,
+    );
+    expect(screen.getByRole("button", { name: "Verify with AI" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument();
+  });
+
   it("offers the enforcement prompt only for active decisions", () => {
     const { unmount } = renderView(
       <DecisionDetail decision={makeDecision({ status: "active" })} adapter={makeAdapter()} />,
