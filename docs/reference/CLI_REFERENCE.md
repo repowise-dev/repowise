@@ -2103,6 +2103,12 @@ repowise doctor --workspace --repair
   `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
   A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
   repo's alias.
+- **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
+  would redo stored work: git history written by older rules, health or security results from an older analyzer or
+  scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each
+  problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
+  HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
+  `repowise update --index-only` (no model calls).
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.

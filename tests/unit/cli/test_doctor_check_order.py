@@ -19,7 +19,10 @@ import pytest
 from repowise.cli.commands.doctor_cmd import _render, repo_checks
 from repowise.cli.commands.doctor_cmd._checks import core, integrations, providers
 from repowise.cli.commands.doctor_cmd._types import _check
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 
+from ._index_rows import code_rows
 from ._real_call_guard import guard_real_calls
 
 
@@ -59,7 +62,15 @@ async def _build(
     gitpython.Repo.init(repo_path)
     rw = repo_path / ".repowise"
     rw.mkdir()
-    (rw / "state.json").write_text(json.dumps({"last_sync_commit": "abcdef0123456789"}))
+    (rw / "state.json").write_text(
+        json.dumps(
+            {
+                "last_sync_commit": "abcdef0123456789",
+                "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+                "security_scanner_version": SECURITY_SCANNER_VERSION,
+            }
+        )
+    )
 
     engine = create_engine(f"sqlite+aiosqlite:///{rw / 'wiki.db'}")
     await init_db(engine)
@@ -82,6 +93,7 @@ async def _build(
                 model_name="mock",
                 provider_name="mock",
             )
+        session.add_all(code_rows(repo.id))
         await session.commit()
 
     index = FullTextSearch(engine)
@@ -155,6 +167,7 @@ HEALTHY_ORDER = [
     "<provider>",
     "Hosted account",
     "Stale pages",
+    "Index data",
     "SQL ↔ Vector Store",
     "SQL ↔ FTS Index",
     "Coordinator drift",
@@ -179,6 +192,7 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert got["Database"] == (True, "1 pages")
     assert got["state.json"] == (True, "last_sync: abcdef01")
     assert got["Stale pages"] == (True, "0 stale")
+    assert got["Index data"] == (True, "current; graph, symbol and health tables populated")
     assert got["SQL ↔ Vector Store"] == (True, "in sync")
     assert got["SQL ↔ FTS Index"] == (True, "in sync")
     assert got["Coordinator drift"] == (True, "SQL=1, Vector=1, Drift=0.0%")
