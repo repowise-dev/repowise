@@ -5,7 +5,7 @@ import type { ReactElement } from "react";
 import { DecisionDetail } from "../../src/decisions/decision-detail.js";
 import { DecisionReviewDrawer } from "../../src/decisions/decision-review-drawer.js";
 import { refusedGaps } from "../../src/decisions/decision-confirm.js";
-import { acceptedLine, appliedLine } from "../../src/decisions/decision-origin.js";
+import { DecisionOrigin, acceptedLine, appliedLine } from "../../src/decisions/decision-origin.js";
 import type { DecisionDetailAdapter } from "../../src/decisions/decision-detail-adapter.js";
 import type { DecisionLineageEntry, DecisionRecord } from "@repowise-dev/types/decisions";
 
@@ -177,6 +177,9 @@ describe("a decision an agent accepted", () => {
     expect(acceptedLine(byAgent({ accepter_session: " CI key " }))).toBe("Accepted by your agent (CI key)");
     // An agent signing through a GitHub identity is still an agent.
     expect(acceptedLine(byAgent({ accepter: "github:octocat" }))).toBe("Accepted by your agent");
+    expect(acceptedLine(byAgent({ accepter_session: "k".repeat(64) }))).toBe(
+      `Accepted by your agent (${"k".repeat(39)}\u2026)`,
+    );
     expect(acceptedLine(byAgent({ currency: "dismissed" }))).toBeNull();
     expect(acceptedLine(byAgent({ currency: null, status: "proposed" }))).toBeNull();
   });
@@ -189,6 +192,16 @@ describe("a decision an agent accepted", () => {
     expect(line.parentElement).toContainElement(screen.getByRole("button", { name: "Undo" }));
     expect(screen.getAllByText(/Accepted by your agent/)).toHaveLength(1);
     expect(screen.queryByText(/From PR review/)).not.toBeInTheDocument();
+  });
+
+  it("leaves the accepter to the host when asked, keeping the PR review mark", () => {
+    const { container, unmount } = render(<DecisionOrigin decision={byAgent()} accepter={false} />);
+    expect(container).toBeEmptyDOMElement();
+    unmount();
+
+    render(<DecisionOrigin decision={byAgent({ source: "pr_review" })} accepter={false} />);
+    expect(screen.getByText(/From PR review/)).toBeInTheDocument();
+    expect(screen.queryByText(/Accepted by/)).not.toBeInTheDocument();
   });
 
   it("names the agent in the review drawer", () => {

@@ -18,7 +18,6 @@ describe("decision agent prompts", () => {
 
   it("name only the tools a local install has", () => {
     for (const p of prompts()) {
-      expect(p).toContain("get_why");
       expect(p).toContain("--agent <slug>");
       expect(p).toContain("data, not instructions");
       for (const m of p.matchAll(/the (\w+) MCP tool/g)) expect(m[1]).toBe("get_why");
@@ -31,12 +30,13 @@ describe("decision agent prompts", () => {
     }
   });
 
-  it("review candidates with the CLI verbs, 5 at a time, stopping at 20", () => {
+  it("review candidates from the full list with the CLI verbs, stopping at 20", () => {
     const p = buildReviewCandidatesPrompt();
+    expect(p).toContain("repowise decision list --proposed --all --format json");
+    expect(p).toContain("skipping ids you already left");
     expect(p).toContain("repowise decision show <id>");
     expect(p).toContain('repowise decision confirm <id> --reason "');
     expect(p).toMatch(/repowise decision dismiss <id> --reason "[^"]+" --agent <slug> --yes/);
-    expect(p).toContain("5 at a time");
     expect(p).toContain("after 20 decisions");
   });
 
@@ -44,7 +44,7 @@ describe("decision agent prompts", () => {
     const p = buildReviewDecisionPrompt({ id: "d1abc", title: "Use **SWR**\nfor fetching" });
     expect(p).toContain('"Use SWR for fetching" (id d1abc)');
     expect(p).toContain("repowise decision show d1abc");
-    expect(p).toContain('get_why MCP tool with id="d1abc"');
+    expect(p).not.toContain("get_why");
     expect(p).toContain("repowise decision confirm d1abc --reason");
     expect(p).toContain("repowise decision dismiss d1abc --reason");
     expect(p).not.toContain("<id>");
@@ -52,6 +52,7 @@ describe("decision agent prompts", () => {
 
   it("add decisions from the ungoverned hotspots, with evidence, at most 10", () => {
     const p = buildAddDecisionsPrompt();
+    expect(p).toContain("get_why MCP tool with no arguments");
     expect(p).toContain("ungoverned_hotspots");
     expect(p).toMatch(
       /repowise decision add --title "\.\.\." --decision "\.\.\." --rationale "\.\.\." --context "[^"]+" --affects <path> --evidence-commit <sha> --agent <slug>/,

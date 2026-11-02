@@ -41,7 +41,8 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
       <AiPromptButton copyText={buildAddDecisionsPrompt} label={ADD_WITH_AGENT_LABEL} />
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+      {/* Quieter than the agent action beside it: agents record most decisions. */}
+      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
         <Plus className="h-3.5 w-3.5" />
         {t("add.trigger")}
       </Button>

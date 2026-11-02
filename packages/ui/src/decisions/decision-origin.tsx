@@ -32,6 +32,13 @@ function safeHref(url: string | null | undefined): string | null {
   return url && /^https:\/\/\S+$/.test(url) ? url : null;
 }
 
+/** A recorded session or key label, clipped so a long one never swamps the line. */
+const SESSION_MAX = 40;
+
+function clip(text: string, max = SESSION_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text;
+}
+
 /**
  * Who accepted a decision, when that can be said in plain words: an agent
  * ("Accepted by your agent", plus the session or key label when one was
@@ -43,7 +50,7 @@ export function acceptedLine(d: OriginFields): string | null {
   if (!accepted) return null;
   if (d.accepter_kind === "agent") {
     const session = d.accepter_session?.trim();
-    return session ? `Accepted by your agent (${session})` : "Accepted by your agent";
+    return session ? `Accepted by your agent (${clip(session)})` : "Accepted by your agent";
   }
   const login = githubLogin(d.accepter);
   if (!login) return null;
