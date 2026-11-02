@@ -10,7 +10,15 @@ from typing import TYPE_CHECKING, Any
 import click
 from rich.markup import escape
 
-from repowise.cli.helpers import console, find_workspace_root
+from repowise.cli.helpers import (
+    console,
+    db_configured,
+    find_workspace_root,
+    get_db_url_for_repo,
+    get_repowise_dir,
+    reconcile_schema_best_effort,
+    run_async,
+)
 
 if TYPE_CHECKING:
     from repowise.core.workspace.config import WorkspaceConfig
@@ -101,6 +109,65 @@ def _report_artifact_provenance(
             f"{'is' if len(never_read) == 1 else 'are'} configured but "
             "absent from this artifact; re-run 'repowise update --workspace'."
         )
+
+
+def _query_store_counts(repo_path: Path) -> tuple[int, int] | None:
+    """Return ``(file_count, symbol_count)`` from the store configured for *repo_path*.
+
+    ``None`` means no store could answer for this repository: there is no
+    repo-local ``wiki.db`` and no database is configured, or the configured
+    store holds no repository row for this path. A returned ``(0, 0)`` means a
+    store answered and holds nothing for it, which under a configured database
+    still means the repository is indexed. Collapsing the two would report a
+    repository the store has never seen as indexed with a zero count.
+
+    With ``REPOWISE_DB_URL`` (or ``REPOWISE_DATABASE_URL``) set the local file is
+    not consulted at all: a repository indexed into a shared store has no file
+    on disk, and a repo-local ``wiki.db`` left behind from an earlier run is not
+    the store the rest of the app reads. A repository row for this path is the
+    index.
+
+    This is the workspace's own query, beside ``status_cmd._query_repo_counts``,
+    because that one reports ``(0, 0)`` for all three outcomes: ``status`` prints
+    the same empty table either way, while a workspace listing has to say which
+    repos it counts as indexed. The counts themselves come from the same
+    ``count_files``/``count_symbols`` the status surfaces use.
+    """
+    db_path = get_repowise_dir(repo_path) / "wiki.db"
+    if not db_path.exists() and not db_configured():
+        return None
+
+    async def _query() -> tuple[int, int] | None:
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_repository_by_path,
+            get_session,
+        )
+        from repowise.core.persistence.crud import count_files, count_symbols
+
+        url = get_db_url_for_repo(repo_path)
+        # Without this a store one repowise older reports 0 files: the
+        # `no such column` is swallowed by the except below.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        try:
+            async with get_session(sf) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return None
+                return (
+                    await count_files(session, repo.id),
+                    await count_symbols(session, repo.id),
+                )
+        finally:
+            await engine.dispose()
+
+    try:
+        return run_async(_query())
+    except Exception:
+        return None
 
 
 def _print_evidence(evidence: dict[str, Any] | None) -> None:
