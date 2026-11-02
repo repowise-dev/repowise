@@ -126,7 +126,19 @@ def run_partial_analysis(
                 _performance_changed |= (
                     execution_index.affected_files(historical_callers) & parsed_paths
                 )
-            _health_scope = _health_changed | _performance_changed
+            # A loop owner the closure re-scores keeps a cross-function finding
+            # only if the pass walks the sink its calls reach, and the closure
+            # walks back to an owner without following the owner's other calls.
+            # So the walk also covers every file the owners reach within the
+            # cross-function depth (one hop to the loop callee, three to the
+            # sink). Those files are read for their sinks, not re-scored.
+            _sink_files = (
+                execution_index.affected_files(
+                    _performance_changed, forward_depth=4, reverse_depth=0
+                )
+                & parsed_paths
+            ) - _performance_changed
+            _health_scope = _health_changed | _performance_changed | _sink_files
             _health_analyzer = HealthAnalyzer(
                 graph_builder.graph(),
                 git_meta_map=git_meta_map,
@@ -144,7 +156,7 @@ def run_partial_analysis(
                     else None
                 )
                 _analyzer_config = _performance_only_config(
-                    _analyzer_config, _performance_changed - _health_changed
+                    _analyzer_config, (_performance_changed | _sink_files) - _health_changed
                 )
                 partial_health_report = _health_analyzer.analyze(
                     _analyzer_config,
@@ -172,7 +184,11 @@ def run_partial_analysis(
                 partial_health_report.findings = [
                     finding
                     for finding in partial_health_report.findings
-                    if finding.file_path in _health_changed or finding.dimension == "performance"
+                    if finding.file_path in _health_changed
+                    or (
+                        finding.dimension == "performance"
+                        and finding.file_path in _performance_changed
+                    )
                 ]
                 partial_health_report.refactoring_suggestions = [
                     suggestion
