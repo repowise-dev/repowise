@@ -119,11 +119,16 @@ def _hosted_account_check() -> DoctorCheck:
                 check_id=check_id,
             )
         if creds.get("stale"):
+            # Hosted is optional, so an expired session is a row to look at,
+            # not a failing health check: doctor must not exit 1 for a repo
+            # that is otherwise healthy.  The Setup page turns any non-ok
+            # level into a card, so the ``repowise login`` fix still surfaces.
             return _check(
                 name,
-                False,
+                True,
                 "Session expired or revoked; run repowise login",
                 check_id=check_id,
+                warn=True,
                 fix="repowise login",
             )
         account = auth.fetch_account()
