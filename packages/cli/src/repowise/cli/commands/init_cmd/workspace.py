@@ -117,6 +117,7 @@ def _run_workspace_generation(
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
     reuse_prior_pages: bool = True,
+    warnings: list[str] | None = None,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -127,6 +128,9 @@ def _run_workspace_generation(
 
     ``reuse_prior_pages=False`` is ``--force``: every page is regenerated
     instead of reused from the prior run (issue #1089).
+
+    Generation builds its own progress bar, so its warnings never reach the
+    pipeline callback: pass ``warnings`` to collect what it degraded on.
     """
     from repowise.core.generation import GenerationConfig
 
@@ -194,6 +198,7 @@ def _run_workspace_generation(
         verbose=False,
         test_run=test_run,
         timings=timings,
+        warnings=warnings,
     )
 
 
@@ -209,6 +214,7 @@ def _run_workspace_deterministic_generation(
     wiki_style: str,
     language: str,
     timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[list[Any], str]:
     """Render one workspace repo's wiki from templates (no model, no cost).
 
@@ -218,6 +224,9 @@ def _run_workspace_deterministic_generation(
     rather than no pages at all, so it reads as a real wiki in the UI. Returns
     the generated pages plus the embedder actually used (persisted by the caller
     so a later workspace update embeds the same way rather than re-deciding).
+
+    ``warnings`` collects what the render degraded on, for the same reason as
+    ``_run_workspace_generation``: this phase owns its own progress bar.
     """
     # "No key, no spend": a template run must not put a hosted embedder on the
     # bill unless the user named it. ``resolve_embedder`` infers one from any LLM
@@ -260,6 +269,7 @@ def _run_workspace_deterministic_generation(
         resume=resume,
         verbose=False,
         timings=timings,
+        warnings=warnings,
     )
     return generated_pages, embedder
 
@@ -359,6 +369,23 @@ class _RepoDocs:
     det_embedder: str | None = None
 
 
+def _fold_generation_warnings(state: dict[str, Any], gen_warnings: list[str]) -> None:
+    """Record what a workspace repo's generation phase degraded on.
+
+    Generation builds its own embedder and its own progress bar, so its warnings
+    arrive on a list of our own rather than on the pipeline ``callback``. A silent
+    downgrade to keyless vectors would otherwise write a clean ``state.json`` with
+    semantic search off, which is what issue #1369 was about, on a path the
+    single-repo flow already covers.
+
+    Extended rather than assigned: ``state`` may already carry entries from the
+    persist phase, and the single-repo path builds one list for the whole run for
+    the same reason.
+    """
+    if gen_warnings:
+        state.setdefault("degraded", []).extend(gen_warnings)
+
+
 def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
     """Index (and optionally generate docs for) one repo in a workspace init.
 
@@ -381,7 +408,12 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         return _RepoOutcome(error=str(exc))
     result = index.result
 
-    docs = _generate_repo_docs(repo, ctx, index)
+    # Generation owns a progress bar built after the pipeline callback is gone,
+    # so its warnings are not collected by ``callback``. Thread a list of our own
+    # and fold it into state.json below, the way single-repo init folds the
+    # generation and persist callbacks into ``run_warnings`` (issue #1369).
+    gen_warnings: list[str] = []
+    docs = _generate_repo_docs(repo, ctx, index, gen_warnings)
     docs_outcome = (len(result.generated_pages or []), docs.skip_reason)
 
     # A dry run writes nothing for this repo: the index was computed in memory
@@ -397,6 +429,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     persist_warnings = _persist_repo_index(repo.path, index)
     head = get_head_commit(repo.path)
     state = _repo_state(head, repo.path, ctx, index, docs, persist_warnings)
+    _fold_generation_warnings(state, gen_warnings)
     # Fully indexed here (concept tree included), so stamp the terminal store
     # format rather than clamping below the reindex gate.
     save_state(repo.path, state, full_index=True)
@@ -472,7 +505,9 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
     return _RepoIndex(result=result, callback=callback, provider=repo_provider)
 
 
-def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _RepoDocs:
+def _generate_repo_docs(
+    repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex, warnings: list[str] | None = None
+) -> _RepoDocs:
     """The per-repo generation phase."""
     docs = _RepoDocs()
     if ctx.dry_run:
@@ -486,16 +521,20 @@ def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _Re
         # the panel names it Index only rather than calling it skipped.
         console.print()
     elif not ctx.index_only and ctx.provider is not None:
-        _generate_repo_with_model(repo, ctx, index, docs)
+        _generate_repo_with_model(repo, ctx, index, docs, warnings)
     else:
         # Index-only, or provider setup fell back to index-only: a complete
         # template wiki rather than an empty index with no upgrade target.
-        _render_repo_from_templates(repo, ctx, index, docs)
+        _render_repo_from_templates(repo, ctx, index, docs, warnings)
     return docs
 
 
 def _generate_repo_with_model(
-    repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex, docs: _RepoDocs
+    repo: Any,
+    ctx: _WorkspaceCtx,
+    index: _RepoIndex,
+    docs: _RepoDocs,
+    warnings: list[str] | None = None,
 ) -> None:
     """Write the repo's wiki with the model; templates when the cost is declined."""
     result = index.result
@@ -517,6 +556,7 @@ def _generate_repo_with_model(
             wiki_style=ctx.wiki_style,
             language=ctx.language,
             reuse_prior_pages=not ctx.force,
+            warnings=warnings,
         )
         result.generated_pages = generated_pages
         # ``result.vector_store`` is set inside the generation call.
@@ -537,7 +577,7 @@ def _generate_repo_with_model(
             f"[bold]{MODEL_COMMAND} {escape(str(repo.path))}[/bold] to write it with a model "
             "later.[/dim]"
         )
-        _render_repo_from_templates(repo, ctx, index, docs)
+        _render_repo_from_templates(repo, ctx, index, docs, warnings)
     except Exception as gen_exc:
         console.print(f"    [{ERR}]{glyph('fail')} Generation failed: {gen_exc}[/]\n")
         docs.skip_reason = f"generation error: {gen_exc}"
@@ -546,7 +586,11 @@ def _generate_repo_with_model(
 
 
 def _render_repo_from_templates(
-    repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex, docs: _RepoDocs
+    repo: Any,
+    ctx: _WorkspaceCtx,
+    index: _RepoIndex,
+    docs: _RepoDocs,
+    warnings: list[str] | None = None,
 ) -> None:
     """Render the whole wiki from templates and mark this repo deterministic."""
     generated_pages, docs.det_embedder = _run_workspace_deterministic_generation(
@@ -560,6 +604,7 @@ def _render_repo_from_templates(
         onboarding=ctx.onboarding,
         wiki_style=ctx.wiki_style,
         language=ctx.language,
+        warnings=warnings,
     )
     index.result.generated_pages = generated_pages
     docs.pages_generated = len(generated_pages)
