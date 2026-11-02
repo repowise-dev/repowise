@@ -140,6 +140,9 @@ class RepoUpdateResult:
     # True when every file's health was re-scored this run, so the caller can
     # stamp ``last_full_rescore_at`` / ``health_analyzer_version``.
     health_rescored: bool = False
+    # The graph rebuild's patch-or-rebuild decision, stamped as state.json
+    # "graph_update"; None leaves the stored record alone.
+    graph_update: dict[str, Any] | None = None
 
 
 @dataclass
@@ -203,6 +206,12 @@ async def _incremental_repo_update(
         # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
         return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
+
+    # A moved or copied checkout's store still names the old path; adopt its
+    # only row before the seed and stored-row lookups key on the new one.
+    from ...persistence.crud import adopt_moved_repository_best_effort
+
+    await adopt_moved_repository_best_effort(repo_path)
 
     # Decay-only rows for idle files, persisted beside the changed rows but kept
     # out of git_meta_map so partial health's repo-wide aggregates are unaffected.
@@ -306,6 +315,7 @@ async def _incremental_repo_update(
         working_tree_paths=working_tree_paths,
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
         health_rescored=rescored_report is not None,
+        graph_update=getattr(graph_builder, "incremental_graph_decision", None),
     )
 
 
