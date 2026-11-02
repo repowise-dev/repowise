@@ -1067,3 +1067,45 @@ async def test_a_record_without_its_table_is_ignored(tmp_path: Path) -> None:
     shutil.rmtree(_lance_dir(tmp_path) / "wiki_pages.lance")
 
     assert providers.existing_vector_dim(_lance_dir(tmp_path)) is None
+
+
+def test_build_embedder_warns_once_per_invocation(monkeypatch):
+    """One degraded run reports the fallback once, not once per build.
+
+    ``repowise update`` builds the embedder for its decision store and again
+    for the deterministic page path, and a workspace run builds one per repo.
+    Printing the full warning at each site would stack the same sentence N
+    times and bury it.
+    """
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    def _boom(name: str, **kwargs: object):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("repowise.core.providers.embedding.registry.get_embedder", _boom)
+    printed = _capture_console(monkeypatch)
+
+    for name in ("openai", "gemini", "ollama"):
+        assert isinstance(providers.build_embedder(name), KeylessEmbedder)
+
+    said = " ".join(printed)
+    assert "semantic search" in said.lower()
+    assert said.count("could not be built") == 1
+
+
+def test_build_embedder_warns_again_after_a_reset(monkeypatch):
+    """The gate is per invocation, not permanent: a new unit of work re-arms it."""
+    from repowise.cli.providers.embedders import reset_degradation_warning
+
+    def _boom(name: str, **kwargs: object):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("repowise.core.providers.embedding.registry.get_embedder", _boom)
+    printed = _capture_console(monkeypatch)
+
+    providers.build_embedder("ollama")
+    assert " ".join(printed).count("could not be built") == 1
+
+    reset_degradation_warning()
+    providers.build_embedder("ollama")
+    assert " ".join(printed).count("could not be built") == 2

@@ -40,6 +40,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _reset_degradation_warning():
+    """Re-arm the once-per-invocation embedder-degradation warning.
+
+    ``build_embedder`` reports a degradation at most once per process, so one
+    ``update`` that builds the embedder for several stores prints the sentence
+    once rather than once per site. The gate is module-global, so without this
+    it stays closed across tests and silences the warning a later test asserts.
+    """
+    from repowise.cli.providers.embedders import reset_degradation_warning
+
+    reset_degradation_warning()
+    yield
+    reset_degradation_warning()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(tmp_path_factory, monkeypatch):
     fake_home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(fake_home))
