@@ -52,6 +52,7 @@ def run_partial_analysis(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
+    full_git_history: bool = False,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -91,6 +92,12 @@ def run_partial_analysis(
 
     ``dead_code=False`` skips the dead-code pass and returns ``None`` for it,
     which keeps the stored findings.
+
+    ``full_git_history=True`` says ``git_meta_map`` came from a walk of the
+    whole history, so it carries a blame index for every file. The report's
+    blame rows then cover every file, as init writes them, instead of the
+    changed ones; with no changed file the report carries those rows and
+    nothing else.
     """
     log = log or _noop_log
 
@@ -133,18 +140,16 @@ def run_partial_analysis(
             repo_root=repo_path,
             coverage_map=coverage_map,
         )
-        if _health_scope:
+        _analyzer_config = None
+        if _health_scope or full_git_history:
             _hcfg = HealthConfig.load(repo_path)
-            _analyzer_config = (
-                _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if _hcfg.has_overrides()
-                else None
-            )
-            _analyzer_config = _performance_only_config(
-                _analyzer_config, _performance_changed - _health_changed
-            )
+            if _hcfg.has_overrides():
+                _analyzer_config = _hcfg.to_analyzer_config(
+                    [pf.file_info.path for pf in parsed_files]
+                )
+        if _health_scope:
             partial_health_report = _health_analyzer.analyze(
-                _analyzer_config,
+                _performance_only_config(_analyzer_config, _performance_changed - _health_changed),
                 changed_files=_health_scope,
                 repo_function_mod_p80=repo_function_mod_p80,
                 timings=timings,
@@ -187,6 +192,18 @@ def run_partial_analysis(
                 f"[cyan]{len(_performance_changed)} performance-affected[/cyan], "
                 f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
             )
+        if full_git_history:
+            # Every file was re-blamed, and the stored rollup can predate that
+            # walk, so it is rebuilt whole, as init builds it.
+            blame_rows = _health_analyzer.function_blame_rows(_analyzer_config)
+            if partial_health_report is None and blame_rows:
+                from datetime import UTC, datetime
+
+                from repowise.core.analysis.health import HealthReport
+
+                partial_health_report = HealthReport(repo_id="", analyzed_at=datetime.now(UTC))
+            if partial_health_report is not None:
+                partial_health_report.function_blame_rows = blame_rows
     except Exception as exc:
         log(f"[yellow]Health analysis skipped: {exc}[/yellow]")
     finally:

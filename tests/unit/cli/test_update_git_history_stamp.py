@@ -8,6 +8,7 @@ update, and nothing else: no page is regenerated for it.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,7 @@ from repowise.core.ingestion.git_indexer import (
     git_history_stale,
 )
 
-from .test_update_up_to_date_lock import _indexed_repo, _invoke_update
+from .test_update_up_to_date_lock import _git, _indexed_repo, _invoke_update
 
 UP_TO_DATE = "Already up to date"
 
@@ -220,3 +221,126 @@ def test_stamp_forced_walk_keeps_commit_health(tmp_path) -> None:
 
     assert "Git history rules changed" in _invoke_update(repo)
     assert _health_shas(repo).get(old_sha) == 7
+
+
+def _repo_with_functions(tmp_path: Path) -> Path:
+    """Two Python files with the five commits each that blame asks for, indexed
+    at HEAD with every stamp current."""
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "T")
+    for version in range(6):
+        (repo / "a.py").write_text(
+            f"def alpha():\n    return {version}\n\n\ndef beta():\n    return 2\n"
+        )
+        (repo / "b.py").write_text(f"def gamma():\n    return {version}\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", f"c{version}")
+    head = _git(repo, "rev-parse", "HEAD")
+    (repo / ".repowise").mkdir()
+    asyncio.run(index_repo_full(repo))
+    save_state(
+        repo,
+        {
+            "last_sync_commit": head,
+            "last_docs_commit": head,
+            "docs_enabled": False,
+            GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+        },
+    )
+    return repo
+
+
+async def _with_session(repo: Path, work):
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.database import resolve_db_url
+
+    engine = create_engine(resolve_db_url(repo))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            return await work(session)
+    finally:
+        await engine.dispose()
+
+
+def _function_blame(repo: Path) -> dict[str, int]:
+    """The stored blame rollup, ``symbol_id -> mod_count``."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GitFunctionBlame
+
+    async def _read(session) -> dict[str, int]:
+        rows = (await session.execute(select(GitFunctionBlame))).scalars()
+        return {r.symbol_id: r.mod_count for r in rows}
+
+    return asyncio.run(_with_session(repo, _read))
+
+
+def _empty_function_blame(repo: Path) -> None:
+    from sqlalchemy import delete
+
+    from repowise.core.persistence.models import GitFunctionBlame
+
+    async def _delete(session) -> None:
+        await session.execute(delete(GitFunctionBlame))
+
+    asyncio.run(_with_session(repo, _delete))
+
+
+@pytest.mark.parametrize(
+    ("analyzer_version", "git_tier", "refilled"),
+    [
+        pytest.param(HEALTH_ANALYZER_VERSION, None, True, id="full"),
+        # The re-score a stale analyzer adds re-blames only Split File candidates.
+        pytest.param(HEALTH_ANALYZER_VERSION - 1, None, True, id="full-with-rescore"),
+        # Blame stays a FULL-tier signal.
+        pytest.param(HEALTH_ANALYZER_VERSION, "essential", False, id="essential"),
+    ],
+)
+def test_stale_stamp_refills_the_whole_function_blame(
+    tmp_path, analyzer_version, git_tier, refilled
+) -> None:
+    """#5216: the forced walk re-blames every file, so an emptied rollup comes
+    back as init wrote it, not only for the files a commit changed."""
+    repo = _repo_with_functions(tmp_path)
+    indexed = _function_blame(repo)
+    assert {sid.split("::")[0] for sid in indexed} == {"a.py", "b.py"}
+    _empty_function_blame(repo)
+    state = {**load_state(repo), "health_analyzer_version": analyzer_version}
+    state.pop(GIT_HISTORY_VERSION_KEY)
+    if git_tier is not None:
+        state["git_tier"] = git_tier
+    save_state(repo, state)
+
+    assert "Git history rules changed" in _invoke_update(repo)
+    assert _function_blame(repo) == (indexed if refilled else {})
+
+
+def test_workspace_stale_stamp_refills_the_whole_function_blame(tmp_path) -> None:
+    from repowise.core.workspace.update import update_single_repo_index
+
+    repo = _repo_with_functions(tmp_path)
+    indexed = _function_blame(repo)
+    _empty_function_blame(repo)
+    state = load_state(repo)
+    state.pop(GIT_HISTORY_VERSION_KEY)
+    save_state(repo, state)
+
+    assert asyncio.run(update_single_repo_index(repo)).git_history_refreshed
+    assert _function_blame(repo) == indexed
+
+
+def test_ordinary_update_reblames_only_the_changed_file(tmp_path) -> None:
+    """Without a forced walk the rollup is refreshed for the changed file alone."""
+    repo = _repo_with_functions(tmp_path)
+    _empty_function_blame(repo)
+    (repo / "a.py").write_text("def alpha():\n    return 100\n\n\ndef beta():\n    return 2\n")
+    _git(repo, "commit", "-am", "c3")
+
+    assert "Git history rules changed" not in _invoke_update(repo)
+    assert {sid.split("::")[0] for sid in _function_blame(repo)} == {"a.py"}
