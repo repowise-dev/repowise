@@ -175,6 +175,7 @@ def test_the_walk_reaches_the_sinks_of_every_rescored_loop_owner(monkeypatch) ->
                 repo_id="",
                 analyzed_at=None,
                 findings=[finding("owner.py"), finding("sink.py")],
+                function_facts=[{"symbol_id": f"{p}::f"} for p in paths],
             )
 
     monkeypatch.setattr("repowise.core.analysis.health.HealthAnalyzer", FakeAnalyzer)
@@ -198,3 +199,5 @@ def test_the_walk_reaches_the_sinks_of_every_rescored_loop_owner(monkeypatch) ->
     # Only the closure is re-scored: the sink file is read, its rows are kept.
     assert health.performance_authoritative_paths == {"changed.py", "owner.py"}
     assert [f.file_path for f in health.findings] == ["owner.py"]
+    # Facts only for the re-scored files: the writer replaces no others.
+    assert [r["symbol_id"] for r in health.function_facts] == ["changed.py::f", "owner.py::f"]
