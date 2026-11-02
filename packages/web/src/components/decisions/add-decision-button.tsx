@@ -12,6 +12,9 @@ import {
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
+import { ADD_WITH_AGENT_LABEL } from "@repowise-dev/ui/decisions/decision-review-lanes";
+import { buildAddDecisionsPrompt } from "@/lib/decision-prompts";
 import type { DecisionCreateInput } from "@repowise-dev/types/decisions";
 import { createDecision } from "@/lib/api/decisions";
 import { useTranslations } from "next-intl";
@@ -19,7 +22,9 @@ import { useTranslations } from "next-intl";
 /**
  * The host half of recording a decision: the entry point, the POST, and the
  * refresh. The form itself is shared, so hosted mounts the same fields behind
- * its own client.
+ * its own client. Beside it, the page's agent action: hand the search for
+ * unrecorded rules to the reader's agent, which a page with few decisions
+ * needs most.
  */
 export function AddDecisionButton({ repoId }: { repoId: string }) {
   const t = useTranslations("decisions");
@@ -34,7 +39,8 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
   );
 
   return (
-    <>
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <AiPromptButton copyText={buildAddDecisionsPrompt} label={ADD_WITH_AGENT_LABEL} />
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
         <Plus className="h-3.5 w-3.5" />
         {t("add.trigger")}
@@ -58,6 +64,6 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
           />
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }
