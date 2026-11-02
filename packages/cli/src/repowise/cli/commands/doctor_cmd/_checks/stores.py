@@ -179,6 +179,32 @@ async def _fts_ids(engine) -> set[str]:
         return set()
 
 
+def _vector_missing(
+    sql: _SqlSide,
+    vs_ids: set[str],
+    *,
+    lance_present: bool,
+    repo_path: _DoctorPath,
+) -> tuple[set[str], bool]:
+    """``(missing_from_vector, store_gone)`` for the SQL↔vector drift.
+
+    A present index holding none of the indexable pages has them all missing.
+    A *missing* directory is only "nothing to compare" in mock/fast mode; with
+    a real (non-mock) embedder configured and indexable pages present, the
+    store is expected but gone, so every indexable page is missing and the fix
+    is a reindex (not ``--repair``, which will not re-embed a whole store).
+    ``detect=False`` judges by what the index was built with (pin/flag/env),
+    never by an ambient key the repo never used.
+    """
+    if lance_present:
+        return sql.vector_indexable_ids - vs_ids, False
+    from repowise.core.providers.embedding.resolve import resolve_embedder_name
+
+    embedder_name, _source = resolve_embedder_name(repo_path=repo_path, detect=False)
+    store_gone = embedder_name != "mock" and bool(sql.vector_indexable_ids)
+    return (set(sql.vector_indexable_ids) if store_gone else set()), store_gone
+
+
 async def _reconcile(
     repo_path: _DoctorPath, repowise_dir: _DoctorPath
 ) -> tuple[StoreDrift, int, str | None]:
@@ -198,30 +224,10 @@ async def _reconcile(
     fts_ids = await _fts_ids(engine)
     await engine.dispose()
 
-    # An index on disk that holds none of the indexable pages is every one of
-    # them missing. A *missing* directory is only "nothing to compare" in
-    # mock/fast mode; when a real (non-mock) embedder is configured and there
-    # are indexable pages, the store is expected but gone, so every indexable
-    # page is missing and the fix is a reindex (not --repair, which will not
-    # re-embed a whole store). detect=False: judge by what the index was built
-    # with (pin/flag/env), never by an ambient key the repo never used.
-    from repowise.core.providers.embedding.resolve import resolve_embedder_name
-
     lance_present = lance_dir.exists()
-    embedder_name, _embedder_source = resolve_embedder_name(
-        repo_path=repo_path, detect=False
+    missing_from_vector, store_gone = _vector_missing(
+        sql, vs_ids, lance_present=lance_present, repo_path=repo_path
     )
-    store_gone = (
-        not lance_present
-        and embedder_name != "mock"
-        and bool(sql.vector_indexable_ids)
-    )
-    if lance_present:
-        missing_from_vector = sql.vector_indexable_ids - vs_ids
-    elif store_gone:
-        missing_from_vector = set(sql.vector_indexable_ids)
-    else:
-        missing_from_vector = set()
 
     return (
         StoreDrift(
