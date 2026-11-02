@@ -180,6 +180,10 @@ describe("a decision an agent accepted", () => {
     expect(acceptedLine(byAgent({ accepter_session: "k".repeat(64) }))).toBe(
       `Accepted by your agent (${"k".repeat(39)}\u2026)`,
     );
+    // The clip counts characters, so it never cuts an emoji in half.
+    expect(acceptedLine(byAgent({ accepter_session: "\u{1F511}".repeat(64) }))).toBe(
+      `Accepted by your agent (${"\u{1F511}".repeat(39)}\u2026)`,
+    );
     expect(acceptedLine(byAgent({ currency: "dismissed" }))).toBeNull();
     expect(acceptedLine(byAgent({ currency: null, status: "proposed" }))).toBeNull();
   });

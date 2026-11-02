@@ -36,7 +36,9 @@ function safeHref(url: string | null | undefined): string | null {
 const SESSION_MAX = 40;
 
 function clip(text: string, max = SESSION_MAX): string {
-  return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text;
+  // By code points, so the cut never splits a surrogate pair.
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}\u2026` : text;
 }
 
 /**
