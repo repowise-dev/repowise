@@ -181,8 +181,9 @@ _WORD = re.compile(r"[a-z0-9_]+")
 
 _NEGATIONS = frozenset({"never", "no", "not", "without"})
 
-#: Negation and contrast words are deliberately absent: "use A, not B" and
-#: "use B, not A" must not reduce to one word set.
+#: Negation, contrast and quantity words are deliberately absent: "use A, not B"
+#: and "use B, not A", or "one worker" and "two workers", must not reduce to one
+#: word set.
 _STOPWORDS = frozenset(
     [
         "a",
@@ -192,14 +193,12 @@ _STOPWORDS = frozenset(
         "as",
         "at",
         "be",
-        "but",
         "by",
         "can",
         "could",
         "did",
         "does",
         "done",
-        "each",
         "for",
         "from",
         "had",
@@ -213,7 +212,6 @@ _STOPWORDS = frozenset(
         "now",
         "of",
         "on",
-        "one",
         "or",
         "our",
         "per",
@@ -227,7 +225,6 @@ _STOPWORDS = frozenset(
         "they",
         "this",
         "to",
-        "two",
         "use",
         "used",
         "uses",
@@ -242,11 +239,6 @@ _STOPWORDS = frozenset(
         "with",
         "would",
         "also",
-        "all",
-        "any",
-        "every",
-        "more",
-        "less",
     ]
 )
 

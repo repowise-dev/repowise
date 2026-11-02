@@ -92,6 +92,10 @@ DISTINCT = [
         "The worker pool reads the cache directly and the queue is not used",
         "The worker pool reads the cache directly and the queue is used",
     ),
+    (  # rulings that differ only in a quantity
+        "The cache holds one message per worker thread",
+        "The cache holds two message per worker thread",
+    ),
     (  # 48803a7c: a multi-claim span and one claim it bundles
         "changes table (migration 0110) filled at every index and extended on update; "
         "git_commits stores each commit's category, and update re-labels rows the "
