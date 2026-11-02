@@ -101,7 +101,12 @@ async def test_pr_without_a_merge_sha_does_not_fold(async_session):
 
 
 def _second_pr(title="Drop the legacy manifest format"):
-    return {**_pr(), "title": title, "source_quote": "drop the v1 manifest reader"}
+    return {
+        **_pr(),
+        "title": title,
+        "decision": "The v1 manifest reader is removed",
+        "source_quote": "drop the v1 manifest reader",
+    }
 
 
 async def test_several_pr_decisions_pair_by_title_overlap(async_session):
@@ -127,7 +132,12 @@ async def test_several_pr_decisions_without_a_clear_match_do_not_fold(async_sess
 
 async def test_two_archaeology_decisions_on_one_pr_do_not_fold(async_session):
     repo = await insert_repo(async_session)
-    other = {**_arch(), "title": "Parse manifests lazily", "source_quote": "lazy parse"}
+    other = {
+        **_arch(),
+        "title": "Parse manifests lazily",
+        "decision": "Manifests are parsed on first access",
+        "source_quote": "lazy parse",
+    }
 
     await bulk_upsert_decisions(async_session, repo.id, [_arch(), other, _pr()])
 
