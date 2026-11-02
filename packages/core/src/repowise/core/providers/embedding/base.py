@@ -14,7 +14,7 @@ import hashlib
 import math
 import os
 import sys
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
@@ -104,6 +104,16 @@ def resolve_embed_prefix(kind: str) -> str:
 
 # Vars already reported this process, so the notice prints once, not per batch.
 _PREFIX_WARNED: set[str] = set()
+
+
+def client_for_kind(client: Any, kind: str) -> Any:
+    """*client* for one embed call: a query gets no SDK retries.
+
+    A query waits on the answer, and the SDK's retry backoff on a rate-limited
+    or dead endpoint costs seconds per call; the query path falls back to text
+    search instead. Bulk document embeds keep the SDK's retries.
+    """
+    return client.with_options(max_retries=0) if kind == "query" else client
 
 
 def _report_prefix_needs_reindex(var: str) -> None:

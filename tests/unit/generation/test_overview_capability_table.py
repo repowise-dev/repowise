@@ -153,7 +153,7 @@ def test_the_table_carries_the_term_its_sentence_and_its_source():
             _term(
                 "Dead code",
                 definition="Dead code is code no import path reaches.",
-                definition_source="src/analysis/dead_code.py",
+                definition_source="docs/dead_code.md",
             )
         ],
         MODULES,
@@ -161,7 +161,40 @@ def test_the_table_carries_the_term_its_sentence_and_its_source():
     table = build_capability_table(picked)
     assert "| Capability | What it is | Where it is written |" in table
     assert "| Dead code | Dead code is code no import path reaches. |" in table
-    assert "`src/analysis/dead_code.py`" in table
+    assert "`docs/dead_code.md`" in table
+
+
+def test_a_docstring_definition_is_not_a_capability():
+    """A docstring describes one function, not what the product does. This
+    sentence, read from a doctor check's module, was once the whole table."""
+    picked = select_capabilities(
+        [
+            _term(
+                "Decisions",
+                definition="Decisions are co-located in the page vector store.",
+                definition_source="packages/cli/doctor_cmd/_checks/stores.py",
+            )
+        ],
+        [*MODULES, "Decisions"],
+    )
+    assert picked == []
+
+
+def test_docstring_markup_is_shown_as_markdown():
+    """``literal`` and :role:`x` read as stray punctuation on a Markdown page."""
+    picked = select_terms(
+        [
+            _term(
+                "Decisions",
+                definition="Decisions are stored under the ``decision:<id>`` key by "
+                ":func:`~store.put`, *never* elsewhere.",
+            )
+        ],
+        [*MODULES, "Decisions"],
+    )
+    assert picked[0].definition == (
+        "Decisions are stored under the `decision:<id>` key by `store.put`, never elsewhere."
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,7 +242,7 @@ def test_a_real_sentence_survives(term, text):
     """Each sentence is paired with the term it names, because a definition
     that never mentions its term is rejected as prose that merely sat nearby."""
     picked = select_capabilities([_term(term, definition=text)], [*MODULES, term])
-    assert picked[0].definition == text
+    assert picked[0].definition == text.replace("``", "`")
 
 
 def test_a_rejected_definition_does_not_leave_its_source_behind():
@@ -360,7 +393,7 @@ def capabilities():
             _term(
                 "Dead code",
                 definition="Dead code is code no import path reaches.",
-                definition_source="src/analysis/dead_code.py",
+                definition_source="docs/dead_code.md",
             )
         ],
         MODULES,

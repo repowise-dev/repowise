@@ -254,16 +254,15 @@ def test_fsharp_multi_handler_with_counts_once_not_per_clause() -> None:
     assert _rows("fsharp", source, "fs") == {"f": 2}
 
 
-def test_fsharp_single_expression_body_is_a_known_undercount() -> None:
-    """Pinning current behaviour so a traversal fix is a deliberate change.
+def test_fsharp_single_expression_body_counts_its_branch() -> None:
+    """A body that IS the branch is a decision point of its own.
 
-    ``walk_file`` takes the ``body`` field and walks that node's children, so a
-    body that IS the branch is never visited. Correct for block-bodied
-    languages, wrong here. When the traversal root changes this should become
-    2, and this test is the place that says so.
+    ``walk_file`` takes the ``body`` field; the walk visits that node itself
+    when it is a decision (see ``_is_decision_body``) instead of only its
+    children, so an expression-bodied ``if`` scores like its block twin.
     """
     _require_language("fsharp")
-    assert _rows("fsharp", "let f x =\n  if x > 0 then 1 else 2\n", "fs") == {"f": 1}
+    assert _rows("fsharp", "let f x =\n  if x > 0 then 1 else 2\n", "fs") == {"f": 2}
 
 
 # --------------------------------------------------------------------------- #

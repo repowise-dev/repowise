@@ -16,7 +16,7 @@ from typing import Any
 
 from repowise.core.cancellation import check_cancelled
 
-from ..source_reader import disk_source_reader
+from ..source_reader import reads_working_tree
 from .detector import (
     DEFAULT_MIN_LINES,
     DEFAULT_WINDOW_TOKENS,
@@ -105,7 +105,7 @@ def detect_clones_with_isolation(
     # revision's, which that reader documents as the thing it must not do.
     # Those callers (the base side of a diff, a historical commit) analyse a
     # changed-file set, not a repository, so the bound is not what they need.
-    reader_is_working_tree = source_reader is None or source_reader is disk_source_reader
+    reader_is_working_tree = reads_working_tree(source_reader)
 
     if len(parsed_files) < isolation_file_threshold or not reader_is_working_tree:
         return detect_clones(

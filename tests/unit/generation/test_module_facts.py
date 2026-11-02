@@ -26,6 +26,7 @@ _FILES = [
 class _Flow:
     trace: list[str]
     entry_point_score: float = 1.0
+    reach: int = 0
 
 
 def _ctx(files=_FILES, entry_points=()) -> ModulePageContext:
@@ -111,6 +112,33 @@ def test_a_hub_with_a_flow_that_starts_here_gets_a_sequence():
         "outside: src/db/",
     ]
     assert facts["traced_flow"][0]["file"] == "orders/place.py"
+
+
+def test_the_flow_drawn_is_the_one_that_drives_the_most_code():
+    """Not the one crossing the most parts: that picked a niche command once."""
+    niche = _Flow(
+        [
+            "src/shop/orders/place.py::reprint",
+            "src/shop/billing/charge.py::fmt",
+            "src/shop/stock/reserve.py::fmt",
+            "src/shop/__init__.py::fmt",
+        ],
+        reach=5,
+    )
+    main = _Flow(
+        [
+            "src/shop/orders/place.py::place_order",
+            "src/shop/orders/place.py::validate",
+            "src/shop/billing/charge.py::charge",
+            "src/db/session.py::save",
+        ],
+        reach=80,
+    )
+    facts = build_module_facts(
+        _ctx(entry_points=["src/shop/orders/place.py"]), [], _graph(), [niche, main]
+    )
+
+    assert facts["traced_flow"][0]["call"] == "place_order"
 
 
 def test_a_flow_that_only_passes_through_is_not_used():

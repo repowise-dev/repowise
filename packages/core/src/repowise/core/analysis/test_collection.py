@@ -88,9 +88,22 @@ def read_checkout(repo_path, head: str | None = None) -> Checkout:
     ]
     roots = read_pytest_roots((p, t) for p, t in texts if Path(p).name in PYTEST_CONFIG_NAMES)
     at_head: list[frozenset[str]] = []
+    tracked_set = frozenset(tracked)
+    gone: list[frozenset[str] | None] = []
+
+    def on_disk(path: str) -> bool:
+        # A tracked file is present unless git lists it deleted: one git call
+        # instead of a stat per named test, thousands on a large suite.
+        # Ceiling: a sparse checkout's skipped files count as present.
+        if path in tracked_set:
+            if not gone:
+                gone.append(git_refs.deleted_paths(str(root)))
+            if gone[0] is not None:
+                return path not in gone[0]
+        return (root / path).is_file()
 
     def exists(path: str) -> bool:
-        if (root / path).is_file():
+        if on_disk(path):
             return True
         if head is None:
             return False
@@ -193,8 +206,36 @@ def plan_scopes(
             )
             namers = {**{f: n for f, n in namers.items() if f not in fixtures}, **readers}
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
+    if change.head is None:
+        scopes.update(_empty_new_files(change.files, checkout))
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes)
+
+
+#: Empty files whose presence alone still changes what runs: a package and a pytest scope.
+_PRESENCE_MATTERS = frozenset({"__init__.py", "conftest.py"})
+
+
+def _empty_new_files(paths: Collection[str], checkout: Checkout) -> dict[str, Any]:
+    """An untracked code file with no content needs no tests: it holds nothing to run.
+
+    Ceiling: only uncommitted work is read here, so a file committed empty
+    keeps its rule; reading it at the change's head is the upgrade.
+    """
+    from .selection_scopes import Scope
+    from .test_selection import EMPTY_NEW_FILE, NO_TESTS_NEEDED, is_code_file
+
+    tracked = set(checkout.tracked)
+    out: dict[str, Any] = {}
+    for path in paths:
+        if path in tracked or not is_code_file(path):
+            continue
+        if PurePosixPath(path).name in _PRESENCE_MATTERS:
+            continue
+        text = checkout.read(path)
+        if text is not None and not text.strip():
+            out[path] = Scope(EMPTY_NEW_FILE, NO_TESTS_NEEDED)
+    return out
 
 
 def _scan_texts(
@@ -246,8 +287,9 @@ async def collect(
     without them no conftest route is narrowed. *read_source* (``Checkout.read``)
     lets that narrowing read the modules a conftest takes names from.
     """
-    from ..persistence.crud import get_health_metrics, get_test_coverage_summary
+    from ..persistence.crud import get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import map_is_truncated
+    from ..persistence.crud.analysis.health.metrics import health_file_paths
 
     out = empty_result(len(change.files) + len(change.deleted))
     if not out["changed_files"]:
@@ -262,7 +304,7 @@ async def collect(
 
     # Repo file keys back the filename-pattern fallback (same source the
     # aggregate coverage ingest resolves against).
-    repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
+    repo_keys = await health_file_paths(session, repo_id)
     # git runs off the event loop: a server shares it with other requests.
     routes = (
         []
@@ -303,18 +345,14 @@ async def _explain_route(session, repo_id: str, test: str, change, out: dict) ->
 
 async def _place_tests(session, repo_id: str, out: dict) -> None:
     """Record the tests the graph can see into, and those the indexer found it cannot."""
-    from .test_reachability import (
-        always_run_test_files,
-        placed_test_files,
-        unscanned_test_files,
-    )
+    from .test_reachability import cached_placement
 
     if out["graph_error"] is not None:
         return
     try:
-        out["placed_tests"] = await placed_test_files(session, repo_id)
-        out["always_run_tests"] = await always_run_test_files(session, repo_id)
-        unscanned = sorted(await unscanned_test_files(session, repo_id) & out["placed_tests"])
+        placed, out["always_run_tests"], unscanned_all = await cached_placement(session, repo_id)
+        out["placed_tests"] = set(placed)
+        unscanned = sorted(unscanned_all & placed)
     except Exception as exc:
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
         return
@@ -616,18 +654,17 @@ async def _graph_candidates(
     node: a JSON or golden file the index flags as test material is data, not a
     route. A read failure raises.
 
-    The import edges are read once (:func:`load_import_graph`) and every walk
-    runs over them in memory; *hops* is each candidate's distance to the
+    The import edges are read once per index state (:func:`cached_import_graphs`)
+    and every walk runs over them in memory; *hops* is each candidate's distance to the
     *changed* files (every target when not given; :func:`_test_hops`).
     """
     from .conftest_routes import scoped_candidates
-    from .test_reachability import load_import_graph, load_test_files
+    from .test_reachability import cached_import_graphs, cached_test_files
     from .test_selection import is_code_file, plugin_loader
 
     texts = pytest_texts or {}
-    test_files = {f for f in await load_test_files(session, repo_id) if is_code_file(f)}
-    graph = await load_import_graph(session, repo_id)
-    wide = graph.with_package_inits()
+    test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
+    graph, wide = await cached_import_graphs(session, repo_id)
     found, entries, calls = await _tier_picks(
         session, repo_id, targets, test_files, roots, graph, wide
     )

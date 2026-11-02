@@ -214,6 +214,25 @@ def is_definition(term: str, text: str) -> bool:
     return False
 
 
+#: reStructuredText inline literal (``x``) and role (:class:`x`), both shown as
+#: Markdown code; emphasis markers around a word, which read as literal stars.
+_RST_LITERAL = re.compile(r"``([^`]+)``")
+_RST_ROLE = re.compile(r":[a-z]+(?::[a-z]+)?:`~?([^`]+)`")
+_EMPHASIS = re.compile(r"(?<![\w*])\*{1,2}([^*\s][^*]*?)\*{1,2}(?![\w*])")
+
+
+def plain_inline_markup(text: str) -> str:
+    """Mined prose with docstring markup turned into what Markdown shows.
+
+    Definitions are read from Python docstrings and ``.rst`` files as often as
+    from Markdown, and their double backticks and ``:func:`` roles render on a
+    Markdown page as stray punctuation around the one word that mattered.
+    """
+    text = _RST_ROLE.sub(r"`\1`", text)
+    text = _RST_LITERAL.sub(r"`\1`", text)
+    return _EMPHASIS.sub(r"\1", text)
+
+
 def cell(text: str) -> str:
     """Text safe to put in a markdown table cell.
 
@@ -324,7 +343,7 @@ def select_terms(
         if not hits:
             continue
         definition_evidence = term.definition
-        definition = definition_evidence
+        definition = plain_inline_markup(definition_evidence) if definition_evidence else None
         # No "the definition must name the term" test. It was built, measured
         # and dropped: a heading gloss is the commonest definition shape there
         # is, and it does not restate its own heading. "## Blast radius" over

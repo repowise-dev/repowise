@@ -73,6 +73,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, or a custom style name under `.repowise/styles/<name>/`. |
 | `language` | `en` | Wiki output language: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. |
 | `enable_onboarding` | `true` | First-run onboarding prompts (CLI and web). |
+| `editor_setup` | unset | `init --no-editor-setup` writes `false`: `update` then leaves editor files alone. A later `init` with editor setup sets it `true`. |
 | `max_file_pages` | unset | Most file pages per run, highest importance first; see [below](#max_file_pages). |
 | `folder_coverage` | `[]` | File-page floors per folder as `"GLOB=PCT"` strings; see [below](#folder_coverage). |
 | `forges.hosts` | `{}` | Self-managed git host to forge (`github`, `gitlab`, `azure`, `bitbucket`, `generic`); see [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts). |

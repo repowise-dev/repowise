@@ -243,7 +243,6 @@ async def test_no_skeleton_without_an_explicit_include(setup_mcp, tmp_path, monk
     # signatures, line numbers, and the cheap card around them.
     assert card["docs"]["symbols"]
     assert card["docs"].get("summary") is not None
-    assert "freshness" in card
 
 
 @pytest.mark.asyncio

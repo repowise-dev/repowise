@@ -46,13 +46,25 @@ def _decision_rows(result: dict) -> list:
     ]
 
 
+def _answers(row: Any, mode: Any) -> bool:
+    """Whether an accepted *row* answers the call, not just governs a named file.
+
+    A question is answered only by a row that cleared its relevance floor, and
+    those are the rows served with their ``decision`` text: a semantic hit
+    carries a snippet, a card's off-question rule only its title. Without a
+    question (path mode) the path is the question, so every rule answers it.
+    """
+    return _is_accepted_row(row) and (mode != "search" or "decision" in row)
+
+
 def rests_on_decision(result: dict) -> bool:
-    """Whether *result* serves an accepted decision.
+    """Whether *result* serves an accepted decision that answers it.
 
     The one fact behind ``answer_basis: "decision"`` and behind any prose that
     says no record covers the call, so the two cannot disagree.
     """
-    return any(_is_accepted_row(r) for r in _decision_rows(result))
+    mode = result.get("mode")
+    return any(_answers(r, mode) for r in _decision_rows(result))
 
 
 def _stamp_answer_basis(result: dict) -> dict:
@@ -73,7 +85,7 @@ def _stamp_answer_basis(result: dict) -> dict:
     ]
     candidate_rows = [
         *(r for e in entries for r in (e.get("candidate_decisions") or [])),
-        *(r for r in _decision_rows(result) if not _is_accepted_row(r)),
+        *(r for r in result.get("decisions") or [] if not _is_accepted_row(r)),
     ]
     if rests_on_decision(result):
         result["answer_basis"] = "decision"

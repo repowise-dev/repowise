@@ -122,10 +122,33 @@ def test_help_names_the_exit_codes():
 
 
 def test_no_gaps_returns_and_any_gap_exits_degraded():
-    assert run_gaps(failed_pages=0, embed_error=None) == []
+    assert run_gaps(failed_page_ids=[], embed_error=None) == []
     exit_on_gaps([])
-    gaps = run_gaps(failed_pages=3, embed_error="Embedding failed for 1 page(s).")
-    assert gaps == ["3 page(s) failed to generate", "Embedding failed for 1 page(s)"]
+    gaps = run_gaps(
+        failed_page_ids=["module_page:src/shared"], embed_error="Embedding failed for 1 page(s)."
+    )
+    assert gaps == [
+        "1 page failed to generate; write it with: "
+        "repowise generate --page module_page:src/shared",
+        "Embedding failed for 1 page(s)",
+    ]
     with pytest.raises(SystemExit) as exc:
         exit_on_gaps(gaps)
     assert exc.value.code == EXIT_DEGRADED
+
+
+def test_failed_pages_gap_names_the_command_that_writes_them():
+    """Exit 2's contract: the last line names the gap and its fix."""
+    from repowise.cli.commands.init_cmd._exit import failed_pages_gap
+
+    two = failed_pages_gap(["module_page:src/a", "flow_page:src/b.py::Run.go"])
+    assert two.endswith(
+        "repowise generate --page module_page:src/a --page flow_page:src/b.py::Run.go"
+    )
+    assert two.startswith("2 pages failed")
+    spaced = failed_pages_gap(["module_page:my docs"])
+    assert spaced.endswith("--page 'module_page:my docs'")
+    many = failed_pages_gap([f"module_page:m{i}" for i in range(5)])
+    assert many == "5 pages failed to generate; write them with: repowise generate --unwritten"
+    structural = failed_pages_gap(["file_page:src/a.py"])
+    assert structural.endswith("repowise init --resume")

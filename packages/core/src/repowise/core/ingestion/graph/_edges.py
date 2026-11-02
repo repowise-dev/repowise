@@ -108,12 +108,17 @@ class EdgesMixin:
         """Add co_changes edges from git metadata. Returns count of edges added.
 
         Gated on shared commits rather than the decayed weight, whose scale
-        depends on how wide the commits were.
+        depends on how wide the commits were. Both ends must already be graph
+        nodes and each edge runs in canonical order, so the result depends only
+        on the pairs, not on which files ``git_meta_map`` keys or its order:
+        update passes every tracked file's partners, init only indexed files.
         """
         count = 0
         seen: set[tuple[str, str]] = set()
 
         for file_path, meta in git_meta_map.items():
+            if file_path not in self._graph:
+                continue
             for partner in parse_partners(meta.get("co_change_partners_json")):
                 partner_path, co_count = partner.file_path, partner.weight
                 if partner.support < min_support:
@@ -126,12 +131,9 @@ class EdgesMixin:
                     continue
                 seen.add(pair)
 
-                if not self._graph.has_edge(file_path, partner_path) and not self._graph.has_edge(
-                    partner_path, file_path
-                ):
+                if not self._graph.has_edge(*pair) and not self._graph.has_edge(pair[1], pair[0]):
                     self._graph.add_edge(
-                        file_path,
-                        partner_path,
+                        *pair,
                         edge_type="co_changes",
                         weight=co_count,
                         imported_names=[],

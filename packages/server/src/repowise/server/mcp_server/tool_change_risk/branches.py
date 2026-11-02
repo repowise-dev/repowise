@@ -100,26 +100,56 @@ async def _scan_overlap(ctx: Any, files: list[str], current: str = "HEAD") -> An
     return scan.overlap
 
 
+def _start_overlap_scan(
+    ctx: Any, changed: dict[str, set[int]], current: str = "HEAD"
+) -> asyncio.Task | None:
+    """Start the branch scan now, ``None`` with nothing changed.
+
+    The scan is git work, so it runs beside the index-bound blocks instead of
+    after them; :func:`_branch_overlap_block` collects it.
+    """
+    if not changed:
+        return None
+    return asyncio.create_task(
+        asyncio.wait_for(
+            _pkg._scan_overlap(ctx, sorted(changed), current),
+            timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS,
+        )
+    )
+
+
+async def _scan_answer(scan: asyncio.Task | None) -> dict[str, Any] | None:
+    """The scan's whole answer before capping, ``None`` without one or when it failed.
+
+    A task can be awaited again once done, so the payload cache reads the same
+    answer the block was built from.
+    """
+    if scan is None:
+        return None
+    try:
+        return (await scan).to_dict()
+    except (TimeoutError, subprocess.SubprocessError, OSError):
+        return None
+
+
 async def _branch_overlap_block(
-    ctx: Any, changed: dict[str, set[int]], collector: OmissionCollector, current: str = "HEAD"
+    ctx: Any,
+    changed: dict[str, set[int]],
+    collector: OmissionCollector,
+    current: str = "HEAD",
+    scan: asyncio.Task | None = None,
 ) -> dict[str, Any] | None:
     """Other open branches editing the files this change edits, or ``None``.
 
     Git alone answers it, so a repo without an index still gets the block; an
     index only ranks the shared files and adds the history rows. ``None`` when
-    no other branch overlaps, because an all-clear block is noise.
+    no other branch overlaps, because an all-clear block is noise. *scan* is a
+    scan :func:`_start_overlap_scan` already started for this change.
     """
-    if not changed:
-        return None
-    try:
-        overlap = await asyncio.wait_for(
-            _pkg._scan_overlap(ctx, sorted(changed), current), timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS
-        )
-    except (TimeoutError, subprocess.SubprocessError, OSError):
-        return None
-
-    block = overlap.to_dict()
-    if not block["branches"]:
+    if scan is None:
+        scan = _start_overlap_scan(ctx, changed, current)
+    block = await _scan_answer(scan)
+    if block is None or not block["branches"]:
         return None
     # Branches first: an entry the cap drops goes to the store whole, and only
     # the entries that survive can carry an index the reader can find.

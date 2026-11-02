@@ -596,6 +596,12 @@ async def persist_incremental_edges(
         # Every reconciled file, not only a widen's: a symbol renamed or removed
         # in a changed file otherwise keeps its node beside the new one.
         await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, reconcile_paths)
+    # Only when the rebuild re-added every pair; a failed or skipped walk leaves
+    # the graph without them, and syncing would wipe the stored ones.
+    if getattr(graph_builder, "co_change_edges_complete", False):
+        from .co_change_edges import sync_co_change_edges
+
+        await sync_co_change_edges(session, repo_id, graph_builder)
     # Only after the widen actually ran to completion. Raising here (or in any
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.

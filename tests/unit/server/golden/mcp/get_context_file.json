@@ -21,12 +21,7 @@
           }
         ]
       },
-      "hotspot": true,
-      "freshness": {
-        "confidence_score": 0.85,
-        "freshness_status": "fresh",
-        "is_stale": false
-      }
+      "hotspot": true
     }
   },
   "_meta": {

@@ -161,6 +161,40 @@ class TestStructure:
         assert {"src/pkg/sub", "src/pkg/app.py"} <= paths
         assert _tier_of(sm)["src/pkg/cli.py"] == "surface"
 
+    def test_a_setup_module_in_a_package_is_not_a_box_but_a_subproject_setup_py_is(self):
+        files = dict.fromkeys(
+            [
+                "libs/foo/setup.py",
+                "libs/foo/foo/__init__.py",
+                "libs/foo/foo/core.py",
+                "server/routers/__init__.py",
+                "server/routers/setup.py",
+                "server/routers/repos.py",
+                "apps/a/main.py",
+                "apps/b/main.py",
+                "apps/c/main.py",
+            ],
+            "python",
+        )
+        # The overview passes every parsed manifest, the route module included.
+        # Five roots, so no box is opened up a level.
+        manifests = [
+            "libs/foo/setup.py",
+            "server/routers/setup.py",
+            "server/pyproject.toml",
+            "apps/a/pyproject.toml",
+            "apps/b/pyproject.toml",
+            "apps/c/pyproject.toml",
+        ]
+        edges = [
+            (src, "libs/foo/foo/core.py", "imports")
+            for src in ("server/routers/repos.py", "apps/a/main.py", "apps/b/main.py")
+        ]
+        sm = build_system_map(files, edges, repo_name="demo", manifests=manifests)
+        paths = {n.path for n in sm.nodes if n.path}
+        assert {"libs/foo", "server"} <= paths
+        assert "server/routers" not in paths
+
     def test_nothing_to_draw_returns_none(self):
         assert build_system_map({"a.py": "python"}, [], repo_name="x") is None
 

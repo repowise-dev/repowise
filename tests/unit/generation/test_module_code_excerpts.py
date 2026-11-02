@@ -16,7 +16,7 @@ import pytest
 
 from repowise.core.generation.context import assembler as assembler_mod
 from repowise.core.generation.context.evidence import select_symbol_evidence
-from repowise.core.generation.context.module_excerpts import module_excerpts
+from repowise.core.generation.context.module_excerpts import excerpt_candidates, module_excerpts
 from repowise.core.generation.context.token_budget import estimate_tokens
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.page_generator import PageGenerator
@@ -93,10 +93,14 @@ async def test_prompt_snapshot_has_public_api_excerpts_and_declarations(tmp_path
     slugify = excerpts[1]
     assert (slugify["file"], slugify["lines"], slugify["truncated"]) == ("util.py", "1-3", False)
     # Fixtures are written in text mode, so a Windows checkout has CRLF sources.
-    assert slugify["code"].replace("\r\n", "\n").startswith(
-        "def slugify(text: str) -> str:\n"
-        '    """Lower-case words joined by dashes."""\n'
-        '    return "-".join(text.lower().split())\n'
+    assert (
+        slugify["code"]
+        .replace("\r\n", "\n")
+        .startswith(
+            "def slugify(text: str) -> str:\n"
+            '    """Lower-case words joined by dashes."""\n'
+            '    return "-".join(text.lower().split())\n'
+        )
     )
     assert "_hidden" not in json.dumps(excerpts)
 
@@ -144,7 +148,11 @@ async def test_a_long_body_is_capped_at_sixty_lines(tmp_path, sample_config):
         source_map=_sources(tmp_path, parsed),
     )
     [excerpt] = ctx.code_excerpts
-    assert (excerpt["symbol"], excerpt["lines"], excerpt["truncated"]) == ("big.py::f0", "1-60", True)
+    assert (excerpt["symbol"], excerpt["lines"], excerpt["truncated"]) == (
+        "big.py::f0",
+        "1-60",
+        True,
+    )
     assert "x59 = 59" not in excerpt["code"] and "x58 = 58" in excerpt["code"]
 
 
@@ -199,3 +207,47 @@ def test_a_big_public_api_body_is_not_displaced_by_a_smaller_ranked_one(tmp_path
     assert [item.symbol for item in alone.included] == ["small.py::g"]
     assert selection.included == ()
     assert any("big.py" in line for line in declared)
+
+
+def test_c_typedef_duplicates_do_not_consume_excerpt_slots(tmp_path):
+    path = "tokenizer.c"
+    parsed = _index(
+        tmp_path,
+        {
+            path: (
+                "typedef struct Tokenizer Tokenizer;\n"
+                "struct Tokenizer { int value; };\n"
+                "typedef struct Callback Callback;\n"
+                "struct Callback { int value; };\n"
+                "static int hidden(int value) { return value; }\n"
+                "int initialize(void) { return hidden(42); }\n"
+            )
+        },
+    )
+    candidates = excerpt_candidates([], parsed, [path])
+    assert [s.name for s in candidates] == ["Tokenizer", "Callback", "initialize"]
+    selection, _ = module_excerpts([], parsed, [path], _sources(tmp_path, parsed), 10_000)
+    assert [item.symbol for item in selection.included] == [s.id for s in candidates]
+    assert selection.included[-1].text.replace("\r\n", "\n") == (
+        "int initialize(void) { return hidden(42); }\n"
+    )
+
+
+def test_ranked_overloads_select_one_implementation_before_the_file_cap(tmp_path):
+    path = "client.ts"
+    parsed = _index(
+        tmp_path,
+        {
+            path: (
+                "export function encode(value: string): string;\n"
+                "export function encode(value: number): string;\n"
+                "export function encode(value: string | number): string { return String(value); }\n"
+                "export function first(): number { return 1; }\n"
+                "export function second(): number { return 2; }\n"
+                "export function third(): number { return 3; }\n"
+            )
+        },
+    )
+    candidates = excerpt_candidates([], parsed, [path])
+    assert [s.name for s in candidates] == ["encode", "first", "second"]
+    assert not candidates[0].is_declaration

@@ -20,7 +20,13 @@ the major architectural layers: {% for path in ctx.lifecycle_entry_points %}`{{ 
 ## Candidate concepts (the symbols the rest of the system depends on most —
 ## ground every concept you name in this list; do not invent new ones)
 {% for c in ctx.concept_symbols %}
-- **`{{ c.name }}`** ({{ c.kind }}) — `{{ c.file_path }}`{% if c.cluster %}, in cluster *{{ c.cluster }}*{% endif %}
+- **`{{ c.name }}`** ({{ c.kind }}) — `{{ c.file_path }}`{% if c.cluster %}, in cluster *{{ c.cluster }}*{% endif %}{% if c.cross_file_callers %}, used from {{ c.cross_file_callers }} places in other files{% endif %}
+{% if c.signature %}
+  Declared as: `{{ c.signature }}`
+{% endif %}
+{% if c.members %}
+  Public members: {% for m in c.members %}`{{ m }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
 {% if c.docstring %}
   > {{ c.docstring }}
 {% endif %}
@@ -72,8 +78,12 @@ Produce a Key Concepts markdown page. Required structure:
 2. **## Core concepts** — one subsection per concept (heading: `### \`Name\``,
    matching the candidate list above exactly). Aim for 3–6 subsections.
    For each:
-   - one short paragraph (2–4 sentences) explaining what the concept is
-     and the role it plays,
+   - one short paragraph (2–4 sentences) saying what the concept is and
+     what code does with it, written only from its docstring, declaration
+     and public members above. If those do not say what it is for, say
+     what its members let a caller do and stop; never assign it a role,
+     layer or pipeline stage they do not state, and never remark on what
+     the information above does or does not say,
    - a `**Where it lives:**` line citing the file path,
    - if a docstring was supplied, weave it in — don't quote verbatim if
      it's awkward.

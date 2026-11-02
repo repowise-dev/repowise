@@ -78,6 +78,15 @@ class ChangeRiskResult:
     baseline_as_of: str | None = None
 
 
+def owned_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """The exclusions in *patterns* that name repowise's own output.
+
+    For a committed change these are :func:`riskignore_patterns`' owned paths,
+    the ``owned_excludes`` its score reports.
+    """
+    return tuple(p for p in patterns if p in OWNED_PATTERNS)
+
+
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
     """Non-comment patterns of the repository-root ``.riskignore``, then repowise's own paths.
 
@@ -253,7 +262,7 @@ def score_live_change(
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
-    owned = tuple(p for p in from_riskignore if p in OWNED_PATTERNS)
+    owned = owned_patterns(from_riskignore)
     owned += generated if working_tree else ()
     return replace(result, history_ref=history, owned_excludes=owned, baseline_as_of=as_of)
 

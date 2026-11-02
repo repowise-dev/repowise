@@ -66,6 +66,11 @@ def clear_fix_pressure_cache() -> None:
     _PRESSURE_CACHE.clear()
 
 
+def _pressure_key(repo_path: str, sha: str, depth: int) -> tuple[str, str, int]:
+    """The memo key: a ``Path`` and its ``str`` name one checkout, so they share an entry."""
+    return (str(repo_path), sha, depth)
+
+
 def _history_sha(repo_path: str, upto_ref: str) -> str:
     """*upto_ref*'s commit sha, or ``""`` when there is no history before it.
 
@@ -159,7 +164,7 @@ def fix_pressure(
     sha = _history_sha(repo_path, upto_ref)
     if not sha:
         return {}
-    key = (repo_path, sha, depth)
+    key = _pressure_key(repo_path, sha, depth)
     if key in _PRESSURE_CACHE:
         return _PRESSURE_CACHE[key]
 
@@ -297,7 +302,7 @@ def prime_fix_pressure(
     """
     primed = 0
     for sha in shas:
-        key = (repo_path, sha, depth)
+        key = _pressure_key(repo_path, sha, depth)
         pressure = _PRESSURE_CACHE.get(key)
         if pressure is None:
             pressure = history.pressure(sha, depth)

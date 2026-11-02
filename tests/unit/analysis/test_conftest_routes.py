@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from textwrap import dedent
 
 import pytest
 
 from repowise.core.analysis.conftest_routes import (
     ConftestFacts,
+    _judge_routes,
+    _Route,
     conftest_use,
     entry_names,
     local_names,
@@ -771,3 +774,20 @@ def test_an_autouse_fixture_reading_a_re_exported_constant_reaches_only_its_defi
     assert conftest_use(source, "tests/conftest.py", entries, behind).run_all is None
     at_definer = {"src/app/facade.py": names.stable("src/app/console.py")}
     assert conftest_use(source, "tests/conftest.py", entries, at_definer).run_all
+
+
+def test_judging_routes_reads_each_file_once() -> None:
+    """Entries re-exporting one module probe and read it once per judgement, not once each."""
+    files = {**_FACADE, "src/app/facade2.py": "from app.console import NAMES as NAMES\n"}
+    reads: Counter[str] = Counter()
+
+    def read(path: str) -> str | None:
+        reads[path] += 1
+        return files.get(path)
+
+    route = _Route(frozenset({"src/app/facade.py", "src/app/facade2.py"}), direct=False)
+    conftest = {"tests/conftest.py": "import pytest\nfrom app import facade, facade2\n"}
+    _judge_routes({"src/app/util.py": {"tests/conftest.py": route}}, conftest.get, None, read)
+    assert route.use is not None
+    assert reads["src/app/console.py"] == 1
+    assert max(reads.values()) == 1

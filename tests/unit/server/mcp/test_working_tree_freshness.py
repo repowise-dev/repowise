@@ -171,7 +171,7 @@ def test_uncommitted_edits_are_marked_and_cleared_by_working_tree_update(
     after = asyncio.run(_serve(repo))
     _assert_clear(after)
     card = after[("rename", "get_context")]["targets"]["billing.py"]
-    assert "working_tree" not in card["freshness"]
+    assert "working_tree" not in card.get("freshness", {})
 
     # Revert without committing: git status is clean, but the index still
     # holds the edits, so every served target is marked until the next update.

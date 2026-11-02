@@ -168,8 +168,8 @@ def test_same_type_pages_are_held_to_their_own_threshold():
     )
     as_same_type = measure_orientation_overlap(
         [
-            _page("layer_page:one", "layer_page", "Layer: One", left),
-            _page("layer_page:two", "layer_page", "Layer: Two", right),
+            _page("onboarding:one", "onboarding", "One", left),
+            _page("onboarding:two", "onboarding", "Two", right),
         ],
         **thresholds,
     )
@@ -299,7 +299,6 @@ def test_jaccard_of_two_empty_sets_is_zero():
 def test_orientation_types_are_the_pages_read_before_reference_content():
     assert set(ORIENTATION_PAGE_TYPES) == {
         "onboarding",
-        "layer_page",
         "repo_overview",
         "architecture_diagram",
     }

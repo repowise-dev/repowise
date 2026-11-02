@@ -718,3 +718,88 @@ def test_chapters_never_double_claim_a_file():
 
     assert sorted(claims) == sorted(files), "every file is claimed exactly once"
     assert len(claims) == len(set(claims))
+
+
+def test_a_chapter_inside_a_same_named_chapter_is_qualified_readably():
+    """No container ("Src Core Overview"), no repeated word ("Web Web Overview")."""
+    from repowise.core.generation.concept_tree.naming import chapter_titles
+
+    out = chapter_titles(
+        {"p/web/src/lib/chat/a.ts": "Chat State"},
+        ["packages/core", "packages/core/src/repowise/core", "p/web", "p/web/src/lib", "p/ui", "p/ui/src"],
+    )
+    assert out["packages/core"] == "Core Overview"
+    assert out["packages/core/src/repowise/core"] == "Repowise Core Overview"
+    assert out["p/web/src/lib"] == "Web Library Overview"
+    assert out["p/ui/src"] == "Ui Source Overview"
+
+
+def test_a_chapter_is_spelled_the_way_the_leaf_titles_spell_it():
+    """Word by word, and two leaf words can spell one directory name."""
+    from repowise.core.generation.concept_tree.naming import chapter_titles
+
+    leaves = {
+        "packages/vscode/webview": "VS Code Webview",
+        "packages/api-client/src": "API Client Operations",
+    }
+    out = chapter_titles(leaves, ["packages/vscode", "packages/api-client"])
+    assert out == {"packages/vscode": "VS Code Overview", "packages/api-client": "API Client Overview"}
+
+
+def test_a_page_gathered_from_siblings_is_titled_after_them_without_a_model():
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+    from repowise.core.generation.concept_tree.naming import deterministic_title
+
+    answer = [f"srv/tool_answer/a{i}.py" for i in range(4)]
+    health = [f"srv/tool_health/h{i}.py" for i in range(4)]
+    mixed = ConceptGroup(
+        members=["srv/_savings/s.py", *answer, *health],
+        dirs=["srv/_savings", "srv/tool_answer", "srv/tool_health"],
+        target_path="srv/_savings",
+    )
+    assert deterministic_title(mixed) == "Tool Answer and Tool Health"
+
+    dominated = ConceptGroup(
+        members=["srv/_savings/s.py", *answer],
+        dirs=["srv/_savings", "srv/tool_answer"],
+        target_path="srv/_savings",
+    )
+    assert deterministic_title(dominated) == "Srv Tool Answer"
+
+
+def test_a_leaf_title_takes_a_container_qualifier_in_front():
+    """Only an "... Overview" title has a slot before its last word."""
+    from repowise.core.generation.concept_tree.naming import disambiguate_titles
+
+    assert disambiguate_titles([("Auth Handler", "a/src"), ("Auth Handler", "b/src")]) == [
+        "Auth Handler",
+        "Source Auth Handler",
+    ]
+
+
+def test_a_root_container_chapter_is_named_for_what_it_holds():
+    from repowise.core.generation.concept_tree.naming import chapter_title
+
+    assert chapter_title("src") == "Source Overview"
+
+
+def test_sibling_runs_count_where_a_gathered_page_files_sit():
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+    from repowise.core.generation.concept_tree.naming import sibling_runs
+
+    gathered = ConceptGroup(
+        members=["s/_x/a.py", "s/big/b.py", "s/big/c.py", "s/big/deep/d.py"],
+        dirs=["s/_x", "s/big", "s/big/deep"],
+        target_path="s/_x",
+    )
+    assert sibling_runs(gathered) == [("s/big", 3), ("s/_x", 1)]
+    # A subtree its target contains is not gathered from siblings.
+    subtree = ConceptGroup(members=["s/big/b.py", "s/big/deep/d.py"], dirs=["s/big", "s/big/deep"], target_path="s/big")
+    assert sibling_runs(subtree) == []
+
+
+def test_spelling_index_prefers_a_single_word_over_a_pair():
+    from repowise.core.generation.concept_tree.naming import _respell, _spelling_index
+
+    index = _spelling_index(["VS Code Webview", "Database Layer", "Data Base Notes", "helpers for ui", "UI Kit"])
+    assert _respell("Vscode Database Ui", index) == "VS Code Database UI"

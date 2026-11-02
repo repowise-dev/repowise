@@ -215,6 +215,7 @@ module in the last column and call `.register(name, impl)`, for example
 | Seam | Registry object | One or every | When it runs | On failure | Defined in |
 |------|-----------------|--------------|--------------|------------|------------|
 | `event-sink` | `event_sinks` | every sink named in `events.sinks` (default: the seam default, `jsonl`) | after an index run stores component events | logged; the events stay in the store | `packages/core/src/repowise/core/events/sinks.py` |
+| `index-persistence` | `index_persistence` | every | `apply` inside each index write's transaction, before commit, including init's checkpoint (mode `checkpoint`); `publish` after commit and cleanup, except after the checkpoint | an `apply` failure rolls back and propagates, except in the checkpoint, which logs it and leaves the final write to apply; a `publish` failure propagates and the commit stays; a cleanup failure after the commit skips `publish` | `packages/core/src/repowise/core/pipeline/index_persistence.py` |
 | `report-section` | `report_sections` | every | `repowise report` builds a document | the section becomes one inconclusive item marked `failed`; other sections run | `packages/core/src/repowise/core/report/model.py` |
 | `report-renderer` | `report_renderers` | one, chosen by `repowise report assessment --format` | when a report is written | propagates | `packages/core/src/repowise/core/report/render.py` |
 | `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates | `packages/core/src/repowise/core/changes/outcomes.py` |
@@ -241,6 +242,67 @@ registry, for example `EventSink.deliver` in `events/sinks.py`, `Section` and
 Read that protocol before you write an implementation. The
 `chat-dataset` and `chat-view` seams have decorators,
 `register_dataset(...)` and `register_view_builder(...)`, in the same modules.
+
+### Authenticator and authorizer
+
+An `Authenticator` turns a bearer token or a request into a `Principal`. An
+`Authorizer` decides what that principal may reach. Both live in
+`repowise.server.auth`.
+
+| `Principal` field | Meaning |
+|-------------------|---------|
+| `id`, `kind` | Who is calling. `kind` is free text for your own principals, such as `"sso"` |
+| `repo_scope`, `tool_scope` | Built-in scopes. `None` means unrestricted |
+| `claims` | Your own data about the caller (roles, groups, tenant). repowise never reads it. It survives the MCP HTTP token round trip, so keep it JSON-serializable |
+
+| Authorizer method | Arguments |
+|-------------------|-----------|
+| `can_access_repo(principal, identifiers, action=Action.READ)` | `identifiers` are the forms one repo is known by: its id, stored name or workspace alias, any of which may be `None`. On a workspace MCP server the id is read from each repo's index, so a scope written in repo ids works there too. An empty tuple is a server-wide route that names no repo, such as registering one: decide from `action` alone |
+| `can_use_tool(principal, tool, action=Action.READ)` | `action` is `WRITE` for a tool registered with `safety="mutating"`, or a tool the registry does not know |
+
+`action` is `Action.READ` or `Action.WRITE`. A REST route's action follows its
+HTTP method: GET, HEAD and OPTIONS read, anything else writes. A POST route that
+only reads, such as chat, `generate/estimate` or `preflight`, declares it with
+`@read_route` under the router decorator. Webhook deliveries are writes.
+
+Declaring `action` opts in. An authorizer whose `can_access_repo` accepts an
+`action` keyword (or `**kwargs`) is asked on every call, for every principal,
+including routes that name no repo. One that does not keeps the original
+contract: called without `action`, and asked about repos only for a principal
+with a `repo_scope`. Both satisfy the `Authorizer` protocol, so an existing
+plugin needs no change.
+
+On MCP, `repo="all"` is refused for a principal with a `repo_scope`. For any
+other principal, an action-aware authorizer must allow every repo it expands
+to, or the call is refused.
+
+A read-only role, with repos chosen by id:
+
+```python
+from repowise.server.auth import Action, authorizers
+
+
+class RoleAuthorizer:
+    def can_access_repo(self, principal, identifiers, action=Action.READ):
+        roles = principal.claims.get("roles", ())
+        if action is Action.WRITE and "writer" not in roles:
+            return False
+        allowed = principal.claims.get("repo_ids")
+        ids = [i for i in identifiers if i]
+        return allowed is None or not ids or any(i in allowed for i in ids)
+
+    def can_use_tool(self, principal, tool, action=Action.READ):
+        return action is Action.READ or "writer" in principal.claims.get("roles", ())
+
+
+def register():
+    authorizers.register("roles", RoleAuthorizer())
+```
+
+Pair it with an authenticator that returns
+`Principal(id=..., kind="sso", claims={"roles": [...], "repo_ids": [...]})`,
+then select both with `REPOWISE_SEAM_AUTHENTICATOR` and
+`REPOWISE_SEAM_AUTHORIZER`.
 
 ## Choosing an implementation
 

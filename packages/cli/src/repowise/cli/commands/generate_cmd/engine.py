@@ -15,6 +15,7 @@ from typing import Any
 
 from repowise.cli.helpers import console, load_state
 from repowise.core.generation.cascade import CascadeMode
+from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 from repowise.core.generation.page_selection import PageSelectionIntent
 from repowise.core.generation.scope import (
     ScopePlan,
@@ -25,10 +26,8 @@ from repowise.core.generation.scope import (
 
 # The page types a model writes. Everything else is structural and refreshes on
 # `repowise update`, so `generate` never writes one: it works on the concept
-# layer only. Its complement is the structural set in generate_cmd/command.py.
-_MODEL_WRITTEN_PAGE_TYPES = frozenset(
-    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
-)
+# layer only (``MODEL_WRITTEN_PAGE_TYPES``). Its complement is the structural
+# set in generate_cmd/command.py.
 
 
 def _narrow_to_model_written(plan: ScopePlan) -> ScopePlan:
@@ -40,8 +39,8 @@ def _narrow_to_model_written(plan: ScopePlan) -> ScopePlan:
     count. Keep only the model-written pages, in both the generate set and the
     cascade fallout marked stale, and re-price from what remains.
     """
-    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in _MODEL_WRITTEN_PAGE_TYPES}
-    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in _MODEL_WRITTEN_PAGE_TYPES}
+    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
+    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
     return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
 
 
@@ -340,7 +339,7 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                 sa_select(Page).where(
                     Page.repository_id == repo_id,
                     Page.provider_name == "template",
-                    Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
+                    Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
                 )
             )
         ).scalars()
@@ -354,7 +353,7 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                     sa_select(Page.id).where(
                         Page.repository_id == repo_id,
                         Page.freshness_status == "stale",
-                        Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
+                        Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
                     )
                 )
             ).scalars()

@@ -315,3 +315,29 @@ async def test_the_anchor_cap_keeps_what_retrieval_ranked(session, repo_id):
     )
 
     assert [_ANSWER, ranked] in paths
+
+
+def test_bfs_never_routes_a_path_through_a_test():
+    """A test importing both endpoints is not a flow between them."""
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["tests/test_ab.py"],
+        "b.py": ["tests/test_ab.py"],
+        "tests/test_ab.py": ["a.py", "b.py"],
+    }
+    assert _bfs_path(adj, "a.py", "b.py", 4) is None
+    adj = {**adj, "a.py": ["m.py", "tests/test_ab.py"], "m.py": ["a.py", "b.py"]}
+    adj["b.py"] = ["m.py", "tests/test_ab.py"]
+    assert _bfs_path(adj, "a.py", "b.py", 4) == ["a.py", "m.py", "b.py"]
+
+
+def test_bfs_still_reaches_a_test_file_that_is_an_endpoint():
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["m.py"],
+        "m.py": ["a.py", "tests/test_a.py"],
+        "tests/test_a.py": ["m.py"],
+    }
+    assert _bfs_path(adj, "a.py", "tests/test_a.py", 4) == ["a.py", "m.py", "tests/test_a.py"]

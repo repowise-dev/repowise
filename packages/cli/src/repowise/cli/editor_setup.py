@@ -412,8 +412,12 @@ def write_editor_project_files(
 
     if is_editor_setup_disabled(no_editor_setup):
         _persist_project_file_optouts(repo_path, resolved_options)
+        # Only the flag is remembered: the env var describes the machine, not the repo.
+        if no_editor_setup:
+            _remember_editor_setup(repo_path, enabled=False)
         return []
 
+    _remember_editor_setup(repo_path, enabled=True)
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
 
     written: list[Path] = []
@@ -425,6 +429,26 @@ def write_editor_project_files(
             integration.write_project_files(console_obj, repo_path, resolved_options) or []
         )
     return written
+
+
+#: ``config.yaml`` key ``init --no-editor-setup`` sets to false. ``update`` reads it
+#: and leaves the editor files alone; a later ``init`` with editor setup turns it on.
+_EDITOR_SETUP_KEY = "editor_setup"
+
+
+def _editor_setup_declined(repo_path: Path) -> bool:
+    from repowise.cli.helpers import load_config
+
+    return load_config(repo_path).get(_EDITOR_SETUP_KEY) is False
+
+
+def _remember_editor_setup(repo_path: Path, *, enabled: bool) -> None:
+    """Record the repo's editor-setup choice, writing config only when it changes."""
+    from repowise.cli.helpers import save_config_partial
+
+    if _editor_setup_declined(repo_path) != enabled:
+        return
+    save_config_partial(repo_path, **{_EDITOR_SETUP_KEY: enabled})
 
 
 def _persist_project_file_optouts(repo_path: Path, options: EditorSetupOptions) -> None:
@@ -471,8 +495,12 @@ def refresh_editor_project_files(
     options: EditorSetupOptions | None = None,
     integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
-    """Refresh editor-managed project files without rewriting common MCP config."""
+    """Refresh editor-managed project files without rewriting common MCP config.
 
+    A repo initialised with ``--no-editor-setup`` gets nothing written.
+    """
+    if _editor_setup_declined(repo_path):
+        return
     resolved_options = options or EditorSetupOptions()
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):

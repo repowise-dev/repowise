@@ -285,3 +285,99 @@ fun after() {}
 """
         result = parser.parse_file(_file(), src)
         assert {s.name for s in result.symbols} == {"outer", "after"}
+
+
+class TestKotlinMisparsedSpanRecovery:
+    """Shapes tree-sitter-kotlin reads as an ERROR swallowing the class body."""
+
+    def _parse(self, parser: ASTParser, src: bytes):
+        return parser.parse_file(_file(), src)
+
+    def test_primary_constructor_modifiers_on_their_own_line(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+actual open class Bytes
+internal actual constructor(
+  internal actual val data: ByteArray,
+) : Comparable<Bytes> {
+  actual fun hex(): String = render()
+}
+"""
+        result = self._parse(parser, src)
+        assert result.parse_errors == []
+        hex_ = next(s for s in result.symbols if s.name == "hex")
+        assert hex_.parent_name == "Bytes"
+        assert hex_.start_line == 7
+        assert [c.target_name for c in result.calls] == ["render"]
+
+    def test_annotated_accessor_of_an_untyped_property(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+class Bytes {
+  actual val size
+    @JvmName("size")
+    get() = getSize()
+
+  fun after() = 1
+}
+"""
+        result = self._parse(parser, src)
+        assert result.parse_errors == []
+        assert "after" in {s.name for s in result.symbols}
+
+    def test_get_call_statement_under_a_val(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+class Bytes {
+  fun of(): Bytes {
+    val copy = ByteArray(remaining())
+    get(copy)
+    return Bytes(copy)
+  }
+
+  fun after() = 1
+}
+"""
+        result = self._parse(parser, src)
+        assert result.parse_errors == []
+        assert "after" in {s.name for s in result.symbols}
+        assert ("get", 6) in {(c.target_name, c.line) for c in result.calls}
+
+    def test_route_get_calls_are_left_alone(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+fun Route.listing() {
+    routing {
+        get("/") {
+            respond()
+        }
+    }
+}
+"""
+        result = self._parse(parser, src)
+        assert result.parse_errors == []
+        assert {"get", "respond"} <= {c.target_name for c in result.calls}
+
+    def test_spans_outside_the_error_keep_their_text(self, parser: ASTParser) -> None:
+        src = b"""\
+package a
+
+class Doc {
+  /** Reads @Cached get(key) first. */
+  fun doc() = 1
+}
+
+class Bytes {
+  actual val size
+    @JvmName("size")
+    get() = getSize()
+}
+"""
+        result = self._parse(parser, src)
+        assert result.parse_errors == []
+        doc = next(s for s in result.symbols if s.name == "doc")
+        assert "@Cached get(key)" in (doc.docstring or "")

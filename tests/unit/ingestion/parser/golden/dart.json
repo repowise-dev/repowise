@@ -67,6 +67,7 @@
       "testManyAsserts",
       "testFewAsserts"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -340,6 +341,7 @@
       "Cohesive",
       "Wide"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -446,6 +448,7 @@
       "shallow",
       "manyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -649,6 +652,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -667,6 +671,7 @@
       "makeClients",
       "constantBound"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

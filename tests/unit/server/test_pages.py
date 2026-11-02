@@ -505,6 +505,48 @@ async def test_live_page_is_not_redirected(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_retired_file_page_serves_the_page_that_superseded_it(
+    client: AsyncClient, app
+) -> None:
+    """A file page the build replaced with an API contract page leads there;
+    a deleted file's page is still served as its own tombstone."""
+    from repowise.core.persistence.models import Page
+    from repowise.core.pipeline.persist import (
+        mark_tombstone_pages,
+        tombstone_pages_outside_generation,
+    )
+
+    repo_id, page_id = await _create_page(client, app.state.session_factory)
+    contract_id = "api_contract:src/main.py"
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_page(
+            session,
+            page_id=contract_id,
+            repository_id=repo_id,
+            page_type="api_contract",
+            title="API Contract: src/main.py",
+            content="# Routes",
+            target_path="src/main.py",
+            source_hash="def456",
+            model_name="mock",
+            provider_name="mock",
+        )
+        await tombstone_pages_outside_generation(session, repo_id, {contract_id})
+    resp = await client.get(f"/api/pages/{page_id}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == contract_id
+    assert resp.headers["x-repowise-redirected-from"] == page_id
+
+    async with get_session(app.state.session_factory) as session:
+        await session.delete(await session.get(Page, contract_id))
+        await mark_tombstone_pages(session, repo_id, [("src/main.py", [])])
+    resp = await client.get(f"/api/pages/{page_id}")
+    assert resp.json()["id"] == page_id
+    assert resp.json()["freshness_status"] == "tombstone"
+    assert "x-repowise-redirected-from" not in resp.headers
+
+
+@pytest.mark.asyncio
 async def test_unknown_page_id_still_404s(client: AsyncClient, app) -> None:
     """Nothing in the redirect path may turn a genuine miss into a success."""
     await _create_page(client, app.state.session_factory)
@@ -593,3 +635,38 @@ async def test_ambiguous_overview_is_refused_not_guessed(client: AsyncClient, ap
             )
     resp = await client.get("/api/pages/layer_page:layer:analysis")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_summary_window_matches_the_full_listing(client: AsyncClient, app) -> None:
+    """Summary rows are read without the body; every shared field and the window agree."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        for i in range(5):
+            await crud.upsert_page(
+                session,
+                page_id=f"file_page:src/m{i}.py",
+                repository_id=repo_id,
+                page_type="file_page",
+                title=f"m{i}.py",
+                content="é" * (i + 1),
+                target_path=f"src/m{i}.py",
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+                metadata={"layer_id": "layer:core", "layer_name": "Core"} if i % 2 else {},
+            )
+
+    seen: list[str] = []
+    # Every page has the same confidence: the id has to break the tie.
+    for offset in (0, 2, 4):
+        params = {"repo_id": repo_id, "limit": 2, "offset": offset, "sort_by": "confidence"}
+        full = (await client.get("/api/pages", params=params)).json()
+        summary = (await client.get("/api/pages", params={**params, "fields": "summary"})).json()
+        assert [r["id"] for r in summary] == [r["id"] for r in full]
+        for s_row, f_row in zip(summary, full, strict=True):
+            assert s_row == {k: v for k, v in f_row.items() if k in s_row}
+            assert s_row["content_chars"] == len(f_row["content"])
+        seen += [r["id"] for r in summary]
+    assert sorted(seen) == sorted(set(seen)) and len(seen) == 5

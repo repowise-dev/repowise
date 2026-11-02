@@ -16,7 +16,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import networkx as nx
+import pytest
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.git_indexer import GitIndexer
@@ -107,6 +110,184 @@ async def test_update_graph_converges_with_init_graph(tmp_path: Path) -> None:
     assert subgraph_signature(init_gb.file_subgraph()) == subgraph_signature(upd_gb.file_subgraph())
     assert subgraph_signature(init_gb.symbol_subgraph()) == subgraph_signature(
         upd_gb.symbol_subgraph()
+    )
+
+
+async def test_opt_out_update_does_not_touch_incremental_graph_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _build_git_repo(tmp_path)
+    index_dir = tmp_path / ".repowise"
+    index_dir.mkdir()
+    seed = index_dir / "graph_seed_edges.pkl"
+    resolutions = index_dir / "resolved_imports.pkl"
+    seed.write_bytes(b"existing seed snapshot")
+    resolutions.write_bytes(b"existing resolution snapshot")
+    monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [SimpleNamespace(path="a.py", status="modified")],
+        cfg={},
+        exclude_patterns=[],
+        git_tier="full",
+    )
+
+    assert seed.read_bytes() == b"existing seed snapshot"
+    assert resolutions.read_bytes() == b"existing resolution snapshot"
+
+
+async def test_update_does_not_touch_incremental_caches_when_opted_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _build_git_repo(tmp_path)
+    index = tmp_path / ".repowise"
+    index.mkdir()
+    seed_path = index / "graph_seed_edges.pkl"
+    resolutions_path = index / "resolved_imports.pkl"
+    seed_path.write_bytes(b"existing seed is untouched when opt-out")
+    resolutions_path.write_bytes(b"existing resolutions are untouched when opt-out")
+    monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [SimpleNamespace(path="a.py", status="modified")],
+        cfg={},
+        exclude_patterns=[],
+        git_tier="full",
+    )
+
+    assert seed_path.read_bytes() == b"existing seed is untouched when opt-out"
+    assert resolutions_path.read_bytes() == b"existing resolutions are untouched when opt-out"
+
+
+async def test_missing_patch_seed_is_invalidated_before_full_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    cache.parent.mkdir()
+    cache.write_bytes(b"stale snapshot")
+    events: list[str] = []
+    messages: list[str] = []
+    graph_builder = SimpleNamespace(
+        compute_metrics_parallel=AsyncMock(),
+        update_co_change_edges=lambda _meta: None,
+    )
+
+    async def missing_seed(_repo_path: Path) -> None:
+        assert cache.is_file()
+        events.append("load_seed")
+        return None
+
+    def full_build(*_args, **kwargs):
+        events.append("build_graph")
+        assert kwargs["seed_edges"] is None
+        assert not cache.exists()
+        return [], {}, graph_builder, SimpleNamespace(), 0
+
+    async def no_changed_files(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph.build_repo_graph",
+        full_build,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges",
+        missing_seed,
+    )
+
+    async def no_previous_seed(_repo_path: Path) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges_for_reconciliation",
+        no_previous_seed,
+    )
+    monkeypatch.setattr(
+        "repowise.core.ingestion.git_indexer.GitIndexer.index_changed_files",
+        no_changed_files,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.phases.git.label_co_change_structure",
+        lambda *_args: None,
+    )
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [],
+        cfg={},
+        exclude_patterns=[],
+        patch_graph=True,
+        log=messages.append,
+    )
+
+    assert events == ["load_seed", "build_graph"]
+    assert not cache.exists()
+    assert any("no valid persisted edge snapshot" in message for message in messages)
+
+
+async def test_full_fallback_restores_unparsed_rows_before_metric_recompute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = nx.DiGraph()
+    graph.add_node("b.py", file_path="b.py")
+    previous_snapshot = {
+        "nodes": [
+            ("a.py::run", {"file_path": "a.py"}),
+            ("b.py", {"file_path": "b.py"}),
+        ],
+        "edges": [("a.py::run", "b.py", {"edge_type": "calls"})],
+    }
+    builder = SimpleNamespace(
+        graph=lambda: graph,
+        traversed_file_paths={"a.py", "b.py"},
+        patch_plan=SimpleNamespace(eligible=False, reason="parser fingerprint mismatch"),
+    )
+    parsed_files = [SimpleNamespace(file_info=SimpleNamespace(path="b.py"))]
+
+    async def missing_seed(_repo_path: Path) -> None:
+        return None
+
+    async def prior_snapshot(_repo_path: Path) -> dict[str, list]:
+        return previous_snapshot
+
+    def full_build(*_args, **_kwargs):
+        return parsed_files, {}, builder, SimpleNamespace(), 2
+
+    async def no_git(*_args, **_kwargs) -> dict:
+        return {}
+
+    async def check_metrics(graph_builder, *_args, **_kwargs) -> None:
+        assert graph_builder.graph().has_edge("a.py::run", "b.py")
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph.build_repo_graph",
+        full_build,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges",
+        missing_seed,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges_for_reconciliation",
+        prior_snapshot,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph._index_git_metadata",
+        no_git,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph._prime_graph_metrics",
+        check_metrics,
+    )
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [],
+        cfg={},
+        exclude_patterns=[],
+        patch_graph=True,
     )
 
 

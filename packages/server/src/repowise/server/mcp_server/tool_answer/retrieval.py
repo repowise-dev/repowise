@@ -90,9 +90,15 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
 
 
 def serialize_candidate_files(hits: list[dict]) -> list[str]:
-    """Distinct openable file paths in rank order, paths only, no hydration."""
+    """Distinct openable file paths in rank order, paths only, no hydration.
+
+    A file only the 1-hop graph walk added is left out: it neighbours a top hit
+    but nothing in the question matched it, so it is not a file to open next.
+    """
     paths: list[str] = []
     for h in hits:
+        if h.get("_sources") == {"graph_expand"}:
+            continue
         path = hit_file_path(h)
         if path and path not in paths:
             paths.append(path)
@@ -178,14 +184,14 @@ def serialize_hits(
         summary = h.get("summary") or ""
         if summary_chars is not None and len(summary) > summary_chars:
             summary = summary[: summary_chars - 1].rstrip() + "…"
-        if summary:
-            entry["summary"] = summary
+        # One text per row: the summary and snippet are prefixes of the excerpt.
         serve_excerpt = excerpt_rows is None or idx < excerpt_rows
-        for key in ("snippet", "excerpt"):
-            if h.get(key) and (key != "excerpt" or serve_excerpt):
-                entry[key] = h[key]
-        if entry.get("snippet"):
-            entry["snippet"] = strip_leading_headings(entry["snippet"])
+        if h.get("excerpt") and serve_excerpt:
+            entry["excerpt"] = h["excerpt"]
+        elif summary:
+            entry["summary"] = summary
+        elif h.get("snippet"):
+            entry["snippet"] = strip_leading_headings(h["snippet"])
         if h.get("score") is not None:
             entry["score"] = round(h["score"], 3)
         expanded = "graph_expand" in (h.get("_sources") or ())

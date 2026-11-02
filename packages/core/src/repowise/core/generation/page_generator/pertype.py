@@ -32,7 +32,7 @@ from ..architecture_mermaid import (
     system_map_section,
 )
 from ..context.assembler import build_concept_index
-from ..context.module_facts import module_base
+from ..context.module_facts import CONNECTIONS_HEADING, connections_markdown, module_base
 from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
@@ -49,8 +49,10 @@ from ..overview_tables import (
     build_package_table,
     embed_capability_table,
     embed_package_table,
+    embed_section,
 )
-from ..page_sources import lint_sources
+from ..page_sources import lint_sources, module_page_sources
+from ..prose import unwrap_markdown_links
 from ..structural_labels import structural_page_title
 from .reuse import files_digest, group_material, model_reuse_key
 
@@ -191,17 +193,9 @@ class PerTypeGenerationMixin:
         self,
         symbol: Any,
         parsed: ParsedFile,
-        pagerank: dict[str, float],
         graph: Any,
-        source_map: dict[str, bytes] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_symbol_spotlight(
-            symbol,
-            parsed,
-            pagerank,
-            graph,
-            source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
-        )
+        ctx = self._assembler.assemble_symbol_spotlight(symbol, parsed, graph)
         target = f"{parsed.file_info.path}::{symbol.name}"
         # The subject is the defining file's bytes — the same subject the file
         # page uses. A spotlight renders a symbol out of that file, so when the
@@ -423,12 +417,23 @@ class PerTypeGenerationMixin:
         )
         # Citations of a missing file, or one its section never names, go.
         # Diagrams are checked for every page of the run in ``sanitize_pages``.
+        known_paths = [n for n in graph if "::" not in n]
         page.content = lint_sources(
-            page.content,
+            unwrap_markdown_links(page.content),
             base=module_base(ctx.files),
             members=ctx.files,
-            known_paths=[n for n in graph if "::" not in n],
+            known_paths=known_paths,
             symbols_by_file={fc.file_path: [s["name"] for s in fc.symbols] for fc in file_contexts},
+        )
+        # The functions each surviving citation is about, with their spans.
+        cited = module_page_sources(
+            page.content, base=module_base(ctx.files), members=ctx.files,
+            known_paths=known_paths, file_contexts=file_contexts,
+        )
+        if cited:
+            page.metadata["sources"] = cited
+        page.content = embed_section(
+            page.content, CONNECTIONS_HEADING, connections_markdown(ctx.facts or {})
         )
         return _stamp_concept(_with_digest(page))
 

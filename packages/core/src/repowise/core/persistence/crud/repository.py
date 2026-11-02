@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +29,8 @@ from ..models import (
     _now_utc,
 )
 from ._shared import _VALID_JOB_STATUSES
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Repository CRUD
@@ -73,9 +79,16 @@ async def upsert_repository(
     made the database claim an index at HEAD while ``state.json`` still named
     the last real sync. ``updated_at`` (see :func:`index_synced_at`) moves with
     the commit stamp for the same reason.
+
+    A repo-local store (``<local_path>/.repowise/wiki.db``) holds one
+    repository. When its single row names another directory because the repo
+    was moved or copied with its index, the row is re-pointed at ``local_path``
+    (see :func:`_relocated_row`) instead of a second row being added.
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
+    if repo is None:
+        repo = await _relocated_row(session, local_path)
 
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
@@ -200,6 +213,76 @@ def _read_git_remote(local_path: str) -> tuple[str | None, str | None]:
 
     remote = read_remote_url(local_path)
     return (strip_credentials(remote) if remote else None), default_branch(local_path)
+
+
+def _same_dir(a: str | Path, b: str | Path) -> bool:
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def _store_dir(session: AsyncSession) -> Path | None:
+    """The directory whose own ``.repowise/wiki.db`` backs *session*, or ``None``.
+
+    A configured database is shared by contract, wherever its file sits.
+    """
+    from ..database import get_configured_db_url
+
+    if get_configured_db_url() is not None:
+        return None
+    bind = session.bind
+    url = getattr(bind, "url", None)
+    database = getattr(url, "database", None)
+    if not database or not str(getattr(url, "drivername", "")).startswith("sqlite"):
+        return None
+    db_file = Path(database)
+    if db_file.name != "wiki.db" or db_file.parent.name != ".repowise":
+        return None
+    return db_file.parent.parent
+
+
+async def _relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
+    """The single row of ``local_path``'s own store, re-pointed at ``local_path``.
+
+    A repo moved, renamed or copied together with its ``.repowise`` keeps the
+    old ``local_path`` in its row. Adding a second row there split the index:
+    servers resolving "the" repository picked the stale one. Only a store that
+    lives in ``local_path`` and holds exactly one row is re-pointed, and only
+    when that row is this checkout's: the old directory is gone, or it shares
+    the remote url or the indexed commit. Any other store (a configured or
+    shared database, a server registry) keeps one row per path.
+    """
+    store_dir = _store_dir(session)
+    if store_dir is None or not _same_dir(store_dir, local_path):
+        return None
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if len(rows) != 1 or not await asyncio.to_thread(_same_checkout, rows[0], local_path):
+        return None
+    repo = rows[0]
+    _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
+    repo.local_path = local_path
+    return repo
+
+
+def _same_checkout(repo: Repository, local_path: str) -> bool:
+    """Whether *repo*'s row describes the checkout at *local_path*."""
+    old = repo.local_path or ""
+    if not old or not Path(old).exists():
+        return True
+    head = repo.head_commit
+    if head and head == _read_head_commit(local_path):
+        return True
+    remote = read_remote_url(local_path)
+    if repo.url and remote and strip_credentials(remote) == repo.url:
+        return True
+    return bool(head) and _has_commit(local_path, head)
+
+
+def _has_commit(local_path: str, sha: str) -> bool:
+    from ...analysis.git_cli import run_git
+
+    try:
+        return run_git(["cat-file", "-e", f"{sha}^{{commit}}"], cwd=local_path).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:

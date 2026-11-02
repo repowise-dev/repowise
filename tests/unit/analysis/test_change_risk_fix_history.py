@@ -128,6 +128,19 @@ def test_fix_pressure_counts_only_fix_commits(repo_with_history: Path) -> None:
     assert "cold.py" not in pressure  # churn is not fix history
 
 
+def test_a_path_and_its_string_share_one_walk(
+    repo_with_history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The score passes a ``Path``, other readers a ``str``: one checkout, one walk."""
+    from repowise.core.analysis.change_risk import fix_history
+
+    walks: list[str] = []
+    real = fix_history._walk
+    monkeypatch.setattr(fix_history, "_walk", lambda *a: walks.append(a[1]) or real(*a))
+    assert fix_pressure(repo_with_history, "HEAD") == fix_pressure(str(repo_with_history), "HEAD")
+    assert len(walks) == 1
+
+
 _MANIFESTS = ("package.json", "web/package-lock.json", "pyproject.toml")
 
 

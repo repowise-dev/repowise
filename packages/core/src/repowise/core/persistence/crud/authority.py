@@ -175,6 +175,24 @@ async def latest_acceptance(
     return result.scalar_one_or_none()
 
 
+async def accepted_evidence(session: AsyncSession, decision_id: str) -> list[str]:
+    """The evidence the latest acceptance that named any rests on, or ``[]``.
+
+    Evidence given at ``confirm`` is stored on its acceptance row, not on the
+    record, so this is where a later action finds what the decision stands on.
+    """
+    rows = await session.scalars(
+        select(DecisionAcceptance.evidence_json)
+        .where(DecisionAcceptance.decision_id == decision_id)
+        .order_by(DecisionAcceptance.seq.desc())
+    )
+    for raw in rows:
+        evidence = [item for item in json.loads(raw or "[]") if isinstance(item, str) and item]
+        if evidence:
+            return evidence
+    return []
+
+
 async def is_accepted(session: AsyncSession, decision_id: str) -> bool:
     """Whether *decision_id* has ever been accepted."""
     return await latest_acceptance(session, decision_id) is not None
@@ -557,6 +575,9 @@ async def record_acceptance(
         raise ValueError(f"Unknown acceptance action {action!r}.")
     if currency not in STORED_CURRENCIES:
         raise ValueError(f"Unknown stored currency {currency!r}.")
+    if evidence is None and not _record_evidence(record):
+        # What an earlier acceptance was given still stands behind the record.
+        evidence = await accepted_evidence(session, record.id) or None
 
     req = requirement(
         decision_fields(record),

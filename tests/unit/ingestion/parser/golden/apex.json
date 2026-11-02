@@ -357,6 +357,7 @@
     "exports": [
       "AccountService"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -696,6 +697,7 @@
     "exports": [
       "AccountTrigger"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -982,6 +984,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1715,6 +1718,7 @@
     "exports": [
       "Classes"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2224,6 +2228,7 @@
     "exports": [
       "HealthMarkers"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2705,6 +2710,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2968,6 +2974,7 @@
     "exports": [
       "Nested"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -3523,6 +3530,7 @@
     "exports": [
       "PerfIoInLoop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

@@ -3,13 +3,13 @@
     read in five minutes. Identifiers, public API and git signals are rendered
     into the page's digest after generation, so they are not asked for here. -#}
 {% if ctx.is_rollup %}
-This page is the overview of a subsystem whose parts have their own pages (`child_pages` in the facts). Explain how the parts fit together and send the reader to the right child page by naming its path in backticks; do not re-document each file.
+The parts of this code have pages of their own (`child_pages` in the facts). Explain how the parts fit together, and when one deserves a closer look name its directory in backticks; do not re-document each file, and do not talk about pages, the wiki or its structure.
 {% endif %}
 {% if ctx.packages %}
 The page covers several sibling packages (`packages` in the facts), each with its own manifest. Say what they share and how they differ, and never name the page after one of them. A table of the packages is added after you write, so do not list them.
 {% endif %}
 {% if ctx.scope %}
-Scope, for setting the boundary in the opening (what this page covers and what it leaves to neighbouring pages; do not quote it): {{ ctx.scope }}
+What this code covers, so the page stays on it (do not quote or restate it): {{ ctx.scope }}
 {% endif %}
 
 Structural facts about **{{ ctx.title }}**, read from the code and its import graph. `code_excerpts` holds exact source for the central symbols; `declared` lists what other files declare, signatures only:
@@ -22,7 +22,7 @@ Write the page in Markdown with exactly this shape.
 
 # {{ ctx.title }}
 
-An opening of 2 or 3 plain sentences: what this part of the system does, what it takes in and hands on, and why the rest of the system needs it. No file paths, numbers or identifiers in the opening. Do not open with a frame: "The X layer is the Y of Z", "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are all banned, because two pages that open with the same first five words read as one.
+An opening of 2 or 3 plain sentences, written the way an engineer on the team would explain it to a new colleague: what this code is for, the 2 or 3 types or functions that do the work (by name, in backticks), and when someone would need to change it. Start with the thing itself ("The CLI runs `init`, `update` and the agent hooks ..."), not with a frame. No file paths or numbers in the opening. Never use these words anywhere on the page: subsystem, boundary, seam, surface, layer (unless the code names one), "takes in", "hands on", "turns X into Y"; never mention child pages, concept pages or "this page". Do not open with a frame either: "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are banned, because two pages that open with the same first five words read as one.
 
 Then one diagram in a fenced `mermaid` block, of the type the facts' `diagram` field names:
 - `sequenceDiagram`: draw `traced_flow` as one operation, with 4 to 6 participants and 6 to 10 messages. Participants are the parts involved under plain names, declared with one-word ids (`participant Store as Result store`); an outside caller or callee may be one participant. Messages follow the traced calls in order, each written as a short plain-English phrase for what the call does ("resolve call targets"), never the function's name.
@@ -33,10 +33,7 @@ Node and participant ids are short CamelCase words (`GraphViews`), never a merma
 Then 3 to 5 sections, each a `##` heading that names a step or an idea in how the module works ("From a file to parsed symbols"), never a generic name such as Overview, Architecture, Key files, Public API, Dependencies or Summary. Each section is 1 to 3 short paragraphs that explain how and why. Put an identifier in backticks only where a reader would search for it. One section may carry a second small diagram when it walks a flow the first diagram does not show. End each section with one line, `Sources: ` followed by 1 to 3 file paths in backticks, written as in the facts, naming only files that section talks about.
 
 ## Where to start reading
-Exactly 3 bullets: `path` - one sentence on why to read it first.
-
-## How it connects
-One short paragraph, in words: what depends on this part of the system and what it depends on.
+Exactly 3 bullets: `path` - one sentence on why to read it first. What depends on this code and what it depends on is added after you write, so do not describe its neighbours in a section of their own.
 
 ## Questions this page answers
 3 to 6 questions a developer or an agent would ask that this page answers, as a list. They are kept with the page for search, not shown in its body.

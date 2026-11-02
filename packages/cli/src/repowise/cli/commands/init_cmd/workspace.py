@@ -30,6 +30,7 @@ from repowise.cli.editor_setup import (
     resolve_editor_setup_options,
     write_editor_project_files,
 )
+from repowise.cli.git_exclude import keep_workspace_data_out
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -1105,6 +1106,8 @@ def _workspace_config(pick: WorkspacePick, *, ask: bool, dry_run: bool) -> Any:
     else:
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]{glyph('ok')}[/] {verb} {config_path.name}")
+        if excluded := keep_workspace_data_out(root):
+            console.print(f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]")
     console.print()
     return ws_config
 

@@ -164,13 +164,25 @@ async def _search_one_repo(
         async with get_session(ctx.session_factory) as session:
             paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
     if plan.mode == "hybrid":
-        c = await _search_single_repo(ctx, plan.query, plan.limit, plan.page_type, plan.kind)
+        # With an exact name hit in hand, a vector store still loading is not
+        # waited for (up to 30 s): its pages only add context to that answer.
+        exact = _has_exact_symbol(_identifier_candidates(plan.query, plan.mode, plan.names), s)
+        semantic = not exact or _vector_store_loaded(ctx)
+        c = await _search_single_repo(
+            ctx, plan.query, plan.limit, plan.page_type, plan.kind, semantic=semantic
+        )
         for item in c:
             item["type"] = "page"
         await attach_hit_symbols(ctx, plan.query, c)
     for rows in (s, f, c):
         _tag_repo(rows, ctx, plan.multi)
     return s, f, paths, c
+
+
+def _vector_store_loaded(ctx: Any) -> bool:
+    """Whether the vector store finished loading (one that does not track it is)."""
+    ready = getattr(ctx, "vector_store_ready", None)
+    return ready is None or ready.is_set()
 
 
 def _merge_pools(answered: list[tuple[Any, Any]], limit: int) -> _Pools:

@@ -10,6 +10,7 @@ import {
   Server,
   Compass,
   Layers,
+  Workflow,
 } from "lucide-react";
 import type { DocPageSummary } from "@repowise-dev/types/docs";
 
@@ -23,6 +24,8 @@ export const PAGE_TYPE_CONFIG: Record<string, PageTypeConfig> = {
   architecture_diagram: { label: "Knowledge Graph", icon: LayoutGrid },
   layer_page: { label: "Layer", icon: Layers },
   module_page: { label: "Module", icon: FolderOpen },
+  // One operation walked end to end; listed in the tree's Start here group.
+  flow_page: { label: "Walkthrough", icon: Workflow },
   symbol_spotlight: { label: "Symbol", icon: Sparkles },
   file_page: { label: "File", icon: FileText },
   api_contract: { label: "API Contract", icon: FileCode },
@@ -70,10 +73,11 @@ export function getPageLabel(
 // Every file / symbol / api / infra / scc / layer page renders from structure
 // and is a template forever. Only the concept tree and onboarding are written
 // by a model, so "does this page have prose yet" is a question that only makes
-// sense for these four types. This mirrors core's MODEL_WRITTEN_PAGE_TYPES.
+// sense for these types. This mirrors core's MODEL_WRITTEN_PAGE_TYPES.
 
 export const MODEL_WRITTEN_PAGE_TYPES = new Set([
   "module_page",
+  "flow_page",
   "repo_overview",
   "architecture_diagram",
   "onboarding",
@@ -107,6 +111,20 @@ export function isStubPage(
   if (!page || !isModelWrittenType(page.page_type)) return false;
   if (page.metadata?.["model_free"]) return false;
   return page.provider_name === "template";
+}
+
+/** True for a page a model actually wrote: a model-written type carrying a
+ *  real provider. The counterpart of `isStubPage`, except that a model-free
+ *  page (the glossary) is neither: finished, but not written by a model. */
+export function isWrittenByModel(
+  page:
+    | { page_type?: string; provider_name?: string; metadata?: Record<string, unknown> }
+    | null
+    | undefined,
+): boolean {
+  if (!page || !isModelWrittenType(page.page_type)) return false;
+  if (page.metadata?.["model_free"]) return false;
+  return page.provider_name !== "template";
 }
 
 /** Metadata key core stamps with the provider error a page fell back over.

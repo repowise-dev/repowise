@@ -128,13 +128,13 @@ async def test_literal_number_is_scanned_with_definition_first(tree):
     out = await search_codebase("47821")
 
     # Word-bounded: 147821 is not a match. deploy/config.yaml is committed but
-    # never indexed, and is read all the same.
+    # never indexed, and is read all the same. A data file's key is no definition.
     assert _rows(out) == [
-        ("deploy/config.yaml", 2, "definition"),
         ("pkg/catalog.py", 1, "definition"),
         ("app/widget.py", 4, "match"),
+        ("deploy/config.yaml", 2, "match"),
     ]
-    assert out["lines"][1]["text"] == "PORT = 47821"
+    assert out["lines"][0]["text"] == "PORT = 47821"
     assert out["complete"] is True
 
 
@@ -318,7 +318,7 @@ async def test_explicit_excludes_make_the_scan_incomplete(tree):
 
 
 @pytest.mark.asyncio
-async def test_too_many_exact_symbols_ask_to_narrow(tree, session):
+async def test_too_many_exact_symbols_list_the_definitions(tree, session):
     rid = (await session.get(GraphNode, "lh_sym")).repository_id
     session.add_all(
         GraphNode(
@@ -338,11 +338,21 @@ async def test_too_many_exact_symbols_ask_to_narrow(tree, session):
     )
     await session.commit()
 
-    out = await search_codebase("backend_of", mode="symbol")
+    for i in range(3):
+        (tree / "pkg" / f"m{i}.py").write_text("def backend_of(name):\n    return name\n")
 
-    assert out["lines"] == []
+    out = await search_codebase("backend_of", mode="symbol", limit=2)
+
+    # Between them results and lines name each of the 4 definitions once.
+    in_results = {(r["path"], r["start_line"]) for r in out["results"] if r.get("type") == "symbol"}
+    in_lines = {(r["path"], r["line"]) for r in out["lines"]}
+    assert {r["kind"] for r in out["lines"]} == {"definition"}
+    assert not in_results & in_lines
+    assert in_results | in_lines == {
+        ("pkg/catalog.py", 4), ("pkg/m0.py", 1), ("pkg/m1.py", 1), ("pkg/m2.py", 1)
+    }
     assert out["complete"] is False
-    assert out["reasons"] == ["4 symbols match; narrow the query"]
+    assert out["reasons"][0].startswith("4 symbols share this name: definitions only")
 
 
 def test_budget_dropping_lines_is_never_complete():

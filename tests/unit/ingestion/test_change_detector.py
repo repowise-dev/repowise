@@ -337,7 +337,8 @@ class TestAffectedPagesPagerankParam:
         result = d.get_affected_pages(
             [self._diff("f0.py")], graph=g, cascade_budget=3, pagerank=pr
         )
-        assert result.regenerate == ["f5.py", "f4.py", "f0.py"]
+        # The changed file first, then importers by the supplied pagerank.
+        assert result.regenerate == ["f0.py", "f5.py", "f4.py"]
         assert set(result.decay_only) == {"f1.py", "f2.py", "f3.py"}
 
     def test_without_pagerank_falls_back_to_internal_computation(

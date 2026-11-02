@@ -49,6 +49,25 @@ def model_command(scope: Mapping[str, Any] | None) -> str:
     """The command that has a model write *scope*'s documentation, for its mode."""
     return upgrade_command(scope) or MODEL_COMMAND
 
+
+def answers_upgrade_line(scope: Mapping[str, Any] | None) -> str | None:
+    """How an index with no model-written prose gets answers and docs; None once it has them.
+
+    The one wording the MCP server and the CLI share. The key is what lets
+    ``get_answer`` synthesize, and the server reads it at start, hence the restart.
+    """
+    fast = upgrade_command(scope)
+    if fast is None and not (
+        isinstance(scope, Mapping) and scope.get("content_provenance") == "template"
+    ):
+        return None
+    command = fast or MODEL_COMMAND
+    no_reindex = "" if fast else " (one command, no re-index)"
+    return (
+        f"answers and docs: set a provider key, run `{command}`{no_reindex}, "
+        "then restart the MCP server"
+    )
+
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
 # re-parses config.yaml. Keyed on mtime+size so an index rebuild invalidates it.

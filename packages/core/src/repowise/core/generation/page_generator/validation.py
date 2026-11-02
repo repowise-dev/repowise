@@ -11,8 +11,9 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
+from repowise.core.generation.agent_digest import split_questions
 from repowise.core.generation.mermaid_safety import invalid_mermaid_blocks, sanitize_mermaid
-from repowise.core.generation.prose import prose_text
+from repowise.core.generation.prose import prose_text, prose_word_count
 from repowise.core.ingestion.models import ParsedFile
 from repowise.core.providers.llm.base import GeneratedResponse
 
@@ -73,11 +74,23 @@ class InvalidMermaidError(InvalidGeneratedContentError):
 
 @dataclass(frozen=True)
 class ArtifactRule:
-    """One phrasing that must never reach a reader, and why."""
+    """One phrasing that must never reach a reader, why, and what to write instead.
+
+    ``remedy`` goes into the corrective re-ask only. It says what the page
+    should do in place of the rejected sentence without quoting it, because a
+    retry told only which rule it broke tends to rephrase the same sentence
+    into the same rule.
+    """
 
     name: str
     pattern: re.Pattern[str]
     explanation: str
+    remedy: str
+
+    @property
+    def retry_hint(self) -> str:
+        """The complaint and its remedy, without the phrase that broke the rule."""
+        return f"{self.name}: {self.explanation}. {self.remedy}"
 
 
 GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
@@ -101,6 +114,7 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             re.IGNORECASE,
         ),
         explanation="offers the reader further work, which no page can deliver",
+        remedy="End the page on its last fact about the code and offer nothing further.",
     ),
     ArtifactRule(
         name="first_person",
@@ -127,19 +141,40 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             r"|\bmyself\b"
         ),
         explanation="speaks as the generator rather than describing the code",
+        remedy="Write in the third person about the code, with no narrator.",
     ),
     ArtifactRule(
         name="supplied_context",
         # The model narrating the shape of its own prompt.  The reader has no
         # idea what was "provided" and cannot go and look at it.
+        #
+        # Only nouns that name prompt material.  "the supplied input", "the
+        # given data", "the provided list" and "the given files" describe a
+        # function's arguments in plain English, and rejecting them cost whole
+        # pages.  "context", "code", "files", "snippet" and "documentation"
+        # count only after a reasoning frame ("based on the provided code",
+        # "not shown in the given context"): "runs in the given context" is a
+        # Go ``context.Context`` argument and "executes the provided code" is
+        # a sandbox's.
         pattern=re.compile(
             r"\bthe (?:provided|supplied|given|attached|above) "
-            r"(?:information|context|data|input|material|details|excerpt|"
-            r"snippet|list|files?|documents?)\b"
-            r"|\byou (?:provided|supplied|gave|listed)\b",
+            r"(?:information|material|excerpts)\b"
+            r"|\b(?:based on|according to|judging (?:by|from)) the "
+            r"(?:provided|supplied|given|attached|above) "
+            r"(?:context|code|source|files?|details|snippets?|documentation)\b"
+            r"|\b(?:not|never) (?:shown|visible|included|present|defined|described|specified) "
+            r"(?:in|within) the (?:provided|supplied|given|attached|above)\b"
+            r"|\b(?:provided|supplied|shared|pasted|attached) above\b"
+            r"|\byou (?:provided|supplied|gave|listed|shared|pasted|attached)\b"
+            r"|\byou were (?:given|shown|provided|supplied)\b",
             re.IGNORECASE,
         ),
         explanation="refers to the prompt, which the reader cannot see",
+        remedy=(
+            "State what the code does. Where a detail is unknown, either leave it "
+            "out or say it about the code (for example: the caller of a function is "
+            "not traced here), never about what this request did or did not include."
+        ),
     ),
 )
 
@@ -168,8 +203,8 @@ def _artifact_detail(content: str) -> tuple[str, str] | None:
     """Describe the first generation artifact in ``content``, if any.
 
     Returns ``(detail, retry_hint)``: the first quotes the offending phrase for
-    the log, the second names only the rule so a re-ask built from it does not
-    repeat the words that failed.
+    the log, the second names the rule and its remedy but not the phrase, so a
+    re-ask built from it does not repeat the words that failed.
     """
     prose = prose_text(content)
     for rule in GENERATION_ARTIFACT_RULES:
@@ -178,7 +213,7 @@ def _artifact_detail(content: str) -> tuple[str, str] | None:
             _artifact_check_counts["rejected"] += 1
             _artifact_check_counts[f"rejected:{rule.name}"] += 1
             detail = f"{rule.name}: {rule.explanation} ({match.group(0).strip()!r})"
-            return detail, f"{rule.name}: {rule.explanation}"
+            return detail, rule.retry_hint
     return None
 
 
@@ -213,8 +248,96 @@ def _pathological_repetition_detail(content: str) -> str | None:
     return None
 
 
-def validate_generated_response(response: GeneratedResponse) -> None:
-    """Reject fresh provider output that is unsafe to persist as a wiki page."""
+# ---------------------------------------------------------------------------
+# Page shape
+#
+# The rules a page type's template states and the model drifts from: the house
+# vocabulary it bans, the table and length budget. A page that breaks one is
+# still a page a reader can use, so these are retried once and then kept as
+# written (``PageShapeError`` is soft), unlike the checks above.
+# ---------------------------------------------------------------------------
+
+
+class PageShapeError(InvalidGeneratedContentError):
+    """The response breaks its template's shape rules; retried, then kept."""
+
+
+#: Words the module page template bans: the abstraction the in/out/why opening
+#: used to produce ("This subsystem turns X into Y") and talk about the wiki's
+#: own structure. Measured on this repository's 101 module pages before the
+#: template changed: 403 hits on 91 pages.
+_HOUSE_JARGON = re.compile(
+    r"\bsubsystems?\b|\bboundar(?:y|ies)\b|\b(?:child|concept) pages?\b"
+    r"|\btakes in\b|\bhands? (?:it |them )?on\b|\bturns\b(?! out)[^.\n]{1,80}?\binto\b",
+    re.IGNORECASE,
+)
+#: Two stray uses are tolerated: "word boundary" on a regex page and "error
+#: boundary" on a React one are the code's own words.
+_MAX_JARGON_HITS = 2
+_MAX_TABLES = 1
+_MAX_TABLE_ROWS = 8
+#: The template asks for 500 to 800 words before the questions.
+_MAX_PROSE_WORDS = 900
+_TABLE_DIVIDER = re.compile(r"^\s*\|[-:| ]+\|\s*$")
+
+
+def _table_row_counts(prose: str) -> list[int]:
+    """Body rows of each markdown table in *prose*, in order."""
+    counts: list[int] = []
+    run = 0
+    for line in [*prose.splitlines(), ""]:
+        if line.lstrip().startswith("|"):
+            run += 0 if _TABLE_DIVIDER.match(line) else 1
+        elif run:
+            counts.append(run - 1)  # the header row is not a body row
+            run = 0
+    return counts
+
+
+def _module_page_shape(content: str) -> str | None:
+    """What breaks the module page template's own rules, or ``None``."""
+    body, _questions = split_questions(content)
+    prose = prose_text(body)
+    if len(_HOUSE_JARGON.findall(prose)) > _MAX_JARGON_HITS:
+        # The banned words are not repeated here: the re-ask quotes this text,
+        # and naming them again is how a retry plants them back.
+        return (
+            "uses the abstract vocabulary the opening rule bans, or talks about pages "
+            "of the wiki, instead of naming what the code does"
+        )
+    tables = _table_row_counts(prose)
+    if len(tables) > _MAX_TABLES or any(rows > _MAX_TABLE_ROWS for rows in tables):
+        return (
+            f"has {len(tables)} tables (largest {max(tables)} rows); at most "
+            f"{_MAX_TABLES} table of at most {_MAX_TABLE_ROWS} rows is allowed"
+        )
+    words = prose_word_count(body)
+    if words > _MAX_PROSE_WORDS:
+        return f"runs to {words} words of prose; it must stay within 500 to 800"
+    return None
+
+
+_SHAPE_CHECKS = {"module_page": _module_page_shape}
+
+
+def validate_page_shape(page_type: str | None, content: str) -> None:
+    """Raise :class:`PageShapeError` when *content* breaks *page_type*'s shape rules."""
+    check = _SHAPE_CHECKS.get(page_type or "")
+    detail = check(content) if check is not None else None
+    if detail is not None:
+        _artifact_check_counts["shape_rejected"] += 1
+        raise PageShapeError(f"the page {detail}")
+
+
+def validate_generated_response(
+    response: GeneratedResponse, page_type: str | None = None
+) -> None:
+    """Reject fresh provider output that is unsafe to persist as a wiki page.
+
+    With *page_type*, the page is also held to its template's shape rules
+    (:func:`validate_page_shape`), checked last so a hard failure is reported
+    ahead of a soft one.
+    """
     _artifact_check_counts["responses_checked"] += 1
     if response.stop_reason == "max_tokens":
         detail = (
@@ -247,6 +370,7 @@ def validate_generated_response(response: GeneratedResponse) -> None:
     broken = invalid_mermaid_blocks(sanitize_mermaid(response.content))
     if broken:
         raise InvalidMermaidError(f"a mermaid diagram will not render: {broken[0]}")
+    validate_page_shape(page_type, response.content)
 
 
 # Common words that appear in backticks but are not code symbols.

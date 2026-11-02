@@ -8,7 +8,9 @@ re-exports the others so callers keep one import path.
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -32,7 +34,11 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.models import Repository
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
-from repowise.server.mcp_server._helpers import filter_rows_by_attr, is_missing_table
+from repowise.server.mcp_server._helpers import (
+    filter_rows_by_attr,
+    is_excluded,
+    is_missing_table,
+)
 from repowise.server.mcp_server.tool_context.call_graph import (  # noqa: F401
     _CALL_EDGE_TYPES,
     _MIN_CALL_CONFIDENCE,
@@ -44,6 +50,7 @@ from repowise.server.mcp_server.tool_context.call_graph import (  # noqa: F401
     _resolve_file_level_callers,
     _unique_by_symbol,
 )
+from repowise.server.mcp_server.tool_context.doc_mentions import MENTIONS_BASIS, doc_mentions
 from repowise.server.mcp_server.tool_context.signals import (  # noqa: F401
     _FILE_DEPENDENCY_EDGE_TYPES,
     _resolve_community,
@@ -71,6 +78,7 @@ async def attach_doc_references(
     *,
     exclude_spec: Any = None,
     collector: OmissionCollector | None = None,
+    repo_root: str | Path | None = None,
 ) -> None:
     """Attach, to every card, the documents that name its file.
 
@@ -85,6 +93,8 @@ async def attach_doc_references(
     Two claims, kept apart: ``references`` says a document names this file,
     ``documents_with_drift`` says a listed document has some assertion that no
     longer holds -- anywhere in it, not necessarily about this file.
+    With *repo_root*, ``mentions`` adds the live lines naming the file by a
+    short form those rows cannot resolve.
     """
     wanted = {
         name: card.pop(_DOC_DRIFT_PATH, None)
@@ -149,13 +159,26 @@ async def attach_doc_references(
         elif not stored:
             cards[name]["doc_drift"] = {"unavailable": UNAVAILABLE_NOT_COMPUTED}
         else:
+            mentions = await _mentions(repo_root, path, by_target.get(path, []), exclude_spec)
             cards[name]["doc_drift"] = _doc_reference_block(
                 by_target.get(path, []),
                 drift_by_document,
                 excluded=excluded_by_target.get(path, 0),
                 target=path,
                 collector=collector,
+                mentions=mentions,
             )
+
+
+async def _mentions(
+    repo_root: str | Path | None, path: str, rows: list[Any], exclude_spec: Any
+) -> list[dict[str, Any]]:
+    """Short-form documentation lines naming *path* that *rows* do not already list."""
+    if not repo_root:
+        return []
+    listed = {(r.document_path, r.line_number) for r in rows}
+    found = await asyncio.to_thread(doc_mentions, Path(repo_root), path, listed)
+    return [m for m in found if not is_excluded(m["document"], exclude_spec)]
 
 
 def _doc_reference_block(
@@ -165,8 +188,9 @@ def _doc_reference_block(
     excluded: int,
     target: str,
     collector: OmissionCollector | None,
+    mentions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """One target's reverse-view block, built from its own rows."""
+    """One target's reverse-view block, built from its own rows and live *mentions*."""
     block: dict[str, Any] = {}
     emitted = collapse_reference_sites(
         [serialize_doc_drift_reference_row(row) for row in rows]
@@ -191,6 +215,17 @@ def _doc_reference_block(
     drifted = documents_with_drift(emitted, drift_by_document)
     if drifted:
         block["documents_with_drift"] = drifted
+
+    if mentions:
+        cap_collection(
+            block,
+            "mentions",
+            mentions,
+            _MAX_DOC_REFERENCES,
+            collector,
+            label=f"documents naming {target} by a short form",
+        )
+        block["mentions_basis"] = MENTIONS_BASIS
 
     # Emitted on an empty answer too: that is the one most likely to be
     # read as proof that nothing documents this file.

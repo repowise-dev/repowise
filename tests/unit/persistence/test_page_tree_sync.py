@@ -47,20 +47,10 @@ async def _placement(session, repo_id):
 
 @pytest.fixture
 async def wiki(async_session):
-    """A small persisted wiki: overview, one layer, one module, two files."""
+    """A small persisted wiki: overview, one module, two files."""
     repo = await insert_repo(async_session)
     rid = repo.id
-    # Two layers, spine ordered opposite to the alphabet, so reading the
-    # spine off the stored overview is distinguishable from not reading it.
-    await _add(
-        async_session,
-        rid,
-        "repo_overview",
-        "demo",
-        layer_order_ids=["layer:service", "layer:api"],
-    )
-    await _add(async_session, rid, "layer_page", "layer:service")
-    await _add(async_session, rid, "layer_page", "layer:api")
+    await _add(async_session, rid, "repo_overview", "demo")
     await _add(
         async_session,
         rid,
@@ -80,15 +70,8 @@ class TestRebuild:
     async def test_it_places_pages(self, async_session, wiki):
         placed = await _placement(async_session, wiki)
         assert placed["file_page:src/ingest/a.py"][0] == "module_page:src/ingest"
-        assert placed["module_page:src/ingest"][0] == "layer_page:layer:service"
-        assert placed["layer_page:layer:service"][0] == "repo_overview:demo"
+        assert placed["module_page:src/ingest"][0] == "repo_overview:demo"
         assert placed["repo_overview:demo"][0] is None
-
-    async def test_it_reads_the_layer_spine_off_the_stored_overview(self, async_session, wiki):
-        """`layer:api` sorts first alphabetically; the stored spine puts
-        `layer:service` first, so this fails if the spine is not read."""
-        placed = await _placement(async_session, wiki)
-        assert placed["layer_page:layer:service"][1] < placed["layer_page:layer:api"][1]
 
     async def test_a_second_rebuild_changes_nothing(self, async_session, wiki):
         before = await _placement(async_session, wiki)
@@ -199,4 +182,4 @@ class TestAddRemoveRename:
         await async_session.commit()
 
         placed = await _placement(async_session, wiki)
-        assert placed["file_page:src/ingest/a.py"][0] == "layer_page:layer:service"
+        assert placed["file_page:src/ingest/a.py"][0] == "repo_overview:demo"

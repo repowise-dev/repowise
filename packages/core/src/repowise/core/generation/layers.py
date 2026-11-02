@@ -339,26 +339,44 @@ def compute_layer_order(
     runtime = [layer for layer in layers if not _is_pinned(layer)]
     adjacent = [layer for layer in layers if _is_pinned(layer)]
 
-    out_deg: dict[str, int] = defaultdict(int)  # edges leaving the layer
-    in_deg: dict[str, int] = defaultdict(int)  # edges entering the layer
-    for src, dst in import_edges:
-        if is_external(src) or is_external(dst):
-            continue
-        ls = file_layers.get(src)
-        ld = file_layers.get(dst)
-        if not ls or not ld or ls == ld:
-            continue
-        if _is_pinned(ls) or _is_pinned(ld):
-            continue
-        out_deg[ls] += 1
-        in_deg[ld] += 1
+    balance = import_balance(file_layers, import_edges)
 
     def sort_key(layer: str) -> tuple[int, int]:
         # Net "imported-ness": more incoming than outgoing → foundational →
-        # sorts later (bottom). Negate out so consumers float to the top.
-        net = in_deg[layer] - out_deg[layer]
-        return (net, _canonical_rank(layer))
+        # sorts later (bottom), so consumers float to the top.
+        return (balance[layer], _canonical_rank(layer))
 
     ordered = sorted(runtime, key=sort_key)
     ordered += sorted(adjacent, key=_canonical_rank)
     return ordered
+
+
+def import_balance(
+    file_groups: Mapping[str, str],
+    import_edges: Iterable[tuple[str, str]],
+) -> defaultdict[str, int]:
+    """Per group, import edges entering it minus edges leaving it.
+
+    Positive means foundational (imported more than it imports), negative a
+    consumer. Only edges between two different groups count, and none that
+    touch a support layer (see :data:`_PINNED_AFTER_RUNTIME`) or an external
+    node. *file_groups* maps a file to any grouping — a layer, or a chapter.
+    """
+    balance: defaultdict[str, int] = defaultdict(int)
+    for src, dst in import_edges:
+        if is_external(src) or is_external(dst):
+            continue
+        gs = file_groups.get(src)
+        gd = file_groups.get(dst)
+        if not gs or not gd or gs == gd:
+            continue
+        if _is_pinned(gs) or _is_pinned(gd):
+            continue
+        balance[gd] += 1
+        balance[gs] -= 1
+    return balance
+
+
+def is_support_layer(layer: str) -> bool:
+    """True for a layer outside the runtime stack: tests, docs and tooling."""
+    return _is_pinned(layer)

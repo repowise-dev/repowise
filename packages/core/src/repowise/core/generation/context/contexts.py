@@ -85,14 +85,11 @@ class SymbolSpotlightContext:
     decorators: list[str]
     is_async: bool
     complexity_estimate: int
-    # Files importing the module that defines the symbol. Import-level
-    # references, not call sites; the template says so where it lists them.
-    callers: list[str]
-    source_body: str | None = None
-    # Resolved calls *to* this symbol: [{"caller", "caller_file"}]. Where the
-    # call resolver reached a verdict this is what "where it is used" means,
-    # and ``callers`` is the fallback for the symbols it did not resolve.
+    # Resolved calls *to* this symbol from production code:
+    # [{"caller", "caller_file"}], most confident first.
     call_sites: list[dict] = field(default_factory=list)
+    # How many resolved calls come from test files; counted, not listed.
+    test_call_sites: int = 0
 
 
 @dataclass

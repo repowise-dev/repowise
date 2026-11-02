@@ -23,9 +23,10 @@ import {
   GitCommitHorizontal,
 } from "lucide-react";
 import type { ChatContext } from "@repowise-dev/types/chat";
-import type {
-  DecisionRecord,
-  DecisionStatus,
+import {
+  decisionSourceLabel,
+  type DecisionRecord,
+  type DecisionStatus,
 } from "@repowise-dev/types/decisions";
 
 import { Markdown } from "../shared/markdown";
@@ -50,20 +51,6 @@ import type {
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
-
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Marker",
-  git_archaeology: "Git history",
-  readme_mining: "Docs",
-  cli: "Manual",
-  comment: "Comment",
-  pr: "Pull request",
-  adr: "ADR",
-  changelog: "Changelog",
-  session: "Session",
-  agent: "Agent",
-  conventions: "Convention",
-};
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -313,7 +300,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             verification, so it restated the Source cell beside it as a
             percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
-          <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
+          <MetaItem label="Source" value={decisionSourceLabel(decision.source)} />
           <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
         </dl>
 

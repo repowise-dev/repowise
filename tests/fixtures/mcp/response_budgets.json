@@ -1,0 +1,17 @@
+{
+  "overview": 3723,
+  "answer_defined_many_times": 1912,
+  "answer_not_in_repo": 1623,
+  "context_file": 2690,
+  "context_dir": 695,
+  "context_symbol": 1259,
+  "symbol": 4724,
+  "search_identifier": 2970,
+  "search_concept": 1906,
+  "search_path": 256,
+  "risk": 436,
+  "change_risk": 1640,
+  "why": 342,
+  "health": 2973,
+  "dead_code": 14386
+}

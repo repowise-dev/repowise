@@ -265,9 +265,7 @@ async def test_a_symbol_spotlight_stores_a_render_key(
     page = await gen.generate_symbol_spotlight(
         sample_parsed_file.symbols[0],
         sample_parsed_file,
-        graph_metrics["pagerank"],
         sample_graph,
-        {sample_parsed_file.file_info.path: sample_source_bytes},
     )
 
     assert page.metadata.get("render_key")
@@ -287,9 +285,7 @@ async def test_a_spotlight_render_key_moves_when_its_template_does(
     page = await gen.generate_symbol_spotlight(
         sample_parsed_file.symbols[0],
         sample_parsed_file,
-        graph_metrics["pagerank"],
         sample_graph,
-        {sample_parsed_file.file_info.path: sample_source_bytes},
     )
 
     subject = sample_parsed_file.content_hash

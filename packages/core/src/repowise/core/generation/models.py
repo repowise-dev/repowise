@@ -33,7 +33,7 @@ PageType = Literal[
     "file_page",
     "scc_page",
     "module_page",
-    "layer_page",
+    "flow_page",
     "repo_overview",
     "architecture_diagram",
     "infra_page",
@@ -50,7 +50,9 @@ GENERATION_LEVELS: dict[str, int] = {
     "file_page": 2,
     "scc_page": 3,
     "module_page": 4,
-    "layer_page": 5,
+    # After the module pages, so a walkthrough can name the page each step
+    # belongs to by the title the namer gave it.
+    "flow_page": 5,
     "repo_overview": 6,
     "architecture_diagram": 6,
     "infra_page": 7,
@@ -206,7 +208,7 @@ class GenerationConfig:
         cache_enabled:            In-memory SHA256 prompt deduplication.
         staleness_threshold_days: Days before a page is considered stale.
         expiry_threshold_days:    Days before a page is considered expired.
-        top_symbol_percentile:    Top N% by PageRank → symbol_spotlight.
+        top_symbol_percentile:    Top N% of eligible symbols by use → symbol_spotlight.
         jobs_dir:                 Directory for job checkpoint JSON files.
     """
 
@@ -233,18 +235,16 @@ class GenerationConfig:
     coverage_pct: float = 0.20
     max_pages_pct: float = 0.20
     #
-    # The fraction of public symbols, highest PageRank first, that get a
-    # ``symbol_spotlight``. A spotlight repeats what its file's page already
+    # The fraction of spotlight-eligible symbols, most used first, that get a
+    # ``symbol_spotlight`` (ranking and floors: selection/scoring.py
+    # ``score_symbol``). A spotlight repeats what its file's page already
     # says, so taking all of them buries the pages that say something new.
-    # This bound used to be a side effect of the budget's 0.15 share.
     #
-    # Lowered 0.20 -> 0.10 on the evidence of a large monorepo: a 5.3k-file
-    # repo produced 4,996 spotlights inside a 14,027-page wiki. Doubling down
-    # on the strongest decile keeps the pages that say something new and drops
-    # the ones that restate their file's page. Small repos are unaffected in
-    # practice: the selector floors the bucket at one, so a repo with few
-    # public symbols still gets a spotlight.
-    top_symbol_percentile: float = 0.10
+    # Eligible means the symbol adds something to its file page: resolved
+    # production callers or a docstring past its first sentence. 0.12 of that
+    # pool is ~1.7k pages on a 54k-public-symbol monorepo (5.3k under the old
+    # file-PageRank top decile). A small repository keeps ``MIN_SPOTLIGHTS``.
+    top_symbol_percentile: float = 0.12
     # The most ``file_page`` pages a run will emit, highest importance score
     # first. Three states, resolved in selection/selector.py:
     #
@@ -593,15 +593,21 @@ def compute_page_id(page_type: str, target_path: str) -> str:
 # stamps ``structural_key`` on these pages, and the persist layer sweeps them,
 # because an identity that can move strands the old row as a duplicate on the
 # next index. A new page type of this shape belongs here and nowhere else.
-STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = ("module_page", "layer_page", "scc_page")
+STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = (
+    "module_page",
+    "scc_page",
+    # Keyed by the entry symbol it walks; which operations get a page moves
+    # with the call graph, so a deselected one has to be swept.
+    "flow_page",
+)
 
 # The page types a model writes as prose. Every other type renders from
 # structure and is permanently ``provider_name='template'``, so "does this page
-# have prose yet" is only a meaningful question for these four. A stub is one of
+# have prose yet" is only a meaningful question for these. A stub is one of
 # these still stamped ``template``; a written one carries a real provider. The
-# CLI keeps its own mirror in ``generate_cmd/engine.py``.
+# web reader mirrors this in ``ui/src/lib/page-types.ts``.
 MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
-    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
+    {"module_page", "flow_page", "repo_overview", "architecture_diagram", "onboarding"}
 )
 
 # Metadata key holding the provider error a page fell back to its stub over.

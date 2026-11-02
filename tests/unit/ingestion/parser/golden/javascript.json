@@ -64,6 +64,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -181,6 +182,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": 1,
             "column": 6
           }
@@ -192,6 +194,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -248,7 +251,11 @@
         "caller_symbol_id": null,
         "line": 11,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -312,7 +319,11 @@
         "caller_symbol_id": null,
         "line": 17,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -376,7 +387,11 @@
         "caller_symbol_id": "lang_samples/javascript/route.js::validateRequest",
         "line": 29,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

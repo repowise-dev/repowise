@@ -460,7 +460,7 @@ Think of it as automated "package detection." Even if your code doesn't use clea
 
 `detect_file_communities()` in `core/analysis/communities.py` tries three partitioners in order:
 
-1. **Leiden** (`graspologic.partition.leiden`, `random_seed=42`). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
+1. **Leiden** (`graspologic_native.leiden`, seed 42, called directly for the same partition as `graspologic.partition.leiden` without importing the full graspologic package). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
 2. **Louvain** (`networkx.community.louvain_communities`, `seed=42`, `threshold=1e-4`, `max_level=10`). This is what a default install runs.
 3. **Directory grouping**: if Louvain raises, files are grouped by their first path segment.
 

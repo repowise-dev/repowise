@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import BlastRadiusRequest, BlastRadiusResponse
 
@@ -17,6 +18,7 @@ router = APIRouter(
 
 
 @router.post("/{repo_id}/blast-radius", response_model=BlastRadiusResponse)
+@read_route
 async def analyze_blast_radius(
     repo_id: str,
     body: BlastRadiusRequest,

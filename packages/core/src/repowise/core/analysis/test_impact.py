@@ -230,14 +230,14 @@ async def _read_inferred(
     """The tests the graph walk reaches per changed path, the test files, and the walk error."""
     from repowise.core.analysis.test_reachability import (
         cached_hub_files,
-        load_test_files,
+        cached_test_files,
         tests_reaching_by_tier,
     )
 
     inference_error: str | None = None
-    test_files: set[str] = set()
+    test_files: frozenset[str] = frozenset()
     try:
-        test_files = await load_test_files(session, repository_id)
+        test_files = await cached_test_files(session, repository_id)
         reached_by_file = await tests_reaching_by_tier(
             session,
             repository_id,

@@ -30,10 +30,12 @@ from repowise.core.git_head import read_head_commit
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
+    answers_upgrade_line,
     compact_index_scope,
     index_scope_fingerprint,
     load_index_scope,
 )
+from repowise.server.mcp_server import _code_drift
 from repowise.server.mcp_server._rounding import round_float
 
 # 2: index_scope carries the compact projection on routine responses. The key
@@ -43,7 +45,10 @@ from repowise.server.mcp_server._rounding import round_float
 # 3: the lean envelope. Diagnostics (this version, timing, budget accounting,
 # an uncapped completeness block, a complete index_scope digest, savings) leave
 # routine responses; get_overview and REPOWISE_MCP_DEBUG_META=1 keep them.
-MCP_CONTRACT_VERSION = 3
+# 4: one wire vocabulary (see lean_response): no empty or false-status fields,
+# `_meta.omitted` plus `<x>_total` on cut lists for truncation, `stale_warning`
+# alone for freshness, one `_meta.degraded` list.
+MCP_CONTRACT_VERSION = 4
 
 #: Restores the diagnostic ``_meta`` fields on every response, for diagnosis.
 DEBUG_META_ENV = "REPOWISE_MCP_DEBUG_META"
@@ -709,6 +714,10 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
         meta.setdefault("runtime_breakage_proven", False)
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
+    # Here, not in build_meta, so every tool and every shielded error carries it.
+    server_stale = _code_drift.stale_line()
+    if server_stale:
+        meta["server_stale"] = server_stale
 
     state: dict[str, Any] = {}
     combined = {**result, **meta}
@@ -739,6 +748,123 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
             state = {**existing, **state}
         meta["state"] = state
     return result
+
+
+#: Freshness detail behind ``stale_warning``; the hashes and age are debug data.
+_DEBUG_FRESHNESS_KEYS = (
+    "index_age_days",
+    "indexed_commit",
+    "live_head",
+    "index_behind",
+    "working_tree_dirty",
+)
+#: Accounting a reader gets from ``_meta.omitted`` and ``<x>_total`` instead.
+_DEBUG_ACCOUNTING_KEYS = ("completeness", "response_budget", "floor", "reductions", "state")
+#: A ``false`` under these names says nothing happened, so it is not sent.
+_STATUS_FLAGS = ("degraded", "truncated", "capped", "partial")
+#: Siblings of a capped ``<x>`` that ``<x>_total`` already says.
+_CAP_COUNTERS = ("_emitted", "_reduced_reason", "_omitted", "_truncated")
+
+
+def lean_response(result: Any) -> Any:
+    """The delivered shape of a tool result: only fields an agent can act on.
+
+    The one owner of the wire vocabulary, run outermost on MCP responses;
+    ``get_overview`` and ``REPOWISE_MCP_DEBUG_META`` skip it.
+
+    * No ``None`` or empty string; no empty container below the top level
+      unless a ``<key>_basis`` sibling explains it; no ``false`` status flag.
+    * Truncation is ``_meta.omitted`` plus ``<x>_total`` on a list actually cut.
+    * Freshness is ``stale_warning`` alone.
+    * Degradation is one ``_meta.degraded`` list of reasons.
+    """
+    if not isinstance(result, dict):
+        return result
+    meta = result.get("_meta")
+    if isinstance(meta, dict):
+        if result.get("degraded") and meta.get("degraded") == result["degraded"]:
+            del meta["degraded"]  # Already said at the top level.
+        _lean_meta(meta)
+        if meta.get("omitted"):
+            # Restates ``_meta.omitted``.
+            result.pop("omission_marker", None)
+    _prune(result, top=True)
+    return result
+
+
+def _lean_meta(meta: dict[str, Any]) -> None:
+    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, "embedder"):
+        meta.pop(key, None)
+    existing = meta.pop("degraded", None)
+    reasons = [existing] if isinstance(existing, str) else list(existing or [])
+    for key in sorted(k for k in meta if k.endswith("_degraded")):
+        reasons.extend(_degraded_reasons(key.removesuffix("_degraded"), meta.pop(key)))
+    if reasons:
+        meta["degraded"] = reasons
+
+
+def _degraded_reasons(stem: str, value: Any) -> list[str]:
+    if isinstance(value, (list, dict)):
+        return [f"{stem}:{leg}" for leg in value]
+    if isinstance(value, str) and value:
+        return [f"{stem}:{value}"]
+    return [stem] if value else []
+
+
+def _is_status_flag(key: str) -> bool:
+    return any(key == flag or key.endswith(f"_{flag}") for flag in _STATUS_FLAGS)
+
+
+def _prune(node: Any, *, top: bool = False) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _prune(item)
+        return
+    if not isinstance(node, dict):
+        return
+    _drop_cap_counters(node)
+    for key in list(node):
+        value = node[key]
+        _prune(value)
+        if _is_noise(node, key, value, top):
+            del node[key]
+
+
+def _is_noise(node: dict[str, Any], key: str, value: Any, top: bool) -> bool:
+    if value is None or value == "" or (value is False and _is_status_flag(key)):
+        return True
+    # An empty top-level list is the tool's answer; a ``_basis`` explains one.
+    return value in ([], {}) and not top and f"{key}_basis" not in node
+
+
+def _drop_cap_counters(node: dict[str, Any]) -> None:
+    """Keep ``<x>_total`` only where ``<x>`` was cut; drop the other counters."""
+    counted = {k.removesuffix("_emitted") for k in node if k.endswith("_emitted")}
+    counted.update(k.removesuffix("_total") for k in node if k.endswith("_total"))
+    for key in [k for k in node if k.endswith("_total") and _uncut_total(node, k)]:
+        del node[key]
+    for key in [k for k in node if _counter_stem(node, k) in counted]:
+        del node[key]
+
+
+def _counter_stem(node: dict[str, Any], key: str) -> str | None:
+    """The ``<x>`` a cap counter key describes; ``None`` for any other key."""
+    suffix = next((s for s in _CAP_COUNTERS if key.endswith(s)), None)
+    if suffix is None or (suffix == "_truncated" and not isinstance(node[key], bool)):
+        return None
+    return key.removesuffix(suffix)
+
+
+def _uncut_total(node: dict[str, Any], key: str) -> bool:
+    """A ``<x>_total`` that says nothing: ``<x>`` arrived whole, or not at all."""
+    stem = key.removesuffix("_total")
+    total, kept = node[key], node.get(stem)
+    if not isinstance(total, int) or isinstance(total, bool):
+        return False
+    if isinstance(kept, (list, dict)):
+        return len(kept) >= total
+    # A list projected away whole: its counts describe nothing served.
+    return f"{stem}_emitted" in node
 
 
 def semantic_search_state() -> bool | None:
@@ -840,26 +966,27 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-def keyless_note_meta() -> dict[str, Any]:
-    """Name what a key or a local model would add, once per process, the
-    first time ``get_answer`` degrades with ``no-llm-provider`` (#3105).
+#: For a keyless server over an index whose prose a model already wrote.
+_KEY_ONLY_NOTE = (
+    "no model is configured, so answers are not synthesized; set a provider "
+    "key (or a provider in .repowise/config.yaml) and restart the MCP server"
+)
 
-    The agent reading a keyless answer is told synthesis is missing, but
-    nothing says how to get it. Same once-per-process shape as
-    :func:`_release_meta`: a fact the caller only needs once, not charged
-    against every later response's budget.
+
+def prose_upgrade_meta(local_path: str | None) -> dict[str, Any]:
+    """``keyless_note`` naming the upgrade command, on an index no model wrote prose for."""
+    line = answers_upgrade_line(read_index_scope(local_path))
+    return {"keyless_note": line} if line else {}
+
+
+def keyless_note_meta(local_path: str | None) -> dict[str, Any]:
+    """What a key would add, on every ``get_answer`` that degrades with
+    ``no-llm-provider`` (#3105).
+
+    Not once per process: an agent that starts a conversation on a server
+    another conversation already used would never learn how to upgrade.
     """
-    from repowise.server.mcp_server import _state
-
-    if _state._keyless_note_announced:
-        return {}
-    _state._keyless_note_announced = True
-    return {
-        "keyless_note": (
-            "no model is configured, so answers are not synthesized; set a provider "
-            "key (or a provider in .repowise/config.yaml) and restart the MCP server"
-        )
-    }
+    return prose_upgrade_meta(local_path) or {"keyless_note": _KEY_ONLY_NOTE}
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:

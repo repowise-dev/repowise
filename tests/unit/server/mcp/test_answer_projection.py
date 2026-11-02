@@ -377,7 +377,7 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     assert not set(result["candidate_files"]) & set(result.get("citations") or [])
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
     if legs["vector"] == "error":
-        assert result["_meta"]["retrieval_degraded"] == ["vector"]
+        assert result["_meta"]["degraded"] == ["retrieval:vector"]
 
 
 @pytest.mark.asyncio
@@ -424,8 +424,8 @@ async def test_real_embedding_failure_keeps_fts_evidence_in_final_projection(
 
     assert result["answer"]
     assert result.get("best_guesses") or result.get("retrieval")
-    assert "embed" in result["_meta"]["retrieval_degraded"]
-    assert "vector" in result["_meta"]["retrieval_degraded"]
+    assert "retrieval:embed" in result["_meta"]["degraded"]
+    assert "retrieval:vector" in result["_meta"]["degraded"]
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
 
 

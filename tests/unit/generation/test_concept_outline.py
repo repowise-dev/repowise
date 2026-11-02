@@ -368,7 +368,28 @@ class TestPayload:
             target_path="src/git_indexer",
         )
         payload, _ = build_payload([group])
-        assert sorted(payload["groups"][0]["subdirs"]) == ["git_indexer", "graph"]
+        assert sorted(payload["groups"][0]["subdirs"]) == [
+            "git_indexer (1 files)",
+            "graph (1 files)",
+        ]
+
+    def test_a_page_gathered_from_siblings_is_shown_where_its_files_are(self):
+        """Not as the one sibling it happens to be targeted at.
+
+        Shown only ``mcp_server/_savings``, the namer titled a page that was
+        mostly answer and health tools "MCP Answer Economics".
+        """
+        from repowise.core.generation.concept_tree.grouping import ConceptGroup
+
+        members = [f"srv/tool_answer/a{i}.py" for i in range(5)] + ["srv/_savings/s.py"]
+        group = ConceptGroup(
+            members=members,
+            dirs=["srv/_savings", "srv/tool_answer"],
+            target_path="srv/_savings",
+        )
+        entry = build_payload([group])[0]["groups"][0]
+        assert entry["dir"] == "srv"
+        assert entry["subdirs"] == ["tool_answer (5 files)", "_savings (1 files)"]
 
 
 def test_layer_prefixed_title_does_not_repeat_the_layer_word():

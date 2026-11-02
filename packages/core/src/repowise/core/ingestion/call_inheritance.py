@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from .models import CallSite
+from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
 from .symbol_identity import outer_scope
 
@@ -19,8 +19,8 @@ _MAX_ANCESTOR_EXPAND_DEPTH = 3
 
 
 def _is_super_call(call: CallSite, language: str) -> bool:
-    """Python's ``super().m()`` (a chained call), or Java's and Apex's ``super.m()``."""
-    if language in ("java", "apex"):
+    """Python's ``super().m()`` (a chained call), or Java's, Apex's and Kotlin's ``super.m()``."""
+    if language in ("java", "apex", "kotlin"):
         return call.receiver_name == "super"
     receiver = call.receiver_call
     return (
@@ -47,6 +47,12 @@ def _c3_merge(sequences: list[tuple[str, ...]]) -> list[str] | None:
     return merged
 
 
+def _is_class(symbol: Symbol | None) -> bool:
+    """A class, or a C++ ``struct``, which differs from one only in default access."""
+    kind = getattr(symbol, "kind", None)
+    return kind == "class" or (kind == "struct" and symbol.language == "cpp")
+
+
 def _extract_class_id(symbol_id: str) -> str | None:
     """``path::Cls::meth`` -> ``path::Cls``; None when no class encloses it.
 
@@ -64,7 +70,8 @@ class InheritanceMixin:
     def _super_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
         """``super().m()``: the first class after the caller's own in its MRO to declare ``m``.
 
-        Java's ``super.m()`` arrives here too, with ``super`` as its receiver.
+        Java's and Kotlin's ``super.m()`` arrive here too, with ``super`` as
+        their receiver.
 
         Never handed to the bare-name tiers, which answered with whichever
         same-named method the file declared last. A base outside the
@@ -89,16 +96,18 @@ class InheritanceMixin:
         return None
 
     def _qualified_super(self, caller_id: str, qualifier: str) -> tuple[str | None, int]:
-        """Where Java's ``S.super.m()`` starts its walk, and how many classes it skips.
+        """Where ``S.super.m()`` (Java) or ``super<S>.m()`` (Kotlin) starts its walk.
 
-        ``S`` names an enclosing class, whose superclass is meant, or a direct
-        superinterface of the caller's class, whose own ``m`` is.
+        Also how many classes it skips. Java's ``S`` names an enclosing class,
+        whose superclass is meant, or a direct superinterface of the caller's
+        class, whose own ``m`` is. Kotlin's ``S`` is always a direct supertype.
         """
         def named(type_id: str) -> bool:
             return getattr(self._symbols_by_id.get(type_id), "name", None) == qualifier
 
         class_id = self._caller_class_id(caller_id)
-        node = class_id
+        kotlin = getattr(self._symbols_by_id.get(caller_id), "language", None) == "kotlin"
+        node = "" if kotlin else class_id
         while "::" in node:
             if named(node):
                 return node, 1
@@ -212,14 +221,14 @@ class InheritanceMixin:
         """*class_id*'s superclasses, nearest first.
 
         The walk stops where a type has no class parent, more than one, or
-        one already seen.
+        one already seen. A C++ ``struct`` is a class.
         """
         node, seen = class_id, {class_id}
         while True:
             parents = [
                 p
                 for p in self._heritage_parents.get(node, ())
-                if getattr(self._symbols_by_id.get(p), "kind", None) == "class"
+                if _is_class(self._symbols_by_id.get(p))
             ]
             if len(parents) != 1 or parents[0] in seen:
                 return

@@ -9,7 +9,9 @@
 // The order of the layers themselves is a property of the repository, computed
 // once from its import graph and recorded on the overview page. It is read from
 // there rather than re-derived (or alphabetised, which would put "API" above
-// "Runtime" and say something untrue about the dependency direction).
+// "Runtime" and say something untrue about the dependency direction). It is
+// only the fallback: when the pages carry a stored reading order, a layer
+// reads where its first page does.
 
 import type { DocPageSummary } from "@repowise-dev/types/docs";
 
@@ -61,7 +63,7 @@ export interface LayerGroup {
 }
 
 export interface LayerGrouping {
-  /** One per layer that actually claimed a page, in spine order. */
+  /** One per layer that actually claimed a page, in stored page order, then spine order. */
   groups: LayerGroup[];
   /** Pages no layer claimed, in the order they were given. */
   ungrouped: DocPageSummary[];
@@ -71,8 +73,17 @@ export interface LayerGrouping {
   offSpine: string[];
 }
 
+/** The smallest stored `display_order` among a group's pages, if any. */
+function leadOrder(group: LayerGroup): number {
+  return group.pages.reduce(
+    (lead, p) => Math.min(lead, p.display_order ?? Number.MAX_SAFE_INTEGER),
+    Number.MAX_SAFE_INTEGER,
+  );
+}
+
 /**
- * Bucket pages by the layer stamped on them, ordered by the given spine.
+ * Bucket pages by the layer stamped on them, ordered by the stored page order
+ * and then by the given spine.
  *
  * Pure and quiet: it reports what it found (including the ways the inputs
  * disagree) and leaves the complaining to the caller, which knows whether the
@@ -111,11 +122,13 @@ export function groupPagesByLayer(
   }
 
   const ordered = [...groups.values()].sort((a, b) => {
-    // Off-spine layers sort last, then by label so their order is at least
-    // stable rather than dependent on which page happened to come first.
+    // The stored page order leads: a layer reads where its first page does.
+    // Pages with no stored order tie here, so the spine decides; off-spine
+    // layers sort last, then by label so their order is at least stable
+    // rather than dependent on which page happened to come first.
     const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
     const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
-    return ra - rb || a.label.localeCompare(b.label);
+    return leadOrder(a) - leadOrder(b) || ra - rb || a.label.localeCompare(b.label);
   });
 
   return { groups: ordered, ungrouped, stamped, offSpine };

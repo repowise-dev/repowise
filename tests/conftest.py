@@ -96,6 +96,17 @@ def _no_real_editor_setup():
     mp.undo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _no_background_commit_health():
+    """Keep updates and inits under test from leaving detached scanner processes behind."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("REPOWISE_COMMIT_HEALTH_BACKGROUND", "0")
+    yield
+    mp.undo()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_db_url_env():
     """Stop one test's database URL from redirecting every later test.

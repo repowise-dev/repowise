@@ -185,3 +185,26 @@ def test_update_seeds_without_the_ancestor_check(tmp_path: Path, monkeypatch) ->
     _prepare_repo(repo)
 
     assert calls and calls[0]["require_ancestor"] is False
+
+
+def test_refused_seed_does_not_promise_a_full_init(
+    base_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """update has no full init to fall back to, so the refusal must not claim one (#4875)."""
+    import io
+    import json
+
+    from rich.console import Console
+
+    import repowise.cli.worktree as worktree
+
+    wt, _ = _base_moved_past_worktree(base_repo, tmp_path)
+    (base_repo / ".repowise" / "state.json").write_text(json.dumps({}), encoding="utf-8")
+    out = io.StringIO()
+    monkeypatch.setattr(worktree, "console", Console(file=out, width=400))
+
+    assert not worktree.seed_index_from_base(
+        root=wt, repo_paths=[wt], seed_base=base_repo, require_ancestor=False
+    )
+    assert "has no last_sync_commit" in out.getvalue()
+    assert "Falling back to full init" not in out.getvalue()

@@ -62,7 +62,7 @@ def _body_carries_decision(subject: str, body: str) -> bool:
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
+__all__ = ["DECAY_REFRESH_KEYS", "decay_meta", "index_file", "new_meta"]
 
 # The anchor-dependent window/decay fields: the only git-metadata columns that
 # recover as the repo's newest-commit anchor advances. An incremental update
@@ -250,7 +250,7 @@ def _add_own_churn(
 ) -> set[str]:
     """Add the churn of rows naming this file to *current*; return every changed path.
 
-    A rename row adds both of its names to *known_paths*.
+    A rename row naming one of this file's paths adds its other name to *known_paths*.
     """
     changed_paths: set[str] = set()
     for line in numstat_lines:
@@ -382,6 +382,25 @@ def index_file(
     except Exception:
         logger.debug("git_indexer_partial_failure", file_path=file_path, exc_info=True)
 
+    return meta
+
+
+def decay_meta(file_path: str, commits: list[_CommitRec], as_of_ts: float | None) -> dict:
+    """A code file's window and decay fields, as :func:`index_file` computes them.
+
+    The idle refresh keeps only :data:`DECAY_REFRESH_KEYS`, so it skips the
+    span, ownership, provenance and commit-message work it would discard.
+    """
+    now = _window_anchor(as_of_ts)
+    meta = new_meta(file_path)
+    if commits:
+        _add_windows(
+            meta,
+            commits,
+            (now - timedelta(days=90)).timestamp(),
+            (now - timedelta(days=30)).timestamp(),
+        )
+        meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
     return meta
 
 

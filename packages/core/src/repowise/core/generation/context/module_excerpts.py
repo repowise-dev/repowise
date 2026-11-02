@@ -44,10 +44,14 @@ def excerpt_candidates(
             seen.add(sym.id)
     for path in ranked_paths:
         room = _PER_FILE - sum(1 for s in out if _file_of(s) == path)
-        fresh = [s for s in _worth_excerpting(parsed.get(path)) if s.id not in seen]
-        for s in fresh[: max(0, room)]:
-            out.append(s)
+        for s in _worth_excerpting(parsed.get(path)):
+            if room <= 0:
+                break
+            if s.id in seen:
+                continue
+            out.append(_symbol(parsed, path, s.id))
             seen.add(s.id)
+            room -= 1
     return out
 
 

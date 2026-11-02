@@ -78,10 +78,17 @@ def _ids(parsed: ParsedFile) -> list[str]:
     return [s.id for s in parsed.symbols]
 
 
-def _edges(root: Path, files: dict[str, tuple[str, str]]) -> set[tuple[str, str]]:
+def _edges(
+    root: Path,
+    files: dict[str, tuple[str, str]],
+    partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
+) -> set[tuple[str, str]]:
     parsed = {rel: _parse(rel, lang, text, root) for rel, (lang, text) in files.items()}
     resolver = CallResolver(
-        parsed, {rel: set(parsed) - {rel} for rel in parsed}, repo_path=str(root)
+        parsed,
+        {rel: set(parsed) - {rel} for rel in parsed},
+        repo_path=str(root),
+        partial_fragments=partial_fragments,
     )
     return {
         (rc.caller_id, rc.callee_id)
@@ -1022,6 +1029,120 @@ class TestCSharpArgumentShapes:
         })
         assert ("C.cs::C::Run", "Q.cs::Q::M#1(int)") in edges
 
+    def test_a_builtin_argument_picks_the_constructor_that_takes_it(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic sealed class Spec {\n"
+            "  public Spec(int basketId) { }\n"
+            "  public Spec(string buyerId) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void ByName(string user) { var s = new Spec(user); }\n"
+            "  public void ById(int id) { var s = new Spec(id); }\n"
+            '  public void ByText() { var s = new Spec("x"); }\n'
+            "  public void ByNumber() { var s = new Spec(3); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"Spec.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert {(a.removeprefix("C.cs::C::"), c.removeprefix("Spec.cs::Spec::")) for a, c in edges} == {
+            ("ByName", "Spec#1(string)"),
+            ("ById", "Spec#1(int)"),
+            ("ByText", "Spec#1(string)"),
+            ("ByNumber", "Spec#1(int)"),
+        }
+
+    def test_builtin_arguments_follow_implicit_numeric_conversions(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static void M(bool b) { }\n"
+            "  public static void M(long n) { }\n"
+            "  public static void N(byte b) { }\n"
+            "  public static void N(string s) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Widen(int n) { H.M(n); }\n"
+            "  public void Flag() { H.M(true); }\n"
+            "  public void Constant() { H.N(7); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        callees = {(a.removeprefix("C.cs::C::"), c.removeprefix("H.cs::H::")) for a, c in edges}
+        assert callees == {
+            ("Widen", "M#1(long)"),
+            ("Flag", "M#1(bool)"),
+            # A constant reaches ``byte`` when its value fits; never ``string``.
+            ("Constant", "N#1(byte)"),
+        }
+
+    def test_a_partial_type_chooses_among_the_constructors_of_every_file(self, tmp_path: Path) -> None:
+        files = {
+            "Context.cs": ("csharp", (
+                "namespace App;\npublic partial class Context {\n"
+                "  public Context(string operationKey) { }\n"
+                "  public Context() { }\n"
+                "}\n"
+            )),
+            "Context.Dictionary.cs": ("csharp", (
+                "using System.Collections.Generic;\nnamespace App;\npublic partial class Context {\n"
+                "  internal Context(IDictionary<string, object> contextData) { }\n"
+                "}\n"
+            )),
+            "C.cs": ("csharp", (
+                "using System.Collections.Generic;\nnamespace App;\npublic class C {\n"
+                "  public void Data(IDictionary<string, object> data) { var c = new Context(data); }\n"
+                "  public void Key(string key) { var c = new Context(key); }\n"
+                "  public void None() { var c = new Context(); }\n"
+                "}\n"
+            )),
+        }
+        fragments = ("Context.Dictionary.cs", "Context.cs")
+        partial = {(f, "Context"): fragments for f in fragments}
+        edges = _edges(tmp_path, files, partial)
+        assert {(a.removeprefix("C.cs::C::"), c) for a, c in edges if a.startswith("C.cs")} == {
+            ("Data", "Context.Dictionary.cs::Context::Context"),
+            ("Key", "Context.cs::Context::Context#1"),
+            ("None", "Context.cs::Context::Context#0"),
+        }
+
+    def test_unread_or_open_arguments_refuse_nothing(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static void M(ulong n) { }\n"
+            "  public static void M(object o) { }\n"
+            "  public static void P(int? n) { }\n"
+            "  public static void P(string s) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            # A long constant may reach ulong, and object takes anything: a tie keeps the first.
+            "  public void Long() { H.M(5L); }\n"
+            "  public void Nullable(int n) { H.P(n); }\n"
+            # The lambda's own ``id`` shadows the string parameter.
+            "  public void Shadow(string id) { System.Action<int> a = (int id) => H.P(id); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        callees = {(a.removeprefix("C.cs::C::"), c.removeprefix("H.cs::H::")) for a, c in edges}
+        assert callees == {
+            ("Long", "M#1(ulong)"),
+            ("Nullable", "P#1(int?)"),
+            ("Shadow", "P#1(int?)"),
+        }
+
+    def test_csharp_literal_argument_types(self) -> None:
+        parsed = _parse(
+            "C.cs", "csharp",
+            'class C { void R() { F("s", @"v", \'c\', true, 1, 2L, 3u, 4ul, 4.0, 5f, 6m, null, -1); } }',
+        )
+        assert parsed.calls[0].argument_types == (
+            "string", "string", "char", "bool", "int constant", None, "uint", "ulong",
+            "double", "float", "decimal", None, None,
+        )
+
     def test_a_named_argument_reads_no_position(self) -> None:
         parsed = _parse("C.cs", "csharp", "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); } }")
         shapes = {c.target_name: c.argument_types for c in parsed.calls}
@@ -1435,6 +1556,82 @@ class TestJavaLiteralArguments:
         assert (
             "app/NotFound.java::NotFound::of", "app/NotFound.java::NotFound::NotFound#2(Class?,Object)"
         ) in edges
+
+    @pytest.mark.parametrize(
+        ("argument", "member"),
+        [
+            ("final Long id", "get#1(long)"),
+            ("final String id", "get#1(CharSequence)"),
+            ("final java.util.List<Long> id", "get#1(Collection)"),
+        ],
+    )
+    def test_a_box_or_string_reaches_no_type_it_does_not_extend(
+        self, tmp_path: Path, argument: str, member: str
+    ) -> None:
+        """``get(id)`` with a ``Long id`` unboxes to ``get(long)``: a Long is no Collection."""
+        repo = (
+            "package app;\nimport java.util.Collection;\npublic interface Repo {\n"
+            "  void get(Collection<Long> ids);\n  void get(long id);\n"
+            "  void get(CharSequence s);\n}\n"
+        )
+        user = (
+            "package app;\npublic class U {\n  private Repo repo;\n"
+            f"  void use({argument}) {{\n    repo.get(id);\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/Repo.java": ("java", repo), "app/U.java": ("java", user)})
+        assert ("app/U.java::U::use", f"app/Repo.java::Repo::{member}") in edges
+
+    @pytest.mark.parametrize(
+        ("arguments", "member"),
+        [
+            ('"Target", id + ":" + key', "NotFound#2(String,Object)"),
+            ("5, 7", "NotFound#2(Object,Integer)"),
+        ],
+    )
+    def test_a_string_or_literal_skips_a_repository_or_throwable_parameter(
+        self, tmp_path: Path, arguments: str, member: str
+    ) -> None:
+        """A String is no Throwable and an int boxes to no repository class."""
+        text = (
+            "package app;\nclass Entity { }\npublic class NotFound extends RuntimeException {\n"
+            "  public NotFound(String message, Throwable cause) { }\n"
+            "  public NotFound(String type, Object id) { }\n"
+            "  public NotFound(Entity e, Integer n) { }\n"
+            "  public NotFound(Object o, Integer n) { }\n"
+            "  static NotFound of(Long id, String key) {\n"
+            f"    return new NotFound({arguments});\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/NotFound.java": ("java", text)})
+        assert ("app/NotFound.java::NotFound::of", f"app/NotFound.java::NotFound::{member}") in edges
+
+    def test_a_type_variable_parameter_still_takes_a_box(self, tmp_path: Path) -> None:
+        """``T`` may be ``Long``, so ``put(T)`` stays a candidate beside ``put(Collection)``."""
+        text = (
+            "package app;\nimport java.util.Collection;\npublic class Box<T> {\n"
+            "  void put(Collection<T> all) { }\n  void put(T one) { }\n"
+            "  static void use(Box<Long> box, Long id) {\n    box.put(id);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/Box.java": ("java", text)})
+        assert ("app/Box.java::Box::use", "app/Box.java::Box::put#1(T)") in edges
+
+    @pytest.mark.parametrize(
+        ("first", "second", "member"),
+        [
+            # An array is no Collection, and a String[] no Entity[].
+            ("java.util.Collection<String> c", "Object o", "f#1(Object)"),
+            ("Entity[] es", "Object[] os", "f#1(Object[])"),
+        ],
+    )
+    def test_an_array_reaches_only_its_supertypes_and_covariant_arrays(
+        self, tmp_path: Path, first: str, second: str, member: str
+    ) -> None:
+        text = (
+            "package app;\nclass Entity { }\npublic class S {\n"
+            f"  void f({first}) {{ }}\n  void f({second}) {{ }}\n"
+            "  void use(String[] parts) {\n    f(parts);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/S.java": ("java", text)})
+        assert ("app/S.java::S::use", f"app/S.java::S::{member}") in edges
 
     def test_a_body_that_suits_both_still_takes_a_void_interface(self, tmp_path: Path) -> None:
         """``run(() -> n++, 1)``: the lambda suits Runnable, so the literal decides."""

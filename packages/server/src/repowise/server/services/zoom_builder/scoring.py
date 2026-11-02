@@ -22,19 +22,19 @@ Pure: no DB, no session.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from repowise.core.ingestion.models import (
     EXECUTION_EDGE_TYPES,
     FILE_DEPENDENCY_EDGE_TYPES,
 )
 
-from .models import ZoomNode
+from .models import ZoomNode, evolve
 
-# Edge types that represent "uses at runtime" for reachability. This used to be
-# {"imports", "depends_on"}; "depends_on" is a knowledge-graph export label and
-# never a persisted edge_type, so only "imports" ever matched and framework and
-# dynamic wiring were invisible to reachability.
+# Edge types that represent "uses at runtime" for reachability: the persisted
+# file-dependency and execution edge types. "depends_on" is a knowledge-graph
+# export label, never a persisted edge_type, so it does not belong here; the
+# file-dependency set brings in framework and dynamic wiring beside "imports".
 #
 # The call graph is a union with the file-dependency set, not a replacement for
 # it, and the measurement is one-sided. Walking calls *alone* reaches strictly
@@ -217,7 +217,7 @@ def score_tree(
             ranked = sorted(children, key=lambda c: (-raw[c], updated[c].name))
             top = raw[ranked[0]] or 1.0
             for rank, cid in enumerate(ranked, start=1):
-                updated[cid] = replace(
+                updated[cid] = evolve(
                     updated[cid],
                     importance=raw[cid] / top,
                     sibling_rank=rank,
@@ -226,6 +226,6 @@ def score_tree(
                 normalize_children(cid)
 
     # The root has no siblings; pin it to full importance.
-    updated[root_id] = replace(updated[root_id], importance=1.0, sibling_rank=1)
+    updated[root_id] = evolve(updated[root_id], importance=1.0, sibling_rank=1)
     normalize_children(root_id)
     return updated

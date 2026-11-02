@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -94,6 +95,7 @@ class RepoRegistry:
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
         # Serialises loads so concurrent callers can't overshoot the cap.
         self._load_lock = asyncio.Lock()
+        self._repo_ids: dict[str, str] = {}
         self._validate_public_identities()
 
     def _identity_key(self, value: str | Path) -> str:
@@ -190,6 +192,41 @@ class RepoRegistry:
                 return entry.alias
         available = self.get_all_aliases()
         raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
+
+    def repo_id(self, repo: str) -> str | None:
+        """The repository id behind any identity ``resolve_repo_param`` accepts.
+
+        The id of the one row the repo's own index holds, the rule the
+        single-repo server uses; None when it is unknown, unindexed or holds
+        several. Synchronous for per-call auth checks: one read-only SQLite
+        query per alias, then cached, without loading the repo's context.
+        """
+        try:
+            alias = self.resolve_repo_param(repo)
+        except ValueError:
+            return None
+        if not isinstance(alias, str):  # "all"
+            return None
+        cached = self._repo_ids.get(alias)
+        if cached is not None:
+            return cached
+        entry = self._ws_config.get_repo(alias)
+        if entry is None:
+            return None
+        db_path = repo_db_path((self._workspace_root / entry.path).resolve())
+        if not db_path.exists():
+            return None
+        try:
+            with contextlib.closing(
+                sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+            ) as conn:
+                rows = conn.execute("SELECT id FROM repositories LIMIT 2").fetchall()
+        except sqlite3.Error:
+            return None
+        if len(rows) != 1:
+            return None
+        self._repo_ids[alias] = rows[0][0]
+        return rows[0][0]
 
     async def get(self, alias: str) -> RepoContext:
         """Get the ``RepoContext`` for *alias*, loading lazily if needed."""

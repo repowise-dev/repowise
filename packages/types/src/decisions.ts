@@ -91,6 +91,7 @@ export const DECISION_SOURCES = [
   "inline_marker",
   "llm_inferred",
   "pr",
+  "pr_review",
   "session",
 ] as const;
 
@@ -132,6 +133,7 @@ export const DECISION_SOURCE_LABELS: Record<
   inline_marker: "Marker",
   llm_inferred: "Model",
   pr: "Pull request",
+  pr_review: "PR review",
   session: "Session",
   changelog: "Changelog",
   code_comment: "Comment",

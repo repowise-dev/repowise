@@ -175,8 +175,10 @@ PG_FTS_EXPRESSION = (
 # vocabulary heavily, so a small cache removes almost all of the counting.
 _DF_CACHE_MAX = 2048
 
-# Keeps scores strictly decreasing when two MATCH expressions' results are
-# concatenated. Small enough not to disturb any threshold downstream.
+# How far below its predecessor a widened-pass hit is pulled when the two
+# MATCH expressions' results are concatenated out of score order. Relative, so
+# a term common enough that BM25 scores it near zero is pulled to a smaller
+# positive score rather than below zero.
 _SCORE_EPSILON = 1e-6
 
 # Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
@@ -806,13 +808,13 @@ class FullTextSearch:
         # the widened one — so scores are clamped to be non-increasing along it,
         # keeping a caller that sorts by score in agreement with one that reads
         # the list in order.
-        ceiling: float | None = None
+        previous: float | None = None
         for pid in page_ids:
             page_type, target_path = meta.get(pid, ("", ""))
             score = -(rank_by_id[pid] or 0.0)  # FTS5 rank is negative
-            if ceiling is not None and score > ceiling:
-                score = ceiling
-            ceiling = score - _SCORE_EPSILON
+            if previous is not None and score > previous:
+                score = previous * (1 - _SCORE_EPSILON)
+            previous = score
             results.append(
                 SearchResult(
                     page_id=pid,

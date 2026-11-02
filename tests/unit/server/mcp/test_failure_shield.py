@@ -160,7 +160,7 @@ async def test_a_server_older_than_the_checkout_says_restart_not_give_up():
 
     result = await shield(stale_server_tool)()
 
-    assert "older repowise code than this checkout" in result["error"]
+    assert "older repowise code than the install" in result["error"]
     assert "Restart the MCP server" in result["error"]
     assert "user" in result["remedy"]
     assert "guidance" not in result

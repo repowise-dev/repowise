@@ -92,6 +92,7 @@
       "SixOps",
       "TwoOps"
     ],
+    "module_name": "conditionals",
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -173,6 +174,7 @@
       "DeeplyNested",
       "Shallow"
     ],
+    "module_name": "sample",
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -434,6 +436,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -459,6 +462,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -484,6 +488,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -509,6 +514,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -520,6 +526,7 @@
       }
     ],
     "exports": [],
+    "module_name": "sample",
     "export_aliases": {},
     "calls": [
       {

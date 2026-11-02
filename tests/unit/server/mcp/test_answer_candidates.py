@@ -170,3 +170,13 @@ def test_candidate_files_are_ranked_openable_paths_beyond_the_candidates_cap():
     out = serialize_candidate_files(hits)
     assert out == ["a.py", *[f"f{i}.py" for i in range(9)]]
     assert len(serialize_candidates(hits)) == 5
+
+
+def test_a_file_only_the_graph_walk_added_is_not_a_candidate_file():
+    hits = [
+        {**_hit("lead.py"), "_sources": {"fts"}},
+        {**_hit("hub.py"), "_sources": {"graph_expand"}},
+        {**_hit("named.py"), "_sources": {"graph_expand", "symbol"}},
+        _hit("anchored.py"),
+    ]
+    assert serialize_candidate_files(hits) == ["lead.py", "named.py", "anchored.py"]

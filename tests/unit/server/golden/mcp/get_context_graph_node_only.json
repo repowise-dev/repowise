@@ -7,12 +7,7 @@
         "symbols": [],
         "summary": "test_service.py: empty or non-symbol file"
       },
-      "hotspot": false,
-      "freshness": {
-        "confidence_score": null,
-        "freshness_status": null,
-        "is_stale": null
-      }
+      "hotspot": false
     }
   },
   "_meta": {

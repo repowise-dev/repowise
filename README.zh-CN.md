@@ -7,7 +7,7 @@ Repowise 在你自己的机器上，把代码、依赖图、git 历史、测试�
 一个人在笔记本上免费使用。开源版本包含全部引擎能力，商业层是在此之上、面向整个组织的运行方式。协议是 [AGPL-3.0](LICENSE)。不想在本机跑的话，[repowise.dev](https://www.repowise.dev/?src=oss_readme_section) 可以托管，私有仓库也包括在内。
 
 <p align="center">
-<img src=".github/assets/hero.webp" alt="了解代码，知道改动会影响什么，先修最重要的问题。本地仪表盘描绘仓库架构，列出所有导入你要修改的文件的文件，在代码健康地图上排出优先修复项，跨仓库连接服务，并用图表回答问题。" width="100%" />
+<img src=".github/assets/readme/zh-architecture.png" alt="中文界面下的架构地图：文件按依赖最多的社区分组，社区之间的强连接画成一条带，悬停或选中文件即可看到它导入了什么、又被谁导入。" width="100%" />
 </p>
 
 <p align="center"><sub>智能体查询的是本地索引，仪表盘和 CLI 读的是同一份。没有 API key，也没有上传数据。</sub></p>

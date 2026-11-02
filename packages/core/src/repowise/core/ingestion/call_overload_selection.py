@@ -7,7 +7,7 @@ member by argument count, then by the typed arguments (Java's most-specific rule
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from functools import cache
 from types import MappingProxyType
@@ -15,7 +15,7 @@ from types import MappingProxyType
 from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
 from .language_data import get_builtin_types
 from .languages.receiver_types import external_type_name
-from .models import CallSite, ParsedFile, Symbol
+from .models import CSHARP_INTEGER_CONSTANT, CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .return_types import signature_parameter_range, signature_parameters
 from .symbol_identity import (
@@ -123,12 +123,20 @@ def _argument_fit(
         return 0
     levels = _JAVA_LITERAL_LEVELS.get(argument)
     if levels is None:
-        return _reference_fit(parameter, argument)
+        return _reference_fit(parameter, argument, repo_types)
     if parameter.endswith("[]"):
         return 1 if argument == "null" else None
     if parameter not in _JAVA_JUDGED_PARAMETERS:
-        return _UNJUDGED_LEVEL[argument]
+        return _unjudged_literal_fit(parameter, argument, repo_types)
     return levels.get(parameter)
+
+
+def _unjudged_literal_fit(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> int | None:
+    """A literal reaching a class parameter: by boxing, or as a String; None where its class cannot."""
+    boxed = _JAVA_BOXES.get(argument, argument)
+    if argument != "null" and not _final_may_reach(parameter, boxed, repo_types):
+        return None
+    return _UNJUDGED_LEVEL[argument]
 
 
 # JDK functional interfaces: (parameter count, whether the function returns a value).
@@ -182,24 +190,52 @@ _NO_LAMBDA_TARGETS = _JAVA_PRIMITIVES | _JAVA_FINAL_PARAMETERS | frozenset(
 )
 
 
-def _reference_fit(parameter: str, argument: str) -> int | None:
+# The supertypes every String and box shares, and the one each adds.
+_JAVA_FINAL_SUPERTYPES = frozenset({"Object", "Comparable", "Serializable", "Constable"})
+_JAVA_OWN_SUPERTYPE = {
+    "String": "CharSequence",
+    **{box: "Number" for box in _JAVA_UNBOXED if box not in ("Boolean", "Character")},
+}
+
+
+# JDK types a parameter commonly names; a String or a box reaches only its supertypes among them.
+_JAVA_KNOWN_TYPES = _NO_LAMBDA_TARGETS | frozenset(
+    {"CharSequence", "Collection", "List", "Set", "Map", "Iterable", "Iterator", "Queue",
+     "Deque", "Stream", "SortedSet", "SortedMap", "NavigableSet", "NavigableMap",
+     *_JAVA_FUNCTIONAL_SHAPES}
+)
+
+
+def _reference_fit(
+    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+) -> int | None:
     """How a value of class or array type *argument* reaches *parameter*.
 
     0 as itself; 2 unboxed, 3 unboxed and widened; None where it never can
-    (a primitive, another final class, an array it is not). An array reaches
-    a covariant array at 1 and anything else (``Object``) at 2. Any other
-    parameter may be a supertype or a type variable: 1, which an exact
-    match beats and nothing else tells apart.
+    (a primitive, another final class, an array it is not, or a known type
+    that is no supertype of a String or a box). An array reaches a covariant
+    array at 1 and anything else (``Object``) at 2. Any other parameter may
+    be a supertype or a type variable: 1, which an exact match beats and
+    nothing else tells apart.
     """
     if parameter == argument:
         return 0
     if parameter in _JAVA_PRIMITIVES:
         return _unboxed_fit(parameter, argument)
     if argument.endswith("[]"):
-        return _array_fit(parameter, argument)
+        return _array_fit(parameter, argument, repo_types)
     if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
         return None
+    if argument in _JAVA_FINAL_PARAMETERS and not _final_may_reach(parameter, argument, repo_types):
+        return None
     return 1
+
+
+def _final_may_reach(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> bool:
+    """Whether a String or box *argument* may reach *parameter*: a supertype or a type variable."""
+    if parameter in _JAVA_FINAL_SUPERTYPES or parameter == _JAVA_OWN_SUPERTYPE.get(argument):
+        return True
+    return parameter not in _JAVA_KNOWN_TYPES and parameter not in repo_types
 
 
 def _unboxed_fit(parameter: str, argument: str) -> int | None:
@@ -210,17 +246,26 @@ def _unboxed_fit(parameter: str, argument: str) -> int | None:
     return 2 if parameter == unboxed else 3
 
 
-def _array_fit(parameter: str, argument: str) -> int | None:
+# The supertypes of every array type.
+_JAVA_ARRAY_SUPERTYPES = frozenset({"Object", "Cloneable", "Serializable"})
+
+
+def _array_fit(
+    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+) -> int | None:
     """``String[]`` reaches ``Object[]`` (1, covariance) and ``Object`` (2).
 
-    A primitive array reaches no other array, and no array a final class.
+    A primitive array reaches no other array, and no known type but an
+    array's supertypes; an unknown name may be a type variable.
     """
     if not parameter.endswith("[]"):
-        return None if parameter in _JAVA_FINAL_PARAMETERS else 2
+        if not parameter or parameter in _JAVA_ARRAY_SUPERTYPES:
+            return 2
+        return None if parameter in _JAVA_KNOWN_TYPES or parameter in repo_types else 2
     element, takes = argument.removesuffix("[]"), parameter.removesuffix("[]")
     if element in _JAVA_PRIMITIVES or takes in _JAVA_PRIMITIVES:
         return None
-    return None if _argument_fit(takes, element) is None else 1
+    return None if _argument_fit(takes, element, repo_types) is None else 1
 
 
 def _closest_fit(
@@ -438,6 +483,39 @@ _CSHARP_CLOSED_TYPES = frozenset(
      "DateTimeOffset", "Guid", "CancellationToken"}
 )
 
+# Framework collection types: none converts to a closed type.
+_CSHARP_COLLECTIONS = frozenset(
+    {"IEnumerable", "ICollection", "IList", "IDictionary", "IReadOnlyCollection", "IReadOnlyList",
+     "IReadOnlyDictionary", "ISet", "List", "Dictionary", "HashSet", "Queue", "Stack"}
+)
+
+# The closed types a value of each C# builtin reaches: itself, and its implicit
+# numeric conversions. An unsuffixed integer constant reaches every numeric
+# type, which its value may fit.
+_CSHARP_NUMERIC = frozenset(
+    {"sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "nint", "nuint",
+     "float", "double", "decimal"}
+)
+_CSHARP_BUILTIN_REACH: dict[str, frozenset[str]] = {
+    name: frozenset({name, *wider.split()})
+    for name, wider in {
+        "sbyte": "short int long float double decimal nint",
+        "byte": "short ushort int uint long ulong float double decimal nint nuint",
+        "short": "int long float double decimal nint",
+        "ushort": "int uint long ulong float double decimal nint nuint",
+        "int": "long float double decimal nint",
+        "uint": "long ulong float double decimal nuint",
+        "long": "float double decimal",
+        "ulong": "float double decimal",
+        "char": "ushort int uint long ulong float double decimal nint nuint",
+        "float": "double",
+        "double": "",
+        "decimal": "",
+        "bool": "",
+        "string": "",
+    }.items()
+} | {CSHARP_INTEGER_CONSTANT: _CSHARP_NUMERIC}
+
 # How many parameters a lambda converting to ``Func`N`` / ``Action`N`` declares, past N.
 _CSHARP_LAMBDA_PARAMETERS = {"Func": -1, "Action": 0}
 
@@ -467,9 +545,30 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     if argument.startswith("=>") or "`" in argument:
         return framework and _csharp_delegate_fits(parameter, head, argument)
     written = argument.removeprefix("new ")
+    framework_verdict = _csharp_framework_reach(head, written, shape_of) if framework else None
+    if framework_verdict is not None:
+        return framework_verdict
     if written == head or shape_of(written) not in ("interface", "value"):
         return True
     return not framework or (head not in _CSHARP_CLOSED_TYPES and head not in _CSHARP_DELEGATES)
+
+
+def _csharp_framework_reach(
+    head: str, written: str, shape_of: Callable[[str], str | None]
+) -> bool | None:
+    """Whether a builtin or framework collection *written* reaches framework type *head*; None: unknown.
+
+    A builtin reaches the builtins its implicit conversions name and, a string
+    being chars, ``IEnumerable`` among collections; a collection reaches no builtin.
+    """
+    if written in _CSHARP_BUILTIN_REACH:
+        if head in _CSHARP_CLOSED_TYPES:
+            return head in _CSHARP_BUILTIN_REACH[written]
+        if head in _CSHARP_COLLECTIONS:
+            return (written, head) == ("string", "IEnumerable")
+    if head in _CSHARP_CLOSED_TYPES and written in _CSHARP_COLLECTIONS and shape_of(written) is None:
+        return False
+    return None
 
 
 def _csharp_delegate_fits(parameter: str, head: str, argument: str) -> bool:
@@ -666,6 +765,9 @@ class OverloadSelectionMixin:
         recursion only when the arguments pick it and the site reads as a call
         to itself; a fallback onto it is no edge.
         """
+        partial = self._partial_constructor(resolved.callee_id, call)
+        if partial is not None:
+            return replace(resolved, callee_id=partial)
         rep = self._overload_rep.get(resolved.callee_id)
         if rep is None:
             return self._inherited_overload(resolved, call)
@@ -673,6 +775,29 @@ class OverloadSelectionMixin:
         if target == resolved.caller_id and not self._picks_itself(rep, target, call):
             return None
         return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
+
+    def _partial_constructor(self, callee_id: str, call: CallSite) -> str | None:
+        """The one constructor of a C# ``partial`` type, across its files, the call's arguments take.
+
+        Each file's constructors form their own overload set, so the set the
+        tiers landed in may lack the one ``new T(..)`` means. None when the
+        callee is no such constructor or the arguments do not single one out.
+        """
+        callee = self._symbols_by_id.get(callee_id)
+        if callee is None or callee.language != "csharp" or callee.name != callee.parent_name:
+            return None
+        fragments = self._partial_fragments.get((self._symbol_paths_by_id[callee_id], callee.name))
+        if not fragments or len(fragments) < 2:
+            return None
+        members = [
+            member
+            for fragment in fragments
+            if (ctor := self._file_methods.get(fragment, {}).get((callee.name, callee.name)))
+            for member in self._overload_members.get(self._overload_rep.get(ctor, ctor))
+            or [(ctor, signature_parameter_range(self._symbols_by_id[ctor].signature or "", "csharp"))]
+        ]
+        found = self._deciding_members(members, call.argument_count, call.argument_types)
+        return found[0] if len(found) == 1 else None
 
     def _picks_itself(self, rep: str, caller_id: str, call: CallSite) -> bool:
         """Do the arguments pick the caller from its own set, at a site that reads as recursion?"""
@@ -783,10 +908,25 @@ class OverloadSelectionMixin:
         A tie there is broken by *argument_types* when the typed arguments
         fit exactly one member's parameters (``value(true)`` over ``value(String)``).
         """
-        if argument_count is None or rep in self._unranged_overload_sets:
+        if rep in self._unranged_overload_sets:
+            return []
+        return self._deciding_members(self._overload_members.get(rep, ()), argument_count, argument_types)
+
+    def _deciding_members(
+        self,
+        members: Iterable[tuple[str, tuple[int, int | None] | None]],
+        argument_count: int | None,
+        argument_types: _ArgumentTypes = None,
+    ) -> list[str]:
+        """``_deciding_overloads`` over *members*, ``(id, admitted count range)`` pairs.
+
+        A member whose range is unread may take any count, so none is chosen.
+        """
+        members = list(members)
+        if argument_count is None or any(admitted is None for _, admitted in members):
             return []
         phases: dict[int, list[str]] = defaultdict(list)
-        for member, admitted in self._overload_members.get(rep, ()):
+        for member, admitted in members:
             phase = _overload_phase(admitted, argument_count)
             if phase is not None:
                 phases[phase].append(member)
@@ -1004,8 +1144,9 @@ class OverloadSelectionMixin:
     def _csharp_delegate_argument(self, file_path: str, caller_id: str, name: str) -> str | None:
         """``Func`2`` when argument *name* is a ``Func<A, B>``, ``group`1`` for a method group; else None.
 
-        The declaration scan types no builtin, so a forwarded delegate is read
-        off the caller's own parameters, and a name the body neither binds
+        The declaration scan types no builtin, so a forwarded delegate, or a
+        parameter of a builtin type (``string id``), is read off the caller's
+        own parameters, and a name the body neither binds
         nor declares may be a method of the caller's class: one member, no
         overload set and no ``params``, whose parameter count a delegate
         conversion matches. Ceiling: a lambda parameter shadowing a caller
@@ -1016,6 +1157,9 @@ class OverloadSelectionMixin:
         parameter = _csharp_parameter_named(caller.signature or "", name) if caller else None
         if parameter is not None:
             head = erased_type(parameter)
+            if head in _CSHARP_BUILTIN_REACH:
+                # A lambda parameter of the same name may shadow it, and its type is unread.
+                return None if name in self._bound_names_in(file_path, caller_id, "csharp") else head
             if head not in _CSHARP_LAMBDA_PARAMETERS:
                 return None
             return f"{head}`{parameter_type_arity(parameter)}"

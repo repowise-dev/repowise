@@ -145,6 +145,262 @@ def _add_synthetic_edges(
         )
 
 
+def _plan_graph_patch(
+    repo_path: Any,
+    *,
+    patch_requested: bool,
+    seed_edges: Any | None,
+    parse_cache: Any,
+    parsed_files: list[Any],
+    merged: dict[int, Any],
+    to_parse: list[tuple[int, tuple, str]],
+    changed_paths: set[str] | None,
+) -> tuple[Any, dict[str, tuple] | None]:
+    """Return the safe patch plan and restored-import cache, if eligible."""
+    from .surface import PatchPlan, plan_patch
+
+    if not patch_requested:
+        return PatchPlan(False, reason="feature disabled"), None
+    if seed_edges is None:
+        return PatchPlan(False, reason="no valid persisted graph snapshot"), None
+
+    changed = {
+        fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
+    }
+    detected_changes = set(changed) if changed_paths is None else changed_paths
+    if detected_changes != set(changed):
+        return (
+            PatchPlan(
+                False,
+                reason="detected changes include unparsed files or do not match the parse cache",
+            ),
+            None,
+        )
+
+    patch_plan = plan_patch(
+        parse_cache=parse_cache,
+        current_paths=[pf.file_info.path for pf in parsed_files],
+        changed=changed,
+    )
+    if not patch_plan.eligible:
+        return patch_plan, None
+
+    from .resolution_cache import covers, load_resolutions
+
+    resolutions = load_resolutions(Path(repo_path) / ".repowise")
+    if covers(resolutions, parsed_files, patch_plan.scope):
+        return patch_plan, resolutions
+
+    missing_path = next(
+        (
+            pf.file_info.path
+            for pf in parsed_files
+            if pf.file_info.path not in patch_plan.scope
+            and (
+                resolutions is None
+                or pf.file_info.path not in resolutions
+                or resolutions[pf.file_info.path][0] != pf.content_hash
+            )
+        ),
+        None,
+    )
+    reason = "saved import resolutions do not cover every unchanged file"
+    if missing_path:
+        reason = f"{missing_path}: {reason}"
+    return PatchPlan(False, reason=reason), None
+
+
+def _wire_graph_builder(
+    graph_builder: Any,
+    repo_path: Any,
+    *,
+    include_submodules: bool,
+    include_nested_repos: bool,
+    source_map: dict[str, bytes],
+    pytest_roots: Any,
+) -> None:
+    """Attach repo-wide resolvers and source context needed by either build path."""
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    graph_builder.set_source_map(source_map)
+    graph_builder.set_pytest_roots(pytest_roots)
+
+
+def _build_graph_with_plan(
+    graph_builder: Any,
+    *,
+    patch_plan: Any,
+    resolutions: dict[str, tuple] | None,
+    parsed_files: list[Any],
+    seed_edges: Any | None,
+    timings: PhaseTimings | None,
+    log: LogFn,
+) -> None:
+    """Run the scoped or full resolver build and record its specific timing."""
+    if patch_plan.eligible:
+        from .resolution_cache import restore_resolutions
+
+        with timed(timings, "rebuild.graph.patch"):
+            restore_resolutions(resolutions, parsed_files, patch_plan.scope)
+            seeded = graph_builder.seed_graph_snapshot(seed_edges)
+            log(
+                f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
+                f"reusing {seeded:,} edges"
+            )
+            graph_builder.build(scope=patch_plan.scope)
+        return
+
+    with timed(timings, "rebuild.graph.full"):
+        if seed_edges is not None:
+            log(f"[yellow]Full graph rebuild: {patch_plan.reason}[/yellow]")
+        graph_builder.build()
+
+
+def _traverse_repo(
+    repo_path: Any,
+    exclude_patterns: list[str],
+    *,
+    include_submodules: bool,
+    include_nested_repos: bool,
+    timings: PhaseTimings | None,
+) -> tuple[Any, list[Any], Any]:
+    """Walk once, build file metadata in parallel, and derive repo structure."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from repowise.core.ingestion import FileTraverser
+
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    with timed(timings, "rebuild.traverse"):
+        all_paths = list(traverser._walk())
+        workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            maybe_infos = list(pool.map(traverser._build_file_info, all_paths))
+        file_infos = [file_info for file_info in maybe_infos if file_info is not None]
+        repo_structure = traverser.get_repo_structure(file_infos)
+    return traverser, file_infos, repo_structure
+
+
+def _read_and_parse_misses(
+    repo_path: Any,
+    file_infos: list[Any],
+    *,
+    read_only: bool,
+    timings: PhaseTimings | None,
+    log: LogFn,
+) -> tuple[Any, list[tuple], dict[int, Any], list[tuple[int, tuple, str]]]:
+    """Read sources, split cache hits/misses, then parse only the misses."""
+    from repowise.core.pipeline.phases.ingestion import _read_sources, _split_cached
+
+    with timed(timings, "rebuild.read"):
+        file_bytes = _read_sources(file_infos, None)
+        parse_cache, cached_hits, to_parse = _split_cached(
+            Path(repo_path), file_bytes, None
+        )
+    if read_only:
+        parse_cache = None
+    merged = _parse_misses(cached_hits, to_parse, parse_cache, timings, log)
+    return parse_cache, file_bytes, merged, to_parse
+
+
+def _new_update_graph_builder(
+    repo_path: Any,
+    exclude_patterns: list[str],
+    *,
+    read_only: bool,
+    include_submodules: bool,
+    include_nested_repos: bool,
+    traverser: Any,
+    file_infos: list[Any],
+) -> Any:
+    """Create the graph builder and attach traversal metadata used downstream."""
+    from repowise.core.ingestion import GraphBuilder
+    from repowise.core.workspace.update import get_head_commit
+
+    builder = GraphBuilder(
+        repo_path,
+        exclude_patterns=exclude_patterns,
+        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
+        head_commit=get_head_commit(Path(repo_path)),
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    builder.console_scripts = traverser.console_script_names
+    builder.traversal_stats = traverser.stats
+    builder.traversed_file_paths = {file_info.path for file_info in file_infos}
+    return builder
+
+
+def _build_update_graph(
+    repo_path: Any,
+    graph_builder: Any,
+    traverser: Any,
+    file_bytes: list[tuple],
+    merged: dict[int, Any],
+    to_parse: list[tuple[int, tuple, str]],
+    *,
+    collect_sources: bool,
+    include_submodules: bool,
+    include_nested_repos: bool,
+    parse_cache: Any,
+    patch_requested: bool,
+    seed_edges: Any | None,
+    changed_paths: set[str] | None,
+    timings: PhaseTimings | None,
+    log: LogFn,
+) -> tuple[list[Any], dict[str, bytes], int]:
+    """Parse/build/resolve one update graph, preserving the patch/full timings."""
+    if timings is not None:
+        timings.start("rebuild.graph")
+    try:
+        parsed_files, source_map, unparsed = _add_parsed_files(
+            graph_builder, file_bytes, merged, collect_sources
+        )
+        patch_plan, resolutions = _plan_graph_patch(
+            repo_path,
+            patch_requested=patch_requested,
+            seed_edges=seed_edges,
+            parse_cache=parse_cache,
+            parsed_files=parsed_files,
+            merged=merged,
+            to_parse=to_parse,
+            changed_paths=changed_paths,
+        )
+        graph_builder.patch_plan = patch_plan
+        _wire_graph_builder(
+            graph_builder,
+            repo_path,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+            source_map=source_map,
+            pytest_roots=traverser.pytest_roots,
+        )
+        _build_graph_with_plan(
+            graph_builder,
+            patch_plan=patch_plan,
+            resolutions=resolutions,
+            parsed_files=parsed_files,
+            seed_edges=seed_edges,
+            timings=timings,
+            log=log,
+        )
+        return parsed_files, source_map, unparsed
+    finally:
+        if timings is not None:
+            timings.stop("rebuild.graph")
+
+
 def build_repo_graph(
     repo_path: Any,
     exclude_patterns: list[str],
@@ -155,6 +411,10 @@ def build_repo_graph(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     read_only: bool = False,
+    seed_edges: Any | None = None,
+    changed_paths: set[str] | None = None,
+    patch_requested: bool = False,
+    cache_resolutions: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -171,36 +431,32 @@ def build_repo_graph(
     is set; every path that persists the graph sets it, since the framework-edge
 pass reads the sources.
 
+    ``seed_edges`` is the last full graph snapshot. ``patch_requested`` says
+    the experimental feature is enabled, including when a cache miss forces
+    the safe full-build fallback. ``cache_resolutions`` opts into writing the
+    supporting per-file import cache. ``changed_paths`` is the
+    complete source/config diff from the update detector; it must exactly match
+    the parsed cache misses before a patch is considered. This also catches
+    changed manifests or excluded/unparsed files, which the parse cache alone
+    cannot see. If the changed files' cross-file surface is untouched
+    (:func:`~.surface.plan_patch`), only those files are re-resolved; otherwise
+    the full build runs. The decision is left on ``graph_builder.patch_plan``.
+
     ``timings`` is the run's shared :class:`PhaseTimings` table; each step
     below records into it under a ``rebuild.*`` name. ``None`` records nothing.
 
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count)``.
     """
-    import os
-    from concurrent.futures import ThreadPoolExecutor
-
-    from repowise.core.ingestion import FileTraverser, GraphBuilder
-
     log = log or _noop_log
 
-    traverser = FileTraverser(
+    traverser, file_infos, repo_structure = _traverse_repo(
         repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
+        exclude_patterns,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        timings=timings,
     )
-    # Parallel stat + header sniffing, mirroring the init ingestion phase.
-    # A serial traverse() pays per-file I/O latency sequentially; on a cold
-    # OS file cache that was ~50s of every PowerToys-scale update. Passing
-    # the file_infos into get_repo_structure also avoids its re-walk.
-    with timed(timings, "rebuild.traverse"):
-        all_paths = list(traverser._walk())
-        io_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
-        with ThreadPoolExecutor(max_workers=io_workers) as io_pool:
-            maybe_infos = list(io_pool.map(traverser._build_file_info, all_paths))
-        file_infos = [fi for fi in maybe_infos if fi is not None]
-        repo_structure = traverser.get_repo_structure(file_infos)
 
     # Structural episodes, minus the formatter check: this path is the hot one
     # (every update, plus the config-triggered re-score), so it derives only
@@ -211,71 +467,46 @@ pass reads the sources.
     # Thread-pool source reads + content-hash parse cache split, shared with
     # the init parse phase: only changed files need a tree-sitter parse.
     # Cache failures degrade to all-miss (full parse), as before.
-    from repowise.core.pipeline.phases.ingestion import (
-        _read_sources,
-        _split_cached,
-    )
-    from repowise.core.workspace.update import get_head_commit
-
-    with timed(timings, "rebuild.read"):
-        fi_and_bytes = _read_sources(file_infos, None)
-        parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
-    if read_only:
-        parse_cache = None  # hits above still count; misses are not stored
-
-    graph_builder = GraphBuilder(
+    graph_builder = _new_update_graph_builder(
         repo_path,
-        exclude_patterns=exclude_patterns,
-        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
-        head_commit=get_head_commit(Path(repo_path)),
+        exclude_patterns,
+        read_only=read_only,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        traverser=traverser,
+        file_infos=file_infos,
     )
-    graph_builder.console_scripts = traverser.console_script_names
-    # Carry the walk's skip record to the dead-code analyzer. This report is
-    # persisted repo-wide, so an update that could not see the skipped source
-    # files would re-derive and write back the verdicts init had clamped.
-    graph_builder.traversal_stats = traverser.stats
-    # Reconciliation authority is the successful traversal, not the successful
-    # parse set. A transient read/parser failure must not make an existing
-    # in-scope file look deleted and prune its persisted rows.
-    graph_builder.traversed_file_paths = {
-        file_info.path for file_info in file_infos
-    }
+    parse_cache, fi_and_bytes, merged, to_parse = _read_and_parse_misses(
+        repo_path,
+        file_infos,
+        read_only=read_only,
+        timings=timings,
+        log=log,
+    )
 
-    # Misses go through init's deadline pool. An update pays one pool start
-    # (about a second on Windows) when anything changed, in exchange for a
-    # file that never finishes parsing costing one deadline instead of the run.
-    merged = _parse_misses(cached_hits, to_parse, parse_cache, timings, log)
-
-    skipped = len(file_infos) - len(fi_and_bytes)  # unreadable files
-    # Opened here and closed after build(): graph construction is the add_file
-    # loop plus the resolver, and the tsconfig wiring sits between them.
-    if timings is not None:
-        timings.start("rebuild.graph")
-    parsed_files, source_map, unparsed = _add_parsed_files(
-        graph_builder, fi_and_bytes, merged, collect_sources
+    skipped = len(file_infos) - len(fi_and_bytes)
+    parsed_files, source_map, unparsed = _build_update_graph(
+        repo_path,
+        graph_builder,
+        traverser,
+        fi_and_bytes,
+        merged,
+        to_parse,
+        collect_sources=collect_sources,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+        parse_cache=parse_cache,
+        patch_requested=patch_requested,
+        seed_edges=seed_edges,
+        changed_paths=changed_paths,
+        timings=timings,
+        log=log,
     )
     skipped += unparsed
+    if not read_only and cache_resolutions:
+        from .resolution_cache import save_resolutions
 
-    # TS/JS path aliases (``@/components/...``) resolve only when the
-    # tsconfig resolver is attached before build(); without it the alias
-    # targets read as external nodes and every aliased file looks
-    # unreachable to the dead-code analyzer (#648 — this rebuild path was
-    # missed when the CLI commands were wired).
-    from repowise.core.ingestion import wire_tsconfig_resolver
-
-    wire_tsconfig_resolver(
-        graph_builder,
-        repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    graph_builder.set_source_map(source_map)
-    graph_builder.set_pytest_roots(traverser.pytest_roots)
-    graph_builder.build()
-    if timings is not None:
-        timings.stop("rebuild.graph")
+        save_resolutions(Path(repo_path) / ".repowise", parsed_files)
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
             parse_cache.save()
@@ -285,7 +516,190 @@ pass reads the sources.
 
     _add_synthetic_edges(repo_path, graph_builder, file_infos, source_map, log, timings)
 
+    # The flag init sets after its graph build, so an update renders and keeps
+    # a route-declaring file's api_contract page instead of demoting it.
+    from repowise.core.generation import detect_code_api_contracts
+
+    detect_code_api_contracts(parsed_files)
+
     return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
+
+
+async def _index_git_metadata(
+    repo_path: Any,
+    file_diffs: list,
+    cfg: dict,
+    exclude_patterns: list[str],
+    graph_builder: Any,
+    source_map: dict[str, bytes],
+    *,
+    git_tier: str | None,
+    force_full_git: bool,
+    git_summary_sink: list[Any] | None,
+    idle_decay_sink: dict[str, dict] | None,
+    log: LogFn,
+    timings: PhaseTimings | None,
+) -> dict[str, dict]:
+    """Reindex changed-file history and restore complete co-change graph edges."""
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
+    from repowise.core.pipeline.phases.git import label_co_change_structure
+
+    git_meta_map: dict[str, dict] = {}
+    if timings is not None:
+        timings.start("rebuild.git")
+    try:
+        try:
+            tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
+        except ValueError:
+            tier = GitIndexTier.FULL
+        git_indexer = GitIndexer(
+            repo_path,
+            commit_limit=cfg.get("commit_limit"),
+            follow_renames=cfg.get("follow_renames", False),
+            exclude_patterns=exclude_patterns or None,
+            tier=tier,
+        )
+        if force_full_git:
+            summary, updated_meta = await git_indexer.index_repo(
+                repo_path.name, on_warning=log
+            )
+            if git_summary_sink is not None:
+                git_summary_sink.append(summary)
+            git_meta_map = {meta["file_path"]: meta for meta in updated_meta}
+            label_co_change_structure(graph_builder, git_meta_map)
+            graph_builder.update_co_change_edges(git_meta_map)
+            graph_builder.co_change_edges_complete = True
+        else:
+            git_meta_map = await _index_changed_git_files(
+                git_indexer,
+                file_diffs,
+                exclude_patterns,
+                graph_builder,
+                source_map,
+                idle_decay_sink=idle_decay_sink,
+                log=log,
+                timings=timings,
+            )
+    except Exception as exc:
+        log(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+        if force_full_git:
+            raise
+    finally:
+        if timings is not None:
+            timings.stop("rebuild.git")
+    return git_meta_map
+
+
+async def _index_changed_git_files(
+    git_indexer: Any,
+    file_diffs: list,
+    exclude_patterns: list[str],
+    graph_builder: Any,
+    source_map: dict[str, bytes],
+    *,
+    idle_decay_sink: dict[str, dict] | None,
+    log: LogFn,
+    timings: PhaseTimings | None,
+) -> dict[str, dict]:
+    """Update changed-file git rows and rebuild co-change edges for the repo."""
+    from repowise.core.pipeline.phases.git import label_co_change_structure
+
+    changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
+    co_change_full: dict[str, list[dict]] = {}
+    updated_meta = await git_indexer.index_changed_files(
+        changed_paths,
+        all_files=set(source_map.keys()),
+        co_change_sink=co_change_full,
+        idle_decay_sink=idle_decay_sink,
+        on_warning=log,
+        timings=timings,
+    )
+    git_meta_map = {meta["file_path"]: meta for meta in updated_meta}
+    label_co_change_structure(graph_builder, git_meta_map)
+    if idle_decay_sink:
+        # Idle rows carry the same column and are persisted on their own path.
+        label_co_change_structure(graph_builder, idle_decay_sink)
+    if co_change_full:
+        graph_builder.update_co_change_edges(
+            {
+                path: {"co_change_partners_json": partners}
+                for path, partners in co_change_full.items()
+            }
+        )
+        graph_builder.co_change_edges_complete = True
+    else:
+        graph_builder.update_co_change_edges(git_meta_map)
+    return git_meta_map
+
+
+def _graph_update_decision(
+    *, enabled: bool, seed_edges: Any | None, patch_plan: Any
+) -> dict[str, Any]:
+    """Persistable summary of why this update patched or rebuilt the graph."""
+    if not enabled:
+        return {
+            "enabled": False,
+            "mode": "full",
+            "reason": "feature disabled",
+            "files": [],
+        }
+    if seed_edges is None:
+        return {
+            "enabled": True,
+            "mode": "full",
+            "reason": "no valid persisted graph snapshot",
+            "files": [],
+        }
+    if getattr(patch_plan, "eligible", False) is True:
+        return {
+            "enabled": True,
+            "mode": "patch",
+            "reason": "dependency surface unchanged",
+            "files": list(patch_plan.scope),
+        }
+    return {
+        "enabled": True,
+        "mode": "full",
+        "reason": getattr(patch_plan, "reason", None) or "patch plan unavailable",
+        "files": [],
+    }
+
+
+async def _load_update_seed(
+    repo_path: Any,
+    *,
+    enabled: bool,
+    timings: PhaseTimings | None,
+    log: LogFn,
+) -> tuple[Any | None, Any | None]:
+    """Load and invalidate the optional seed before any opted-in update write."""
+    if not enabled:
+        return None, None
+    from .graph_seed import (
+        invalidate_seed_edge_cache,
+        load_seed_edges,
+        load_seed_edges_for_reconciliation,
+    )
+
+    with timed(timings, "rebuild.seed_load"):
+        seed_edges = await load_seed_edges(repo_path)
+        previous_seed_edges = seed_edges or await load_seed_edges_for_reconciliation(repo_path)
+    if seed_edges is None:
+        log("[yellow]Full graph rebuild: no valid persisted edge snapshot[/yellow]")
+    invalidate_seed_edge_cache(repo_path)
+    return seed_edges, previous_seed_edges
+
+
+async def _prime_graph_metrics(
+    graph_builder: Any, timings: PhaseTimings | None, log: LogFn
+) -> None:
+    """Refresh global metrics without failing an otherwise valid update."""
+    try:
+        with timed(timings, "rebuild.metrics"):
+            await graph_builder.compute_metrics_parallel()
+    except Exception as exc:
+        log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
 
 
 async def rebuild_graph_and_git(
@@ -302,9 +716,14 @@ async def rebuild_graph_and_git(
     git_summary_sink: list[Any] | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    patch_graph: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
+
+    ``patch_graph`` tries to reuse the persisted edges and re-resolve only the
+    changed files; see :func:`build_repo_graph`. It falls back to the full
+    rebuild whenever the change is not provably local.
 
     ``timings`` records the whole step as ``rebuild`` plus one ``rebuild.*``
     row per sub-step, so a slow update names the stage that made it slow.
@@ -339,6 +758,10 @@ async def rebuild_graph_and_git(
     if timings is not None:
         timings.start("rebuild")
 
+    seed_edges, previous_seed_edges = await _load_update_seed(
+        repo_path, enabled=patch_graph, timings=timings, log=log
+    )
+
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = build_repo_graph(
         repo_path,
@@ -348,87 +771,52 @@ async def rebuild_graph_and_git(
         include_nested_repos=include_nested_repos,
         log=log,
         timings=timings,
+        seed_edges=seed_edges,
+        patch_requested=patch_graph,
+        cache_resolutions=patch_graph,
+        changed_paths={
+            path
+            for fd in file_diffs
+            for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
+            if path
+        },
+    )
+    if previous_seed_edges is not None:
+        graph_builder.previous_seed_edges = previous_seed_edges
+        if not getattr(getattr(graph_builder, "patch_plan", None), "eligible", False):
+            from .graph_seed import restore_unparsed_graph_rows
+
+            with timed(timings, "rebuild.seed_reconcile"):
+                restore_unparsed_graph_rows(
+                    graph_builder,
+                    previous_seed_edges,
+                    {pf.file_info.path for pf in parsed_files},
+                )
+
+    git_meta_map = await _index_git_metadata(
+        repo_path,
+        file_diffs,
+        cfg,
+        exclude_patterns,
+        graph_builder,
+        source_map,
+        git_tier=git_tier,
+        force_full_git=force_full_git,
+        git_summary_sink=git_summary_sink,
+        idle_decay_sink=idle_decay_sink,
+        log=log,
+        timings=timings,
     )
 
-    # Re-index git metadata for changed files
-    git_meta_map: dict[str, dict] = {}
-    if timings is not None:
-        timings.start("rebuild.git")
-    try:
-        from repowise.core.ingestion.git_indexer import GitIndexer
-        from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
-        from repowise.core.pipeline.phases.git import label_co_change_structure
+    # Global metrics must reflect the patched graph; the persistence upsert gate
+    # avoids rewriting unchanged rows, but the metric values must still be fresh.
+    await _prime_graph_metrics(graph_builder, timings, log)
 
-        try:
-            tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
-        except ValueError:
-            tier = GitIndexTier.FULL
-        _commit_limit = cfg.get("commit_limit")
-        _follow_renames = cfg.get("follow_renames", False)
-        git_indexer = GitIndexer(
-            repo_path,
-            commit_limit=_commit_limit,
-            follow_renames=_follow_renames,
-            exclude_patterns=exclude_patterns or None,
-            tier=tier,
-        )
-        if force_full_git:
-            summary, updated_meta = await git_indexer.index_repo(repo_path.name, on_warning=log)
-            if git_summary_sink is not None:
-                git_summary_sink.append(summary)
-            git_meta_map = {m["file_path"]: m for m in updated_meta}
-            label_co_change_structure(graph_builder, git_meta_map)
-            graph_builder.update_co_change_edges(git_meta_map)
-        else:
-            changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
-            # The full tracked-file set lets the indexer re-run the repo-wide
-            # co-change walk so partners aren't wiped to "[]" for changed files.
-            # The sink captures that walk's FULL per-file partner map: the graph
-            # was just rebuilt from scratch, so co_changes edges must be re-added
-            # for every file (not only the changed ones) or the update graph
-            # diverges from the init graph and the centrality cache can't hit.
-            co_change_full: dict[str, list[dict]] = {}
-            updated_meta = await git_indexer.index_changed_files(
-                changed_paths,
-                all_files=set(source_map.keys()),
-                co_change_sink=co_change_full,
-                idle_decay_sink=idle_decay_sink,
-                on_warning=log,
-                timings=timings,
-            )
-            git_meta_map = {m["file_path"]: m for m in updated_meta}
-            label_co_change_structure(graph_builder, git_meta_map)
-            if idle_decay_sink:
-                # Idle rows carry the same column and are persisted on their own
-                # path, having been serialized before the graph existed.
-                label_co_change_structure(graph_builder, idle_decay_sink)
-            if co_change_full:
-                graph_builder.update_co_change_edges(
-                    {
-                        fp: {"co_change_partners_json": partners}
-                        for fp, partners in co_change_full.items()
-                    }
-                )
-            else:
-                graph_builder.update_co_change_edges(git_meta_map)
-    except Exception as exc:
-        log(f"[yellow]Git re-index skipped: {exc}[/yellow]")
-        if force_full_git:
-            raise
-    finally:
-        if timings is not None:
-            timings.stop("rebuild.git")
-
-    # Pre-compute centrality/community metrics with the init path's fan-out
-    # parallelism. Without this, persist_graph_nodes computes the same
-    # metrics lazily one-by-one. Runs after the co-change edge refresh so
-    # the cached subgraphs reflect the final structure. Best-effort: every
-    # metric still falls back to lazy computation.
-    try:
-        with timed(timings, "rebuild.metrics"):
-            await graph_builder.compute_metrics_parallel()
-    except Exception as exc:
-        log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
+    graph_builder.incremental_graph_decision = _graph_update_decision(
+        enabled=patch_graph,
+        seed_edges=seed_edges,
+        patch_plan=getattr(graph_builder, "patch_plan", None),
+    )
 
     if timings is not None:
         timings.stop("rebuild")

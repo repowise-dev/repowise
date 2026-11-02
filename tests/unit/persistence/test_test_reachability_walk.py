@@ -684,6 +684,41 @@ async def test_the_import_walk_from_memory_matches_the_walk_from_the_database(as
     }
 
 
+async def test_the_import_graphs_and_placement_are_read_once_per_index_state(
+    async_session, monkeypatch
+):
+    """Each selection asks for them; a process serving many reads them once."""
+    from repowise.core.analysis.test_reach import db
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"src/pkg/__init__.py": False, "src/pkg/a.py": False, "tests/test_a.py": True},
+        edges=[("tests/test_a.py", "src/pkg/a.py", "imports")],
+    )
+    reads: list[str] = []
+    real_graph, real_placed = db.load_import_graph, db.placed_test_files
+
+    async def graph(session, repo_id):
+        reads.append("graph")
+        return await real_graph(session, repo_id)
+
+    async def placed(session, repo_id):
+        reads.append("placed")
+        return await real_placed(session, repo_id)
+
+    monkeypatch.setattr(db, "load_import_graph", graph)
+    monkeypatch.setattr(db, "placed_test_files", placed)
+    first = await db.cached_import_graphs(async_session, repo.id)
+    assert await db.cached_import_graphs(async_session, repo.id) is first
+    assert first[1] == first[0].with_package_inits()
+    placement = await db.cached_placement(async_session, repo.id)
+    assert placement[0] == {"tests/test_a.py"}
+    assert await db.cached_placement(async_session, repo.id) == placement
+    assert reads == ["graph", "placed"]
+
+
 _KY_LIKE = {
     "src/core/Ky.ts": "export class Ky {\n  static create(input: string) { return new Ky(); }\n}\n",
     # Three calls deep before the test's own call: past the call walk's depth.
@@ -800,6 +835,66 @@ async def test_any_reach_reads_which_tests_replace_a_module_from_the_checkout(
     clear_test_map_cache()
     found = await any_tests_reaching(async_session, repo.id, ["app/util.py"])
     assert found["app/util.py"].state == "reached"
+
+
+async def test_stored_test_masks_spare_a_new_process_the_test_file_reads(
+    tmp_path, async_session, monkeypatch
+):
+    """Masks stored at index time serve a new process; a moved index state rebuilds them."""
+    import shutil
+
+    from sqlalchemy import text
+
+    import repowise.core.analysis.test_reach.db as tr
+    from repowise.core.analysis.test_reachability import (
+        cached_test_masks,
+        clear_test_map_cache,
+        write_test_masks_snapshot,
+    )
+    from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
+    from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
+    from tests.unit.analysis.test_public_api_flag import build_fixture
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    builder = build_fixture(root, _SWAPPED)
+    repo = await insert_repo(async_session, local_path=str(root))
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+    assert await write_test_masks_snapshot(async_session, repo.id)
+    await async_session.commit()
+    expected = {
+        "tests/test_core.py": frozenset({"app/util.py"}),
+        "web/a.test.ts": frozenset({"web/a.ts"}),
+    }
+
+    # A new process: nothing cached, and the checkout gone, so only the stored
+    # copy can answer.
+    clear_test_map_cache()
+    shutil.rmtree(root)
+    assert await cached_test_masks(async_session, repo.id) == expected
+
+    # A write that leaves the index state alone keeps the stored copy.
+    await async_session.execute(
+        text("UPDATE graph_nodes SET start_line = 7 WHERE repository_id = :r"), {"r": repo.id}
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    assert await cached_test_masks(async_session, repo.id) == expected
+
+    # A new index state misses it and builds from the checkout (gone: no masks).
+    await async_session.execute(
+        text("UPDATE repositories SET head_commit = 'moved' WHERE id = :r"), {"r": repo.id}
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    reads: list[int] = []
+    real = tr._read_texts
+    monkeypatch.setattr(tr, "_read_texts", lambda *a: reads.append(1) or real(*a))
+    assert await cached_test_masks(async_session, repo.id) == {}
+    assert reads == [1]
 
 
 async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):

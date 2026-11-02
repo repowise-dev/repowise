@@ -67,8 +67,10 @@ export function formatCost(usd: number): string {
   }).format(usd);
 }
 
-/** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
-export function formatRelativeTime(date: string | Date): string {
+export type RelativeTimeUnit = "now" | "s" | "m" | "h" | "d" | "w" | "mo" | "y";
+
+/** The bucket `formatRelativeTime` picks, for hosts that word it themselves. */
+export function relativeTimeParts(date: string | Date): { unit: RelativeTimeUnit; value: number } {
   const d = parseDate(date);
   const now = Date.now();
   const diff = now - d.getTime();
@@ -79,14 +81,20 @@ export function formatRelativeTime(date: string | Date): string {
   const weeks = Math.floor(days / 7);
   const months = Math.floor(days / 30);
 
-  if (seconds < 10) return "just now";
-  if (seconds < 60) return `${seconds}s ago`;
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  if (weeks < 5) return `${weeks}w ago`;
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
+  if (seconds < 10) return { unit: "now", value: 0 };
+  if (seconds < 60) return { unit: "s", value: seconds };
+  if (minutes < 60) return { unit: "m", value: minutes };
+  if (hours < 24) return { unit: "h", value: hours };
+  if (days < 7) return { unit: "d", value: days };
+  if (weeks < 5) return { unit: "w", value: weeks };
+  if (months < 12) return { unit: "mo", value: months };
+  return { unit: "y", value: Math.floor(months / 12) };
+}
+
+/** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
+export function formatRelativeTime(date: string | Date): string {
+  const { unit, value } = relativeTimeParts(date);
+  return unit === "now" ? "just now" : `${value}${unit} ago`;
 }
 
 /** Relative time that tolerates null/invalid input, returning `fallback`

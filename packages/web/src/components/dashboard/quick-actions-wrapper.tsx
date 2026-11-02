@@ -73,6 +73,12 @@ export function QuickActionsWrapper({
         : key === "dead-code"
           ? t("quickActions.deadCode")
           : labelFor(key);
+  // Button labels keep the shell's English casing, so they have their own keys.
+  const tButtons = useTranslations("overview.quickActions");
+  const actions = DEFAULT_QUICK_ACTIONS.map((a) => ({
+    ...a,
+    label: tButtons(a.key === "dead-code" ? "deadCode" : a.key),
+  }));
   // The job on screen and which action started it, so its completion is
   // reported in its own terms and a retry re-runs the same action.
   const { watched, watch: startWatching, watchIfIdle, settle, dismiss } =
@@ -168,7 +174,7 @@ export function QuickActionsWrapper({
 
   return (
     <QuickActionsShell
-      actions={DEFAULT_QUICK_ACTIONS}
+      actions={actions}
       onAction={handleAction}
       lastSyncAt={lastSyncAt}
       lastResyncAt={lastResyncAt}

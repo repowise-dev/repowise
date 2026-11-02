@@ -134,6 +134,7 @@ from repowise.server.mcp_server.tool_answer.callers import (
     is_impact_question,
 )
 from repowise.server.mcp_server.tool_answer.citations import answer_files
+from repowise.server.mcp_server.tool_answer.clauses import cover_clauses
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
     _grade_answer,
@@ -210,6 +211,7 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
     _resolve_reasoning_for_answer,
     synthesize,
 )
+from repowise.server.mcp_server.tool_answer.value_lines import value_line_anchor_hits
 from repowise.server.mcp_server.tool_search_symbols import issue_files
 
 _log = logging.getLogger("repowise.mcp.answer")
@@ -304,12 +306,18 @@ async def _run_retrieval_pipeline(
                     repo_root=_anchor_root,
                     session_factory=ctx.session_factory,
                     question=question,
+                    scope=scope,
                 )
     # Concept anchoring: a why/value question pinning a number to a behaviour
     # anchors the file whose source comment justifies that number.
     if _is_why_question(question) or _is_value_question(question):
         with contextlib.suppress(Exception):
             hits = await _concept_anchor_hits(getattr(ctx, "path", None), question, hits)
+    # Value anchoring: a value set inside a function body (``timeout=5.0``)
+    # anchors the function holding it.
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            hits = await value_line_anchor_hits(ctx, session, repo_id, question, question_ids, hits)
     # Flow-path expansion: when the question anchors 2+ endpoints, inject the
     # files on the path between them, reaching a far endpoint 1-hop expansion
     # cannot. This and the stages below run before the cap so an injected file
@@ -358,6 +366,9 @@ async def _run_retrieval_pipeline(
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
     hits = drop_ruled_out_files(hits, question)
+    # A compound question gets each later clause's best file into the top five.
+    with contextlib.suppress(Exception):
+        hits = await cover_clauses(question, hits, ctx, scope=scope, exclude_spec=exclude_spec)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -618,6 +629,9 @@ async def _graded_payload(
         dominance=dominance,
         uncovered=uncovered,
         lead_off_top=cited.drops_top_hit(hits, answer_text),
+        unindexed_names=retrieved.homonyms.get("unindexed", ()),
+        absent_names=retrieved.homonyms.get("absent", ()),
+        split_names=retrieved.homonyms.get("split"),
     )
     payload = await build_synthesized_payload(
         question=ask.question,

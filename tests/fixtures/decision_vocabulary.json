@@ -11,6 +11,7 @@
     "inline_marker",
     "llm_inferred",
     "pr",
+    "pr_review",
     "session"
   ],
   "retired_sources": [

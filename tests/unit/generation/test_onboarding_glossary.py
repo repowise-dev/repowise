@@ -132,14 +132,18 @@ def test_terms_no_module_group_corroborates_do_not_reach_the_page():
 # ---------------------------------------------------------------------------
 
 
-def test_a_term_the_repository_never_defined_is_left_blank():
-    """The one thing this page refuses to do. An invented definition on a
-    glossary is unfalsifiable by the reader who came to look it up."""
+def _listed(ctx) -> set[str]:
+    return {e.term for e in ctx.entries}
+
+
+def test_a_term_the_repository_never_defined_is_left_off():
+    """The one thing this page refuses to do is invent a definition: one on a
+    glossary is unfalsifiable by the reader who came to look it up. A row
+    without one answers nothing, so the term is not listed at all."""
     terms = [*SIX_TERMS[:5], _term("Split file")]
     ctx = _build(_signals(terms))
-    entry = next(e for e in ctx.entries if e.term == "Split file")
-    assert entry.definition is None
-    assert entry.source_path == "README.md"
+    assert "Split file" not in _listed(ctx)
+    assert all(e.definition for e in ctx.entries)
 
 
 def test_a_definition_that_never_names_its_term_is_still_taken():
@@ -170,7 +174,7 @@ def test_a_command_line_is_not_a_definition():
         _term("Split file", definition="repowise split-file --json # list them"),
     ]
     ctx = _build(_signals(terms))
-    assert next(e for e in ctx.entries if e.term == "Split file").definition is None
+    assert "Split file" not in _listed(ctx)
 
 
 def test_a_sentence_about_a_term_is_not_automatically_its_definition():
@@ -182,37 +186,22 @@ def test_a_sentence_about_a_term_is_not_automatically_its_definition():
     ]
 
     ctx = _build(_signals(terms))
-    entry = next(e for e in ctx.entries if e.term == "Dead code")
 
-    assert entry.definition is None
-    assert entry.definition_evidence == incidental
-    assert entry.definition_evidence_source == "docs/benchmark.md"
+    assert "Dead code" not in _listed(ctx)
 
 
 def test_a_short_incidental_sentence_is_not_a_definition():
     terms = [_term("Dead code", definition="Dead code fails often."), *SIX_TERMS[1:]]
 
     ctx = _build(_signals(terms))
-    entry = next(e for e in ctx.entries if e.term == "Dead code")
 
-    assert entry.definition is None
-    assert entry.definition_evidence == "Dead code fails often."
+    assert "Dead code" not in _listed(ctx)
 
 
-def test_an_undefined_term_still_earns_its_row():
-    """Corroboration is the only test a term has to pass.
-
-    A row whose middle column is an em dash still carries two facts a reader
-    came for: the repository has a word for this, and these are the parts of
-    the system that use it. Requiring a definition was measured and reverted —
-    on this repository it removed "Workspace", "Coupling", "CLI", "Distill",
-    "Costs" and "Decisions", and on django it removed "Security", to remove
-    two weak rows. A lookup page is judged on coverage.
-    """
-    ctx = _build(_signals([*SIX_TERMS, _term("Ingestion")]))
-    listed = {e.term for e in ctx.entries}
-    assert "Ingestion" in listed
-    assert next(e for e in ctx.entries if e.term == "Ingestion").definition is None
+def test_undefined_terms_do_not_count_toward_the_gate():
+    """Five defined terms make a glossary; five named ones do not."""
+    terms = [*SIX_TERMS[:4], *(_term(f"Term {i}") for i in range(4))]
+    assert _build(_signals(terms, modules=[*MODULES, *(f"Term {i}" for i in range(4))])) is None
 
 
 def test_every_row_cites_a_real_path():
@@ -298,18 +287,12 @@ def test_the_page_renders_one_row_per_term(render):
     assert "{{" not in page
 
 
-def test_an_undefined_term_renders_an_em_dash_not_a_sentence(render):
-    page = render(_build(_signals([*SIX_TERMS[:5], _term("Split file")])))
-    row = next(line for line in page.splitlines() if line.startswith("| **Split file**"))
-    assert "| — |" in row
-
-
 def test_a_pipe_in_mined_prose_does_not_break_the_table(render):
     """Definitions are the repository's text, not ours. One quoting a shell
     pipeline would otherwise shift every column to its right."""
     terms = [
         *SIX_TERMS[:5],
-        _term("Split file", definition="Split file findings pipe | into the report."),
+        _term("Split file", definition="Split file proposes a split for an a|b file."),
     ]
     page = render(_build(_signals(terms)))
     row = next(line for line in page.splitlines() if line.startswith("| **Split file**"))
@@ -331,11 +314,11 @@ def test_a_term_the_codebase_defines_is_backticked_and_a_coined_one_is_not(rende
     assert "| **Dead code** |" in page
 
 
-def test_the_page_says_how_much_of_its_vocabulary_it_could_define(render):
-    """A glossary covering a third of the terms it lists should say so rather
-    than reading as though the repository defined everything."""
-    page = render(_build(_signals([*SIX_TERMS[:5], _term("Split file")])))
-    assert "5 of 6 terms carry a definition" in page
+def test_the_page_says_which_terms_it_left_off(render):
+    """A term the code confirms but the repository never defines is counted,
+    so the page does not read as the repository's whole vocabulary."""
+    page = render(_build(_signals([*SIX_TERMS, _term("Ingestion")])))
+    assert "1 more term the code confirms is not listed" in page
 
 
 # ---------------------------------------------------------------------------

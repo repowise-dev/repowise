@@ -16,6 +16,7 @@ import {
 import { useAiPromptAction } from "../health/ai-prompt-action";
 import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { EFFORT_LABEL } from "../health/labels";
+import type { Severity } from "../health/tokens";
 import { RowPromptAction } from "../health/row-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
@@ -53,7 +54,81 @@ export interface NextActionsProps {
    */
   defaultOpen?: boolean;
   LinkComponent?: ElementType | undefined;
+  /** The list's own words. English by default; the actions' text is the server's. */
+  copy?: Partial<NextActionsCopy> | undefined;
 }
+
+export interface NextActionsCopy {
+  title: string;
+  /** The folded heading, which carries the count. */
+  titleCount: (count: number) => string;
+  timeFrame: string;
+  week: string;
+  weekHint: string;
+  quarter: string;
+  quarterHint: string;
+  tier: (tier: ActionTier) => string;
+  allAnswered: string;
+  showFewer: string;
+  showAll: (count: number) => string;
+  listing: (shown: number, total: number) => string;
+  answered: (count: number) => string;
+  /** `checks` is the comma-joined list of checks that did not run. */
+  notChecked: (checks: string) => string;
+  emptyChecks: (count: number) => string;
+  undo: string;
+  undoFailed: string;
+  saveFailed: string;
+  openDetails: string;
+  markDone: string;
+  markedDone: string;
+  snooze: string;
+  snoozed: string;
+  dismiss: string;
+  dismissed: string;
+  effort: (effort: NextAction["effort"]) => string;
+  worthCheck: string;
+  inferred: string;
+  openRow: (title: string) => string;
+  moreFor: (title: string) => string;
+  /** Undefined keeps SeverityMark's own word. */
+  severity: (severity: Severity) => string | undefined;
+}
+
+export const NEXT_ACTIONS_COPY: NextActionsCopy = {
+  title: "Do next",
+  titleCount: (count) => `Do next · ${count.toLocaleString("en-US")}`,
+  timeFrame: "Time frame",
+  week: "This week",
+  weekHint: "What the last 7 days of commits changed",
+  quarter: "This quarter",
+  quarterHint: "What the last 90 days say is worth planning",
+  tier: (tier) => ACTION_TIER_LABELS[tier] ?? tier,
+  allAnswered: "You have answered everything listed here. Answers are kept until the facts change.",
+  showFewer: "Show fewer",
+  showAll: (count) => `Show all ${count.toLocaleString()}`,
+  listing: (shown, total) => `Listing ${shown.toLocaleString()} of ${total.toLocaleString()}.`,
+  answered: (count) => `${plural(count, "action")} answered (done, snoozed or dismissed).`,
+  notChecked: (checks) => `Not checked: ${checks}.`,
+  emptyChecks: (count) =>
+    `Repowise ran ${plural(count, "check")} over this index and none of them produced work for this time frame.`,
+  undo: "Undo",
+  undoFailed: "Could not undo",
+  saveFailed: "Could not save that; the action is back in the list",
+  openDetails: "Open details",
+  markDone: "Mark done",
+  markedDone: "Marked done. It returns if the facts change.",
+  snooze: "Snooze for 14 days",
+  snoozed: "Snoozed for 14 days",
+  dismiss: "Dismiss",
+  dismissed: "Dismissed. It returns if the facts change.",
+  effort: (effort) => `${EFFORT_LABEL[effort]} effort`,
+  worthCheck: "worth a check",
+  inferred: "(inferred)",
+  openRow: (title) => `Open ${title}`,
+  moreFor: (title) => `More for ${title}`,
+  severity: () => undefined,
+};
 
 type ActionPromptLoader = (action: NextAction, flavor: AiPromptFlavor) => Promise<string>;
 
@@ -145,7 +220,9 @@ export function NextActions({
   showCliCommands,
   defaultOpen = true,
   LinkComponent,
+  copy,
 }: NextActionsProps) {
+  const c = { ...NEXT_ACTIONS_COPY, ...copy };
   // Open on the week unless it holds no work and the quarter does: a lone
   // "add a coverage report" is not a reason to show an empty week first.
   // Counts come from `data` alone, like the sentence, so the two agree; both
@@ -185,27 +262,27 @@ export function NextActions({
       () =>
         toast.success(message, {
           action: {
-            label: "Undo",
+            label: c.undo,
             onClick: () => {
               restore();
-              void onSetState(action, null).catch(() => toast.error("Could not undo"));
+              void onSetState(action, null).catch(() => toast.error(c.undoFailed));
             },
           },
         }),
       () => {
         restore();
-        toast.error("Could not save that; the action is back in the list");
+        toast.error(c.saveFailed);
       },
     );
   };
 
   const timeFrame = (
     <Segmented
-      label="Time frame"
+      label={c.timeFrame}
       value={horizon}
       options={[
-        { value: "week", label: "This week", count: String(work("week")), hint: "What the last 7 days of commits changed" },
-        { value: "quarter", label: "This quarter", count: String(work("quarter")), hint: "What the last 90 days say is worth planning" },
+        { value: "week", label: c.week, count: String(work("week")), hint: c.weekHint },
+        { value: "quarter", label: c.quarter, count: String(work("quarter")), hint: c.quarterHint },
       ]}
       onChange={(v) => {
         setHorizon(v);
@@ -216,7 +293,7 @@ export function NextActions({
 
   return (
     <OverviewSection
-      title={defaultOpen ? "Do next" : `Do next · ${work(horizon).toLocaleString("en-US")}`}
+      title={defaultOpen ? c.title : c.titleCount(work(horizon))}
       description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
       // A folded section has no header action slot, so the time frame sits
       // under the summary, above the list it filters, and the toggle carries
@@ -228,16 +305,16 @@ export function NextActions({
       {!defaultOpen && timeFrame}
       {shown.length === 0 && [...answered.values()].some((a) => a.horizons.includes(horizon)) ? (
         <p className="py-2 text-sm text-[var(--color-text-secondary)]">
-          You have answered everything listed here. Answers are kept until the facts change.
+          {c.allAnswered}
         </p>
       ) : shown.length === 0 ? (
-        <EmptyActions data={data} />
+        <EmptyActions data={data} copy={c} />
       ) : (
         <div className="flex flex-col">
           {groupByTier(shown).map(([tier, items]) => (
             <div key={tier} className="flex flex-col">
               <h3 className="pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:pt-0">
-                {ACTION_TIER_LABELS[tier] ?? tier}
+                {c.tier(tier)}
               </h3>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
                 {items.map((action) => (
@@ -248,6 +325,7 @@ export function NextActions({
                     onOpen={() => setOpened(action)}
                     onPrompt={loadPrompt ? () => openActionPrompt(action, loadPrompt) : undefined}
                     onAnswer={onSetState ? (state, message) => answer(action, state, message) : undefined}
+                    copy={c}
                   />
                 ))}
               </ul>
@@ -263,23 +341,22 @@ export function NextActions({
             onClick={() => setExpanded((e) => !e)}
             className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
-            {expanded ? "Show fewer" : `Show all ${Math.min(rows.length, total).toLocaleString()}`}
+            {expanded ? c.showFewer : c.showAll(Math.min(rows.length, total))}
           </button>
         )}
         {total > rows.length && (
           <span className="tabular-nums">
-            {`Listing ${rows.length.toLocaleString()} of ${total.toLocaleString()}.`}
+            {c.listing(rows.length, total)}
           </span>
         )}
         {h.hidden + (h.actions.length - rows.length) > 0 && (
-          <span className="tabular-nums">{`${plural(
-            h.hidden + (h.actions.length - rows.length),
-            "action",
-          )} answered (done, snoozed or dismissed).`}</span>
+          <span className="tabular-nums">
+            {c.answered(h.hidden + (h.actions.length - rows.length))}
+          </span>
         )}
         {unavailable.length > 0 && (
           <span>
-            {`Not checked: ${unavailable.join(", ").replace(/_/g, " ")}.`}
+            {c.notChecked(unavailable.join(", ").replace(/_/g, " "))}
             {unavailableHint === undefined ? (
               <>
                 {" Run "}
@@ -346,6 +423,7 @@ export function ActionRow({
   selected = false,
   onPrompt,
   onAnswer,
+  copy,
 }: {
   action: NextAction;
   /** Open the action's drawer; the whole row is the trigger. */
@@ -354,34 +432,36 @@ export function ActionRow({
   /** Open the agent prompt for this action. Omit to hide the row's prompt verb. */
   onPrompt?: (() => void) | undefined;
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
+  copy?: Partial<NextActionsCopy> | undefined;
 }) {
+  const c = { ...NEXT_ACTIONS_COPY, ...copy };
   const plainTitle = action.title.replace(/`/g, "");
   const location = actionLocation(action);
   const items = [
-    { label: "Open details", icon: PanelRight, onSelect: onOpen },
+    { label: c.openDetails, icon: PanelRight, onSelect: onOpen },
     ...(onAnswer
       ? [
           {
-            label: "Mark done",
+            label: c.markDone,
             icon: Check,
-            onSelect: () => onAnswer("done", "Marked done. It returns if the facts change."),
+            onSelect: () => onAnswer("done", c.markedDone),
           },
           {
-            label: "Snooze for 14 days",
+            label: c.snooze,
             icon: BellOff,
-            onSelect: () => onAnswer("snoozed", "Snoozed for 14 days"),
+            onSelect: () => onAnswer("snoozed", c.snoozed),
           },
           {
-            label: "Dismiss",
+            label: c.dismiss,
             icon: X,
-            onSelect: () => onAnswer("dismissed", "Dismissed. It returns if the facts change."),
+            onSelect: () => onAnswer("dismissed", c.dismissed),
           },
         ]
       : []),
   ];
   return (
     <li
-      aria-label={`Open ${plainTitle}`}
+      aria-label={c.openRow(plainTitle)}
       aria-current={selected ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
       className={`${CLICKABLE_ROW_CLS} group group/row flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
@@ -392,7 +472,11 @@ export function ActionRow({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           {action.tier === "act_now" && (
-            <SeverityMark severity={action.severity} className="translate-y-[-1px]" />
+            <SeverityMark
+              severity={action.severity}
+              label={c.severity(action.severity)}
+              className="translate-y-[-1px]"
+            />
           )}
           <p className="min-w-0 text-[15px] font-semibold leading-snug text-[var(--color-text-primary)] [text-wrap:pretty] group-hover:text-[var(--color-accent-primary)]">
             {renderActionTitle(action.title)}
@@ -419,7 +503,7 @@ export function ActionRow({
               >
                 {w.value}
                 {w.basis === "inferred" && (
-                  <span className="ml-1 font-sans text-[var(--color-text-tertiary)]">(inferred)</span>
+                  <span className="ml-1 font-sans text-[var(--color-text-tertiary)]">{c.inferred}</span>
                 )}
               </dd>
             </div>
@@ -428,27 +512,27 @@ export function ActionRow({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          <span className="hidden sm:inline">{`${EFFORT_LABEL[action.effort]} effort`}</span>
+          <span className="hidden sm:inline">{c.effort(action.effort)}</span>
           {action.confidence === "medium" && (
             <>
               <span className="hidden sm:inline">, </span>
-              <span>worth a check</span>
+              <span>{c.worthCheck}</span>
             </>
           )}
         </span>
         {onPrompt && <RowPromptAction subject={plainTitle} onClick={onPrompt} />}
-        <RowOverflow label={`More for ${plainTitle}`} items={items} />
+        <RowOverflow label={c.moreFor(plainTitle)} items={items} />
       </div>
     </li>
   );
 }
 
-function EmptyActions({ data }: { data: ActionsResponse }) {
+function EmptyActions({ data, copy }: { data: ActionsResponse; copy: NextActionsCopy }) {
   const checked = data.rules.filter((r) => r.status === "evaluated").length;
   const skipped = data.rules.filter((r) => r.status === "not_applicable");
   return (
     <div className="flex flex-col gap-1 py-2 text-sm text-[var(--color-text-secondary)]">
-      <p>{`Repowise ran ${plural(checked, "check")} over this index and none of them produced work for this time frame.`}</p>
+      <p>{copy.emptyChecks(checked)}</p>
       {skipped.length > 0 && (
         <p className="text-xs text-[var(--color-text-tertiary)]">
           {skipped.map((r) => r.reason).join(" ")}

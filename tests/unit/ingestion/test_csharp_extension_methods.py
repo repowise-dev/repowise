@@ -210,8 +210,8 @@ class TestRefusals:
         }
         assert "Slug" not in _resolve(tmp_path, files, "src/Consumer.cs")
 
-    def test_refuses_when_the_receiver_inherits_the_method(self, tmp_path: Path) -> None:
-        """C# prefers an inherited instance method, and no tier above sees one."""
+    def test_an_inherited_instance_method_outranks_an_extension(self, tmp_path: Path) -> None:
+        """C# prefers an inherited instance method, so the base's member answers."""
         files = {
             "src/Base.cs": (
                 "namespace Acme;\npublic class BaseOrder { public int Net() { return 1; } }\n"
@@ -227,7 +227,8 @@ class TestRefusals:
             ),
         }
         heritage = {"src/Order.cs::Order": {"src/Base.cs::BaseOrder"}}
-        assert "Net" not in _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+        found = _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+        assert found["Net"] == ("receiver_typed_global", 0.75)
 
     def test_a_default_value_is_not_a_parameter_list(self, tmp_path: Path) -> None:
         """A parenthesised string in a default value must not mint a pair."""

@@ -7,10 +7,11 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -19,7 +20,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
-from ._shared import _parse_dt
+from ._shared import _BATCH_SIZE, _parse_dt
 
 # ---------------------------------------------------------------------------
 # Page CRUD (with versioning)
@@ -320,6 +321,7 @@ async def upsert_page(
 async def load_prior_pages(
     session: AsyncSession,
     repository_id: str,
+    page_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return a ``page_id → PriorPage`` map for cross-run cache reuse.
 
@@ -330,16 +332,15 @@ async def load_prior_pages(
     nothing has been generated yet. Rows a model never wrote (``template``
     provider — keyless stubs, or stubs left by failed provider calls) carry
     their ``provider_name`` so the reuse gate can refuse to copy them
-    (issue #1089).
+    (issue #1089). *page_ids* narrows the read to those pages.
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
     from repowise.core.generation.models import STUB_FALLBACK_ERROR
     from repowise.core.generation.page_generator import PriorPage
 
-    result = await session.execute(select(Page).where(Page.repository_id == repository_id))
     prior: dict[str, Any] = {}
-    for row in result.scalars():
+    for row in await _prior_rows(session, repository_id, page_ids):
         try:
             metadata = json.loads(row.metadata_json or "{}")
         except (TypeError, ValueError):
@@ -362,6 +363,20 @@ async def load_prior_pages(
             provider_name=row.provider_name,
         )
     return prior
+
+
+async def _prior_rows(
+    session: AsyncSession, repository_id: str, page_ids: list[str] | None
+) -> list[Page]:
+    query = select(Page).where(Page.repository_id == repository_id)
+    if page_ids is None:
+        return list((await session.execute(query)).scalars())
+    rows: list[Page] = []
+    unique = list(dict.fromkeys(page_ids))
+    for i in range(0, len(unique), _BATCH_SIZE):
+        batch = query.where(Page.id.in_(unique[i : i + _BATCH_SIZE]))
+        rows.extend((await session.execute(batch)).scalars())
+    return rows
 
 
 async def upsert_page_from_generated(
@@ -429,9 +444,10 @@ async def upsert_pages_from_generated(
     :func:`_apply_page_upsert` (version snapshot on content change, no-op touch
     on metadata-only change, insert on new).
 
-    NOT a drop-in for the per-page durability sinks: this flushes once at the
-    end, so an interrupt mid-batch persists nothing. The ``on_page_ready``
-    streaming sinks must keep calling :func:`upsert_page_from_generated`.
+    It flushes once at the end, so an interrupt mid-batch persists nothing of
+    the batch. A streaming sink that commits per page must keep calling
+    :func:`upsert_page_from_generated`; one that commits per batch (init's
+    incremental sink) can call this.
 
     Assumes ``generated_pages`` carries no duplicate ``page_id`` (true by
     construction: ids are deterministic, one page per target).
@@ -639,6 +655,19 @@ async def set_page_pinned(session: AsyncSession, page_id: str, pinned: bool) -> 
     return page
 
 
+@dataclass(frozen=True)
+class PageListing:
+    """Which pages a listing returns, and in what order and window."""
+
+    page_type: str | None = None
+    has_prose: bool | None = None
+    include_tombstones: bool = True
+    limit: int = 100
+    offset: int = 0
+    sort_by: str = "updated_at"
+    order: str = "desc"
+
+
 async def list_pages(
     session: AsyncSession,
     repository_id: str,
@@ -666,29 +695,103 @@ async def list_pages(
     reader-facing count or listing, where a tombstoned page (its file is gone)
     should not be shown or counted.
     """
-    q = select(Page).where(Page.repository_id == repository_id)
-    if page_type is not None:
-        q = q.where(Page.page_type == page_type)
-    if not include_tombstones:
+    listing = PageListing(
+        page_type=page_type,
+        has_prose=has_prose,
+        include_tombstones=include_tombstones,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        order=order,
+    )
+    q = _filter_page_listing(select(Page), repository_id, listing)
+    result = await session.execute(q)
+    return list(result.scalars().all())
+
+
+# The columns a page listing sends, without the two heavy ones.
+_SUMMARY_COLUMNS = (
+    Page.id,
+    Page.repository_id,
+    Page.page_type,
+    Page.title,
+    Page.target_path,
+    Page.source_hash,
+    Page.model_name,
+    Page.provider_name,
+    Page.input_tokens,
+    Page.output_tokens,
+    Page.cached_tokens,
+    Page.generation_level,
+    Page.version,
+    Page.confidence,
+    Page.freshness_status,
+    Page.human_notes,
+    Page.parent_page_id,
+    Page.display_order,
+    Page.section_number,
+    Page.structural_key,
+    Page.created_at,
+    Page.updated_at,
+)
+# The metadata keys a summary row promotes; only blobs that mention one are read.
+SUMMARY_METADATA_KEYS = ("layer_id", "is_chapter")
+
+
+async def list_page_summaries(
+    session: AsyncSession, repository_id: str, listing: PageListing
+) -> list[Any]:
+    """:func:`list_pages` as column rows, without ``content``.
+
+    Each row carries ``content_chars`` (the body's length, counted by the
+    database) and ``metadata_json`` only when the blob holds a key in
+    :data:`SUMMARY_METADATA_KEYS`, else ``None``. No ORM entities are built:
+    on an 8.8k-page wiki loading full pages to drop their bodies cost
+    seconds per listing.
+    """
+    # The window is picked over ids first: sorting the full rows would carry
+    # every page's length and metadata blob through the sort on every trip.
+    window = _filter_page_listing(select(Page.id), repository_id, listing)
+    mentions_key = or_(*(Page.metadata_json.contains(k) for k in SUMMARY_METADATA_KEYS))
+    q = (
+        select(
+            *_SUMMARY_COLUMNS,
+            func.length(Page.content).label("content_chars"),
+            case((mentions_key, Page.metadata_json), else_=None).label("metadata_json"),
+        )
+        .where(Page.id.in_(window.scalar_subquery()))
+        .order_by(*_listing_order(listing.sort_by, listing.order))
+    )
+    return list((await session.execute(q)).all())
+
+
+def _filter_page_listing(q: Any, repository_id: str, listing: PageListing) -> Any:
+    """The filters, order and window shared by both page listings."""
+    q = q.where(Page.repository_id == repository_id)
+    if listing.page_type is not None:
+        q = q.where(Page.page_type == listing.page_type)
+    if not listing.include_tombstones:
         q = q.where(Page.freshness_status != "tombstone")
-    if has_prose is not None:
+    if listing.has_prose is not None:
         from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
         q = q.where(Page.page_type.in_(sorted(MODEL_WRITTEN_PAGE_TYPES)))
-        if has_prose:
+        if listing.has_prose:
             q = q.where(Page.provider_name != "template")
         else:
             q = q.where(Page.provider_name == "template")
-    _sort_cols = {
+    order = _listing_order(listing.sort_by, listing.order)
+    return q.order_by(*order).limit(listing.limit).offset(listing.offset)
+
+
+def _listing_order(sort_by: str, order: str) -> tuple[Any, Any]:
+    """The listing's sort, with the id breaking ties so pages never overlap."""
+    sort_col = {
         "updated_at": Page.updated_at,
         "confidence": Page.confidence,
         "created_at": Page.created_at,
-    }
-    sort_col = _sort_cols.get(sort_by, Page.updated_at)
-    q = q.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
-    q = q.limit(limit).offset(offset)
-    result = await session.execute(q)
-    return list(result.scalars().all())
+    }.get(sort_by, Page.updated_at)
+    return (sort_col.asc() if order == "asc" else sort_col.desc(), Page.id.asc())
 
 
 async def get_page_versions(
@@ -734,6 +837,12 @@ _FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
 # retired and swept independently.
 _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES = frozenset({"scc_page"})
 
+# Model-written whole-repository pages an update re-renders only while they are
+# still the keyless rendering: refreshing one costs no tokens and writes over
+# no prose. Once a model has written one it waits for ``generate --stale``,
+# like every other page a model writes.
+_UPDATE_WIDE_STUB_PAGE_TYPES = frozenset({"flow_page"})
+
 
 async def get_stale_update_targets(
     session: AsyncSession,
@@ -747,17 +856,25 @@ async def get_stale_update_targets(
     from one query keeps the up-to-date fast path to a single store read.
     """
     result = await session.execute(
-        select(Page.id, Page.page_type, Page.target_path).where(
+        select(Page.id, Page.page_type, Page.target_path, Page.provider_name).where(
             Page.repository_id == repository_id,
             Page.page_type.in_(
-                sorted(_FILE_SCOPED_PAGE_TYPES | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES)
+                sorted(
+                    _FILE_SCOPED_PAGE_TYPES
+                    | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES
+                    | _UPDATE_WIDE_STUB_PAGE_TYPES
+                )
             ),
             Page.freshness_status.in_(["stale", "expired"]),
         )
     )
     stale_paths: list[str] = []
     deterministic_ids: set[str] = set()
-    for page_id, page_type, target_path in result:
+    for page_id, page_type, target_path, provider_name in result:
+        if page_type in _UPDATE_WIDE_STUB_PAGE_TYPES:
+            if provider_name == "template":
+                deterministic_ids.add(page_id)
+            continue
         if page_type in _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES:
             deterministic_ids.add(page_id)
             continue

@@ -22,7 +22,8 @@ from .. import onboarding as _onboarding
 from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
-from .helpers import _is_infra_file, decisions_for_files, rank_decisions
+from ..page_tree import is_module_head, nearest_head
+from .helpers import _is_infra_file, decisions_for_files, indexed_parsed_files, rank_decisions
 
 if TYPE_CHECKING:
     from ..concept_tree.vocabulary import HouseTerm
@@ -63,9 +64,7 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     level1 = [
         (
             compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}"),
-            gen.generate_symbol_spotlight(
-                sym, pf, run.pagerank, run.graph, source_map=run.source_map
-            ),
+            gen.generate_symbol_spotlight(sym, pf, run.graph),
         )
         for sym, pf in top_symbols
         if run._emit(compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}"))
@@ -235,7 +234,7 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
-    """The pages a rollup links down to: those it is the nearest chapter of.
+    """The pages a rollup links down to: those it is the nearest head of.
 
     The same rule ``assign_page_tree`` nests by, so the links match the tree:
     a nested overview links to the next level down (a sub-overview or a leaf),
@@ -244,16 +243,12 @@ def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
     itself is excluded. Titles are read after naming, so they match what the
     tree shows.
     """
-    chapters = {g.key for g in groups if getattr(g, "is_rollup", False)}
-
-    def nearest_chapter(key: str) -> str | None:
-        while "/" in key:
-            key = key.rsplit("/", 1)[0]
-            if key in chapters:
-                return key
-        return None
-
-    children = [g for g in groups if g.key != rollup.key and nearest_chapter(g.key) == rollup.key]
+    heads = {
+        g.key
+        for g in groups
+        if is_module_head(g.key, getattr(g, "file_paths", ()), bool(getattr(g, "is_rollup", False)))
+    }
+    children = [g for g in groups if g.key != rollup.key and nearest_head(g.key, heads) == rollup.key]
     children.sort(key=lambda g: g.key)
     return [{"title": g.display, "path": g.key} for g in children]
 
@@ -271,10 +266,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 4 (module_page), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
-    # The whole indexed set, not this run's slice: re-exports reach unchanged files.
-    parsed_by_path = getattr(run.graph_builder, "_parsed_files", None)
-    if not isinstance(parsed_by_path, dict) or not parsed_by_path:
-        parsed_by_path = {p.file_info.path: p for p in run.parsed_files}
+    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
     package_roots = package_roots_from_paths(set(parsed_by_path))
     flows = _execution_flows(run.graph_builder)
     for mg in run.sel_module_groups:
@@ -492,6 +484,38 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             )
         )
     return coros
+
+
+def flow_module_index(module_groups: list[Any]) -> dict[str, tuple[str, str]]:
+    """``file -> (module page id, title)``: the page a flow step points at.
+
+    A file's documenting page is the group that claims it in ``file_paths``,
+    the same ownership rule the docs tree places file pages by.
+    """
+    index: dict[str, tuple[str, str]] = {}
+    for mg in module_groups:
+        page_id = compute_page_id("module_page", mg.key)
+        for path in mg.file_paths:
+            index.setdefault(path, (page_id, mg.display))
+    return index
+
+
+def build_flow_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+    """Level 5 (flow_page): one walkthrough per selected operation."""
+    plans = run.flow_plans()
+    emitted = [plan for plan in plans if run._emit(plan.page_id)]
+    if not emitted:
+        return []
+    modules = flow_module_index(run.sel_module_groups)
+    return [
+        (
+            plan.page_id,
+            run.gen.generate_flow_page(
+                plan, graph=run.graph, modules=modules, source_map=run.source_map
+            ),
+        )
+        for plan in emitted
+    ]
 
 
 def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:

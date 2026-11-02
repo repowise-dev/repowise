@@ -22,6 +22,7 @@ async def prune_deleted_files(
     log: LogFn,
     degraded: list[str] | None,
     timings: PhaseTimings | None,
+    pruned: set[str] | None = None,
 ) -> None:
     """Drop file-scoped rows for deleted files, then rebuild the queues built from them.
 
@@ -36,7 +37,7 @@ async def prune_deleted_files(
     sources); they fail every liveness test, and only changed files' edges are
     rebuilt afterwards. A graph that cannot be read skips the prune.
     """
-    pruned = 0
+    pruned_count = 0
     try:
         from repowise.core.pipeline.persist import prune_deleted_file_rows
 
@@ -46,11 +47,11 @@ async def prune_deleted_files(
             if data.get("node_type", "file") == "file"
         }
         with timed(timings, "persist.prune"):
-            pruned, refusals = await prune_deleted_file_rows(
-                session, repo_id, repo_path, live_hint=live_hint
+            pruned_count, refusals = await prune_deleted_file_rows(
+                session, repo_id, repo_path, live_hint=live_hint, pruned=pruned
             )
-        if pruned:
-            log(f"Pruned rows for [cyan]{pruned}[/cyan] deleted file(s)")
+        if pruned_count:
+            log(f"Pruned rows for [cyan]{pruned_count}[/cyan] deleted file(s)")
         for refusal in refusals:
             log(f"[yellow]{refusal}[/yellow]")
             if degraded is not None:
@@ -61,7 +62,7 @@ async def prune_deleted_files(
     # The performance and refactoring queues are materialized from the health
     # findings the prune just deleted; without this they keep serving a cause
     # whose evidence is gone, on a file the store no longer claims exists.
-    if not pruned:
+    if not pruned_count:
         return
     try:
         from repowise.core.persistence.crud import (

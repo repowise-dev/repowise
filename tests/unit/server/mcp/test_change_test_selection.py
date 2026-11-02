@@ -122,14 +122,14 @@ def _tc(test_id: str, source_file: str, covered_lines: list[int]):
     )
 
 
-async def _change_risk(monkeypatch, repo: Path, factory) -> dict:
+async def _change_risk(monkeypatch, repo: Path, factory, **filters) -> dict:
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
     async def _context(_: str | None) -> SimpleNamespace:
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    return await module.get_change_risk("HEAD", baseline=0, include=["tests"])
+    return await module.get_change_risk("HEAD", baseline=0, include=["tests"], **filters)
 
 
 async def _risk_directive(monkeypatch, repo: Path, factory, changed: list[str]) -> dict:
@@ -170,6 +170,74 @@ async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch
     assert it["why"]["tests/test_walks.py"].startswith("runs with every subset: it lists")
     assert it["always_run_total"] == 1
     assert it["basis_by_file"] == {"src/status.py": "import-graph"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"exclude_patterns": ["docs/"]},
+        {"extensions": [".py"]},
+        {"include_paths": ["src/"]},
+    ],
+    ids=["none", "exclude_patterns", "extensions", "include_paths"],
+)
+async def test_change_risk_selects_tests_once_while_it_scores(
+    tmp_path, monkeypatch, filters
+) -> None:
+    """The selection starts beside the score, and the tests block joins it.
+
+    The request's path filters narrow the score, not the tests block's change,
+    so a filtered call shares the same selection.
+    """
+    import asyncio
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, {**_STATUS, "docs/notes.md": "one\n"})
+    # The docs edit is what each filter drops from the score.
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
+        "fix: status",
+    )
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+        db_file=tmp_path / "wiki.db",
+    )
+    runs: list[str] = []
+    real = _test_selection._select_here
+
+    async def _recording(*args, **kwargs):
+        runs.append(args[2].label)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_test_selection, "_select_here", _recording)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+    tool = importlib.import_module("repowise.server.mcp_server.tool_change_risk.tool")
+    real_score = tool._score_change
+    during: list[bool] = []
+
+    async def _slow_score(*args, **kwargs):
+        for _ in range(500):
+            if runs:
+                break
+            await asyncio.sleep(0.01)
+        during.append(bool(runs))
+        return await real_score(*args, **kwargs)
+
+    monkeypatch.setattr(tool, "_score_change", _slow_score)
+
+    it = (await _change_risk(monkeypatch, repo, factory, **filters))["impacted_tests"]
+
+    assert it["status"] == "selected"
+    assert "tests/test_status.py" in it["tests_to_run"]
+    assert during == [True]
+    assert len(runs) == 1
 
 
 @pytest.mark.asyncio
@@ -599,3 +667,12 @@ def test_get_risk_counts_the_broadcast_and_import_closure_apart(tmp_path) -> Non
     summary = tests_summary(len(population), basis, fields, {}, False, 10)
     assert "3 more test(s) must still run because a conftest" in summary
     assert "1 more test(s) must still run because they import the change" in summary
+
+
+def test_only_a_named_commit_starts_a_selection_before_the_score() -> None:
+    from repowise.server.mcp_server.tool_change_risk.impacted import _start_selection
+
+    ctx = SimpleNamespace(path=".", session_factory=object())
+    # Both read as uncommitted or staged work to git, never as the scored HEAD.
+    assert _start_selection(ctx, None) is None
+    assert _start_selection(ctx, "") is None

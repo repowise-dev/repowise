@@ -859,6 +859,8 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",  # JAX-WS
+    "WebServiceProvider",
     "ApplicationScoped",
     "RequestScoped",
     "SessionScoped",

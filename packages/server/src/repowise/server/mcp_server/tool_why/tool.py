@@ -15,6 +15,7 @@ from repowise.server.mcp_server.tool_why.basis import _stamp_answer_basis
 from repowise.server.mcp_server.tool_why.dashboard import _why_health_dashboard
 from repowise.server.mcp_server.tool_why.loading import _named_file
 from repowise.server.mcp_server.tool_why.path_mode import _why_path, _why_targets
+from repowise.server.mcp_server.tool_why.projection import lean_response
 from repowise.server.mcp_server.tool_why.reference import _why_reference
 from repowise.server.mcp_server.tool_why.search import _why_search
 from repowise.server.mcp_server.tool_why.workspace import _why_workspace_search
@@ -47,8 +48,8 @@ async def get_why(
     story + alignment score), a question anchored to targets, or no query
     (decision health dashboard). Falls back to git archaeology when no
     decisions exist for a path — never empty. Evidence-bearing rows carry an
-    explicit ``provenance`` and self-contained ``evidence_refs``; matching ids
-    mean shared evidence, not independent corroboration. Every decision row
+    explicit ``provenance`` and ``evidence_refs`` whose ids ``id=`` resolves in
+    full; matching ids mean shared evidence, not independent corroboration. Every decision row
     carries ``authority``: ``accepted`` means somebody signed it, ``candidate``
     means nobody has yet. ``answer_basis`` names the strongest lane the response
     rests on (decision, episode, rationale, archaeology, documentation,
@@ -77,19 +78,19 @@ async def get_why(
             response = _unsupported_repo_all("get_why (health dashboard)")
             response["error"] += " To search all repositories, pass a query."
             return response
-        return _stamp_answer_basis(await _why_workspace_search(query))
+        return _stamp_answer_basis(_lean(await _why_workspace_search(query)))
 
     # --- Mode 1: No query → the targets, or the health dashboard ---
     # Targets first: naming files and asking nothing asks about those files.
     if not query:
         if targets:
-            return _stamp_answer_basis(await _why_targets(list(targets), repo))
+            return _stamp_answer_basis(_lean(await _why_targets(list(targets), repo)))
         # An orientation call, not an answer: no basis to name.
-        return await _why_health_dashboard(repo)
+        return _lean(await _why_health_dashboard(repo))
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
-        return _stamp_answer_basis(await _why_path(query, repo))
+        return _stamp_answer_basis(_lean(await _why_path(query, repo)))
 
     # --- Mode 3: Natural language → target-aware search ---
     # A named file anchors as ``targets`` would; a failed lookup anchors nothing.
@@ -102,7 +103,12 @@ async def get_why(
     result = await _why_search(query, [named] if named else targets, repo)
     if named:
         result["anchored_on"] = named
-    return _stamp_answer_basis(result)
+    return _stamp_answer_basis(_lean(result))
+
+
+def _lean(result: dict) -> dict:
+    # A workspace ref names its repository, so passing it back routes the lookup.
+    return lean_response(result, keep_repository=_is_workspace_mode())
 
 
 def _reference_coordinates(

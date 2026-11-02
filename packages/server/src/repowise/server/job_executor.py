@@ -31,6 +31,7 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session, refresh_planner_stats
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
+from repowise.core.pipeline.index_persistence import publish_index_persistence
 from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
@@ -583,6 +584,7 @@ async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     all_pages = (result.generated_pages or []) + incremental_pages
     await _refresh_fts(run.fts, swept_page_ids, all_pages)
     await refresh_planner_stats(run.session_factory.kw["bind"])
+    await publish_index_persistence(spec.repo_id, Path(spec.repo_path))
 
     # Stop progress updates first, so none overwrites "completed".
     await run.progress.drain_and_stop()

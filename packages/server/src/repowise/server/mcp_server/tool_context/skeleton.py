@@ -14,6 +14,36 @@ from repowise.server.mcp_server._budget import DEFAULT_RESPONSE_CHARS
 _FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
 
 
+def _document_outline(source: str, file_path: str) -> dict[str, Any] | None:
+    """A document over the skeleton budget as its headings with line numbers.
+
+    ``None`` for a code file, a document within the budget (served whole), or
+    one without headings.
+    """
+    from repowise.core.distill.budget import estimate_tokens
+    from repowise.core.distill.skeleton import DEFAULT_TOKEN_BUDGET
+    from repowise.server.mcp_server.tool_context.preview import heading_rows
+
+    full_tokens = estimate_tokens(source)
+    rows = heading_rows(source, file_path) if full_tokens > DEFAULT_TOKEN_BUDGET else None
+    if not rows:
+        return None
+    text = "\n".join(f"{n}: {title}" for n, title in rows)
+    tokens = estimate_tokens(text)
+    return {
+        "mode": "outline",
+        "tokens": tokens,
+        "full_tokens": full_tokens,
+        "pct_of_full": round(100 * tokens / full_tokens, 1),
+        "text": text,
+        "verified": True,
+        "note": (
+            "Document over the skeleton budget: its headings with line numbers. "
+            f"Read a section with get_symbol('{file_path}:<start>-<end>')."
+        ),
+    }
+
+
 async def _resolve_skeleton(
     session: AsyncSession,
     repository: Repository,
@@ -115,6 +145,9 @@ async def _resolve_skeleton(
         mode=mode,
         hotspot=bool(result_data.get("hotspot")),
     )
+    if result.mode == "raw" and (outline := _document_outline(source, file_target)):
+        result_data["skeleton"] = outline
+        return
     result_data["skeleton"] = {
         "mode": result.mode,
         "tokens": result.skeleton_tokens,

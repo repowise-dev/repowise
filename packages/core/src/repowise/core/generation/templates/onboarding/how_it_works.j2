@@ -45,7 +45,9 @@ Produce a How It Works markdown page. Required structure:
 
 1. **## What this system does in one sentence** — open with a single,
    concrete sentence that captures the system's job, adapted to the
-   archetype above (service / cli / library / pipeline / module).
+   archetype above (service / cli / library / pipeline / module). Say what a
+   user or caller gets from it, the way its README would; name no helper,
+   utility or file in this sentence.
 2. **## A walk through one example** — the heart of the page. Pick one
    concrete example matching the archetype:
    - service → "when a request hits `<a real entry point>`, …"
@@ -54,17 +56,17 @@ Produce a How It Works markdown page. Required structure:
    - pipeline → "when input enters at `<the real source>`, …"
    - module → narrate the highest-scoring flow above as a generic
      control-flow story.
-   Prefer the first flow: candidates are ranked for a declared entry boundary,
-   breadth across architectural layers/directories, trace depth, and only then
-   graph score. A narrow subsystem trace may illustrate a stage, but it must not
-   stand in for the repository's end-to-end lifecycle when broader evidence is
-   available.
+   Prefer the first flow: flows are ranked by how much of the code the
+   operation drives, so the first is the main path through the system. A
+   narrow trace may illustrate a stage, but it must not stand in for the
+   repository's end-to-end lifecycle when broader evidence is available.
 {% if exact_source_available | default(false) %}
    Walk through only behavior established by exact source excerpts. A detected
    flow is a static graph path, not permission to invent a chronological
    transition between adjacent hops. Use file/symbol names as-is; if an excerpt
    is absent or does not establish a transition, state only that the symbol is
-   on the detected path.
+   on the detected path. Say it about the code ("`b` comes next on this
+   path"): the reader never sees these excerpts, so never mention them.
 {% else %}
    Walk through the hops above (or, if no flow was detected, the entry point and
    its immediate neighbors). Use the file/symbol names as-is. If a flow hop is
@@ -77,8 +79,8 @@ Produce a How It Works markdown page. Required structure:
    flow itself supports.
 4. **## Where to read next** — a short bulleted list of 2–4 file paths
    the reader should open after this page, pulled from the flow hops
-   above. Each bullet gets a half-sentence reason ("the boundary where
-   request becomes domain object", etc.).
+   above. Each bullet gets a half-sentence reason ("where a request becomes
+   a domain object", etc.).
 
 Hard rules:
 - Every file path or symbol you name must come from the data above.

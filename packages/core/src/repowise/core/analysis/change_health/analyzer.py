@@ -27,7 +27,6 @@ from ...ingestion.parse_cache import ParseCache
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
 from ..health import (
-    HEALTH_ANALYZER_VERSION,
     HealthAnalyzer,
     HealthFileMetricData,
     HealthFindingData,
@@ -96,9 +95,7 @@ class AnalysisCaches:
     @classmethod
     def open(cls, cache_dir: str | Path) -> AnalysisCaches:
         directory = Path(cache_dir)
-        caches = cls(
-            directory, ParseCache(directory), HealthWalkCache(directory, HEALTH_ANALYZER_VERSION)
-        )
+        caches = cls(directory, ParseCache(directory), HealthWalkCache(directory))
         caches.parse.load()
         caches.walk.load()
         return caches
