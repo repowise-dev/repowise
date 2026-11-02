@@ -186,3 +186,74 @@ def test_upgrade_with_placeholder_pages_completes_and_names_the_fix(
     assert "2 page(s) could not be written" in printed
     assert "model runner has unexpectedly stopped" in printed
     assert "repowise generate" in printed
+
+
+def test_full_upgrade_matches_standard_init_blame_and_coupling(tmp_path: Path) -> None:
+    """Issue #5217: fast init followed by update --full yields function blame and hidden coupling."""
+    import asyncio
+
+    from click.testing import CliRunner
+    from sqlalchemy import func, select
+
+    from repowise.cli.main import cli
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.database import resolve_db_url
+    from repowise.core.persistence.models import GitFunctionBlame, HealthFinding
+
+    def _build_history(repo_dir: Path) -> Path:
+        repo_dir.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(repo_dir), check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo_dir), check=True)
+        for i in range(6):
+            (repo_dir / "a.py").write_text(f"def func_a(x):\n    return x + {i}\n")
+            (repo_dir / "b.py").write_text(f"def func_b(y):\n    return y * {i}\n")
+            subprocess.run(["git", "add", "."], cwd=str(repo_dir), check=True)
+            subprocess.run(["git", "commit", "-m", f"commit {i}"], cwd=str(repo_dir), check=True)
+        return repo_dir
+
+    async def _query_blame_and_coupling(repo_dir: Path) -> tuple[int, int]:
+        engine = create_engine(resolve_db_url(repo_dir))
+        try:
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                blame_count = await session.scalar(
+                    select(func.count()).select_from(GitFunctionBlame)
+                )
+                findings = (
+                    await session.scalars(
+                        select(HealthFinding).where(
+                            HealthFinding.biomarker_type == "hidden_coupling"
+                        )
+                    )
+                ).all()
+                return blame_count or 0, len(findings)
+        finally:
+            await engine.dispose()
+
+    runner = CliRunner()
+    fast_repo = _build_history(tmp_path / "fast_repo")
+    init_res = runner.invoke(cli, ["init", "-y", "--mode", "fast", str(fast_repo)])
+    assert init_res.exit_code == 0, init_res.output
+
+    blame_before, hc_before = asyncio.run(_query_blame_and_coupling(fast_repo))
+    assert blame_before == 0
+    assert hc_before == 0
+
+    up_res = runner.invoke(cli, ["update", "--full", "-y", str(fast_repo)])
+    assert up_res.exit_code == 0, up_res.output
+
+    blame_after, hc_after = asyncio.run(_query_blame_and_coupling(fast_repo))
+
+    std_repo = _build_history(tmp_path / "std_repo")
+    std_res = runner.invoke(
+        cli, ["init", "-y", "--mode", "standard", "--index-only", str(std_repo)]
+    )
+    assert std_res.exit_code == 0, std_res.output
+
+    blame_std, hc_std = asyncio.run(_query_blame_and_coupling(std_repo))
+
+    assert blame_after > 0
+    assert hc_after > 0
+    assert blame_after == blame_std
+    assert hc_after == hc_std
