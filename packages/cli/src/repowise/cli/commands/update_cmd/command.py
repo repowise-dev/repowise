@@ -1391,7 +1391,9 @@ def _rebuild_index(run: UpdateRun) -> None:
     if decision is not None:
         # Persist the selected path and its reason alongside this run's phase
         # timings so a fallback is visible after the console output is gone.
-        run.state["graph_update"] = decision
+        from repowise.core.pipeline.incremental.feature import stamp_graph_update
+
+        stamp_graph_update(run.state, decision)
 
 
 def _working_tree_only(run: UpdateRun) -> bool:
