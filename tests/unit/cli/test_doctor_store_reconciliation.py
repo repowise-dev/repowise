@@ -297,3 +297,60 @@ def test_missing_lancedb_with_real_embedder_and_no_indexable_pages_stays_ok(
     assert vec.detail == "in sync"
     assert vec.fix is None
     assert by_id["coordinator-drift"].ok is True
+
+
+def test_coordinator_drift_counts_decisions_with_live_vector_store(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When a live LanceDB store holds decision embeddings, _decision_aware_drift
+    counts them on the SQL side (including when list_page_ids raises)."""
+    from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    repowise_dir = repo_path / ".repowise"
+
+    async def _seed_decision_and_missing_page() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}")
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            rec = DecisionRecord(
+                repository_id=repo.id, title="Use SQLite", decision="because local"
+            )
+            session.add(rec)
+            await session.commit()
+            dec_vid = f"{DECISION_VECTOR_PREFIX}{rec.id}"
+        await engine.dispose()
+
+        store = LanceDBVectorStore(str(repowise_dir / "lancedb"), embedder=MockEmbedder())
+        await store.embed_and_upsert(PAGE_MISSING, "Body.", {"title": "File: dropped.py"})
+        await store.embed_and_upsert(dec_vid, "because local", {"title": "Use SQLite"})
+        await store.close()
+
+    asyncio.run(_seed_decision_and_missing_page())
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    by_id = {c.id: c for c in checks}
+    assert by_id["coordinator-drift"].ok is True
+    assert by_id["coordinator-drift"].detail == "SQL=3, Vector=3, Drift=0.0%"
+
+    async def _check_fallback_and_missing() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}")
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            res_present = {"sql_pages": 2, "vector_count": 3, "drift": 0.5}
+            await stores._decision_aware_drift(session, repo_path, res_present, object())
+            assert res_present == {"sql_pages": 3, "vector_count": 3, "drift": 0.0}
+
+            res_missing = {"sql_pages": 2, "vector_count": 0, "drift": 1.0}
+            await stores._decision_aware_drift(session, repo_path, res_missing, None)
+            assert res_missing == {"sql_pages": 2, "vector_count": 0, "drift": 1.0}
+        await engine.dispose()
+
+    asyncio.run(_check_fallback_and_missing())
+

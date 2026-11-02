@@ -309,7 +309,7 @@ async def _decision_aware_drift(session, repo_path: _DoctorPath, result: dict, v
     if repo is None:
         return
     dec_ids = await _decision_vector_ids(session, repo.id)
-    decision_count = 0
+    decision_count = len(dec_ids) if vector_store is not None else 0
     if vector_store is not None:
         with contextlib.suppress(Exception):
             store_ids = await vector_store.list_page_ids()
