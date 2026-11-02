@@ -105,6 +105,74 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
         return 0, 0
 
 
+def _query_git_history_file_count(repo_path: Path) -> int | None:
+    """Return the live number of indexed files with git history, if readable."""
+
+    async def _query() -> int:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.models import GitMetadata, Repository
+
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        try:
+            async with get_session(sf) as session:
+                repo_result = await session.execute(
+                    sa_select(Repository.id).where(Repository.local_path == str(repo_path))
+                )
+                repo_id = repo_result.scalar_one_or_none()
+                if repo_id is None:
+                    return 0
+                result = await session.execute(
+                    sa_select(sa_func.count())
+                    .select_from(GitMetadata)
+                    .where(
+                        GitMetadata.repository_id == repo_id,
+                        GitMetadata.commit_count_total > 0,
+                    )
+                )
+                return int(result.scalar_one() or 0)
+        finally:
+            await engine.dispose()
+
+    db_path = get_repowise_dir(repo_path) / "wiki.db"
+    if not db_path.exists() and not db_configured():
+        return None
+    try:
+        return run_async(_query())
+    except Exception:
+        return None
+
+
+def _refresh_git_history_coverage(scope: dict[str, Any], live_count: int | None) -> bool:
+    """Replace the stored measured count with its live DB value when available."""
+    coverage = scope.get("git_history_coverage")
+    if live_count is None or not isinstance(coverage, dict):
+        return False
+
+    count_key = next(
+        (key for key in ("files_with_history", "files_measured", "files_indexed") if key in coverage),
+        None,
+    )
+    if count_key is None:
+        return False
+    stored_count = coverage[count_key]
+    coverage[count_key] = live_count
+    return (
+        isinstance(stored_count, int)
+        and not isinstance(stored_count, bool)
+        and live_count < stored_count
+    )
+
+
 def _working_tree_file_count(repo_path: Path) -> int:
     """Documentable files in the checkout, without reading them.
 
@@ -905,6 +973,12 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     storage_bytes = _index_storage_bytes(repowise_dir)
     db_path = repowise_dir / "wiki.db"
     has_db = db_path.exists() or db_configured()
+    git_history_is_stale = _refresh_git_history_coverage(
+        scope,
+        _query_git_history_file_count(repo_path)
+        if has_db and scope["git_history_coverage"]
+        else None,
+    )
     incomplete = _incomplete_index(repo_path, state)
     pending_lanes = pending_decision_lanes(state, repo_path)
     # An unfinished init has no stamps yet; the resume line covers it.
@@ -1000,8 +1074,14 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         )
         eligible = coverage.get("files_eligible", coverage.get("eligible_files", "?"))
         cap = commit_cap_label(scope["git_commit_cap"])
+        coverage_value = f"{measured}/{eligible} files" + (f" ({cap})" if cap else "")
+        if git_history_is_stale:
+            coverage_value += (
+                " [dim](stored coverage is stale; run [bold]repowise update "
+                "--index-only[/bold])[/dim]"
+            )
         state_table.add_row(
-            "Git coverage", f"{measured}/{eligible} files" + (f" ({cap})" if cap else "")
+            "Git coverage", coverage_value
         )
     fp = scope["file_pages"]
     if fp["eligible"] is not None:
