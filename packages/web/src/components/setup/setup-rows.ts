@@ -66,8 +66,12 @@ export const ESSENTIALS_TOTAL = 3;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Doctor rows another Setup row already shows. */
-const CHECKS_SHOWN_AS_ROWS = new Set(["post-commit-hook"]);
+/**
+ * Doctor rows another Setup row already shows. `index-freshness` is the index
+ * row's own comparison, which the page reads from the database on every load
+ * rather than from the cached doctor run.
+ */
+const CHECKS_SHOWN_AS_ROWS = new Set(["post-commit-hook", "index-freshness"]);
 
 const msg = (key: string, values?: Record<string, string | number>): SetupMsg =>
   values ? { key, values } : { key };

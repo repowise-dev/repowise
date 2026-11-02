@@ -1262,9 +1262,10 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
 def _report_lock_held(run: UpdateRun, existing_lock: dict) -> None:
     from repowise.core.update_lock import (
-        UPDATE_LOCK_SUSPECT_AFTER_SECONDS,
         format_lock_age,
         lock_age_seconds,
+        lock_is_suspect,
+        stuck_lock_advice,
     )
 
     head = run.head
@@ -1277,13 +1278,11 @@ def _report_lock_held(run: UpdateRun, existing_lock: dict) -> None:
         f"holding the lock {format_lock_age(age)}).[/yellow]"
     )
     # A live owner is never evicted on age; say where to look instead.
-    if age is not None and age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
-        console.print(
-            "[yellow]That is longer than an update normally takes. If "
-            "[bold].repowise/.update.log[/bold] has not been written to in "
-            f"that time, pid {existing_lock.get('pid')} is stuck and can be "
-            "stopped; this repo will update on the next run.[/yellow]"
+    if lock_is_suspect(age):
+        advice = stuck_lock_advice(
+            existing_lock.get("pid"), log="[bold].repowise/.update.log[/bold]"
         )
+        console.print(f"[yellow]{advice}[/yellow]")
     console.print(
         f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
         "the running update will roll forward to it. This run regenerated "

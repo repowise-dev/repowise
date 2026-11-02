@@ -40,6 +40,7 @@ PINNED_IDS = {
     "grammar-*",
     "hosted-account",
     "index-data",
+    "index-freshness",
     "llm-provider",
     "mcp-responds",
     "omission-store",
@@ -51,6 +52,7 @@ PINNED_IDS = {
     "state-json",
     "store-consistency",
     "store-format",
+    "update-lock",
     "vector-store",
     "vector-store-sync",
 }
