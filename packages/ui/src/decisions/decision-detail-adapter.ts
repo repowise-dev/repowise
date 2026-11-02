@@ -42,10 +42,13 @@ export interface DecisionDetailAdapter {
   patchDecision(patch: DecisionStatusUpdate): Promise<void>;
   /**
    * Reverses the reader's own latest accept or dismiss, returning the
-   * decision to where it was before. Given, the Undo after an accept or a
-   * dismiss calls it; without it, undoing an accept asks to dismiss instead.
+   * decision to where it was before, and resolves to the decision as it now
+   * stands (refetched when the write does not return it). Given, every Undo
+   * on the page calls it; without it, undoing an accept asks to dismiss.
+   * A refusal (say, the latest review was someone else's) rejects with the
+   * server's sentence, which the page shows as is.
    */
-  undoReview?(): Promise<void>;
+  undoReview?(): Promise<Pick<DecisionRecord, "status">>;
 
   /** href to the decisions list. */
   decisionsHref(): string;

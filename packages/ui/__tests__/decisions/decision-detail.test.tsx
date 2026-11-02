@@ -115,7 +115,7 @@ describe("DecisionDetail", () => {
   }
 
   it("puts an accepted decision back where it was when the host can undo a review", async () => {
-    const undoReview = vi.fn(async () => undefined);
+    const undoReview = vi.fn(async () => ({ status: "proposed" as const }));
     const adapter = makeAdapter({ undoReview });
     renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
 
@@ -130,7 +130,7 @@ describe("DecisionDetail", () => {
   });
 
   it("puts a dismissed decision back too", async () => {
-    const undoReview = vi.fn(async () => undefined);
+    const undoReview = vi.fn(async () => ({ status: "proposed" as const }));
     renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter({ undoReview })} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
@@ -139,6 +139,48 @@ describe("DecisionDetail", () => {
 
     await waitFor(() => expect(undoReview).toHaveBeenCalledTimes(1));
     expect(toastSuccess).toHaveBeenCalledWith("Undone. It is back where it was.");
+  });
+
+  it("undoes an accepted decision from the page through the host, showing what it reports", async () => {
+    const undoReview = vi.fn(async () => ({ status: "proposed" as const }));
+    const adapter = makeAdapter({ undoReview });
+    renderView(<DecisionDetail decision={makeDecision({ status: "active" })} adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() => expect(undoReview).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    expect(toastSuccess).toHaveBeenCalledWith("Undone. It is back where it was.");
+    expect(adapter.patchDecision).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("says why the host refused to undo, and leaves the decision as it was", async () => {
+    const undoReview = vi.fn(async () => {
+      throw new Error("The latest review is Asha's. Accept or dismiss it instead.");
+    });
+    renderView(
+      <DecisionDetail decision={makeDecision({ status: "active" })} adapter={makeAdapter({ undoReview })} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Couldn't undo: The latest review is Asha's. Accept or dismiss it instead.",
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+  });
+
+  it("asks to dismiss from the page's Undo when the host cannot undo a review", async () => {
+    const adapter = makeAdapter();
+    renderView(<DecisionDetail decision={makeDecision({ status: "active" })} adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(adapter.patchDecision).not.toHaveBeenCalled();
   });
 
   it("asks to dismiss instead when the host cannot undo a review", async () => {
