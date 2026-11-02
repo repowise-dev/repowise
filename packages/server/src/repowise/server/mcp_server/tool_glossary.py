@@ -46,6 +46,20 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 #: for one row; passing a bigger ``limit`` serves more of the same list.
 _DEFAULT_LIMIT = 40
 _MAX_LIMIT = 200
+
+#: Said instead of a hint when nothing in the repository declares its words.
+_NO_DECLARED_GLOSSARY_HINT = (
+    "No glossary is declared in this repository, so these are mined from its "
+    "own documents. Add a root CONTEXT.md to make the terms authoritative."
+)
+
+#: The structured version of the same fact, so a client can key off it.
+_NO_GLOSSARY_NOTE = (
+    "No CONTEXT.md, GLOSSARY.md or docs/GLOSSARY.md in this repository, and no "
+    "CONTEXT-MAP.md naming one. The rows below are the mined house vocabulary: "
+    "what the repository says its words mean, not what the team decided they mean."
+)
+
 #: How many paths to name per row under ``used_in``. The count stays in full.
 _MAX_USED_IN = 5
 #: Module pages read for the corroboration corpus. A module group is what the
@@ -166,13 +180,23 @@ async def get_glossary(
         wanted = [t for t in targets if t and t.strip()]
         rows = [row for row in rows if _matches_targets(row, wanted)]
 
+    return _glossary_response(rows, limit=limit, targets=targets)
+
+
+def _glossary_response(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    targets: list[str] | None,
+) -> dict[str, Any]:
+    """The bounded response for *rows*, trimmed, counted and explained."""
     total = len(rows)
     served = rows[: max(1, min(limit, _MAX_LIMIT))]
-    declared_rows = [row for row in served if row["status"] == "declared"]
+    declared_rows = [row for row in rows if row["status"] == "declared"]
 
     result: dict[str, Any] = {
         "terms": served,
-        "declared_count": sum(1 for row in rows if row["status"] == "declared"),
+        "declared_count": len(declared_rows),
         "mined_count": sum(1 for row in rows if row["status"] == "mined"),
         "demoted_count": sum(1 for row in rows if row.get("demoted_by")),
         "total": total,
@@ -183,11 +207,7 @@ async def get_glossary(
                 "A declared term is the team's ruling on naming; prefer it over "
                 "any synonym in `avoid`."
                 if declared_rows
-                else (
-                    "No glossary is declared in this repository, so these are "
-                    "mined from its own documents. Add a root CONTEXT.md to make "
-                    "the terms authoritative."
-                )
+                else _NO_DECLARED_GLOSSARY_HINT
             ),
         ),
     }
@@ -195,15 +215,7 @@ async def get_glossary(
         result["truncated"] = True
         result["reduced_reason"] = "limit"
     if not declared_rows:
-        result["declared_glossary"] = {
-            "present": False,
-            "note": (
-                "No CONTEXT.md, GLOSSARY.md or docs/GLOSSARY.md in this "
-                "repository, and no CONTEXT-MAP.md naming one. The rows below "
-                "are the mined house vocabulary: what the repository says its "
-                "words mean, not what the team decided they mean."
-            ),
-        }
+        result["declared_glossary"] = {"present": False, "note": _NO_GLOSSARY_NOTE}
     return result
 
 

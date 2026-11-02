@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
@@ -168,6 +168,172 @@ def _clean_definition(raw: str) -> str | None:
     return text[:_MAX_DEFINITION_CHARS]
 
 
+@dataclass
+class _GlossaryReader:
+    """One pass over a declared-glossary document.
+
+    Split out of :func:`parse_declared_glossary` because the single loop was
+    three readers in a trench coat, one per shape, and the branches crowded
+    each other past what a reader can hold. The state lives here instead.
+    """
+
+    source_path: str
+    context: str | None
+    terms: list[DeclaredTerm] = field(default_factory=list)
+    seen: set[str] = field(default_factory=set)
+    columns: tuple[int, int, int | None] | None = None
+    in_fence: bool = False
+    fence_marker: str = ""
+    pending_term: str | None = None
+    pending_line: int = 0
+    definition_lines: list[str] = field(default_factory=list)
+    definition_taken: bool = False
+
+    def feed(self, line: str, number: int) -> None:
+        """Read one line, whichever shape it belongs to."""
+        if self._skips(line):
+            return
+        cells = _cells(line)
+        if cells is None:
+            # A line that is not a table row ends any table being read, so the
+            # second table in a document is never read with the first one's
+            # column map. Without this, an unrelated table's rows become terms.
+            self.columns = None
+            self._prose(line, number)
+            return
+        self._table_row(cells, number)
+
+    def _skips(self, line: str) -> bool:
+        """True for a fenced-code line or the fence that opens one."""
+        if self.in_fence:
+            if line.strip().startswith(self.fence_marker):
+                self.in_fence = False
+            return True
+        stripped = line.strip()
+        if not stripped.startswith(("```", "~~~")):
+            return False
+        self.in_fence = True
+        self.fence_marker = stripped[:3]
+        return True
+
+    def _table_row(self, cells: tuple[str, ...], number: int) -> None:
+        if _is_separator_row(cells):
+            return
+        header = _table_columns(cells)
+        if header is not None:
+            self.columns = header
+            return
+        if self.columns is None:
+            return
+        self.emit()
+        self._append_table_term(cells, number)
+
+    def _append_table_term(self, cells: tuple[str, ...], number: int) -> None:
+        term_i, def_i, avoid_i = self.columns  # type: ignore[misc]
+        if term_i >= len(cells):
+            return
+        term = cells[term_i].strip()
+        key = phrase_key(term)
+        if not key or key in self.seen:
+            return
+        self.seen.add(key)
+        self.terms.append(
+            DeclaredTerm(
+                term=term,
+                definition=(
+                    _clean_definition(cells[def_i]) if def_i < len(cells) else None
+                ),
+                avoid=(
+                    _split_avoid(cells[avoid_i])
+                    if avoid_i is not None and avoid_i < len(cells)
+                    else ()
+                ),
+                context=self.context,
+                source_path=self.source_path,
+                line=number,
+            )
+        )
+
+    def _prose(self, line: str, number: int) -> None:
+        avoid_match = _AVOID_LINE.match(line)
+        if avoid_match:
+            self.emit()
+            self.attach_avoid(_split_avoid(avoid_match.group("items")))
+            return
+        term_match = _BOLD_TERM.match(line)
+        if term_match:
+            self.emit()
+            self._open_term(term_match, number)
+            return
+        self._definition_line(line)
+
+    def _open_term(self, term_match: re.Match[str], number: int) -> None:
+        term = term_match.group("term").strip().strip(":：").strip()
+        inline = (term_match.group("inline") or "").strip()
+        if not term or _SKIP_LINE.match(term):
+            return
+        self.pending_term = term
+        self.pending_line = number
+        if inline:
+            # A one-line definition closes the term's paragraph, so a
+            # following line is the next paragraph and not more of it.
+            self.definition_lines = [inline]
+            self.definition_taken = True
+
+    def _definition_line(self, line: str) -> None:
+        if self.pending_term is None:
+            return
+        stripped = line.strip()
+        if not stripped:
+            # A blank line ends the paragraph. The term stays open for a
+            # trailing ``_Avoid_:`` line, which is the one thing the format
+            # allows to follow the definition.
+            if self.definition_lines:
+                self.definition_taken = True
+            return
+        if _SKIP_LINE.match(line):
+            return
+        if not self.definition_taken and not self.definition_lines:
+            self.definition_lines = [stripped]
+
+    def emit(self) -> None:
+        if self.pending_term is None:
+            return
+        key = phrase_key(self.pending_term)
+        if key and key not in self.seen:
+            self.seen.add(key)
+            self.terms.append(
+                DeclaredTerm(
+                    term=self.pending_term,
+                    definition=_clean_definition(" ".join(self.definition_lines)),
+                    avoid=(),
+                    context=self.context,
+                    source_path=self.source_path,
+                    line=self.pending_line,
+                )
+            )
+        self.pending_term = None
+        self.definition_lines = []
+        self.definition_taken = False
+
+    def attach_avoid(self, items: tuple[str, ...]) -> None:
+        if not self.terms or not items:
+            return
+        last = self.terms[-1]
+        # ``_Avoid_`` belongs to the term above it, which is the only reading
+        # the format admits. A second line adds to the first rather than
+        # replacing it, so a wrapped list is not silently halved.
+        merged = last.avoid + tuple(item for item in items if item not in last.avoid)
+        self.terms[-1] = DeclaredTerm(
+            term=last.term,
+            definition=last.definition,
+            avoid=merged,
+            context=last.context,
+            source_path=last.source_path,
+            line=last.line,
+        )
+
+
 def parse_declared_glossary(
     text: str,
     *,
@@ -191,146 +357,11 @@ def parse_declared_glossary(
     sentences under a term, and running on would eventually swallow the next
     section's prose. ``_Avoid_`` may follow the definition directly.
     """
-    terms: list[DeclaredTerm] = []
-    seen: set[str] = set()
-    columns: tuple[int, int, int | None] | None = None
-    in_fence = False
-    fence_marker = ""
-
-    #: The term currently being read, and the definition lines gathered for it.
-    pending_term: str | None = None
-    pending_line = 0
-    definition_lines: list[str] = []
-    definition_taken = False
-
-    def emit() -> None:
-        nonlocal pending_term, definition_lines, definition_taken
-        if pending_term is None:
-            return
-        key = phrase_key(pending_term)
-        if key and key not in seen:
-            seen.add(key)
-            terms.append(
-                DeclaredTerm(
-                    term=pending_term,
-                    definition=_clean_definition(" ".join(definition_lines)),
-                    avoid=(),
-                    context=context,
-                    source_path=source_path,
-                    line=pending_line,
-                )
-            )
-        pending_term = None
-        definition_lines = []
-        definition_taken = False
-
-    def attach_avoid(items: tuple[str, ...]) -> None:
-        if not terms or not items:
-            return
-        last = terms[-1]
-        # ``_Avoid_`` belongs to the term above it, which is the only reading
-        # the format admits. A second line adds to the first rather than
-        # replacing it, so a wrapped list is not silently halved.
-        merged = last.avoid + tuple(item for item in items if item not in last.avoid)
-        terms[-1] = DeclaredTerm(
-            term=last.term,
-            definition=last.definition,
-            avoid=merged,
-            context=last.context,
-            source_path=last.source_path,
-            line=last.line,
-        )
-
+    reader = _GlossaryReader(source_path=source_path, context=context)
     for number, line in enumerate(text.splitlines(), start=1):
-        if in_fence:
-            if line.strip().startswith(fence_marker):
-                in_fence = False
-            continue
-        stripped = line.strip()
-        if stripped.startswith(("```", "~~~")):
-            in_fence = True
-            fence_marker = stripped[:3]
-            continue
-
-        cells = _cells(line)
-        if cells is None:
-            # A line that is not a table row ends any table being read, so the
-            # second table in a document is never read with the first one's
-            # column map. Without this, an unrelated table's rows become terms.
-            columns = None
-        else:
-            if _is_separator_row(cells):
-                continue
-            header = _table_columns(cells)
-            if header is not None:
-                columns = header
-                continue
-            if columns is None:
-                continue
-            emit()
-            term_i, def_i, avoid_i = columns
-            if term_i >= len(cells):
-                continue
-            term = cells[term_i].strip()
-            key = phrase_key(term)
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            terms.append(
-                DeclaredTerm(
-                    term=term,
-                    definition=(
-                        _clean_definition(cells[def_i]) if def_i < len(cells) else None
-                    ),
-                    avoid=(
-                        _split_avoid(cells[avoid_i])
-                        if avoid_i is not None and avoid_i < len(cells)
-                        else ()
-                    ),
-                    context=context,
-                    source_path=source_path,
-                    line=number,
-                )
-            )
-            continue
-
-        avoid_match = _AVOID_LINE.match(line)
-        if avoid_match:
-            emit()
-            attach_avoid(_split_avoid(avoid_match.group("items")))
-            continue
-
-        term_match = _BOLD_TERM.match(line)
-        if term_match:
-            emit()
-            term = term_match.group("term").strip().strip(":：").strip()
-            inline = (term_match.group("inline") or "").strip()
-            if term and not _SKIP_LINE.match(term):
-                pending_term = term
-                pending_line = number
-                if inline:
-                    # A one-line definition closes the term's paragraph, so a
-                    # following line is the next paragraph and not more of it.
-                    definition_lines = [inline]
-                    definition_taken = True
-            continue
-
-        if pending_term is None:
-            continue
-        if not stripped:
-            # A blank line ends the paragraph. The term stays open for a
-            # trailing ``_Avoid_:`` line, which is the one thing the format
-            # allows to follow the definition.
-            if definition_lines:
-                definition_taken = True
-            continue
-        if _SKIP_LINE.match(line):
-            continue
-        if not definition_taken and not definition_lines:
-            definition_lines = [stripped]
-
-    emit()
-    return terms
+        reader.feed(line, number)
+    reader.emit()
+    return reader.terms
 
 
 def _context_map_entries(text: str, repo_root: Path) -> list[tuple[str, Path]]:
