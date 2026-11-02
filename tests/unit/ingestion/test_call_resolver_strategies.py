@@ -3038,6 +3038,177 @@ class TestJavaStaticImport:
         }
         assert callees == {"a/Ex.java::Ex::afterCommit"}
 
+    def test_a_static_import_binds_an_inherited_member_before_a_nested_rival(
+        self, tmp_path: Path
+    ) -> None:
+        """An inherited Ex member wins over a same-named member on Ex.Inner."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base { public static void m() { } }\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Base {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n"
+                    "  }\n"
+                    "}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\n"
+                    "public class Use {\n"
+                    "  public void run() {\n"
+                    "    m();\n"
+                    "  }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {**{path: set() for path in parsed}, "b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Ex.java::Ex": {"a/Base.java::Base"}},
+        )
+        callees = {
+            call.callee_id
+            for call in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
+    def test_a_static_import_binds_a_member_inherited_through_ancestors(
+        self, tmp_path: Path
+    ) -> None:
+        """A static import walks the named type's whole ancestor chain."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base { public static void m() { } }\n",
+                ),
+                "a/Mid.java": (
+                    "java",
+                    "package a;\npublic class Mid extends Base { }\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Mid {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n"
+                    "  }\n"
+                    "}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\n"
+                    "public class Use {\n"
+                    "  public void run() {\n"
+                    "    m();\n"
+                    "  }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {**{path: set() for path in parsed}, "b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "a/Ex.java::Ex": {"a/Mid.java::Mid"},
+                "a/Mid.java::Mid": {"a/Base.java::Base"},
+            },
+        )
+        callees = {
+            call.callee_id
+            for call in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
+    def test_a_static_import_does_not_fall_back_to_a_nested_type_member(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n"
+                    "  }\n"
+                    "}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\n"
+                    "public class Use {\n"
+                    "  public void run() {\n"
+                    "    m();\n"
+                    "  }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {**{path: set() for path in parsed}, "b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+        )
+        assert resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls) == []
+
+    def test_a_caller_inherited_method_still_wins_when_static_import_misses(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n"
+                    "  }\n"
+                    "}\n",
+                ),
+                "b/UseBase.java": (
+                    "java",
+                    "package b;\npublic class UseBase {\n"
+                    "  public void m() { }\n"
+                    "}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\n"
+                    "public class Use extends UseBase {\n"
+                    "  public void run() {\n"
+                    "    m();\n"
+                    "  }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {**{path: set() for path in parsed}, "b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={"b/Use.java::Use": {"b/UseBase.java::UseBase"}},
+        )
+        calls = resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        assert [
+            (call.callee_id, call.origin)
+            for call in calls
+            if call.caller_id == "b/Use.java::Use::run"
+        ] == [("b/UseBase.java::UseBase::m", "enclosing_inherited")]
+
     def test_a_static_import_of_a_nested_type_member_binds_that_type(self, tmp_path: Path) -> None:
         """``import static a.Ex.Sync.flush`` names the nested type's member, not the outer one's."""
         parsed = _parse_all(
