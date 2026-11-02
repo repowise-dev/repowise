@@ -197,18 +197,41 @@ async def _reconcile(
     vs_ids, vs_error = await _vector_ids(lance_dir)
     fts_ids = await _fts_ids(engine)
     await engine.dispose()
+
+    # An index on disk that holds none of the indexable pages is every one of
+    # them missing. A *missing* directory is only "nothing to compare" in
+    # mock/fast mode; when a real (non-mock) embedder is configured and there
+    # are indexable pages, the store is expected but gone, so every indexable
+    # page is missing and the fix is a reindex (not --repair, which will not
+    # re-embed a whole store). detect=False: judge by what the index was built
+    # with (pin/flag/env), never by an ambient key the repo never used.
+    from repowise.core.providers.embedding.resolve import resolve_embedder_name
+
+    lance_present = lance_dir.exists()
+    embedder_name, _embedder_source = resolve_embedder_name(
+        repo_path=repo_path, detect=False
+    )
+    store_gone = (
+        not lance_present
+        and embedder_name != "mock"
+        and bool(sql.vector_indexable_ids)
+    )
+    if lance_present:
+        missing_from_vector = sql.vector_indexable_ids - vs_ids
+    elif store_gone:
+        missing_from_vector = set(sql.vector_indexable_ids)
+    else:
+        missing_from_vector = set()
+
     return (
         StoreDrift(
-            # An index on disk that holds none of the indexable pages is every
-            # one of them missing. Only no index at all (fast mode, nothing
-            # embedded yet) has nothing to compare.
-            missing_from_vector=(
-                sql.vector_indexable_ids - vs_ids if lance_dir.exists() else set()
-            ),
+            missing_from_vector=missing_from_vector,
             orphaned_vector=vs_ids - sql.vector_sql_ids,
             missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
             orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
-            vector_store_empty=lance_dir.exists() and vs_error is None and not vs_ids,
+            vector_store_empty=(
+                (lance_present and vs_error is None and not vs_ids) or store_gone
+            ),
         ),
         sql.stub_count,
         vs_error,

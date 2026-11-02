@@ -222,3 +222,37 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
     out = " ".join(" ".join(printed).split())
     assert "2 page(s) need embedding with openai" in out
     assert "repowise reindex" in out
+
+
+def test_missing_lancedb_with_real_embedder_is_missing_with_reindex_fix(tmp_path: Path) -> None:
+    """A deleted/absent lancedb with a real embedder configured is not "in sync":
+    every indexable page is missing and the fix is a reindex (issue #5233)."""
+    import shutil
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    # Pin a real embedder, then lose the vector store entirely.
+    (repo_path / ".repowise" / "config.yaml").write_text(
+        "embedder: openai\n", encoding="utf-8"
+    )
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    row = next(c for c in checks if c.name == "SQL ↔ Vector Store")
+    assert row.ok is False, row
+    assert row.detail == "2 missing, 0 orphaned", row.detail
+    assert row.fix == "repowise reindex", row.fix
+
+
+def test_missing_lancedb_with_mock_embedder_stays_ok(tmp_path: Path) -> None:
+    """No real embedder means no semantic search is expected, so an absent
+    lancedb is genuinely "nothing to compare" and stays OK (issue #5233)."""
+    import shutil
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    # No embedder pinned -> resolves to mock.
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    row = next(c for c in checks if c.name == "SQL ↔ Vector Store")
+    assert row.ok is True, row
+    assert row.detail == "in sync", row.detail
