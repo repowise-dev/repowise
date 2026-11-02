@@ -15,8 +15,9 @@ import json
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
-from repowise.cli.commands.doctor_cmd import _render, repo_checks
+from repowise.cli.commands.doctor_cmd import _render, doctor_command, repo_checks
 from repowise.cli.commands.doctor_cmd._checks import core, integrations, providers
 from repowise.cli.commands.doctor_cmd._types import _check
 
@@ -296,6 +297,16 @@ def test_expired_and_cached_hosted_identity(env, monkeypatch, tmp_path) -> None:
     stale = _by_name(_rows(repo))["Hosted account"]
     assert stale == (True, "Session expired or revoked; run repowise login")
     assert providers._hosted_account_check().level == "warn"
+    result = CliRunner().invoke(
+        doctor_command,
+        [str(repo), "--no-workspace", "--format", "json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    hosted = next(row for row in payload["checks"] if row["id"] == "hosted-account")
+    assert hosted["ok"] is True
+    assert hosted["level"] == "warn"
+    assert hosted["fix"] == "repowise login"
     monkeypatch.setattr(
         "repowise.cli.platform.credentials.load",
         lambda: {"account": {"email": "a@b.test", "tier": "pro"}},
