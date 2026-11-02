@@ -256,6 +256,43 @@ def lock_age_seconds(payload: dict[str, Any] | None) -> float | None:
     return max(0.0, time.time() - started)
 
 
+def lock_is_suspect(age: float | None) -> bool:
+    """Whether a live owner has held a lock past :data:`UPDATE_LOCK_SUSPECT_AFTER_SECONDS`."""
+    return age is not None and age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS
+
+
+def stuck_lock_advice(pid: object, log: str = ".repowise/.update.log") -> str:
+    """Where to look once :func:`lock_is_suspect`; a Rich caller passes *log* marked up."""
+    return (
+        "That is longer than an update normally takes. If "
+        f"{log} has not been written to in that time, pid {pid} is stuck and can be "
+        "stopped; this repo will update on the next run."
+    )
+
+
+def describe_stuck_lock(payload: dict[str, Any] | None) -> str | None:
+    """One line for a live update lock held past the suspect age, else ``None``.
+
+    ``doctor`` and ``status`` print it as is; ``update`` prints the same advice
+    after its own "already running" line.
+    """
+    age = lock_age_seconds(payload)
+    if payload is None or not lock_is_suspect(age):
+        return None
+    pid = payload.get("pid")
+    target = (payload.get("target_commit") or "")[:8]
+    owner = f"pid {pid}, target {target}" if target else f"pid {pid}"
+    return (
+        f"An update ({owner}) has held the lock {format_lock_age(age)}. "
+        f"{stuck_lock_advice(pid)}"
+    )
+
+
+def stuck_update_line(repo_path: Path) -> str | None:
+    """:func:`describe_stuck_lock` for this repo's update lock."""
+    return describe_stuck_lock(read_update_lock(repo_path))
+
+
 def format_lock_age(age: float | None) -> str:
     """Human phrasing for how long a lock has been held.
 
