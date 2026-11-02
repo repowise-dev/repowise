@@ -146,9 +146,11 @@ class RepoUpdateResult:
 class UpdateProducts:
     """The in-memory products of one incremental update, for callers that reuse them.
 
-    The graph, parse and structure cover the whole repo. ``health_report`` is
-    the whole-repo report when health was re-scored, else the partial
-    (changed-files) one; either report may be ``None`` when its step failed.
+    The graph, parse and structure cover the whole repo, and so does
+    ``health_report``: the re-scored report when health was re-scored, else
+    the one read back from the store after the changed files were written
+    (``rehydrate_health_report``). Any report may be ``None`` when its step
+    failed.
     """
 
     parsed_files: list[Any]
@@ -184,7 +186,8 @@ async def _incremental_repo_update(
 
     *products_sink* receives one :class:`UpdateProducts` when the graph was
     rebuilt; a run with no relevant changes rebuilds nothing and appends
-    nothing. *rescore_health* re-scores every file's health after persisting.
+    nothing. *rescore_health* re-scores every file's health after persisting,
+    in place of the changed-files health pass that re-score would replace.
 
     Raises on failure — the caller falls back to the full pipeline.
     """
@@ -233,7 +236,14 @@ async def _incremental_repo_update(
     )
 
     partial_health_report, dead_code_report, doc_drift_report = await _partial_analysis(
-        repo_path, base_ref, file_diffs, parsed_files, source_map, graph_builder, git_meta_map
+        repo_path,
+        base_ref,
+        file_diffs,
+        parsed_files,
+        source_map,
+        graph_builder,
+        git_meta_map,
+        health=not rescore_health,
     )
 
     # Drop the transient, non-serializable ``BlameIndex`` before persistence.
@@ -275,12 +285,19 @@ async def _incremental_repo_update(
         log=_log.info,
     )
 
+    # Ceiling: a failed re-score leaves the changed files' stored health as it
+    # was until the next re-score; the result says health was not re-scored.
     rescored_report = (
         await _rescore_repo_health(repo_path, graph_builder, parsed_files, merged_excludes)
         if rescore_health
         else None
     )
     if products_sink is not None:
+        health_report = (
+            rescored_report
+            if rescored_report is not None
+            else await _stored_health_report(repo_path)
+        )
         products_sink.append(
             UpdateProducts(
                 parsed_files=parsed_files,
@@ -290,9 +307,7 @@ async def _incremental_repo_update(
                 file_count=file_count,
                 dead_code_report=dead_code_report,
                 doc_drift_report=doc_drift_report,
-                health_report=(
-                    rescored_report if rescored_report is not None else partial_health_report
-                ),
+                health_report=health_report,
                 knowledge_graph_result=kg,
             )
         )
@@ -321,10 +336,41 @@ async def _rescore_repo_health(
 
     try:
         return await rescore_health_from_store(
-            repo_path, graph_builder, parsed_files, exclude_patterns, log=_log.info
+            repo_path,
+            graph_builder,
+            parsed_files,
+            exclude_patterns,
+            log=_log.info,
+            # The changed-files health write that snapshots was skipped.
+            snapshot=True,
         )
     except Exception:
         _log.warning("Health re-score failed for %s", repo_path, exc_info=True)
+    return None
+
+
+async def _stored_health_report(repo_path: Path) -> Any:
+    """The whole-repo health report read back from the store, or ``None``.
+
+    Best-effort: a failed read leaves the products without a health report.
+    """
+    from ...persistence import create_engine, create_session_factory, get_session
+    from ...persistence.crud import get_repository_by_path
+    from ...persistence.database import resolve_db_url
+    from ...pipeline.resume.rehydrate import rehydrate_health_report
+
+    try:
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return None
+                return await rehydrate_health_report(session, repo.id)
+        finally:
+            await engine.dispose()
+    except Exception:
+        _log.warning("Stored health report unavailable for %s", repo_path, exc_info=True)
     return None
 
 
@@ -377,10 +423,13 @@ async def _partial_analysis(
     source_map: dict,
     graph_builder: Any,
     git_meta_map: dict,
+    *,
+    health: bool = True,
 ) -> tuple[Any, Any, Any]:
     """Partial health, dead-code and doc-drift reports over the changed files.
 
-    Returns ``(partial_health_report, dead_code_report, doc_drift_report)``.
+    Returns ``(partial_health_report, dead_code_report, doc_drift_report)``;
+    ``health=False`` skips the health pass and returns ``None`` for it.
     """
     from ...pipeline.incremental import (
         DocDriftUpdate,
@@ -419,6 +468,7 @@ async def _partial_analysis(
         repo_function_mod_p80=stored_function_mod_p80,
         coverage_map=stored_coverage_map,
         log=_log.info,
+        health=health,
     )
     doc_drift_report = run_doc_drift_partial(
         graph_builder,
@@ -502,7 +552,9 @@ async def update_single_repo_index(
     - ``full_index_fallback=False`` returns ``skipped_reason="full_index_required"``
       with ``full_index_reason`` set instead of running the full pipeline.
     - ``rescore_health=True`` re-scores every file's health, not only the
-      changed ones, after the incremental write.
+      changed ones, after the incremental write. The products' health report
+      covers the whole repo either way, so a caller needs it only to refresh
+      every file's scores, not to get a whole-repo report.
     """
     from ...repo_config import load_repo_config
 

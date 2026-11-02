@@ -34,6 +34,7 @@ __all__ = [
     "rehydrate_decision_report",
     "rehydrate_git_meta_map",
     "rehydrate_graph_builder",
+    "rehydrate_health_report",
     "stored_git_meta_for",
 ]
 
@@ -185,6 +186,99 @@ async def rehydrate_dead_code_report(session: Any, repo_id: str) -> Any:
         for r in rows
     ]
     return SimpleNamespace(findings=findings)
+
+
+async def rehydrate_health_report(session: Any, repo_id: str) -> Any:
+    """Rebuild the whole-repo ``HealthReport`` from the stored health rows.
+
+    For a caller that wants the report a full re-score would return, after an
+    update that scored only the changed files: the store already holds the
+    merged repository. Carries every metric row, the open findings, the open
+    refactoring suggestions (performance plans included), the KPIs computed
+    the way the analyzer computes them, and the stored function-mod p80.
+
+    What it cannot carry: findings and plans a person triaged (they are not
+    ``open``), each plan's ``validation`` (never stored; detectors leave it
+    empty), and the write-side inputs (``function_facts``, ``function_tests``,
+    ``execution_roles``, ``performance_plan_policy``, ``function_blame_rows``,
+    coverage, authoritative paths), which are already persisted in their own
+    tables. So the report is for reading, never for writing back.
+
+    Returns ``None`` when no file has been scored. Raises on a DB error.
+    """
+    from dataclasses import fields
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.models import (
+        HealthFileMetricData,
+        HealthFindingData,
+        HealthReport,
+        Severity,
+    )
+    from repowise.core.analysis.health.ranking import deduction_by_path
+    from repowise.core.analysis.health.refactoring.recommendations import rehydrate_suggestion
+    from repowise.core.analysis.health.scoring import compute_kpis
+    from repowise.core.persistence.crud import get_hotspot_file_paths
+    from repowise.core.persistence.models import (
+        HealthFileMetric,
+        HealthFinding,
+        RefactoringSuggestion,
+        Repository,
+    )
+
+    async def rows(model: Any, *where: Any) -> list[Any]:
+        query = select(model).where(model.repository_id == repo_id, *where)
+        return list((await session.execute(query)).scalars().all())
+
+    metric_rows = await rows(HealthFileMetric)
+    if not metric_rows:
+        return None
+    metric_fields = [f.name for f in fields(HealthFileMetricData)]
+    metrics = [
+        HealthFileMetricData(**{name: getattr(row, name) for name in metric_fields})
+        for row in metric_rows
+    ]
+    findings = [
+        HealthFindingData(
+            biomarker_type=row.biomarker_type,
+            severity=Severity(row.severity),
+            file_path=row.file_path,
+            function_name=row.function_name,
+            line_start=row.line_start,
+            line_end=row.line_end,
+            details=json.loads(row.details_json or "{}"),
+            health_impact=row.health_impact,
+            reason=row.reason or "",
+            dimension=row.dimension or "defect",
+        )
+        for row in await rows(HealthFinding, HealthFinding.status == "open")
+    ]
+    suggestions = [
+        rehydrate_suggestion(row)
+        for row in await rows(RefactoringSuggestion, RefactoringSuggestion.status == "open")
+    ]
+    repo = await session.get(Repository, repo_id)
+    # SQLite hands timestamps back naive; they were written in UTC.
+    stamps = [
+        row.updated_at if row.updated_at.tzinfo else row.updated_at.replace(tzinfo=UTC)
+        for row in metric_rows
+        if row.updated_at is not None
+    ]
+    return HealthReport(
+        repo_id=repo_id,
+        analyzed_at=max(stamps) if stamps else datetime.now(UTC),
+        findings=findings,
+        metrics=metrics,
+        kpis=compute_kpis(
+            metrics,
+            await get_hotspot_file_paths(session, repo_id),
+            deductions=deduction_by_path(findings),
+        ),
+        repo_function_mod_p80=getattr(repo, "function_mod_p80", None),
+        refactoring_suggestions=suggestions,
+    )
 
 
 async def rehydrate_decision_report(session: Any, repo_id: str) -> Any:
