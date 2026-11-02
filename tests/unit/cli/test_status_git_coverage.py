@@ -129,3 +129,22 @@ def test_status_counts_only_git_metadata_rows_with_commits(tmp_path: Path, monke
 
     assert result.exit_code == 0, result.output
     assert "1/36 files (last 5,000 commits)" in result.output
+
+
+def test_status_marks_stored_git_coverage_when_live_query_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_git_metadata(tmp_path)
+    _write_state(tmp_path)
+    _prepare_status(monkeypatch)
+    monkeypatch.setattr(status_cmd, "_query_git_history_file_count", lambda _path: None)
+
+    result = CliRunner().invoke(
+        status_cmd.status_command,
+        [str(tmp_path), "--no-workspace"],
+        terminal_width=200,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "36/36 files (last 5,000 commits)" in result.output
+    assert "live coverage unavailable; showing stored value" in result.output

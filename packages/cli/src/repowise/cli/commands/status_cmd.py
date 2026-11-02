@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import subprocess
 from datetime import UTC
 from pathlib import Path
@@ -148,15 +149,22 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
         return None
     try:
         return run_async(_query())
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Could not read live Git history coverage for %s: %s", repo_path, exc
+        )
         return None
 
 
-def _refresh_git_history_coverage(scope: dict[str, Any], live_count: int | None) -> bool:
-    """Replace the stored measured count with its live DB value when available."""
+def _refresh_git_history_coverage(
+    scope: dict[str, Any], live_count: int | None
+) -> bool | None:
+    """Replace stored coverage when readable; None means live coverage is unavailable."""
     coverage = scope.get("git_history_coverage")
-    if live_count is None or not isinstance(coverage, dict):
+    if not isinstance(coverage, dict):
         return False
+    if live_count is None:
+        return None
 
     count_key = next(
         (key for key in ("files_with_history", "files_measured", "files_indexed") if key in coverage),
@@ -1075,7 +1083,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         eligible = coverage.get("files_eligible", coverage.get("eligible_files", "?"))
         cap = commit_cap_label(scope["git_commit_cap"])
         coverage_value = f"{measured}/{eligible} files" + (f" ({cap})" if cap else "")
-        if git_history_is_stale:
+        if git_history_is_stale is None:
+            coverage_value += " [dim](live coverage unavailable; showing stored value)[/dim]"
+        elif git_history_is_stale:
             coverage_value += (
                 " [dim](stored coverage is stale; run [bold]repowise update "
                 "--index-only[/bold])[/dim]"
