@@ -675,3 +675,32 @@ async def test_the_fetcher_returns_nothing_for_a_repository_without_one(
         session=None, repo_id="r1", repo_path=_repo(tmp_path)
     )
     assert fetcher._get_canonical_terms() == []
+
+
+def test_the_overview_reads_the_glossary_it_is_about_to_use(tmp_path: Path) -> None:
+    """The terms the overview ranks with have to come from the repository.
+
+    ``select_terms`` is tested with the declared terms handed to it; this
+    covers the other half, the reader the overview calls on a real run, so
+    dropping the call leaves an assertion failure rather than a green suite.
+    """
+    from types import SimpleNamespace
+
+    from repowise.core.generation.page_generator import levels
+
+    run = SimpleNamespace(repo_path=_repo(tmp_path, root=_POCOCK), repo_name="demo")
+    assert [t.term for t in levels._read_declared_glossary(run)] == [
+        "Order",
+        "Customer",
+        "Co-change",
+    ]
+
+
+def test_a_run_with_no_repository_reads_no_glossary() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.generation.page_generator import levels
+
+    assert levels._read_declared_glossary(
+        SimpleNamespace(repo_path=None, repo_name="demo")
+    ) == ()
