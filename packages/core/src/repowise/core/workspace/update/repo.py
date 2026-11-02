@@ -233,7 +233,14 @@ async def _incremental_repo_update(
     )
 
     partial_health_report, dead_code_report, doc_drift_report = await _partial_analysis(
-        repo_path, base_ref, file_diffs, parsed_files, source_map, graph_builder, git_meta_map
+        repo_path,
+        base_ref,
+        file_diffs,
+        parsed_files,
+        source_map,
+        graph_builder,
+        git_meta_map,
+        full_git_history=bool(full_git_summaries),
     )
 
     # Drop the transient, non-serializable ``BlameIndex`` before persistence.
@@ -377,6 +384,8 @@ async def _partial_analysis(
     source_map: dict,
     graph_builder: Any,
     git_meta_map: dict,
+    *,
+    full_git_history: bool = False,
 ) -> tuple[Any, Any, Any]:
     """Partial health, dead-code and doc-drift reports over the changed files.
 
@@ -419,6 +428,7 @@ async def _partial_analysis(
         repo_function_mod_p80=stored_function_mod_p80,
         coverage_map=stored_coverage_map,
         log=_log.info,
+        full_git_history=full_git_history,
     )
     doc_drift_report = run_doc_drift_partial(
         graph_builder,

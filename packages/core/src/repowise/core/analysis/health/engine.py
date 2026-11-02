@@ -891,6 +891,19 @@ class HealthAnalyzer:
                 )
         return rows
 
+    def function_blame_rows(self, config: dict | None = None) -> list[dict]:
+        """The blame rollup over every file a full pass walks, as init builds it.
+
+        For an update whose git walk re-read the whole history: ``git_meta_map``
+        then holds every file's blame index, but an incremental :meth:`analyze`
+        walks only the changed files, so its rows cover only those. Unchanged
+        sources come out of the walk cache.
+        """
+        walked = self._walk_files(
+            self._target_files(None), _RunConfig.read(config).vocab, None, partial=True
+        )
+        return self._function_blame_rows(walked)
+
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the
         FULL-tier blame indexes attached to ``git_meta_map``.
