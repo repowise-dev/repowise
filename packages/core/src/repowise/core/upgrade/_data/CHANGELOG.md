@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.60.1] - 2026-11-02
+
+### Added
+
+- The decisions page hands review to your agent. The candidates lane copies a prompt that has your agent check each candidate against its evidence commits and the code, then confirm or dismiss it with a one-line reason, or leave it for you. A second prompt has it record up to 10 missing decisions for the busiest ungoverned files, and each candidate has a "Copy prompt" of its own. A decision your agent accepted says so, next to an Undo button. (#5246)
+- Confirming a decision that has no rationale asks "Why does this hold?" right on the detail page and in the drawer, and saves your answer as the reason. Other gaps say in plain words what to add. Decisions saved from a PR review link back to the comment and show who accepted them. (#5222)
+- `repowise update --index-only --defer-docs` stores the new index facts and marks the affected wiki pages stale while keeping their text, so the code index stays current without waiting on documentation. `repowise status` and the JSON completion event report the stale page count. (#5207)
+- Workspace updates report how long each phase took for every repository. (#5244)
+
+### Changed
+
+- An incremental update reads the stored health report back instead of re-scoring every file. A one-file update on a 7,000-file repository restored at another path takes 164 s instead of 284 s. (#5242)
+- The in-place graph patch also works when the index was restored at another path: a comment-only commit patches one file in 3.4 s instead of a 34 s full graph rebuild. (#5243)
+
+### Fixed
+
+- An incremental update keeps every cross-function performance finding, including those whose sink sits in an unchanged file, matching what a full index reports. (#5242)
+- A decision mined from both a PR and its merge commit is stored once, under the PR's wording. (#2753)
+- A decision that each update re-mines with new wording folds into the record that already holds it, and existing copies are merged on the next index with their old ids still resolving. On the repowise repository itself, 462 mined records collapse to the 187 decisions they hold. (#5221)
+
 ## [0.60.0] - 2026-11-01
 
 repowise 0.60 makes every agent call count. `get_answer` cites the lines it rests on, `get_why` quotes the comment or commit body that states the reason, `get_change_risk` scores each commit of a branch in one call, and a worktree or subdirectory path works as `repo`. The tool list and server instructions sent on every turn are 41% smaller, the generated CLAUDE.md and AGENTS.md route each task to Grep or one named call, and `repowise init --yes` installs the agent hooks and an MCP entry Claude Code loads. On 24 agent tasks across four public repositories, agents finished with 53% fewer tool calls and 41% fewer bytes read than on the build from a day earlier.
