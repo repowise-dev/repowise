@@ -77,6 +77,82 @@ def test_markdown_preview_returns_the_heading_spine(tmp_path) -> None:
     assert preview["chars"] > 0
 
 
+def test_preview_is_counts_plus_three_lines(tmp_path) -> None:
+    """The heading count is whole; only three headings ride along verbatim."""
+    body = "".join(f"## H{i}\n\ntext\n\n" for i in range(10))
+    (tmp_path / "long.md").write_text(body, encoding="utf-8")
+    preview = _file_preview(tmp_path, "long.md")
+    assert preview["heading_count"] == 10
+    assert preview["headings"] == ["## H0", "## H1", "## H2"]
+    (tmp_path / "long.txt").write_text("".join(f"l{i}\n" for i in range(10)), encoding="utf-8")
+    assert _file_preview(tmp_path, "long.txt")["head"] == ["l0", "l1", "l2"]
+
+
+def test_comments_in_a_fenced_block_are_not_markdown_headings(tmp_path) -> None:
+    """A ``#`` line inside a code fence is a shell or Python comment."""
+    (tmp_path / "f.md").write_text(
+        "# Title\n\n```bash\n# install it\npip install x\n```\n\n"
+        "~~~\n# also code\n~~~\n\n## Usage\n#hashtag is not a heading\n",
+        encoding="utf-8",
+    )
+    preview = _file_preview(tmp_path, "f.md")
+    assert preview["headings"] == ["# Title", "## Usage"]
+    assert preview["heading_count"] == 2
+
+
+def test_rst_headings_come_from_adornment_not_hash_lines(tmp_path) -> None:
+    """In reST a section title is underlined; ``#`` lines are code or list items."""
+    (tmp_path / "g.rst").write_text(
+        "=====\nGuide\n=====\n\nIntro.\n\nInstall\n-------\n\n"
+        ".. code-block:: python\n\n    # a comment\n    x = 1\n\n"
+        "#. first item\n#. second item\n\nToo short\n---\n\nUsage\n~~~~~\n",
+        encoding="utf-8",
+    )
+    preview = _file_preview(tmp_path, "g.rst")
+    assert preview["headings"] == ["Guide", "Install", "Usage"]
+    assert preview["heading_count"] == 3
+
+
+def test_a_fence_closes_only_on_a_bare_marker(tmp_path) -> None:
+    """```python inside an open fence is code, not the fence's end."""
+    (tmp_path / "n.md").write_text(
+        "# Top\n\n```\n```python\n# still code\n```\n\n## After\n",
+        encoding="utf-8",
+    )
+    assert _file_preview(tmp_path, "n.md")["headings"] == ["# Top", "## After"]
+
+
+def test_front_matter_and_html_comments_hold_no_headings(tmp_path) -> None:
+    (tmp_path / "fm.md").write_text(
+        "---\ntitle: x\n# yaml comment\n---\n\n<!--\n# commented out\n-->\n"
+        "<!-- # inline --> \n# Real\n",
+        encoding="utf-8",
+    )
+    preview = _file_preview(tmp_path, "fm.md")
+    assert preview["headings"] == ["# Real"]
+    assert preview["heading_count"] == 1
+
+
+def test_rst_simple_table_rows_are_not_titles(tmp_path) -> None:
+    (tmp_path / "t.rst").write_text(
+        "Guide\n=====\n\n=====\nName\n=====\nfoo\nbar\n=====\n\nUsage\n-----\n",
+        encoding="utf-8",
+    )
+    assert _file_preview(tmp_path, "t.rst")["headings"] == ["Guide", "Usage"]
+
+
+def test_head_lines_skip_a_comment_banner(tmp_path) -> None:
+    """A licence banner says nothing about the file; its keys do."""
+    (tmp_path / "b.yaml").write_text(
+        "# Copyright 2026 Example\n# Licensed under the Apache License\n#\n"
+        "name: svc\nport: 8080\nreplicas: 2\nimage: x\n",
+        encoding="utf-8",
+    )
+    assert _file_preview(tmp_path, "b.yaml")["head"] == ["name: svc", "port: 8080", "replicas: 2"]
+    (tmp_path / "only.sh").write_text("# just a comment\n", encoding="utf-8")
+    assert _file_preview(tmp_path, "only.sh")["head"] == ["# just a comment"]
+
+
 def test_non_markdown_preview_returns_head_lines(tmp_path) -> None:
     """Config and data files keep their keys at the top, so head lines carry them."""
     (tmp_path / "c.yaml").write_text("\n\nname: svc\nport: 8080\n", encoding="utf-8")
@@ -145,6 +221,7 @@ async def test_symbolless_file_card_carries_a_preview(
     )
     preview = card["docs"]["file_preview"]
     assert preview["headings"] == ["# Guide", "## Install", "## Usage"]
+    assert preview["heading_count"] == 3
     assert preview["lines"] == 11
     assert "Read the file" in preview["note"]
     # The stub summary contradicted the preview sitting beside it.

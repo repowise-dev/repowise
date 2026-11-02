@@ -14,6 +14,9 @@ from typing import Any, Literal
 
 import pytest
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 PlanReason = Literal[
     "no_applicable_findings",
     "plan_analysis_indeterminate",
@@ -45,9 +48,9 @@ def _frozen(**kwargs: Any) -> MappingProxyType[str, Any]:
 
 SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
     HealthSemanticsCase(
-        name="repository directive",
-        call='get_health(only=["directive"], limit=0)',
-        kwargs=_frozen(only=("directive",), limit=0),
+        name="repository fix first",
+        call='get_health(only=["fix_first"], limit=1)',
+        kwargs=_frozen(only=("fix_first",), limit=1),
         comparison="default dashboard and limit=50",
         comparison_kwargs=_frozen(limit=50),
         plans_requested=False,
@@ -55,7 +58,7 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         expected_empty_reason=None,
         next_action=None,
         recovery="none",
-        invariant_paths=("directive", "_meta.health_analysis", "_meta.health_semantics"),
+        invariant_paths=("fix_first.lead", "fix_first.totals", "_meta.health_analysis"),
     ),
     HealthSemanticsCase(
         name="healthy file self-check",
@@ -81,7 +84,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
             "metrics",
             "findings",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
@@ -108,7 +110,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
             "metrics",
             "findings",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
@@ -138,7 +139,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
             "modules_total",
             "metrics_total",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
@@ -152,7 +152,7 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         expected_empty_reason=None,
         next_action=None,
         recovery="none",
-        invariant_paths=("trend", "_meta.health_analysis", "_meta.health_semantics"),
+        invariant_paths=("trend", "_meta.health_analysis"),
     ),
     HealthSemanticsCase(
         name="accuracy",
@@ -168,7 +168,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         invariant_paths=(
             "defect_accuracy",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
@@ -188,25 +187,27 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
             "coverage.summary",
             "coverage.files_total",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
         name="performance plus refactoring",
         call=(
             'get_health(include=["performance", "refactoring"], '
-            'only=["performance_opportunities", "refactoring_plans"], limit=1)'
+            'only=["performance_opportunities", "refactoring_plans"], limit=1, '
+            'refactoring_scope="all")'
         ),
         kwargs=_frozen(
             include=("performance", "refactoring"),
             only=("performance_opportunities", "refactoring_plans"),
             limit=1,
+            refactoring_scope="all",
         ),
         comparison="independent performance and refactoring projections",
         comparison_kwargs=_frozen(
             include=("performance", "refactoring"),
             only=("performance_opportunities", "refactoring_plans"),
             limit=1,
+            refactoring_scope="all",
         ),
         plans_requested=True,
         expected_plan_count=1,
@@ -219,7 +220,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
             "refactoring_plans",
             "refactoring_plans_total",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
@@ -245,7 +245,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         invariant_paths=(
             "findings",
             "_meta.health_analysis",
-            "_meta.health_semantics",
         ),
     ),
     HealthSemanticsCase(
@@ -259,7 +258,7 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         expected_empty_reason=None,
         next_action=None,
         recovery="none",
-        invariant_paths=("targets", "unresolved", "_meta.health_semantics"),
+        invariant_paths=("targets", "unresolved"),
     ),
     HealthSemanticsCase(
         name="stale indexed analysis with live source",
@@ -272,33 +271,33 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         expected_empty_reason=None,
         next_action="repowise update",
         recovery="none",
-        invariant_paths=("metrics", "_meta.health_analysis", "_meta.health_semantics"),
+        invariant_paths=("metrics", "_meta.health_analysis"),
     ),
     HealthSemanticsCase(
         name="degraded or missing analysis",
         call=(
             'get_health(include=["refactoring"], '
-            'only=["directive", "kpis", "refactoring_plans"])'
+            'only=["fix_first", "kpis", "refactoring_plans"])'
         ),
         kwargs=_frozen(
             include=("refactoring",),
-            only=("directive", "kpis", "refactoring_plans"),
+            only=("fix_first", "kpis", "refactoring_plans"),
         ),
         comparison="missing-analysis narrow projection",
-        comparison_kwargs=_frozen(only=("directive", "kpis")),
+        comparison_kwargs=_frozen(only=("fix_first", "kpis")),
         plans_requested=True,
         expected_plan_count=0,
         expected_empty_reason="analysis_unavailable",
         next_action="repowise update",
         recovery="none",
-        invariant_paths=("directive", "kpis", "_meta.health_analysis", "_meta.health_semantics"),
+        invariant_paths=("fix_first", "kpis", "_meta.health_analysis"),
     ),
 )
 
 
 def test_sealed_health_semantics_matrix_has_every_independent_oracle() -> None:
     assert tuple(case.name for case in SEALED_HEALTH_SEMANTICS) == (
-        "repository directive",
+        "repository fix first",
         "healthy file self-check",
         "unhealthy file self-check",
         "module triage",
@@ -344,6 +343,7 @@ def _path(result: dict[str, Any], dotted: str) -> Any:
 
 async def _seed_case_evidence(case: HealthSemanticsCase, session, repository_id: str) -> None:
     from repowise.core.persistence.crud import (
+        finalize_refactoring_opportunities,
         save_coverage_files,
         save_health_findings,
         save_health_snapshot,
@@ -420,6 +420,8 @@ async def _seed_case_evidence(case: HealthSemanticsCase, session, repository_id:
             )
             plans.append({**plans[0], "file_path": "src/db/models.py", "target_symbol": "load_rows"})
         await save_refactoring_suggestions(session, repository_id, plans)
+        # The plan list is a view of the opportunity queue the finalizer composes.
+        await finalize_refactoring_opportunities(session, repository_id)
     await session.commit()
 
 
@@ -470,7 +472,7 @@ async def test_sealed_missing_analysis_row_executes_without_fabricating_health(
     result = await call(**_mutable_kwargs(case.kwargs))
     comparison = await call(**_mutable_kwargs(case.comparison_kwargs))
 
-    assert result["directive"] is None
+    assert result["fix_first"]["lead"] is None
     assert result["kpis"]["average_health"] is None
     assert result["kpis"]["analysis_status"] == "unavailable"
     assert result["refactoring_plans"] == []
@@ -488,10 +490,9 @@ async def test_sealed_projection_invariance_uses_independent_calls(setup_mcp, he
     from repowise.server.mcp_server import get_health
 
     dashboard = await get_health()
-    directive = await get_health(only=["directive"], limit=0)
-    assert directive["directive"] == dashboard["directive"]
-    assert directive["_meta"]["health_semantics"] == dashboard["_meta"]["health_semantics"]
-    assert directive["_meta"]["health_analysis"] == dashboard["_meta"]["health_analysis"]
+    lead = await get_health(only=["fix_first"])
+    assert lead["fix_first"] == dashboard["fix_first"]
+    assert lead["_meta"]["health_analysis"] == dashboard["_meta"]["health_analysis"]
 
     broad = await get_health(
         targets=["src/auth/service.py"],
@@ -545,7 +546,7 @@ async def test_seven_registry_health_recipes_are_bounded_and_self_describing(
 
     call = tool_middleware(get_health)
     recipes = (
-        ({"only": ["directive"]}, "directive"),
+        ({"only": ["fix_first"]}, "fix_first"),
         ({"targets": ["src/auth/service.py"], "include": ["refactoring"]}, "metrics"),
         (
             {"targets": ["module:auth"], "only": ["modules", "metrics"]},
@@ -565,7 +566,8 @@ async def test_seven_registry_health_recipes_are_bounded_and_self_describing(
     for kwargs, answer_key in recipes:
         result = await call(**kwargs)
         assert answer_key in result
-        assert result["_meta"]["health_semantics"]
+        # The unit legend rides only when ``include=["semantics"]`` asks.
+        assert "health_semantics" not in result["_meta"]
         assert result["_meta"]["health_analysis"]
         size = len(json.dumps(result, separators=(",", ":"), default=str))
         budget = 32_000 if kwargs.get("include") else 24_000

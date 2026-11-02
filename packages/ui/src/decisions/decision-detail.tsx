@@ -22,9 +22,11 @@ import {
   Flame,
   GitCommitHorizontal,
 } from "lucide-react";
-import type {
-  DecisionRecord,
-  DecisionStatus,
+import type { ChatContext } from "@repowise-dev/types/chat";
+import {
+  decisionSourceLabel,
+  type DecisionRecord,
+  type DecisionStatus,
 } from "@repowise-dev/types/decisions";
 
 import { Markdown } from "../shared/markdown";
@@ -49,19 +51,6 @@ import type {
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
-
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Marker",
-  git_archaeology: "Git history",
-  readme_mining: "Docs",
-  cli: "Manual",
-  comment: "Comment",
-  pr: "Pull request",
-  adr: "ADR",
-  changelog: "Changelog",
-  session: "Session",
-  conventions: "Convention",
-};
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -110,6 +99,13 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   // Which AI-prompt flavor the modal shows: verification ("is this decision
   // still true?") or enforcement ("make the code conform to it").
   const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
+  // One subject for both the chat control and the prompt modal's "Ask in chat".
+  const chatContext: ChatContext = {
+    kind: "decision",
+    label: stripMarkdown(decision.title),
+    target: decision.id,
+    targetKind: "decision",
+  };
 
   // Read from `decision.affected_files` and not from `linkedFiles`, which the
   // editor below mutates locally. `staleness_score` is a proportion the server
@@ -290,12 +286,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <VerificationBadge verification={decision.verification} />
             )}
             <AskAboutThis
-              context={{
-                kind: "decision",
-                label: stripMarkdown(decision.title),
-                target: decision.id,
-                targetKind: "decision",
-              }}
+              context={chatContext}
               question={`Why was this decision made, what evidence supports it, and has later work conflicted with it?`}
               label="Ask about this decision"
             />
@@ -309,8 +300,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             verification, so it restated the Source cell beside it as a
             percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
-          <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
-          <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
+          <MetaItem label="Source" value={decisionSourceLabel(decision.source)} />
+          <MetaItem label="Recorded" value={formatDate(decision.created_at)} />
         </dl>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -416,7 +407,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           <div className="space-y-2 text-sm">
             {decision.last_code_change && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                Affected files last changed {formatDateOrDash(decision.last_code_change)}.
+                Affected files last changed {formatDate(decision.last_code_change)}.
               </p>
             )}
             <div className="flex flex-col gap-1.5">
@@ -481,10 +472,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                // Accent, not a filled green: green/amber/red are reserved for
+                // Ink, not a filled green: green/amber/red are reserved for
                 // health readouts where they carry a band. This is the page's
-                // one primary action, which is what the accent is for.
-                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
+                // one primary action, and primary actions are ink.
+                className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
                 Confirm
               </button>
@@ -575,6 +566,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           })
         }
         filePath={stripMarkdown(decision.title)}
+        chatContext={chatContext}
         title={
           promptMode === "enforce"
             ? "AI decision enforcement"
@@ -602,20 +594,6 @@ function MetaItem({ label, value }: { label: string; value: string }) {
       </dd>
     </div>
   );
-}
-
-/** Older/hosted backends can omit decision timestamps — render "—" instead of
- *  "Invalid Date" for a missing or unparseable value.
- *
- *  Uses `formatDate`, which pins the locale, rather than
- *  `toLocaleDateString()`. The latter formats against the *runtime's* locale,
- *  so the server rendered "23/06/2026" and the browser "23/6/2026" — a
- *  hydration mismatch that made React throw away and re-render the tree on
- *  every visit to a decision. */
-function formatDateOrDash(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : formatDate(d);
 }
 
 function PrevNextLink({

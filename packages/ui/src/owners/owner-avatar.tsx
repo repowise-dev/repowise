@@ -56,7 +56,7 @@ export function OwnerAvatar({ name, email, size = "md", className }: OwnerAvatar
     <span
       className={cn(
         "relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full",
-        "border border-[var(--color-border-default)] bg-[var(--color-accent-muted)]",
+        "border border-[var(--color-border-default)] bg-[var(--color-bg-inset)]",
         className,
       )}
       style={{ width: px, height: px }}
@@ -64,7 +64,7 @@ export function OwnerAvatar({ name, email, size = "md", className }: OwnerAvatar
       title={label}
     >
       <span
-        className="font-semibold leading-none tracking-wide text-[var(--color-accent-primary)]"
+        className="font-semibold leading-none tracking-wide text-[var(--color-text-secondary)]"
         style={{ fontSize: Math.max(9, Math.floor(px / 2.9)) }}
       >
         {initials(name, email ?? null)}

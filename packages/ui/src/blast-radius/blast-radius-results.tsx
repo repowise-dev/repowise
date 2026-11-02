@@ -47,54 +47,63 @@ export function BlastRadiusResults({
           ? "Test analysis is partial; available recommendations do not cover every evidence input."
           : null;
 
+  const noDownstream =
+    result.direct_risks.length === 0 && result.transitive_affected.length === 0;
+
   return (
     <div className="space-y-6">
       <BlastRadiusHeader result={result} changedFiles={changedFiles} />
 
-      {/* One picture: changed files → direct → transitive. */}
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-          Impact map
-        </p>
-        {result.direct_risks.length === 0 &&
-        result.transitive_affected.length === 0 ? (
-          <EmptyState
-            title="No downstream impact found"
-            description="No files depend on the changed paths within the selected depth."
-          />
-        ) : (
+      {noDownstream ? (
+        <EmptyState
+          tone="positive"
+          title="No downstream impact"
+          description="No other file depends on the changed paths within the selected depth."
+        />
+      ) : (
+        /* One picture: changed files → direct → transitive. */
+        <div>
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            Impact map
+          </p>
           <ImpactGraph result={result} changedFiles={changedFiles} />
-        )}
-      </div>
+        </div>
+      )}
 
+      {!noDownstream && (
       <CollapsibleSection
-        title="Direct risks"
-        hint={result.direct_risks.length || undefined}
-        defaultOpen={result.direct_risks.length > 0}
-      >
-        {result.direct_risks.length > 0 ? (
-          <DirectRisksTable rows={result.direct_risks} />
-        ) : (
-          <EmptyState
-            title="No direct risks"
-            description="Nothing depends directly on the changed files."
-          />
-        )}
-      </CollapsibleSection>
+          title="Direct risks"
+          hint={result.direct_risks.length || undefined}
+          defaultOpen={result.direct_risks.length > 0}
+        >
+          {result.direct_risks.length > 0 ? (
+            <DirectRisksTable rows={result.direct_risks} />
+          ) : (
+            <EmptyState
+              size="compact"
+              title="No direct risks"
+              description="Nothing depends directly on the changed files."
+            />
+          )}
+        </CollapsibleSection>
+      )}
 
+      {!noDownstream && (
       <CollapsibleSection
-        title="Transitive affected files"
-        hint={result.transitive_affected.length || undefined}
-      >
-        {result.transitive_affected.length > 0 ? (
-          <TransitiveTable rows={result.transitive_affected} />
-        ) : (
-          <EmptyState
-            title="No transitive impact"
-            description="No deeper dependents within the selected depth."
-          />
-        )}
-      </CollapsibleSection>
+          title="Transitive affected files"
+          hint={result.transitive_affected.length || undefined}
+        >
+          {result.transitive_affected.length > 0 ? (
+            <TransitiveTable rows={result.transitive_affected} />
+          ) : (
+            <EmptyState
+              size="compact"
+              title="No transitive impact"
+              description="No deeper dependents within the selected depth."
+            />
+          )}
+        </CollapsibleSection>
+      )}
 
       <CollapsibleSection
         title="Co-change warnings"
@@ -104,6 +113,7 @@ export function BlastRadiusResults({
           <CochangeTable rows={result.cochange_warnings} />
         ) : (
           <EmptyState
+            size="compact"
             title="No co-change warnings"
             description="No historical co-change partners are missing from this change."
           />
@@ -119,6 +129,7 @@ export function BlastRadiusResults({
             <ReviewersTable rows={result.recommended_reviewers} />
           ) : (
             <EmptyState
+              size="compact"
               title="No reviewer suggestions"
               description="No owners matched the changed files."
             />
@@ -164,6 +175,7 @@ export function BlastRadiusResults({
           </div>
         ) : (
           <EmptyState
+            size="compact"
             title={
               testAnalysisLimited
                 ? "Test analysis limited"
@@ -186,6 +198,7 @@ export function BlastRadiusResults({
           <TestGapsList gaps={result.test_gaps} />
         ) : (
           <EmptyState
+            size="compact"
             title="No file-level gaps identified"
             description={
               testAnalysisLimited

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ElementType } from "react";
+import { useCallback, useState, type ElementType } from "react";
 import type {
   ActionHorizonKey,
   NextAction,
@@ -8,10 +8,12 @@ import type {
   WorkspaceRepoActions,
 } from "@repowise-dev/types/actions";
 
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { ActionDrawer } from "../overview/action-drawer";
-import { ActionRow, renderActionTitle } from "../overview/next-actions";
+import { ActionRow, renderActionTitle, useActionPrompt } from "../overview/next-actions";
 import { OverviewSection } from "../overview/section";
 import { Segmented } from "../shared/segmented";
+import { formatNumber } from "../lib/format";
 
 export interface WorkspaceNextActionsProps {
   data: WorkspaceActionsResponse;
@@ -23,6 +25,10 @@ export interface WorkspaceNextActionsProps {
   fileHref?: ((repoId: string, path: string) => string | null) | undefined;
   /** Where cross-repository contract changes are listed. */
   contractsHref: string;
+  /** An action's agent prompt as core renders it, given its repository's id. Omit to hide the prompt. */
+  loadPrompt?:
+    | ((repoId: string, action: NextAction, flavor: AiPromptFlavor) => Promise<string>)
+    | undefined;
   LinkComponent?: ElementType | undefined;
 }
 
@@ -31,7 +37,7 @@ function work(repo: WorkspaceRepoActions, horizon: ActionHorizonKey): number {
 }
 
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+  return `${formatNumber(n)} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 /**
@@ -46,15 +52,22 @@ export function WorkspaceNextActions({
   repoHref,
   fileHref,
   contractsHref,
+  loadPrompt,
   LinkComponent,
 }: WorkspaceNextActionsProps) {
   const [horizon, setHorizon] = useState<ActionHorizonKey>(
     data.repos.some((r) => work(r, "week") > 0) ? "week" : "quarter",
   );
-  const [opened, setOpened] = useState<{ action: NextAction; repo: string; repoId: string } | null>(
+  const [opened, setOpened] = useState<{ action: NextAction; repoId: string } | null>(
     null,
   );
   const Link = LinkComponent ?? "a";
+  const { openActionPrompt, promptModal } = useActionPrompt();
+  const openedRepoId = opened?.repoId;
+  const loadActionPrompt = useCallback(
+    (action: NextAction, flavor: AiPromptFlavor) => loadPrompt!(openedRepoId!, action, flavor),
+    [loadPrompt, openedRepoId],
+  );
 
   const available = data.repos.filter((r) => r.status === "available");
   const withWork = available
@@ -70,7 +83,7 @@ export function WorkspaceNextActions({
 
   const status =
     total === 0
-      ? `Nothing stands out ${window} in ${available.length.toLocaleString()} ${
+      ? `Nothing stands out ${window} in ${formatNumber(available.length)} ${
           available.length === 1 ? "repository" : "repositories"
         }.`
       : `${plural(total, "thing")} worth doing ${window}, across ${plural(
@@ -78,11 +91,51 @@ export function WorkspaceNextActions({
           "place",
         )}.`;
 
+  // The item the open list leads with, so the folded heading still names it.
+  const leadCross = data.cross_repo[0];
+  const leadRepo = withWork[0];
+  const leadAction = leadRepo?.horizons[horizon]?.actions[0];
+  const lead = leadCross
+    ? { title: leadCross.title, where: "across repositories" }
+    : leadAction && leadRepo
+      ? { title: leadAction.title, where: `in ${leadRepo.alias}` }
+      : null;
+
   return (
+    // Folded by default: on a workspace the list runs two actions per
+    // repository and pushed the repositories themselves off the first screen.
+    // The heading keeps the count and the lead item, so nothing is hidden
+    // without saying what is behind it.
     <OverviewSection
       title="Do next"
-      description={status}
-      action={
+      collapsible
+      defaultOpen={false}
+      // Folded-only: once open, the status line and the first row say the same.
+      hint={
+        <span className="[overflow-wrap:anywhere] group-open/section:hidden">
+          {total === 0 ? (
+            `Nothing stands out ${window}`
+          ) : (
+            <>
+              {`${plural(total, "thing")} ${window}`}
+              {lead && (
+                <>
+                  {" · top: "}
+                  <span className="text-[var(--color-text-secondary)]">
+                    {renderActionTitle(lead.title)}
+                  </span>
+                  {` ${lead.where}`}
+                </>
+              )}
+            </>
+          )}
+        </span>
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)]">
+          {status}
+        </p>
         <Segmented
           label="Time frame"
           value={horizon}
@@ -92,8 +145,7 @@ export function WorkspaceNextActions({
           ]}
           onChange={setHorizon}
         />
-      }
-    >
+      </div>
       <div className="flex flex-col gap-5">
         {data.cross_repo.length > 0 && (
           <div className="flex flex-col">
@@ -106,7 +158,7 @@ export function WorkspaceNextActions({
                   <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
                     <Link
                       href={contractsHref}
-                      className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                     >
                       {renderActionTitle(c.title)}
                     </Link>
@@ -131,9 +183,9 @@ export function WorkspaceNextActions({
                 </h3>
                 <Link
                   href={repoHref(repoId)}
-                  className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
-                  {`All ${work(repo, horizon).toLocaleString()} in ${repo.alias}`}
+                  {`All ${formatNumber(work(repo, horizon))} in ${repo.alias}`}
                 </Link>
               </div>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
@@ -142,7 +194,12 @@ export function WorkspaceNextActions({
                     key={action.id}
                     action={action}
                     selected={opened?.action.id === action.id && opened.repoId === repoId}
-                    onOpen={() => setOpened({ action, repo: repo.alias, repoId })}
+                    onOpen={() => setOpened({ action, repoId })}
+                    onPrompt={
+                      loadPrompt
+                        ? () => openActionPrompt(action, (a, flavor) => loadPrompt(repoId, a, flavor))
+                        : undefined
+                    }
                   />
                 ))}
               </ul>
@@ -168,10 +225,11 @@ export function WorkspaceNextActions({
         onClose={() => setOpened(null)}
         evidenceHref={opened ? hrefFor(opened.repoId, opened.action) : null}
         fileHref={opened && fileHref ? (path) => fileHref(opened.repoId, path) : undefined}
-        repoName={opened?.repo}
+        loadPrompt={loadPrompt ? loadActionPrompt : undefined}
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
+      {promptModal}
     </OverviewSection>
   );
 }

@@ -110,6 +110,55 @@
   )
 ) @symbol.def
 
+; A definition returning a pointer or a reference wraps the function_declarator:
+; ``Node *make(...)``, ``char **argv(...)``, ``Foo& Foo::operator=(...)``, and a
+; function returning a function pointer, ``int (*handler(int k))(int)``.
+; Queries cannot recurse, so each wrapper depth is listed (up to two pointer
+; levels; ``T ***f()`` is not matched); the name shapes are
+; the ones the unwrapped patterns above accept. ``reference_declarator`` does
+; not name its declarator field, so its child is matched unnamed.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: [
+            (identifier) @symbol.name
+            (field_identifier) @symbol.name
+            (qualified_identifier name: (identifier) @symbol.name)
+            (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+            (qualified_identifier name: (operator_name) @symbol.name)
+          ]
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 ; Class
 (class_specifier
   name: (type_identifier) @symbol.name
@@ -141,16 +190,6 @@
 (template_declaration
   (struct_specifier
     name: (type_identifier) @symbol.name
-  )
-) @symbol.def
-
-; Template function: template<typename T> T func(T x) { ... }
-(template_declaration
-  (function_definition
-    declarator: (function_declarator
-      declarator: (identifier) @symbol.name
-      parameters: (parameter_list) @symbol.params
-    )
   )
 ) @symbol.def
 
@@ -191,6 +230,31 @@
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params
   )
+) @symbol.def
+
+; ... returning a pointer or a reference, the same wrappers as definitions
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
 ) @symbol.def
 
 ; In-class member-function declaration: ``void Seek(const Slice&);``
@@ -304,10 +368,23 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Method call: obj.method(args) or obj->method(args)
+; Method call: obj.method(args) or obj->method(args), and the two ``this``
+; spellings. ``this->m()`` keeps ``this`` as the receiver, which the resolver
+; answers from the caller's own class. ``this->f_->m()`` captures ``f_`` alone,
+; as java.scm does for ``this.f.m()``: the field is the caller's own, so it is
+; typed exactly as a bare ``f_->m()`` is (ceiling: a same-named parameter
+; then shadows the field, as in Java). Any other nested receiver
+; (``a->b->m()``) stays uncaptured, since ``b`` is not the caller's field.
+; One alternation, so tree-sitter runs no extra match pass per call.
 (call_expression
   function: (field_expression
-    argument: (identifier) @call.receiver
+    argument: [
+      (identifier) @call.receiver
+      (this) @call.receiver
+      (field_expression
+        argument: (this)
+        field: (field_identifier) @call.receiver)
+    ]
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

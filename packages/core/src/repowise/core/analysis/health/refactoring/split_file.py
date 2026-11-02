@@ -19,8 +19,8 @@ Algorithm (all signals from ``ctx.graph``):
   1. direct intra-file call (A calls B) -> ``w = 3`` — they belong together;
   2. co-change affinity (A and B's line ranges are touched by overlapping
      commits) -> ``w = 2 x Jaccard(commits_a, commits_b)`` — "these always
-     change together, keep them together". Read from the file's blame index
-     at zero index cost; absent when no ``blame_index`` is threaded in.
+     change together, keep them together". Read from the per-function
+     commit sets in ``ctx.commit_spans``; absent when there are none.
   3. shared local helper (A and B both call a third local symbol) ->
      ``w = 2`` per shared helper — cohesion without a direct A<->B edge;
   4. shared external-import surface (A and B lean on the same *imported
@@ -49,17 +49,21 @@ need a back-compat re-export shim, surfaced as ``shim_required``.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
 
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
+from ....code_origin import is_migration_path, is_vendored_or_generated_path
+from ....ingestion.lang_helpers.anonymous_classes import is_anonymous_scope
+from ....ingestion.symbol_identity import outer_scope
 from ....test_paths import is_test_related_path
 from ...dead_code.file_reachability import BARREL_FILENAMES
+from ..effort import effort_bucket
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # Edge weights over the intra-file symbol graph (see module docstring).
 _DIRECT_CALL_WEIGHT = 3.0
@@ -115,23 +119,26 @@ _HIGH_CONFIDENCE_MODULARITY = 0.45
 def _is_generated_path(path: str) -> bool:
     """Generated / vendored / append-only code: a migration or a barrel
     re-export file must stay self-contained, so it is never a split target."""
-    p = path.lower().replace("\\", "/")
-    base = p.rsplit("/", 1)[-1]
     return (
-        "/migrations/" in p
-        or "/alembic/versions/" in p
-        or "/node_modules/" in p
-        or "/vendor/" in p
-        or "/__generated__/" in p
-        or ".generated." in base
-        or base.endswith(".min.js")
+        is_vendored_or_generated_path(path)
+        or is_migration_path(path)
         # Barrel / package-init re-export files: nothing of substance to split.
-        or base in BARREL_FILENAMES
+        or path.replace("\\", "/").rsplit("/", 1)[-1].lower() in BARREL_FILENAMES
     )
 
 
 def _is_skippable_path(path: str, language: str | None = None) -> bool:
     return is_test_related_path(path, language) or _is_generated_path(path)
+
+
+def may_split(path: str, language: str | None, line_count: int, top_level_symbols: int) -> bool:
+    """A necessary condition for a plan, from what a parse knows: lets a caller
+    skip work only a candidate file needs."""
+    return (
+        not _is_skippable_path(path, language)
+        and line_count >= _MIN_FILE_NLOC
+        and top_level_symbols >= _MIN_SYMBOLS
+    )
 
 
 def _line_range(data: dict) -> tuple[int, int] | None:
@@ -234,14 +241,60 @@ def _label_identifier(label: str) -> str:
     return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in seg).strip("_")
 
 
-def _module_label(
-    foreign_of: dict[str, set[str]], members: list[str], self_segments: set[str]
+# Every C++ function in a project with a precompiled header calls into it, so
+# it wins the vote and names nothing; ``pch.cpp`` is also the file that builds it.
+_PRECOMPILED_HEADER_STEMS = frozenset({"pch", "stdafx", "precomp", "precompiled"})
+
+
+def _top_module(
+    foreign_of: dict[str, set[str]], members: list[str], excluded: frozenset[str] = frozenset()
 ) -> str:
-    """The group's most-called foreign module label as a file name, or ``""``."""
-    labels = Counter(lab for m in members for lab in foreign_of.get(m, set()))
+    """The group's most-called foreign module label, or ``""`` when none is left."""
+    labels = Counter(
+        lab
+        for m in members
+        for lab in foreign_of.get(m, set())
+        # "tpl, resources" is a two-area community label, not a module name.
+        if "," not in lab
+        and lab not in excluded
+        and _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
+    )
     if not labels:
         return ""
-    best = min(labels, key=lambda lab: (-labels[lab], lab))
+    return min(labels, key=lambda lab: (-labels[lab], lab))
+
+
+def _shared_top_modules(
+    foreign_of: dict[str, set[str]], groups: list[list[str]]
+) -> frozenset[str]:
+    """Module labels that would be the top pick of more than one group.
+
+    A module most of the file calls into (``utils.h``, ``common.h``) wins the
+    vote in every group, and a name two groups share tells them apart only by
+    the ``_2`` the filename de-duplication adds. Such a label is dropped for
+    all of them, and the next pick is checked the same way.
+    """
+    excluded: frozenset[str] = frozenset()
+    while True:
+        tops = Counter(
+            top for members in groups if (top := _top_module(foreign_of, members, excluded))
+        )
+        shared = {lab for lab, count in tops.items() if count > 1}
+        if not shared:
+            return excluded
+        excluded |= shared
+
+
+def _module_label(
+    foreign_of: dict[str, set[str]],
+    members: list[str],
+    self_segments: set[str],
+    excluded: frozenset[str] = frozenset(),
+) -> str:
+    """The group's most-called foreign module label as a file name, or ``""``."""
+    best = _top_module(foreign_of, members, excluded)
+    if not best:
+        return ""
     cleaned = _label_identifier(best)
     # Reject uninformative labels: too short, carrying a community-dedup
     # digit suffix, or naming the file's own namespace (tells you
@@ -530,7 +583,7 @@ def _weighted_graph(
 
     # Signals are added strongest first (see module docstring).
     edges = _EdgeWeights(spine)
-    for a, b in signals.local_pairs:
+    for a, b in sorted(signals.local_pairs):
         edges.add(a, b, _DIRECT_CALL_WEIGHT)
     cochange_edges = _add_cochange_edges(edges, commits_of)
     _add_shared_helper_edges(edges, signals.callers_of)
@@ -607,7 +660,7 @@ class SplitFileDetector(RefactoringDetector):
     ) -> RefactoringSuggestion:
         groups = self._shape_groups(ctx, fg, partition.groups)
         residual = (
-            {"symbols": sorted(self._sym_name(fg.defined, m) for m in partition.residual)}
+            {"symbols": self._sym_names(fg.defined, partition.residual)}
             if partition.residual
             else None
         )
@@ -652,7 +705,9 @@ class SplitFileDetector(RefactoringDetector):
 
     def _resolve_owner(self, file_path: str, sid: str, defined: dict[str, dict]) -> str:
         """Walk ``parent_name`` up to the outermost top-level symbol (a method
-        rolls up to its class, a nested function to its owner)."""
+        rolls up to its class, a nested function to its owner). An anonymous
+        class has no node, so its member climbs ``A::over#1(int)::Runnable``
+        to the nearest scope that has one."""
         cur = sid
         seen: set[str] = set()
         while cur not in seen:
@@ -661,6 +716,9 @@ class SplitFileDetector(RefactoringDetector):
             parent = data.get("parent_name")
             if not parent:
                 return cur
+            if is_anonymous_scope(data.get("language"), parent):
+                while parent and f"{file_path}::{parent}" not in defined:
+                    parent = outer_scope(parent)
             pid = f"{file_path}::{parent}"
             if pid not in defined or pid == cur:
                 return cur
@@ -689,23 +747,21 @@ class SplitFileDetector(RefactoringDetector):
         defined: dict[str, dict],
         cluster_nodes: list[str],
     ) -> dict[str, set[str]]:
-        """Project each node's ``(start_line, end_line)`` through the file's
-        blame index to its set of touching commits — the raw material for the
-        co-change edge. Empty (the documented "no signal" outcome) when no
-        ``blame_index`` was threaded in or the index has no coverage."""
-        idx = ctx.blame_index
-        if idx is None or not getattr(idx, "lines", None):
-            return {}
-        try:
-            from repowise.core.ingestion.git_indexer.function_blame import (
-                distinct_commits_in_range,
-            )
-        except Exception:
+        """Each node's commits: the union of the function commit sets whose
+        span overlaps the node's, so a class collects its methods. The raw
+        material for the co-change edge; empty (the "no signal" outcome) when
+        the context carries no commit spans."""
+        if not ctx.commit_spans:
             return {}
         out: dict[str, set[str]] = {}
         for nid in cluster_nodes:
             span = _line_range(defined.get(nid, {}))
-            commits = distinct_commits_in_range(idx, *span) if span else None
+            if span is None:
+                continue
+            commits: set[str] = set()
+            for start, end, shas in ctx.commit_spans:
+                if start <= span[1] and end >= span[0]:
+                    commits |= shas
             if commits:
                 out[nid] = commits
         return out
@@ -743,8 +799,13 @@ class SplitFileDetector(RefactoringDetector):
         groups: list[dict] = []
         self_segments = {seg.lower() for seg in ctx.file_path.replace("\\", "/").split("/")}
         self_segments.add(stem.lower())
+        # Only the groups that fall back to a module label take part in the vote.
+        shared = _shared_top_modules(
+            fg.signals.foreign_of,
+            [m for m in substantive if not self._name_token(fg, m, self_segments)],
+        )
         for members in substantive:
-            label = self._group_label(fg, members, self_segments)
+            label = self._group_label(fg, members, self_segments, shared)
             # No shared name token means no honest filename; the surfaces prompt for one.
             suggested = None
             if label:
@@ -753,23 +814,37 @@ class SplitFileDetector(RefactoringDetector):
             groups.append(
                 {
                     "name": label or None,
-                    "symbols": sorted(self._sym_name(fg.defined, m) for m in members),
+                    "symbols": self._sym_names(fg.defined, members),
                     "suggested_file": suggested,
                 }
             )
         return groups
 
-    def _group_label(self, fg: _FileGraph, members: list[str], self_segments: set[str]) -> str:
+    def _name_token(self, fg: _FileGraph, members: list[str], self_segments: set[str]) -> str:
+        """The plurality name token, when it is not part of the file's own path."""
+        token = _dominant_token([self._sym_name(fg.defined, m) for m in members])
+        return token if token and token not in self_segments else ""
+
+    def _group_label(
+        self,
+        fg: _FileGraph,
+        members: list[str],
+        self_segments: set[str],
+        shared_modules: frozenset[str] = frozenset(),
+    ) -> str:
         """Deterministic file name for a group: the plurality name token when it is
         not part of the file's own path, else a clean dominant foreign-module
-        label, else the token (possibly ``""``, meaning no name).
+        label that no other group shares, else the token (possibly ``""``,
+        meaning no name).
 
         Module labels often name the repo's own package with a size suffix, so
         the name vote leads."""
         token = _dominant_token([self._sym_name(fg.defined, m) for m in members])
         if token and token not in self_segments:
             return token
-        return _module_label(fg.signals.foreign_of, members, self_segments) or token
+        return (
+            _module_label(fg.signals.foreign_of, members, self_segments, shared_modules) or token
+        )
 
     @staticmethod
     def _unique_filename(stem: str, ext: str, used: set[str]) -> str:
@@ -784,6 +859,11 @@ class SplitFileDetector(RefactoringDetector):
     @staticmethod
     def _sym_name(defined: dict[str, dict], sid: str) -> str:
         return defined.get(sid, {}).get("name") or sid.rsplit("::", 1)[-1]
+
+    @classmethod
+    def _sym_names(cls, defined: dict[str, dict], sids: Iterable[str]) -> list[str]:
+        """Sorted bare names, each once: overloads are separate ids with one name."""
+        return sorted({cls._sym_name(defined, sid) for sid in sids})
 
     def _blast_radius(
         self, ctx: RefactoringContext, defined: dict[str, dict], *, shim_required: bool

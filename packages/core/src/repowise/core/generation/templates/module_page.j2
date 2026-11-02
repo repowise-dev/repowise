@@ -1,159 +1,46 @@
-{% if ctx.is_rollup %}
-You are documenting **{{ ctx.title }}**, an OVERVIEW of the `{{ ctx.directories[0] if ctx.directories else ctx.title }}` subsystem as a whole. Detail lives on the child pages listed below; this page situates the subsystem, explains how its parts fit together, and points a reader to the right child page. Do not re-document each file.
-{% else %}
-You are documenting **{{ ctx.title }}** (language: {{ ctx.language }}), a group of files that belong together, not a single directory. Write about what the group does as a whole.
-{% endif %}
+{#- The module page contract. The facts arrive as one JSON object built by
+    ``context/module_facts.py``. A page whose parts have pages of their own is a
+    map (what each part owns, how a run crosses them); any other page explains
+    the mechanism. Identifiers, public API and git signals are rendered into the
+    page's digest after generation, so they are not asked for here. -#}
+{% set parent = ctx.child_pages %}
 {% if ctx.packages %}
-This page covers {{ ctx.packages | length }} sibling packages: {% for p in ctx.packages %}`{{ p.path }}`{% if not loop.last %}, {% endif %}{% endfor %}. Each is a separate package with its own manifest. Say what they share and how they differ; never describe the group as one of them or name the page after one. A table listing every package is appended after you write the page, so do not reproduce it.
+The page covers several sibling packages (`packages` in the facts), each with its own manifest. Say what they share and how they differ, and never name the page after one of them. A table of the packages is added after you write, so do not list them.
 {% endif %}
-
 {% if ctx.scope %}
-SCOPE (use this to open by situating the page against its siblings — say what it covers and what it deliberately leaves to other pages; do NOT quote this line verbatim):
-> {{ ctx.scope }}
+What this code covers, so the page stays on it (do not quote or restate it): {{ ctx.scope }}
 {% endif %}
 
-## Material
+Structural facts about **{{ ctx.title }}**, read from the code, its import graph and its history. `code_excerpts` holds exact source for the symbols most other code runs through; `declared` lists what other files declare, signatures only. `used_by` and `depends_on` name the directories on either side with the names imported across. {% if parent %}`child_pages` holds each part that has a page of its own: how that page opens, its size, and the names other code imports from it. {% endif %}`readmes` are notes the maintainers wrote beside the code; `tests`, `change_history` and `decisions` say what guards it, where changes and fixes cluster, and why it is shaped this way.
 
-**Covers:** {% if ctx.directories %}{% for d in ctx.directories[:6] %}`{{ d }}`{% if not loop.last %}, {% endif %}{% endfor %}{% if ctx.directories | length > 6 %} and {{ ctx.directories | length - 6 }} more{% endif %}{% else %}the repository root{% endif %} | **Language:** {{ ctx.language }} | **Files:** {{ ctx.files | length }} | **Public symbols:** {{ ctx.public_symbols }} / {{ ctx.total_symbols }}{% if ctx.community_label %} | **Community:** {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}{% endif %}
+```json
+{{ ctx.facts_json }}
+```
 
-{%- set _mod_signals = [] -%}
-{%- if ctx.entry_points -%}{%- set _ = _mod_signals.append("hosts entry points into this subsystem") -%}{%- endif -%}
-{%- if ctx.pagerank_mean is defined and ctx.pagerank_mean >= 0.005 -%}{%- set _ = _mod_signals.append("architecturally central (high mean PageRank across its files)") -%}{%- endif -%}
-{% if _mod_signals %}
-**Architectural signals:** {{ _mod_signals | join("; ") }}. Weave these into the opening rather than listing them.
+## What to write
+
+Every item below is an instruction about the page, never text to copy into it. Start your reply with one line `Nav: <name>`, where the name is the name of this code in the wiki's sidebar: 1 to 4 words, Title Case, the capability it provides ("Ingestion Pipeline", "Dead Code Detection", "MCP Server"); no path, no "Overview", "Module" or "Components", and not the directory name respelled when the code does something you can name. Then start the page with the line `# {{ ctx.title }}`.
+
+- Opening: one sentence saying what this code does, in the words its users would use, then a paragraph of at most 3 sentences: who calls it{% if parent %} and how work moves through it{% else %}, what comes in and what goes out{% endif %}. Write it the way an engineer on the team would explain it to a new colleague, starting with the thing itself. No file paths or numbers in the opening. Do not open with a frame: "X serves as the ...", "X acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ..." and "This module contains N files" are banned, because two pages that open with the same first five words read as one.
+{% if parent %}
+- `## How the parts fit`: a bold one-line title, then one `flowchart LR` in a fenced `mermaid` block: each part in `parts` declared once as a node under its plain name, edges taken from `imports_between_parts` and labelled with the names imported (`-->|ParsedFile|`), at most 12 edges. Then ONE paragraph of at most 5 sentences on how one real run moves across the parts and what data passes between them. Do not describe each part here; the table does that.
+- `## The parts`: a table `Part | Owns | Open it when`, one row per entry in `child_pages` (its title in bold) and one per notable group of the files in `key_files` (its path in backticks). "Owns" is what the part is responsible for; "Open it when" is the change or question that sends a reader there. No prose after the table.
+- Sections on what spans the parts: two or three, each with its own `##` heading, on conventions they share, configuration and state they read or write, and rules or decisions a newcomer must know before changing any of them. Each is ONE paragraph of at most 4 sentences (about 60 to 100 words). Never re-explain a part's internals; that is what its own page is for.
+{% else %}
+- Diagram: one diagram in a fenced `mermaid` block, under a bold one-line title, of the type the facts' `diagram` field names:
+  - `sequenceDiagram`: draw `traced_flow` as one operation, with 4 to 6 participants and 6 to 10 messages. Participants are the parts involved under plain names, declared with one-word ids (`participant Store as Result store`); an outside caller or callee may be one participant. Messages follow the traced calls in order, each a short plain-English phrase for what the call does ("resolve call targets"), never the function's name.
+  - `flowchart`: `flowchart LR` with 4 to 9 nodes for the parts in `imports_between_parts`, under plain names, the directory in small text on a second line (`Resolvers["Resolvers<br/><small>resolvers/</small>"]`). At most 10 edges, each taken from `imports_between_parts`, pointing the way data flows and labelled with the names imported (`-->|ParsedFile|`). At most 2 outside nodes from `depends_on` or `used_by`, marked `:::ext`, with `classDef ext stroke-dasharray:4 3;`.
+  - `none`: draw how data moves through the main operation the excerpts show, as a `flowchart LR` of 4 to 8 nodes, or leave the diagram out when the excerpts show no such operation.
+- Sections in the order the work happens: three to five, each with its own `##` heading. Each is ONE paragraph of at most 4 sentences (about 60 to 100 words): what goes in, what the code decides, what comes out or is stored, and why when a decision, docstring or comment says so. When 3 or more parallel items matter (formats, modes, options, record types), give them one short table instead of a list in prose. Group files by what they do together; never walk file by file.
 {% endif %}
 
-{% if ctx.is_rollup and ctx.child_pages %}
-### Child pages (this overview links down to these)
-Name each in backticks by its path so it resolves to a wiki link; explain in one clause what each covers and when a reader should go there.
-{% for cp in ctx.child_pages %}
-- **{{ cp.title }}** — `{{ cp.path }}`
-{% endfor %}
+Node and participant ids are short CamelCase words (`GraphViews`), never a mermaid keyword such as `end`, `graph` or `style`. `classDef`, `class` and `style` lines belong in flowcharts only.
+
+Each `##` heading names a step or an idea in how the code works ("From a file to parsed symbols"), never a generic name such as Overview, Architecture, Key files, Public API, Dependencies or Summary. Put an identifier in backticks only where a reader would search for it. End each section written in prose (every one but the parts table, the reading list and the questions) with a blank line and then one line, `Sources: ` followed by 1 to 3 file paths in backticks, written as in the facts, naming only files that section talks about.
+{% if ctx.tests or ctx.git_activity or ctx.decision_records %}
+- `## Changing it safely`: at most 4 sentences from `tests`, `change_history` and `decisions`: which tests guard which behaviour, where changes and bug fixes have clustered, and any recorded decision a change must respect. Name the test files in backticks.
 {% endif %}
+- `## Where to start reading`: 2 to 4 bullets in the order to open them: `path` (a bare path, no line span) - one sentence on what reading it first explains. This is a reading order, not a list of sources: no citations here. What depends on this code and what it depends on is added after you write, so do not describe its neighbours in a section of their own.
+- `## Questions this page answers`: 3 to 6 questions a developer or an agent would ask that this page answers, as a list. They are kept with the page for search, not shown in its body.
 
-{% if ctx.public_api %}
-### Public API (computed from the package manifests and re-exports; what a consumer imports)
-Name the central ones in backticks exactly as written and say what each is for; do not invent members beyond these.
-{% for e in ctx.public_api if e.signature %}
-- `{{ e.name }}` ({{ e.kind }}, `{{ e.file }}`): `` {{ e.signature }} ``{% if e.doc %}: {{ e.doc }}{% endif %}
-{% endfor %}
-{% for file, rows in ctx.public_api | rejectattr("signature") | groupby("file") %}
-- `{{ file }}`: {% for e in rows %}`{{ e.name }}`{% if e.alias_of %} (another name for `{{ e.alias_of }}`){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
-{% endfor %}
-{% if ctx.public_api_omitted %}
-- and {{ ctx.public_api_omitted }} more public names not listed
-{% endif %}
-{% endif %}
-
-{% if ctx.entry_points %}
-### Entry points
-{% for ep in ctx.entry_points %}
-- `{{ ep }}`
-{% endfor %}
-{% endif %}
-
-{% if ctx.key_files %}
-### Key files (highest PageRank first — read these first)
-{% for kf in ctx.key_files %}
-- `{{ kf.path }}`{% if kf.is_entry_point %} *(entry point)*{% endif %}{% if kf.summary %} — {{ kf.summary }}{% endif %}
-{% endfor %}
-{% endif %}
-
-{% if ctx.decision_records %}
-### Architectural decisions
-Use these to explain *why* the subsystem is shaped the way it is. Do not invent rationale beyond what is listed.
-{% for dr in ctx.decision_records[:5] %}
-- **{{ dr.title }}** — {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
-{% endfor %}
-{% endif %}
-
-{% if ctx.dependencies %}
-### Depends on (modules this imports)
-{% for dep in ctx.dependencies[:25] %}
-- `{{ dep }}`
-{% endfor %}
-{% endif %}
-
-{% if ctx.dependents %}
-### Depended on by (modules that import this)
-{% for dep in ctx.dependents[:25] %}
-- `{{ dep }}`
-{% endfor %}
-{% endif %}
-
-{% if ctx.external_systems %}
-### External systems used
-{% for sys in ctx.external_systems[:15] %}
-- `{{ sys.name }}`{% if sys.category and sys.category != 'library' %} *({{ sys.category }})*{% endif %}{% if sys.ecosystem %} — {{ sys.ecosystem }}{% endif %}
-{% endfor %}
-{% endif %}
-
-{# Health and history signals a reader cannot get from the code alone. Only
-   surfaced when git metadata supplied them; all zero/empty degrades to nothing
-   rather than a fabricated number. This is repowise's differentiation — weave
-   the true ones into the narrative, do not tabulate them mechanically. #}
-{%- set _health = [] -%}
-{%- if ctx.hotspot_count > 0 -%}{%- set _ = _health.append(ctx.hotspot_count ~ " file" ~ ("s" if ctx.hotspot_count != 1 else "") ~ " flagged as change hotspots") -%}{%- endif -%}
-{%- if ctx.single_owner_files > 0 -%}{%- set _ = _health.append(ctx.single_owner_files ~ " file" ~ ("s" if ctx.single_owner_files != 1 else "") ~ " with a bus factor of one (single-maintainer risk)") -%}{%- endif -%}
-{%- if ctx.bugfix_total > 0 -%}{%- set _ = _health.append(ctx.bugfix_total ~ " bug-fix commit" ~ ("s" if ctx.bugfix_total != 1 else "") ~ " in recent history" ~ (", most in `" ~ ctx.most_fixed_file.path ~ "`" if ctx.most_fixed_file else "")) -%}{%- endif -%}
-{%- if ctx.stable_count > 0 -%}{%- set _ = _health.append(ctx.stable_count ~ " file" ~ ("s" if ctx.stable_count != 1 else "") ~ " that have been stable") -%}{%- endif -%}
-{% if _health %}
-### Subsystem health (from git history — state the notable ones plainly)
-{% for h in _health %}
-- {{ h }}
-{% endfor %}
-{% endif %}
-
-{% if ctx.coupled_modules %}
-### Change-coupled with (co-changes in history, not import edges)
-These modules change together with this one in history and nothing in the dependency graph accounts for it — hidden coupling worth naming.
-{% for cm in ctx.coupled_modules %}
-- `{{ cm.path }}` ({{ cm.count }} co-changing file{{ "s" if cm.count != 1 else "" }})
-{% endfor %}
-{% endif %}
-
-{% if ctx.top_owners %}
-### Ownership
-{% for o in ctx.top_owners %}
-- **{{ o.name }}** — primary maintainer of {{ o.file_count }} file(s)
-{% endfor %}
-{% endif %}
-
-{% if ctx.key_classes %}
-### Class hierarchy
-{% for h in ctx.key_classes %}
-- `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}
-{% endfor %}
-{% endif %}
-
-{% if module_git_summary is defined and module_git_summary %}
-### Recent activity
-Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_summary.most_active_commits_90d }} commits in 90 days).
-{% endif %}
-
-{% if ctx.declared_files %}
-### What other files declare (signatures only, no code shown)
-{% for line in ctx.declared_files %}
-- {{ line }}
-{% endfor %}
-{% endif %}
-{{ ctx.code_excerpts }}
-
-## How to write this page
-
-Write the page now from the material above. Requirements:
-
-- Open with one sentence that could only have been written about THIS subsystem, situating it against its siblings using the scope line. The opening sentence is stored as this page's summary and is shown as the module's description wherever the wiki is listed, so it has to carry information on its own.
-  - Do not open with a frame. Every one of these is banned as an opening: "The X layer is the Y of Z", "The X layer serves as the ...", "The X layer acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ...", and "This module contains N files".
-  - Two module pages that open with the same first five words is the failure this rule exists to prevent. Name what this subsystem is responsible for, in words the material above forced on you.
-- Choose H2/H3 headings that name this subsystem's real concerns. There is no fixed heading list — do not emit generic "Overview / Public API / Architecture Notes" headings unless they are genuinely the right names here.
-- Synthesise across the whole file set. Draw on the material as a body of evidence; a file-by-file walkthrough is a failure even when accurate. Draw on many files, not one.
-- Put any enumerable list (key files, dependencies, decisions) in a markdown table where it reads better than prose.
-- Name the subsystem's key files and the neighbouring modules it consumes or serves in backticks exactly as written above so they resolve to wiki links. Mention a neighbour only where it explains this subsystem's role — no links for density, no reciprocal mentions for symmetry.
-- Weave the true health and history signals (hotspots, bus factor, change coupling, fix history) into the narrative where they explain the subsystem's character. Skip any that are absent; never invent one.
-- State behaviour only when an excerpt shows it; otherwise say what the file declares.
-- A commit subject is history, not current behaviour: if you cite one, label it (historical, <date>).
-- Third person throughout. No concluding or summary section.
-- End with the mandatory `## Questions this page answers` section: 3 to 6 real questions this page answers, phrased as a developer or agent would ask them.
-
-Ground everything in the material above. Do not fabricate files, symbols, modules, or rationale that are not listed.
+Rules: {% if not (style_states_length | default(false)) %}about {{ ctx.words[0] }} to {{ ctx.words[1] }} words of prose before the questions; tables, diagrams and lists do not count. {% endif %}Never use these words: subsystem, boundary, layer (unless the code names one), "takes in", "hands on", "turns X into Y"; never talk about pages, the wiki or its structure, and never about what the facts above leave out: a point with no fact behind it is simply not made. Never write markdown links: name a file or directory by its path in backticks and the wiki links it. A style note at the top of this request changes voice and density; it does not change this shape. Describe what a symbol does only when its excerpt shows it; a symbol seen only as a signature is named, not explained. A commit subject is history, not current behaviour: if you cite one, label it (historical, <date>).

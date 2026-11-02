@@ -7,6 +7,8 @@
  * adapter before passing data to components.
  */
 
+import type { HealthDeltaSummaryResponse } from "./generated/http.js";
+
 export interface FileAuthor {
   name: string;
   email: string;
@@ -119,10 +121,30 @@ export interface Hotspot {
   last_fix_at?: string | null;
   /** The file's path before its most recent rename, if any. */
   original_path?: string | null;
+  /** Faster over the last 30 days than over the last 90, on a file older than that window. */
+  accelerating?: boolean;
+  /** Place by hotspot score within the listed scope; set by the hotspot list only. */
+  rank?: number | null;
 }
 
-/** Repo-relative review priority derived from the score's percentile within
- * its own repo (terciles) — portable, unlike the absolute calibration band. */
+/** The hotspot list's filters; `all` lists every hotspot in scope. */
+export type HotspotFilter = "all" | "bus_factor_1" | "accelerating" | "bug_magnet";
+/** The hotspot list's sortable columns; `score` is the temporal hotspot score. */
+export type HotspotSort = "score" | "commits" | "fixes" | "churn";
+export type HotspotOrder = "asc" | "desc";
+
+/** Counts over every hotspot the search matches, whatever the filter. */
+export interface HotspotFacets {
+  total: number;
+  bus_factor_1: number;
+  accelerating: number;
+  bug_magnet: number;
+  /** Hotspots with any recorded fix, across the whole searched set. */
+  with_fixes?: number;
+}
+
+/** Repo-relative tercile of the diff-size percentile within its own repo;
+ * size, not danger. */
 export type ReviewPriority = "low" | "moderate" | "high";
 
 export interface Commit {
@@ -146,7 +168,7 @@ export interface Commit {
   change_risk_level: ReviewPriority | null;
   /** Where this commit's score sits within its repo's distribution, 0–100. */
   risk_percentile: number;
-  /** Repo-relative review priority (the portable ranking signal). */
+  /** Repo-relative tercile of the diff-size percentile; size, not danger. */
   review_priority: ReviewPriority;
   /** Label of the dominant risk driver, so rows explain themselves without
    * opening the detail sheet. Null when the commit was never risk-scored. */
@@ -156,13 +178,21 @@ export interface Commit {
   author_experience?: number | null;
   /** Commits by this author across the indexed history (identities folded). */
   author_commit_count?: number | null;
-  /** Coding-agent attribution (deterministic local-git channels).
-   * Null/undefined for human-authored commits. */
+  /** Coding-agent attribution (deterministic local-git channels). Null for
+   * human-attested and unknown commits alike; read `attribution`. */
   agent_name?: string | null;
   /** 1 = near-autonomous bot, 2 = human-driven agent, 3 = assisted/co-authored. */
   agent_autonomy_tier?: number | null;
   agent_confidence?: string | null;
+  /** agent / human_attested / unknown; null when attribution is off. */
+  attribution?: CommitAttribution | null;
+  /** What the commit did to health, the row's lead; null when never scanned. */
+  health_delta?: HealthDeltaSummaryResponse | null;
+  /** Hotspot files (as flagged now) the commit touched. */
+  touches_hotspot?: number;
 }
+
+export type CommitAttribution = "agent" | "human_attested" | "unknown";
 
 /** One feature's signed contribution to a commit's change-risk logit. */
 export interface RiskDriver {
@@ -198,6 +228,8 @@ export interface CommitHealthFinding {
    *  `unknown`. Separates what a change wrote from what it merely touched. */
   attribution_basis: string;
   reason: string;
+  /** Set when the commit moved this finding's code here from another file. */
+  moved_from?: { path: string; symbol?: string | null } | null;
 }
 
 /** What a commit did to code health, computed at index time.
@@ -209,9 +241,16 @@ export interface CommitHealth {
   /** `available` when every changed file was compared, `partial` when some
    *  were skipped (unsupported language, binary, unreadable). */
   status: string;
+  /** An older analyzer wrote it: the direction holds, the counts do not
+   *  compare with current rows. */
+  stale?: boolean;
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;
+  /** Findings whose metric dropped, at the same place or after a move. */
+  improved_count?: number;
+  /** Findings carried to another file with their code; a worsened or improved one is in that count too. */
+  moved_count?: number;
   files_analyzed: number;
   files_skipped: number;
   /** Worst first, capped. `introduced_count + worsened_count` is the true
@@ -231,21 +270,34 @@ export interface CommitDetail extends Commit {
   health?: CommitHealth | null;
 }
 
-/** One month of agent-vs-human commit volume. */
-export interface AgentTrendBucket {
-  month: string; // "YYYY-MM"
+/** Commits by attribution label, with the honest agent share. Unknown is
+ * never counted as human: `agent_pct_of_covered` is the agent share of commits
+ * with a known source (agent or human-attested), null below the coverage
+ * floor with `suppressed_reason` set. Percentages are 0-100. */
+export interface AttributionShareFields {
   total_commits: number;
   agent_commits: number;
-  agent_pct: number; // 0-100
+  human_attested_commits: number;
+  unknown_commits: number;
+  coverage_pct: number | null;
+  agent_pct_of_covered: number | null;
+  suppressed_reason: string | null;
+}
+
+/** One month of commits by attribution label. */
+export interface AgentTrendBucket extends AttributionShareFields {
+  month: string; // "YYYY-MM"
   tier_counts: Record<string, number>;
 }
 
-/** Monthly agent-share trend across the indexed commit window. */
-export interface AgentTrend {
+/** Monthly attribution trend across the indexed commit window. `enabled` is
+ * false, with every figure empty, when attribution is off for the repo. */
+export interface AgentTrend extends AttributionShareFields {
+  /** Absent from a server that does not send it; a trend carrying
+   *  `agent_pct_of_covered` then reads as on. */
+  enabled?: boolean;
+  coverage_floor_pct: number;
   buckets: AgentTrendBucket[];
-  total_commits: number;
-  agent_commits: number;
-  agent_pct: number; // 0-100
   agent_names: { name: string; count: number }[];
 }
 
@@ -293,7 +345,13 @@ export interface CommitStats {
   total_commits: number;
   high_priority_count: number;
   fix_commit_count: number;
-  agent_commit_count: number;
+  /** Null, like the two figures below, when attribution is off. */
+  agent_commit_count: number | null;
+  /** Agent share of commits with a known source, 0-100; null below the
+   * coverage floor. */
+  agent_pct_of_covered?: number | null;
+  /** Commits with a known source / all commits, 0-100. */
+  attribution_coverage_pct?: number | null;
   avg_entropy: number;
   /** Binned on the raw score, not the percentile — percentile ranks are
    * uniform by construction, so only the raw axis has a shape to draw. */

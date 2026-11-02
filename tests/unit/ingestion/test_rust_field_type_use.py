@@ -130,15 +130,15 @@ class TestRustFieldTypeCapture:
 # module file via a `super::` path — no `use` statement anywhere.
 _SOURCES: dict[str, str] = {
     "Cargo.toml": '[package]\nname = "net"\nversion = "0.1.0"\n',
-    "src/lib.rs": "pub mod transport;\n",
+    # DeadState is never referenced anywhere, a true positive that must
+    # survive the fix. It sits in the crate root because every public item of
+    # a file that a `mod` item declares counts as reachable through it.
+    "src/lib.rs": "pub mod transport;\n\npub struct DeadState { pub id: u32 }\n",
     "src/transport.rs": "pub mod state;\npub mod types;\n",
     "src/transport/state.rs": (
         "// RecvState is used only as an enum-variant field type in\n"
         "// types.rs, crossing files with no `use` statement.\n"
-        "pub struct RecvState { pub id: u32 }\n\n"
-        "// DeadState is never referenced anywhere — a true positive that\n"
-        "// must survive the fix.\n"
-        "pub struct DeadState { pub id: u32 }\n"
+        "pub struct RecvState { pub id: u32 }\n"
     ),
     "src/transport/types.rs": (
         "pub enum Event {\n"

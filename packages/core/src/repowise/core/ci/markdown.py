@@ -24,7 +24,12 @@ def longest_backtick_run(text: str) -> int:
 
 
 def code(text: str) -> str:
-    """*text* as an inline code span that no backtick inside it can close early."""
+    """*text* as an inline code span that no backtick inside it can close early.
+
+    A snippet read from a CRLF file keeps its ``\\r``; prose drops it, so one
+    span reads the same on every checkout.
+    """
+    text = text.replace("\r\n", "\n")
     fence = "`" * (longest_backtick_run(text) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"

@@ -1,38 +1,21 @@
-"""Aggregate file→file graph edges up to container/component relations.
+"""Read graph edges and roll them up to container/component relations.
 
-The graph stores edges between individual files (and symbols). For C4
-diagrams we need edges between higher-level boxes — between containers at
-L2, between components at L3. This module does that aggregation:
-
-    1. Load all ``graph_edges`` whose source AND target are file-level.
-    2. Map each endpoint to its container (L2) or component (L3) using the
-       ``file_index`` produced by :mod:`.containers` / :mod:`.components`.
-    3. Group by (source_box, target_box, edge_type) and sum counts.
-    4. Drop self-loops — an edge from a container to itself is not useful
-       to a viewer.
-
-Co-change edges are history, not a dependency, so they are left out unless a
-caller opts in to them as an overlay. Edges touching a configuration file
-(``tsconfig.json``, ``pyproject.toml``) are dropped: reading config is not a
-dependency between boxes.
-
-External-system edges are produced from file→``external:*`` edges where
-the target's ``external_system_id`` resolved to a row in the
-``external_systems`` table.
+The roll-up rules live in :mod:`repowise.core.analysis.c4.relations`; this
+module owns the queries and turns each rolled pair into a labelled
+:class:`Relation`. External-system edges come from file to ``external:*``
+edges whose target resolved to a row in the ``external_systems`` table.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.c4.labels import coupling_strength, relation_label
+from repowise.core.analysis.c4.relations import roll_up_edges
 from repowise.core.ids import ExternalSystemId, render
 from repowise.core.persistence import ExternalSystem, GraphEdge, GraphNode
-from repowise.core.support_paths import is_config_path
 
-from .labels import coupling_strength, relation_label
 from .models import Relation
 
 
@@ -77,40 +60,18 @@ async def aggregate_relations(
     include_co_changes:
         Also roll up ``co_changes`` edges, as an overlay on the dependencies.
     """
-    file_to_external = file_to_external or {}
     if edges is None:
         edges = await load_edges(session, repository_id)
-
-    # No containment filter needed: ``file_to_box`` is keyed on file paths, so
-    # ``defines`` (file → symbol) and ``has_method`` (symbol → symbol) always
-    # lose an endpoint below. Co-change is filtered: it is history, not a
-    # dependency, and drawn only when the caller asks for the overlay.
-    counts: dict[tuple[str, str], int] = defaultdict(int)
-    types: dict[tuple[str, str], set[str]] = defaultdict(set)
-
-    for src, tgt, etype in edges:
-        if etype == "co_changes" and not include_co_changes:
-            continue
-        src_box = file_to_box.get(src)
-        if src_box is None:
-            continue
-        if tgt in file_to_box:
-            tgt_box = file_to_box[tgt]
-        elif tgt in file_to_external:
-            tgt_box = file_to_external[tgt]
-        else:
-            continue
-        if src_box == tgt_box:
-            continue
-        if is_config_path(src) or is_config_path(tgt):
-            continue
-        key = (src_box, tgt_box)
-        counts[key] += 1
-        types[key].add(etype)
+    rolled = roll_up_edges(
+        edges,
+        file_to_box,
+        file_to_external=file_to_external,
+        include_co_changes=include_co_changes,
+    )
 
     relations: list[Relation] = []
-    for (src_box, tgt_box), count in counts.items():
-        etypes = tuple(sorted(types[(src_box, tgt_box)]))
+    for (src_box, tgt_box), (count, types) in rolled.items():
+        etypes = tuple(sorted(types))
         relations.append(
             Relation(
                 source_id=src_box,

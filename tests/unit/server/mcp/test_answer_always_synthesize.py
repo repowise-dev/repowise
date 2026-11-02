@@ -33,7 +33,7 @@ def _patch_pipeline(monkeypatch, answer_mod, scores=(2.0, 1.9), *, with_symbols=
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Module summary for the page. " * 4
+            h["summary"] = "The alpha module go function. " * 4
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:
@@ -94,7 +94,7 @@ async def test_configured_reasoning_reaches_synthesis(setup_mcp, monkeypatch):
 
     async def _capture_synthesis(provider, system_prompt, user_prompt, **kwargs):
         seen.update(kwargs)
-        return "The go() function drives it (pkg/alpha/one.py).", None
+        return "The go() function drives it (pkg/alpha/one.py).", None, None
 
     monkeypatch.setattr(answer_mod, "synthesize", _capture_synthesis)
 
@@ -117,7 +117,7 @@ async def test_repo_reasoning_resolution_reaches_synthesis(setup_mcp, monkeypatc
 
     async def _capture_synthesis(provider, system_prompt, user_prompt, **kwargs):
         seen.update(kwargs)
-        return "The go() function drives it (pkg/alpha/one.py).", None
+        return "The go() function drives it (pkg/alpha/one.py).", None, None
 
     monkeypatch.setattr(answer_mod, "synthesize", _capture_synthesis)
 

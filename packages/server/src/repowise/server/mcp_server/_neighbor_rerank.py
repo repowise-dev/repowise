@@ -38,7 +38,7 @@ from sqlalchemy import select
 from repowise.core.persistence.models import Page
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.mcp_server._answer_pipeline import question_vector, vector_search
-from repowise.server.mcp_server._flow_path import _is_plumbing, _load_file_adjacency
+from repowise.server.mcp_server._flow_path import _is_plumbing, file_adjacency
 
 # Motion cues that mark a data-flow question. Loose on purpose: the walk (reaches
 # only files near the top hits) and the single contested slot are the real
@@ -219,7 +219,7 @@ async def expand_via_neighbor_rerank(
     if not seed_paths:
         return hits
 
-    adj = await _load_file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id)
     pool = _walk_neighborhood(adj, seed_paths) if adj else set()
     if not pool:
         return hits

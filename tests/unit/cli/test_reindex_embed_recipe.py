@@ -24,6 +24,7 @@ class _DummyEngine:
 
 class _Page:
     metadata_json = "{}"  # non-nullable on the real model
+    digest = ""  # non-nullable on the real model
 
     def __init__(self, **kw: Any) -> None:
         self.__dict__.update(kw)

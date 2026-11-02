@@ -3,6 +3,7 @@
 import { useRef, useEffect, useMemo } from "react";
 import * as d3 from "d3-force";
 import type { Hotspot } from "@repowise-dev/types/git";
+import { seriesColor } from "../shared/series";
 
 interface ContributorNetworkProps {
   hotspots: Hotspot[];
@@ -18,15 +19,6 @@ interface ContributorLink extends d3.SimulationLinkDatum<ContributorNode> {
   sharedFiles: number;
 }
 
-// Categorical contributor palette — token-driven so it themes (SVG fill
-// accepts var()). 12 distinct warm-palette hues; mirrors the viz tokens.
-const PALETTE = [
-  "var(--color-accent-fill)", "var(--color-accent-secondary)", "var(--color-success)",
-  "var(--color-warning)", "var(--color-info)", "var(--color-edge-co-change)",
-  "var(--color-edge-implements)", "var(--color-plum-400)", "var(--color-sunset-300)",
-  "var(--color-edge-inherits)", "var(--color-plum-300)", "var(--color-amber)",
-];
-const PALETTE_FALLBACK = "var(--color-accent-secondary)";
 
 export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -110,7 +102,7 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
       const group = document.createElementNS(ns, "g");
       group.style.cursor = "pointer";
 
-      const fill = PALETTE[i % PALETTE.length] ?? PALETTE_FALLBACK;
+      const fill = seriesColor(i);
       const circle = document.createElementNS(ns, "circle");
       circle.setAttribute("r", String(n.radius));
       circle.setAttribute("fill", fill);

@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { BrandLogo } from "./brand-logo";
 import {
   Menu,
@@ -17,15 +18,15 @@ import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { VersionFooter } from "./version-footer";
+import { NewMark } from "./new-mark";
+import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 import { FeedbackButton } from "./feedback-button";
+import { LanguageSwitcher } from "./language-switcher";
+import { FooterSetupPill } from "@/components/setup/setup-pill";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
-import {
-  GLOBAL_NAV,
-  WORKSPACE_NAV,
-  repoNavGroups,
-  isNavItemActive,
-} from "./nav-items";
+import { GLOBAL_NAV, WORKSPACE_NAV, isNavItemActive, repoNavGroups } from "./nav-items";
+import { NAV_ROW_ACTIVE, NAV_ROW_IDLE, NavGroupList } from "./nav-group-list";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface MobileNavProps {
@@ -34,7 +35,10 @@ interface MobileNavProps {
 }
 
 export function MobileNav({ repos = [], workspace }: MobileNavProps) {
+  const t = useTranslations("nav");
+  const ts = useTranslations("shell");
   const isWorkspace = workspace?.is_workspace ?? false;
+  const isNew = useIsNewSurface();
   const [open, setOpen] = React.useState(false);
   const pathname = usePathname();
   const activeRepoId = React.useMemo(() => {
@@ -70,12 +74,12 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
   }, [pathname]);
 
   return (
-    <div className="flex md:hidden min-h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
+    <div className="flex md:hidden print:hidden min-h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
       <Button
         variant="ghost"
         size="icon"
         onClick={() => setOpen(true)}
-        aria-label="Open navigation menu"
+        aria-label={ts("openNavMenu")}
         className="h-11 w-11"
       >
         <Menu className="h-5 w-5" />
@@ -92,7 +96,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
         onClick={() => {
           window.dispatchEvent(new CustomEvent("repowise:open-command-palette"));
         }}
-        aria-label="Open search"
+        aria-label={ts("openSearch")}
         className="h-11 w-11"
       >
         <Search className="h-5 w-5" />
@@ -110,27 +114,21 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
               <nav className="space-y-1">
                 {GLOBAL_NAV.map((item) => {
                   const Icon = item.icon;
-                  const isActive = pathname === item.href;
+                  const isActive = isNavItemActive(item, pathname);
                   return (
                     <Link
                       key={item.href}
                       href={item.href}
                       className={cn(
                         "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-base transition-colors",
-                        isActive
-                          ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                        isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                       )}
                     >
                       <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                        <Icon
-                          className={cn(
-                            "h-4 w-4",
-                            isActive && "text-[var(--color-accent-primary)]",
-                          )}
-                        />
+                        <Icon className="h-4 w-4" />
                       </span>
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">{t(item.labelKey)}</span>
+                      {isNew(item.href) && <NewMark />}
                     </Link>
                   );
                 })}
@@ -139,7 +137,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
               {isWorkspace && (
                 <>
                   <p className="mb-1 mt-4 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                    Workspace
+                    {ts("workspace")}
                   </p>
                   {/* Children of the Workspace group, same as on desktop:
                       indented, ruled, and at the nested size. */}
@@ -155,20 +153,13 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           href={item.href}
                           className={cn(
                             "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
-                            isActive
-                              ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                              : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                            isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                           )}
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                            <Icon
-                              className={cn(
-                                "h-4 w-4",
-                                isActive && "text-[var(--color-accent-primary)]",
-                              )}
-                            />
+                            <Icon className="h-4 w-4" />
                           </span>
-                          <span className="truncate">{item.label}</span>
+                          <span className="truncate">{t(item.labelKey)}</span>
                         </Link>
                       );
                     })}
@@ -180,7 +171,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                 <>
                   <Separator className="my-4" />
                   <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                    Repositories
+                    {ts("repositories")}
                   </p>
                   <div className="space-y-0.5">
                     {repos.map((repo) => {
@@ -208,43 +199,29 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           </button>
                           {isExpanded && (
                             <div className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
-                              {navGroups.map((group, gi) => (
-                                <React.Fragment key={group.label ?? gi}>
-                                  {group.label ? (
-                                    <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                                      {group.label}
-                                    </p>
-                                  ) : gi > 0 ? (
-                                    <div className="pt-1.5" />
-                                  ) : null}
-                                  {group.items.map((item) => {
+                              <NavGroupList
+                                groups={navGroups}
+                                pathname={pathname}
+                                idPrefix={`mobile-repo-${repo.id}`}
+                                renderItem={(item, isActive) => {
                                     const Icon = item.icon;
-                                    const isActive = isNavItemActive(item, pathname);
                                     return (
                                       <Link
-                                        key={item.href}
                                         href={item.href}
                                         className={cn(
                                           "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
-                                          isActive
-                                            ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                                            : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                                          isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                                         )}
                                       >
                                         <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                          <Icon
-                                            className={cn(
-                                              "h-4 w-4",
-                                              isActive && "text-[var(--color-accent-primary)]",
-                                            )}
-                                          />
+                                          <Icon className="h-4 w-4" />
                                         </span>
-                                        <span className="truncate">{item.label}</span>
+                                        <span className="truncate">{t(item.labelKey)}</span>
+                                        {isNew(item.href) && <NewMark />}
                                       </Link>
                                     );
-                                  })}
-                                </React.Fragment>
-                              ))}
+                                }}
+                              />
                             </div>
                           )}
                         </div>
@@ -269,13 +246,20 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-4 py-2.5">
+            <FooterSetupPill repos={repos} activeRepoId={activeRepoId} />
             <FeedbackButton />
             {/* Mobile had no theme control anywhere in the shell, so the
                 preference was simply unreachable on a phone. It shares the
                 version row, same as the desktop footer. */}
             <div className="flex items-center justify-between gap-2">
               <VersionFooter />
-              <ThemeToggle compact />
+              <div className="flex items-center gap-1">
+                <LanguageSwitcher />
+                <ThemeToggle
+                  switchToDarkLabel={ts("switchToDarkTheme")}
+                  switchToLightLabel={ts("switchToLightTheme")}
+                />
+              </div>
             </div>
           </div>
         </SheetContent>

@@ -563,37 +563,35 @@ async def test_shutdown_closes_the_registry_and_member_engines(env, stubs):
 
 
 @pytest.fixture
-def embedder_env(monkeypatch):
-    for key in ("REPOWISE_EMBEDDER", "REPOWISE_EMBEDDING_MODEL", "REPOWISE_EMBEDDING_DIMS"):
+def embedder_env(monkeypatch, tmp_path):
+    for key in (
+        "REPOWISE_EMBEDDER",
+        "REPOWISE_EMBEDDING_MODEL",
+        "REPOWISE_EMBEDDING_DIMS",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "EDENAI_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
+    # No developer ~/.repowise/config.yaml key leaks into the kwargs.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     return monkeypatch
 
 
+# Only configured values are passed; each embedder's default model and width
+# live in its own constructor.
 @pytest.mark.parametrize(
     ("backend", "target", "model_env", "expected_kwargs"),
     [
         ("ollama", "ollama.OllamaEmbedder", None, {}),
-        ("OpenAI", "openai.OpenAIEmbedder", None, {"model": "text-embedding-3-small"}),
+        ("OpenAI", "openai.OpenAIEmbedder", None, {}),
         ("openai", "openai.OpenAIEmbedder", "text-embedding-3-large", {"model": "text-embedding-3-large"}),
-        (
-            "openrouter",
-            "openrouter.OpenRouterEmbedder",
-            None,
-            {"model": "google/gemini-embedding-001"},
-        ),
-        (
-            "edenai",
-            "edenai.EdenAIEmbedder",
-            None,
-            {"model": "amazon/amazon.titan-embed-text-v2:0"},
-        ),
-        ("gemini", "gemini.GeminiEmbedder", None, {"output_dimensionality": 768}),
-        (
-            "gemini",
-            "gemini.GeminiEmbedder",
-            "text-embedding-004",
-            {"model": "text-embedding-004", "output_dimensionality": 768},
-        ),
+        ("openrouter", "openrouter.OpenRouterEmbedder", None, {}),
+        ("edenai", "edenai.EdenAIEmbedder", None, {}),
+        ("gemini", "gemini.GeminiEmbedder", None, {}),
+        ("gemini", "gemini.GeminiEmbedder", "text-embedding-004", {"model": "text-embedding-004"}),
     ],
 )
 def test_build_embedder_backends(embedder_env, backend, target, model_env, expected_kwargs):
@@ -607,21 +605,37 @@ def test_build_embedder_backends(embedder_env, backend, target, model_env, expec
     cls.assert_called_once_with(**expected_kwargs)
 
 
+def test_build_embedder_passes_the_resolved_key(embedder_env):
+    from repowise.server.app import _build_embedder
+
+    embedder_env.setenv("REPOWISE_EMBEDDER", "openai")
+    embedder_env.setenv("OPENAI_API_KEY", "sk-test")
+    with patch("repowise.core.providers.embedding.openai.OpenAIEmbedder") as cls:
+        _build_embedder()
+    cls.assert_called_once_with(api_key="sk-test")
+
+
 @pytest.mark.parametrize(
-    ("raw", "dims", "warned"),
-    [("1536", 1536, False), ("0", 768, True), ("-3", 768, True), ("wide", 768, True), ("", 768, False)],
+    ("raw", "expected", "warned"),
+    [
+        ("1536", {"output_dimensionality": 1536}, False),
+        ("0", {}, True),
+        ("-3", {}, True),
+        ("wide", {}, True),
+        ("", {}, False),
+    ],
 )
-def test_build_embedder_gemini_dims(embedder_env, capsys, raw, dims, warned):
+def test_build_embedder_gemini_dims(embedder_env, capsys, raw, expected, warned):
     from repowise.server.app import _build_embedder
 
     embedder_env.setenv("REPOWISE_EMBEDDER", "gemini")
     embedder_env.setenv("REPOWISE_EMBEDDING_DIMS", raw)
     with patch("repowise.core.providers.embedding.gemini.GeminiEmbedder") as cls:
         _build_embedder()
-    cls.assert_called_once_with(output_dimensionality=dims)
+    cls.assert_called_once_with(**expected)
     err = capsys.readouterr().err
     if warned:
-        assert err == f"REPOWISE_EMBEDDING_DIMS={raw!r} is not a positive integer; using 768.\n"
+        assert f"REPOWISE_EMBEDDING_DIMS={raw!r} is not a positive integer" in err
     else:
         assert err == ""
 

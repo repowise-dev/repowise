@@ -11,20 +11,15 @@ import {
   splitResidual,
 } from "./types";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import { ExtractMethodBefore } from "./extract-method-before";
+import { splitPath } from "../lib/path-parts";
+import { FilePath } from "../shared/file-path";
 
 export interface PlanBeforeProps {
   plan: RefactoringPlan;
 }
 
-function shortFile(path: string): string {
-  const parts = path.split("/");
-  return parts.length <= 2 ? path : `…/${parts.slice(-2).join("/")}`;
-}
-
-function baseName(path: string): string {
-  const parts = path.split("/");
-  return parts[parts.length - 1] ?? path;
-}
+const baseName = (path: string): string => splitPath(path).name;
 
 /**
  * The "before" half of the before→after comparison: a synthesized picture of
@@ -60,10 +55,12 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             key={`${location.file_path}:${location.line_start ?? index}`}
             className="border-t border-[var(--color-border-default)] py-2"
           >
-            <code className="break-all text-2xs text-[var(--color-text-secondary)]">
-              {location.file_path}
-              {location.line_start ? `:${location.line_start}` : ""}
-            </code>
+            <FilePath
+              path={location.file_path}
+              line={location.line_start || null}
+              mode="full"
+              className="text-2xs text-[var(--color-text-secondary)]"
+            />
           </div>
         ))}
         {detail.affectedLocationsTotal > shown.length ? (
@@ -89,7 +86,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             {plan.target_symbol || baseName(plan.file_path)}
           </code>
           {lcom4 > 0 ? (
-            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-caption font-semibold tabular-nums text-[var(--color-error)]">
+            <span className="shrink-0 text-caption font-semibold tabular-nums text-[var(--color-text-secondary)]">
               LCOM4 {lcom4}
             </span>
           ) : null}
@@ -141,9 +138,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
               key={i}
               className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2"
             >
-              <code className="truncate text-2xs text-[var(--color-text-secondary)]" title={o.file}>
-                {shortFile(o.file)}
-              </code>
+              <FilePath path={o.file} className="text-2xs text-[var(--color-text-secondary)]" />
               <span className="shrink-0 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
                 duplicate
               </span>
@@ -158,6 +153,8 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
       </div>
     );
   }
+
+  if (plan.refactoring_type === "extract_method") return <ExtractMethodBefore plan={plan} />;
 
   if (plan.refactoring_type === "move_method") {
     const mv = moveTarget(plan);
@@ -207,7 +204,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             {baseName(plan.file_path)}
           </code>
           {nloc > 0 ? (
-            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-caption font-semibold tabular-nums text-[var(--color-error)]">
+            <span className="shrink-0 text-caption font-semibold tabular-nums text-[var(--color-text-secondary)]">
               {nloc} NLOC
             </span>
           ) : null}

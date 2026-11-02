@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from .jvm_gradle import declaration_rank, get_or_build_source_set_graph
 from .jvm_workspace import classify_jvm_import, get_or_build_jvm_index
 from .kotlin_gradle import resolve_via_kotlin_index
 
@@ -62,16 +63,12 @@ def resolve_kotlin_import_all(
                 return files
         return (ctx.add_external_node(module_path),) if module_path else ()
 
-    # Try JVM workspace index first (handles cross-language Java ↔ Kotlin)
-    files = jvm_index.files_for_fqn(module_path)
+    # Try JVM workspace index first (handles cross-language Java ↔ Kotlin).
+    # Member imports (``import okio.ByteString.Companion.encodeUtf8``) name a
+    # function/constant inside a type, so the declaring type resolves them.
+    files = jvm_index.files_for_fqn(module_path) or jvm_index.files_for_member_fqn(module_path)
     if files:
-        return files
-
-    # Member imports: ``import okio.ByteString.Companion.encodeUtf8``
-    # names a function/constant inside a type — resolve the declaring type.
-    files = jvm_index.files_for_member_fqn(module_path)
-    if files:
-        return files
+        return _visible_first(files, set(parts[1:]), importer_path, ctx)
 
     # Gradle-aware resolution (settings.gradle subprojects)
     gradle_match = resolve_via_kotlin_index(module_path, ctx)
@@ -107,3 +104,27 @@ def resolve_kotlin_import_all(
                     return (p,)
 
     return (ctx.add_external_node(module_path),)
+
+
+def _visible_first(
+    files: tuple[str, ...], names: set[str], importer_path: str, ctx: ResolverContext
+) -> tuple[str, ...]:
+    """*files* with the declaration *importer_path* sees most directly first.
+
+    The first file is the one the import binds (``declaration_rank``). A file
+    holds the ``expect`` declaration when it declares one of the imported
+    path's names ``expect``. When several files declare the name, one in a
+    source set the importer cannot see is dropped.
+    """
+    if len(files) < 2:
+        return files
+    parsed = ctx.parsed_files or {}
+    graph = get_or_build_source_set_graph(ctx)
+
+    def rank(path: str) -> int | None:
+        symbols = parsed[path].symbols if path in parsed else ()
+        expect = any("expect" in s.modifiers and s.name in names for s in symbols)
+        return declaration_rank(importer_path, path, expect, graph)
+
+    ranked = [(r, path) for path in files if (r := rank(path)) is not None]
+    return tuple(path for _, path in sorted(ranked, key=lambda pair: pair[0]))

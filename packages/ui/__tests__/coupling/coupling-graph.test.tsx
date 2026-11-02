@@ -137,7 +137,12 @@ describe("CouplingTable", () => {
   });
 
   it("shows the empty state with no couplings", () => {
-    render(<CouplingTable edges={[]} />);
+    render(<CouplingTable edges={[]} historyFiles={120} />);
     expect(screen.getByText(/no couplings detected/i)).toBeInTheDocument();
+  });
+
+  it("reads as not-yet without commit history", () => {
+    render(<CouplingTable edges={[]} />);
+    expect(screen.getByText(/no couplings yet/i)).toBeInTheDocument();
   });
 });

@@ -20,8 +20,9 @@ from typing import Any
 import networkx as nx
 import structlog
 
-from ..cohesion import is_cohesion_edge
+from ..cohesion import cannot_close_cycle
 from ..models import SYMBOL_USE_EDGE_TYPES, TEMPORAL_EDGE_TYPES
+from ..symbol_use import SymbolUse, symbol_use_counts
 
 log = structlog.get_logger(__name__)
 
@@ -38,10 +39,37 @@ _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
 # they were scored at.
 _CHURN_BUDGET_FRACTION = 0.002
 
+# Brandes cost (~nodes x edges) below which a graph keeps exact-signature-only
+# reuse. Sequential NetworkX on a fully reachable graph took 0.7 s at 1.2e6,
+# 2 s at 4e6 and 45 s at 3.2e7, so mid graphs under the parallel threshold
+# were paying tens of seconds for every added call edge.
+_CHURN_BUDGET_MIN_COST = 1e6
+
 
 def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     """Whether both ends are test material; such edges carry no centrality."""
     return bool(g.nodes[u].get("is_test") and g.nodes[v].get("is_test"))
+
+
+def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
+    """Score a directed symbol graph exactly, skipping isolated nodes."""
+    from ._betweenness import betweenness_centrality_fast
+
+    n = g.number_of_nodes()
+    connected = [node for node, degree in g.degree() if degree]
+    if not connected or n <= 2:
+        return dict.fromkeys(g, 0.0)
+    if len(connected) == n:
+        return betweenness_centrality_fast(g, normalized=True)
+
+    # Isolates lie on no shortest path, so removing them leaves raw scores
+    # unchanged. Keep the full symbol population in the normalization factor.
+    raw = betweenness_centrality_fast(g.subgraph(connected).copy(), normalized=False)
+    scale = 1 / ((n - 1) * (n - 2))
+    values = dict.fromkeys(g, 0.0)
+    for node, score in raw.items():
+        values[node] = score * scale
+    return values
 
 
 class MetricsMixin:
@@ -72,6 +100,8 @@ class MetricsMixin:
         Used to materialize the ``graph_metrics`` table. Computes every metric
         from NetworkX (or returns the cached/SQL-loaded values when present).
         """
+        from repowise.core.analysis.communities import stored_community_id
+
         pr = self.pagerank()
         bc = self.betweenness_centrality()
         cd = self.community_detection()
@@ -86,7 +116,7 @@ class MetricsMixin:
             n: {
                 "pagerank": pr.get(n, 0.0),
                 "betweenness": bc.get(n, 0.0),
-                "community_id": cd.get(n, 0),
+                "community_id": stored_community_id(cd, n),
                 "in_degree": ind.get(n, 0),
                 "out_degree": outd.get(n, 0),
             }
@@ -131,13 +161,24 @@ class MetricsMixin:
             return sub
 
     def cycle_subgraph(self) -> nx.DiGraph:
-        """Return :meth:`file_subgraph` minus cohesion edges, for cycle detection.
+        """Return :meth:`file_subgraph` minus the edges no runtime cycle runs
+        through (:func:`~repowise.core.ingestion.cohesion.cannot_close_cycle`).
 
         A cohesion edge records that two files are one compilation unit — Go
         package siblings, JVM same-package classes, C# partial fragments, a C++
         header/implementation pair — not that one depends on the other. See
         :mod:`repowise.core.ingestion.cohesion`. Left in, they turn every
         cohesive package into a fabricated import cycle.
+
+        A ``dynamic_uses`` edge is a hint match, not a resolved dependency — the
+        .NET extractor among others links every file declaring a type of a given
+        short name, so two unrelated same-named classes in different projects
+        form a false two-file cycle (#2886). Type-only and deferred
+        (function-local) imports never run at module load, so they cannot make
+        one either. The predicate is shared with
+        ``refactoring.graph_signals._is_cycle_edge``: this method feeds the wiki
+        SCC pages and the repo-overview cycle list, that one feeds
+        ``break_cycle`` plans.
 
         Kept separate from :meth:`file_subgraph` deliberately: PageRank,
         betweenness and the degree kernels must keep seeing cohesion edges,
@@ -150,7 +191,8 @@ class MetricsMixin:
         only ever read. Callers must treat the result as read-only.
         """
         return self._file_edge_view(
-            "_cycle_subgraph_cache", lambda base, u, v, d: is_cohesion_edge(d)
+            "_cycle_subgraph_cache",
+            lambda base, u, v, d: cannot_close_cycle(d),
         )
 
     def centrality_subgraph(self) -> nx.DiGraph:
@@ -246,17 +288,14 @@ class MetricsMixin:
         """Return PageRank scores for file nodes only (cached)."""
         if self._pagerank_cache is not None:
             return self._pagerank_cache
-        filtered = self.centrality_subgraph()
-        if filtered.number_of_nodes() == 0:
-            self._pagerank_cache = {}
-            return self._pagerank_cache
+        from ._pagerank import cached_pagerank
 
-        try:
-            self._pagerank_cache = nx.pagerank(filtered, alpha=alpha)
-        except nx.PowerIterationFailedConvergence:
-            log.warning("PageRank did not converge, using uniform scores")
-            n = filtered.number_of_nodes()
-            self._pagerank_cache = {node: 1.0 / n for node in filtered.nodes()}
+        self._pagerank_cache = cached_pagerank(
+            self.centrality_subgraph(),
+            kind="file",
+            alpha=alpha,
+            cache=getattr(self, "_centrality_cache", None),
+        )
         return self._pagerank_cache
 
     def betweenness_centrality(self) -> dict[str, float]:
@@ -348,17 +387,27 @@ class MetricsMixin:
         """
         if self._symbol_pagerank_cache is not None:
             return self._symbol_pagerank_cache
+        from ._pagerank import cached_pagerank
+
         sub = self.symbol_subgraph()
         if sub.number_of_nodes() == 0:
             self._symbol_pagerank_cache = {}
             return self._symbol_pagerank_cache
-        try:
-            self._symbol_pagerank_cache = nx.pagerank(sub, alpha=alpha)
-        except nx.PowerIterationFailedConvergence:
-            log.warning("Symbol PageRank did not converge, using uniform scores")
-            n = sub.number_of_nodes()
-            self._symbol_pagerank_cache = {node: 1.0 / n for node in sub.nodes()}
+        self._symbol_pagerank_cache = cached_pagerank(
+            sub,
+            kind="symbol",
+            alpha=alpha,
+            cache=getattr(self, "_centrality_cache", None),
+        )
+        self._release_symbol_subgraph()
         return self._symbol_pagerank_cache
+
+    def symbol_uses(self) -> dict[str, SymbolUse]:
+        """Production callers per symbol (see :func:`symbol_use_counts`).
+
+        Uncached: one linear pass over the edges, read once per selection.
+        """
+        return symbol_use_counts(self.graph())
 
     def symbol_betweenness_centrality(self) -> dict[str, float]:
         """Return betweenness centrality for symbol nodes (cached)."""
@@ -369,7 +418,19 @@ class MetricsMixin:
             self._symbol_betweenness_cache = {}
             return self._symbol_betweenness_cache
         self._symbol_betweenness_cache = self._betweenness_with_disk_cache("symbol", sub)
+        self._release_symbol_subgraph()
         return self._symbol_betweenness_cache
+
+    def _release_symbol_subgraph(self) -> None:
+        """Drop the cached symbol subgraph once both symbol kernels have scored it.
+
+        It is a full copy of every symbol node and call edge, and these two
+        kernels are its only readers; kept, it sat beside the graph for the
+        rest of the run. A later caller gets it rebuilt on demand.
+        """
+        if self._symbol_pagerank_cache is not None and self._symbol_betweenness_cache is not None:
+            with self._subgraph_lock:
+                self._symbol_subgraph_cache = None
 
     def betweenness_scoring(self, kind: str) -> Any | None:
         """Return the provenance of *kind*'s betweenness, or ``None`` if unscored.
@@ -383,19 +444,14 @@ class MetricsMixin:
     def _churn_budget(self, g: nx.DiGraph) -> int:
         """How far *g* may drift from its last exact scoring before rescoring.
 
-        Zero below the cost threshold that already decides whether exact
-        Brandes is worth parallelising: under it the recompute is fast enough
-        that trading accuracy for it buys nothing, so those graphs keep the
-        exact-signature-only behaviour they had before. Above it, proportional
-        to the graph, because the same absolute delta perturbs a large ranking
-        far less than a small one.
+        Zero below :data:`_CHURN_BUDGET_MIN_COST`: there the recompute takes
+        under a second, so trading accuracy for it buys nothing and small graphs
+        keep exact-signature-only reuse. Above it, proportional to the graph,
+        because the same absolute delta perturbs a large ranking far less than
+        a small one.
         """
-        from . import _betweenness
-
         n, e = g.number_of_nodes(), g.number_of_edges()
-        # Read through the module so the tests that lower the threshold reach
-        # this decision too.
-        if n * e < _betweenness._PARALLEL_COST_THRESHOLD:
+        if n * e < _CHURN_BUDGET_MIN_COST:
             return 0
         return int((n + e) * _CHURN_BUDGET_FRACTION)
 
@@ -412,12 +468,8 @@ class MetricsMixin:
         signature: str | None = None
         if cache is not None:
             try:
-                from ._centrality_cache import subgraph_signature
-
-                signature = subgraph_signature(g)
-                hit = cache.lookup(
-                    kind, g, signature=signature, max_churn=self._churn_budget(g)
-                )
+                signature = cache.signature(kind, g)
+                hit = cache.lookup(kind, g, signature=signature, max_churn=self._churn_budget(g))
                 if hit is not None:
                     log.info(
                         "betweenness_reused_from_cache",
@@ -438,19 +490,13 @@ class MetricsMixin:
             # Seeded: k-sampling is the one randomized kernel left in the
             # pipeline. Unseeded it made every large-repo index emit a
             # different betweenness ranking (typst's entry-point order
-            # flapped between runs).
-            #
-            # The seed alone is not enough. NetworkX samples from
-            # ``list(G.nodes())``, so a fixed seed over a population in a
-            # different order still draws a different 500 nodes, and that is a
-            # different ranking rather than a rounding difference. Re-inserting
-            # the nodes in sorted order is what makes the sample reproducible.
-            # The copy costs one pass over a graph we are about to run 500
-            # shortest-path trees on.
-            ordered = nx.DiGraph() if g.is_directed() else nx.Graph()
-            ordered.add_nodes_from(sorted(g.nodes()))
-            ordered.add_edges_from(g.edges())
-            values = nx.betweenness_centrality(ordered, k=k, normalized=True, seed=42)
+            # flapped between runs). The kernel also fixes the population
+            # order the sample is drawn from.
+            from ._sampled_betweenness import sampled_betweenness_centrality
+
+            values = sampled_betweenness_centrality(g, k=k, seed=42)
+        elif kind == "symbol":
+            values = _exact_symbol_betweenness(g)
         else:
             from ._betweenness import betweenness_centrality_fast
 

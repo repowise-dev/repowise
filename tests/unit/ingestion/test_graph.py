@@ -118,6 +118,17 @@ class TestAddFile:
         # 2 file nodes + 2 synthetic __module__ symbol nodes
         assert g.number_of_nodes() == 4
 
+    def test_symbol_count_counts_an_overload_set_once(self) -> None:
+        """Two overload signatures and the implementation share one id, one node."""
+        b = GraphBuilder()
+        parsed = _parsed("src/pages.ts", "typescript")
+        parsed.symbols = [_sym("src/pages.ts", "get") for _ in range(3)]
+        parsed.symbols.append(_sym("src/pages.ts", "put"))
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.nodes["src/pages.ts"]["symbol_count"] == 2
+        assert parsed.symbol_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Docstring propagation

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import networkx as nx
 
+from repowise.core.analysis.dead_code.file_reachability import file_dependency_neighbors
 from repowise.core.analysis.health import HealthAnalyzer
 from repowise.core.analysis.health.engine import _dependents_count
 from repowise.core.analysis.health.models import Severity
@@ -56,3 +57,45 @@ def test_the_engine_reports_importers_only(tmp_path):
     assert finding.reason.split("— ")[-1] == "4 dependents"
     # Ten or more dependents would have made it critical; four at 0% is high.
     assert finding.severity == Severity.HIGH
+
+
+def test_go_package_siblings_are_not_importers():
+    """A Go package is one compilation unit: a sibling referencing ``command.go``
+    imports nothing, while a file in another package that imports it does."""
+    target = "cobra/command.go"
+    g = nx.DiGraph()
+    g.add_node(target, node_type="file", language="go")
+    for i in range(3):
+        g.add_edge(
+            f"cobra/sibling_{i}.go", target, edge_type="type_use", hint_source="same_package"
+        )
+    g.add_edge("cmd/main.go", target, edge_type="imports")
+    assert _dependents_count(g, target) == 1
+    # Reachability still sees the siblings.
+    assert len(file_dependency_neighbors(g, target, incoming=True)) == 4
+
+
+def _users(edges: list[tuple[str, str, str | None]], target: str) -> int:
+    g = nx.DiGraph()
+    for source, dest, hint in edges:
+        g.add_edge(source, dest, edge_type="imports", **({"hint_source": hint} if hint else {}))
+    for n in g.nodes:
+        g.nodes[n]["node_type"] = "file"
+    return _dependents_count(g, target)
+
+
+def test_a_java_same_package_text_scan_user_still_counts():
+    """``Foo.class`` in a sibling test is a use with no import: its hinted edge counts."""
+    target = "src/main/java/app/App.java"
+    assert _users([("src/test/java/app/AppTests.java", target, "same_package")], target) == 1
+
+
+def test_a_swift_same_module_user_counts():
+    assert _users([("Sources/App/View.swift", "Sources/App/Model.swift", "same_module")],
+                  "Sources/App/Model.swift") == 1
+
+
+def test_a_source_including_its_header_counts_but_the_reverse_pair_edge_does_not():
+    edges = [("src/foo.c", "src/foo.h", None), ("src/foo.h", "src/foo.c", "header_source_pair")]
+    assert _users(edges, "src/foo.h") == 1
+    assert _users(edges, "src/foo.c") == 0

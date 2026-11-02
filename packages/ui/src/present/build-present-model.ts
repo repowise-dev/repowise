@@ -1,97 +1,41 @@
-// Build a Present model (slide deck + guided walkthrough) from already-loaded
-// wiki pages. Pure and synchronous: no LLM, no network, no DB. Every section is
-// guarded so missing page types (e.g. no architecture diagram, index-only repos)
-// degrade to a shorter deck instead of erroring.
+// Build a Present deck from already-loaded wiki pages. Pure and synchronous:
+// no LLM, no network, no DB.
+//
+// The deck tells one story in a fixed order: what the repository is (the
+// overview's opening), how it fits together (the overview's diagram), one
+// slide per major part (its opening, its own diagram, its step-named
+// sections), one traced flow when a page carries a sequence diagram, and where
+// to start reading. Every slide is optional except the title, so a page shape
+// without diagrams or step sections yields a shorter deck, never a broken one.
+// Prose is cut on sentence boundaries only; tables, lists and stat lines are
+// never shown as slide text.
 
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { filterMarkdownByPersona } from "../docs/reader-persona";
 import {
+  diagramKind,
+  extractMermaidBlocks,
+  isDrawable,
+  isProse,
+  splitBlocks,
   splitOnH2,
   stripLeadingH1,
-  extractMermaidBlocks,
-  clampProse,
-  countWords,
+  wholeSentences,
+  type SplitMarkdown,
 } from "./split-markdown";
-import { readLayerOrder } from "../lib/layers";
-import type { PresentModel, PresentSlide, PresentStep } from "./types";
+import type {
+  PresentModel,
+  PresentSlide,
+  PresentSource,
+  StartGroup,
+} from "./types";
 
-// Curation caps keep the deck tight and premium on large repos.
-export const MAX_LAYER_SLIDES = 5;
-export const MAX_MODULE_SLIDES = 5;
-const MAX_TOUR_STOPS = 8;
-const DECK_BODY_CHARS = 520;
-const STEP_BODY_CHARS = 1100;
-
-export interface TourStop {
-  order?: number | undefined;
-  title?: string | undefined;
-  target_path?: string | undefined;
-  reason?: string | undefined;
-  kind?: string | undefined;
-}
-
-export function readTour(overview: DocPage | undefined): TourStop[] {
-  const raw = overview?.metadata?.["guided_tour"];
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
-    .map((s) => ({
-      order: typeof s["order"] === "number" ? (s["order"] as number) : undefined,
-      title: typeof s["title"] === "string" ? (s["title"] as string) : undefined,
-      target_path:
-        typeof s["target_path"] === "string" ? (s["target_path"] as string) : undefined,
-      reason: typeof s["reason"] === "string" ? (s["reason"] as string) : undefined,
-      kind: typeof s["kind"] === "string" ? (s["kind"] as string) : undefined,
-    }));
-}
-
-// The spine reader lives with the rest of the layer logic — the docs tree
-// groups by the same order this deck presents in, and one repository can only
-// have one layer order.
-export { readLayerOrder } from "../lib/layers";
-
-/**
- * A readable repo name from the overview page title. Titles look like
- * "Repository Overview: repowise" — prefer the part after the colon, then
- * strip stray "repository"/"overview" words, so the title slide reads "repowise"
- * not "This repository".
- */
-function deriveRepoName(overview: DocPage | undefined, override?: string): string {
-  const fromOverride = override?.trim();
-  if (fromOverride) return fromOverride;
-  if (!overview) return "This repository";
-  const title = overview.title.trim();
-  const afterColon = title.includes(":") ? (title.split(":").pop() ?? title).trim() : title;
-  const cleaned = afterColon.replace(/\b(repository|repo|overview)\b/gi, "").replace(/\s+/g, " ").trim();
-  return cleaned || afterColon || "This repository";
-}
-
-/** First real prose paragraph of a page (skips a leading heading). */
-function firstProse(page: DocPage, maxChars: number): string {
-  const filtered = stripLeadingH1(filterMarkdownByPersona(page.content, "overview"));
-  const { lead, sections } = splitOnH2(filtered);
-  const leadText = lead.trim();
-  const source = leadText.length >= 40 ? leadText : (sections[0]?.body.trim() ?? leadText);
-  const firstPara = source.split(/\n{2,}/)[0] ?? "";
-  return clampProse(firstPara, maxChars);
-}
-
-/** Persona-filtered lead excerpt for a slide (prose + diagrams only). */
-function slideBody(page: DocPage, maxChars: number): string {
-  const filtered = stripLeadingH1(filterMarkdownByPersona(page.content, "overview"));
-  const { lead, sections } = splitOnH2(filtered);
-  let text = lead.trim();
-  const first = sections[0];
-  if (text.length < 60 && first) {
-    text = `## ${first.heading}\n\n${first.body}`.trim();
-  }
-  return clampProse(text, maxChars);
-}
-
-function estimateMinutes(markdown: string): number {
-  const words = countWords(markdown);
-  return Math.min(12, Math.max(2, 2 + Math.ceil(words / 200)));
-}
+const TITLE_CHARS = 360;
+const PART_CHARS = 420;
+const CAPTION_CHARS = 280;
+const SHORT_OPENING = 160;
+const MAX_STEPS = 5;
+const MAX_START_FILES = 8;
 
 /** True when there is enough generated content to present. Reads only the page
  *  type, so it answers from a summary listing without fetching any bodies. */
@@ -99,174 +43,235 @@ export function canPresent(pages: readonly DocPageSummary[]): boolean {
   return pages.some((p) => p.page_type === "repo_overview");
 }
 
-/** Rank layer pages the way the deck orders them, longest-standing first. */
-export function orderedLayers<T extends DocPageSummary>(
-  pages: readonly T[],
-  overview: DocPage | undefined,
-): T[] {
-  const layerOrder = readLayerOrder(overview);
-  const rankOf = (name: string | undefined) => {
-    if (!name) return Number.MAX_SAFE_INTEGER;
-    const idx = layerOrder.indexOf(name);
-    return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
-  };
-  return pages
-    .filter((p) => p.page_type === "layer_page")
-    // Rank on the layer page's target_path, which is the stable ``layer:<slug>``
-    // id. layer_name is display text the LLM rewrites between generations, so
-    // ranking on it silently drops every layer to MAX_SAFE_INTEGER.
-    .sort((a, b) => rankOf(a.target_path) - rankOf(b.target_path));
+/**
+ * A readable repo name from the overview page title. Titles look like
+ * "Repository Overview: name": prefer the part after the colon, then strip
+ * stray "repository"/"overview" words.
+ */
+function deriveRepoName(overview: DocPage): string {
+  const title = overview.title.trim();
+  const afterColon = title.includes(":") ? (title.split(":").pop() ?? title).trim() : title;
+  const cleaned = afterColon.replace(/\b(repository|repo|overview)\b/gi, "").replace(/\s+/g, " ").trim();
+  return cleaned || afterColon || "This repository";
 }
 
-export function buildPresentModel(
-  pages: DocPage[],
-  opts: { repoName?: string } = {},
-): PresentModel {
-  const overview = pages.find((p) => p.page_type === "repo_overview");
-  const repoName = deriveRepoName(overview, opts.repoName);
+/** A page's human reading path: reference sections dropped, title removed. */
+function readable(page: DocPage): SplitMarkdown {
+  return splitOnH2(stripLeadingH1(filterMarkdownByPersona(page.content, "overview")));
+}
 
-  const deck: PresentSlide[] = [];
+/** Prose paragraphs of a region; a list's lead-in closes as a statement. */
+function proseOf(markdown: string): string[] {
+  return splitBlocks(markdown)
+    .filter(isProse)
+    .map((p) => p.replace(/:\s*$/, "."));
+}
 
-  // 1 — Title
-  deck.push({
+function firstProse(markdown: string): string | undefined {
+  return proseOf(markdown)[0];
+}
+
+/**
+ * The opening of a page: whole sentences from the first region (lead, then
+ * each section) that has prose. A one-line lead-in borrows the paragraph after
+ * it, so a slide says more than "It has three parts."
+ */
+function opening(doc: SplitMarkdown, maxChars: number): string | undefined {
+  for (const region of [doc.lead, ...doc.sections.map((s) => s.body)]) {
+    const [first, next] = proseOf(region);
+    if (!first) continue;
+    const text = wholeSentences(first, maxChars);
+    if (text.length >= SHORT_OPENING || !next) return text;
+    const more = wholeSentences(next, maxChars);
+    return text.length + 1 + more.length <= maxChars ? `${text} ${more}` : text;
+  }
+  return undefined;
+}
+
+interface PlacedDiagram {
+  chart: string;
+  /** The H2 the diagram sits under; absent when it is in the lead. */
+  heading?: string | undefined;
+  /** The text of that section (or the lead), for a caption. */
+  context: string;
+}
+
+function diagrams(doc: SplitMarkdown): PlacedDiagram[] {
+  const regions = [
+    { heading: undefined, body: doc.lead },
+    ...doc.sections.map((s) => ({ heading: s.heading, body: s.body })),
+  ];
+  return regions.flatMap((r) =>
+    extractMermaidBlocks(r.body)
+      .filter(isDrawable)
+      .map((chart) => ({ chart, heading: r.heading, context: r.body })),
+  );
+}
+
+/** A caption from the diagram's own section, unless it opens like `shown`. */
+function caption(placed: PlacedDiagram, shown: string | undefined): string | undefined {
+  const para = firstProse(placed.context);
+  if (!para) return undefined;
+  const text = wholeSentences(para, CAPTION_CHARS);
+  return shown && shown.startsWith(text.slice(0, 60)) ? undefined : text;
+}
+
+/** Step-named sections: the ones that close on a `Sources:` line. */
+function steps(doc: SplitMarkdown): string[] {
+  return doc.sections
+    .filter((s) => {
+      const last = s.body.trim().split("\n").pop() ?? "";
+      return /^\W*sources\W*:/i.test(last.trim());
+    })
+    .map((s) => s.heading)
+    .slice(0, MAX_STEPS);
+}
+
+const START_ITEM = /^\s*[-*+]\s+`([^`]+)`\s*(?:[-:\u2013\u2014]+\s*(.+))?$/;
+
+/** The first entry of a part's "Where to start reading" list, if it has one. */
+function partStart(
+  part: DocPage,
+  doc: SplitMarkdown,
+  pageIdByPath: ReadonlyMap<string, string>,
+): StartGroup | undefined {
+  const section = doc.sections.find((s) => /^where to start/i.test(s.heading.trim()));
+  const match = section?.body
+    .split("\n")
+    .map((line) => START_ITEM.exec(line))
+    .find((m) => m !== null);
+  const raw = match?.[1]?.trim();
+  if (!raw) return undefined;
+  // Entries are written relative to the part's directory; resolve when possible.
+  const nested = `${part.target_path.replace(/\/+$/, "")}/${raw.replace(/^\.?\//, "")}`;
+  const path = pageIdByPath.has(raw) ? raw : pageIdByPath.has(nested) ? nested : raw;
+  return {
+    label: part.title,
+    note: match?.[2]?.trim() || undefined,
+    files: [{ path, pageId: pageIdByPath.get(path) }],
+  };
+}
+
+/**
+ * The overview's guided-tour stops not already listed (nor repeated),
+ * grouped where consecutive stops share a reason, up to `budget` files.
+ */
+function tourStart(
+  overview: DocPage,
+  pageIdByPath: ReadonlyMap<string, string>,
+  listed: ReadonlySet<string>,
+  budget: number,
+): StartGroup[] {
+  const raw = overview.metadata?.["guided_tour"];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set(listed);
+  const groups: StartGroup[] = [];
+  for (const stop of raw) {
+    if (seen.size - listed.size >= budget) break;
+    if (!stop || typeof stop !== "object") continue;
+    const path = (stop as Record<string, unknown>)["target_path"];
+    const reason = (stop as Record<string, unknown>)["reason"];
+    if (typeof path !== "string" || !path || seen.has(path)) continue;
+    seen.add(path);
+    const note = typeof reason === "string" && reason ? reason : undefined;
+    const file = { path, pageId: pageIdByPath.get(path) };
+    const last = groups[groups.length - 1];
+    if (last && !last.label && last.note === note) last.files.push(file);
+    else groups.push({ note, files: [file] });
+  }
+  return groups;
+}
+
+export function buildPresentModel(source: PresentSource): PresentModel {
+  const { overview, parts, totalParts, pageIdByPath } = source;
+  const overviewDoc = readable(overview);
+  const repoName = deriveRepoName(overview);
+  const slides: PresentSlide[] = [];
+  const shownCharts = new Set<string>();
+
+  const summary = opening(overviewDoc, TITLE_CHARS);
+  slides.push({
     id: "title",
     kind: "title",
-    eyebrow: "Repository",
     title: repoName,
-    bodyMarkdown: overview ? firstProse(overview, 280) : undefined,
-    sourcePageId: overview?.id,
-    sourcePath: overview?.target_path,
-    freshness: overview?.freshness_status,
+    body: summary,
+    sourcePageId: overview.id,
+    freshness: overview.freshness_status,
   });
 
-  // 2 — Architecture diagram slides
-  const archPage = pages.find((p) => p.page_type === "architecture_diagram");
-  if (archPage) {
-    const charts = extractMermaidBlocks(archPage.content).slice(0, 2);
-    charts.forEach((chart, i) => {
-      deck.push({
-        id: `arch-${i}`,
-        kind: "diagram",
-        eyebrow: "Architecture",
-        title: charts.length > 1 ? `${archPage.title} (${i + 1})` : archPage.title,
-        mermaid: chart,
-        sourcePageId: archPage.id,
-        sourcePath: archPage.target_path,
-        freshness: archPage.freshness_status,
-      });
+  const hero = diagrams(overviewDoc)[0];
+  if (hero) {
+    shownCharts.add(hero.chart);
+    slides.push({
+      id: "architecture",
+      kind: "architecture",
+      eyebrow: "Architecture",
+      title: "How it fits together",
+      body: caption(hero, summary),
+      mermaid: hero.chart,
+      sourcePageId: overview.id,
+      freshness: overview.freshness_status,
     });
   }
 
-  // 3 — Layers, ordered by the overview's layer_order when resolvable
-  const layerPages = orderedLayers(pages, overview).slice(0, MAX_LAYER_SLIDES);
-  for (const p of layerPages) {
-    // Layer pages generated with the deterministic architecture diagram embed
-    // it as a mermaid block; pair prose with diagram in a split slide. Older
-    // indexes without a diagram degrade to a plain prose section.
-    const layerChart = extractMermaidBlocks(p.content)[0];
-    let body = slideBody(p, DECK_BODY_CHARS);
-    // The diagram renders in its own column on a split slide, so keep any
-    // embedded fence out of the prose body.
-    if (layerChart) body = body.replace(/```mermaid[\s\S]*?```/g, "").trim();
-    deck.push({
-      id: `layer-${p.id}`,
-      kind: layerChart ? "split" : "section",
-      eyebrow: "Layer",
-      title: p.title,
-      bodyMarkdown: body,
-      mermaid: layerChart,
-      sourcePageId: p.id,
-      sourcePath: p.target_path,
-      freshness: p.freshness_status,
+  const partDocs = parts.map((page) => ({ page, doc: readable(page) }));
+  partDocs.forEach(({ page, doc }, i) => {
+    const chart = diagrams(doc)[0]?.chart;
+    if (chart) shownCharts.add(chart);
+    slides.push({
+      id: `part-${page.id}`,
+      kind: "part",
+      eyebrow: `Part ${i + 1} of ${parts.length}`,
+      title: page.title,
+      body: opening(doc, PART_CHARS),
+      mermaid: chart,
+      steps: steps(doc),
+      sourcePageId: page.id,
+      freshness: page.freshness_status,
     });
-  }
-
-  // 4 — Modules, richest first (longest content is a decent proxy)
-  const modulePages = pages
-    .filter((p) => p.page_type === "module_page")
-    .sort((a, b) => b.content.length - a.content.length)
-    .slice(0, MAX_MODULE_SLIDES);
-  for (const p of modulePages) {
-    deck.push({
-      id: `module-${p.id}`,
-      kind: "section",
-      eyebrow: "Module",
-      title: p.title,
-      bodyMarkdown: slideBody(p, DECK_BODY_CHARS),
-      sourcePageId: p.id,
-      sourcePath: p.target_path,
-      freshness: p.freshness_status,
-    });
-  }
-
-  // 5 — Where to start (guided-tour landmarks as one list slide)
-  const tour = readTour(overview);
-  if (tour.length > 0) {
-    const items = tour
-      .slice(0, MAX_TOUR_STOPS)
-      .map((s) => {
-        const label = s.title || s.target_path || "";
-        const reason = s.reason ? ` — ${s.reason}` : "";
-        return `- **${label}**${reason}`;
-      })
-      .join("\n");
-    deck.push({
-      id: "key-files",
-      kind: "section",
-      eyebrow: "Where to start",
-      title: "Key files to read first",
-      bodyMarkdown: items,
-    });
-  }
-
-  // 6 — Closing
-  deck.push({
-    id: "closing",
-    kind: "closing",
-    eyebrow: "Keep exploring",
-    title: "That's the tour",
-    bodyMarkdown:
-      "Open any page in the reader for the full detail, ask the assistant a question, or dive into the knowledge graph.",
   });
 
-  // Walkthrough — one step per guided-tour stop, in order.
-  const byPath = new Map(pages.map((p) => [p.target_path, p]));
-  let walkthrough: PresentStep[] = tour.map((stop, i) => {
-    const page = stop.target_path ? byPath.get(stop.target_path) : undefined;
-    const body = page ? slideBody(page, STEP_BODY_CHARS) : "";
-    const forEstimate = body || stop.reason || stop.title || "";
-    return {
-      id: `step-${i}`,
-      order: stop.order ?? i + 1,
-      title: stop.title || page?.title || stop.target_path || `Step ${i + 1}`,
-      reason: stop.reason,
-      targetPath: stop.target_path,
-      bodyMarkdown: body,
-      estMinutes: estimateMinutes(forEstimate),
-      sourcePageId: page?.id,
-      freshness: page?.freshness_status,
-    };
-  });
-
-  // Fallback: no tour metadata (older/edge indexes) — walk the deck's section
-  // slides so the walkthrough is never empty when a deck exists.
-  if (walkthrough.length === 0) {
-    walkthrough = deck
-      .filter((s) => (s.kind === "section" || s.kind === "split") && s.bodyMarkdown)
-      .map((s, i) => ({
-        id: `step-${i}`,
-        order: i + 1,
-        title: s.title,
-        reason: s.eyebrow,
-        targetPath: s.sourcePath,
-        bodyMarkdown: s.bodyMarkdown,
-        estMinutes: estimateMinutes(s.bodyMarkdown ?? ""),
-        sourcePageId: s.sourcePageId,
-        freshness: s.freshness,
-      }));
+  // One traced flow: the first sequence diagram no earlier slide has shown.
+  const flow = [...partDocs, { page: overview, doc: overviewDoc }]
+    .flatMap(({ page, doc }) => diagrams(doc).map((d) => ({ page, doc, d })))
+    .find(({ d }) => diagramKind(d.chart) === "sequencediagram" && !shownCharts.has(d.chart));
+  if (flow) {
+    slides.push({
+      id: "flow",
+      kind: "flow",
+      eyebrow: "One flow, end to end",
+      title: flow.d.heading ?? flow.page.title,
+      body: caption(flow.d, opening(flow.doc, PART_CHARS)),
+      mermaid: flow.d.chart,
+      sourcePageId: flow.page.id,
+      freshness: flow.page.freshness_status,
+    });
   }
 
-  const totalMinutes = walkthrough.reduce((sum, s) => sum + s.estMinutes, 0);
+  const fromParts = partDocs
+    .map(({ page, doc }) => partStart(page, doc, pageIdByPath))
+    .filter((g): g is StartGroup => g !== undefined);
+  // Parts name their own first file; the guided tour fills the rest.
+  const listed = new Set(fromParts.flatMap((g) => g.files.map((f) => f.path)));
+  const start = [
+    ...fromParts,
+    ...tourStart(overview, pageIdByPath, listed, MAX_START_FILES - listed.size),
+  ];
+  const omitted = totalParts - parts.length;
+  const scope =
+    omitted > 0
+      ? `This deck covers ${parts.length} of the ${totalParts} top-level sections. The rest are in the documentation.`
+      : undefined;
+  if (start.length > 0 || scope) {
+    slides.push({
+      id: "start",
+      kind: "start",
+      eyebrow: "Reading list",
+      title: "Where to start reading",
+      body: scope,
+      start,
+    });
+  }
 
-  return { repoName, deck, walkthrough, totalMinutes };
+  return { repoName, slides };
 }

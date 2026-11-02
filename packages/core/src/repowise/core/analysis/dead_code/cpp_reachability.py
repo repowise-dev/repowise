@@ -172,7 +172,15 @@ def is_cpp_file_reachable(
     generic skips (``is_entry_point``, ``is_test``, ``is_never_flag``,
     fixture / barrel filters). Rules below short-circuit.
     """
-    if graph.in_degree(node) > 0:
+    # Called, not imported at module level: file_reachability imports this module.
+    from .file_reachability import has_dependency_importer
+
+    if has_dependency_importer(graph, node):
+        return True
+
+    # Build-listed rescue: the file is compiled by a CMake target, MSBuild
+    # .vcxproj, or included by an .rc resource script.
+    if graph.nodes.get(node, {}).get("build_listed"):
         return True
 
     # ``int main`` / ``WinMain`` / fuzzer entry — the file IS the binary
@@ -198,7 +206,7 @@ def is_cpp_file_reachable(
         if sibling == node:
             continue
         sib_data = graph.nodes.get(sibling, {})
-        sib_has_importer = graph.in_degree(sibling) > 0
+        sib_has_importer = has_dependency_importer(graph, sibling)
         if is_reachability_root(sib_data):
             has_sibling_entry = True
             break

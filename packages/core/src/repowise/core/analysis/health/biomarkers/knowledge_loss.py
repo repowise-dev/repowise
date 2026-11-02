@@ -1,4 +1,4 @@
-"""Knowledge Loss — the primary owner is gone or barely present.
+"""Fading ownership — the primary owner is gone or barely present.
 
 Bus-factor risk: the person who wrote most of this file no longer
 contributes. When the primary owner of a hotspot is also the only deep
@@ -16,7 +16,7 @@ Fires when:
 
 The activity gate is what makes this signal point the right way: an
 abandoned-but-stable file is *low* risk (the survivor effect — code
-nobody touches doesn't break), so knowledge loss only matters while the
+nobody touches doesn't break), so fading ownership only matters while the
 code is live and the lost author's intent is still being edited around.
 
 Severity grades on whether the file is also a hotspot.
@@ -79,6 +79,15 @@ class KnowledgeLossDetector:
         primary = (meta.get("primary_owner_name") or "").strip()
         recent = (meta.get("recent_owner_name") or "").strip()
         if not primary:
+            return []
+
+        # ``recent_owner_commit_pct`` is None when the file's only recent
+        # commits were pure renames: ``_Authors.tally`` skips a rename when
+        # tallying authorship, so there is no authored activity in the window
+        # to judge the owner against, even though ``commit_count_90d`` (which
+        # counts the rename) kept the file out of ``is_stable`` (#2957). A
+        # missing signal is not evidence the owner went quiet.
+        if meta.get("recent_owner_commit_pct") is None:
             return []
 
         recent_share = _as_float(meta.get("recent_owner_commit_pct"))

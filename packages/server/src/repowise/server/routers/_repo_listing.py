@@ -73,10 +73,12 @@ async def load_repositories(
 
 
 def heal_indexed_commits(responses: list[RepoResponse]) -> None:
-    # Prefer state.json's last_sync_commit over a possibly stale DB head_commit.
+    # The resolved indexed commit; diverged stamps keep the row's own value.
     for resp in responses:
         if resp.local_path:
-            resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
+            resp.head_commit = (
+                resolve_indexed_commit(resp.head_commit, resp.local_path) or resp.head_commit
+            )
 
 
 def flag_unindexed(responses: list[RepoResponse], indexed_repo_ids: set[str]) -> None:

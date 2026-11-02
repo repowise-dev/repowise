@@ -157,6 +157,43 @@ class TestCycleSubgraph:
         assert b.cycle_subgraph().number_of_edges() == 0
 
 
+class TestDynamicUsesIsNotACycle:
+    """A hint match is not a resolved dependency and must not close a cycle (#2886)."""
+
+    def _graph_with(self, edge_type: str) -> GraphBuilder:
+        import threading
+
+        b = GraphBuilder.__new__(GraphBuilder)
+        b._graph = nx.DiGraph()
+        b._built = True
+        b._subgraph_lock = threading.Lock()
+        b._file_subgraph_cache = None
+        b._symbol_subgraph_cache = None
+        b._cycle_subgraph_cache = None
+        b._graph.add_node("a.cs", node_type="file")
+        b._graph.add_node("b.cs", node_type="file")
+        b._graph.add_edge("a.cs", "b.cs", edge_type=edge_type)
+        b._graph.add_edge("b.cs", "a.cs", edge_type=edge_type)
+        return b
+
+    def test_dynamic_uses_pair_is_not_a_cycle(self) -> None:
+        b = self._graph_with("dynamic_uses")
+        assert _cycles(b.cycle_subgraph()) == []
+
+    def test_dynamic_uses_edge_stays_in_file_subgraph(self) -> None:
+        # Reachability, blast radius and communities must keep seeing the
+        # hint edge — only cycle detection excludes it.
+        b = self._graph_with("dynamic_uses")
+        fs = b.file_subgraph()
+        assert fs.number_of_edges() == 2
+        assert fs.in_degree("a.cs") == 1
+        assert b.cycle_subgraph().number_of_edges() == 0
+
+    def test_a_real_import_pair_is_still_a_cycle(self) -> None:
+        b = self._graph_with("imports")
+        assert _cycles(b.cycle_subgraph()) == [{"a.cs", "b.cs"}]
+
+
 class TestHealthCycleDefinitionAgrees:
     """break_cycle must not propose cutting an edge the wiki calls no cycle."""
 
@@ -461,3 +498,13 @@ class TestGoImportSurfaceExcludesTestFiles:
         assert "store/store_test.go" in pkg.files
         # The import surface does not.
         assert index.files_for_import("example.com/app/store") == ("store/store.go",)
+
+
+def test_typescript_type_only_imports_excluded_from_cycle_subgraph() -> None:
+    builder = _pair_builder(type_only=True)
+
+    cycle_sub = builder.cycle_subgraph()
+    assert cycle_sub.number_of_edges() == 0
+    assert _cycles(cycle_sub) == []
+
+

@@ -77,6 +77,15 @@ class TestUnindexedImporterClamp:
         _analyzer(repo, [("App.tsx", "over_max_size")])._clamp_for_unindexed_importers([finding])
         assert finding.confidence >= 0.4
 
+    def test_evidence_names_skipped_files_in_a_stable_order(self, repo: Path) -> None:
+        # The skipped list arrives in traversal order, which varies run to run.
+        for name in ("d.tsx", "c.tsx", "b.tsx"):
+            (repo / name).write_text("Widget\n", encoding="utf-8")
+        skipped = [(n, "over_max_size") for n in ("d.tsx", "App.tsx", "c.tsx", "b.tsx")]
+        finding = _finding(symbol_name="Widget")
+        _analyzer(repo, skipped)._clamp_for_unindexed_importers([finding])
+        assert "(App.tsx, b.tsx, c.tsx (+1 more))" in finding.evidence[-1]
+
     def test_symbol_absent_from_unindexed_file_is_untouched(self, repo: Path) -> None:
         finding = _finding(symbol_name="Orphan")
         _analyzer(repo, [("App.tsx", "over_max_size")])._clamp_for_unindexed_importers([finding])

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { NextAction, WorkspaceActionsResponse } from "@repowise-dev/types/actions";
 
 import { WorkspaceNextActions } from "../../src/workspace/workspace-next-actions.js";
@@ -18,6 +18,8 @@ function action(id: string, title: string, tier: NextAction["tier"] = "plan"): N
     surface: "file",
     effort: "M",
     confidence: "high",
+    value: 3,
+    priority: 1.5,
     done_when: "Coverage reaches 80%.",
     command: null,
     marker: null,
@@ -93,5 +95,84 @@ describe("WorkspaceNextActions", () => {
     );
     expect(screen.getByText(/Not included: docs \(not indexed yet\)/)).toBeInTheDocument();
     expect(screen.getByText(/5 things worth doing this week/)).toBeInTheDocument();
+  });
+
+  it("loads an opened action's prompt from its own repository", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+        loadPrompt={loadPrompt}
+      />,
+    );
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Clean up/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
+  });
+
+  it("gives each repository's rows the agent prompt, loaded from that repository", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Row prompt");
+    render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+        loadPrompt={loadPrompt}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt: Clean up/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Row prompt")).toBeInTheDocument();
+    expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
+  });
+  it("is folded by default, with the count and the lead item on its heading", () => {
+    const { container } = render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    const summary = container.querySelector("summary")!;
+    expect(summary).toHaveTextContent("Do next");
+    // Cross-repo work leads the open list, so it leads the folded heading too.
+    expect(summary).toHaveTextContent(
+      "5 things this week · top: Resolve 2 breaking contract changes across repositories",
+    );
+  });
+
+  it("names the lead repository action when there is no cross-repo work", () => {
+    const { container } = render(
+      <WorkspaceNextActions
+        data={{ ...data, cross_repo: [] }}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+      />,
+    );
+    expect(container.querySelector("summary")).toHaveTextContent(
+      "4 things this week · top: Clean up app.tsx in frontend",
+    );
+  });
+
+  it("says nothing stands out when no repository has work", () => {
+    const { container } = render(
+      <WorkspaceNextActions
+        data={{ repos: [data.repos[2]!], cross_repo: [] }}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+      />,
+    );
+    expect(container.querySelector("summary")).toHaveTextContent("Nothing stands out this quarter");
   });
 });

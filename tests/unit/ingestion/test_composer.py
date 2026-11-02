@@ -36,8 +36,12 @@ class TestParse:
                     "psr-4": {"Billing\\": "src/"},
                     "psr-0": {"Legacy_": "lib/"},
                     "classmap": ["database/"],
+                    "files": ["src/helpers.php"],
                 },
-                "autoload-dev": {"psr-4": {"Billing\\Tests\\": ["tests/", "./spec"]}},
+                "autoload-dev": {
+                    "psr-4": {"Billing\\Tests\\": ["tests/", "./spec"]},
+                    "files": "tests/functions.php",
+                },
                 "repositories": [
                     {"type": "path", "url": "../core"},
                     {"type": "vcs", "url": "https://example.com/x.git"},
@@ -60,6 +64,10 @@ class TestParse:
         )
         assert manifest.psr0 == (("Legacy_", ("packages/billing/lib",)),)
         assert manifest.classmap == ("packages/billing/database",)
+        assert manifest.files == (
+            "packages/billing/src/helpers.php",
+            "packages/billing/tests/functions.php",
+        )
         assert manifest.path_repositories == ("../core",)
         assert manifest.extra == {"laravel": {"providers": []}}
 

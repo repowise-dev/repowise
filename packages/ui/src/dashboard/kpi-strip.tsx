@@ -41,7 +41,7 @@ function Gauge({ value }: { value: number }) {
   return (
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
       <div
-        className="h-full rounded-full bg-[var(--color-accent-fill)]"
+        className="h-full rounded-full bg-[var(--color-series-1)]"
         style={{ width: `${clamped}%` }}
       />
     </div>

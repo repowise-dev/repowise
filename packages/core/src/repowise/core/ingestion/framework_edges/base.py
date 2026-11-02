@@ -58,13 +58,19 @@ class FrameworkHandler(Protocol):
         ...
 
 
-def _add_edge_if_new(graph: nx.DiGraph, source: str, target: str) -> bool:
-    """Add a framework edge if no edge already exists. Returns True if added."""
+def _add_edge_if_new(
+    graph: nx.DiGraph, source: str, target: str, imported_names: list[str] | None = None
+) -> bool:
+    """Add a framework edge if no edge already exists. Returns True if added.
+
+    An edge without *imported_names* tells dead code the runtime may reach any
+    public member of *target*; one with names vouches for those names only.
+    """
     if source == target:
         return False
     if graph.has_edge(source, target):
         return False
-    graph.add_edge(source, target, edge_type="framework", imported_names=[])
+    graph.add_edge(source, target, edge_type="framework", imported_names=imported_names or [])
     return True
 
 
@@ -89,8 +95,12 @@ def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
         data = graph.nodes.get(node)
         if data is None or data.get("node_type") != "symbol":
             return False
-    if graph.has_edge(source, target):
-        return False
+    existing = graph.get_edge_data(source, target)
+    if existing is not None:
+        # A binding says the target runs, which outranks a bare mention of it.
+        if existing.get("edge_type") != "references":
+            return False
+        graph.remove_edge(source, target)
     graph.add_edge(
         source,
         target,

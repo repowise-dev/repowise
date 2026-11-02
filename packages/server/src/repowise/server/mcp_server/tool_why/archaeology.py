@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.server.mcp_server._why_relevance import floor_ranked
 
 _GIT_LOG_FORMAT = "--format=%H\t%an\t%ai\t%s"
@@ -18,7 +19,7 @@ async def _git_archaeology_fallback(
     file_path: str,
     git_meta: Any | None,
     all_git_meta: list,
-    repository: Any,
+    repo_root: str | None,
 ) -> dict:
     """When no decisions govern a file, mine git history for intent signals."""
     result: dict[str, Any] = {"triggered": True}
@@ -34,9 +35,8 @@ async def _git_archaeology_fallback(
 
     # --- Layer 3: Live git log (when local repo exists) ---
     git_log_results = []
-    local_path = getattr(repository, "local_path", None)
-    if local_path and (Path(local_path) / ".git").exists():
-        git_log_results = await _run_git_log(local_path, file_path, stem)
+    if repo_root and (Path(repo_root) / ".git").exists():
+        git_log_results = await _run_git_log(repo_root, file_path, stem)
     result["git_log"] = git_log_results
 
     # --- Summary ---
@@ -150,7 +150,10 @@ def _sync_git_log(repo_path: str, file_path: str, stem: str) -> list[dict]:
             repo_path, ["--follow", _GIT_LOG_FORMAT, "-20", "--", file_path]
         )
         if stdout is not None:
-            results.extend(_parse_git_log(stdout, "git_log_follow"))
+            # A shallow clone's cut commit shows as adding every file it holds.
+            cut = shallow_roots(repo_path)
+            rows = _parse_git_log(stdout, "git_log_follow")
+            results.extend(r for r in rows if r["commit"] not in cut)
 
         if safe_stem and len(safe_stem) >= 3:
             stdout = _git_log_stdout(

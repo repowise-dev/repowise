@@ -25,6 +25,7 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
+    SdkClientOwner,
     ensure_reasoning_supported,
     fallback_model_option,
     normalize_stop_reason,
@@ -253,7 +254,7 @@ def listed_model_options(
     return tuple(options)
 
 
-class OpenAICompatibleProvider(BaseProvider):
+class OpenAICompatibleProvider(SdkClientOwner, BaseProvider):
     """Base for a gateway that is the Chat Completions API at another URL.
 
     Subclasses set the class attributes and override the ``_*_kwargs`` hooks.
@@ -291,7 +292,7 @@ class OpenAICompatibleProvider(BaseProvider):
         )
         self._api_key = resolved_key
         self._base_url = self._clean_base_url(resolved_base_url)
-        self._client = AsyncOpenAI(api_key=resolved_key, base_url=self._base_url)
+        self._open_client(lambda: AsyncOpenAI(api_key=resolved_key, base_url=self._base_url))
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker

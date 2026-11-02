@@ -7,8 +7,10 @@ on:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a pull request replaces its run. Pushes get one group per
+  # commit, so every merge finishes and uploads its coverage.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -17,6 +19,12 @@ jobs:
   test-python:
     name: Python ${{ matrix.python-version }} tests
     runs-on: ubuntu-latest
+    # A normal run takes 30-40 minutes. The per-test timeout in pyproject.toml
+    # catches a hung test; this catches a hang outside any test.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write   # proves the coverage upload comes from this repository
     strategy:
       fail-fast: false
       matrix:
@@ -40,8 +48,58 @@ jobs:
       - name: Run provider tests (no API keys required)
         run: uv run pytest tests/providers/ -v --tb=short
 
+      # One worker per core. loadfile keeps each module on one worker, so a
+      # module-scoped fixture (an indexed sample repo, say) is built once, not
+      # once per worker that draws a test from it.
+      # --max-worker-restart=0: a worker the per-test timeout ended stops the
+      # run with that test named. With restarts, loadfile hands the unfinished
+      # tests of that file back, and the run can wait with every worker idle.
       - name: Run unit tests
-        run: uv run pytest tests/unit/ -v --tb=short
+        if: matrix.python-version != '3.12'
+        run: uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
+
+      # One leg measures coverage for the pull request bot's checks comment.
+      # sysmon (Python 3.12+) measures lines with far less overhead than the
+      # tracer; it cannot record per-test contexts, which this report omits.
+      - name: Run unit tests with coverage
+        if: matrix.python-version == '3.12'
+        env:
+          COVERAGE_CORE: sysmon
+        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report=xml
+
+      # The Repowise coverage job below gates the pull request on this report.
+      - name: Keep coverage.xml for the coverage gate
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Upload coverage to Repowise
+        if: always() && matrix.python-version == '3.12'
+        continue-on-error: true
+        env:
+          REPORTS: "coverage.xml"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          shopt -s globstar nullglob
+          files=()
+          for pattern in $REPORTS; do for f in $pattern; do [ -f "$f" ] && files+=(-F "report=@$f"); done; done
+          if [ ${#files[@]} -eq 0 ]; then echo "::warning::Repowise: no coverage report found at: $REPORTS"; exit 0; fi
+          auth=()
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty' || true)
+            [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
+          fi
+          curl -sS --fail-with-body --max-time 60 "${auth[@]}" "${files[@]}" \
+            -F "repository=$GITHUB_REPOSITORY" -F "head_sha=$HEAD_SHA" -F "pr_number=$PR_NUMBER" \
+            -F "event=$GITHUB_EVENT_NAME" -F "run_url=$RUN_URL" -F "workspace=$GITHUB_WORKSPACE" \
+            https://api.repowise.dev/ci/coverage \
+            || echo "::warning::Repowise: coverage upload failed; see the message above."
 
   # ---------------------------------------------------------------------------
   # tree-sitter floor — installs the declared minimum tree-sitter version and
@@ -77,6 +135,85 @@ jobs:
         # running, which would silently reinstall the newest tree-sitter and
         # undo the pin above.
         run: uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # Windows smoke test — repowise init and status under a native Windows console
+  # with default cp1252 encoding and redirected stdout.
+  #
+  # Unit tests fake a cp1252 stream, but every other CI job runs on Ubuntu.
+  # This smoke test ensures that repowise init and repowise status run cleanly
+  # on Windows when PYTHONIOENCODING and PYTHONUTF8 are unset, stdout is piped,
+  # and output decodes as cp1252 without UnicodeEncodeError.
+  # ---------------------------------------------------------------------------
+  windows-smoke:
+    name: Windows smoke test (cp1252 console)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-packages --python 3.12
+
+      - name: Add virtualenv to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/.venv/Scripts" >> "$GITHUB_PATH"
+
+      - name: Run repowise init and status in cp1252 console
+        shell: cmd
+        run: |
+          @echo off
+          REM Ensure PYTHONIOENCODING and PYTHONUTF8 are not set
+          if defined PYTHONIOENCODING (
+            echo Error: PYTHONIOENCODING is set
+            exit /b 1
+          )
+          if defined PYTHONUTF8 (
+            echo Error: PYTHONUTF8 is set
+            exit /b 1
+          )
+
+          REM Create a small git repository in a temp directory
+          set "SMOKE_DIR=%RUNNER_TEMP%\windows-smoke"
+          if exist "%SMOKE_DIR%" rmdir /s /q "%SMOKE_DIR%"
+          mkdir "%SMOKE_DIR%"
+          cd /d "%SMOKE_DIR%"
+
+          git init
+          git config user.name "Dev"
+          git config user.email "dev@example.com"
+          echo def add(a, b): return a + b > math_utils.py
+          echo print("hello") > main.py
+          git add .
+          git commit -m "initial commit"
+          echo def sub(a, b): return a - b >> math_utils.py
+          git commit -am "second commit"
+
+          REM Run init and status with stdout piped to file
+          repowise init --yes --no-editor-setup > init_out.txt
+          if errorlevel 1 (
+            echo repowise init failed with exit code %errorlevel%
+            exit /b %errorlevel%
+          )
+          repowise status > status_out.txt
+          if errorlevel 1 (
+            echo repowise status failed with exit code %errorlevel%
+            exit /b %errorlevel%
+          )
+
+      - name: Assert output decodes as cp1252
+        shell: cmd
+        run: |
+          python -c "import os; p = os.path.join(os.environ['RUNNER_TEMP'], 'windows-smoke'); init_bytes = open(os.path.join(p, 'init_out.txt'), 'rb').read(); init_text = init_bytes.decode('cp1252'); print(f'init output decoded as cp1252 ({len(init_text)} chars)'); assert len(init_text) > 0, 'init output is empty'; assert '{^' in init_text or 'repowise' in init_text, 'expected repowise output'; status_bytes = open(os.path.join(p, 'status_out.txt'), 'rb').read(); status_text = status_bytes.decode('cp1252'); print(f'status output decoded as cp1252 ({len(status_text)} chars)'); assert len(status_text) > 0, 'status output is empty'; assert 'Sync State' in status_text or 'Pages by Type' in status_text or 'Health' in status_text, 'expected status output'"
 
   # ---------------------------------------------------------------------------
   # Python lint — ruff. Deliberately its own job rather than a step inside the
@@ -124,6 +261,105 @@ jobs:
 
       - name: Check documentation drift
         run: uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json --format github
+
+  # ---------------------------------------------------------------------------
+  # Repowise gates from this tree's action (uses: ./). Git only, no index: fails
+  # on high-severity health findings the change introduces and new high
+  # security findings. A PR editing action.yml edits its own gate, so
+  # CODEOWNERS review covers it.
+  # ---------------------------------------------------------------------------
+  repowise-gates:
+    name: Repowise gates
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./
+        with:
+          checks: health,security
+          health-fail-on: introduced
+          health-fail-at: high
+          security-fail-on: high
+
+  # ---------------------------------------------------------------------------
+  # Patch coverage on the Python 3.12 leg's report. Its own job so the gates
+  # above do not wait for the test matrix.
+  # ---------------------------------------------------------------------------
+  repowise-coverage:
+    name: Repowise coverage
+    runs-on: ubuntu-latest
+    needs: test-python
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      - uses: ./
+        with:
+          checks: coverage
+          coverage-report: coverage.xml
+          coverage-fail-under: 70
+          coverage-min-coverable-lines: 10
+
+  # ---------------------------------------------------------------------------
+  # MCP response gate: indexes the sample repo and checks each default tool's
+  # response size ceiling, lean field contract and answer grades. Path-gated
+  # to the MCP tools, the answer pipeline and retrieval; on push it runs with
+  # the integration tests below.
+  # ---------------------------------------------------------------------------
+  mcp-gate:
+    name: MCP response gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether the MCP surface changed
+        id: changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            mcp:
+              - 'packages/server/src/repowise/server/mcp_server/**'
+              - 'packages/core/src/repowise/core/persistence/search.py'
+              - 'packages/core/src/repowise/core/persistence/vector_store/**'
+              - 'packages/core/src/repowise/core/fts_query.py'
+              - 'tests/integration/mcp/test_response_gate.py'
+              - 'tests/fixtures/mcp/response_budgets.json'
+              - 'tests/fixtures/sample_repo/**'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.changed.outputs.mcp == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        if: steps.changed.outputs.mcp == 'true'
+        run: uv sync --all-packages
+
+      - name: Run the MCP response gate
+        if: steps.changed.outputs.mcp == 'true'
+        env:
+          DO_NOT_TRACK: "1"
+        run: uv run pytest tests/integration/mcp/test_response_gate.py -v --tb=short --durations=5
 
   # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
@@ -193,6 +429,34 @@ jobs:
       - name: Test ui
         run: npm run test --workspace @repowise-dev/ui
 
+      # ICU compile gate: a malformed plural or stray brace in any catalog
+      # fails the build here instead of throwing on the page that renders it.
+      - name: Check message catalogs compile (ICU)
+        run: npm run i18n:icu --workspace packages/web
+
+      # Usage gate: a key a `t("...")` call asks for that `en.json` does not
+      # define renders the raw key path (or throws MISSING_MESSAGE), and key
+      # parity cannot see it — it compares key sets, not call sites. Structural
+      # error, so it fails the build.
+      - name: Check every used message key resolves
+        run: npm run i18n:usage --workspace packages/web
+
+      # Catalog freshness only warns: English is the source of truth, so a key
+      # a locale has not reached yet still renders English at runtime. The step
+      # must not fail the build (the script itself exits 0 either way).
+      - name: Report catalog key gaps (warn only)
+        run: npm run i18n:check --workspace packages/web
+        continue-on-error: true
+
+      - name: Type check claude-mod
+        run: npm run type-check --workspace @repowise-dev/claude-mod
+
+      - name: Test claude-mod
+        run: npm run test --workspace @repowise-dev/claude-mod
+
+      - name: Check the committed Lens bundle is current
+        run: npm run build:mod --workspace @repowise-dev/claude-mod -- --check
+
   # ---------------------------------------------------------------------------
   # VS Code extension — type check, bundle-size gate, and Electron smoke test
   # ---------------------------------------------------------------------------
@@ -213,6 +477,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve VS Code test version
+        id: vscode-test-version
+        run: |
+          echo "version=$(node --input-type=module -e 'import { vscodeVersion } from "./packages/vscode/.vscode-test.mjs"; console.log(vscodeVersion)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VS Code test editor
+        uses: actions/cache@v4
+        with:
+          path: packages/vscode/.vscode-test
+          key: vscode-test-${{ runner.os }}-${{ steps.vscode-test-version.outputs.version }}
+
       - name: Type check
         run: npm run type-check --workspace packages/vscode
 
@@ -226,7 +501,16 @@ jobs:
         run: npm run test:webview --workspace packages/vscode
 
       - name: Smoke test under a virtual display
-        run: xvfb-run -a npm run test --workspace packages/vscode
+        run: |
+          for attempt in 1 2; do
+            if xvfb-run -a --server-args="-screen 0 1280x1024x24" npm run test --workspace packages/vscode; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 1 ]; then
+              echo "::warning::VS Code smoke test attempt $attempt failed, retrying"
+            fi
+          done
+          exit 1
 
       - name: Package VSIX (no login required)
         run: npm run package --workspace packages/vscode

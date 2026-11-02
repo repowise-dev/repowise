@@ -1,7 +1,7 @@
 import * as React from "react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { PageLede } from "../shared/page-lede";
-import { formatAgeDays, formatDate, formatNumber } from "../lib/format";
+import { formatAgeDays, formatBytes, formatDate, formatNumber } from "../lib/format";
 import { ArrivalsTimeline } from "./arrivals-timeline";
 import { ChronotypeList } from "./chronotype-list";
 import { ChurnLedger } from "./churn-ledger";
@@ -81,7 +81,16 @@ function identityStats(data: StatsHighlights): RibbonStat[] {
       sub: languageMix(data),
       hint: "Programming languages by file count. Data and markup formats such as JSON, YAML and Markdown are not counted.",
     },
-    { label: "Commits", value: formatNumber(origin.total_commits) },
+    {
+      label: "Commits",
+      value: formatNumber(origin.total_commits),
+      ...(origin.total_merge_commits != null
+        ? {
+            sub: `plus ${formatNumber(origin.total_merge_commits)} merge${origin.total_merge_commits === 1 ? "" : "s"}`,
+            hint: "Non-merge commits reachable from HEAD. Merge commits are counted apart.",
+          }
+        : {}),
+    },
   ];
 }
 
@@ -196,6 +205,15 @@ function SizeLede({ data }: { data: StatsHighlights }) {
             .
           </>
         )}
+        {data.index_storage_bytes ? (
+          <>
+            {" "}Its Repowise index (documentation, symbols and vectors) takes{" "}
+            <strong className="font-semibold text-[var(--color-text-primary)]">
+              {formatBytes(data.index_storage_bytes)}
+            </strong>{" "}
+            on disk.
+          </>
+        ) : null}
       </p>
     </PageLede>
   );

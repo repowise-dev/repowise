@@ -227,8 +227,7 @@ async def test_changed_contract_config_forces_re_extraction(
 ) -> None:
     """Rows extracted under a different question must not be reused.
 
-    Turning a detector off, or adding a ``service_bases`` mapping, changes what
-    extraction looks for and how consumers resolve — but it moves no commit, so
+    Turning a detector off changes what extraction looks for — but it moves no commit, so
     the HEAD check alone would happily carry the old answers forward and the
     config change would appear to do nothing until someone committed.
     """
@@ -495,3 +494,212 @@ async def test_walk_count_scales_with_changed_repos_not_workspace_size(
     full_total = sum(s.get("files_walked", 0) for s in first.extraction_stats.values())
     assert 0 < walked_this_run < full_total
     assert second.extraction_stats["alpha"]["walks"] == 1  # still one walk per repo
+
+
+# ---------------------------------------------------------------------------
+# MassTransit: the message-type index is part of the extraction fingerprint
+# ---------------------------------------------------------------------------
+
+
+def _message_repos(tmp_path: Path, contract_dir: str = "Sample.Contracts") -> tuple[Path, Path]:
+    """Alpha declares the message ``Ping``; beta consumes ``Ping`` and ``Pong``."""
+    alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+    contract = alpha / contract_dir
+    contract.mkdir()
+    (contract / f"{contract_dir}.csproj").write_text("<Project />", encoding="utf-8")
+    _message(contract, "Ping")
+    (beta / "Consumers.cs").write_text(
+        "using Sample.Contracts;\n"
+        "public class PingConsumer : IConsumer<Ping> { }\n"
+        "public class PongConsumer : IConsumer<Pong> { }\n",
+        encoding="utf-8",
+    )
+    _commit_all(alpha, beta, message="contract")
+    return alpha, contract
+
+
+def _message(directory: Path, name: str) -> None:
+    (directory / f"{name}.cs").write_text(
+        f"namespace Sample.Contracts\n{{\n    public class {name} {{ }}\n}}\n", encoding="utf-8"
+    )
+
+
+def _commit_all(*repos: Path, message: str) -> None:
+    for repo in repos:
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", message)
+
+
+def _topic_ids(store: ContractStore, alias: str) -> list[str]:
+    return sorted(c.contract_id for c in store.rows_for_repo(alias) if c.contract_type == "topic")
+
+
+async def test_new_contract_type_in_one_repo_re_extracts_its_consumers_elsewhere(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """A MassTransit consumer resolves against another repo's contract project.
+
+    Beta's source and HEAD never move, so only the message-type fingerprint can
+    tell it that the message it consumes now exists.
+    """
+    alpha, contract = _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    assert _topic_ids(first, "beta") == ["topic::sample.contracts:ping"]
+    extracted.clear()
+
+    _message(contract, "Pong")
+    _commit_all(alpha, message="add Pong")
+    second = await run_contract_extraction(workspace, tmp_path, ["alpha"], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == [
+        "topic::sample.contracts:ping",
+        "topic::sample.contracts:pong",
+    ]
+
+
+async def test_removed_contract_type_re_extracts_its_consumers_elsewhere(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    alpha, contract = _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    (contract / "Ping.cs").unlink()
+    _commit_all(alpha, message="remove Ping")
+    second = await run_contract_extraction(workspace, tmp_path, ["alpha"], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == []
+
+
+async def test_renamed_contract_type_re_extracts_its_consumers_elsewhere(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    alpha, contract = _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    (contract / "Ping.cs").unlink()
+    _message(contract, "Pong")
+    _commit_all(alpha, message="rename Ping to Pong")
+    second = await run_contract_extraction(workspace, tmp_path, ["alpha"], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == ["topic::sample.contracts:pong"]
+
+
+async def test_unchanged_contract_types_still_reuse(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    _message_repos(tmp_path)
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    await run_contract_extraction(workspace, tmp_path, [], None, first)
+
+    assert extracted == []
+
+
+async def test_changed_contract_project_pattern_re_extracts_every_repo(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """The pattern decides which projects hold messages, and moves no commit."""
+    _message_repos(tmp_path, contract_dir="Sample.Messages")
+    first = await _first_run(workspace, tmp_path)
+    assert _topic_ids(first, "beta") == []
+    extracted.clear()
+
+    configured = WorkspaceConfig(
+        repos=list(workspace.repos),
+        contracts=ContractConfig(contract_project_pattern=r".+\.messages"),
+    )
+    second = await run_contract_extraction(configured, tmp_path, [], None, first)
+
+    assert sorted(extracted) == ["alpha", "beta"]
+    assert _topic_ids(second, "beta") == ["topic::sample.contracts:ping"]
+
+
+# ---------------------------------------------------------------------------
+# Matching settings, repowise's own files, and which indexes are opened
+# ---------------------------------------------------------------------------
+
+
+async def test_matching_settings_relink_without_re_extracting(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """service_bases and manual_links decide links, not what a repo holds."""
+    from repowise.core.workspace.config import ManualContractLink
+
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    relinked = WorkspaceConfig(
+        repos=list(workspace.repos),
+        contracts=ContractConfig(
+            service_bases={"API_BASE": "beta"},
+            manual_links=[ManualContractLink("alpha", "beta", "http", "http::GET::/manual")],
+        ),
+    )
+    second = await run_contract_extraction(relinked, tmp_path, [], None, first)
+
+    assert extracted == []
+    assert second.contracts == first.contracts
+    assert any(lk.contract_id == "http::GET::/manual" for lk in second.contract_links)
+
+
+async def test_repowise_editor_file_keeps_the_repo_reusable(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """init writes .claude/CLAUDE.md untracked; that is not a change to the repo."""
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+    from repowise.core.generation.editor_files.claude_md import ClaudeMdGenerator
+
+    first = await _first_run(workspace, tmp_path)
+    tag = ClaudeMdGenerator.marker_tag
+    claude_md = tmp_path / "beta" / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir()
+    claude_md.write_text(
+        ClaudeMdGenerator.user_placeholder
+        + Gen.MARKER_START_FMT.format(tag=tag)
+        + "Last indexed: today"
+        + Gen.MARKER_END_FMT.format(tag=tag),
+        encoding="utf-8",
+    )
+    extracted.clear()
+
+    await run_contract_extraction(workspace, tmp_path, [], None, first)
+
+    assert extracted == []
+
+
+class _RecordingIndex:
+    """A workspace index that holds nothing and records what it was asked to open."""
+
+    def __init__(self) -> None:
+        self.ensured: list[set[str]] = []
+
+    def get(self, alias: str) -> None:
+        return None
+
+    async def ensure(self, aliases) -> None:
+        self.ensured.append(set(aliases))
+
+
+async def test_indexes_open_only_for_extracted_repos(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None
+) -> None:
+    """Loading every repo's symbols was most of the time a run with nothing to extract took."""
+    index = _RecordingIndex()
+    first = await run_contract_extraction(workspace, tmp_path, [], None, None, index)
+    assert index.ensured == [{"alpha", "beta"}]
+
+    index = _RecordingIndex()
+    await run_contract_extraction(workspace, tmp_path, [], None, first, index)
+    assert index.ensured == []
+
+    (tmp_path / "beta" / "svc" / "api.py").write_text("x = 1\n", encoding="utf-8")
+    index = _RecordingIndex()
+    await run_contract_extraction(workspace, tmp_path, [], None, first, index)
+    # beta, plus the repos publishing a package beta may import (both ship "svc").
+    assert index.ensured == [{"alpha", "beta"}]

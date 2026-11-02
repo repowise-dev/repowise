@@ -214,6 +214,45 @@ def test_stdlib_names_inside_a_package_stay_stdlib(py_shadow_thirdparty) -> None
     assert resolve_python_import("json", "pkg/utils/pydantic.py", ctx) == "external:json"
 
 
+@pytest.mark.parametrize("module", ["signal", "signal.events"])
+def test_stdlib_import_does_not_bind_an_unrelated_package_root(module: str) -> None:
+    ctx = _layout_ctx(
+        {
+            "plugins/adapter/__init__.py",
+            "plugins/adapter/client.py",
+            "vendor/signal/__init__.py",
+            "vendor/signal/events.py",
+        }
+    )
+    importer = "plugins/adapter/client.py"
+    assert resolve_python_import(module, importer, ctx) == f"external:{module}"
+    assert resolve_python_import_all(_imp(module, ["events"]), importer, ctx) == (
+        f"external:{module}",
+    )
+    assert resolve_python_import(".client", "plugins/adapter/__init__.py", ctx) == importer
+    assert resolve_python_import("adapter.client", "vendor/signal/events.py", ctx) == importer
+
+
+@pytest.mark.parametrize("root", ["", "src/", "packages/shadow/src/", "scripts/"])
+def test_explicit_stdlib_shadow_keeps_its_own_submodules(root: str) -> None:
+    ctx = _layout_ctx(
+        {
+            f"{root}signal/__init__.py",
+            f"{root}signal/events.py",
+            "vendor/signal/__init__.py",
+            "vendor/signal/events.py",
+            "plugins/adapter/__init__.py",
+            "plugins/adapter/client.py",
+            "scripts/run.py",
+        }
+    )
+    importer = "scripts/run.py" if root == "scripts/" else "plugins/adapter/client.py"
+    assert resolve_python_import("signal", importer, ctx) == f"{root}signal/__init__.py"
+    assert resolve_python_import_all(_imp("signal", ["events"]), importer, ctx) == (
+        f"{root}signal/events.py",
+    )
+
+
 def test_a_module_never_imports_itself(py_self_stdlib) -> None:
     ctx = py_self_stdlib
     assert resolve_python_import("logging", "pkg/logging.py", ctx) == "external:logging"
@@ -333,3 +372,85 @@ def test_own_root_wins_over_a_same_dotted_name_in_another_root() -> None:
     assert resolve_python_import("tests.stubs", "libs/b/tests/test_x.py", ctx) == (
         "libs/b/tests/stubs.py"
     )
+
+
+# A name imported from outside the repository is that module's, so a call to
+# it must not fall through to a same-named repo symbol.
+
+
+def _call_edges(tmp_path, sources: dict[str, str]) -> set[tuple[str, str]]:
+    from datetime import datetime
+
+    from repowise.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import ASTParser
+
+    parser = ASTParser()
+    builder = GraphBuilder(tmp_path)
+    for rel, text in sources.items():
+        abs_path = tmp_path / rel
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_text(text, encoding="utf-8")
+        info = FileInfo(
+            path=rel,
+            abs_path=str(abs_path),
+            language="python",
+            size_bytes=len(text),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        builder.add_file(parser.parse_file(info, text.encode("utf-8")))
+    graph = builder.build()
+    return {(u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "calls"}
+
+
+_SHADOWED = {
+    "pkg/__init__.py": "",
+    "pkg/utils.py": "def unquote(s):\n    return s\n\n\ndef other():\n    return 1\n",
+    "pkg/types.py": "class Path:\n    pass\n",
+}
+
+
+def test_an_imported_stdlib_name_does_not_bind_a_same_named_repo_symbol(tmp_path) -> None:
+    edges = _call_edges(
+        tmp_path,
+        {
+            **_SHADOWED,
+            "pkg/urls.py": (
+                "from urllib.parse import unquote\nfrom pkg.utils import other\n\n\n"
+                "def parse(s):\n    other()\n    return unquote(s)\n"
+            ),
+            "pkg/paths.py": "from pathlib import Path\n\n\ndef mk(s):\n    return Path(s)\n",
+        },
+    )
+    assert ("pkg/urls.py::parse", "pkg/utils.py::other") in edges
+    assert not {e for e in edges if e[1] in ("pkg/utils.py::unquote", "pkg/types.py::Path")}
+
+
+def test_an_unimported_name_still_reaches_the_repo_symbol(tmp_path) -> None:
+    edges = _call_edges(
+        tmp_path,
+        {**_SHADOWED, "pkg/paths.py": "def mk(s):\n    return Path(s)\n"},
+    )
+    assert ("pkg/paths.py::mk", "pkg/types.py::Path") in edges
+
+
+def test_graph_does_not_call_a_vendored_stdlib_shadow(tmp_path) -> None:
+    edges = _call_edges(
+        tmp_path,
+        {
+            "plugins/adapter/__init__.py": "",
+            "plugins/adapter/helper.py": "def other():\n    return 1\n",
+            "plugins/adapter/client.py": (
+                "from signal import getsignal\nfrom .helper import other\n\n\n"
+                "def read():\n    other()\n    return getsignal(1)\n"
+            ),
+            "vendor/signal/__init__.py": "def getsignal(n):\n    return n\n",
+        },
+    )
+    assert ("plugins/adapter/client.py::read", "plugins/adapter/helper.py::other") in edges
+    assert ("plugins/adapter/client.py::read", "vendor/signal/__init__.py::getsignal") not in edges

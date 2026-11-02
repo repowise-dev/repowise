@@ -33,6 +33,7 @@ from repowise.core.persistence.models import (
     PerformanceOpportunity,
     PerformanceSummary,
 )
+from repowise.core.pipeline import PhaseTimings
 
 
 class _EmptyGraphBuilder:
@@ -55,7 +56,16 @@ class _EmptyGraphBuilder:
 
 
 _SCORED = "src/app.py"
-_SOURCE = "def run(items):\n    return [i for i in items if i]\n"
+# Nested three deep so a replayed function_hotspot on `run` still clears the
+# complexity floor the re-score checks it against.
+_SOURCE = (
+    "def run(items):\n"
+    "    for i in items:\n"
+    "        if i:\n"
+    "            while i:\n"
+    "                i -= 1\n"
+    "    return items\n"
+)
 
 
 def _parsed_file(repo_path: Path) -> SimpleNamespace:
@@ -250,3 +260,71 @@ class TestRescoreKeepsHistoryMarkers:
         assert {"prior_defect", "co_change_scatter"} <= types
         # No blame index is persisted, so the stored finding is kept, not deleted.
         assert "function_hotspot" in types
+
+
+class TestRescoreKeepsGovernanceFindings:
+    async def test_an_ungoverned_hotspot_survives_the_rescore(self, git_repo: Path):
+        # A hotspot no decision names: the governance pass, not the analyzer,
+        # writes its finding, and the re-score replaces every open finding.
+        repo_id = await _seed_history(git_repo)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        assert "ungoverned_hotspot" in await _finding_types(git_repo, repo_id)
+
+    async def test_the_refactoring_queue_is_folded_once(self, git_repo: Path, monkeypatch):
+        # Governance rows are rebuilt inside the health writer, before the
+        # queue is composed, rather than recomposing it a second time after.
+        from repowise.core.persistence import crud
+
+        await _seed_history(git_repo)
+        calls = []
+        real = crud.finalize_refactoring_opportunities
+
+        async def _count(*args, **kwargs):
+            calls.append(1)
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(crud, "finalize_refactoring_opportunities", _count)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        assert len(calls) == 1
+
+    async def test_a_failed_governance_rebuild_keeps_the_health_rows(
+        self, git_repo: Path, monkeypatch
+    ):
+        from repowise.core.pipeline import persist
+
+        repo_id = await _seed_history(git_repo)
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("governance down")
+
+        monkeypatch.setattr(persist, "refresh_governance_findings", _boom)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        types = await _finding_types(git_repo, repo_id)
+        assert {"prior_defect", "co_change_scatter"} <= types
+        assert "ungoverned_hotspot" not in types
+
+
+class TestRescoreTimings:
+    async def test_stages_record_under_the_rescore_prefix(self, git_repo: Path):
+        await _seed_history(git_repo)
+        timings = PhaseTimings()
+
+        await _rescore_health_from_db(
+            git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [], timings=timings
+        )
+
+        names = set(timings.totals)
+        assert {
+            "rescore.inputs",
+            "rescore.analysis.health.walk",
+            "rescore.persist.graph_nodes",
+            "rescore.persist.health",
+        } <= names
+        # Kept apart from the update's own changed-files health pass.
+        assert not any(name.startswith("analysis.") for name in names)

@@ -1,0 +1,208 @@
+"use client";
+
+/**
+ * Fix first: the ranked list of what to fix in this repository, as core built
+ * it. The header states the scope exactly (shown of eligible); what each rule
+ * excluded is one click away in a popover; the list is the payload's order.
+ * Shared by every host: the host fetches, routes and writes, this renders.
+ */
+
+import { useCallback, useState, type ElementType } from "react";
+import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
+
+import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
+import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
+import { ApiError } from "../../shared/api-error";
+import { EmptyState } from "../../shared/empty-state";
+import { toFriendlyMessage } from "../../lib/errors";
+import { OverviewSection } from "../../overview/section";
+import { formatNumber } from "../../lib/format";
+import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
+import type { AiPromptFlavor } from "../ai-prompt-builder";
+import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
+import { exclusionEntries, exclusionPhrase, fixFirstScopeSentence, fixLocation } from "./scope";
+
+export interface FixFirstListProps {
+  queue: FixFirstQueue | undefined;
+  loading?: boolean | undefined;
+  error?: unknown;
+  onRetry?: (() => void) | undefined;
+  /** `production` leaves test files out; `all` keeps them. Omit the setter to hide the toggle. */
+  scope: FixScope;
+  onScopeChange?: ((scope: FixScope) => void) | undefined;
+  fileHref?: ((path: string, line: number | null) => string | undefined) | undefined;
+  planHref?: ((item: FixItem) => string | null) | undefined;
+  onTriage?: ((item: FixItem, status: FixTriageStatus) => Promise<void>) | undefined;
+  /** An item's agent prompt as core renders it, for this `scope`. Omit to hide the prompt. */
+  loadPrompt?: ((item: FixItem, flavor: AiPromptFlavor) => Promise<string>) | undefined;
+  LinkComponent?: ElementType | undefined;
+  /** Drop the section's top hairline when it opens the page. */
+  flush?: boolean | undefined;
+  /** Closed by default, under the score: the headline keeps the first screen
+   *  and the toggle's count says how much is behind it. */
+  defaultOpen?: boolean | undefined;
+  /** Section heading. Callers with i18n pass their translated string. */
+  title?: string | undefined;
+}
+
+export function FixFirstList({
+  queue,
+  loading = false,
+  error,
+  onRetry,
+  scope,
+  onScopeChange,
+  fileHref,
+  planHref,
+  onTriage,
+  loadPrompt,
+  LinkComponent,
+  flush = false,
+  defaultOpen = false,
+  title = "Highest-interest technical debt",
+}: FixFirstListProps) {
+  // Every row starts as its one or two scan lines; the detail opens per row.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggle = (id: string) => {
+    const next = new Set(expanded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setExpanded(next);
+  };
+  const [promptFor, setPromptFor] = useState<FixItem | null>(null);
+  // Only fetched while the modal is open on an item; stable per item.
+  const promptSource = useCallback(
+    (flavor: AiPromptFlavor) => loadPrompt!(promptFor!, flavor),
+    [loadPrompt, promptFor],
+  );
+
+  const toggleTests = onScopeChange ? (
+    <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+      <input
+        type="checkbox"
+        checked={scope === "all"}
+        onChange={(e) => onScopeChange(e.target.checked ? "all" : "production")}
+        className="h-3.5 w-3.5 accent-[var(--color-accent-primary)]"
+      />
+      Include tests
+    </label>
+  ) : undefined;
+
+  const description = queue
+    ? `${fixFirstScopeSentence(queue)}${scope === "all" ? " Test files are included." : ""}`
+    : undefined;
+
+  const count = queue ? queue.items.length : null;
+  const exclusions = queue ? exclusionEntries(queue.totals.excluded) : [];
+  const excludedTotal = exclusions.reduce((n, entry) => n + entry.count, 0);
+  const excludedControl =
+    excludedTotal > 0 ? (
+      <Popover>
+        <PopoverTrigger className="rounded text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
+          <span className="tabular-nums">{formatNumber(excludedTotal)}</span> excluded
+        </PopoverTrigger>
+        <PopoverContent align="start">
+          <p className="mb-1.5 text-[var(--color-text-tertiary)]">Left out of Fix first, by rule:</p>
+          <ul className="space-y-0.5 tabular-nums text-[var(--color-text-secondary)]">
+            {exclusions.map((entry) => (
+              <li key={entry.reason}>{entry.text}</li>
+            ))}
+          </ul>
+        </PopoverContent>
+      </Popover>
+    ) : null;
+
+  return (
+    <OverviewSection
+      title={title}
+      flush={flush}
+      collapsible
+      defaultOpen={defaultOpen}
+      {...(count !== null ? { hint: `${count} ${count === 1 ? "item" : "items"}` } : {})}
+      {...(description ? { description } : {})}
+    >
+      {/* A collapsible section has no header action slot, so the controls
+          lead the body. */}
+      {toggleTests || excludedControl ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {toggleTests}
+          {excludedControl}
+        </div>
+      ) : null}
+      {error ? (
+        <ApiError
+          title="Couldn't load Fix first"
+          message={toFriendlyMessage(error)}
+          {...(onRetry ? { onRetry } : {})}
+        />
+      ) : loading && !queue ? (
+        <SkeletonRegion className="flex flex-col gap-3" label="Loading Fix first">
+          <Skeleton className="h-4 w-80 max-w-full" />
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </SkeletonRegion>
+      ) : queue && queue.items.length === 0 ? (
+        <FixFirstEmpty queue={queue} />
+      ) : queue ? (
+        <ol className="flex flex-col divide-y divide-[var(--color-border-default)]">
+          {queue.items.map((item) => (
+            <FixFirstItem
+              key={item.id}
+              item={item}
+              expanded={expanded.has(item.id)}
+              onToggle={() => toggle(item.id)}
+              fileHref={fileHref}
+              planHref={planHref}
+              onAiPrompt={loadPrompt ? setPromptFor : undefined}
+              onTriage={onTriage}
+              LinkComponent={LinkComponent}
+            />
+          ))}
+        </ol>
+      ) : null}
+
+      <AiPromptModal
+        open={promptFor !== null}
+        onOpenChange={(next) => {
+          if (!next) setPromptFor(null);
+        }}
+        getPrompt={null}
+        promptSource={promptSource}
+        filePath={promptFor ? fixLocation(promptFor) : null}
+        chatContext={fileChatContext(promptFor?.target.file_path)}
+        title="Prompt for an agent"
+        description="The change, why it ranks first, the steps in order, and how to verify it."
+      />
+    </OverviewSection>
+  );
+}
+
+/** Nothing queued: all clear, left out by a rule, or never analyzed. Each says something different. */
+function FixFirstEmpty({ queue }: { queue: FixFirstQueue }) {
+  const excluded = exclusionPhrase(queue.totals.excluded);
+  if (excluded) {
+    return (
+      <EmptyState
+        size="compact"
+        title="Everything was left out by a rule"
+        description={`Nothing is queued because the rules above set aside ${excluded}.`}
+      />
+    );
+  }
+  if (!queue.basis.health_analyzed_at) {
+    return (
+      <EmptyState
+        size="compact"
+        title="Health has not been analyzed yet"
+        description="Run an index update and the ranked list appears here."
+      />
+    );
+  }
+  return (
+    <EmptyState
+      tone="positive"
+      title="Nothing to fix first"
+      description="Health was analyzed and no function or finding is worth fixing ahead of the rest."
+    />
+  );
+}

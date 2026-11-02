@@ -16,7 +16,7 @@ _KNOWN: frozenset[str] = frozenset(
 )
 
 _PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
-_HOME = "packages/core/src/repowise/core/analysis/dead_code/file_reachability.py"
+_HOME = "packages/core/src/repowise/core/ingestion/barrels.py"
 _BARREL_MARKERS = {
     "index.ts",
     "index.tsx",
@@ -88,7 +88,7 @@ def _offenders() -> dict[str, list[str]]:
 def test_no_new_barrel_filename_copies() -> None:
     offenders = {p: hits for p, hits in _offenders().items() if p not in _KNOWN}
     assert not offenders, (
-        "New inline barrel-filename definition(s) outside file_reachability.py:\n"
+        "New inline barrel-filename definition(s) outside ingestion/barrels.py:\n"
         + "\n".join(f"  {p}: {', '.join(hits)}" for p, hits in sorted(offenders.items()))
     )
 

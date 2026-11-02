@@ -32,10 +32,11 @@ export interface TestsReachingListProps {
  * figure the data cannot support, and the moment it becomes one we have rebuilt
  * the confusion the core spent its whole design avoiding.
  *
- * `via` is carried through rather than flattened because the two tiers are
+ * `via` is carried through rather than flattened because the tiers are
  * different claims. A test whose calls run into the file is strong evidence; a
- * test that merely imports it is real but much cruder, and a reader deciding
- * whether this file is guarded needs to know which one they have.
+ * test that merely imports it, directly or through another module, is real
+ * but much cruder, and a reader deciding whether this file
+ * is guarded needs to know which one they have.
  */
 export function TestsReachingList({
   filePath,
@@ -44,26 +45,40 @@ export function TestsReachingList({
   onSelect,
   heading = true,
 }: TestsReachingListProps) {
-  const { data, isLoading } = useSWR<TestsReachingFile | null>(
+  const { data, error, isLoading } = useSWR<TestsReachingFile>(
     fetcher ? `tests-reaching:${cacheKey}:${filePath}` : null,
-    () => fetcher!(filePath).catch(() => null),
+    () => fetcher!(filePath),
     { revalidateOnFocus: false },
   );
 
   if (!fetcher) return null;
   if (isLoading) return <Skeleton className="h-16 w-full max-w-[52ch] rounded-md" />;
 
-  // A file nothing reaches is the honest answer, not an error, and it is the
+  // A failed request and a walk the server could not finish read the same: the
+  // answer is unknown, which must not render as "no test reaches this".
+  if (error || data?.basis === "unavailable") {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {heading ? <Heading>Tests reaching this file</Heading> : null}
+        <p className="max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          Could not load which tests reach this file. Try again in a moment.
+        </p>
+      </div>
+    );
+  }
+
+  // A file no test reaches is the honest answer, not an error, and it is the
   // one the reader most needs: it is the whole left column of the chart.
   if (!data || !data.reached || data.tests.length === 0) {
     return (
       <div className="flex flex-col gap-1.5">
         {heading ? <Heading>Tests reaching this file</Heading> : null}
         <p className="max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-          No test in the repository calls into this file, and none imports it.
-          That is a static reading of the dependency graph, so a test that
-          reaches it only through a framework hook or a name looked up at run
-          time would not show up here.
+          No test reaches this file through the graph: none calls into it or
+          imports it, directly or through any chain of imports.
+          That is a floor, not a verdict. Code a framework invokes, such as a
+          route handler, a CLI command or a plugin registry, and names looked up
+          at run time are invisible to it.
         </p>
       </div>
     );
@@ -108,11 +123,8 @@ export function TestsReachingList({
         ))}
       </ul>
       <p className="border-t border-[var(--color-border-default)] pt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        {data.via === "call-graph" ? "call graph" : "import graph"} · no report
-        needed
-        {count > shown
-          ? ` · listing ${shown} of ${count}, cut alphabetically`
-          : ""}
+        {TIER_LABEL[data.via ?? "call-graph"]} · no report needed
+        {count > shown ? ` · listing ${shown} of ${count}` : ""}
       </p>
     </div>
   );
@@ -126,6 +138,13 @@ function Heading({ children }: { children: React.ReactNode }) {
   );
 }
 
+const TIER_LABEL: Record<ReachedVia, string> = {
+  "call-graph": "call graph",
+  "import-graph": "import graph",
+  "indirect-import": "indirect import",
+  "mocked-only": "only tests that replace it",
+};
+
 /**
  * Names the claim rather than the tier. "Reached via call-graph" is our word for
  * it; "runs into this file" is what it means to the person reading.
@@ -133,6 +152,12 @@ function Heading({ children }: { children: React.ReactNode }) {
 function viaSentence(via: ReachedVia | null): string {
   if (via === "import-graph") {
     return "import this file. Nothing calls into it, so they load it without necessarily running any of it.";
+  }
+  if (via === "mocked-only") {
+    return "reach this file only to replace it with a double, so none of them runs its code.";
+  }
+  if (via === "indirect-import") {
+    return "import a file that imports this one: a test helper, a package entry file, or a longer import chain. None imports or calls it directly, so they load it without necessarily running any of it.";
   }
   return "run into this file: their calls reach code defined here, within three hops.";
 }

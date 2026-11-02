@@ -11,7 +11,8 @@ import time
 
 import pytest
 
-from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateLimiter
+from repowise.core.providers.llm.registry import PROVIDER_DEFAULTS
+from repowise.core.rate_limiter import RateLimitConfig, RateLimiter
 
 
 class TestRateLimitConfig:

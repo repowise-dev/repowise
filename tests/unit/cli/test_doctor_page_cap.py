@@ -113,7 +113,7 @@ async def _build_repo(tmp_path: Path) -> Path:
     fts = FullTextSearch(engine)
     await fts.ensure_index()
     await fts.index_many(
-        [(r["id"], r["title"], r["content"], "", r["target_path"]) for r in rows]
+        [(r["id"], r["title"], r["content"], "", r["target_path"], "") for r in rows]
     )
     await engine.dispose()
     return repo_path

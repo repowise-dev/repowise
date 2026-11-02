@@ -98,12 +98,10 @@ def test_every_provider_that_can_be_auto_detected_is_in_the_order():
     )
 
 
-# --- the copies that survive elsewhere -------------------------------------
+# --- the catalogs derived from the specs ------------------------------------
 #
-# Two catalogs still list env vars of their own because they carry display
-# metadata this table has no business holding (labels, model lists, signup
-# URLs, CLI sentinels). They are pinned to the registry here rather than left
-# to drift: a mismatch fails, and moving one into the registry is a deletion.
+# The server catalog and the init picker build their tables from the provider
+# specs. These pin the derivation, so a hand-written copy cannot creep back.
 
 
 def test_server_provider_catalog_agrees_with_the_registry():

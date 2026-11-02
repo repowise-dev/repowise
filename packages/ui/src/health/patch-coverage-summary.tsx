@@ -222,11 +222,19 @@ function gapText(file: PatchCoverageFile): string {
   return parts.join(" · ");
 }
 
-/** Not-in-report files before those without line data, then by risk: the core's order. */
+/** How an unmeasured file reads, in the core's order (`attention_rows`). */
+const UNMEASURED_TEXT: Partial<Record<PatchCoverageFile["status"], string>> = {
+  not_in_report: "not in report",
+  stale_file: "changed since measured",
+  no_line_data: "no line data",
+};
+const UNMEASURED_ORDER = Object.keys(UNMEASURED_TEXT);
+
+/** Not-in-report files, then stale ones, then those without line data, then by risk. */
 function unmeasuredFiles(files: PatchCoverageFile[]): PatchCoverageFile[] {
-  const rank = (f: PatchCoverageFile) => Number(f.status !== "not_in_report");
+  const rank = (f: PatchCoverageFile) => UNMEASURED_ORDER.indexOf(f.status);
   return files
-    .filter((f) => f.status === "not_in_report" || f.status === "no_line_data")
+    .filter((f) => rank(f) >= 0)
     .sort((a, b) => rank(a) - rank(b) || byRisk(a, b));
 }
 
@@ -505,7 +513,7 @@ function UnmeasuredList({
           <FileRow
             key={f.file_path}
             file={f}
-            trailing={f.status === "not_in_report" ? "not in report" : "no line data"}
+            trailing={UNMEASURED_TEXT[f.status] ?? ""}
             onOpenFile={onOpenFile}
           />
         ))}

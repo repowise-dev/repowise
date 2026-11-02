@@ -6,6 +6,7 @@ from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
 )
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 from tests.unit.dead_code._helpers import _build_graph
 
 
@@ -176,74 +177,9 @@ def test_pascal_unused_export_is_not_blanket_capped():
         if f.kind == DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "TConsoleBuffer"
     ]
     assert pascal_findings, "expected a finding for TConsoleBuffer"
-    assert any(f.confidence >= 0.7 and f.safe_to_delete for f in pascal_findings), (
-        "a genuinely-unused Pascal symbol with no risk factors should still be able to "
-        f"reach safe-to-delete confidence, got {[(f.confidence, f.safe_to_delete) for f in pascal_findings]}"
-    )
-
-
-def test_pascal_uses_clause_rescues_every_public_symbol_in_the_unit():
-    """A ``uses UnitA;`` clause exposes UnitA's entire public interface
-    section, unlike Python/JS's name-scoped ``from x import y`` -- Pascal
-    has no per-symbol import syntax. ``parser.py`` emits
-    ``imported_names=["*"]`` for every Pascal import edge for exactly this
-    reason, which should rescue every public symbol in a unit that's
-    named in another file's ``uses`` clause, not just capped confidence.
-    """
-    g = _build_graph(
-        nodes={
-            "src/uConsole.pas": {
-                "is_entry_point": False,
-                "is_test": False,
-                "is_api_contract": False,
-                "symbol_count": 1,
-                "symbols": [
-                    {
-                        "name": "TConsoleBuffer",
-                        "kind": "class",
-                        "visibility": "public",
-                        "decorators": [],
-                        "start_line": 1,
-                        "end_line": 20,
-                        "complexity_estimate": 1,
-                        "language": "pascal",
-                    },
-                ],
-            },
-            "src/uMain.pas": {
-                "is_entry_point": False,
-                "is_test": False,
-                "is_api_contract": False,
-                "symbol_count": 0,
-                "symbols": [],
-            },
-        },
-        # uMain.pas has `uses uConsole;` -- Pascal's parser.py emits this
-        # as a wildcard import (no per-symbol names in the uses syntax).
-        edges=[
-            (
-                "src/uMain.pas",
-                "src/uConsole.pas",
-                {"edge_type": "imports", "imported_names": ["*"]},
-            )
-        ],
-    )
-    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
-    report = analyzer.analyze(
-        {
-            "detect_unreachable_files": False,
-            "detect_zombie_packages": False,
-            "min_confidence": 0.0,
-        }
-    )
-    pascal_findings = [
-        f
-        for f in report.findings
-        if f.kind == DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "TConsoleBuffer"
-    ]
-    assert not pascal_findings, (
-        "TConsoleBuffer should be rescued entirely by the uses-clause wildcard import, "
-        f"got {pascal_findings}"
+    assert any(f.confidence > RISK_CAP_CONFIDENCE for f in pascal_findings), (
+        "a genuinely-unused Pascal symbol with no risk factors should not be capped "
+        f"to the review tier, got {[(f.confidence, f.safe_to_delete) for f in pascal_findings]}"
     )
 
 
@@ -291,6 +227,5 @@ def test_release_in_non_com_language_not_clamped():
     com_findings = [f for f in report.findings if f.symbol_name == "Release"]
     for f in com_findings:
         # If it surfaces at all, it must do so under the *normal*
-        # rule — not under the COM clamp specifically. The normal
-        # rule yields 0.7 / 1.0 depending on file-level importers.
-        assert f.confidence >= 0.7 or f.confidence < 0.4
+        # rule, not under the COM clamp, which would cap it to the review tier.
+        assert f.confidence > RISK_CAP_CONFIDENCE

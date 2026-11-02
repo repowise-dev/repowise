@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...repo_config import health_rules_fingerprint
 from ..change_contracts import (
     ContractImpact,
     analyze_contract_impact,
@@ -176,9 +177,7 @@ class ChangeReviewService:
             lanes["health"] = LaneState("unsupported", "the caller skipped this lane")
             return None
         else:
-            service = self.delta_service or ChangeHealthDeltaService(
-                self.source, repo_path=self.repo_path
-            )
+            service = self.delta_service or self._default_delta_service()
             delta = service.compare(
                 DeltaRequest(
                     repo_path=self.repo_path or "",
@@ -194,6 +193,12 @@ class ChangeReviewService:
             None if delta.status == "available" else delta.explanation,
         )
         return delta
+
+    def _default_delta_service(self) -> ChangeHealthDeltaService:
+        fingerprint = health_rules_fingerprint(self.repo_path) if self.repo_path else ""
+        return ChangeHealthDeltaService(
+            self.source, repo_path=self.repo_path, rules_fingerprint=fingerprint
+        )
 
     def _risk(
         self,
@@ -271,9 +276,7 @@ class ChangeReviewService:
             base_parsed=inputs.base_parsed,
             head_parsed=inputs.head_parsed,
             changed_set={e.path for e in manifest if e.head_path},
-            added_ranges_by_file={
-                e.path: list(e.added_ranges) for e in manifest if e.added_ranges
-            },
+            added_ranges_by_file={e.path: list(e.added_ranges) for e in manifest if e.added_ranges},
             base_is_snapshot=inputs.base_is_snapshot,
         )
         lanes["contracts"] = LaneState(
@@ -298,9 +301,7 @@ class ChangeReviewService:
         )
         return evidence.tests
 
-    def _independent(
-        self, evidence: ChangeReviewEvidence, lanes: dict[str, LaneState]
-    ) -> Any:
+    def _independent(self, evidence: ChangeReviewEvidence, lanes: dict[str, LaneState]) -> Any:
         if evidence.independent is None or "independent_changes" in evidence.skip:
             lanes["independent_changes"] = LaneState("unsupported", _NO_SOURCE)
             return None
@@ -308,9 +309,7 @@ class ChangeReviewService:
         # ``None`` here means one change, not a missing answer: the lane ran.
         return partition_independent_changes(evidence.independent)
 
-    def _branch_overlap(
-        self, evidence: ChangeReviewEvidence, lanes: dict[str, LaneState]
-    ) -> Any:
+    def _branch_overlap(self, evidence: ChangeReviewEvidence, lanes: dict[str, LaneState]) -> Any:
         if "branch_overlap" in evidence.skip:
             lanes["branch_overlap"] = LaneState("unsupported", "the caller skipped this lane")
             return None
@@ -354,9 +353,7 @@ def _head_id(pair: RevisionPair) -> RevisionId:
     )
 
 
-def _covering_tests(
-    tests: Mapping[str, Any] | None, state: EvidenceState
-) -> CoveringTestEvidence:
+def _covering_tests(tests: Mapping[str, Any] | None, state: EvidenceState) -> CoveringTestEvidence:
     """The test lane's contribution to the directive, in the directive's terms."""
     if tests is None:
         return CoveringTestEvidence()

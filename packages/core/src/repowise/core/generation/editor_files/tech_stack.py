@@ -11,9 +11,10 @@ from collections.abc import Callable, Container, Iterator
 from itertools import chain
 from pathlib import Path
 
+from repowise.core.repo_formatters import declares_ruff_format
+
 from ...ingestion.composer import COMPOSER_JSON, read_composer
 from ...ingestion.framework_facts import detect_php_framework
-from ...precedent.structural import declares_ruff_format
 from .data import TechStackItem
 
 # package.json dependency -> (display name, category).
@@ -22,6 +23,7 @@ _NODE_FRAMEWORKS: dict[str, tuple[str, str]] = {
     "react": ("React", "framework"),
     "vue": ("Vue.js", "framework"),
     "svelte": ("Svelte", "framework"),
+    "astro": ("Astro", "framework"),
     "@angular/core": ("Angular", "framework"),
     "express": ("Express", "framework"),
     "fastify": ("Fastify", "framework"),

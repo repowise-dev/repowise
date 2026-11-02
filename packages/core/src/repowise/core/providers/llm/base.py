@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -40,6 +41,7 @@ ModelOptionSource = Literal["api", "local", "fallback"]
 _FIXED_TEMPERATURE_PREFIXES = (
     # OpenAI reasoning era
     "gpt-5",
+    "gpt-6",
     "o1",
     "o3",
     "o4",
@@ -48,6 +50,7 @@ _FIXED_TEMPERATURE_PREFIXES = (
     "claude-opus-4-8",
     "claude-opus-5",
     "claude-sonnet-5",
+    "claude-haiku-5",
     "claude-fable-5",
     "claude-mythos-5",
 )
@@ -219,6 +222,13 @@ class GeneratedResponse:
         return self.input_tokens + self.output_tokens
 
 
+#: Window a local model is run with when nothing names one. On qwen3.5:4b a
+#: 16k window held 3.5 GB against 4.1 GB at 32k and 5.0 GB at 64k, and a page
+#: prompt cut to fit it still read as a whole page; on a CPU, prompt
+#: evaluation time grows with every token kept.
+LOCAL_CONTEXT_WINDOW = 16_384
+
+
 class BaseProvider(ABC):
     """Abstract base class that all LLM providers must implement.
 
@@ -245,6 +255,21 @@ class BaseProvider(ABC):
     # timeout every MCP client imposes, so the extra headroom costs nothing but
     # a longer wait on calls that were going to fail regardless.
     interactive_timeout_s: float = 60.0
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> BaseProvider:
+        # Every provider is known to ``close_provider_clients``, so one that
+        # gains a client later is closed without having to remember to register.
+        provider = super().__new__(cls)
+        _LIVE_PROVIDERS.add(provider)
+        return provider
+
+    async def aclose(self) -> None:  # noqa: B027 - an optional hook, not an abstract one
+        """Release what this provider holds on the running event loop.
+
+        A no-op for a provider with nothing loop-bound. One that owns a client
+        closes or drops it and stays usable: the next call builds a new one
+        (see ``SdkClientOwner``).
+        """
 
     @abstractmethod
     async def generate(
@@ -315,6 +340,15 @@ class BaseProvider(ABC):
 
         return ("auto",)
 
+    def context_window(self) -> int | None:
+        """Tokens (prompt plus answer) this model runs with; None means no practical limit.
+
+        Hosted models take far more than any page prompt, so the default is
+        None and page material keeps its full budgets. A local model reports
+        its window, and page material shrinks to fit it.
+        """
+        return None
+
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         """Return model options available for interactive provider setup."""
 
@@ -327,6 +361,52 @@ class BaseProvider(ABC):
                 source="fallback",
             ),
         )
+
+
+# Every live provider. Weak, so a dropped provider is not kept alive to be closed.
+_LIVE_PROVIDERS: weakref.WeakSet[BaseProvider] = weakref.WeakSet()
+
+
+class SdkClientOwner:
+    """Mixin for a provider whose ``_client`` is an ``AsyncAnthropic`` / ``AsyncOpenAI``.
+
+    The SDK client pools connections on the event loop that opened them. The
+    CLI runs one provider through several ``asyncio.run`` calls, and a
+    connection left pooled when its loop closes can no longer be closed: the
+    SDK's ``__del__`` then schedules ``aclose()`` on whichever loop is running
+    and Python prints ``Task exception was never retrieved ... Event loop is
+    closed`` (issue #2946). Closing once after the last step is too late for
+    the same reason, so ``aclose`` runs at the end of every loop
+    (``close_provider_clients``) and leaves a fresh client for the next one.
+    """
+
+    _client: Any
+    _client_factory: Callable[[], Any]
+    _owned_client: Any
+
+    def _open_client(self, factory: Callable[[], Any]) -> None:
+        self._client_factory = factory
+        self._client = self._owned_client = factory()
+
+    async def aclose(self) -> None:
+        owned = self._owned_client
+        fresh = self._client_factory()
+        # A client somebody put there in our place (a test double) is theirs.
+        if self._client is owned:
+            self._client = fresh
+        self._owned_client = fresh
+        await owned.close()
+
+
+async def close_provider_clients() -> None:
+    """Have every live provider release what it holds on the running event loop.
+
+    Called as an ``asyncio.run`` ends. A cleanup step must not turn a finished
+    command into a failed one, so a client that will not close is skipped.
+    """
+    for provider in list(_LIVE_PROVIDERS):
+        with contextlib.suppress(Exception):
+            await provider.aclose()
 
 
 class ProviderError(Exception):
@@ -575,17 +655,24 @@ class ChatStreamEvent:
     - ``text_delta``: incremental text token(s) in ``text``
     - ``tool_start``: a completed tool call block in ``tool_call``
     - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
-    - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
+    - ``usage``: the call's token counts in ``input_tokens`` / ``output_tokens``.
+      At most one per ``stream_chat`` call, after ``stop``, and only when the
+      SDK reported usage; no ``usage`` event means the counts are unknown.
     - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
+    - ``assistant_content``: the turn's provider-native blocks in ``content_blocks``,
+      after ``stop``. The caller stores them on the assistant message as
+      ``provider_content`` so the same provider can replay the turn verbatim
+      (Anthropic thinking blocks must accompany their tool results).
     """
 
-    type: str  # text_delta | tool_start | tool_result | usage | stop
+    type: str  # text_delta | tool_start | tool_result | usage | stop | assistant_content
     text: str | None = None
     tool_call: ChatToolCall | None = None
     tool_result_data: dict[str, Any] | None = None  # populated for tool_result events
     stop_reason: str | None = None  # end_turn | tool_use | max_tokens
     input_tokens: int = 0
     output_tokens: int = 0
+    content_blocks: list[dict[str, Any]] | None = None  # populated for assistant_content
 
 
 ToolExecutor = (

@@ -211,12 +211,10 @@ async def test_rollup_prompt_names_every_package_and_page_lists_them(sample_conf
         packages=[{"path": f"packages/{n}", "files": 1} for n in ("alpha", "bravo", "charlie")],
     )
     prompt = provider._calls[-1]["user_prompt"]
-    assert (
-        "covers 3 sibling packages: `packages/alpha`, `packages/bravo`, `packages/charlie`"
-        in prompt
-    )
+    assert "several sibling packages" in prompt
     assert "## Packages" in page.content
     for n in ("alpha", "bravo", "charlie"):
+        assert f'"packages/{n}"' in prompt
         assert f"| `packages/{n}` | 1 |" in page.content
 
 

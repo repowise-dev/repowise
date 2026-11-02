@@ -95,6 +95,10 @@ class LanguageRegistry:
         """Return ``{ext: tag}`` for all registered extensions."""
         return dict(self._ext_map)
 
+    def all_name_suffixes(self) -> dict[str, str]:
+        """Return ``{lowercase name ending: tag}`` for multi-dot endings."""
+        return {sfx: s.tag for s in self._specs.values() for sfx in s.name_suffixes}
+
     def all_special_filenames(self) -> dict[str, str]:
         """Return ``{filename: tag}`` for all special filenames."""
         return dict(self._filename_map)
@@ -208,6 +212,10 @@ class LanguageRegistry:
             for f in s.manifest_files
             if f not in s.build_config_manifests
         )
+
+    def package_manifest_globs(self) -> frozenset[str]:
+        """Glob patterns that mark their directory as a package root (``*.csproj``)."""
+        return frozenset(g for s in self._specs.values() for g in s.manifest_globs)
 
     def blocked_dirs(self) -> frozenset[str]:
         """Return the union of all per-language blocked directories."""

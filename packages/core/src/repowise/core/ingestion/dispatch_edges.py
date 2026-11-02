@@ -29,6 +29,7 @@ from collections import defaultdict
 import structlog
 
 from .heritage_resolver import heritage_ancestors
+from .symbol_identity import id_segment_name, symbol_id_arity
 
 log = structlog.get_logger(__name__)
 
@@ -39,7 +40,7 @@ log = structlog.get_logger(__name__)
 # class-scoped boilerplate macro is extracted as a method every subtype
 # "overrides".
 DISPATCH_LANGUAGES: frozenset[str] = frozenset(
-    {"java", "csharp", "kotlin", "swift", "python"}
+    {"java", "csharp", "kotlin", "swift", "python", "pascal"}
 )
 
 _HERITAGE_EDGE_TYPES = frozenset({"extends", "implements"})
@@ -71,7 +72,7 @@ _CONSTRUCTOR_NAMES = frozenset({"__init__", "__new__", "constructor"})
 # `_name` / `private` are conventions the runtime does not enforce. Found by
 # the C# precision audit, where four of six wrong edges were a `private` test
 # helper that happened to share a name with a `virtual` base.
-_PRIVATE_IS_NOT_DISPATCHED = frozenset({"java", "csharp", "kotlin", "swift", "cpp"})
+_PRIVATE_IS_NOT_DISPATCHED = frozenset({"java", "csharp", "kotlin", "swift", "cpp", "pascal"})
 
 
 def _methods_by_name(graph, type_id: str) -> dict[str, list[str]]:
@@ -99,7 +100,18 @@ def _methods_by_name(graph, type_id: str) -> dict[str, list[str]]:
 
 
 def _is_constructor(name: str, type_id: str) -> bool:
-    return name in _CONSTRUCTOR_NAMES or name == type_id.rpartition("::")[2]
+    return name in _CONSTRUCTOR_NAMES or name == id_segment_name(type_id.rpartition("::")[2])
+
+
+def _same_overload(base: str, impl: str) -> bool:
+    """False only when both are overload members of different arities.
+
+    Parameter types are not compared: a generic base's ``T`` erases apart from
+    the ``String`` its implementation writes.
+    """
+    base_arity = symbol_id_arity(base)
+    impl_arity = symbol_id_arity(impl)
+    return base_arity is None or impl_arity is None or base_arity == impl_arity
 
 
 def resolve_override_dispatch(
@@ -149,7 +161,9 @@ def resolve_override_dispatch(
                 if impls is None or _is_constructor(name, ancestor):
                     continue
                 for base in bases:
-                    candidates[base].update(impl for impl in impls if impl != base)
+                    candidates[base].update(
+                        impl for impl in impls if impl != base and _same_overload(base, impl)
+                    )
 
     added = 0
     refused = 0

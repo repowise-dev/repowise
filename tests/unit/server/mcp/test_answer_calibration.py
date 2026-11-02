@@ -309,7 +309,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool, symbol: dict
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Auth service summary."
+            h["summary"] = "Auth service summary. Callers get a bounded, limited list."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:
@@ -462,6 +462,72 @@ async def test_mechanism_question_skips_fast_path(setup_mcp, monkeypatch):
 
     result = await get_answer("How does MIN_COUNT influence the retry loop?")
     assert "grounding" not in result
+
+
+def _value_hits(name: str, signature: str) -> list[dict]:
+    sym = {"name": name, "kind": "constant", "signature": signature, "start_line": 7}
+    return [{"target_path": "pkg/models.py", "symbols": [dict(sym, _matched=True)]}]
+
+
+class TestValueExtractionRelevance:
+    """A constant that only contains a question identifier is not the answer."""
+
+    def _extract(self, question: str, name: str, signature: str):
+        from repowise.server.mcp_server.tool_answer.symbols import (
+            _extract_question_identifiers,
+            _extract_value_answer,
+        )
+
+        ids = _extract_question_identifiers(question)
+        return _extract_value_answer(_value_hits(name, signature), ids, question)
+
+    def test_exact_name_is_extracted(self) -> None:
+        out = self._extract(
+            "What is the default of _DOMINANCE_RATIO?", "_DOMINANCE_RATIO", "_DOMINANCE_RATIO = 1.2"
+        )
+        assert out is not None and out["exact_name"]
+
+    def test_identifier_inside_an_unrelated_name_is_not_extracted(self) -> None:
+        # `Symbol` sits inside `SymbolKind`; nothing in the question asks about a kind.
+        question = (
+            "How are has_method edges built from Symbol.parent_name; how does a "
+            "method's parent_name map to its class (e.g. enum constant parent 'E::A')?"
+        )
+        assert self._extract(question, "SymbolKind", "SymbolKind = Literal[") is None
+
+    def test_alias_of_the_named_function_is_not_extracted(self) -> None:
+        question = "What is the timeout for the FTS search leg in get_answer retrieval?"
+        assert (
+            self._extract(question, "_get_answer_raw", "_get_answer_raw = get_answer") is None
+        )
+
+    def test_name_the_question_spells_out_is_extracted_but_not_exact(self) -> None:
+        out = self._extract(
+            "What is the DEFAULT_TIMEOUT config value?",
+            "DEFAULT_TIMEOUT_CONFIG",
+            "DEFAULT_TIMEOUT_CONFIG = Timeout(timeout=5.0)",
+        )
+        assert out is not None and not out.get("exact_name")
+
+    def test_short_name_part_must_appear_in_the_question(self) -> None:
+        # The stemmer drops parts under 3 chars, so `V2` is checked as a token.
+        assert self._extract("What is the MAX limit?", "MAX_V2", "MAX_V2 = 8") is None
+        out = self._extract("What is the MAX v2 limit?", "MAX_V2", "MAX_V2 = 8")
+        assert out is not None and not out.get("exact_name")
+
+
+@pytest.mark.asyncio
+async def test_spelled_out_value_is_medium_not_high(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    symbol = dict(_SYMBOL, name="MIN_COUNT_FLOOR", signature="MIN_COUNT_FLOOR = 2")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=symbol)
+
+    result = await get_answer("What is the floor value of MIN_COUNT?")
+    assert result["grounding"] == "extracted"
+    assert result["confidence"] == "medium"
+    assert "no verification Read needed" not in result["note"]
 
 
 @pytest.mark.asyncio
@@ -1353,3 +1419,72 @@ class TestPageExcerptEnrichment:
         missing = await _attach_page_excerpts(hits, ctx)
         assert hits[0].get("excerpt", "").startswith("# Test Repo")
         assert missing == 0
+
+
+def test_an_answer_admitting_a_gap_is_held_at_medium() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import (
+        _admitted_gap,
+        _admitted_gap_gate,
+        _GradeState,
+    )
+
+    text = "Pages are rendered from `regenerate_paths`. The code that builds it is not included."
+    assert _admitted_gap(text) == "The code that builds it is not included."
+    state = _GradeState(
+        question="how are pages picked", question_ids=set(), answer_text=text, hits=[],
+        citations=[], symbol_bodies=[], served_named_body=False, dominant=True,
+        earn_high=False, uncovered=None, confidence="high",
+    )
+    _admitted_gap_gate(state)
+    assert state.confidence == "medium"
+    assert _admitted_gap("Every page is rendered from the changed paths.") is None
+
+
+def test_a_statement_about_the_code_is_not_an_admitted_gap() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _admitted_gap
+
+    # "not included in the" is a hedge marker, so the preposition case uses "by".
+    assert _admitted_gap("The header is not included by the signer.") is None
+    assert _admitted_gap("The builder isn't shown, but the renderer is.") is not None
+
+
+def test_an_excerpt_that_stops_short_is_an_admitted_gap() -> None:
+    """The answer says the code it describes was cut from what it was shown."""
+    from repowise.server.mcp_server.tool_answer.confidence import _admitted_gap
+
+    for text in (
+        "The body of `SilenceErrors` is not fully visible in the provided excerpts.",
+        "The checks inside `ExecuteC` are truncated in the retrieved excerpts.",
+        "The exact body of `_weakness` is truncated in the excerpt.",
+    ):
+        assert _admitted_gap(text) == text
+    assert _admitted_gap("The checks are truncated in the excerpts for command.go.") is not None
+    # Code that truncates is behaviour, not a gap in the evidence.
+    for text in (
+        "Long summaries are truncated in the payload builder.",
+        "Long lines are truncated in the excerpt builder.",
+        "Values are truncated in the provided_options map.",
+    ):
+        assert _admitted_gap(text) is None
+
+
+async def test_the_payload_quotes_the_admitted_gap() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _Grade
+    from repowise.server.mcp_server.tool_answer.payload import _graded_payload
+
+    gap = "The code that builds regenerate_paths is not included."
+    grade = _Grade(
+        confidence="medium", hedged=False, ratio=1.5, top_score=3.0, second_score=2.0,
+        high_reason=None, ungrounded_values=[], uncovered=[], frame_unsupported=[],
+        exclusivity_over_truncated=False, withheld_implicated=[], lookup_body_truncated=False,
+        named_body_cut=None, admitted_gap=gap,
+    )
+    payload = await _graded_payload(
+        question="how are pages picked", answer_text=f"Pages render. {gap}",
+        citations=["src/render.py"], grade=grade, retrieval_quality="dominant", hits=[],
+        fallback_targets=["src/select.py"], symbol_bodies=[], quotes=[], ctx=None,
+        repository=None, exclude_spec=None,
+    )
+    assert payload["confidence"] == "medium"
+    assert gap in payload["note"]
+    assert "src/select.py" in payload["note"]

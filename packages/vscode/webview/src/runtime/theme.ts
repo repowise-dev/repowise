@@ -7,7 +7,8 @@
  * (the next-themes shim, canvas renderers).
  *
  * The two high-contrast kinds additionally stamp an `hc` class, which
- * `theme-bridge.css` uses to widen borders and lift tertiary text. Contrast is
+ * `theme-bridge.css` uses to widen borders and lift tertiary text. The
+ * `native` class (preference "auto") switches neutrals to --vscode-* values. Contrast is
  * read from the editor even when the light/dark preference is pinned: a user on
  * a high-contrast theme needs the contrast whichever ramp they chose.
  */
@@ -43,6 +44,8 @@ function apply(kind: ThemeKind): void {
   const root = document.documentElement;
   root.classList.toggle("dark", kind === "dark");
   root.classList.toggle("hc", computeHighContrast());
+  // Native editor neutrals apply only while following the editor theme.
+  root.classList.toggle("native", preference === "auto");
   if (kind === current) return;
   current = kind;
   for (const cb of subscribers) cb(kind);
@@ -86,6 +89,8 @@ export function getThemeKind(): ThemeKind {
  */
 export function setThemeOverride(kind: ThemeKind): void {
   apply(kind);
+  // The override is a Repowise-palette scheme; native neutrals would clash with it.
+  document.documentElement.classList.remove("native");
 }
 
 export function subscribeTheme(cb: (kind: ThemeKind) => void): () => void {

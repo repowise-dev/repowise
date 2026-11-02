@@ -18,6 +18,10 @@ import pytest
 
 from repowise.cli.commands.update_cmd import command as upd_cmd
 from repowise.cli.helpers import save_state, write_update_pending
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -64,7 +68,15 @@ def _indexed_repo(tmp_path: Path) -> tuple[Path, str]:
     asyncio.run(index_repo_full(repo))
     # index_repo_full does not persist state.json in the test harness; record
     # the sync/docs pointers at HEAD so the update resolves to "already current".
-    save_state(repo, {"last_sync_commit": c2, "last_docs_commit": c2, "docs_enabled": False})
+    save_state(
+        repo,
+        {
+            "last_sync_commit": c2,
+            "last_docs_commit": c2,
+            "docs_enabled": False,
+            **CURRENT_GIT_HISTORY,
+        },
+    )
     return repo, c2
 
 

@@ -47,7 +47,8 @@ class _TopicEmbedder:
 
     dimensions = 4
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         out: list[list[float]] = []
         for t in texts:
             tl = t.lower()

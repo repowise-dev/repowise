@@ -15,6 +15,9 @@ export interface FileWikiPageRef {
   freshness_status: string;
   confidence: number;
   human_notes: string | null;
+  /** Hand-requested doc: regenerated on every reindex so it keeps
+      following the code (issue #812). */
+  pinned: boolean;
   updated_at: string | null;
 }
 
@@ -36,6 +39,12 @@ export interface FileHealthFinding {
    * `defect` when an older payload omits it.
    */
   dimension?: HealthDimension;
+  /** `"unverified"` for a provisional finding type; null for a validated one. */
+  verification?: string | null;
+  lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface FileHealthMetric {
@@ -104,10 +113,15 @@ export interface FileDetailHealth {
   signals: FileSignals | null;
 }
 
+/** Agent share (0-1) of the file's commits with a known source, null below
+ * the coverage floor with `agent_share_suppressed` set; coverage is known /
+ * all commits (0-1). Unknown commits are never counted as human. */
 export interface FileAgentProvenance {
   agent_commit_count: number;
   agent_authored_pct: number | null;
   tier_counts: Record<string, number>;
+  attribution_coverage: number | null;
+  agent_share_suppressed: string | null;
 }
 
 /** Hotspot row + history extras the detail endpoint joins in. */
@@ -115,8 +129,12 @@ export interface FileDetailGit extends Hotspot {
   significant_commits: SignificantCommit[];
   top_authors: FileAuthor[];
   co_change_partners: CoChangePartner[];
-  agent: FileAgentProvenance;
+  /** Null when attribution is off for the repository. */
+  agent: FileAgentProvenance | null;
   first_commit_at: string | null;
+  /** The primary (blame) owner's share of current lines, 0-1. Null without
+   *  blame; `primary_owner_commit_pct` is the same person's share of commits. */
+  primary_owner_line_pct?: number | null;
   /** `symbol_id` -> counted fixes that landed in it, over the same window as
    *  `prior_defect_count`. Approximate: symbol spans are current-tree while
    *  each fix's line ranges are numbered on its own parent commit. A symbol
@@ -141,6 +159,13 @@ export interface FileDetailCoverage {
   source_format: string;
   ingested_at: string | null;
   ingested_commit_sha: string | null;
+  /**
+   * Whether `covered_lines` still lines up with the file on disk: `stale` when
+   * git shows the file changed since `ingested_commit_sha`, `unknown` when it
+   * cannot tell. Only `stale` withholds the line tint. Optional so older
+   * payloads parse.
+   */
+  freshness?: "current" | "stale" | "unknown";
 }
 
 export interface FileGraphNeighbor {

@@ -1,64 +1,77 @@
 "use client";
 
 import { memo } from "react";
-import { UserRound } from "lucide-react";
 import { cn } from "../lib/cn";
-import { BrandMark } from "../shared/brand-mark";
 import { ToolCallGroup } from "./tool-call-group";
 import { WorkingOrb } from "./working-orb";
 import { MessageActions } from "./message-actions";
+import { CHAT_STAGES, chatStage } from "./chat-stage";
 import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
+import { EvidenceCardList, cardRefHref } from "../cards/evidence-card";
+import { ViewPartList } from "./view-part";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
+
+/** Copy for figures the numeric check could not find in the turn's tool results. */
+export interface UnverifiedFigureCopy {
+  /** Tooltip and screen-reader text on each flagged figure. */
+  flag: string;
+  /** One line under an answer that has flagged figures. */
+  note: string;
+}
+
+export const DEFAULT_UNVERIFIED_FIGURE_COPY: UnverifiedFigureCopy = {
+  flag: "Not found in this turn's tool results",
+  note: "Figures with a dotted underline were not found in this turn's tool results.",
+};
 
 interface ChatMessageProps {
   message: ChatUIMessage;
   repoId: string;
   onViewArtifact?: (artifact: ChatArtifact) => void;
-  /** Optional avatar src for the assistant. Defaults to `/repowise-logo.png`. */
-  assistantAvatarSrc?: string;
   /** Forwarded to `SourceCitations` so consumers can customise the link path. */
   buildCitationHref?: (source: SourceReference) => string;
   /** Forwarded to `SourceCitations` for route-agnostic link generation. */
   linkPrefix?: string;
   density?: "page" | "dock";
-  /** Optional host identity image for user turns. */
-  userAvatarSrc?: string;
   /** True when this response uses a different model from the prior answer. */
   modelChanged?: boolean;
+  /** The newest answer keeps its actions visible without hover. */
+  isLatest?: boolean;
+  /** Why this turn failed, shown inline with Retry. */
+  error?: string | null;
   onRetry?: (message: ChatUIMessage) => void | Promise<void>;
   onEditAndResend?: (message: ChatUIMessage, text: string) => void | Promise<void>;
-  onFollowUp?: (text: string) => void;
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
 }
 
 /**
- * One turn of the transcript.
- *
- * The user's turn used to be a solid accent bubble with an accent avatar disc —
- * the highest-contrast object on the page, spent on the one element that is
- * purely a record of what you already typed. The accent belongs to things that
- * respond. A question now reads as the heading it functionally is, and the
- * answer below it gets the page.
+ * One turn of the transcript, with no labels or avatars: the user's turn is a
+ * quiet right-aligned bubble and the answer is plain prose on the page.
  *
  * Memoised: without it every SSE token re-renders the whole list, which means
- * react-markdown re-parses every prior reply on every frame of a stream. The
- * cost is invisible in the JSX and scales with transcript length.
+ * react-markdown re-parses every prior reply on every frame of a stream.
  */
 function ChatMessageImpl({
   message,
   repoId,
   onViewArtifact,
-  assistantAvatarSrc = "/repowise-logo.png",
   buildCitationHref,
   linkPrefix,
   density = "page",
-  userAvatarSrc,
   modelChanged = false,
+  isLatest = false,
+  error,
   onRetry,
   onEditAndResend,
-  onFollowUp,
+  unverifiedFigureCopy = DEFAULT_UNVERIFIED_FIGURE_COPY,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
+  const dock = density === "dock";
+  const stage = isUser ? null : chatStage(message);
+  const flagged = !message.isStreaming && message.unverifiedFigures?.length
+    ? message.unverifiedFigures
+    : undefined;
 
   if (isUser) {
     return (
@@ -67,31 +80,21 @@ function ChatMessageImpl({
         data-chat-message-id={message.id}
         data-chat-role="user"
         data-chat-density={density}
-        className="flex min-w-0 justify-end gap-2.5"
+        className="group/turn flex min-w-0 flex-col items-end"
       >
-        <div className={cn("min-w-0", density === "dock" ? "max-w-[88%]" : "max-w-[78%]") }>
-          <p className="mb-1 text-right font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            You
-          </p>
-          <p
-            className={cn(
-              "[overflow-wrap:anywhere] rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)]",
-              density === "dock"
-                ? "px-3 py-2 text-[15px] leading-relaxed"
-                : "px-3.5 py-2.5 text-base leading-relaxed",
-            )}
-          >
-            {message.text}
-          </p>
-          <MessageActions message={message} {...(onEditAndResend ? { onEditAndResend: (text) => onEditAndResend(message, text) } : {})} />
-        </div>
-        <div className="mt-5 flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)]">
-          {userAvatarSrc ? (
-            <img src={userAvatarSrc} alt="" className="h-full w-full object-cover" />
-          ) : (
-            <UserRound aria-hidden className="h-3.5 w-3.5" />
+        <p
+          className={cn(
+            "max-w-[85%] whitespace-pre-wrap rounded-2xl bg-[var(--color-bg-elevated)] px-4 py-2.5 leading-relaxed text-[var(--color-text-primary)] [overflow-wrap:anywhere]",
+            dock ? "text-sm" : "text-base",
           )}
-        </div>
+        >
+          {message.text}
+        </p>
+        <MessageActions
+          message={message}
+          align="end"
+          {...(onEditAndResend ? { onEditAndResend: (text) => onEditAndResend(message, text) } : {})}
+        />
       </article>
     );
   }
@@ -102,66 +105,90 @@ function ChatMessageImpl({
       data-chat-message-id={message.id}
       data-chat-role="assistant"
       data-chat-density={density}
-      className={cn("flex min-w-0", density === "dock" ? "gap-2.5" : "gap-3.5")}
+      className="group/turn min-w-0"
     >
-      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center">
-        <BrandMark darkSrc={assistantAvatarSrc} size={22} />
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          Repowise
+      {modelChanged && (message.provider || message.model) && (
+        <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+          Model changed to {[message.provider, message.model].filter(Boolean).join(" · ")}
         </p>
-        {(message.provider || message.model) && (
-          <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">
-            {modelChanged ? "Model changed to " : ""}
-            {[message.provider, message.model].filter(Boolean).join(" · ")}
-          </p>
-        )}
-        <div className={cn("max-w-full", density === "dock" ? "space-y-2.5" : "space-y-3")}>
-          {message.toolCalls.length > 0 && (
+      )}
+      <div className={cn("max-w-full", dock ? "space-y-2.5" : "space-y-3")}>
+        {message.toolCalls.length > 0 && (
+          <div className="print:hidden">
             <ToolCallGroup
               toolCalls={message.toolCalls}
               {...(onViewArtifact ? { onViewArtifact } : {})}
             />
-          )}
+          </div>
+        )}
 
-          {message.text && (
-            <Markdown content={message.text} density={density === "dock" ? "compact" : "reading"} streaming={message.isStreaming} />
-          )}
-
-          {!message.isStreaming && message.toolCalls.length > 0 && (
-            <SourceCitations
-              toolCalls={message.toolCalls}
-              repoId={repoId}
-              {...(linkPrefix ? { linkPrefix } : {})}
-              {...(buildCitationHref ? { buildHref: buildCitationHref } : {})}
-            />
-          )}
-
-          {message.truncated && !message.isStreaming && (
-            <p
-              data-chat-truncated="true"
-              className="border-y border-[var(--color-border-default)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]"
-            >
-              Stopped at the step limit before a final answer. Ask again to continue.
-            </p>
-          )}
-
-          {message.isStreaming &&
-            !message.text &&
-            !message.toolCalls.some((tc) => tc.status === "running") && (
-              <div className="flex items-center gap-2 py-2 text-xs text-[var(--color-text-tertiary)]">
-                <WorkingOrb />
-                <span>Reading context</span>
-              </div>
-            )}
-          <MessageActions
-            message={message}
-            {...(onRetry ? { onRetry: () => onRetry(message) } : {})}
-            {...(onFollowUp ? { onFollowUp } : {})}
+        {message.text && (
+          <Markdown
+            content={message.text}
+            density={dock ? "narrow" : "reading"}
+            streaming={message.isStreaming}
+            fill
+            {...(flagged ? { flags: flagged, flagLabel: unverifiedFigureCopy.flag } : {})}
           />
-        </div>
+        )}
+
+        {flagged && (
+          <p data-chat-unverified-figures={flagged.length} className="text-xs text-[var(--color-text-tertiary)]">
+            {unverifiedFigureCopy.note}
+          </p>
+        )}
+
+        {/* Views arrive live, each right after the call that built it. */}
+        {message.views && message.views.length > 0 && (
+          <ViewPartList
+            views={message.views}
+            buildRefHref={(ref) => cardRefHref(ref, linkPrefix ?? `/repos/${repoId}`)}
+          />
+        )}
+
+        {/* Only stored messages carry cards for now; the stream sends none. */}
+        {!message.isStreaming && message.cards && (
+          <EvidenceCardList
+            cards={message.cards}
+            buildRefHref={(ref) => cardRefHref(ref, linkPrefix ?? `/repos/${repoId}`)}
+          />
+        )}
+
+        {!message.isStreaming && message.toolCalls.length > 0 && (
+          <SourceCitations
+            toolCalls={message.toolCalls}
+            repoId={repoId}
+            {...(linkPrefix ? { linkPrefix } : {})}
+            {...(buildCitationHref ? { buildHref: buildCitationHref } : {})}
+          />
+        )}
+
+        {message.truncated && !message.isStreaming && (
+          <p
+            data-chat-truncated="true"
+            className="text-xs text-[var(--color-text-tertiary)]"
+          >
+            Stopped at the step limit before a final answer. Ask again to continue.
+          </p>
+        )}
+
+        {stage && (
+          // The one live marker, always at the edge of the answer: it follows
+          // the turn from thinking through each tool to writing.
+          <div
+            data-chat-stage={stage}
+            className="flex min-h-8 print:hidden items-center gap-2 text-xs text-[var(--color-text-tertiary)]"
+          >
+            <WorkingOrb state={CHAT_STAGES[stage].state} />
+            <span>{CHAT_STAGES[stage].label}</span>
+          </div>
+        )}
+        <MessageActions
+          message={message}
+          pinned={isLatest}
+          {...(error ? { error } : {})}
+          {...(onRetry ? { onRetry: () => onRetry(message) } : {})}
+        />
       </div>
     </article>
   );

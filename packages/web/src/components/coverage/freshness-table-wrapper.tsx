@@ -10,11 +10,13 @@ import {
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
 import { regeneratePage } from "@/lib/api/pages";
+import { useTranslations } from "next-intl";
 
 export function FreshnessTableWithRegenerate({
   pages,
   repoId,
 }: Pick<FreshnessTableProps, "pages"> & { repoId: string }) {
+  const t = useTranslations("coverage");
   const router = useRouter();
   // A single active job (a per-row regenerate) shown above the table. On
   // completion we revalidate the (server-rendered) page list.
@@ -25,18 +27,20 @@ export function FreshnessTableWithRegenerate({
   const handleRegenerate = useCallback(
     async (pageId: string) => {
       if (busy) {
-        toast.info("A generation job is already running. Wait for it to finish.");
+        toast.info(t("jobRunning"));
         return;
       }
       try {
         const res = await regeneratePage(pageId, { cascade: "none", repoId });
         setActiveJobId(res.job_id);
-        toast.info("Regeneration started");
+        toast.info(t("regenStarted"));
       } catch (e) {
-        toast.error("Couldn't start regeneration", { description: toFriendlyMessage(e) });
+        toast.error(t("regenFailed"), {
+          description: toFriendlyMessage(e),
+        });
       }
     },
-    [busy],
+    [busy, t],
   );
 
   return (

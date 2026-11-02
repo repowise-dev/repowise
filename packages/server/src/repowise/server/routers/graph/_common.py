@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from fastapi import Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import Page, Repository
+from repowise.core.persistence.models import Repository
 from repowise.server.deps import get_db_session
 
 
@@ -26,9 +25,3 @@ async def with_repo(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     return repo
-
-
-async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]:
-    """Return the set of node_ids (file paths) that have a wiki page."""
-    result = await session.execute(select(Page.target_path).where(Page.repository_id == repo_id))
-    return {row.target_path for row in result.all() if row.target_path}

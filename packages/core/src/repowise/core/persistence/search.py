@@ -17,8 +17,9 @@ Usage::
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -32,6 +33,7 @@ from repowise.core.fts_query import build_fts5_query as _build_fts5_query
 from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
+from .batches import chunked
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -50,6 +52,13 @@ class SearchResult:
 
 _SNIPPET_LEN = 200
 
+# How far a snippet edge may move inward to land on whitespace instead of
+# inside a word. Past this the word is a long token and the cut stays.
+_SNIPPET_EDGE_SLACK = 20
+
+# Markdown heading lines and blank lines at the start of a text.
+_LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?\n)+")
+
 # Every column of ``page_fts``, in table order. ``page_id`` is stored but not
 # indexed — it is the join key, never a thing to match on.
 #
@@ -65,16 +74,28 @@ _SNIPPET_LEN = 200
 # ``vocabulary`` is a file page's own identifiers and comment prose. It is kept
 # off the rendered page (it reads as noise), so without its own column a
 # keyless store cannot match a page on any of those words.
-PAGE_FTS_COLUMNS = ("page_id", "title", "content", "summary", "target_path", "vocabulary")
+#
+# ``digest`` is the page's agent material (questions, identifiers, signals),
+# kept out of ``content`` so the reader does not scroll past it and indexed here
+# so retrieval still finds the page by those words.
+PAGE_FTS_COLUMNS = (
+    "page_id",
+    "title",
+    "content",
+    "summary",
+    "target_path",
+    "vocabulary",
+    "digest",
+)
 
 PAGE_FTS_DDL = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
-    "USING fts5(page_id UNINDEXED, title, content, summary, target_path, vocabulary)"
+    "USING fts5(page_id UNINDEXED, title, content, summary, target_path, vocabulary, digest)"
 )
 
 _PAGE_FTS_INSERT_SQL = (
-    "INSERT INTO page_fts(page_id, title, content, summary, target_path, vocabulary) "
-    "VALUES (:pid, :title, :content, :summary, :target_path, :vocabulary)"
+    "INSERT INTO page_fts(page_id, title, content, summary, target_path, vocabulary, digest) "
+    "VALUES (:pid, :title, :content, :summary, :target_path, :vocabulary, :digest)"
 )
 
 # Page-metadata key for a file page's vocabulary (field names, string
@@ -149,7 +170,8 @@ _ORPHAN_DELETE_SQL = f"DELETE FROM page_fts WHERE {_ORPHAN_PREDICATE}"
 PG_FTS_EXPRESSION = (
     "to_tsvector('english', "
     "COALESCE(title,'') || ' ' || COALESCE(content,'') || ' ' "
-    "|| COALESCE(summary,'') || ' ' || COALESCE(target_path,''))"
+    "|| COALESCE(summary,'') || ' ' || COALESCE(target_path,'') || ' ' "
+    "|| COALESCE(digest,''))"
 )
 
 # How many distinct terms' document frequencies one FullTextSearch keeps. Term
@@ -157,18 +179,21 @@ PG_FTS_EXPRESSION = (
 # vocabulary heavily, so a small cache removes almost all of the counting.
 _DF_CACHE_MAX = 2048
 
-# Keeps scores strictly decreasing when two MATCH expressions' results are
-# concatenated. Small enough not to disturb any threshold downstream.
+# How far below its predecessor a widened-pass hit is pulled when the two
+# MATCH expressions' results are concatenated out of score order. Relative, so
+# a term common enough that BM25 scores it near zero is pulled to a smaller
+# positive score rather than below zero.
 _SCORE_EPSILON = 1e-6
 
 # Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
 # target_path name the file a page is about, content and summary only mention
-# it. ``page_id`` is UNINDEXED and contributes nothing, but bm25() takes one
-# weight per column, so it still needs one. bm25() ignores a weight past the
+# it, and ``digest`` weighs like the prose it indexes. ``page_id`` is
+# UNINDEXED and contributes nothing, but bm25() takes one weight per column,
+# so it still needs one. bm25() ignores a weight past the
 # last column and defaults a missing one to 1.0, so the arity is checked by
 # test_search_fts_columns rather than by anything raising here. The vocabulary
 # is a bag of words, so it counts for less than prose written about the file.
-_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0, 0.5)
+_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0, 0.5, 1.0)
 _BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
 
 _log = logging.getLogger(__name__)
@@ -206,19 +231,63 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
 
     lowered = content.lower()
     position = -1
+    match_end = 0
     for term in _meaningful_terms(query):
         found = lowered.find(term)
         if found != -1 and (position == -1 or found < position):
             position = found
+            match_end = found + len(term)
     if position == -1:
-        return content[:length].rstrip()
+        start, end = _word_edges(content, 0, min(length, len(content)), 0, 0)
+        return content[start:end].rstrip()
 
     # Centre the window, then slide it back inside the page rather than
     # letting it run off an edge: a match in the first or last few characters
     # would otherwise return a window shorter than the budget for no reason.
     start = max(0, position - length // 2)
     start = min(start, max(0, len(content) - length))
-    return content[start : start + length].strip()
+    end = min(start + length, len(content))
+    start, end = _word_edges(content, start, end, position, match_end)
+    return content[start:end].strip()
+
+
+def _word_edges(
+    content: str, start: int, end: int, keep_from: int, keep_to: int
+) -> tuple[int, int]:
+    """Move a cut that falls inside a word inward to the nearest whitespace.
+
+    Edges only move inward, so the window never grows past its budget, and
+    never into ``content[keep_from:keep_to]``, the matched term (pass ``0, 0``
+    when there is none and the window starts at the page). A cut with no
+    whitespace within :data:`_SNIPPET_EDGE_SLACK` characters stays where it
+    is, so a page that is one long token still gives a non-empty window.
+    """
+    if 0 < start < end and not content[start - 1].isspace() and not content[start].isspace():
+        limit = min(start + _SNIPPET_EDGE_SLACK, keep_from)
+        for i in range(start, limit):
+            if content[i].isspace():
+                start = i + 1
+                break
+    if start < end < len(content) and not content[end - 1].isspace() and not content[end].isspace():
+        limit = max(end - _SNIPPET_EDGE_SLACK, keep_to, start + 1)
+        for i in range(end - 1, limit - 1, -1):
+            if content[i].isspace():
+                end = i
+                break
+    return start, end
+
+
+def strip_leading_headings(text: str) -> str:
+    """*text* without its leading markdown heading and blank lines.
+
+    For a served snippet only: a page's heading repeats the path and title its
+    row already carries. Ranking reads the snippet as built, so callers strip
+    after every score is final. Text that is only headings comes back as is.
+    """
+    match = _LEADING_HEADINGS.match(text)
+    if match is None or not text[match.end() :].strip():
+        return text
+    return text[match.end() :]
 
 
 class FullTextSearch:
@@ -347,10 +416,10 @@ class FullTextSearch:
             await conn.execute(
                 text(
                     "INSERT INTO page_fts"
-                    "(page_id, title, content, summary, target_path, vocabulary) "
+                    "(page_id, title, content, summary, target_path, vocabulary, digest) "
                     "SELECT id, COALESCE(title,''), COALESCE(content,''), "
                     "       COALESCE(summary,''), COALESCE(target_path,''), "
-                    f"      {_VOCABULARY_SQL} "
+                    f"      {_VOCABULARY_SQL}, COALESCE(digest,'') "
                     "FROM wiki_pages"
                 )
             )
@@ -429,6 +498,7 @@ class FullTextSearch:
         content: str,
         summary: str | None = None,
         target_path: str | None = None,
+        digest: str = "",
     ) -> None:
         """Add or replace a page in the FTS index.
 
@@ -449,15 +519,33 @@ class FullTextSearch:
         exclude, and nothing would report the disagreement. The page itself is
         untouched: it stays in ``wiki_pages`` and stays a valid link target.
         """
-        await self.index_many([(page_id, title, content, summary, target_path)])
+        await self.index_many([(page_id, title, content, summary, target_path, digest)])
+
+    async def index_pages(self, pages: Iterable[Any]) -> None:
+        """Index generated pages, one :meth:`index_many` transaction per chunk.
+
+        Each entry needs ``page_id``, ``title``, ``content``, ``summary``,
+        ``target_path`` and ``digest``. Use this, not :meth:`index` in a loop: a write deletes
+        by ``page_id``, which FTS5 stores unindexed, so every delete scans the
+        whole index. Per page that is quadratic in wiki size (18 GB of reads
+        for a 2,300-page rebuild); chunked it is one scan per chunk, while a
+        failure loses at most one chunk and memory holds one chunk's copies.
+        """
+        for chunk in chunked(list(pages)):
+            await self.index_many(
+                [
+                    (p.page_id, p.title, p.content, p.summary, p.target_path, p.digest)
+                    for p in chunk
+                ]
+            )
 
     async def index_many(
         self,
-        pages: Sequence[tuple[str, str, str, str | None, str | None]],
+        pages: Sequence[tuple[str, str, str, str | None, str | None, str]],
     ) -> None:
         """Add or replace many pages in a single transaction.
 
-        Each entry is ``(page_id, title, content, summary, target_path)`` and
+        Each entry is ``(page_id, title, content, summary, target_path, digest)`` and
         gets exactly the semantics :meth:`index` documents, floor exclusion
         included — this is the one implementation and :meth:`index` is the
         single-page call into it. What changes is the transaction count:
@@ -481,11 +569,11 @@ class FullTextSearch:
         # existed.
         deletions: dict[str, None] = {}
         insertions: dict[str, dict[str, str]] = {}
-        for page_id, title, content, summary, target_path in pages:
+        for page_id, title, content, summary, target_path, digest in pages:
             deletions[page_id] = None
             if summary is None or target_path is None:
                 self._warn_missing_index_fields(page_id, summary, target_path)
-            if meets_information_floor(content):
+            if meets_information_floor(content, digest=digest or ""):
                 insertions[page_id] = {
                     "pid": page_id,
                     "title": title,
@@ -493,6 +581,7 @@ class FullTextSearch:
                     "summary": summary or "",
                     "target_path": target_path or "",
                     "vocabulary": "",
+                    "digest": digest or "",
                 }
             else:
                 self._count_skipped_below_floor(page_id, content)
@@ -754,13 +843,13 @@ class FullTextSearch:
         # the widened one — so scores are clamped to be non-increasing along it,
         # keeping a caller that sorts by score in agreement with one that reads
         # the list in order.
-        ceiling: float | None = None
+        previous: float | None = None
         for pid in page_ids:
             page_type, target_path = meta.get(pid, ("", ""))
             score = -(rank_by_id[pid] or 0.0)  # FTS5 rank is negative
-            if ceiling is not None and score > ceiling:
-                score = ceiling
-            ceiling = score - _SCORE_EPSILON
+            if previous is not None and score > previous:
+                score = previous * (1 - _SCORE_EPSILON)
+            previous = score
             results.append(
                 SearchResult(
                     page_id=pid,

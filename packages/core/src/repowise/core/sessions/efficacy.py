@@ -150,9 +150,9 @@ NO_ACTION_EXPECTED = frozenset(
         # earlier copy — leaves no trace in a transcript.
         ("read", "changed_since_read"),
         # A *served* flood digest, for the same structural reason: it leaves as
-        # updatedToolOutput, so the pattern pass below can never see it. The
-        # appended ``search``/``digest`` rows are still scored normally, and the
-        # two are kept apart so a cost and a saving are never averaged.
+        # updatedToolOutput, so the pattern pass below can never see it. Older
+        # ledgers also hold appended ``search``/``digest`` rows; those are still
+        # scored normally, kept apart so a cost and a saving are never averaged.
         ("search", "digest_served"),
     }
 )
@@ -201,7 +201,7 @@ def advisory_cost(rows: list[dict[str, Any]]) -> tuple[int, int]:
     """``(chars, firings)`` the agent was actually billed for, over ledger rows.
 
     Everything that added text next to a tool result: notices, rescues, the
-    appended digest, the session block. Measurement rows and replacements are
+    appended digest older builds emitted, the session block. Measurement rows and replacements are
     excluded for the reasons given above, so this is the debit side and only
     that.
     """
@@ -234,7 +234,7 @@ def ledger_key(surface: str, category: str, text: str) -> str:
     the emitted text is what lets a transcript firing find the row the live
     hook wrote for it.
     """
-    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
     return f"{surface}:{category}:{digest}"
 
 

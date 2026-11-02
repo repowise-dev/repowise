@@ -14,7 +14,9 @@ from pathlib import Path
 from repowise.core.analysis.health.coverage import (
     parse_contexts_file,
     parse_coverage_sqlite,
+    parse_lcov,
     parse_lcov_contexts,
+    resolve_reports,
     resolve_test_reports,
 )
 
@@ -220,6 +222,41 @@ def test_resolve_test_reports_maps_source_and_test_paths() -> None:
     assert rec.file_path == "packages/app/src/foo.py"  # suffix-resolved source
     assert rec.test_file == "packages/app/tests/test_foo.py"  # test path resolved too
     assert rec.covered_lines == [1, 3]
+
+
+def test_per_test_records_resolve_from_the_report_directory_like_the_aggregate() -> None:
+    # A monorepo package's per-test lcov names files from the package root.
+    # The same names exist in two packages, so a match on the path alone ties.
+    text = (
+        "TN:tests/test_a.py::test_one|run\nSF:src/a.py\nDA:1,1\nend_of_record\n"
+        "TN:tests/test_a.py::test_one|run\nSF:src/b.py\nDA:2,1\nend_of_record\n"
+    )
+    repo_keys = {
+        "packages/web/src/a.py",
+        "packages/api/src/a.py",
+        "packages/web/src/b.py",
+        "packages/api/src/b.py",
+        "packages/web/tests/test_a.py",
+        "packages/api/tests/test_a.py",
+    }
+    report = parse_lcov_contexts(text)
+    report.origin_dir = "packages/web/coverage"
+    resolved = resolve_test_reports(report, repo_keys)
+
+    assert [r.file_path for r in resolved.records] == [
+        "packages/web/src/a.py",
+        "packages/web/src/b.py",
+    ]
+    assert {r.test_file for r in resolved.records} == {"packages/web/tests/test_a.py"}
+    assert resolved.unmatched == [] and resolved.ambiguous == []
+
+    # The aggregate read of the same report maps the same files.
+    aggregate = parse_lcov(text)
+    aggregate.origin_dir = "packages/web/coverage"
+    assert sorted(resolve_reports([aggregate], repo_keys).coverage_map) == [
+        "packages/web/src/a.py",
+        "packages/web/src/b.py",
+    ]
 
 
 def test_resolve_test_reports_reports_unmatched() -> None:

@@ -68,7 +68,3 @@ export function relationLabel(
 export function relationHint(group: SymbolRelationGroup["group"]): string | undefined {
   return GROUP_HINTS[group];
 }
-
-/** Edge types this module can name, for the cross-language pin test. */
-export const KNOWN_RELATION_EDGE_TYPES: readonly string[] =
-  Object.keys(RELATION_LABELS).sort();

@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, status_rank
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.test_paths import is_test_related_path
 
 from ..models import DecisionRecord, GitMetadata
+from .decision_staleness import is_stale
 
 
 async def get_decision_health_summary(
@@ -116,12 +118,13 @@ class _Lanes:
                 self.proposed.append(d)
             return
         if currency in HISTORY_CURRENCIES:
+            lane = _history_lane(d, currency)
             # ``stale`` counts apart: that key already means needs_review here.
-            self.counts["historical" if currency == "stale" else currency] += 1
-            self.retired.append((currency, d))
+            self.counts["historical" if lane == "stale" else lane] += 1
+            self.retired.append((lane, d))
             return
         self.counts["active"] += 1
-        if currency == "needs_review":
+        if is_stale(currency):
             self.counts["stale"] += 1
             self.stale.append(d)
         if currency == "uncheckable":
@@ -146,12 +149,63 @@ class _Lanes:
         self.unscoped.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
 
 
+def _history_lane(d: DecisionRecord, currency: str) -> str:
+    """The retired lane for a history *currency*.
+
+    A deprecation and a dismissal share the ``dismissed`` currency; the status
+    each one writes is what still tells them apart.
+    """
+    return "deprecated" if currency == "dismissed" and d.status == "deprecated" else currency
+
+
+#: Paths per ``IN`` clause, under SQLite's bound-parameter ceiling.
+_PATH_CHUNK = 500
+
+
+async def decision_hotspot_files(
+    session: AsyncSession, repository_id: str, decisions: list[DecisionRecord]
+) -> dict[str, list[str]]:
+    """The files each of *decisions* names that are churn hotspots, in its own order.
+
+    Test files are left out, as in ``_ungoverned_hotspots``: churn in a test is
+    not a reason to review a design choice sooner. A decision naming no hotspot
+    is absent from the result.
+
+    Only records whose scope binds to its paths are read. A commit footprint
+    lists what one commit touched as provenance, so a footprint record sharing
+    a commit with a hotspot does not name that hotspot.
+    """
+    named = {
+        d.id: json.loads(d.affected_files_json or "[]")
+        for d in decisions
+        if binds_to_paths(d.scope_basis)
+    }
+    wanted = sorted({f for files in named.values() for f in files if not is_test_related_path(f)})
+    hot: set[str] = set()
+    for start in range(0, len(wanted), _PATH_CHUNK):
+        result = await session.execute(
+            select(GitMetadata.file_path).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.is_hotspot.is_(True),
+                GitMetadata.file_path.in_(wanted[start : start + _PATH_CHUNK]),
+            )
+        )
+        hot.update(result.scalars().all())
+    out: dict[str, list[str]] = {}
+    for decision_id, files in named.items():
+        hits = [f for f in files if f in hot]
+        if hits:
+            out[decision_id] = hits
+    return out
+
+
 async def _ungoverned_hotspots(
     session: AsyncSession, repository_id: str, governed_files: set[str]
 ) -> list[str]:
-    """Hotspot files no accepted decision names, hottest first.
+    """Hotspot production files no accepted decision names, hottest first.
 
     Same key as ``routers/overview.py``: score descending with NULLs last, then churn.
+    Test files are left out: churn in a test is not a design choice to record.
     """
     hotspot_result = await session.execute(
         select(
@@ -163,7 +217,11 @@ async def _ungoverned_hotspots(
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
-    hotspot_rows = {row[0]: (row[1], row[2]) for row in hotspot_result.all()}
+    hotspot_rows = {
+        row[0]: (row[1], row[2])
+        for row in hotspot_result.all()
+        if not is_test_related_path(row[0])
+    }
 
     def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:
         score, churn = hotspot_rows[file_path]

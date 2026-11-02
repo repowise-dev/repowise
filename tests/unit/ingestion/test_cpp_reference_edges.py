@@ -150,9 +150,11 @@ class TestPrecision:
         assert not [e for e in _reference_edges(graph) if e[1].endswith("::Add")]
 
     def test_other_languages_emit_no_reference_edges(self, tmp_path: Path) -> None:
-        # Only the C/C++ queries define ``@reference.name``; everything else
-        # pays a dict lookup and produces nothing.
-        (tmp_path / "mod.py").write_text("def handler():\n    pass\n\nTABLE = [handler]\n")
+        # A language whose query defines no ``@reference.name`` pays a dict
+        # lookup and produces nothing.
+        (tmp_path / "App.java").write_text(
+            "class App {\n    static void handler() {}\n    static Runnable[] T = { handler };\n}\n"
+        )
         graph = _build(tmp_path)
         assert _reference_edges(graph) == []
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { EmptyState } from "../shared/empty-state";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import {
@@ -32,8 +33,13 @@ export interface HealthWorkQueueListProps {
     | undefined;
   refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
   emptyMessage?: string;
+  /** Wired to the host's filter reset; shows a Clear filters action when set. */
+  onClearFilters?: (() => void) | undefined;
   /** File path of the card to flash-highlight (quadrant click). */
   highlightedPath?: string | null | undefined;
+  /** Bulk triage selection, by file path. */
+  selectedPaths?: ReadonlySet<string> | undefined;
+  onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
 
 export function HealthWorkQueueList({
@@ -44,8 +50,11 @@ export function HealthWorkQueueList({
   onLoadFindings,
   onLoadOpportunity,
   refactoringOpportunityHref,
-  emptyMessage = "No health work items match the current filters.",
+  emptyMessage = "No health work items match these filters",
+  onClearFilters,
   highlightedPath,
+  selectedPaths,
+  onToggleSelect,
 }: HealthWorkQueueListProps) {
   const [visible, setVisible] = useState(CARD_PAGE);
 
@@ -88,9 +97,11 @@ export function HealthWorkQueueList({
 
   if (targets.length === 0) {
     return (
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-secondary)]">
-        {emptyMessage}
-      </div>
+      <EmptyState
+        tone="filtered"
+        title={emptyMessage}
+        {...(onClearFilters ? { action: { label: "Clear filters", onClick: onClearFilters } } : {})}
+      />
     );
   }
   const remaining = targets.length - shown;
@@ -108,6 +119,8 @@ export function HealthWorkQueueList({
             onLoadOpportunity={onLoadOpportunity}
             refactoringOpportunityHref={refactoringOpportunityHref}
             highlighted={highlightedPath === t.file_path}
+            selected={selectedPaths?.has(t.file_path) ?? false}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </div>

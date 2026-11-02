@@ -2,6 +2,7 @@ import * as React from "react";
 import type { CommitStats } from "@repowise-dev/types/git";
 import { PageLede } from "../shared/page-lede";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
+import { formatNumber } from "../lib/format";
 
 export interface CommitsLedeProps {
   stats: CommitStats;
@@ -37,25 +38,30 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
   const total = stats.total_commits;
   const highPct = pct(stats.high_priority_count, total);
   const fixPct = pct(stats.fix_commit_count, total);
-  const agentPct = pct(stats.agent_commit_count, total);
 
   const reads: ReadItem[] = [
     {
       key: "fixes",
       label: "Fix commits",
-      value: stats.fix_commit_count.toLocaleString(),
+      value: formatNumber(stats.fix_commit_count),
       unit: `${fixPct}%`,
       why: "Commits whose subject reads as a bug fix rather than new work.",
-      href: `${base}/code-health?tab=triage`,
+      href: `${base}/code-health`,
     },
   ];
-  if (stats.agent_commit_count > 0) {
+  if (stats.agent_commit_count != null && stats.agent_commit_count > 0) {
+    // The share is of commits with a known source, never of all commits:
+    // a commit without a marker is unknown, not human.
+    const coverage = Math.round(stats.attribution_coverage_pct ?? 0);
     reads.push({
       key: "agent",
       label: "Written by an agent",
-      value: stats.agent_commit_count.toLocaleString(),
-      unit: `${agentPct}%`,
-      why: "Read from commit trailers, so it counts what was declared.",
+      value: formatNumber(stats.agent_commit_count),
+      unit:
+        stats.agent_pct_of_covered != null
+          ? `at least ${Math.round(stats.agent_pct_of_covered)}% of covered, coverage ${coverage}%`
+          : `coverage ${coverage}%`,
+      why: "Read from public markers such as bot authors, trailers and notes. Commits without one are unknown, so the share is of covered commits only.",
       href: `${base}/commits`,
     });
   }
@@ -78,7 +84,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       value: stats.high_cut.toFixed(1),
       unit: "out of 10",
       why: "Score a commit has to clear to land in this repo's top tercile.",
-      href: `${base}/code-health?tab=triage`,
+      href: `${base}/code-health`,
     });
   }
 
@@ -93,15 +99,15 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10">
         <PageLede
           label="Needs review"
-          value={stats.high_priority_count.toLocaleString()}
-          unit={`of ${total.toLocaleString()} scored`}
+          value={formatNumber(stats.high_priority_count)}
+          unit={`of ${formatNumber(total)} scored`}
         >
           <p>
             <strong className="font-semibold text-[var(--color-text-primary)]">
-              {stats.high_priority_count.toLocaleString()} commits
+              {formatNumber(stats.high_priority_count)} commits
             </strong>{" "}
             sit in this repo&apos;s top risk tercile, which is {highPct}% of the{" "}
-            {total.toLocaleString()} scored. The cut is drawn against this
+            {formatNumber(total)} scored. The cut is drawn against this
             codebase&apos;s own history rather than a global curve, so a quiet repo
             still fills its top band
             {stats.high_cut != null

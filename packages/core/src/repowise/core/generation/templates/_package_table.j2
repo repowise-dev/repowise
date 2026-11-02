@@ -1,8 +1,7 @@
 {#- One row per package a package roll-up covers, rendered from the grouping and
     appended after the model has written the page, so no response can drop or
-    merge a package. -#}
-## Packages
-
+    merge a package. The heading comes from ``embed_package_table``, which
+    replaces the section instead of adding a second one when a page is reused. -#}
 This page covers {{ rows | length }} sibling packages, each with its own manifest.
 
 | Package | Files |

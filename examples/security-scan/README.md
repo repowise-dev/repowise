@@ -16,7 +16,7 @@ into docs, commits, or chat.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Working-tree scan (automatic)
@@ -96,7 +96,7 @@ separate from this local OSS history walk — see
 
 | Step | Expected |
 |------|----------|
-| `repowise init --index-only --yes` | Completes; working-tree findings may appear in Security UI |
+| `repowise init --yes --no-prose` | Completes; working-tree findings may appear in Security UI |
 | `repowise security scan` | Short hint mentioning `--history` |
 | `repowise security scan --history` | Table (or empty) of history findings |
 | `repowise security scan --history --output json` | JSON list; re-run stays stable |

@@ -440,22 +440,6 @@ def test_a_term_with_no_sentence_anywhere_reports_none(repo: Path) -> None:
     assert hotspots.definition_source is None
 
 
-def test_a_term_the_codebase_defines_is_marked_as_a_symbol(repo: Path) -> None:
-    """Only a real symbol may be rendered in backticks.
-
-    Grounding strips the backticks off a symbol-shaped token it cannot
-    resolve, so a coined term dressed as code is demoted mid-page — silently,
-    which is the failure shape this repository has shipped before.
-    """
-    found = by_term(repo, known_symbols={"Blast radius"})
-    assert found["Blast radius"].is_indexed_symbol is True
-    assert found["Bug magnet"].is_indexed_symbol is False
-
-
-def test_without_a_symbol_set_nothing_claims_to_be_one(repo: Path) -> None:
-    assert all(not t.is_indexed_symbol for t in extract_house_terms(repo))
-
-
 def test_extraction_is_deterministic(repo: Path) -> None:
     """It runs on the keyless path and has to give the same answer twice."""
     assert extract_house_terms(repo) == extract_house_terms(repo)
@@ -868,10 +852,9 @@ def test_a_hard_wrapped_markdown_sentence_is_read_whole(tmp_path: Path) -> None:
 # Which files may be cited as where a capability is written
 # ---------------------------------------------------------------------------
 #
-# The capability table's third column is headed "Where it is written", and the
-# glossary cites the same path. Both were rendering scratch harnesses under a
-# git-excluded ``local-stash/`` and a competitive-positioning document in
-# ``docs/`` as the authority for what a term means. Nothing downstream can tell
+# The capability table's third column is headed "Where it is written". It was
+# rendering scratch harnesses under a git-excluded ``local-stash/`` and a
+# competitive-positioning document in ``docs/`` as the authority for what a term means. Nothing downstream can tell
 # a planning document from a subsystem guide by its headings, so the source set
 # is decided here.
 
@@ -1248,3 +1231,21 @@ def test_heading_definition_after_fenced_block_is_extracted_correctly(
         "Blast radius is the set of files a change can reach through the import graph."
     )
 
+
+def test_scan_tree_reads_a_source_package_named_coverage(tmp_path: Path) -> None:
+    """An output-shaped name prunes only output: a package named ``coverage``
+    is read, a ``dist`` bundle is not (#3237)."""
+    (tmp_path / "pkg" / "coverage").mkdir(parents=True)
+    (tmp_path / "pkg" / "coverage" / "__init__.py").write_text(
+        '"""Measures which lines the suite executes."""\n', encoding="utf-8"
+    )
+    (tmp_path / "web" / "dist").mkdir(parents=True)
+    (tmp_path / "web" / "dist" / "bundle.js").write_text(
+        "/** Bundled application entry. */\nexport default 1;\n", encoding="utf-8"
+    )
+
+    prose, dir_names = _scan_tree(tmp_path)
+
+    assert [path for path, _ in prose] == ["pkg/coverage/__init__.py"]
+    assert "coverage" in dir_names
+    assert "dist" not in dir_names

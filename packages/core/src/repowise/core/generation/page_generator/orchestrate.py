@@ -22,6 +22,7 @@ import structlog
 from ...persistence.vector_store import embed_item
 from ...pipeline.phase_timing import timed
 from ..context_assembler import FilePageContext
+from ..mermaid_safety import sanitize_pages
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
@@ -33,7 +34,6 @@ from . import levels as _levels
 from .helpers import (
     _CODE_LANGUAGES,
     _is_infra_file,
-    _select_clone_representatives,
     build_dead_code_map,
     build_decision_maps,
     overview_summary,
@@ -111,10 +111,15 @@ class _GenerationRun:
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
+        persisted_page_ids: set[str] | None = None,
+        on_embed: Callable[[int, bool], None] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
         self.vector_store = gen._vector_store
+        # The page ids the store holds, read once on first need. See
+        # ``_new_vectors_only``.
+        self._stored_vector_ids: set[str] | None = None
         # Scoped generation: when set, a level emits a page only if its id is
         # in this set (and not already completed). None means "every page the
         # selection allows", the historical behaviour. The whole repo is still
@@ -128,6 +133,9 @@ class _GenerationRun:
         # wiki the resumed run was there to protect. None when the caller does
         # not care (every non-resume path).
         self.preserved_page_ids = preserved_page_ids
+        # Resume: the ids that already have a stored page row, or None when the
+        # caller cannot tell. See ``_seed_resume``.
+        self.persisted_page_ids = persisted_page_ids
         self.parsed_files = parsed_files
         self.source_map = source_map
         self.graph_builder = graph_builder
@@ -144,6 +152,7 @@ class _GenerationRun:
         self.on_total_known = on_total_known
         self.on_subphase = on_subphase
         self.on_warning = on_warning
+        self.on_embed = on_embed
         self.git_meta_map = git_meta_map
         self.resume = resume
         self.repo_path = repo_path
@@ -197,6 +206,8 @@ class _GenerationRun:
         self.timings = timings
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
+        # Module pages written this run, by target, for the map pages above them.
+        self.module_page_content: dict[str, str] = {}
         self.completed_ids: set[str] = set()
         self.job_id: str | None = None
         self.file_page_contexts: dict[str, FilePageContext] = {}
@@ -218,10 +229,32 @@ class _GenerationRun:
         self.sel_infra_paths: set[str] = set()
         self.sel_module_groups: list[Any] = []
         self.sel_scc_groups: list[Any] = []
+        self._flow_plans: list[Any] | None = None
+        #: ``page id -> content`` of the walkthroughs this run wrote, read by
+        #: the front page and How It Works.
+        self.flow_page_contents: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
+
+    def flow_plans(self) -> list[Any]:
+        """The operations this run's flow pages walk, computed once.
+
+        Read off the call graph only, so a keyed and a keyless run, and the
+        update cascade, choose the same pages.
+        """
+        if self._flow_plans is None:
+            from ..flow_pages import plans_for_index
+
+            self._flow_plans = plans_for_index(self.graph_builder, self.parsed_files)
+        return self._flow_plans
+
+    def _flow_page_count(self) -> int:
+        """Flow pages this run will emit; none on a file-pages-only update."""
+        if getattr(self.config, "file_pages_only", False):
+            return 0
+        return sum(1 for plan in self.flow_plans() if self._emit(plan.page_id))
 
     def _setup_job(self) -> None:
         """Create the resume job and, on resume, seed completed page ids."""
@@ -232,7 +265,8 @@ class _GenerationRun:
             if self.repo_path
             else str(getattr(self.repo_structure, "root_path", "."))
         )
-        # On resume, query the vector store directly — it is the ground truth.
+        # On resume, completed ids come from the vector store (narrowed to
+        # pages with a stored row when the caller knows them).
         if self.resume and self.vector_store is not None:
             # Note: caller drives this synchronously enough; resume seeding is
             # awaited in execute() to keep __init__ side-effect free.
@@ -243,6 +277,7 @@ class _GenerationRun:
             self.gen._provider.provider_name,
             self.gen._provider.model_name,
         )
+        self.gen.last_job_id = self.job_id
 
     def _emit(self, page_id: str) -> bool:
         """Whether this run should generate ``page_id``.
@@ -266,6 +301,12 @@ class _GenerationRun:
     async def _seed_resume(self) -> None:
         if self.job_system is not None and self.resume and self.vector_store is not None:
             self.completed_ids = await self.vector_store.list_page_ids()
+            # The vector and the page row are written separately, so a run
+            # killed between the two leaves a vector with no page. Counting it
+            # as done would skip it forever, so a page is done only when both
+            # landed.
+            if self.persisted_page_ids is not None:
+                self.completed_ids &= self.persisted_page_ids
             if self.completed_ids:
                 log.info(
                     "Resuming generation from vector store",
@@ -282,17 +323,22 @@ class _GenerationRun:
             and p.file_info.language in _CODE_LANGUAGES
         ]
 
+        from ..selection.selector import near_clone_paths
+
         # Near-clone dedupe runs before scoring so clone losers never consume
         # scoring budget. Entry points are never dropped.
         parsed_files_for_selection = self.parsed_files
-        if getattr(self.config, "dedupe_near_clones", True):
-            drop_paths = _select_clone_representatives(code_files, self.pagerank)
-            if drop_paths:
-                log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
-                code_files = [p for p in code_files if p.file_info.path not in drop_paths]
-                parsed_files_for_selection = [
-                    p for p in self.parsed_files if p.file_info.path not in drop_paths
-                ]
+        drop_paths = near_clone_paths(
+            code_files,
+            self.pagerank,
+            enabled=getattr(self.config, "dedupe_near_clones", True),
+        )
+        if drop_paths:
+            log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
+            code_files = [p for p in code_files if p.file_info.path not in drop_paths]
+            parsed_files_for_selection = [
+                p for p in self.parsed_files if p.file_info.path not in drop_paths
+            ]
 
         try:
             community_info_map = self.graph_builder.community_info() or {}
@@ -320,10 +366,12 @@ class _GenerationRun:
                 # map that steers concept grouping, so absence costs taste and
                 # never coverage.
                 kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
+                symbol_uses=self.graph_builder.symbol_uses(),
             )
         )
 
         self.selection = selection
+        self.gen.selection = selection
         self.sel_file_paths = set(selection.file_page_paths)
         self.sel_api_paths = set(selection.api_contract_paths)
         self.sel_infra_paths = set(selection.infra_paths)
@@ -514,6 +562,7 @@ class _GenerationRun:
             + int(self.selection.emit_repo_overview)
             + counts["infra_page"]
             + onboarding_page_count
+            + self._flow_page_count()
         )
         # Split the total across the two progress bars. One bar counting both
         # tiers reads as frozen: the free levels run first, so it reaches ~97%
@@ -534,15 +583,15 @@ class _GenerationRun:
             self.job_system.start_job(self.job_id, estimated_total)
 
     def _file_import_edges(self) -> list[tuple[str, str]]:
-        """``(src, dst)`` import edges between file nodes (src imports dst)."""
-        edges: list[tuple[str, str]] = []
-        try:
-            for src, dst in self.graph.edges():
-                if isinstance(src, str) and isinstance(dst, str):
-                    edges.append((src, dst))
-        except Exception:
-            pass
-        return edges
+        """``(src, dst)`` import edges between file nodes (src imports dst).
+
+        Imports only, the same edges ``rebuild_page_tree`` reads back from the
+        store, so the tree an update rebuilds orders chapters the way this run
+        did.
+        """
+        from ...analysis.kg_inputs import import_edges_of
+
+        return import_edges_of(self.graph)
 
     def _compute_ia(self) -> None:
         """Derive the guided-tour ordering and the layer spine after selection.
@@ -641,6 +690,14 @@ class _GenerationRun:
                             result = await coro
 
                         if isinstance(result, GeneratedPage):
+                            # Sanitized before the streaming sink sees it, so the
+                            # first stored version is the final text. Left to the
+                            # post-generation pass alone, any page it changes was
+                            # written twice and archived a spurious version.
+                            try:
+                                sanitize_pages([result])
+                            except Exception as exc:
+                                log.debug("mermaid_safety.failed", error=str(exc))
                             # A page whose provider call raised comes back as its
                             # structural stub rather than being dropped (issue #1089),
                             # so the row exists and `repowise generate` can refill it.
@@ -730,10 +787,17 @@ class _GenerationRun:
                 # swallow here hid a 300k-token request rejection that silently lost
                 # every file-page embedding on init (`repowise reindex` repairs).
                 if embed_items and self.vector_store is not None:
+                    embed_items = await _new_vectors_only(self, embed_items, results)
+                if embed_items and self.vector_store is not None:
+                    if self.on_embed is not None:
+                        self.on_embed(len(embed_items), False)
                     with timed(self.timings, "generation.embed"):
                         try:
                             await self.vector_store.embed_batch(embed_items)
+                            if self.on_embed is not None:
+                                self.on_embed(len(embed_items), True)
                         except Exception as e:
+                            self.gen.embed_failed_pages += len(embed_items)
                             log.warning(
                                 "rag.embed_batch_failed",
                                 level=level,
@@ -806,8 +870,14 @@ class _GenerationRun:
         # Level 3 (scc_page).
         all_pages.extend(await self.run_level(_levels.build_level3_coros(self), 3))
 
-        # Level 4 (module_page).
-        all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
+        # Level 4 (module_page), in waves: a map page reads how the pages of
+        # its parts open, so the parts are written first.
+        for wave in _levels.module_waves(list(self.sel_module_groups)):
+            pages = await self.run_level(_levels.build_level4_coros(self, wave), 4)
+            self.module_page_content.update(
+                {p.target_path: p.content for p in pages if STUB_FALLBACK_ERROR not in p.metadata}
+            )
+            all_pages.extend(pages)
 
         # Level 4 is the last reader of the per-file contexts, and there is one
         # per code file. Dropping them here rather than at the end of the run
@@ -821,13 +891,22 @@ class _GenerationRun:
         # page belongs to is stamped on the page itself, so the docs tree can
         # group by it without a page to hang the group off.
         #
-        # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
-        # no data dependencies — run merged.
-        final = (
-            await _levels.build_level6_coros(self)
-            + _levels.build_level7_coros(self)
-            + await _levels.build_level8_coros(self)
+        # Levels 5 (flow_page) and 7 (infra_page) run first, merged: flow
+        # pages need only the module groups' names, which naming settled above.
+        # The front page and How It Works are written from the walkthroughs,
+        # so levels 6 (repo_overview) and 8 (onboarding) wait for them.
+        walkthroughs = await self.run_level(
+            _levels.build_flow_coros(self) + _levels.build_level7_coros(self), 5
         )
+        all_pages.extend(walkthroughs)
+        # Model-written walkthroughs only: a template stub's step list is not
+        # a journey a reader can be told about.
+        self.flow_page_contents = {
+            p.page_id: p.content
+            for p in walkthroughs
+            if p.page_type == "flow_page" and p.provider_name != "template"
+        }
+        final = await _levels.build_level6_coros(self) + await _levels.build_level8_coros(self)
         final_pages = await self.run_level(final, 8)
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).
         self.gen._tag_promoted_pages(final_pages)
@@ -876,15 +955,13 @@ class _GenerationRun:
                 try:
                     from ..page_tree import assign_page_tree
 
-                    assign_page_tree(all_pages, self.layer_order_ids)
+                    assign_page_tree(all_pages, self._file_import_edges())
                 except Exception as exc:
                     log.debug("page_tree.failed", error=str(exc))
 
             # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
             # labels in LLM output don't break the whole diagram in the renderer.
             try:
-                from ..mermaid_safety import sanitize_pages
-
                 fixed = sanitize_pages(all_pages)
                 if fixed:
                     log.info("mermaid_safety.applied", pages_changed=fixed)
@@ -904,6 +981,10 @@ class _GenerationRun:
                 )
             except Exception as exc:
                 log.debug("interlinking.failed", error=str(exc))
+
+            # Post-generation: point every cited span at the commit it was read
+            # at, and at the forge when the repository has a known remote.
+            link_sources(all_pages, self.repo_path)
 
             # Post-generation: graph-derived related pages. Runs AFTER
             # interlinking so prose-derived wiki_links win dedup and related
@@ -1008,6 +1089,21 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
             )
 
 
+def link_sources(pages: list[GeneratedPage], repo_path: Any) -> None:
+    """Pin the run's citations to their commit; a failure is said out loud.
+
+    Links are stamped page by page, so a failure partway leaves some pages
+    pinned and others not. That is worth a warning naming how many pages were
+    in hand, not a debug line nobody reads.
+    """
+    from ..page_sources import attach_source_links
+
+    try:
+        attach_source_links(pages, repo_path)
+    except Exception as exc:
+        log.warning("source_links.failed", pages=len(pages), error=str(exc))
+
+
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
     """Derive per-file KG bonus scores from tour membership and role."""
     if not kg_ctx.available:
@@ -1027,6 +1123,42 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
                     if bonus > scores.get(fp, 0.0):
                         scores[fp] = bonus
     return scores
+
+
+async def _new_vectors_only(run: Any, items: list, pages: list) -> list:
+    """*items* minus pages whose stored vector already embeds the same page.
+
+    An update re-renders a changed file's neighbours, which mostly come out
+    byte-identical to their stored rows. Only a page the store already holds,
+    at the running embedder's width, is skipped, so a fresh store or one the
+    embedder change is about to rebuild still gets every vector.
+    """
+    if not getattr(run.vector_store, "persists_across_runs", False):
+        return items
+    same = {
+        page.page_id
+        for page in pages
+        if isinstance(page, GeneratedPage) and _same_as_prior(page, run.gen)
+    }
+    if not same:
+        return items
+    if run._stored_vector_ids is None:
+        current_width = await run.vector_store.holds_current_vectors()
+        run._stored_vector_ids = (
+            await run.vector_store.list_page_ids() if current_width else set()
+        )
+    current = same & run._stored_vector_ids
+    return [item for item in items if item[0] not in current]
+
+
+def _same_as_prior(page: GeneratedPage, gen: Any) -> bool:
+    """Whether *page* rendered byte-identical to its stored row."""
+    prior = gen._prior_pages.get(page.page_id)
+    return (
+        prior is not None
+        and prior.content == page.content
+        and (prior.digest or "") == (page.digest or "")
+    )
 
 
 def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
@@ -1057,6 +1189,7 @@ def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
         summary=page.summary,
         content=page.content,
         page_metadata=page.metadata,
+        digest=page.digest,
     )
 
 

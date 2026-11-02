@@ -44,7 +44,7 @@ function recencyKey(d: DecisionRecordResponse): number {
  *  not reflow when the decisions land. */
 function DecisionsSkeleton() {
   return (
-    <div className="flex h-full flex-col" aria-hidden>
+    <div className="flex h-full flex-col" role="status" aria-label="Loading decisions">
       <header className="border-b border-[var(--color-border-default)] px-6 py-4">
         <div className="h-6 w-32 animate-pulse rounded bg-[var(--color-bg-inset)]" />
         <div className="mt-3 flex gap-2">
@@ -189,7 +189,7 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
                 className={
                   "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
                   (on
-                    ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                    ? "border-[var(--color-border-hover)] bg-[var(--color-bg-selected)] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]")
                 }
               >

@@ -8,7 +8,7 @@ from repowise.cli.commands.health_cmd.refactoring_targets import _render_refacto
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import build_recommendations
 from repowise.server.mcp_server.tool_health import _serialize_refactoring
-from repowise.server.routers.refactoring import _to_response
+from repowise.server.schemas import RefactoringPlanResponse
 
 
 def _plan(target: str, file_path: str) -> RefactoringSuggestion:
@@ -36,7 +36,7 @@ def test_golden_surface_fields_and_order_are_identical(fixtures_dir, capsys) -> 
         [_plan("Beta.run", "src/beta.py"), _plan("Alpha.run", "src/alpha.py")]
     )
 
-    rest = [_to_response(item.as_dict()).model_dump() for item in recommendations]
+    rest = [RefactoringPlanResponse(**item.as_dict()).model_dump() for item in recommendations]
     mcp = [_serialize_refactoring(item) for item in recommendations]
     _render_refactoring_targets([], [], mcp, fmt="json")
     cli = json.loads(capsys.readouterr().out)["refactoring_plans"]

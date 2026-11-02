@@ -91,7 +91,6 @@ from typing import TYPE_CHECKING, Any
 
 from ....test_paths import is_test_related_path
 from ...execution_graph import ExecutionGraphIndex, file_of_symbol, reachable_to_sink
-from ..coverage import is_test_file
 from .predicate import checks_something
 
 if TYPE_CHECKING:
@@ -195,7 +194,7 @@ def collect_cross_file_oracles(
     oracle_name: dict[str, str] = {}
     for pf, fcx in walked_list:
         path = pf.file_info.path
-        if not is_test_related_path(path, pf.file_info.language):
+        if not _is_test_material(pf.file_info):
             continue
         for fn in fcx.functions:
             if not checks_something(fn):
@@ -324,6 +323,17 @@ def _oracles_by_file_and_name(
 
 def _candidates(pf: Any, fcx: FileComplexity) -> list[Any]:
     """Test cases in a test file that check nothing themselves."""
-    if not is_test_file(pf.file_info.path):
+    if not _is_test_material(pf.file_info):
         return []
     return [fn for fn in fcx.functions if fn.is_test_case and not checks_something(fn)]
+
+
+def _is_test_material(file_info: Any) -> bool:
+    """The ``is_test`` flag ingestion stored, which saw pytest's config.
+
+    The path rules answer only for a caller that built no flag.
+    """
+    stored = getattr(file_info, "is_test", None)
+    if stored is not None:
+        return bool(stored)
+    return is_test_related_path(file_info.path, getattr(file_info, "language", None))

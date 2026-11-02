@@ -9,13 +9,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.change_health.file_scores import (
+    SCORE_BASIS,
+    FileScoreDelta,
+    score_change,
+)
 from repowise.core.analysis.change_health.models import ChangeFinding, ChangeHealthDelta
 from repowise.core.analysis.review_directive import (
     CoveringTestEvidence,
     ReviewAction,
     ReviewDirective,
     review_directive,
+    review_order,
 )
+from repowise.server.mcp_server._test_selection import UNAVAILABLE_REASON
 
 #: Actionable findings carried in the default response. The rest are counted
 #: and recoverable by an exact call, never silently dropped.
@@ -24,11 +31,20 @@ TOP_FINDINGS_LIMIT = 3
 #: Reasons carried on the directive.
 REASON_LIMIT = 3
 
+#: Deleted sources listed with where their code went.
+MOVED_TO_LIMIT = 10
+#: Per-file score rows carried in ``health_delta.files``.
+FILE_ROWS_LIMIT = 10
+
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
 
 #: Test ids rendered into a single run command.
 _TESTS_SHOWN = 3
+
+#: Actions that restate a status field (``health_delta.skipped``,
+#: ``impacted_tests.status``) and name nothing in the diff: not rendered.
+_STATUS_ONLY_ACTIONS = frozenset({"review_skipped_files", "establish_test_coverage"})
 
 
 def directive(delta: ChangeHealthDelta, tests: dict[str, Any] | None) -> dict[str, Any]:
@@ -52,13 +68,15 @@ def _test_evidence(tests: dict[str, Any] | None) -> CoveringTestEvidence:
         # report and nothing to ask for.
         return CoveringTestEvidence()
     to_run = tuple(tests.get("tests_to_run") or ())
-    if to_run:
-        state = "available"
-    elif tests.get("status") in {"no_map", "no_index"}:
-        state = "unavailable"
-    else:
-        state = "available"
-    return CoveringTestEvidence(state=state, tests_to_run=to_run, basis=tests.get("basis"))
+    state = "unavailable" if tests.get("status") == "no_index" else "available"
+    run_all = None
+    if tests.get("run_all"):
+        run_all = (tests.get("reasons") or [UNAVAILABLE_REASON])[0]
+    elif tests.get("status") == "degraded":
+        run_all = tests["summary"]
+    return CoveringTestEvidence(
+        state=state, tests_to_run=to_run, basis=tests.get("basis"), run_all=run_all
+    )
 
 
 def _render_actions(decided: ReviewDirective) -> list[str]:
@@ -76,11 +94,13 @@ def _render_actions(decided: ReviewDirective) -> list[str]:
 
 
 def _render_action(action: ReviewAction, inspected: int) -> str | None:
+    if action.kind in _STATUS_ONLY_ACTIONS:
+        return None
     if action.kind == "inspect_finding":
         if inspected >= _ACTIONABLE_FINDINGS:
             return None
         return f"{action.explanation} ({action.targets[0]})"
-    if action.kind == "run_tests":
+    if action.kind == "run_tests" and action.targets:
         return f"Run: {' '.join(action.targets[:_TESTS_SHOWN])}"
     return action.explanation
 
@@ -90,20 +110,14 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
 
     Names the scope and the tests to extend from the rows' hints, riskiest
     file first, so the agent writes the missing test where the suite already
-    exercises the code. Stale coverage leads instead: its gaps are not real yet.
+    exercises the code. Files changed since the coverage was measured carry no
+    figure; ``patch_coverage.freshness`` and ``file_counts.stale_file`` say so.
     """
     uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
     if uncovered <= 0:
         return _partial_action(block)
     lines = f"{uncovered} changed executable line{'' if uncovered == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")
-    if block["scope"]["freshness"] == "stale":
-        # Stale line numbers describe other code: the fix is a fresh run first.
-        return (
-            "Stored coverage predates this change: re-run the tests with coverage, then "
-            "`repowise coverage add` (the hook does it automatically) and call again "
-            f"({lines} read as uncovered until then)"
-        )
     tests = _hinted_tests(block["files"])
     text = f"{lines} {'is' if uncovered == 1 else 'are'} uncovered; "
     if tests:
@@ -114,7 +128,7 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
 def _partial_action(block: dict[str, Any] | None) -> str | None:
     """The next action when every changed line ran but some took only part of their branches."""
     partial = _partial_line_count(block)
-    if not partial or block["scope"]["freshness"] == "stale":
+    if not partial:
         return None
     lines = f"{partial} changed line{'' if partial == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")
@@ -144,9 +158,15 @@ def _scope_words(label: str) -> str:
     return f" in {label}" if label else ""
 
 
-def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict[str, Any]:
-    """The compact delta: what got worse, how much was compared, and how sure."""
-    emitted = delta.findings[:TOP_FINDINGS_LIMIT]
+def health_delta_block(
+    delta: ChangeHealthDelta, *, revspec: str | None, full: bool = False
+) -> dict[str, Any]:
+    """The compact delta: what got worse, how much was compared, and how sure.
+
+    ``files`` rows leave out the structure deductions their scores already
+    state; *full* keeps them.
+    """
+    emitted = review_order(delta.findings)[:TOP_FINDINGS_LIMIT]
     block: dict[str, Any] = {
         "status": delta.status,
         "explanation": delta.explanation,
@@ -166,10 +186,15 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     if delta.head is not None:
         block["head"] = delta.head.as_dict()
     if delta.fingerprint is not None:
-        block["analyzer"] = delta.fingerprint.as_dict()
+        block["analyzer"] = {**delta.fingerprint.as_dict(), "context": delta.context}
     if len(delta.findings) > len(emitted):
         block["findings_reduced_reason"] = "top_findings_cap"
         block["all_findings_via"] = _call(revspec, extra="include=['findings']")
+    block.update(_nonzero(improved=delta.improved_total, moved=delta.moved_total))
+    if delta.moved_to:
+        block["moved_to"] = dict(list(delta.moved_to.items())[:MOVED_TO_LIMIT])
+    if delta.files:
+        block.update(_file_scores(delta.files, full=full))
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
@@ -177,8 +202,33 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     return block
 
 
-def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
-    """One surfaced finding, with the exact call that expands it."""
+#: ``10 - score`` under ``structure_only``, so a default row leaves them out.
+_DERIVED_FILE_FIELDS = ("base_structure", "head_structure")
+
+
+def _file_scores(rows: list[FileScoreDelta], *, full: bool = False) -> dict[str, Any]:
+    """The changed files' scores before and after, and their base-nloc average."""
+    shown = [r.as_dict() for r in rows]
+    if not full:
+        shown = [
+            {k: v for k, v in row.items() if k not in _DERIVED_FILE_FIELDS}
+            for row in shown
+        ]
+    out: dict[str, Any] = {
+        "score_basis": SCORE_BASIS,
+        "files": shown[:FILE_ROWS_LIMIT],
+        "files_total": len(rows),
+    }
+    change = score_change(rows)
+    if change is not None:
+        out["score_change"] = change.as_dict()
+    return out
+
+
+def finding_row(
+    finding: ChangeFinding, revspec: str | None, *, inspect: bool = False
+) -> dict[str, Any]:
+    """One surfaced finding; *inspect* adds the exact call that expands it."""
     row: dict[str, Any] = {
         "id": finding.change_finding_id,
         "change": finding.change_kind,
@@ -192,8 +242,9 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
             "confidence": finding.attribution_confidence,
             "why": finding.attribution_detail,
         },
-        "inspect": _call(revspec, extra=f"finding_id={finding.change_finding_id!r}"),
     }
+    if inspect:
+        row["inspect"] = _call(revspec, extra=f"finding_id={finding.change_finding_id!r}")
     if finding.suggestion and finding.suggestion != finding.reason:
         row["suggestion"] = finding.suggestion
     if finding.symbol:
@@ -202,6 +253,8 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
         row["lines"] = [finding.line_start, finding.line_end or finding.line_start]
     if finding.severity_before:
         row["severity_before"] = finding.severity_before
+    if finding.moved_from:
+        row["moved_from"] = finding.moved_from
     if finding.opportunity_id:
         row["opportunity_id"] = finding.opportunity_id
         row["opportunity_rank"] = finding.opportunity_rank
@@ -213,7 +266,6 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
 def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
     """The drill-down view: the row plus the evidence behind it."""
     row = finding_row(finding, revspec)
-    row.pop("inspect", None)
     row["evidence"] = finding.evidence
     row["health_impact"] = finding.health_impact
     return row
@@ -222,10 +274,9 @@ def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any
 # -- internals --------------------------------------------------------------
 
 
-
-
-
-
+def _nonzero(**counts: int) -> dict[str, int]:
+    """Only the counts that are set, so an ordinary change's block does not grow."""
+    return {name: count for name, count in counts.items() if count}
 
 
 def _counts(findings: list[ChangeFinding], attribute: str) -> dict[str, int]:
@@ -244,5 +295,6 @@ def _skipped(skipped: dict[str, str]) -> dict[str, Any]:
 
 
 def _call(revspec: str | None, *, extra: str) -> str:
+    # Single-quoted by contract (tests and clients pin it); new calls use next_call.render_call.
     ref = f"revspec={revspec!r}, " if revspec else ""
     return f"get_change_risk({ref}{extra})"

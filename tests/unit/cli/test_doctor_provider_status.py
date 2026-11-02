@@ -31,7 +31,7 @@ def _patch_provider_state(
     )
     monkeypatch.setattr(
         "repowise.cli.helpers.validate_provider_config",
-        lambda: warnings or [],
+        lambda **_kw: warnings or [],
     )
 
 

@@ -34,7 +34,20 @@ from pathlib import Path
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .context import ResolverContext
 
-_SOURCE_TU_EXTS: tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".c++", ".cppm", ".ixx", ".mxx")
+_SOURCE_TU_EXTS: tuple[str, ...] = (
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".c++",
+    ".cppm",
+    ".ixx",
+    ".mxx",
+    # Objective-C is a superset of C, so a ``.m`` / ``.mm`` file is a
+    # translation unit for its plain-C symbols too.
+    ".m",
+    ".mm",
+)
 # Include fragments sit with the headers: ``#include "math_impl.inl"`` resolves
 # by the same rules, and a fragment is never a translation unit of its own.
 _HEADER_EXTS: tuple[str, ...] = (

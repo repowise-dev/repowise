@@ -1,14 +1,8 @@
 import * as React from "react";
+import { ProportionBar, type ProportionSegment } from "../shared/proportion-bar";
 
-export interface ReadBarSegment {
-  /** Share of the whole, 0–1. */
-  fraction: number;
-  /** CSS colour. Keep to accent tints so the bar stays inside the one-accent
-   *  rule; semantic red/amber/green belong to health, not to proportions. */
-  color: string;
-  /** Tooltip text for this segment. */
-  title: string;
-}
+/** One segment of a row's split; drawn on the shared share bar. */
+export type ReadBarSegment = ProportionSegment;
 
 export interface ReadItem {
   key: string;
@@ -22,6 +16,9 @@ export interface ReadItem {
   href: string;
   /** Optional proportion bar — use only when the number genuinely splits. */
   bar?: ReadBarSegment[];
+  /** A success dot before the label, for a figure that is good news (a win).
+   *  The word in `label` still names it; the dot only adds tone. */
+  good?: boolean;
 }
 
 /**
@@ -66,7 +63,10 @@ export function ReadsColumn({
               value right on one baseline, which looks tidy in a mockup and is
               ragged with real data: a trailing unit shifts every number to a
               different x, so four figures in a column line up on nothing. */}
-          <span className="block font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            {item.good && (
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-success)]" />
+            )}
             {item.label}
           </span>
           <span className="mt-1 flex items-baseline gap-1.5">
@@ -84,19 +84,13 @@ export function ReadsColumn({
           </span>
 
           {item.bar && item.bar.length > 0 && (
-            <span className="mt-2 flex h-1 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-              {item.bar.map((seg, si) => (
-                <span
-                  key={si}
-                  title={seg.title}
-                  className="h-full"
-                  style={{
-                    width: `${Math.max(0, Math.min(1, seg.fraction)) * 100}%`,
-                    background: seg.color,
-                  }}
-                />
-              ))}
-            </span>
+            <ProportionBar
+              className="mt-2"
+              label={item.label}
+              size="sm"
+              legend={false}
+              segments={item.bar}
+            />
           )}
 
           <span className="mt-1.5 block text-[11px] leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">

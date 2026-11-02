@@ -108,6 +108,28 @@ class TestPkce:
         ):
             assert fragment in url
 
+    def test_authorize_url_carries_the_link_source_and_install_id(self, monkeypatch):
+        from repowise.cli.platform import identity
+
+        monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+        monkeypatch.delenv("REPOWISE_TELEMETRY_DISABLED", raising=False)
+        url = auth.build_authorize_url(
+            redirect_uri="http://127.0.0.1:5555/callback", code_challenge="c", state="s",
+            device_name=None,
+        )
+        assert "src=cli_login" in url
+        assert f"aid={identity.get_anonymous_id()}" in url
+
+    @pytest.mark.parametrize("env", ["DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"])
+    def test_authorize_url_omits_the_install_id_with_telemetry_off(self, monkeypatch, env):
+        monkeypatch.setenv(env, "1")
+        url = auth.build_authorize_url(
+            redirect_uri="http://127.0.0.1:5555/callback", code_challenge="c", state="s",
+            device_name=None,
+        )
+        assert "src=cli_login" in url
+        assert "aid=" not in url
+
 
 class TestAuthHeaders:
     def test_signed_out_is_anonymous(self):
@@ -261,8 +283,8 @@ class TestCliCommands:
         )
         linked = {}
         monkeypatch.setattr(
-            "repowise.cli.platform.client.PlatformClient.post",
-            lambda self, path, payload, timeout=None: linked.setdefault(path, payload) or True,
+            "repowise.cli.platform.client.PlatformClient.post_status",
+            lambda self, path, payload, timeout=None: linked.setdefault(path, payload) and 200,
         )
         result = CliRunner().invoke(login_command, ["--with-token"], input="rw_live_secret123\n")
         assert result.exit_code == 0, result.output
@@ -272,3 +294,70 @@ class TestCliCommands:
         assert stored["token_kind"] == "api_key"
         assert stored["access_token"] == "rw_live_secret123"
         assert "auth/link-anon" in linked
+
+    @pytest.mark.parametrize("status", [200, 401, 0])
+    def test_login_records_the_link_anon_status(self, monkeypatch, status):
+        from repowise.cli.commands.login_cmd import login_command
+        from repowise.cli.platform import telemetry
+
+        telemetry.drain_command_outcome()
+        monkeypatch.setattr(auth, "fetch_account", lambda: {"github_username": "raghav"})
+        monkeypatch.setattr(
+            "repowise.cli.platform.client.PlatformClient.post_status",
+            lambda self, path, payload, timeout=None: status,
+        )
+        monkeypatch.setenv("REPOWISE_TELEMETRY_DEBUG", "1")
+        result = CliRunner().invoke(login_command, ["--with-token"], input="rw_live_secret123\n")
+        assert result.exit_code == 0, result.output
+        assert telemetry.drain_command_outcome()["link_anon_status"] == status
+        assert f"auth/link-anon -> HTTP {status}" in result.output
+
+    def test_link_anon_status_is_quiet_without_debug(self, monkeypatch):
+        from repowise.cli.commands.login_cmd import login_command
+
+        monkeypatch.delenv("REPOWISE_TELEMETRY_DEBUG", raising=False)
+        monkeypatch.setattr(auth, "fetch_account", lambda: {"github_username": "raghav"})
+        monkeypatch.setattr(
+            "repowise.cli.platform.client.PlatformClient.post_status",
+            lambda self, path, payload, timeout=None: 200,
+        )
+        result = CliRunner().invoke(login_command, ["--with-token"], input="rw_live_secret123\n")
+        assert "auth/link-anon" not in result.output
+
+    def test_already_signed_in_is_not_counted_as_a_sign_in(self):
+        from repowise.cli.commands.login_cmd import login_command
+        from repowise.cli.platform import telemetry
+
+        telemetry.drain_command_outcome()
+        credentials.save(_oauth_creds(account={"github_username": "raghav"}))
+        result = CliRunner().invoke(login_command, [])
+        assert result.exit_code == 0
+        assert "Already signed in" in result.output
+        assert telemetry.drain_command_outcome() == {"already_signed_in": True}
+
+
+class TestPlatformClientPost:
+    def _client(self, monkeypatch, outcome):
+        import httpx
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return httpx.Response(outcome, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        return PlatformClient()
+
+    @pytest.mark.parametrize("code", [200, 204, 401, 500])
+    def test_post_status_returns_the_http_status(self, monkeypatch, code):
+        assert self._client(monkeypatch, code).post_status("x", {}) == code
+
+    def test_post_status_is_zero_without_an_answer(self, monkeypatch):
+        import httpx
+
+        client = self._client(monkeypatch, httpx.ConnectError("offline"))
+        assert client.post_status("x", {}) == 0
+
+    @pytest.mark.parametrize(("code", "ok"), [(200, True), (201, True), (401, False), (500, False)])
+    def test_post_still_returns_success(self, monkeypatch, code, ok):
+        assert self._client(monkeypatch, code).post("x", {}) is ok

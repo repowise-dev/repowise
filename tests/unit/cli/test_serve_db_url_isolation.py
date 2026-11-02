@@ -20,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import _embedder, _lock, _ports
 
 SENTINEL = "sqlite+aiosqlite:///:memory:"
 
@@ -28,10 +29,10 @@ SENTINEL = "sqlite+aiosqlite:///:memory:"
 def stub_serve(monkeypatch) -> None:
     """Everything `serve` would really do, except touching the database."""
     monkeypatch.setattr("uvicorn.run", lambda _app, **_kwargs: None)
-    monkeypatch.setattr(serve_cmd, "_load_local_provider_config", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_setup_embedder", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_serve_lock_path", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_find_free_port", lambda _host, port, _label: port)
+    monkeypatch.setattr(_embedder, "_load_local_provider_config", lambda: None)
+    monkeypatch.setattr(_embedder, "_setup_embedder", lambda: None)
+    monkeypatch.setattr(_lock, "_serve_lock_path", lambda: None)
+    monkeypatch.setattr(_ports, "_find_free_port", lambda _host, port, _label: port)
     monkeypatch.delenv("REPOWISE_API_KEY", raising=False)
     monkeypatch.setenv("REPOWISE_HOST", "127.0.0.1")
 
@@ -78,6 +79,35 @@ def test_serve_adopts_the_local_store_when_nothing_is_set(
 
     assert result.exit_code == 0, result.output
     assert tmp_path.name in os.environ["REPOWISE_DB_URL"]
+
+
+def test_serve_does_not_pin_a_shared_db_at_a_workspace_root(
+    stub_serve: None, monkeypatch, tmp_path
+) -> None:
+    """A workspace root's own .repowise/ must not become "the" shared database.
+
+    Auto-detect exists for the single-repo case: a `.repowise/` beside cwd
+    means a real store to open. A workspace root also keeps its own
+    `.repowise/` (for the shared provider config), so the same check fires
+    there too. But setting REPOWISE_DB_URL at a workspace root is read back
+    by the server's workspace-detection code (``app.py``) as "the user
+    explicitly configured one shared database for the whole workspace" — the
+    real, separate shared-DB/Postgres feature — which then routes every
+    member repo's lookup through the workspace root's own near-empty
+    coordinator wiki.db instead of each repo's own <repo>/.repowise/wiki.db.
+    Every repo in the workspace reports as unindexed with zeroed stats, and
+    none of them open, even though each repo's own index is complete and
+    correct on disk.
+    """
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise-workspace.yaml").write_text("version: 1\nrepos: []\n")
+    monkeypatch.chdir(tmp_path)
+    os.environ.pop("REPOWISE_DB_URL", None)
+
+    result = CliRunner().invoke(serve_cmd.serve_command, ["--no-ui"])
+
+    assert result.exit_code == 0, result.output
+    assert "REPOWISE_DB_URL" not in os.environ
 
 
 def test_the_previous_test_did_not_leak_its_db_url() -> None:

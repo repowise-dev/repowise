@@ -11,6 +11,15 @@ import contextlib
 import sys
 from typing import IO
 
+#: What stdout could carry before it was reconfigured: the terminal's real
+#: encoding, which decides whether glyphs print as Unicode or ASCII.
+_original_stdout_encoding: str | None = None
+
+
+def original_stdout_encoding() -> str | None:
+    """Stdout's encoding as the process found it, before the UTF-8 reconfigure."""
+    return _original_stdout_encoding
+
 
 def _ensure_utf8_stdio() -> None:
     """Reconfigure ``sys.stdout``/``sys.stderr`` to UTF-8 with replacement.
@@ -32,6 +41,8 @@ def _ensure_utf8_stdio() -> None:
     silently tolerant of any reconfigure failure — the original behavior
     is preserved in that case rather than masked by an exception.
     """
+    global _original_stdout_encoding
+    _original_stdout_encoding = getattr(sys.stdout, "encoding", None)
     for stream in (sys.stdout, sys.stderr):
         _reconfigure(stream)
 

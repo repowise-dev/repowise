@@ -13,6 +13,7 @@ from .refactoring_tree_fixture import (
     MANIFEST,
     TREES_DIR,
     UNCOVERED,
+    analyze_tree,
     archetype_roots,
     compose_tree,
     load_golden,
@@ -22,6 +23,10 @@ from .refactoring_tree_fixture import (
 )
 
 GOLDEN = "golden_opportunities.json"
+
+# The golden pins composition mechanics, clone demotion included; the registry's
+# visibility rule is tested on its own in test_refactoring_opportunity.py.
+pytestmark = pytest.mark.usefixtures("dry_violation_shown")
 
 
 def test_corpus_composition_matches_the_golden() -> None:
@@ -117,20 +122,26 @@ def test_a_split_offered_on_go_is_classified_not_dropped() -> None:
 
     Two facts refuse the promotion independently: this fixture's groups cannot
     be named, and no split can prove the absence of a file-scoped build
-    constraint. See ``UNCOVERED``.
+    constraint. See ``UNCOVERED``. The unnamed group also holds it out of the
+    steps: it stays a plan, never an instruction.
     """
+    from repowise.core.analysis.health.refactoring.preconditions import classify_step
+
+    report = analyze_tree(TREES_DIR / "gopkg")
     splits = [
-        step
-        for opportunity in compose_tree(TREES_DIR / "gopkg")
-        for step in opportunity["steps"]
-        if step["refactoring_type"] == "split_file"
+        row
+        for row in getattr(report, "refactoring_suggestions", None) or []
+        if row.refactoring_type == "split_file"
     ]
     if not splits:
         pytest.skip("no Go grammar on this build")
-    for step in splits:
-        assert step["applicability"]["facts"]["shim_required"] is False
-        assert step["applicability"]["classification"] == "judgment"
-        assert step["applicability"]["reasons"] == ["no_named_target"]
+    for row in splits:
+        applicability = classify_step(row)
+        assert applicability.facts["shim_required"] is False
+        assert applicability.classification == "judgment"
+        assert applicability.reasons == ("needs_design", "build_constraints_unknown")
+    for opportunity in compose_tree(TREES_DIR / "gopkg"):
+        assert "split_file" not in [step["refactoring_type"] for step in opportunity["steps"]]
 
 
 def test_composition_is_deterministic_across_runs() -> None:

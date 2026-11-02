@@ -73,6 +73,22 @@ describe("StatsReport", () => {
     expect(screen.getByText("70 lines of tests")).toBeInTheDocument();
   });
 
+  it("states the index size when the server measured it", () => {
+    render(<StatsReport data={{ ...makeData(), index_storage_bytes: 5 * 1024 * 1024 }} />);
+    expect(document.body.textContent).toMatch(/Repowise index .* takes 5(\.0)? MB on disk/);
+  });
+
+  it("counts merge commits apart from the commit total", () => {
+    const data = makeData();
+    render(<StatsReport data={{ ...data, origin: { ...data.origin, total_merge_commits: 312 } }} />);
+    expect(screen.getByText("plus 312 merges")).toBeInTheDocument();
+  });
+
+  it("says nothing about merges an older index did not count", () => {
+    render(<StatsReport data={makeData()} />);
+    expect(screen.queryByText(/merges?$/)).not.toBeInTheDocument();
+  });
+
   it("names the commit window when it is not the whole history", () => {
     render(<StatsReport data={makeData()} />);
     expect(screen.getByText(/Drawn from the latest 6 of 5,000 commits/)).toBeInTheDocument();

@@ -33,6 +33,8 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
+from repowise.core.ingestion.languages.specs.aura import aura_bundle
+
 # Findings at or above this confidence, with no risk factors, are presented as
 # deletion-ready ("safe to delete"). Anything below — or anything carrying a
 # risk factor — is a review candidate. Kept here as the single source of truth
@@ -45,6 +47,12 @@ SAFE_CONFIDENCE_THRESHOLD: float = 0.7
 # below the deletion-ready threshold so no verdict is issued on it.
 NO_GIT_SIGNAL_CONFIDENCE: float = 0.5
 
+# Confidence for an unused export whose absence nothing could have shown: no
+# importer of its file names the symbols it takes (a C ``#include``, a C#
+# ``using``, or no importer at all). Below the deletion-ready threshold, above
+# the review cap: still ranked, never issued as a deletion.
+UNPROVEN_EXPORT_CONFIDENCE: float = 0.6
+
 # Confidence ceiling applied to a finding that carries a runtime-load risk
 # factor. 0.4 is the default ``min_confidence`` floor across CLI, REST router,
 # and MCP tools (which import this value as their single source of truth), so the
@@ -55,8 +63,12 @@ RISK_CAP_CONFIDENCE: float = 0.4
 # Finding kinds that are never deletion-ready, whatever their confidence. A
 # whole file with no importers was measured well below the deletion-ready bar
 # (files read by build scripts, manifests and runtime loaders by path), so it
-# is a review candidate until path mentions and entry-shape evidence exist.
-REVIEW_ONLY_KINDS: frozenset[str] = frozenset({"unreachable_file"})
+# is a review candidate until path mentions and entry-shape evidence exist. A
+# whole package and a private symbol the graph saw no call to are the same kind
+# of claim, so neither may be issued as a deletion.
+REVIEW_ONLY_KINDS: frozenset[str] = frozenset(
+    {"unreachable_file", "zombie_package", "unused_internal"}
+)
 
 # Filename-stem tokens → risk-factor tag. Matched against the basename split on
 # ``. _ -`` so ``environment.db.js`` yields {environment, db, js} → environment
@@ -146,6 +158,7 @@ _FACTOR_BLURB: dict[str, str] = {
     "database": "database/schema",
     "script": "script/task",
     "asset": "runtime-loaded web asset",
+    "aura": "Salesforce Aura bundle",
 }
 
 _SPLIT_RE = re.compile(r"[._\-]+")
@@ -186,6 +199,10 @@ def path_risk_factors(file_path: str) -> tuple[str, ...]:
         if tag:
             factors.add(tag)
 
+    # The Lightning runtime loads a whole Aura bundle, so an uncalled function may be load-bearing.
+    if aura_bundle(norm) is not None:
+        factors.add("aura")
+
     return tuple(sorted(factors))
 
 
@@ -199,25 +216,3 @@ def risk_evidence(factors: tuple[str, ...] | list[str]) -> str | None:
         "outside static imports — review before deleting"
     )
 
-
-def effective_safe_to_delete(
-    confidence: float,
-    file_path: str,
-    stored_safe: bool = True,
-    kind: str | None = None,
-) -> bool:
-    """Re-derive whether a finding is genuinely deletion-ready.
-
-    Monotonic — only ever *downgrades* the stored flag, never upgrades it, so
-    it is safe to apply to findings persisted before risk factors existed:
-
-    - never True when ``stored_safe`` is already False,
-    - never True below :data:`SAFE_CONFIDENCE_THRESHOLD`,
-    - never True when the path carries any runtime-load risk factor,
-    - never True for a :data:`REVIEW_ONLY_KINDS` finding.
-    """
-    if not stored_safe or kind in REVIEW_ONLY_KINDS:
-        return False
-    if confidence < SAFE_CONFIDENCE_THRESHOLD:
-        return False
-    return not path_risk_factors(file_path)

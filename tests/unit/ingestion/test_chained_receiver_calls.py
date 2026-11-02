@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from repowise.core.ingestion.call_resolver import CallResolver
-from repowise.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.ingestion.models import CallReceiver, FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
 
@@ -427,3 +427,205 @@ class TestPyChainedFieldCalls:
             },
         )
         assert [(c.receiver_name, c.target_name) for c in parsed["m.py"].calls] == [(None, "make")]
+
+
+# --- py_property_and_returned_receivers ---------------------------------------
+
+
+def _py_returned(store: str, app: str) -> dict[str, tuple[str, str]]:
+    return {
+        "pkg/users.py": (
+            "python",
+            "class Users:\n    def get(self, slug):\n        return slug\n",
+        ),
+        "pkg/store.py": ("python", "from pkg.users import Users\n\n" + store),
+        "pkg/app.py": ("python", "from pkg.store import Store\n\n" + app),
+    }
+
+
+_PY_GET = ("pkg/app.py::run", "pkg/users.py::Users::get")
+
+
+def _typed(edges: list[tuple[str, str, float, str]]) -> set[tuple[str, str, str]]:
+    """Edges into ``Users.get`` a receiver type proved, bare-name guesses left out."""
+    prefixes = ("receiver_chain_", "receiver_typed_", "return_type_")
+    return {
+        (e[0], e[1], e[3]) for e in edges if e[1] == _PY_GET[1] and e[3].startswith(prefixes)
+    }
+
+
+class TestPyPropertyAndReturnedReceivers:
+    def test_a_property_getter_annotation_types_the_hop(self, tmp_path: Path) -> None:
+        store = (
+            "class Store:\n"
+            "    @property\n"
+            "    def users(self) -> Users:\n"
+            "        return Users()\n\n"
+            "    @users.setter\n"
+            "    def users(self, value):\n"
+            "        pass\n"
+        )
+        app = "def run(store: Store):\n    return store.users.get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+        assert (*_PY_GET, "receiver_chain_import") in _typed(edges)
+
+    def test_a_cached_property_types_the_hop(self, tmp_path: Path) -> None:
+        store = (
+            "import functools\n\n"
+            "class Store:\n"
+            "    @functools.cached_property\n"
+            "    def users(self) -> 'Users':\n"
+            "        return Users()\n"
+        )
+        app = "def run(store: Store):\n    return store.users.get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+        assert (*_PY_GET, "receiver_chain_import") in _typed(edges)
+
+    def test_an_unannotated_or_optional_property_types_nothing(self, tmp_path: Path) -> None:
+        for annotation in ("", " -> Optional[Users]", " -> Users | None"):
+            store = (
+                "class Store:\n"
+                "    @property\n"
+                f"    def users(self){annotation}:\n"
+                "        return Users()\n"
+            )
+            app = "def run(store: Store):\n    return store.users.get('x')\n"
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_a_plain_method_is_not_a_property(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def users(self) -> Users:\n        return Users()\n"
+        app = "def run(store: Store):\n    return store.users.get('x')\n"
+        assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_an_assigned_call_types_the_local(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def lookup(self) -> Users:\n        return Users()\n"
+        for value in ("store.lookup()", "await store.lookup()"):
+            app = f"async def run(store: Store):\n    u = {value}\n    return u.get('x')\n"
+            edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+            assert (*_PY_GET, "receiver_typed_import") in _typed(edges)
+
+    def test_a_chained_call_types_the_outer_receiver(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def lookup(self) -> Users:\n        return Users()\n"
+        app = "def run(store: Store):\n    return store.lookup().get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+        assert (*_PY_GET, "return_type_import") in _typed(edges)
+
+    def test_an_unannotated_return_types_nothing(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def lookup(self):\n        return Users()\n"
+        app = (
+            "def run(store: Store):\n"
+            "    u = store.lookup()\n"
+            "    u.get('x')\n"
+            "    return store.lookup().get('y')\n"
+        )
+        assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_a_rebound_local_types_nothing(self, tmp_path: Path) -> None:
+        store = (
+            "class Store:\n"
+            "    def lookup(self) -> Users:\n"
+            "        return Users()\n\n"
+            "    def other(self):\n"
+            "        return None\n"
+        )
+        for rebind in ("u = None", "u = store.other()", "for u in []: pass"):
+            app = (
+                "def run(store: Store):\n"
+                "    u = store.lookup()\n"
+                f"    {rebind}\n"
+                "    return u.get('x')\n"
+            )
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+        same_line = "def run(store: Store):\n    u = store.lookup(); u = 3\n    return u.get('x')\n"
+        assert not _typed(_edges(tmp_path, _py_returned(store, same_line), _PY_LINKS))
+
+    def test_an_async_def_types_only_an_awaited_call(self, tmp_path: Path) -> None:
+        store = "class Store:\n    async def lookup(self) -> Users:\n        return Users()\n"
+        awaited = "async def run(store: Store):\n    u = await store.lookup()\n    u.get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, awaited), _PY_LINKS)
+        assert (*_PY_GET, "receiver_typed_import") in _typed(edges)
+        for app in (
+            "async def run(store: Store):\n    u = store.lookup()\n    u.get('x')\n",
+            "async def run(store: Store):\n    store.lookup().get('x')\n",
+        ):
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_a_property_called_as_a_method_types_nothing(self, tmp_path: Path) -> None:
+        store = (
+            "class Store:\n    @property\n    def users(self) -> Users:\n        return Users()\n"
+        )
+        for app in (
+            "def run(store: Store):\n    return store.users().get('x')\n",
+            "def run(store: Store):\n    u = store.users()\n    return u.get('x')\n",
+        ):
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_an_inner_call_keeps_only_a_dotted_receiver(self, tmp_path: Path) -> None:
+        source = "def run(items):\n    self.client.get(1).close()\n    items[0].get(2).close()\n"
+        parsed = _parse_all(tmp_path, {"m.py": ("python", source)})
+        receivers = {c.line: c.receiver_call for c in parsed["m.py"].calls if c.target_name == "close"}
+        assert receivers[2] == CallReceiver("get", "self.client", 1)
+        assert receivers[3] is None
+
+
+# --- go_chained_field_calls --------------------------------------------------
+
+_GO_COMMAND = (
+    "package cmd\n\n"
+    "type GitCmd struct{}\n\n"
+    "func (g *GitCmd) DiffFilesCh() {}\n\n"
+    "type Base struct{}\n\n"
+    "func (b *Base) Close() {}\n\n"
+    "type Command struct {\n"
+    "\t*Base\n"
+    "\tCmd      *GitCmd `json:\"cmd\"`\n"
+    "\tcommands []*GitCmd\n"
+    "}\n\n"
+)
+
+
+class TestGoChainedFieldCalls:
+    """Go names its receiver, so the head is a parameter; each hop a struct field."""
+
+    def _edges(self, tmp_path: Path, body: str) -> list[tuple[str, str, float, str]]:
+        return _chained(_edges(tmp_path, {"cmd/command.go": ("go", _GO_COMMAND + body)}))
+
+    def test_a_field_types_the_chain(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.Cmd.DiffFilesCh()\n}\n"
+        assert self._edges(tmp_path, body) == [
+            (
+                "cmd/command.go::Command::Run",
+                "cmd/command.go::GitCmd::DiffFilesCh",
+                0.93,
+                "receiver_chain_same_file",
+            )
+        ]
+
+    def test_an_embedded_field_is_read_by_its_type_name(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.Base.Close()\n}\n"
+        assert [e[:2] for e in self._edges(tmp_path, body)] == [
+            ("cmd/command.go::Command::Run", "cmd/command.go::Base::Close")
+        ]
+
+    def test_a_slice_field_yields_no_edge(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.commands.DiffFilesCh()\n}\n"
+        assert self._edges(tmp_path, body) == []
+
+    def test_a_method_missing_on_the_field_type_yields_no_edge(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.Cmd.Close()\n}\n"
+        assert self._edges(tmp_path, body) == []
+
+    def test_a_package_qualified_head_yields_no_edge(self, tmp_path: Path) -> None:
+        """``pkg.Var.M()`` has the same shape as ``c.field.M()``, but ``pkg`` types nothing."""
+        body = "func run() {\n\tconfig.Cmd.DiffFilesCh()\n}\n"
+        assert self._edges(tmp_path, body) == []
+
+    def test_a_package_qualified_field_type_is_not_the_local_type(self, tmp_path: Path) -> None:
+        """``fd *sftp.File`` wraps a foreign ``File``; its ``Write`` is not this file's."""
+        source = (
+            "package sftpfs\n\n"
+            "type File struct {\n\tfd *sftp.File\n}\n\n"
+            "func (f *File) Write(b []byte) {}\n\n"
+            "func (f *File) WriteString(s string) {\n\tf.fd.Write([]byte(s))\n}\n"
+        )
+        assert _chained(_edges(tmp_path, {"sftpfs/file.go": ("go", source)})) == []

@@ -53,7 +53,7 @@ export function CodeBlock({ code, language, html }: CodeBlockProps) {
 
       <div
         className="overflow-x-auto text-sm [&>pre]:p-4 [&>pre]:m-0 [&>pre]:bg-transparent!"
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={{ __html: html /* shiki output; repowise-security-ignore: unsafe_inner_html */ }}
       />
     </div>
   );

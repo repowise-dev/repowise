@@ -32,9 +32,8 @@ By embedding codebase intelligence and MCP workflow guidance directly into
 `CLAUDE.md`, Claude Code treats it as project context and naturally reaches for
 Repowise tools without being prompted.
 
-The same principle applies to Cursor's `.cursor/rules` / `cursor.md`, GitHub
-Copilot's `.github/copilot-instructions.md`, and any other file an AI editor
-auto-loads at session start.
+The same principle applies to Codex's `AGENTS.md`, Cursor's rules, and any
+other file an AI editor auto-loads at session start.
 
 ---
 
@@ -116,39 +115,30 @@ which the placeholder comment warns against.
 
 ## 4. What goes into the Repowise section
 
-The section has three parts. Total target length: **150–250 lines**. Conciseness
-is intentional — research shows AI assistants ignore bloated configuration files.
+The block is read into the agent's context on every turn, so it is lean by
+default. `editor_files.sections` picks the sections (see
+[CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
+only the queries the chosen sections render. Both templates include the shared
+`_editor_block.j2` and differ only in the pre-edit sentence and in how tools
+are named: CLAUDE.md says Claude Code calls them `mcp__repowise__<tool>`
+(`mcp__plugin_repowise_repowise__<tool>` under the plugin), AGENTS.md names the
+`repowise` MCP server and leaves the naming to the client.
 
-### Part 1: Codebase Intelligence
-
-Auto-generated from indexed data. Updates on every `repowise update`.
-
-| Sub-section | Source | Cap |
-|-------------|--------|-----|
-| Architecture summary | First 4 sentences from `repo_overview` wiki page | 4 sentences |
-| Key Modules | `module_page` pages sorted by PageRank desc, joined with git_metadata for owner | Top 10 |
-| Entry Points | The curated `kg_project_meta` list; otherwise `graph_nodes` where `is_entry_point=True`, ranked on execution-start evidence | Top 10 |
-| Tech Stack | Filesystem scan (package.json, pyproject.toml, Cargo.toml, go.mod, etc.) | All detected |
-| Hotspots | `git_metadata` where `is_hotspot=True`, sorted by `churn_percentile` desc | Top 5 |
-
-### Part 2: MCP Tools Workflow Guide
-
-**Static** — the same text for every repo. Hardcoded in `claude_md.j2`. Teaches
-Claude Code *when* to call each MCP tool using natural workflow framing rather than
-imperatives.
-
-This is the most important part. The phrasing matters: "Starting a new task?
-Call `get_overview()` first" is more effective than "ALWAYS call `get_overview()`
-before doing anything."
-
-### Part 3: Codebase Conventions
-
-Auto-generated from indexed data.
-
-| Sub-section | Source | Cap |
-|-------------|--------|-----|
-| Architectural Decisions | `decision_records` where `status='active'`, sorted by `staleness_score` asc | Top 8 |
-| Commands | Filesystem scan: `package.json` scripts, `Makefile` targets, `pyproject.toml` pytest/ruff | All detected |
+| Section | Default | Source | Cap |
+|---------|---------|--------|-----|
+| Header | always | Date and commit; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
+| `architecture` | on | Lead sentence of the `repo_overview` wiki page | 1 sentence |
+| `key_modules` | on | `module_page` pages by PageRank desc | Top 6 |
+| `entry_points` | on | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
+| `hotspots` | on | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
+| `health` | on | Health score, band and worst file | 1 line |
+| `code_health` | off | Every health signal (replaces `health`) | 1 line |
+| `fix_first` | off | The Fix-first queue | Top 3 |
+| `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
+| `how_to_work` | on | Static: task routing (exact names to Grep/Read; flow, callers, risk, why and finishing checks to one Repowise call each), distill, decision capture; a keyless bullet when the index has no model | 10-11 lines |
+| `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
+| `tools` | off | `tool_table.py`, the MCP tool table | All tools |
+| `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
 
 ---
 
@@ -187,6 +177,10 @@ WHERE repository_id = :repo_id AND is_entry_point = TRUE
 # then centrality as a tiebreak; sliced to 10 after ranking.
 ```
 
+Both lists pass through `orientation_entry_points_view`, the rule
+`get_overview` shares. It sets build and CI tooling (`scripts/`, `docker/`) aside
+unless that is all there is.
+
 PageRank deliberately does **not** lead here. Centrality rewards fan-in, so it
 floats a widely-imported barrel above the real front door — see
 `generation/entry_points.py`.
@@ -205,8 +199,7 @@ LIMIT 5
 SELECT * FROM decision_records
 WHERE repository_id = :repo_id AND status = 'active'
 ORDER BY staleness_score ASC
-LIMIT 8
-# → uses first 100 chars of rationale field
+LIMIT 9   -- 3 shown, titles only; the spare rows cover records in excluded paths
 ```
 
 **Average confidence** (`_get_avg_confidence`)
@@ -292,7 +285,7 @@ EditorFileDataFetcher.fetch()
     │  AsyncSession + repo_id + repo_path
     │
     ├── crud.get_repository()          → repo.name
-    ├── _get_architecture_summary()    → str (2-4 sentences)
+    ├── _get_architecture_summary()    → str (lead sentence)
     ├── _get_key_modules()             → list[KeyModule]
     ├── _get_entry_points()            → list[str]
     ├── detect_tech_stack()            → list[TechStackItem]
@@ -367,8 +360,8 @@ prompt-gated in an interactive run. Only `.repowise/mcp.json` and the root
 *Machine-wide*, outside the repo, one shared copy for every repo you index, all
 written by `register_editor_clients()` in `editor_setup.py`:
 
-- the `repowise` MCP entry in `~/.claude/settings.json` and in Claude Desktop's
-  config
+- the `repowise` MCP entry in `~/.claude.json` (Claude Code's user scope) and in
+  Claude Desktop's config
 - the Claude Code PostToolUse and SessionStart hooks
 - `env.ENABLE_TOOL_SEARCH` in `~/.claude/settings.json` (skipped for repos on
   the lean MCP tool profile, and never overwritten if you already set it)
@@ -467,6 +460,7 @@ Returns 422 if `local_path` is not accessible from the server.
 # .repowise/config.yaml
 editor_files:
   claude_md: true     # default: true. Set false to disable entirely.
+  sections: ["+commands"]   # optional; adjusts the default section set
 ```
 
 The `--no-claude-md` CLI flag sets `editor_files.claude_md: false` in
@@ -544,8 +538,10 @@ from .cursor_md import CursorMdGenerator  # add this line
 
 ### Step 5 — Hook into init and update
 
-In `_maybe_generate_claude_md()` (or extract a more generic
-`_maybe_generate_editor_files()` helper):
+Add a sibling of `maybe_generate_claude_md()` in
+`packages/cli/src/repowise/cli/editor_integrations/claude.py` (Codex's
+`maybe_generate_agents_md()` in `codex.py` follows the same contract), or extract a
+generic helper both can share:
 
 ```python
 # After existing CLAUDE.md generation

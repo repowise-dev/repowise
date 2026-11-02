@@ -183,6 +183,8 @@ LINE_PREFIXES: dict[str, tuple[str, ...]] = {
     "lua": ("--",),
     "hs": ("--",),
     "elm": ("--",),
+    # Tree-sitter query files (and Scheme). Longest prefix first: ";; x" is common.
+    "scm": (";;", ";"),
 }
 
 # Extensions that use C-style /* ... */ block comments.
@@ -272,7 +274,6 @@ _WORD_RE = re.compile(r"[A-Za-z']{2,}")
 _MIN_COMMENT_CHARS = 25
 _MIN_COMMENT_WORDS = 5
 _MAX_COMMENT_CHARS = 600
-_MAX_BLOCK_LINES = 12
 
 
 @dataclass(frozen=True)
@@ -294,6 +295,7 @@ class HarvestedComment:
     end_line: int
     text: str
     strength: int  # number of distinct rationale markers present
+    causal: bool = False  # carries a strong CAUSAL_MARKERS reason
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +314,7 @@ def _strip_comment_open(stripped: str, prefixes: tuple[str, ...]) -> str | None:
 
 # A line that is only a divider rule (``# -------`` / ``// =====`` / ``***``).
 # These delimit comment runs and must never be glued into the rationale text.
-_SEPARATOR_CHARS = frozenset("-=*~_#/+.<> ")
+_SEPARATOR_CHARS = frozenset("-=*~_#/+.<>; ")
 
 
 def _is_separator(body: str) -> bool:
@@ -567,6 +569,7 @@ def harvest_file_rationale(
     max_per_file: int = 3,
     include_docstrings: bool = False,
     require_causal: bool = True,
+    require_marker: bool = True,
 ) -> list[HarvestedComment]:
     """Mine the rationale-bearing comments from one file's text.
 
@@ -584,7 +587,8 @@ def harvest_file_rationale(
 
     ``require_causal=True`` demands a strong :data:`CAUSAL_MARKERS` reason
     rather than any intent label. The MCP recall miner sets it ``False`` to
-    surface any marker-bearing comment.
+    surface any marker-bearing comment. ``require_marker=False`` keeps a
+    comment with no marker at all, for a caller that ranks by the question.
     """
     ext = ext.lower()
     if ext not in CODE_EXTENSIONS:
@@ -603,7 +607,7 @@ def harvest_file_rationale(
         body = _clean(b.text)
         if _too_thin(body):
             continue
-        if not marker_test(body):
+        if require_marker and not marker_test(body):
             continue
         # License / SPDX / shebang preamble is the dominant false positive.
         if is_license_or_boilerplate(body):
@@ -611,15 +615,15 @@ def harvest_file_rationale(
         if looks_like_commented_out_code(b.body_lines):
             continue
 
-        end = b.end_line
-        if end - b.start_line + 1 > _MAX_BLOCK_LINES:
-            end = b.start_line + _MAX_BLOCK_LINES - 1
+        # The range spans the whole block, so it holds every line the
+        # (char-capped) text quotes.
         kept.append(
             HarvestedComment(
                 start_line=b.start_line,
-                end_line=end,
+                end_line=b.end_line,
                 text=_truncate(body),
                 strength=marker_strength(body),
+                causal=has_causal_marker(body),
             )
         )
 

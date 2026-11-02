@@ -1,4 +1,5 @@
 import type { RecommendationValidation, ValidationBasis } from "@repowise-dev/types/refactoring";
+import { formatNumber } from "../lib/format";
 
 const BASIS_LABEL: Record<ValidationBasis, string> = {
   measured: "Measured coverage",
@@ -27,27 +28,35 @@ export function ValidationSummary({ validation, fileHref }: ValidationSummaryPro
         <p className="text-sm text-[var(--color-text-secondary)]">
           <span className="font-medium text-[var(--color-text-primary)]">{basis}</span>
           {validation.via ? ` via ${validation.via.replace("-", " ")}` : ""}.{" "}
-          {validation.total.toLocaleString()} guarding test
+          {formatNumber(validation.total)} guarding test
           {validation.total === 1 ? "" : "s"}
-          {validation.truncated ? `; ${validation.tests.length.toLocaleString()} shown.` : "."}
+          {validation.truncated ? `; ${formatNumber(validation.tests.length)} shown.` : "."}
         </p>
         {validation.basis === "unknown" ? (
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            No measured or inferred guarding test was found. Treat this as explicit validation work.
+            {validation.prerequisite ??
+              "No measured or inferred guarding test was found. Treat this as explicit validation work."}
           </p>
         ) : null}
       </div>
 
       {validation.tests.length > 0 ? (
         <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-          {validation.tests.map((test) => (
-            <li
-              key={test}
-              className="break-all py-2 font-mono text-xs text-[var(--color-text-secondary)]"
-            >
-              {test}
-            </li>
-          ))}
+          {validation.tests.map((test) => {
+            const reason = validation.reasons?.[test];
+            return (
+              <li key={test} className="py-2">
+                <span className="block break-all font-mono text-xs text-[var(--color-text-secondary)]">
+                  {test}
+                </span>
+                {reason ? (
+                  <span className="mt-0.5 block text-xs text-[var(--color-text-tertiary)]">
+                    {reason}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       ) : null}
 

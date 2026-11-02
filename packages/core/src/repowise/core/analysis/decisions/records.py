@@ -69,6 +69,15 @@ class EmptyModelResponseError(DecisionSourceError):
     """
 
 
+class TruncatedModelResponseError(DecisionSourceError):
+    """The model's reply for one batch stopped at its output token limit.
+
+    The cut-off text is not valid JSON, so :func:`parse_decisions_json` would
+    read it as ``[]``. Raised so the batch is counted as lost, and retried on
+    the next run, rather than read as nothing found.
+    """
+
+
 @dataclass
 class DecisionExtractionReport:
     total_found: int

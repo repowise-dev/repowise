@@ -15,6 +15,7 @@ import useSWR from "swr";
 import {
   ChatHandoffProvider,
   ChatSelectionAffordance,
+  getChatContextPresentation,
   useChatShortcut,
   type ChatContext as PageChatContext,
   type ChatDockCommand,
@@ -139,12 +140,13 @@ export function RepositoryChatProvider({
       ? handoffContext.context
       : pageContext;
 
-  // Without a target the server has nothing to prefetch and would answer with
-  // the static tier the chips already fall back to, so that request is skipped
-  // rather than made and discarded.
-  const suggestionKey = activeContext.target
-    ? `chat-suggestions:${repoId}:${activeContext.kind}:${activeContext.target}`
-    : null;
+  // Without a target the server prefetches nothing and answers only with chart
+  // questions from datasets it already holds, so the request costs no read.
+  // The full chat page shows its own empty-state questions instead.
+  const suggestionKey =
+    activeContext.kind === "chat"
+      ? null
+      : `chat-suggestions:${repoId}:${activeContext.kind}:${activeContext.target ?? ""}`;
   const { data: suggestionData } = useSWR(
     suggestionKey,
     () =>
@@ -157,10 +159,19 @@ export function RepositoryChatProvider({
     { keepPreviousData: false },
   );
   // An empty list means the page measured nothing, which is the static tier's
-  // cue, not an instruction to show no chips at all.
-  const suggestions = suggestionData?.suggestions?.length
-    ? suggestionData.suggestions
-    : undefined;
+  // cue, not an instruction to show no chips at all. A page with no target
+  // measured counts, not the page itself, so its chips lead the static ones.
+  const measured = suggestionData?.suggestions;
+  const suggestions = useMemo(() => {
+    if (!measured?.length) return undefined;
+    if (activeContext.target) return measured;
+    const shown = getChatContextPresentation(activeContext).suggestions;
+    const texts = new Set(measured.map((s) => s.text));
+    return [...measured, ...shown.filter((s) => !texts.has(s.text))].slice(
+      0,
+      Math.max(shown.length, measured.length),
+    );
+  }, [activeContext, measured]);
 
   // The full chat page mounts no dock, so a handoff made there would lead
   // nowhere. Its transcript already carries its own follow-up affordance.

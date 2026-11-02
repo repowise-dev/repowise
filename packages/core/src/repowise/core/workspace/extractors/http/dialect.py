@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..dialect import build_contract
 from .paths import (
     absolute_host,
@@ -77,23 +79,24 @@ def build_provider_contract(
     path_raw: str,
     framework: str,
     line: int | None = None,
-    confidence: float = 0.85,
+    origin: ContractOrigin = ContractOrigin.ROUTE_REGISTRATION,
     handler: str | None = None,
 ) -> Contract | None:
     """Build a provider contract, or ``None`` if the path is unusable.
 
-    A match whose path normalizes to bare ``/`` only counts when the raw text
-    actually carried a path — a template-variable-only or empty route is
-    dropped, matching the legacy extractor's skip rule.
+    An empty path is dropped: with no prefix to stitch onto, nothing was
+    declared. A root route spelled ``/`` is kept; a service whose whole API is
+    ``POST /`` serves it there, and a base path applied later (a Spring
+    context-path) turns it into ``/accounts``.
 
     *handler* is the expression the registration names, for frameworks that
     declare a route away from its handler (an ASP.NET minimal API). It is what
     lets :func:`.contracts.bind_symbol_ids` reach the handler rather than the
     registration site; without it the line lookup binds to ``Program.cs``.
     """
-    norm_path = normalize_http_path(path_raw)
-    if (not norm_path or norm_path == "/") and not path_raw.strip("/"):
+    if not path_raw.strip():
         return None
+    norm_path = normalize_http_path(path_raw)
 
     return build_contract(
         ctx,
@@ -101,7 +104,7 @@ def build_provider_contract(
         contract_type="http",
         role="provider",
         symbol_name=f"{framework}:{method} {path_raw}",
-        confidence=confidence,
+        origin=origin,
         line=line,
         meta={
             "method": method,
@@ -119,7 +122,7 @@ def build_consumer_contract(
     url: str,
     client: str,
     line: int | None = None,
-    confidence: float = 0.75,
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL,
 ) -> Contract | None:
     """Build a consumer contract from a raw client-call URL.
 
@@ -142,7 +145,7 @@ def build_consumer_contract(
         contract_type="http",
         role="consumer",
         symbol_name=f"{client}:{method} {url}",
-        confidence=confidence,
+        origin=origin,
         line=line,
         meta=consumer_meta(method, norm_path, client, base_token, host),
     )

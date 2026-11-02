@@ -12,6 +12,7 @@ occurrences are unambiguous and deterministic.
 from __future__ import annotations
 
 from repowise.core.analysis.health.duplication import ClonePair
+from repowise.core.analysis.health.gain import removal_gain
 from repowise.core.analysis.health.refactoring import (
     RefactoringContext,
     detect_refactorings,
@@ -168,6 +169,19 @@ def test_intra_file_clone():
     assert s.blast_radius["files"] == []
 
 
+def test_intra_file_clone_recovers_nothing_even_beside_a_cross_file_finding():
+    # dry_violation grades cross-file duplication only, so an intra-file block
+    # that overlaps its line range must not borrow its impact.
+    intra = _pair("pkg/a.py", "pkg/a.py", 100, 115, 160, 175)
+    cross = _pair("pkg/a.py", "pkg/b.py", 12, 27, 40, 55)
+    findings = [_DryFinding(10, 120, 2.0)]
+    sugs = detect_refactorings(_ctx("pkg/a.py", [intra, cross], findings=findings))
+    intra_sug = next(
+        s for s in sugs if s.refactoring_type == "extract_helper" and s.evidence["is_intra_file"]
+    )
+    assert intra_sug.impact_delta == 0.0
+
+
 def test_overlapping_windows_collapse_to_one_site():
     # The clone detector emits a block as several offset windows; they must
     # coalesce into one occurrence per file, not read as many sites.
@@ -271,6 +285,27 @@ def test_test_file_dropped_but_real_sites_kept():
     assert files == ["pkg/a.py", "pkg/b.py"]
 
 
+def test_a_site_in_another_language_is_dropped():
+    # The clone index hashes token shapes across languages: an export list in
+    # TypeScript paired with one in Python. No helper serves both.
+    clones = [
+        _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55),
+        _pair("pkg/a.py", "ui/c.ts", 10, 25, 5, 20),
+    ]
+    sugs = [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", clones))
+        if s.refactoring_type == "extract_helper"
+    ]
+    assert [o["file"] for o in sugs[0].plan["occurrences"]] == ["pkg/a.py", "pkg/b.py"]
+    only_cross = [_pair("pkg/a.py", "ui/c.ts", 10, 25, 5, 20)]
+    assert [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", only_cross))
+        if s.refactoring_type == "extract_helper"
+    ] == []
+
+
 def test_generated_migration_occurrences_dropped():
     # Migration boilerplate duplicates heavily but is never refactored — a
     # clone confined to migration files yields no suggestion.
@@ -302,7 +337,20 @@ def test_impact_from_overlapping_dry_violation():
     findings = [_DryFinding(12, 22, 1.8)]
     sugs = detect_refactorings(_ctx("pkg/a.py", [pair], findings=findings))
     s = next(s for s in sugs if s.refactoring_type == "extract_helper")
-    assert s.impact_delta == 1.8
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 1.0)]) > 0
+
+
+def test_impact_share_counts_cross_file_lines_only():
+    # a.py has 32 cross-file duplicated lines and this block removes 16 of
+    # them; the intra-file clone beside them does not dilute the share.
+    block = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    other = _pair("pkg/a.py", "pkg/c.py", 100, 115, 1, 16)
+    intra = _pair("pkg/a.py", "pkg/a.py", 200, 230, 300, 330)
+    findings = [_DryFinding(10, 25, 2.0)]
+    sugs = detect_refactorings(_ctx("pkg/a.py", [block, other, intra], findings=findings))
+    s = next(s for s in sugs if s.target_symbol == "a.py:10-25")
+    assert s.evidence["recovered_share"] == 0.5
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 0.5)]) > 0
 
 
 def test_no_impact_when_finding_disjoint():
@@ -559,6 +607,21 @@ _SIGNATURE_BLOCK = [
     ")",
 ]
 
+# `detect_clones` in duplication/detector.py, lines 192-201: the clone window
+# it shares with `detect_clones_with_isolation` stops before `) -> ...:`.
+_OPEN_SIGNATURE_BLOCK = [
+    "def detect_clones(",
+    "    parsed_files: Iterable[Any],",
+    "    git_meta_map: dict[str, dict[str, Any]] | None = None,",
+    "    *,",
+    "    window_tokens: int = DEFAULT_WINDOW_TOKENS,",
+    "    min_lines: int = DEFAULT_MIN_LINES,",
+    "    limits: DuplicationLimits | None = None,",
+    "    cache_dir: Path | None = None,",
+    "    changed_files: set[str] | None = None,",
+    "    source_reader: Any | None = None,",
+]
+
 _FIELD_BLOCK = [
     "    name: str = ''",
     "    items: list[str] = field(default_factory=list)",
@@ -603,6 +666,12 @@ def test_import_block_clone_emits_no_plan():
 def test_function_signature_clone_emits_no_plan():
     """Two functions whose parameter lists agree are not duplicated behaviour."""
     assert _plans_for(_SIGNATURE_BLOCK) == []
+
+
+def test_open_function_signature_clone_emits_no_plan():
+    """A clone window that ends inside a parameter list is still only a
+    signature, so it has nothing to extract either."""
+    assert _plans_for(_OPEN_SIGNATURE_BLOCK) == []
 
 
 def test_dataclass_field_run_emits_no_plan():
@@ -682,6 +751,26 @@ def test_declaration_only_unit_cases():
     assert not _is_declaration_only(["    continue", "    continue"])
     assert not _is_declaration_only(["    break", "    break"])
     assert not _is_declaration_only(["    defer f.Close()", "    defer g.Close()"])
+
+    # A signature cut off before its closing line is still only a signature,
+    # and so is a stub whose whole body is `...`.
+    assert _is_declaration_only(_OPEN_SIGNATURE_BLOCK)
+    assert _is_declaration_only(
+        ["    async def get_repository(self, repo_id: str) -> Repository | None: ..."]
+    )
+    assert _is_declaration_only(
+        ["    def a(self) -> int: ...", "    def b(self, x: str) -> None: ..."]
+    )
+    assert _is_declaration_only(["function render(", "  node: Node,", "  opts?: Options,"])
+    assert _is_declaration_only(["func Detect(", "\tfiles []File,", "\twindow int,"])
+    # A comma in a string default or a trailing comment separates no parameters.
+    assert _is_declaration_only(["def f(", '    label: str = "a,b",', "    x: int = 1,"])
+    assert _is_declaration_only(["def f(", "    x: int,  # rows, not bytes", "    y: int,"])
+    assert _is_declaration_only(["def f(", "    sep: str = '#',", "    y: int,"])
+    # An open head followed by a statement is not a signature.
+    assert not _is_declaration_only(["def f(", "    emit(a),  # one, two", "    y: int,"])
+    assert not _is_declaration_only(["def f(", "    x: int,", "    return g(x)"])
+    assert not _is_declaration_only(["def f(", "    emit(a)", "    emit(b)"])
 
 
 # ---- symbol-boundary gating ----------------------------------------------

@@ -127,16 +127,20 @@ def aspnet_groups(content: str) -> Iterator[GroupMatch]:
 # ---------------------------------------------------------------------------
 
 # `use` and `all` are here because the graph consumer scans them for handler
-# functions; the contract consumer drops them via HTTP_METHODS.
-_EXPRESS_VERBS = "get|post|put|delete|patch|options|head|all|use"
+# functions; the contract consumer drops them via HTTP_METHODS. `del` is
+# koa-router's (and Express 3's) DELETE.
+_EXPRESS_VERBS = "get|post|put|delete|del|patch|options|head|all|use"
 
 # router.get('/path', handler). The path literal is optional — `app.use(router)`
 # carries none. The lookbehind excludes a word character as well as `@`, which
 # neither copy did: `\b` alone admits `@app.get` (a FastAPI/NestJS decorator, not
 # an Express route), and `(?<!@)` alone lets the engine restart inside the name
 # and match `pp.get` there instead.
+# A TypeScript type argument may sit between the verb and its call
+# (Fastify's `app.get<{Params: P}>('/x', h)`); it holds no parenthesis.
 _EXPRESS_ROUTE_RE = re.compile(
-    rf"(?<![\w@])(?P<receiver>\w+)\s*\.\s*(?P<verb>{_EXPRESS_VERBS})\s*(?P<paren>\()"
+    rf"(?<![\w@])(?P<receiver>\w+)\s*\.\s*(?P<verb>{_EXPRESS_VERBS})\s*"
+    r"(?:<[^()<>]*(?:<[^()<>]*>[^()<>]*)*>\s*)?(?P<paren>\()"
     r"""\s*(?:(?P<q>['"])(?P<path>[^'"]*)(?P=q))?""",
     re.IGNORECASE,
 )
@@ -155,7 +159,7 @@ _JS_ROUTER_CTORS: tuple[tuple[str, str], ...] = (
     # (`services.http.Router()`) still binds, as it did before this table.
     ("express", r"(?:[\w$.]*\s*\.\s*)?Router\s*\(|express\s*\("),
     ("hono", r"new\s+Hono\s*[(<]"),
-    ("fastify", r"[Ff]astify\s*\("),
+    ("fastify", r"[Ff]astify\s*\(|require\s*\(\s*['\"]fastify['\"]\s*\)\s*\("),
     ("koa", r"new\s+[Kk]oa\s*\("),
     ("elysia", r"new\s+Elysia\s*[(<]"),
 )
@@ -267,10 +271,15 @@ def match_paren(
     text: str, open_idx: int, *, quotes: str = "\"'`", hash_comments: bool = False
 ) -> int:
     """Index of the bracket closing the ``(``, ``[`` or ``{`` at *open_idx*, or -1."""
-    opener = text[open_idx]
+    scan = scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments)
+    return _closing(text[open_idx], scan)
+
+
+def _closing(opener: str, scan: Iterable[tuple[int, str, int]]) -> int:
+    """Index of the bracket closing *opener*, the first character *scan* yields."""
     closer = _CLOSERS.get(opener, ")")
     nest = 0
-    for i, c, _depth in scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments):
+    for i, c, _depth in scan:
         if c == opener:
             nest += 1
         elif c == closer:
@@ -283,23 +292,60 @@ def match_paren(
 _CLOSERS = {"(": ")", "[": "]", "{": "}"}
 
 
+def _jvm_code(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
+    """:func:`scan_code` for Java and Kotlin.
+
+    ``'`` opens a char literal there, and one holding a quote (``'"'``) read
+    as a string start masks the rest of the file. Text blocks and Kotlin raw
+    strings are both ``\"\"\"``.
+    """
+    return scan_code(text, start, quotes="\"'", text_blocks=True)
+
+
+def _jvm_match_paren(text: str, open_idx: int) -> int:
+    """:func:`match_paren` over :func:`_jvm_code`."""
+    return _closing(text[open_idx], _jvm_code(text, open_idx))
+
+
 # ---------------------------------------------------------------------------
-# Go — gin / echo / chi routers and stdlib net/http
+# Go — gin / echo routers and stdlib net/http. chi and fiber's title-case verbs
+# are in `framework_routes_chi`, gorilla/mux route chains in
+# `framework_routes_gorilla`; both build on the pieces here.
 # ---------------------------------------------------------------------------
 
 # `HandleFunc` precedes `Handle` so the longer name wins the alternation.
 _GO_VERBS = "GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|Any|HandleFunc|Handle"
 
-# r.GET("/users", GetUsers). The receiver may be empty on an inline chain. The
-# handler may be wrapped (`api.RequireSession(h)`) or a composite literal
-# (`healthHandler{}`). The two keywords that can open one are excluded: they name
-# no symbol, and `r.GET("/x", func(c *gin.Context) {...})` otherwise yields the
-# handler `func`.
-_GO_ROUTE_RE = re.compile(
-    rf"(?P<receiver>\w*)\s*\.\s*(?P<verb>{_GO_VERBS})\s*(?P<paren>\()"
-    r"""\s*(?P<q>["'])(?P<path>[^"']*)(?P=q)"""
-    r"(?:\s*,\s*(?P<handler>(?!(?:func|struct)\b)[A-Za-z_][\w.]*)\s*(?P<after>[,)({]))?"
-)
+# Registration selectors that carry no verb of their own.
+GO_VERBLESS = frozenset({"HANDLE", "HANDLEFUNC"})
+
+#: A string-literal path argument, its body captured as ``path``. A literal
+#: something is appended to (`"/api" + v`) is only the path's head, not a path.
+GO_PATH_LITERAL = r"""(?P<q>["'`])(?P<path>[^"'`]*)(?P=q)(?!\s*\+)"""
+
+# `base + "/x"`: a path stitched onto a name. `path` stays None and a consumer
+# resolves the argument from `paren_offset` against the file's constants. A
+# handler argument must follow, so a one-argument `log.Handle(p + "/x")` is not
+# a route.
+_GO_PATH_CONCAT = r"""[A-Za-z_][\w.]*\s*\+\s*["`][^"`]*["`](?=\s*,)"""
+
+
+def go_route_pattern(verbs: str, path: str) -> re.Pattern[str]:
+    """``recv.Verb(path, handler)`` for the *verbs* alternation and *path* fragment.
+
+    The receiver may be empty on an inline chain. The handler may be wrapped
+    (``api.RequireSession(h)``) or a composite literal (``healthHandler{}``). The
+    two keywords that can open one are excluded: they name no symbol, and
+    ``r.GET("/x", func(c *gin.Context) {...})`` otherwise yields the handler
+    ``func``.
+    """
+    return re.compile(
+        rf"(?<!\w)(?P<receiver>\w*)\s*\.\s*(?P<verb>{verbs})\s*(?P<paren>\()\s*(?:{path})"
+        r"(?:\s*,\s*(?P<handler>(?!(?:func|struct)\b)[A-Za-z_][\w.]*)\s*(?P<after>[,)({]))?"
+    )
+
+
+_GO_ROUTE_RE = go_route_pattern(_GO_VERBS, f"{GO_PATH_LITERAL}|{_GO_PATH_CONCAT}")
 
 # api := r.Group("/v1") — groups nest, so the parent is captured for transitive
 # composition by `mounts.group_prefixes`.
@@ -307,19 +353,90 @@ _GO_GROUP_RE = re.compile(
     r"""(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Group\s*\(\s*["'](?P<prefix>[^"']+)["']"""
 )
 
+# Go 1.22 net/http patterns: `"GET /items/{id}"`, `"POST api.example.com/x"`.
+_GO_METHOD_PATTERN_RE = re.compile(
+    r"(?P<method>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE)\s+[^/\s]*(?P<path>/\S*)"
+)
+# `{name...}` matches the rest of the path; `{$}` only anchors the end.
+_GO_WILDCARD_RE = re.compile(r"\{(\w+)\.\.\.\}")
+
+# `.Methods(http.MethodGet, "POST")`, gorilla/mux's verb restriction on a route.
+_GO_METHODS_CHAIN_RE = re.compile(r"\s*\.\s*Methods\s*\(")
+_GO_METHOD_ARG_RE = re.compile(r"""^(?:http\.Method(?P<const>\w+)|["'`](?P<lit>\w+)["'`])$""")
+
+
+def go_match_paren(content: str, open_idx: int) -> int:
+    """:func:`match_paren` for Go, where ``'`` opens a rune and `` ` `` a raw string."""
+    return match_paren(content, open_idx, quotes="\"'`")
+
+
+def go_methods(content: str, open_paren: int) -> tuple[str, ...] | None:
+    """The upper-cased verbs a ``Methods(`` call at *open_paren* names.
+
+    ``None`` when an argument is not a verb literal or ``http.Method*``
+    constant: the restriction exists but this cannot read it.
+    """
+    close = go_match_paren(content, open_paren)
+    if close < 0:
+        return None
+    out: list[str] = []
+    for arg in content[open_paren + 1 : close].split(","):
+        m = _GO_METHOD_ARG_RE.match(arg.strip())
+        if m is None:
+            return None
+        out.append((m.group("const") or m.group("lit")).upper())
+    return tuple(out) or None
+
+
+def _trailing_methods(content: str, paren: int) -> tuple[str, ...] | None:
+    """The verbs of a ``.Methods(...)`` chained onto the call opened at *paren*."""
+    close = go_match_paren(content, paren)
+    if close < 0:
+        return None
+    m = _GO_METHODS_CHAIN_RE.match(content, close + 1)
+    return go_methods(content, m.end() - 1) if m else None
+
+
+def _go_pattern(verb: str, path: str) -> tuple[str, str]:
+    """``(verb, path)`` for a verbless registration's path, reading a Go 1.22 pattern."""
+    m = _GO_METHOD_PATTERN_RE.fullmatch(path)
+    if m is not None:
+        verb, path = m.group("method"), m.group("path")
+    return verb, _GO_WILDCARD_RE.sub(r"{\1}", path).replace("{$}", "")
+
+
+def go_route_matches(pattern: re.Pattern[str], content: str) -> Iterator[RouteMatch]:
+    """The :class:`RouteMatch` rows of a :func:`go_route_pattern` over *content*.
+
+    A verbless registration (``HandleFunc``) reads a Go 1.22 method pattern
+    from its path, and a gorilla/mux ``.Methods(...)`` chained after it, one
+    row per verb.
+    """
+    chained = "Methods(" in content
+    for m in pattern.finditer(content):
+        verb, path = m.group("verb").upper(), m.group("path")
+        verbs: tuple[str, ...] = (verb,)
+        if verb in GO_VERBLESS:
+            if path is not None:
+                verb, path = _go_pattern(verb, path)
+                verbs = (verb,)
+            if verb in GO_VERBLESS and chained:
+                verbs = _trailing_methods(content, m.start("paren")) or verbs
+        for one in verbs:
+            yield RouteMatch(
+                verb=one,
+                path=path,
+                receiver=_opt(m.group("receiver")),
+                handler=m.group("handler"),
+                offset=m.start(),
+                paren_offset=m.start("paren"),
+                handler_call=m.group("after") == "(",
+            )
+
 
 def go_routes(content: str) -> Iterator[RouteMatch]:
     """Router and ``net/http`` handler registrations in *content*."""
-    for m in _GO_ROUTE_RE.finditer(content):
-        yield RouteMatch(
-            verb=m.group("verb").upper(),
-            path=m.group("path"),
-            receiver=_opt(m.group("receiver")),
-            handler=m.group("handler"),
-            offset=m.start(),
-            paren_offset=m.start("paren"),
-            handler_call=m.group("after") == "(",
-        )
+    return go_route_matches(_GO_ROUTE_RE, content)
 
 
 def go_groups(content: str) -> Iterator[GroupMatch]:
@@ -912,6 +1029,12 @@ _JAXRS_PATH_RE = re.compile(r"""@Path\s*\(\s*(?:value\s*=\s*)?["'](?P<path>[^"']
 
 _JAXRS_VERB_RE = re.compile(rf"@(?P<verb>{_JAXRS_VERBS})\b")
 
+# Any `@Path(...)`, literal or not.
+_JAXRS_PATH_OPEN_RE = re.compile(r"@Path\s*\(")
+
+# A MicroProfile REST client: a JAX-RS interface whose routes are calls out.
+_MICROPROFILE_CLIENT_RE = re.compile(r"@RegisterRestClient\b")
+
 _JAXRS_TYPE_RE = re.compile(
     r"^[^\S\n]*(?:public|final|abstract|open|internal|sealed|data|\s)*"
     r"(?:class|interface)\s+\w+",
@@ -926,7 +1049,7 @@ def _jaxrs_decl_end(content: str, start: int) -> int:
     (``@Produces(MediaType.APPLICATION_JSON)``) and swagger nests them several
     deep, so anything that stops at the first paren stops inside the run.
     """
-    for i, c, depth in scan_code(content, start, quotes='"', text_blocks=True):
+    for i, c, depth in _jvm_code(content, start):
         if depth == 0 and c in ";{":
             return i
     return len(content)
@@ -950,15 +1073,69 @@ def jaxrs_class_paths(content: str) -> list[tuple[int, str]]:
 def jaxrs_routes(content: str) -> Iterator[RouteMatch]:
     """Verb-annotated resource methods in *content*.
 
-    ``path`` is the method's own ``@Path`` or ``""``; the class prefix is
-    stitched on by the consumer, the only side that knows how to compose one.
+    ``path`` is the method's own ``@Path``, ``""`` when it has none and
+    ``None`` when it names one this cannot read (a constant); the class prefix
+    is stitched on by the consumer, the only side that knows how to compose one.
     """
     for m in _JAXRS_VERB_RE.finditer(content):
         end = _jaxrs_decl_end(content, m.start())
         sub = _JAXRS_PATH_RE.search(content, m.end(), end)
+        if sub is None and _JAXRS_PATH_OPEN_RE.search(content, m.end(), end):
+            path = None
+        else:
+            path = sub.group("path") if sub else ""
         yield RouteMatch(
             verb=m.group("verb").upper(),
-            path=sub.group("path") if sub else "",
+            path=path,
+            receiver=None,
+            handler=None,
+            offset=m.start(),
+            paren_offset=m.start(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Apex REST (Salesforce)
+# ---------------------------------------------------------------------------
+
+# `@RestResource(urlMapping=...)` names the path and `@HttpGet` and siblings the
+# verbs. Apex annotations are case-insensitive and `'` is its only quote.
+_APEX_REST_RESOURCE_RE = re.compile(r"@RestResource\b", re.IGNORECASE)
+_APEX_URL_MAPPING_RE = re.compile(
+    r"\s*\(\s*urlMapping\s*=\s*'(?P<path>[^'\\\n]*)'\s*\)", re.IGNORECASE
+)
+_APEX_REST_VERB_RE = re.compile(r"@Http(?P<verb>Get|Post|Put|Patch|Delete)\b", re.IGNORECASE)
+
+
+def apex_code(content: str) -> str:
+    """*content* with Apex comments and string literals blanked, offsets and newlines kept."""
+    out = [c if c == "\n" else " " for c in content]
+    for i, c, _depth in scan_code(content, quotes="'"):
+        out[i] = c
+    return "".join(out)
+
+
+def apex_rest_routes(content: str, code: str | None = None) -> Iterator[RouteMatch]:
+    """Verb-annotated methods under the file's ``@RestResource`` class.
+
+    ``path`` is the class's raw ``urlMapping``, or ``None`` when it is not one
+    literal. The platform allows the annotation on one top-level class per
+    file, so there is one mapping. A file whose ``@RestResource`` sits only in
+    a comment or a string serves nothing. *code* is :func:`apex_code` of
+    *content*, for a caller that already has it.
+    """
+    if "restresource" not in content.lower():
+        return
+    code = apex_code(content) if code is None else code
+    resource = _APEX_REST_RESOURCE_RE.search(code)
+    if resource is None:
+        return
+    mapping = _APEX_URL_MAPPING_RE.match(content, resource.end())
+    path = mapping.group("path") if mapping else None
+    for m in _APEX_REST_VERB_RE.finditer(code):
+        yield RouteMatch(
+            verb=m.group("verb").upper(),
+            path=path,
             receiver=None,
             handler=None,
             offset=m.start(),
@@ -1011,9 +1188,21 @@ def _exported_names(content: str, pattern: re.Pattern[str]) -> list[tuple[str, i
 
 # The App Router takes the verb from the exported name and the path from the
 # file's location, so a route handler's text holds no path literal at all.
-_NEXT_HANDLER_RE = re.compile(
-    _EXPORT_HEAD + r"(?P<name>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b",
+_NEXT_VERBS = r"GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS"
+_NEXT_HANDLER_RE = re.compile(_EXPORT_HEAD + rf"(?P<name>{_NEXT_VERBS})\b", re.MULTILINE)
+
+# The same handlers exported from a brace list: destructured from a library's
+# handler object (`export const { GET, POST } = handlers`) or named in an export
+# list (`export { handler as GET }`, `export { GET } from "./auth"`).
+_NEXT_HANDLER_LIST_RE = re.compile(
+    r"^[^\S\n]*(?P<export>export)\s+(?:(?:const|let|var)\s+)?\{(?P<body>[^}]*)\}",
     re.MULTILINE,
+)
+# A verb the list binds under its own name. One followed by `:` is a key the
+# destructuring renames, one followed by `as` is exported under another name,
+# and one after an inline `type` modifier exports only a type.
+_NEXT_LISTED_VERB_RE = re.compile(
+    rf"(?<![\w$.])(?P<type>type\s+)?(?P<name>{_NEXT_VERBS})\b(?!\s*(?::|as\b))"
 )
 
 
@@ -1051,7 +1240,17 @@ def next_route_path(rel_path: str) -> str | None:
 
 def next_route_verbs(content: str) -> list[tuple[str, int]]:
     """``(verb, offset)`` per exported handler, in declaration order."""
-    return _exported_names(content, _NEXT_HANDLER_RE)
+    found = _exported_names(content, _NEXT_HANDLER_RE)
+    for m in _NEXT_HANDLER_LIST_RE.finditer(content):
+        listed = _NEXT_LISTED_VERB_RE.finditer(m.group("body"))
+        found += [(v.group("name"), m.start("export")) for v in listed if not v.group("type")]
+    seen: set[str] = set()
+    out: list[tuple[str, int]] = []
+    for verb, offset in sorted(found, key=lambda pair: pair[1]):
+        if verb not in seen:
+            seen.add(verb)
+            out.append((verb, offset))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1262,7 +1461,7 @@ _MICRONAUT_PATH_KEY_RE = re.compile(r"\b(?:uri|uris|value)\s*=")
 # line-anchored match reads as no declaration at all. Java's `record` and `enum`
 # count: both carry controller annotations, and a spelling left out here is a
 # controller the graph reads as an ordinary file.
-_MICRONAUT_TYPE_RE = re.compile(r"\b(?:class|interface|object|record|enum)\s+\w+")
+_JVM_TYPE_RE = re.compile(r"\b(?:class|interface|object|record|enum)\s+\w+")
 
 # An RFC 6570 query or fragment expansion. Micronaut route templates carry
 # their query parameters in the path string (`/list{?args*}`), where
@@ -1286,7 +1485,7 @@ def micronaut_annotations(content: str) -> set[int]:
     The scan reads the whole file, so a consumer wanting more than one of the
     three readers below computes this once and hands it to each of them.
     """
-    return {i for i, c, _ in scan_code(content, quotes='"', text_blocks=True) if c == "@"}
+    return {i for i, c, _ in _jvm_code(content) if c == "@"}
 
 
 def micronaut_path(raw: str) -> str:
@@ -1309,7 +1508,7 @@ def _micronaut_annotation_path(content: str, at: int) -> str | None:
     m = _MICRONAUT_ARG_RE.match(content, at)
     if m is not None:
         return m.group("path")
-    close = match_paren(content, opened.end() - 1, quotes='"')
+    close = _jvm_match_paren(content, opened.end() - 1)
     args = content[opened.end() - 1 : len(content) if close == -1 else close]
     if _MICRONAUT_PATH_KEY_RE.search(args) or not _MICRONAUT_NAMED_ARG_RE.match(args):
         return None
@@ -1330,7 +1529,7 @@ def _micronaut_annotated_types(
         if m.start() not in code:
             continue
         end = _jaxrs_decl_end(content, m.start())
-        if not _MICRONAUT_TYPE_RE.search(content, m.end(), end):
+        if not _JVM_TYPE_RE.search(content, m.end(), end):
             continue
         yield m.start(), _micronaut_annotation_path(content, m.end())
 
@@ -1398,6 +1597,293 @@ def micronaut_routes(content: str, annotations: set[int] | None = None) -> Itera
             offset=m.start(),
             paren_offset=m.start(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Spring MVC / WebFlux
+# ---------------------------------------------------------------------------
+
+# `@GetMapping("/{id}")` on a method names the verb and the sub-path. The
+# `@RequestMapping` spelling names neither: on a type it is the prefix, on a
+# method a route whose verbs sit in `method = ...`, every verb when absent.
+_SPRING_MAPPING_RE = re.compile(r"@(?P<verb>Get|Post|Put|Delete|Patch|Request)Mapping\b")
+_SPRING_CLASS_RE = re.compile(r"@RequestMapping\b")
+
+# A declarative HTTP client written with the controller's annotations: its
+# mappings are calls out, not endpoints served.
+_SPRING_CLIENT_RE = re.compile(r"@FeignClient\b")
+
+_SPRING_OPEN_RE = re.compile(r"\s*\(")
+_JVM_STRING_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+# Where an argument's value starts, matched with string bodies blanked so text
+# inside a literal is never a key. The path is positional, `value =` or `path =`.
+_SPRING_PATH_KEY_RE = re.compile(r"[(,]\s*(?:value|path)\s*=\s*")
+_SPRING_POSITIONAL_RE = re.compile(r"\(\s*(?![\w.]+\s*=)(?=[^\s)])")
+_SPRING_METHOD_KEY_RE = re.compile(r"[(,]\s*method\s*=\s*")
+
+# One literal, or an array of them: Java `{...}`, Kotlin `[...]` or `arrayOf(...)`.
+_SPRING_VALUE_RE = re.compile(r'"(?P<one>[^"]*)"|(?:arrayOf\s*)?(?P<open>[{\[(])')
+_SPRING_ARRAY_REST_RE = re.compile(r'"\s*"|[\s,]')
+_SPRING_VERB_WORD_RE = re.compile(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE)\b")
+
+
+@dataclass(frozen=True)
+class SpringMappingFamily:
+    """One annotation family that maps a Java or Kotlin method to an HTTP route.
+
+    ``method`` matches the method-level annotation with a ``verb`` group, whose
+    ``generic`` spelling names its verbs in ``method = ...`` instead; ``type_``
+    matches the type-level annotation whose path is the prefix; ``path_key``
+    is where a named path argument starts; ``marker`` is a substring every
+    method annotation in the family holds and ``type_marker`` one the type
+    annotation holds, the cheap gates.
+    """
+
+    method: re.Pattern[str]
+    type_: re.Pattern[str]
+    path_key: re.Pattern[str]
+    generic: str
+    marker: str
+    type_marker: str
+
+
+#: Spring MVC / WebFlux: ``@RequestMapping`` and its verb shortcuts.
+SPRING_MVC = SpringMappingFamily(
+    method=_SPRING_MAPPING_RE,
+    type_=_SPRING_CLASS_RE,
+    path_key=_SPRING_PATH_KEY_RE,
+    generic="Request",
+    marker="Mapping",
+    type_marker="@RequestMapping",
+)
+
+#: Spring 6 HTTP interfaces: ``@HttpExchange`` and its verb shortcuts. A client
+#: declaration, so every route it reads is a call out. The path is ``value``
+#: or ``url`` and the verb is a string, ``method = "GET"``.
+SPRING_EXCHANGE = SpringMappingFamily(
+    method=re.compile(r"@(?P<verb>Get|Post|Put|Delete|Patch|Http)Exchange\b"),
+    type_=re.compile(r"@HttpExchange\b"),
+    path_key=re.compile(r"[(,]\s*(?:value|url)\s*=\s*"),
+    generic="Http",
+    marker="Exchange",
+    type_marker="@HttpExchange",
+)
+
+
+def _blank_strings(text: str) -> str:
+    """*text* with every string literal's body blanked, offsets kept."""
+    return _JVM_STRING_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', text)
+
+
+def _spring_args(content: str, at: int) -> str:
+    """The parenthesised argument list of the annotation named up to *at*, or ``""``."""
+    opened = _SPRING_OPEN_RE.match(content, at)
+    if opened is None:
+        return ""
+    close = _jvm_match_paren(content, opened.end() - 1)
+    return content[opened.end() - 1 : len(content) if close == -1 else close + 1]
+
+
+def _spring_paths(args: str, path_key: re.Pattern[str] = _SPRING_PATH_KEY_RE) -> tuple[str, ...] | None:
+    """The paths a mapping's *args* declare.
+
+    ``("",)`` when they name none, which Spring serves at the type prefix.
+    ``None`` when they name one this cannot read: a constant or a concatenation
+    is a path, just not this file's to know.
+    """
+    masked = _blank_strings(args)
+    key = path_key.search(masked) or _SPRING_POSITIONAL_RE.match(masked)
+    if key is None:
+        return ("",)
+    read = _spring_literals(args, masked, key.end())
+    if read is None or not masked[read[1] :].lstrip().startswith((",", ")")):
+        return None
+    return read[0] or ("",)
+
+
+def _spring_literals(args: str, masked: str, at: int) -> tuple[tuple[str, ...], int] | None:
+    """``(literals, end)`` of the value at *at*, or ``None`` when it is not literals alone."""
+    m = _SPRING_VALUE_RE.match(args, at)
+    if m is None:
+        return None
+    if m.group("one") is not None:
+        return (m.group("one"),), m.end()
+    close = _jvm_match_paren(masked, m.start("open"))
+    if close == -1 or _SPRING_ARRAY_REST_RE.sub("", masked[m.end() : close]):
+        return None
+    return tuple(s.group()[1:-1] for s in _JVM_STRING_RE.finditer(args, m.end(), close)), close + 1
+
+
+def _spring_verbs(verb: str, args: str, generic: str = "Request") -> tuple[str, ...]:
+    """The verbs a mapping serves; ``ALL`` for a *generic* mapping naming none."""
+    if verb != generic:
+        return (verb.upper(),)
+    masked = _blank_strings(args)
+    key = _SPRING_METHOD_KEY_RE.search(masked)
+    if key is None:
+        return ("ALL",)
+    # The value's extent is read with strings blanked, its words from the text:
+    # `RequestMethod.GET` and `"GET"` both name the verb.
+    if masked.startswith(("{", "["), key.end()):
+        value = args[key.end() : _jvm_match_paren(masked, key.end()) + 1]
+    else:
+        end = re.search(r"[,)]", masked[key.end() :])
+        value = args[key.end() : key.end() + end.start()] if end else args[key.end() :]
+    return tuple(dict.fromkeys(_SPRING_VERB_WORD_RE.findall(value))) or ("ALL",)
+
+
+def _spring_type_bodies(
+    content: str, annotations: set[int], pattern: re.Pattern[str]
+) -> Iterator[tuple[int, int, int]]:
+    """``(annotation name end, body start, body end)`` per type annotated *pattern*.
+
+    The declaration scan is JAX-RS's. The body span, not the nearest type
+    above, is what a member sits under: a class with no mapping of its own
+    must not inherit the prefix of the class declared before it.
+    """
+    for m in pattern.finditer(content):
+        if m.start() not in annotations:
+            continue
+        start = _jaxrs_decl_end(content, m.start())
+        if not _JVM_TYPE_RE.search(content, m.end(), start):
+            continue
+        close = (
+            _jvm_match_paren(content, start)
+            if content.startswith("{", start)
+            else -1
+        )
+        yield m.end(), start, len(content) if close == -1 else close
+
+
+def spring_class_paths(
+    content: str, annotations: set[int] | None = None, family: SpringMappingFamily = SPRING_MVC
+) -> list[tuple[int, int, tuple[str, ...] | None]]:
+    """``(body start, body end, prefixes)`` per type-level mapping of *family*, ascending.
+
+    ``prefixes`` is ``None`` when the mapping names a path this cannot read; the
+    routes under it are refused rather than served at their bare sub-path.
+    """
+    if family.type_marker not in content:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    out: list[tuple[int, int, tuple[str, ...] | None]] = []
+    for name_end, start, end in _spring_type_bodies(content, code, family.type_):
+        paths = _spring_paths(_spring_args(content, name_end), family.path_key)
+        out.append((start, end, None if paths is None else tuple(p.rstrip("/") for p in paths)))
+    return out
+
+
+def spring_route_prefixes(
+    class_paths: list[tuple[int, int, tuple[str, ...] | None]], offset: int
+) -> tuple[str, ...] | None:
+    """The prefixes of the innermost mapped type around *offset*; ``("",)`` under none."""
+    found: tuple[str, ...] | None = ("",)
+    for start, end, prefixes in class_paths:
+        if start < offset < end:
+            found = prefixes  # ascending, so a later container is a nested one
+    return found
+
+
+def spring_feign_clients(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, int, str]]:
+    """``(body start, body end, annotation arguments)`` per ``@FeignClient`` type, ascending.
+
+    The arguments are the annotation's parenthesised source text, ``""`` when
+    it has none; the client's ``name``, ``url`` and ``path`` sit in it.
+    """
+    return _client_types(content, annotations, _SPRING_CLIENT_RE, "@FeignClient")
+
+
+def microprofile_rest_clients(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, int, str, str | None]]:
+    """``(body start, body end, annotation arguments, prefix)`` per ``@RegisterRestClient`` type.
+
+    A MicroProfile client is a JAX-RS interface: its verb annotations are calls
+    out, not routes served. ``prefix`` is the type's own ``@Path``, ``""`` when
+    it has none and ``None`` when it names one this cannot read.
+    """
+    clients = _client_types(content, annotations, _MICROPROFILE_CLIENT_RE, "@RegisterRestClient")
+    if not clients:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    # A type-level @Path is the one whose declaration ends at the type's body.
+    paths: dict[int, str | None] = {}
+    for m in _JAXRS_PATH_OPEN_RE.finditer(content):
+        if m.start() in code:
+            literal = _JAXRS_PATH_RE.match(content, m.start())
+            paths[_jaxrs_decl_end(content, m.start())] = literal.group("path") if literal else None
+    return [(start, end, args, paths.get(start, "")) for start, end, args in clients]
+
+
+def _client_types(
+    content: str, annotations: set[int] | None, pattern: re.Pattern[str], marker: str
+) -> list[tuple[int, int, str]]:
+    """``(body start, body end, annotation arguments)`` per type annotated *pattern*."""
+    if marker not in content:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    return [
+        (start, end, _spring_args(content, name_end))
+        for name_end, start, end in _spring_type_bodies(content, code, pattern)
+    ]
+
+
+def _spring_method_mappings(
+    content: str, annotations: set[int], family: SpringMappingFamily, feign: bool
+) -> Iterator[re.Match[str]]:
+    """Method mapping annotations written as code, inside Feign clients or outside them."""
+    clients = (
+        [(s, e) for s, e, _ in spring_feign_clients(content, annotations)]
+        if family is SPRING_MVC
+        else []
+    )
+    for m in family.method.finditer(content):
+        if m.start() not in annotations:
+            continue
+        if any(s < m.start() < e for s, e in clients) != feign:
+            continue
+        # A type's own mapping is its prefix, read by spring_class_paths.
+        if not _JVM_TYPE_RE.search(content, m.end(), _jaxrs_decl_end(content, m.start())):
+            yield m
+
+
+def spring_routes(
+    content: str,
+    annotations: set[int] | None = None,
+    family: SpringMappingFamily = SPRING_MVC,
+    *,
+    feign: bool = False,
+) -> Iterator[RouteMatch]:
+    """Method-level mappings of *family* in *content*, one per verb and path.
+
+    ``path`` is the method's own sub-path, ``""`` when it names none and
+    ``None`` when it names one this cannot read; the type prefix is the
+    consumer's to stitch, from :func:`spring_class_paths`. The handler is the
+    method the annotation sits on, which every Spring route has, so ``offset``
+    is all a consumer needs to find it.
+
+    Spring MVC mappings inside a ``@FeignClient`` type are calls out: they are
+    skipped by default and are the only ones read with *feign*.
+    """
+    if family.marker not in content:
+        return
+    code = micronaut_annotations(content) if annotations is None else annotations
+    for m in _spring_method_mappings(content, code, family, feign):
+        args = _spring_args(content, m.end())
+        paths: tuple[str | None, ...] = _spring_paths(args, family.path_key) or (None,)
+        for verb in _spring_verbs(m.group("verb"), args, family.generic):
+            for path in paths:
+                yield RouteMatch(
+                    verb=verb,
+                    path=path,
+                    receiver=None,
+                    handler=None,
+                    offset=m.start(),
+                    paren_offset=m.start(),
+                )
 
 
 # ---------------------------------------------------------------------------

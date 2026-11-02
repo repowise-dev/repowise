@@ -17,6 +17,15 @@ Fires when the file is non-trivial and ownership is fragmented:
 - ``total_commits`` ≥ 5, AND
 - ``minor_contributors`` ≥ 3 OR ``top_owner_share`` < 0.4.
 
+Under 20 commits no author can hold under 5%, so only the share arm can
+fire there. It stays: on the 21-repo T0 defect corpus, dropping it or
+requiring 10 to 30 commits for it lowered the marker's size-controlled
+coefficient from 0.35 to 0.23-0.31. The reason names the arm that fired.
+
+A file under ``_SMALL_NLOC`` code lines (an interface, a DTO) is capped at
+LOW: on the same corpus that raised the score's defect AUC (+0.002 keyword,
++0.004 SZZ labels) and kept every finding.
+
 On a small team (≤ ``SMALL_TEAM_MAX_CONTRIBUTORS`` active contributors
 in 90d) ownership dispersion across the same few people is the normal
 operating model, not Bird-style drive-by fragmentation — severity is
@@ -36,6 +45,10 @@ from ..models import Severity
 from .base import SMALL_TEAM_MAX_CONTRIBUTORS, BiomarkerResult, FileContext
 
 _MIN_COMMITS = 5
+#: Below this NLOC the finding stays LOW. Gains were flat from 40 to 100;
+#: this is the smallest floor on the plateau. Dropping small files instead
+#: (floors 20 to 50) lowered the coefficient and gained less AUC.
+_SMALL_NLOC = 40
 _MINOR_SHARE = 0.05
 _MINOR_THRESHOLD = 3
 _TOP_OWNER_FLOOR = 0.4
@@ -89,11 +102,22 @@ class OwnershipRiskDetector:
             severity = Severity.MEDIUM
         else:
             severity = Severity.LOW
+        small_file = ctx.nloc < _SMALL_NLOC and severity != Severity.LOW
+        if small_file:
+            severity = Severity.LOW
 
-        reason = (
-            f"{minor_contributors} minor contributors (each <5% of commits); "
-            f"top owner holds {top_owner_share:.0%}"
-        )
+        if minor_contributors >= _MINOR_THRESHOLD:
+            reason = (
+                f"{minor_contributors} minor contributors (each <5% of commits); "
+                f"top owner holds {top_owner_share:.0%}"
+            )
+        else:
+            reason = (
+                f"no clear owner: the top author holds {top_owner_share:.0%} "
+                f"of {total} commits across {len(authors)} contributors"
+            )
+        if small_file:
+            reason += f" (low: only {ctx.nloc} code lines)"
 
         # Small-team calibration (issue #361): with ≤3 active contributors,
         # ownership concentration/dispersion is the expected shape of the

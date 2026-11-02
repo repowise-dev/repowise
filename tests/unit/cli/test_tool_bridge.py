@@ -68,7 +68,7 @@ def wired(monkeypatch, tmp_path):
             repo_path=repo_path,
         )
 
-    monkeypatch.setattr("repowise.server.chat_tools.init_tool_state", _fake_init)
+    monkeypatch.setattr("repowise.server.mcp_server._state.init_tool_state", _fake_init)
     return engine, store, published, tmp_path
 
 
@@ -134,6 +134,19 @@ def test_an_unindexed_repo_gets_the_shields_run_init_advice(wired):
     result = tool_bridge.call_tool(repo, _tool, "get_context")
     assert "no repowise index yet" in result["error"].lower()
     assert "repowise init" in result["remedy"]
+
+
+def test_a_failed_repowise_import_points_at_the_install_not_a_server(wired):
+    """The CLI imports fresh each run, so no older server is holding stale code."""
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        from repowise.core.ingestion.type_names import name_missing_from_install  # noqa: F401
+
+    result = tool_bridge.call_tool(repo, _tool, "get_change_risk")
+    assert "install is incomplete" in result["error"]
+    assert "Reinstall repowise" in result["remedy"]
+    assert "MCP server" not in repr(result)
 
 
 def test_a_store_that_fails_to_open_still_disposes_the_engine(wired, monkeypatch):
@@ -423,3 +436,17 @@ def test_a_bridged_call_is_bounded_like_an_mcp_one(wired):
     assert result["truncated"] is True
     assert len(result["results"]) < 80
     assert result["_meta"]["omitted"]["refs"]
+
+
+def test_publishing_tool_state_does_not_load_the_http_stack():
+    """A CLI tool call wires state per process; FastAPI costs about half a second."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; from repowise.server.mcp_server._state import init_tool_state; "
+        "init_tool_state(None, None, None); "
+        "assert 'fastapi' not in sys.modules, 'fastapi imported'"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

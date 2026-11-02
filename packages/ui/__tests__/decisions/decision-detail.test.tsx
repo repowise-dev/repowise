@@ -214,7 +214,7 @@ describe("DecisionDetail", () => {
     );
     expect(
       screen.getByText(
-        "All 2 files it names are still tracked and unchanged since it was recorded.",
+        "All 2 files it names are still tracked and unchanged since it was recorded or last accepted.",
       ),
     ).toBeInTheDocument();
   });

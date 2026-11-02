@@ -62,6 +62,18 @@ def test_extract_comment_blocks_handles_c_style_and_returns_empty_for_unknown():
     assert extract_comment_blocks("plain prose because yes", "txt") == []
 
 
+def test_tree_sitter_query_comments_are_mined():
+    scm = (
+        ";;;;;;;;;;;;;;;;\n"
+        ";; The receiver stays uncaptured because a qualified super call\n"
+        "; binds to the parent class, not the field.\n"
+        "(method_invocation name: (identifier) @call.target) @call.site\n"
+    )
+    blocks = extract_comment_blocks(scm, "scm")
+    assert blocks[0].text.startswith("The receiver stays uncaptured")
+    assert harvest_file_rationale(scm, "scm")
+
+
 # ---------------------------------------------------------------------------
 # Guardrails
 # ---------------------------------------------------------------------------
@@ -108,6 +120,13 @@ def test_harvest_keeps_rationale_drops_license():
 
     # The license block carries "because" but is boilerplate → dropped.
     assert harvest_file_rationale(_LICENSE_PY, "py") == []
+
+
+def test_harvest_range_spans_a_long_comment_whole():
+    body = "\n".join(f"# step {n} of the retry plan for the shared client." for n in range(16))
+    source = f"# We retry here because the shared client cannot back off per tenant.\n{body}\nX = 1\n"
+    kept = harvest_file_rationale(source, "py")
+    assert [(h.start_line, h.end_line) for h in kept] == [(1, 17)]
 
 
 def test_harvest_drops_thin_and_markerless_comments():

@@ -26,6 +26,7 @@ from repowise.core.persistence.database import get_session, init_db
 from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.server.routers import repos as repos_module
+from tests.unit.persistence.helpers import make_wiki_symbol
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -212,6 +213,9 @@ async def test_summary_freshness_when_one_side_is_unknown(
         json.dumps({"last_sync_commit": "d" * 40}), encoding="utf-8"
     )
     behind = await crud.upsert_repository(session, name="behind", local_path=str(behind_dir))
+    # Only state.json records the indexed commit (stamps that disagree are the
+    # resolver's to reconcile, see tests/unit/workspace/test_indexed_commit.py).
+    behind.head_commit = None
     await session.commit()
 
     resp = await client.get("/api/repos/summary")
@@ -403,6 +407,8 @@ async def test_stats_counts(client: AsyncClient, session) -> None:
                 symbol_count=0,
                 is_entry_point=True,
             ),
+            make_wiki_symbol(repo["id"], "a.py", "f"),
+            make_wiki_symbol(repo["id"], "a.py", "g"),
         ]
     )
     await session.commit()

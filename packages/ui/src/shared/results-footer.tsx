@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Button } from "../ui/button";
 import { cn } from "../lib/cn";
+import { formatNumber } from "../lib/format";
 
 interface ResultsFooterProps {
   /** Number of items currently rendered in the parent component. */
@@ -46,9 +47,9 @@ export function ResultsFooter({
       )}
     >
       <span className="tabular-nums">
-        Showing <span className="font-medium text-[var(--color-text-primary)]">{shown.toLocaleString()}</span>
+        Showing <span className="font-medium text-[var(--color-text-primary)]">{formatNumber(shown)}</span>
         {" "}of{" "}
-        <span className="font-medium text-[var(--color-text-primary)]">{total.toLocaleString()}</span>
+        <span className="font-medium text-[var(--color-text-primary)]">{formatNumber(total)}</span>
         {" "}{noun}
       </span>
       {hasMore && onLoadMore && (

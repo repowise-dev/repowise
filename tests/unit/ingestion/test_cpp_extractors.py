@@ -77,6 +77,15 @@ static int Helper(int x) { return x; }
         sym = next(s for s in result.symbols if s.name == "Helper")
         assert sym.visibility == "private"
 
+    def test_anonymous_namespace_function_is_private(self, parser: ASTParser) -> None:
+        src = b"""namespace {
+  int Helper(int x) { return x; }
+}
+"""
+        result = parser.parse_file(_file(), src)
+        sym = next(s for s in result.symbols if s.name == "Helper")
+        assert sym.visibility == "private"
+
     def test_class_method_private_by_default(self, parser: ASTParser) -> None:
         src = b"""\
 class Foo {

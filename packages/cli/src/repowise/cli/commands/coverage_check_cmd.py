@@ -45,6 +45,7 @@ from repowise.cli.ci import (
     change_lines,
     ci_notices,
     repo_root,
+    write_gate_summary,
 )
 from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option
@@ -331,6 +332,7 @@ async def _stored(
                 threshold=threshold,
                 # The flag overrides its config key, as for a report.
                 config=replace(cfg, min_coverable_lines=min_lines),
+                repo_path=str(root),
             )
         except SQLAlchemyError as exc:
             raise CannotEvaluateError(
@@ -503,6 +505,11 @@ class _Reports:
             path_prefix=self.cfg.path_prefix,
             report_prefixes=self.prefixes,
             ignore=self.cfg.ignore,
+            # The check stores nothing, so a fragment is judged, flagged partial.
+            allow_partial=True,
+            # A base report describes another commit than the files on disk,
+            # so its lines cannot be checked against them.
+            check_alignment=False,
         )
 
 
@@ -536,9 +543,12 @@ def _resolve_reports(reports: _Reports, notices, keys=None, side: str = ""):
             "carry a build prefix, set coverage.strip_prefix in .repowise/config.yaml."
         )
     if resolved.mapping_partial:
+        from repowise.core.analysis.health.coverage import prefix_hint
+
+        hint = prefix_hint(resolved.suggested_prefixes)
         notices.print(
             "[yellow]More than half the report paths did not match a file in this "
-            "repository; check coverage.strip_prefix / coverage.path_prefix.[/yellow]"
+            f"repository; {escape(hint)}.[/yellow]"
         )
     return resolved
 
@@ -587,7 +597,11 @@ def _coverage_config(
 
 
 def _emit(pc, fmt: str) -> None:
-    from repowise.core.analysis.patch_coverage import github_annotations, render_markdown
+    from repowise.core.analysis.patch_coverage import (
+        gate_summary,
+        github_annotations,
+        render_markdown,
+    )
 
     if fmt == "json":
         emit_json(pc.to_dict())
@@ -597,6 +611,7 @@ def _emit(pc, fmt: str) -> None:
         for line in github_annotations(pc):
             click.echo(line)
         append_step_summary(render_markdown(pc))
+        write_gate_summary(gate_summary(pc))
         _print_summary(pc)
     else:
         _print_summary(pc)

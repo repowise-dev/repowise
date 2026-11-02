@@ -7,11 +7,17 @@ subsequent run loads them back as ``prior_pages`` for reuse.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from io import StringIO
+from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
+from repowise.cli.commands.init_cmd import generation as generation_cmd
 from repowise.cli.commands.init_cmd._generation_persist import run_generation_with_persistence
+from repowise.core.generation import GenerationConfig, JobSystem
 from repowise.core.generation.models import GeneratedPage
 from repowise.core.persistence import (
     create_engine,
@@ -20,6 +26,7 @@ from repowise.core.persistence import (
     init_db,
     upsert_repository,
 )
+from repowise.core.pipeline.phases.generation import run_generation
 
 
 def _page(page_id: str, content: str = "body") -> GeneratedPage:
@@ -136,3 +143,298 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
     # The valid page still persisted despite the bad one.
     stored = await _read_db_page_ids(repo_dir)
     assert "delta" in stored
+
+
+async def test_batched_flush_stores_every_page_and_times_the_drain(repo_dir, monkeypatch):
+    """Pages queued faster than they are written go out in batches, none lost,
+    and the drain after generation is recorded in the run's phase table."""
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd import _generation_persist
+    from repowise.core.pipeline import PhaseTimings
+
+    monkeypatch.setattr(_generation_persist, "_FLUSH_BATCH", 7)
+    emitted = [_page(f"p{i:02d}") for i in range(30)]
+
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        # No await between pages: all 30 are queued before the consumer runs.
+        for p in emitted:
+            on_page_ready(p)
+        return emitted
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    table = PhaseTimings()
+
+    await run_generation_with_persistence(
+        repo_path=repo_dir,
+        repo_name=repo_dir.name,
+        progress=SimpleNamespace(table=table),
+    )
+
+    assert await _read_db_page_ids(repo_dir) == {p.page_id for p in emitted}
+    assert "generation.persist_drain" in table.totals
+
+
+async def test_resume_hands_the_persisted_ids_to_generation(repo_dir, monkeypatch):
+    """Resume passes the ids that have a stored row, so a page whose vector
+    landed but whose row did not is regenerated and then persisted."""
+    seen: dict = {}
+
+    async def first_run(*, repo_path, on_page_ready=None, **_kw):
+        on_page_ready(_page("saved"))
+        return [_page("saved")]
+
+    async def resumed_run(*, repo_path, on_page_ready=None, persisted_page_ids=None, **kw):
+        seen["persisted"] = persisted_page_ids
+        seen["resume"] = kw.get("resume")
+        # "vector_only" has a vector from the killed run but no row; the
+        # generator regenerates it because it is not in persisted_page_ids.
+        on_page_ready(_page("vector_only"))
+        return [_page("vector_only")]
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", first_run, raising=True)
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", resumed_run, raising=True)
+    await run_generation_with_persistence(
+        repo_path=repo_dir, repo_name=repo_dir.name, resume=True, reuse_prior_pages=False
+    )
+
+    assert seen == {"persisted": {"saved"}, "resume": True}
+    assert await _read_db_page_ids(repo_dir) == {"saved", "vector_only"}
+
+
+async def test_non_resume_run_passes_no_persisted_ids(repo_dir, monkeypatch):
+    seen: dict = {}
+
+    async def fake_run_generation(*, repo_path, persisted_page_ids="unset", **_kw):
+        seen["persisted"] = persisted_page_ids
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+    assert seen["persisted"] is None
+
+
+async def test_reuse_prior_pages_disabled_skips_the_prior_load(repo_dir, monkeypatch):
+    """``--force`` (``reuse_prior_pages=False``) must not load prior pages:
+    a forced run regenerates everything, so the load is pure waste — and
+    worse, would feed the reuse gate pages the run is supposed to replace."""
+
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        assert prior_pages == {}  # nothing loaded
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    await run_generation_with_persistence(
+        repo_path=repo_dir, repo_name=repo_dir.name, reuse_prior_pages=False
+    )
+
+
+async def test_reuse_prior_pages_enabled_loads_prior_pages(repo_dir, monkeypatch):
+    """The default (no ``--force``) loads the prior map so the subject-keyed
+    gate can reuse unchanged pages."""
+
+    async def first_run(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        on_page_ready(_page("gamma"))
+        return [_page("gamma")]
+
+    async def second_run(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        assert prior_pages and "gamma" in prior_pages
+        return []
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", first_run, raising=True)
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", second_run, raising=True)
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+
+
+async def test_generation_completion_callback_reports_only_current_run_failures(
+    repo_dir, monkeypatch
+):
+    """The callback excludes stale and concurrent jobs from this run's result."""
+    jobs = JobSystem(repo_dir / ".repowise" / "jobs")
+    stale_job = jobs.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+    jobs.start_job(stale_job, 1)
+    jobs.fail_page(stale_job, "stale-page", "old failure")
+    jobs.complete_job(stale_job)
+
+    class ControlledGenerator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.last_job_id: str | None = None
+
+        async def generate_all(self, *_args, job_system, **_kwargs):
+            current_job = job_system.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+            job_system.start_job(current_job, 1)
+            job_system.fail_page(current_job, "current-page", "controlled failure")
+            job_system.complete_job(current_job)
+            self.last_job_id = current_job
+
+            # Simulate another run creating a checkpoint after this one. A
+            # list-diff approach cannot distinguish the two new jobs.
+            other_job = job_system.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+            job_system.start_job(other_job, 1)
+            job_system.fail_page(other_job, "other-page", "other run failure")
+            job_system.complete_job(other_job)
+            return []
+
+    monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
+
+    reported_failures: list[list[str]] = []
+    pages = await run_generation(
+        repo_path=repo_dir,
+        parsed_files=[],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        llm_client=object(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+        on_generation_complete=reported_failures.append,
+    )
+
+    assert pages == []
+    assert reported_failures == [["current-page"]]
+
+
+async def test_generation_ignores_completion_callback_exception(repo_dir, monkeypatch):
+    """A completion reporting failure cannot stop otherwise successful generation."""
+
+    class ControlledGenerator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.last_job_id = None
+
+        async def generate_all(self, *_args, job_system, **_kwargs):
+            self.last_job_id = job_system.create_job(
+                str(repo_dir), GenerationConfig(), "test", "test"
+            )
+            job_system.start_job(self.last_job_id, 0)
+            job_system.complete_job(self.last_job_id)
+            return []
+
+    monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
+
+    callback_called = False
+
+    def failing_callback(_failed_page_ids: list[str]) -> None:
+        nonlocal callback_called
+        callback_called = True
+        raise RuntimeError("reporting unavailable")
+
+    pages = await run_generation(
+        repo_path=repo_dir,
+        parsed_files=[],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        llm_client=object(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+        on_generation_complete=failing_callback,
+    )
+
+    assert pages == []
+    assert callback_called
+
+
+async def test_generation_ignores_failed_completion_checkpoint_read(repo_dir, monkeypatch):
+    """A failed read of this run's checkpoint cannot stop generation."""
+
+    class ControlledGenerator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.last_job_id = None
+
+        async def generate_all(self, *_args, job_system, **_kwargs):
+            self.last_job_id = job_system.create_job(
+                str(repo_dir), GenerationConfig(), "test", "test"
+            )
+            job_system.start_job(self.last_job_id, 0)
+            job_system.complete_job(self.last_job_id)
+            return []
+
+    def fail_get_checkpoint(self, _job_id):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
+    monkeypatch.setattr(JobSystem, "get_checkpoint", fail_get_checkpoint)
+
+    reported_failures: list[list[str]] = []
+    pages = await run_generation(
+        repo_path=repo_dir,
+        parsed_files=[],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        llm_client=object(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+        on_generation_complete=reported_failures.append,
+    )
+
+    assert pages == []
+    assert reported_failures == []
+
+
+def test_run_repo_generation_prints_partial_failure_warning_after_progress(monkeypatch, tmp_path):
+    output = StringIO()
+    monkeypatch.setattr(
+        generation_cmd, "console", Console(file=output, force_terminal=False, width=200)
+    )
+    monkeypatch.setattr(generation_cmd, "build_embedder", lambda *_args: object())
+    monkeypatch.setattr(generation_cmd, "build_vector_store", lambda *_args: object())
+
+    async def fake_generation(*, on_generation_complete, **_kwargs):
+        on_generation_complete(["module_page:api", "[red]spoof[/red]:src/main.py"])
+        return []
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd._generation_persist.run_generation_with_persistence",
+        fake_generation,
+    )
+    monkeypatch.setattr(generation_cmd, "run_async", lambda coroutine: asyncio.run(coroutine))
+
+    result = SimpleNamespace(
+        parsed_files=[],
+        repo_name="example",
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        knowledge_graph_result=None,
+    )
+    config = SimpleNamespace(deterministic=True)
+
+    generation_cmd.run_repo_generation(
+        repo_path=tmp_path,
+        result=result,
+        provider=SimpleNamespace(),
+        gen_config=config,
+        concurrency=1,
+        embedder_name_resolved="test",
+        resume=False,
+        verbose=True,
+    )
+
+    text = output.getvalue()
+    assert "Generated 0 pages" in text
+    assert "2 failed" in text
+    assert "[red]spoof[/red]: 1" in text
+    assert "module_page: 1" in text
+    assert "The documentation is incomplete" in text
+    assert "repowise init --resume" in text

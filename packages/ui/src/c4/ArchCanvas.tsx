@@ -17,7 +17,7 @@ import { archEdgeTypes } from "../graph-primitives";
 import { ArchLegend } from "./panels";
 import { KEYFRAMES } from "./theme/theme-variables";
 import { EmptyState } from "../shared/empty-state";
-import { OwlLoader } from "../shared/owl-loader";
+import { OrbLoader, ORB_STATE } from "../shared/orb-loader";
 import { toFriendlyMessage } from "../lib/errors";
 
 export interface ArchCanvasProps {
@@ -42,7 +42,7 @@ export interface ArchCanvasProps {
 
 /**
  * The layered-architecture ReactFlow canvas. Owns the diagram chrome that used
- * to be stranded in the web route (Controls, MiniMap, the "laying out" owl chip,
+ * to be stranded in the web route (Controls, MiniMap, the "laying out" orb chip,
  * the "+N weaker links" chip, and the ArchLegend placement) so the layered view
  * upgrades via a package bump. Deliberately airy: no grid background and no
  * canvas fill behind the diagram.
@@ -82,17 +82,19 @@ export function ArchCanvas({
         )}
         {loading && nodes.length === 0 && !error && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-            <OwlLoader size={120} label={loadingLabel} className="min-h-0" />
+            <OrbLoader state={ORB_STATE.tracing} label={loadingLabel} />
           </div>
         )}
         {/* Re-layout feedback: ELK stage-2 on big layers used to freeze silently
-            — a small owl chip says the canvas is still thinking. */}
+            — a small orb chip says the canvas is still thinking. */}
         {loading && nodes.length > 0 && !error && (
           <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 px-3 py-1 shadow-sm">
-            <OwlLoader
-              size={28}
+            <OrbLoader
+              size={20}
+              state={ORB_STATE.tracing}
               label="Laying out…"
-              className="min-h-0 flex-row gap-2 text-[10px]"
+              showLabel
+              className="text-[10px]"
             />
           </div>
         )}

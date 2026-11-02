@@ -244,3 +244,81 @@ async def test_prune_is_scoped_to_one_repo(async_session, repo_with_kept_file):
         STALE,
         KEPT,
     }
+
+
+async def test_function_facts_of_a_deleted_file_are_pruned(async_session, repo_with_kept_file):
+    """Keyed on the symbol, so the rows go with the deleted file's graph nodes."""
+    from repowise.core.persistence.crud import write_function_facts
+    from repowise.core.persistence.models import FunctionFact
+
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id)
+    await write_function_facts(
+        async_session, repo.id, [{"symbol_id": f"{KEPT}::main"}, {"symbol_id": f"{STALE}::gone"}]
+    )
+    await prune_deleted_file_rows(async_session, repo.id, repo_with_kept_file, live_hint={KEPT})
+    await async_session.commit()
+
+    assert await _paths(async_session, FunctionFact, FunctionFact.symbol_id, repo.id) == {
+        f"{KEPT}::main"
+    }
+
+
+class _Graph:
+    def __init__(self, *files: str) -> None:
+        import networkx as nx
+
+        self._graph = nx.DiGraph()
+        self._graph.add_nodes_from(files, node_type="file")
+
+    def graph(self):
+        return self._graph
+
+
+def _shared_prune(session, repo_id, repo, live_paths, degraded, graph=()):
+    from repowise.core.pipeline.incremental import prune_deleted_files
+
+    def _skip(step: str, exc: Exception) -> None:
+        raise AssertionError(f"{step}: {exc}")
+
+    return prune_deleted_files(
+        session,
+        repo_id,
+        repo,
+        _Graph(*graph),
+        live_paths,
+        health_report=None,
+        skip=_skip,
+        log=lambda _m: None,
+        degraded=degraded,
+        timings=None,
+    )
+
+
+async def test_a_parsed_file_the_graph_lacks_is_not_pruned(async_session, repo_with_kept_file):
+    """This run parsed STALE, so it is live even though disk, git and the graph
+    all miss it: the parse half of the live set is not only an optimisation."""
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id)
+
+    degraded: list[str] = []
+    await _shared_prune(async_session, repo.id, repo_with_kept_file, {STALE}, degraded, (KEPT,))
+    await async_session.commit()
+
+    assert degraded == []
+    for model, column in FILE_SCOPED:
+        assert await _paths(async_session, model, column, repo.id) == {KEPT, STALE}, model
+
+
+async def test_a_refused_prune_lands_in_degraded(async_session, repo_with_kept_file):
+    repo = await insert_repo(async_session)
+    for i in range(40):
+        async_session.add(GitMetadata(repository_id=repo.id, file_path=f"src/module_{i}.js"))
+    await async_session.flush()
+
+    degraded: list[str] = []
+    await _shared_prune(async_session, repo.id, repo_with_kept_file, set(), degraded)
+    await async_session.commit()
+
+    assert len(degraded) == 1
+    assert "git_metadata" in degraded[0]

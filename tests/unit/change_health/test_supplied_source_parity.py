@@ -276,11 +276,28 @@ def test_directive_without_a_test_block_asks_for_nothing():
         assert directive(_clean_delta(), absent)["next_actions"] == []
 
 
-def test_directive_still_names_a_missing_coverage_map():
+def test_a_missing_index_is_a_status_not_an_action():
+    """``impacted_tests.status`` already says no_index; the action named nothing in the diff."""
     from repowise.server.mcp_server._change_health import directive
 
-    actions = directive(_clean_delta(), {"status": "no_map"})["next_actions"]
-    assert actions == ["No measured test map; run the suite covering the changed files."]
+    assert directive(_clean_delta(), {"status": "no_index"})["next_actions"] == []
+
+
+def test_skipped_files_are_a_reason_not_an_action():
+    from repowise.server.mcp_server._change_health import directive
+
+    delta = _clean_delta()
+    delta.skipped = {"src/a.py": "parse_error"}
+    rendered = directive(delta, {"tests_to_run": ["tests/test_a.py"]})
+    assert rendered["next_actions"] == ["Run: tests/test_a.py"]
+    assert any("not analysed" in r for r in rendered["reasons"])
+
+
+def test_directive_says_to_run_every_test_and_why():
+    from repowise.server.mcp_server._change_health import directive
+
+    tests = {"run_all": True, "reasons": ["uv.lock changed."], "tests_to_run": ["t0"]}
+    assert directive(_clean_delta(), tests)["next_actions"] == ["Run every test: uv.lock changed."]
 
 
 def test_directive_renders_at_most_three_tests_in_one_run_command():
@@ -288,3 +305,19 @@ def test_directive_renders_at_most_three_tests_in_one_run_command():
 
     tests = {"tests_to_run": [f"t{i}" for i in range(9)], "basis": "measured"}
     assert directive(_clean_delta(), tests)["next_actions"] == ["Run: t0 t1 t2"]
+
+
+def test_health_check_judges_the_same_through_a_supplied_source_with_no_checkout(make_repo):
+    """A host with no checkout passes its own source and no root; the verdict matches git's."""
+    from repowise.core.analysis.change_health.check import run_health_check
+
+    repo: Repo = make_repo("parity")
+    repo.commit("base", {"app/a.py": python_complex("run", 2)})
+    repo.commit("head", {"app/a.py": python_complex("run", 12)})
+
+    via_git = run_health_check(str(repo.path), "HEAD")
+    supplied = _mirror(GitRevisionSource(str(repo.path)), "HEAD")
+    via_supplied = run_health_check(None, "HEAD", source=supplied)
+
+    assert via_supplied.result.verdict == via_git.result.verdict
+    assert via_supplied.as_json()["gate"] == via_git.as_json()["gate"]

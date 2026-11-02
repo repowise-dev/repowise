@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from repowise.core.analysis.health.duplication import detect_clones
+from repowise.core.analysis.health.duplication import token_cache as token_cache_mod
 from repowise.core.analysis.health.duplication.detector import ClonePair
 from repowise.core.analysis.health.duplication.rabin_karp import WindowHash
 from repowise.core.analysis.health.duplication.token_cache import (
@@ -14,7 +15,6 @@ from repowise.core.analysis.health.duplication.token_cache import (
     DuplicationTokenCache,
 )
 from repowise.core.analysis.health.duplication.tokenizer import Token
-from repowise.core.analysis.health.engine import HEALTH_ANALYZER_VERSION
 
 
 def _pf(path: str, abs_path: str) -> SimpleNamespace:
@@ -79,7 +79,7 @@ def test_second_run_hits_cache_and_edit_misses(tmp_path: Path):
     cache_dir = tmp_path / ".repowise"
     detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
 
-    cache = DuplicationTokenCache(cache_dir, 20, HEALTH_ANALYZER_VERSION)
+    cache = DuplicationTokenCache(cache_dir, 20)
     cache.load()
     import hashlib
 
@@ -89,7 +89,7 @@ def test_second_run_hits_cache_and_edit_misses(tmp_path: Path):
 
     # Edit one file -> its hash misses; the others still hit.
     (tmp_path / "a.py").write_text(_BODY.replace("doit", "changed"))
-    fresh = DuplicationTokenCache(cache_dir, 20, HEALTH_ANALYZER_VERSION)
+    fresh = DuplicationTokenCache(cache_dir, 20)
     fresh.load()
     a_digest = hashlib.sha256((tmp_path / "a.py").read_bytes()).hexdigest()
     assert fresh.get(a_digest) is None
@@ -104,7 +104,7 @@ def test_window_size_mismatch_invalidates(tmp_path: Path):
     cache_dir = tmp_path / ".repowise"
     detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
 
-    other = DuplicationTokenCache(cache_dir, 10, HEALTH_ANALYZER_VERSION)
+    other = DuplicationTokenCache(cache_dir, 10)
     other.load()
     assert other._entries == {}
 
@@ -121,7 +121,7 @@ def test_corrupt_cache_degrades_to_full_run(tmp_path: Path):
 
 
 def test_cache_shares_interned_kinds_and_can_release_memory(tmp_path: Path):
-    cache = DuplicationTokenCache(tmp_path, 20, HEALTH_ANALYZER_VERSION)
+    cache = DuplicationTokenCache(tmp_path, 20)
     kinds = [bytearray(b"identifier").decode() for _ in range(2)]
 
     cache.put("digest", kinds, ["", ""], 1, [(1, 0, 1, 1)])
@@ -147,3 +147,57 @@ def test_high_volume_duplication_records_are_slotted():
     assert not hasattr(token, "__dict__")
     assert not hasattr(window, "__dict__")
     assert not hasattr(pair, "__dict__")
+
+
+def test_changed_tokenizer_code_invalidates(tmp_path: Path, monkeypatch):
+    parsed = _setup(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
+
+    monkeypatch.setattr(token_cache_mod, "tokenizer_fingerprint", lambda: "edited tokenizer")
+    other = DuplicationTokenCache(cache_dir, 20)
+    other.load()
+    assert other._entries == {}
+
+
+def test_an_analyzer_bump_keeps_tokens_and_re_derives_pairs(tmp_path: Path, monkeypatch):
+    # The token streams depend only on the tokenizer, so they survive the bump;
+    # the persisted pairs depend on the verifier, which the stamp stands for.
+    from repowise.core.analysis.health import engine as engine_mod
+
+    parsed = _setup(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    baseline = detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
+
+    monkeypatch.setattr(engine_mod, "HEALTH_ANALYZER_VERSION", engine_mod.HEALTH_ANALYZER_VERSION + 1)
+    misses: list[int] = []
+    real_save = DuplicationTokenCache.save
+
+    def recording_save(self):
+        misses.append(self.misses)
+        real_save(self)
+
+    monkeypatch.setattr(DuplicationTokenCache, "save", recording_save)
+    report = detect_clones(
+        parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir, changed_files=["c.py"]
+    )
+
+    assert "incremental" not in report.diagnostics
+    assert misses == [0]
+    assert _report_key(report) == _report_key(baseline)
+
+
+def test_a_file_whose_grammar_failed_is_not_cached(tmp_path: Path, monkeypatch):
+    import hashlib
+
+    from repowise.core.ingestion.parser import grammars
+
+    parsed = _setup(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    monkeypatch.setitem(grammars._GRAMMAR_FAILURES, "python", "not installed")
+    detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
+
+    cache = DuplicationTokenCache(cache_dir, 20)
+    cache.load()
+    digest = hashlib.sha256((tmp_path / "a.py").read_bytes()).hexdigest()
+    assert cache.get(digest) is None

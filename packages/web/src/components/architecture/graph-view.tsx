@@ -10,12 +10,15 @@ import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-b
 import {
   GraphScopeSwitcher,
   GraphNarrowingSelect,
+  type GraphScope,
 } from "@repowise-dev/ui/graph/graph-scope-controls";
 import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { getGraph } from "@/lib/api/graph";
 import { useCommunities } from "@/lib/hooks/use-graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 import { PRODUCTION_ONLY, type GraphPopulation } from "@repowise-dev/types/graph";
+import { useTranslations } from "next-intl";
+import { useGraphMapCopy } from "@/components/graph/use-graph-map-copy";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 type ColorMode = "language" | "community";
@@ -61,8 +64,12 @@ export function GraphView({
   repoId: string;
   /** Controlled by the page, which owns `?view=`. */
   scope: Scope;
-  onScopeChange: (scope: Scope) => void;
+  /** The page owns `?view=`, so a scope the canvas does not draw (the tree)
+   *  is handed straight up rather than swallowed here. */
+  onScopeChange: (scope: GraphScope) => void;
 }) {
+  const t = useTranslations("architecture");
+  const mapCopy = useGraphMapCopy();
   const searchParams = useSearchParams();
   const initialNode = searchParams.get("node");
 
@@ -196,13 +203,17 @@ export function GraphView({
   }, [onScopeChange]);
 
   const handleScopeChange = useCallback(
-    (next: Scope) => {
+    (next: GraphScope) => {
       // Narrowing is a file-scope concept, so it does not survive a trip to the
       // constellation. It does not survive a trip *back* either: a
       // `?view=communities&community=3` link (hand-edited, or an old share)
       // renders the constellation with the param still set, and without this
       // clicking "Files" would drop the reader inside community 3 rather than
       // in the file graph they asked for.
+      //
+      // The tree is included: it is not narrowed by `?module=` or `?community=`
+      // either, and a pin left set would be there when the reader came back to
+      // the canvas.
       void setActiveModule(null);
       void setCommunityParam(null);
       // `?node=` forces the file scope for as long as it is set, so leaving it
@@ -266,9 +277,14 @@ export function GraphView({
             activeModule={activeModule}
             activeCommunity={activeCommunity}
             onChange={handleNarrowingChange}
+            copy={mapCopy.narrowing}
           />
         )}
-        <GraphScopeSwitcher scope={effectiveScope} onScopeChange={handleScopeChange} />
+        <GraphScopeSwitcher
+          scope={effectiveScope}
+          onScopeChange={handleScopeChange}
+          copy={mapCopy.scope}
+        />
       </div>
     ),
     [
@@ -280,6 +296,7 @@ export function GraphView({
       handleNarrowingChange,
       effectiveScope,
       handleScopeChange,
+      mapCopy,
     ],
   );
 
@@ -290,8 +307,8 @@ export function GraphView({
       // zoom you are at; the one line left is what to do with what you see.
       description={
         isCommunities
-          ? "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on."
-          : "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
+          ? t("graph.communitiesDescription")
+          : t("graph.filesDescription")
       }
       headerActions={headerControls}
       banner={
@@ -303,6 +320,7 @@ export function GraphView({
             limit={graphLimit ?? graphData.nodes.length}
             onLoadMore={(nextLimit) => setGraphLimit(nextLimit)}
             onSwitchToArchitecture={handleSwitchToArchitecture}
+            copy={mapCopy.truncation}
           />
         ) : undefined
       }

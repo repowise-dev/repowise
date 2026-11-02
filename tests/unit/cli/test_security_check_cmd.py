@@ -273,3 +273,56 @@ def test_suppressed_findings_stay_out_of_a_written_baseline(repo, tmp_path):
     assert json.loads(result.stdout)["recorded"] == 1
     entries = json.loads(baseline.read_text(encoding="utf-8"))["entries"]
     assert [e["kind"] for e in entries] == ["os_system"]
+
+
+def _baseline_on_main(repo, *fingerprints: str):
+    """Commit a baseline listing *fingerprints* on ``main``, then return to ``feature``."""
+    _git(repo, "switch", "-q", "main")
+    entries = [{"fingerprint": f} for f in fingerprints]
+    _commit(repo, "baseline.json", json.dumps({"version": 1, "entries": entries}))
+    _git(repo, "switch", "-q", "feature")
+    _git(repo, "merge", "-q", "main")
+    return repo / "baseline.json"
+
+
+def test_a_re_saved_baseline_that_grew_fails(repo):
+    baseline = _baseline_on_main(repo, "old")
+    _commit(repo, "cfg.py", f"AWS = '{KEY}'\n")
+    assert _check(repo, "--write-baseline", str(baseline)).exit_code == 0
+    assert _check(repo, "--baseline", str(baseline)).exit_code == 0
+
+    result = _check(repo, "--baseline", str(baseline), "--fail-on-baseline-growth")
+    assert result.exit_code == 1
+    assert "Baseline grew" in result.output and "cfg.py aws_access_key" in result.output
+
+    doc = json.loads(
+        _check(
+            repo, "--baseline", str(baseline), "--fail-on-baseline-growth", "--format", "json"
+        ).stdout
+    )
+    assert doc["gate"]["passed"] is True
+    assert [e["kind"] for e in doc["baseline_growth"]] == ["aws_access_key"]
+
+
+def test_a_baseline_that_did_not_grow_passes(repo):
+    baseline = _baseline_on_main(repo, "old", "gone")
+    baseline.write_text('{"version": 1, "entries": [{"fingerprint": "old"}]}', encoding="utf-8")
+    _commit(repo, "app.py", "x = 2\n")
+    result = _check(repo, "--baseline", str(baseline), "--fail-on-baseline-growth")
+    assert result.exit_code == 0, result.output
+
+
+def test_baseline_growth_annotates_in_github_format(repo):
+    baseline = _baseline_on_main(repo)
+    baseline.write_text('{"version": 1, "entries": [{"fingerprint": "new"}]}', encoding="utf-8")
+    result = _check(
+        repo, "--baseline", str(baseline), "--fail-on-baseline-growth", "--format", "github"
+    )
+    assert result.exit_code == 1
+    assert "::error::Baseline grew" in result.stdout
+
+
+def test_baseline_growth_needs_a_baseline(repo):
+    result = _check(repo, "--fail-on-baseline-growth")
+    assert result.exit_code == 2
+    assert "needs --baseline" in result.output

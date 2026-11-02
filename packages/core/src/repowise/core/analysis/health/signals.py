@@ -28,6 +28,11 @@ from typing import Protocol
 # these", short enough to sit inside an MCP response without a budget argument.
 _TOP_FIX_SYMBOLS = 5
 
+#: Below this many recorded commits churn and the blame-based markers cannot fire
+#: and the rest rarely do, so the history half reads near zero whatever the past:
+#: a new file, one split out of another, or a rename git did not follow.
+HISTORY_MIN_COMMITS = 5
+
 
 class GitMetaLike(Protocol):
     """The git-metadata fields the signals view reads (duck-typed).
@@ -84,6 +89,8 @@ class FileSignals:
     bug_magnet: bool | None
     last_fix_at: str | None
     fix_symbol_counts: dict[str, int] | None
+    # ``"short"`` below ``HISTORY_MIN_COMMITS`` recorded commits.
+    history: str | None
 
     @property
     def has_any(self) -> bool:
@@ -143,6 +150,18 @@ def _top_fix_symbols(raw: str | None) -> dict[str, int] | None:
     return {str(k): int(v) for k, v in list(counts.items())[:_TOP_FIX_SYMBOLS]}
 
 
+def history_basis(git_meta: object | None) -> str | None:
+    """``"short"`` below :data:`HISTORY_MIN_COMMITS` recorded commits, else ``None``.
+
+    ``None`` too when nothing was recorded (no row, no count) or the row is a
+    non-code file's, which carries no score to qualify.
+    """
+    total = getattr(git_meta, "commit_count_total", None)
+    if total is None or getattr(git_meta, "history_only", False):
+        return None
+    return "short" if total < HISTORY_MIN_COMMITS else None
+
+
 def file_signals(
     git_meta: GitMetaLike | None,
     degrees: dict[str, int] | None,
@@ -185,4 +204,5 @@ def file_signals(
         fix_symbol_counts=_top_fix_symbols(getattr(g, "fix_symbol_counts_json", None))
         if g
         else None,
+        history=history_basis(g),
     )

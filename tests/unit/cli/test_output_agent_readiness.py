@@ -171,7 +171,7 @@ def test_symbol_json_keeps_the_id_the_next_command_takes() -> None:
         "symbol_id": f"{LONG_PATH}::LanceDBVectorStore",
         "name": "LanceDBVectorStore",
         "kind": "class",
-        "file": LONG_PATH,
+        "path": LONG_PATH,
         "start_line": 60,
         "end_line": 240,
         "signature": "class LanceDBVectorStore(VectorStore)",

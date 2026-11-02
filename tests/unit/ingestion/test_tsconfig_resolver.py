@@ -558,3 +558,203 @@ class TestMtsCtsAliasResolution:
         resolver = self._resolver(tmp_path, {"src/pkg/index.mts"})
         result = resolver.resolve("@/pkg", _importer(tmp_path, "src/app.ts"))
         assert result == "src/pkg/index.mts"
+
+
+# ---------------------------------------------------------------------------
+# Commented tsconfig.json (JSONC) support
+# ---------------------------------------------------------------------------
+
+
+class TestCommentedTsconfig:
+    def test_single_line_and_block_comments_in_tsconfig(self, tmp_path: Path) -> None:
+        """TypeScript allows // and /* */ comments in tsconfig.json."""
+        config_content = """\
+        {
+          // Top-level comment
+          "compilerOptions": {
+            "baseUrl": ".",
+            /* Multi-line
+               block comment */
+            "paths": {
+              // aliases for app code
+              "@/*": ["./src/*"],
+            },
+          },
+        }
+        """
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(config_content, encoding="utf-8")
+
+        resolver = TsconfigResolver(
+            repo_path=tmp_path,
+            path_set={"src/components/ui/button.tsx", "src/app/page.tsx"},
+        )
+        result = resolver.resolve("@/components/ui/button", _importer(tmp_path, "src/app/page.tsx"))
+        assert result == "src/components/ui/button.tsx"
+
+    def test_wildcards_and_string_literals_with_slashes_preserved(self, tmp_path: Path) -> None:
+        """String literals with /* or // (like @/* or http://) must not be corrupted."""
+        config_content = """\
+        {
+          "$schema": "https://json.schemastore.org/tsconfig",
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": {
+              "@/*": ["./src/*"],
+              "lib/*": ["./packages/*"], // inline comment
+            }
+          }
+        }
+        """
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(config_content, encoding="utf-8")
+
+        data = TsconfigResolver._parse_json_lenient(tsconfig)
+        assert data is not None
+        assert data["$schema"] == "https://json.schemastore.org/tsconfig"
+        assert data["compilerOptions"]["paths"] == {
+            "@/*": ["./src/*"],
+            "lib/*": ["./packages/*"],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Solution-style configs ("files": [] plus "references")
+# ---------------------------------------------------------------------------
+
+
+class TestProjectReferences:
+    def test_vite_solution_config_uses_the_app_project(self, tmp_path: Path) -> None:
+        """The layout ``npm create vite`` scaffolds: the aliases live in tsconfig.app.json."""
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "files": [],
+                    "references": [
+                        {"path": "./tsconfig.app.json"},
+                        {"path": "./tsconfig.node.json"},
+                    ],
+                },
+                "tsconfig.app.json": {
+                    "compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["./src/*"]}},
+                    "include": ["src"],
+                },
+                "tsconfig.node.json": {"include": ["vite.config.ts"]},
+            },
+            path_set={"src/App.tsx", "src/components/button.tsx", "vite.config.ts"},
+        )
+        assert (
+            resolver.resolve("@/components/button", _importer(tmp_path, "src/App.tsx"))
+            == "src/components/button.tsx"
+        )
+        # vite.config.ts belongs to tsconfig.node.json, which has no aliases.
+        assert (
+            resolver.resolve("@/components/button", _importer(tmp_path, "vite.config.ts")) is None
+        )
+
+    def test_each_file_takes_the_aliases_of_its_own_project(self, tmp_path: Path) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "files": [],
+                    "references": [
+                        {"path": "./tsconfig.web.json"},
+                        {"path": "./tsconfig.server.json"},
+                    ],
+                },
+                "tsconfig.web.json": {
+                    "compilerOptions": {"paths": {"@/*": ["./web/src/*"]}},
+                    "include": ["web/**/*.ts"],
+                },
+                "tsconfig.server.json": {
+                    "compilerOptions": {"paths": {"@/*": ["./server/src/*"]}},
+                    "include": ["server/**/*.ts"],
+                },
+            },
+            path_set={"web/src/db.ts", "server/src/db.ts", "web/main.ts", "server/main.ts"},
+        )
+        assert resolver.resolve("@/db", _importer(tmp_path, "web/main.ts")) == "web/src/db.ts"
+        assert resolver.resolve("@/db", _importer(tmp_path, "server/main.ts")) == "server/src/db.ts"
+
+    def test_referenced_project_inherits_include_through_extends(self, tmp_path: Path) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {"files": [], "references": [{"path": "./tsconfig.app.json"}]},
+                "tsconfig.base.json": {"include": ["src"]},
+                "tsconfig.app.json": {
+                    "extends": "./tsconfig.base.json",
+                    "compilerOptions": {"paths": {"~/*": ["./src/*"]}},
+                },
+            },
+            path_set={"src/main.ts", "src/lib/util.ts"},
+        )
+        assert (
+            resolver.resolve("~/lib/util", _importer(tmp_path, "src/main.ts")) == "src/lib/util.ts"
+        )
+
+    def test_excluded_file_falls_to_the_next_project(self, tmp_path: Path) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "files": [],
+                    "references": [
+                        {"path": "./tsconfig.app.json"},
+                        {"path": "./tsconfig.legacy.json"},
+                    ],
+                },
+                "tsconfig.app.json": {
+                    "compilerOptions": {"paths": {"#/*": ["./src/*"]}},
+                    "include": ["src"],
+                    "exclude": ["src/legacy"],
+                },
+                "tsconfig.legacy.json": {
+                    "compilerOptions": {"paths": {"#/*": ["./src/legacy/*"]}},
+                    "files": ["src/legacy/old.ts"],
+                },
+            },
+            path_set={"src/util.ts", "src/legacy/util.ts", "src/legacy/old.ts", "src/new.ts"},
+        )
+        assert resolver.resolve("#/util", _importer(tmp_path, "src/new.ts")) == "src/util.ts"
+        assert (
+            resolver.resolve("#/util", _importer(tmp_path, "src/legacy/old.ts"))
+            == "src/legacy/util.ts"
+        )
+
+    def test_reference_to_a_directory_and_a_nested_solution(self, tmp_path: Path) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {"files": [], "references": [{"path": "./config"}]},
+                "config/tsconfig.json": {
+                    "files": [],
+                    "references": [{"path": "./tsconfig.app.json"}],
+                },
+                "config/tsconfig.app.json": {
+                    "compilerOptions": {"paths": {"@/*": ["../src/*"]}},
+                    "include": ["../src"],
+                },
+            },
+            path_set={"src/main.ts", "src/util.ts"},
+        )
+        assert resolver.resolve("@/util", _importer(tmp_path, "src/main.ts")) == "src/util.ts"
+
+    def test_file_no_project_owns_keeps_the_solution_config(self, tmp_path: Path) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "compilerOptions": {"baseUrl": "."},
+                    "files": [],
+                    "references": [{"path": "./tsconfig.app.json"}],
+                },
+                "tsconfig.app.json": {"include": ["src"]},
+            },
+            path_set={"scripts/build.ts", "lib/util.ts"},
+        )
+        assert (
+            resolver.resolve("lib/util", _importer(tmp_path, "scripts/build.ts")) == "lib/util.ts"
+        )

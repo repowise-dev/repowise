@@ -49,7 +49,7 @@ export function SystemMapLensControl({
             <select
               value={blastTarget ?? ""}
               onChange={(e) => onBlastTargetChange(e.target.value || null)}
-              className="min-w-0 max-w-[16rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="min-w-0 max-w-[16rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               <option value="">choose a service</option>
               {sorted.map((n) => (

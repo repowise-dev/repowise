@@ -18,7 +18,7 @@ from repowise.server.schemas import (
 
 def test_opportunity_detail_carries_keys_it_never_declared() -> None:
     payload = {
-        "resolved": True,
+        "found": True,
         "steps": [{"plan_id": "p1"}],
         "steps_total": 1,
         "steps_emitted": 1,

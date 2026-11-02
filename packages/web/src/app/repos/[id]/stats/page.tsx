@@ -1,11 +1,16 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { BarChart3 } from "lucide-react";
 import { getStatsHighlights } from "@/lib/api/stats";
+import { ApiClientError } from "@/lib/api/client";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { StatsView } from "@/components/stats/stats-view";
 
-export const metadata: Metadata = { title: "Stats" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.stats");
+  return { title: t("title") };
+}
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -13,19 +18,21 @@ interface Props {
 
 export default async function StatsPage({ params }: Props) {
   const { id } = await params;
+  const t = await getTranslations("views.stats");
 
   let data;
   try {
     data = await getStatsHighlights(id);
-  } catch {
-    notFound();
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) notFound();
+    throw err;
   }
 
   return (
     <PageShell
-      title="By the Numbers"
-      icon={<BarChart3 className="h-5 w-5" />}
-      description="The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
+      title={t("title")}
+      icon={<BarChart3 />}
+      description={t("description")}
       maxWidth="wide"
     >
       <StatsView data={data} repoId={id} />

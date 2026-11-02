@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Any
 
+from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
 from repowise.core.test_paths import is_test_related_path
 
 Row = Mapping[str, Any]
@@ -94,13 +95,9 @@ def _offset_minutes(raw: Any) -> int | None:
         return None
 
 
-def _is_external(node: Row) -> bool:
-    node_id = str(node.get("node_id") or node.get("id") or "")
-    return (
-        node.get("language") == "external"
-        or node_id.startswith("external:")
-        or node.get("external_system_id") is not None
-    )
+def _is_import_target(node: Row) -> bool:
+    """The row form of ``crud.indexed_file``, negated: not a file the index read."""
+    return node.get("language") in IMPORT_TARGET_LANGUAGES
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +122,7 @@ def file_mix(file_nodes: Iterable[Row]) -> dict[str, Any]:
     code_paths: list[str] = []
     for node in file_nodes:
         lang = node.get("language")
-        if not lang or _is_external(node):
+        if not lang or _is_import_target(node):
             continue
         spec = REGISTRY.get(lang)
         if spec is not None and spec.is_code:
@@ -147,20 +144,17 @@ def _ranked_languages(counts: Counter[str]) -> list[dict[str, Any]]:
     return [{"language": lang, "file_count": n} for lang, n in ranked]
 
 
-def build_scale(file_nodes: Iterable[Row], metrics: Iterable[Row]) -> dict[str, Any]:
+def build_scale(
+    file_nodes: Iterable[Row], metrics: Iterable[Row], symbol_count: int
+) -> dict[str, Any]:
     """Counts and NLOC, plus the :func:`file_mix` languages and module count.
 
-    ``file_nodes`` are graph file nodes; external dependency nodes are dropped
-    so the file count describes the repo.
+    ``file_nodes`` are graph file nodes; import targets are dropped so the
+    file count is ``crud.count_files``. ``symbol_count`` is
+    ``crud.count_symbols``, the figure every other surface shows.
     """
     file_nodes = list(file_nodes)
-    file_count = 0
-    symbol_count = 0
-    for node in file_nodes:
-        if _is_external(node):
-            continue
-        file_count += 1
-        symbol_count += _int(node.get("symbol_count"))
+    file_count = sum(1 for node in file_nodes if not _is_import_target(node))
 
     total_nloc = 0
     test_nloc = 0
@@ -550,55 +544,25 @@ def build_people(git_metadata: Iterable[Row], commits: Iterable[Row] = ()) -> di
 
     Owners are people, not display names: each file's primary owner goes
     through :func:`people_resolver`, so one person under two names or emails
-    is one owner, and automation owns nothing here.
+    is one owner, and automation owns nothing here. The counting itself lives
+    in :mod:`repowise.core.analysis.ownership_concentration`, shared with the
+    owners summary.
     """
-    from repowise.core.analysis.health.aggregation import module_label
     from repowise.core.analysis.owners import people_resolver
-
-    rows = list(git_metadata)
-    resolve = people_resolver(rows, commits)
-    owners: Counter[str] = Counter()
-    single_owner_files = 0
-    module_owner_files: dict[str, Counter[str]] = {}
-    module_file_totals: Counter[str] = Counter()
-
-    for m in rows:
-        name = m.get("primary_owner_name")
-        owner = resolve(name, m.get("primary_owner_email")) if name else None
-        if owner and resolve.is_bot(owner):
-            owner = None
-        if _int(m.get("bus_factor")) == 1:
-            single_owner_files += 1
-        module = module_label(m.get("file_path"))
-        module_file_totals[module] += 1
-        if owner:
-            owners[owner] += 1
-            module_owner_files.setdefault(module, Counter())[owner] += 1
-
-    silo_count = sum(
-        1
-        for module, mowners in module_owner_files.items()
-        if max(mowners.values()) / module_file_totals[module] > 0.8
+    from repowise.core.analysis.ownership_concentration import (
+        module_silos,
+        owned_files,
+        truck_factor,
     )
 
-    # Fewest primary owners who together hold more than half the owned files.
-    owned_total = sum(owners.values())
-    truck_factor: int | None = None
-    if owned_total:
-        cumulative = 0
-        truck_factor = 0
-        for count in sorted(owners.values(), reverse=True):
-            cumulative += count
-            truck_factor += 1
-            if cumulative * 2 > owned_total:
-                break
-
+    rows = list(git_metadata)
+    owned = owned_files(rows, people_resolver(rows, commits))
     return {
-        "owner_count": len(owners),
-        "tracked_files": sum(module_file_totals.values()),
-        "single_owner_files": single_owner_files,
-        "silo_count": silo_count,
-        "truck_factor": truck_factor,
+        "owner_count": len(owned.by_owner),
+        "tracked_files": sum(owned.module_totals.values()),
+        "single_owner_files": owned.single_owner_files,
+        "silo_count": len(module_silos(owned)),
+        "truck_factor": truck_factor(owned),
     }
 
 

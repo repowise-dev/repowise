@@ -2,21 +2,29 @@
 
 ``page_suggestions`` turns one already-fetched tool result into questions the
 page has earned; a value absent from the result produces no question, so the
-caller keeps its own static tier. ``follow_up_suggestions`` turns the tools a
-finished turn called into the next read worth making.
+caller keeps its own static tier. ``collection_suggestions`` does the same for
+a page with no target, from chart dataset rows. ``follow_up_suggestions`` turns
+the tools a finished turn called into the next read worth making.
 
-Both take tool results, never a repository path, so a host with its own artifact
-store can feed them. Kept apart from ``routers/chat.py``'s
+All take tool results or rows, never a repository path, so a host with its own
+artifact store can feed them. Kept apart from ``routers/chat.py``'s
 ``_build_tool_summary``: that labels a row that already happened, this asks a
 question nobody has asked yet.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
+
+from repowise.core.analysis.health.biomarker_labels import biomarker_phrase
+
+if TYPE_CHECKING:
+    from repowise.server.chat_datasets import Dataset
 
 MAX_PAGE_SUGGESTIONS = 3
+# A page with no target leads its static questions with these, never replaces them.
+MAX_COLLECTION_SUGGESTIONS = 2
 MAX_FOLLOW_UPS = 2
 
 # A whole path crowds a 390px dock, so a target is named by its last segment.
@@ -125,7 +133,7 @@ def _from_get_risk(target: str, result: Mapping[str, Any]) -> list[dict[str, Any
             where = f" in {function}" if isinstance(function, str) and function else f" in {name}"
             out.append(
                 _suggestion(
-                    f"Explain the {_humanize(kind)} finding{where}", "page", "get_health"
+                    f"Explain the {biomarker_phrase(kind)} finding{where}", "page", "get_health"
                 )
             )
 
@@ -171,7 +179,7 @@ def _from_get_health(target: str, result: Mapping[str, Any]) -> list[dict[str, A
         if isinstance(kind, str) and kind:
             out.append(
                 _suggestion(
-                    f"Explain the {_humanize(kind)} finding{where}", "page", "get_health"
+                    f"Explain the {biomarker_phrase(kind)} finding{where}", "page", "get_health"
                 )
             )
 
@@ -238,21 +246,22 @@ def _from_get_change_risk(target: str, result: Mapping[str, Any]) -> list[dict[s
     # ``drivers`` is diagnostics-gated and absent from the prefetch, so the
     # measured values named here are the ones the default response always
     # carries.
+    # The tercile label ships only with include=["scales"]; the percentile
+    # always does, so either one means the change was ranked.
     classification = result.get("classification") or result.get("review_priority")
-    if isinstance(classification, str) and classification:
-        percentile = result.get("risk_percentile")
-        # Stored to one decimal; every other surface shows it whole.
-        measured = (
-            f" at p{round(percentile)}" if isinstance(percentile, (int, float)) else ""
-        )
-        out.append(
-            _suggestion(
-                f"Why is {ref} rated {classification}{measured}?", "page", "get_change_risk"
-            )
-        )
+    percentile = result.get("risk_percentile")
+    # Stored to one decimal; every other surface shows it whole.
+    measured = f" at p{round(percentile)}" if isinstance(percentile, (int, float)) else ""
+    labelled = isinstance(classification, str) and bool(classification)
+    if labelled:
+        question = f"What makes {ref} {classification.lower()}{measured}?"
+    else:
+        question = f"What drives the diff size of {ref}{measured}?" if measured else ""
+    if question:
+        out.append(_suggestion(question, "page", "get_change_risk"))
     if result.get("is_fix") is True:
         out.append(_suggestion(f"What did {ref} fix?", "page", "get_change_risk"))
-    if isinstance(classification, str) and classification:
+    if question:
         out.append(
             _suggestion(
                 f"Which files in {ref} deserve the closest review?", "page", "get_risk"
@@ -285,6 +294,77 @@ def page_suggestions(
         return []
     primary = target.split(_TARGET_SEPARATOR)[0].strip() if target else ""
     return _dedupe(derive(primary, result))[:MAX_PAGE_SUGGESTIONS]
+
+
+# --------------------------------------------------------------------------
+# Collection tier: a page with no target -> a chart its datasets can draw
+# --------------------------------------------------------------------------
+
+Rows = Sequence[Mapping[str, Any]]
+
+
+def _at_risk(rows: Rows) -> str | None:
+    n = sum(1 for r in rows if r.get("health_band") == "at risk")
+    return f"Chart the {n:,} at-risk files by package" if n > 1 else None
+
+
+def _coverage_packages(rows: Rows) -> str | None:
+    n = len({r.get("package") for r in rows})
+    return f"Which of the {n} packages has the lowest coverage?" if n > 1 else None
+
+
+def _findings(rows: Rows) -> str | None:
+    n = len(rows)
+    return f"Chart the {n:,} open findings by severity and package" if n > 1 else None
+
+
+def _hotspots(rows: Rows) -> str | None:
+    n = sum(1 for r in rows if r.get("is_hotspot"))
+    return f"Chart the {n:,} hotspot files by package" if n > 1 else None
+
+
+def _fixed_files(rows: Rows) -> str | None:
+    n = sum(1 for r in rows if (r.get("fix_count") or 0) > 0)
+    return f"Top 10 of the {n:,} files with bug fixes, rest as Other" if n > 10 else None
+
+
+def _dead_code(rows: Rows) -> str | None:
+    n = len(rows)
+    text = f"Stacked bar of the {n:,} dead-code findings by kind and confidence tier"
+    return text if n > 1 else None
+
+
+def _changes(rows: Rows) -> str | None:
+    n = len(rows)
+    return f"Heatmap of the {n:,} merged changes by week and category" if n > 1 else None
+
+
+# Page kind -> (dataset, chip) pairs, most telling first.
+_COLLECTION_CHIPS: dict[str, tuple[tuple[str, Callable[[Rows], str | None]], ...]] = {
+    "repository": (("files", _at_risk), ("changes", _changes)),
+    "overview": (("files", _at_risk), ("changes", _changes)),
+    "health": (("files", _at_risk), ("coverage", _coverage_packages), ("findings", _findings)),
+    "refactoring": (("findings", _findings), ("files", _at_risk)),
+    "risk": (("files", _fixed_files), ("files", _hotspots)),
+    "dead-code": (("dead_code", _dead_code),),
+    "commit": (("changes", _changes),),
+}
+
+
+def collection_datasets(kind: str) -> list[str]:
+    """The datasets a page of *kind* with no target quotes figures from."""
+    return list(dict.fromkeys(name for name, _ in _COLLECTION_CHIPS.get(kind, ())))
+
+
+def collection_suggestions(kind: str, rows: Mapping[str, Rows]) -> list[dict[str, Any]]:
+    """Chart questions quoting what the cached *rows* hold; a dataset absent
+    from *rows* or with nothing to count produces no question."""
+    out = []
+    for name, chip in _COLLECTION_CHIPS.get(kind, ()):
+        text = chip(rows[name]) if name in rows else None
+        if text:
+            out.append(_suggestion(text, "page", "chart"))
+    return _dedupe(out)[:MAX_COLLECTION_SUGGESTIONS]
 
 
 # --------------------------------------------------------------------------
@@ -334,7 +414,69 @@ _FOLLOW_UPS: dict[str, tuple[tuple[str, str, str], ...]] = {
 }
 
 
+# A chart's next question depends on what it drew, so these are built per call.
+_FIX_FIRST = {
+    "files": ("Which of these files should we fix first?", "get_health"),
+    "findings": ("Which of these findings should we fix first?", "get_health"),
+    "coverage": ("Where should we add tests first?", "get_health"),
+    "dead_code": ("Which of these dead-code findings are safe to remove?", "get_dead_code"),
+}
+
+
+def _drawn(arguments: Mapping[str, Any]) -> set[str]:
+    """The fields a chart call already plots on x or as its series."""
+    x = arguments.get("x")
+    fields = set(x) if isinstance(x, list) else {x}
+    fields.add(arguments.get("series"))
+    return {f for f in fields if isinstance(f, str)}
+
+
+def _breakdown(dataset: Dataset, arguments: Mapping[str, Any], by: str) -> str:
+    """A count over a grouping (health bands, severities) reads as a stacked
+    bar; "break the files down" there drew a table on gpt-5.6-luna. Anything
+    else (a file, a week, a series already drawn) takes the plain wording."""
+    x = arguments.get("x")
+    field = dataset.fields.get(x) if isinstance(x, str) else None
+    if (
+        field is not None
+        and field.type == "text"
+        and x not in dataset.hierarchy
+        and x != "path"
+        and not arguments.get("series")
+    ):
+        return f"Show {_humanize(x)} by {by} as a stacked bar"
+    return f"Break the {dataset.noun} down by {by}"
+
+
+def _chart_follow_ups(arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Fix first where the rows are things to fix, then a breakdown the chart
+    did not draw, then the same numbers as a table. A discovery call (no x)
+    drew nothing and earns none."""
+    from repowise.server.chat_datasets import get_dataset
+
+    name = arguments.get("dataset")
+    dataset = get_dataset(name) if isinstance(name, str) else None
+    if dataset is None or arguments.get("x") is None:
+        return []
+    out = []
+    if name in _FIX_FIRST:
+        text, hint = _FIX_FIRST[name]
+        out.append(_suggestion(text, "followup", hint))
+    by = next((f for f in ("package", "category") if f in dataset.fields), None)
+    if by and by not in _drawn(arguments):
+        out.append(_suggestion(_breakdown(dataset, arguments, by), "followup", "chart"))
+    if arguments.get("kind") != "table":
+        out.append(_suggestion("Show this as a table", "followup", "show_view"))
+    return out
+
+
 def _follow_ups_for(tool_name: str, arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if tool_name == "chart":
+        return _chart_follow_ups(arguments)
+    if tool_name == "show_view":
+        # No table chip: redrawing a redrawn view as a table failed half the
+        # time on gpt-5.6-luna, where a chart tool's table never did.
+        return [_suggestion("What should we fix first here?", "followup", "get_health")]
     subject = _subject(arguments)
     return [
         _suggestion(

@@ -9,6 +9,7 @@ from repowise.core.workspace.extractors.strings import (
     PHP_SYNTAX,
     PYTHON_SYNTAX,
     Arg,
+    call_arguments,
     inline_names,
     resolve_argument,
     resolve_string,
@@ -31,10 +32,20 @@ class TestSelectArgument:
             (["['orders:a', 'orders:b']"], Arg(pos=0), ["'orders:a'", "'orders:b'"]),
             (["'a'"], Arg(pos=3), []),
             (["x == 'a'"], Arg(keys=("x",)), []),
+            (['new[] { "a", "b" }'], Arg(pos=0), ['"a"', '"b"']),
+            (['new List<string> { "a" }'], Arg(pos=0), ['"a"']),
+            (["ctx", '[]string{"a", "b"}'], Arg(pos=1), ['"a"', '"b"']),
+            (["'a'", "'b'", "group_id='g'"], Arg(pos=0, variadic=True), ["'a'", "'b'"]),
+            (['"a"', '[]string{"b"}'], Arg(pos=0, variadic=True), ['"a"', '"b"']),
         ],
     )
     def test_selection(self, args: list[str], arg: Arg, expected: list[str]) -> None:
         assert select_argument(args, arg) == expected
+
+
+def test_a_composite_literal_reads_its_fields_as_arguments() -> None:
+    src = 'm := &sarama.ProducerMessage{Topic: "orders", Value: enc(f(x))}'
+    assert call_arguments(src, src.index("{")) == ['Topic: "orders"', "Value: enc(f(x))"]
 
 
 class TestResolveArgument:
@@ -132,9 +143,88 @@ class TestPhpConstants:
         assert resolve_string("static::QUEUE", PHP_SYNTAX, constants) == "jobs"
 
 
+class TestPythonConstants:
+    def test_an_upper_case_constant_may_be_unspaced(self) -> None:
+        constants = string_constants("class P:\n    EXCHANGE='orders'\n", PYTHON_SYNTAX)
+        assert constants == {"EXCHANGE": "'orders'"}
+
+    def test_an_unspaced_keyword_argument_is_not_an_assignment(self) -> None:
+        src = "url = '/a'\nclient.get(\n    url=str(x),\n    TIMEOUT==1,\n)\n"
+        assert string_constants(src, PYTHON_SYNTAX) == {"url": "'/a'"}
+
+    def test_an_upper_case_keyword_argument_on_a_continuation_line_is_not_one(self) -> None:
+        src = "c.f(\n    EXCHANGE='a',\n    ROUTING='k'\n)\n"
+        assert string_constants(src, PYTHON_SYNTAX) == {}
+
+    def test_an_instance_attribute_does_not_fold_a_bare_name(self) -> None:
+        src = "def f(queue):\n    pass\nclass C:\n    def __init__(self):\n        self.queue = 'jobs'\n"
+        constants = string_constants(src, PYTHON_SYNTAX)
+        assert resolve_string("queue", PYTHON_SYNTAX, constants) is None
+        assert resolve_string("self.queue", PYTHON_SYNTAX, constants) == "jobs"
+
+    def test_self_and_cls_read_a_class_attribute(self) -> None:
+        constants = string_constants("class P:\n    QUEUE = 'jobs'\n", PYTHON_SYNTAX)
+        assert resolve_string("self.QUEUE", PYTHON_SYNTAX, constants) == "jobs"
+        assert resolve_string("cls.QUEUE", PYTHON_SYNTAX, constants) == "jobs"
+        assert resolve_string("f'{self.QUEUE}.dlq'", PYTHON_SYNTAX, constants) == "jobs.dlq"
+
+    def test_an_attribute_a_method_rebinds_is_not_folded(self) -> None:
+        src = "class P:\n    QUEUE = 'jobs'\n    def __init__(self, q):\n        self.QUEUE = q\n"
+        constants = string_constants(src, PYTHON_SYNTAX)
+        assert resolve_string("self.QUEUE", PYTHON_SYNTAX, constants) is None
+        assert resolve_string("cls.QUEUE", PYTHON_SYNTAX, constants) is None
+
+    def test_an_instance_attribute_keeps_the_module_constant_it_copies(self) -> None:
+        src = "EXCHANGE = 'orders'\nclass P:\n    def __init__(self):\n        self.EXCHANGE = EXCHANGE\n"
+        constants = string_constants(src, PYTHON_SYNTAX)
+        assert resolve_string("EXCHANGE", PYTHON_SYNTAX, constants) == "orders"
+        assert resolve_string("self.EXCHANGE", PYTHON_SYNTAX, constants) is None
+
+    def test_self_is_not_a_member_prefix_in_js(self) -> None:
+        assert resolve_string("self.QUEUE", JS_SYNTAX, {"QUEUE": "'jobs'"}) is None
+
+
 @pytest.mark.parametrize(
     ("suffix", "expected"),
     [(".ts", JS_SYNTAX), (".py", PYTHON_SYNTAX), (".php", PHP_SYNTAX), (".sql", None)],
 )
 def test_syntax_for_suffix(suffix: str, expected: object) -> None:
     assert syntax_for_suffix(suffix) is expected
+
+
+class TestJsLocalValue:
+    @staticmethod
+    def _at(content: str, name: str = "options") -> str | None:
+        from repowise.core.workspace.extractors.strings import js_local_value
+
+        return js_local_value(content, name, content.rindex("request("))
+
+    def test_the_nearest_declaration_in_an_open_block(self) -> None:
+        text = "function f() {\n  var options = {\n    uri: '/a',\n  };\n  request(options, cb);\n}\n"
+        assert self._at(text) == "{\n    uri: '/a',\n  }"
+
+    @pytest.mark.parametrize(
+        "between",
+        [
+            "options.method = 'DELETE';\n",
+            "Object.assign(options, extra);\n",
+            "options = other;\n",
+            "items.forEach(function (err, options) {\n",
+            "items.forEach((e, options) => {\n",
+            "items.forEach(options => {\n",
+            "options['uri'] = base + '/b';\n",
+            "class S {\n  save(options) {\n",
+            "}\nfunction g() {\n",
+        ],
+    )
+    def test_a_rebinding_or_closed_block_refuses(self, between: str) -> None:
+        assert self._at("function f() {\n  var options = { uri: '/a' };\n" + between + "request(options);\n") is None
+
+    def test_a_statement_continued_on_the_next_line_refuses(self) -> None:
+        assert self._at("var url = '/a'\n  + '/b';\nrequest(url);\n", "url") is None
+        assert self._at("var url = '/a' +\n  '/b';\nrequest(url);\n", "url") is None
+        assert self._at("var url = '/a'\nrequest(url);\n", "url") == "'/a'"
+
+    def test_a_control_header_naming_the_local_does_not_shadow_it(self) -> None:
+        text = "function f() {\n  var options = { uri: '/a' };\n  if (options) {\n    request(options);\n"
+        assert self._at(text) == "{ uri: '/a' }"

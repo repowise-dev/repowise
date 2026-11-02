@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.cli.cost_estimator import PageTypePlan, _lookup_cost, estimate_cost
+from repowise.cli.cost_estimator import PageTypePlan, estimate_cost, lookup_cost
 from repowise.cli.cost_estimator.heuristics import heuristic_tokens
 
 # ---------------------------------------------------------------------------
@@ -19,9 +19,11 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         ("gpt-5.4-nano", 0.0002, 0.00125),
         ("gpt-5.4-mini", 0.00075, 0.0045),
         ("gpt-5.4", 0.0025, 0.015),
-        # The default. An unpriced model reads as free here (_lookup_cost
-        # falls through to (0.0, 0.0)), so this row is the guard.
+        # The default. An unpriced model is estimated as free (lookup_cost
+        # returns None), so this row is the guard.
         ("gpt-5.6-luna", 0.0002, 0.0012),
+        ("gpt-6-luna", 0.0001, 0.0005),
+        ("gpt-6-sol", 0.002, 0.010),
         # Gemini
         ("gemini-3.1-flash-lite-preview", 0.00025, 0.0015),
         ("gemini-3-flash-preview", 0.0005, 0.003),
@@ -30,6 +32,9 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         ("claude-opus-4-6", 0.005, 0.025),
         ("claude-sonnet-4-6", 0.003, 0.015),
         ("claude-haiku-4-5", 0.001, 0.005),
+        ("claude-haiku-5-5", 0.0001, 0.0005),
+        ("claude-sonnet-5-5", 0.002, 0.01),
+        ("claude-opus-5-5", 0.004, 0.02),
         # Free/local models
         ("mock", 0.0, 0.0),
         ("llama3", 0.0, 0.0),
@@ -38,7 +43,7 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
     ],
 )
 def test_lookup_cost(model, expected_input, expected_output):
-    inp, out = _lookup_cost(model)
+    inp, out = lookup_cost(model)
     assert inp == pytest.approx(expected_input, rel=1e-6)
     assert out == pytest.approx(expected_output, rel=1e-6)
 
@@ -88,3 +93,45 @@ def test_estimate_cost_zero_for_mock():
     plans = [PageTypePlan("module_page", 5, 4)]
     est = estimate_cost(plans, "mock", "mock")
     assert est.estimated_cost_usd == 0.0
+
+
+def test_embedding_is_part_of_the_estimate():
+    """Every page is embedded, structural ones included, so all are priced."""
+    from repowise.core.cost_estimator.pricing import lookup_embedding_cost
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    plans = [PageTypePlan("file_page", 1000, 2)]
+    est = estimate_cost(plans, "gemini", "gemini-3.1-flash-lite-preview", embedder="openai")
+    tokens = 1000 * (EMBED_TEXT_MAX_CHARS // 4)
+    assert est.estimated_embedding_tokens == tokens
+    assert est.embedding_cost_usd == pytest.approx(tokens / 1000 * 0.00002)
+    assert est.estimated_cost_usd == pytest.approx(est.embedding_cost_usd)
+    assert est.cost_range.high > est.embedding_cost_usd
+
+    assert lookup_embedding_cost("gemini") == 0.00015
+    assert lookup_embedding_cost("openai", "text-embedding-3-large") == 0.00013
+    assert lookup_embedding_cost("ollama", "anything") == 0.0
+    assert lookup_embedding_cost("mock") == 0.0
+
+
+def test_local_and_unpriced_embedding_adds_nothing():
+    plans = [PageTypePlan("file_page", 10, 2)]
+    for embedder in ("ollama", "mock", None):
+        est = estimate_cost(plans, "mock", "mock", embedder=embedder)
+        assert est.embedding_cost_usd == 0.0
+        assert est.estimated_cost_usd == 0.0
+
+
+def test_the_embedding_note_names_the_share():
+    from repowise.cli.cost_gate import embedding_note
+
+    plans = [PageTypePlan("file_page", 1000, 2)]
+    note = embedding_note(estimate_cost(plans, "mock", "mock", embedder="gemini"))
+    assert note == "Includes about $0.60 USD to embed 1,000 pages with gemini."
+    few = [PageTypePlan("file_page", 3, 2)]
+    tiny = embedding_note(estimate_cost(few, "mock", "mock", embedder="openai"))
+    assert tiny == "Includes under $0.01 USD to embed 3 pages with openai."
+    free = embedding_note(estimate_cost(plans, "mock", "mock", embedder="ollama"))
+    assert free == "Embedding 1,000 pages with ollama adds no cost."
+    assert embedding_note(estimate_cost(plans, "mock", "mock", embedder="mock")) is None
+    assert embedding_note(estimate_cost(plans, "mock", "mock")) is None

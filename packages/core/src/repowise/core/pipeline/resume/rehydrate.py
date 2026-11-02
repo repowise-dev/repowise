@@ -10,12 +10,14 @@ persisted (see ``phases/git.py: drop_transient_git_signals``), so a
 rehydrated ``git_meta_map`` carries every durable signal but no
 ``blame_index``. Blame-dependent biomarkers treat its absence as "no
 signal" — which is exactly the case for FAST/ESSENTIAL-tier runs that
-never computed blame in the first place.
+never computed blame in the first place. Split File's per-function commit sets
+are the exception: :func:`attach_stored_commit_shas` puts the stored ones back.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,29 +28,14 @@ from ..upgrade import rehydrate_graph_builder
 logger = structlog.get_logger(__name__)
 
 __all__ = [
+    "attach_commit_set_blame",
+    "attach_stored_commit_shas",
     "rehydrate_dead_code_report",
     "rehydrate_decision_report",
     "rehydrate_git_meta_map",
     "rehydrate_graph_builder",
+    "stored_git_meta_for",
 ]
-
-
-def _git_metadata_to_dict(row: Any) -> dict[str, Any]:
-    """Project a ``GitMetadata`` ORM row to the dict shape analysis expects.
-
-    Uses column introspection so every persisted signal is carried faithfully
-    and the keys match the column names the fresh git indexer writes (the
-    upsert path sets attributes by matching dict keys to columns). JSON
-    columns stay as their stored strings — consumers (e.g. the duplication
-    co-change scorer) ``json.loads`` them on demand.
-    """
-    out: dict[str, Any] = {}
-    for col in row.__table__.columns:
-        name = col.name
-        if name in ("id", "repository_id"):
-            continue
-        out[name] = getattr(row, name)
-    return out
 
 
 async def rehydrate_git_meta_map(session: Any, repo_id: str) -> dict[str, dict[str, Any]]:
@@ -58,13 +45,108 @@ async def rehydrate_git_meta_map(session: Any, repo_id: str) -> dict[str, dict[s
     "git was never indexed" and fall back to recomputing).
     """
     from repowise.core.persistence import get_all_git_metadata
+    from repowise.core.persistence.crud import git_metadata_dict
 
     try:
         rows = await get_all_git_metadata(session, repo_id)
     except Exception as exc:
         logger.debug("rehydrate_git_meta_failed", error=str(exc))
         return {}
-    return {path: _git_metadata_to_dict(row) for path, row in rows.items()}
+    return {path: git_metadata_dict(row) for path, row in rows.items()}
+
+
+async def stored_git_meta_for(
+    session: Any, repo_id: str, paths: list[str]
+) -> dict[str, dict[str, Any]]:
+    """The persisted git rows of *paths*, as :func:`rehydrate_git_meta_map` shapes them.
+
+    A path with no row is absent. Unlike the full rehydrate, a failed read
+    raises: the caller has to tell "no history" from "could not read it".
+    """
+    from repowise.core.persistence import get_git_metadata_bulk
+    from repowise.core.persistence.crud import git_metadata_dict
+
+    rows = await get_git_metadata_bulk(session, repo_id, paths)
+    return {path: git_metadata_dict(row) for path, row in rows.items()}
+
+
+async def attach_stored_commit_shas(
+    session: Any, repo_id: str, git_meta_map: dict[str, dict[str, Any]]
+) -> None:
+    """Put each file's stored per-function commit sets under
+    ``"function_commit_shas"``, where a score without a blame index reads them.
+
+    Only files already in *git_meta_map* get them. Best effort: a failed read
+    leaves the map as it was.
+    """
+    from repowise.core.persistence.crud import get_function_commit_shas
+
+    try:
+        stored = await get_function_commit_shas(session, repo_id)
+    except Exception as exc:
+        logger.debug("stored_commit_shas_failed", error=str(exc))
+        return
+    for path, entries in stored.items():
+        meta = git_meta_map.get(path)
+        if meta is not None:
+            meta["function_commit_shas"] = entries
+
+
+def attach_commit_set_blame(
+    repo_path: Any,
+    git_meta_map: dict[str, dict[str, Any]],
+    parsed_files: list[Any],
+    *,
+    git_tier: str | None,
+) -> int:
+    """Blame the Split File candidates that have no stored commit sets, under
+    ``"commit_set_blame"``, so a re-score mints their plans as a full index
+    would. Returns the number of files blamed.
+
+    Rows written before the sets existed carry none, so without this the first
+    re-score after an upgrade mints ids that move again at the next index. Only
+    what an index would have blamed qualifies: a FULL-tier repo, a file with
+    enough commits to keep its blame index, and one Split File could act on.
+    Once the rows are written back the files are skipped, so the cost is paid
+    once.
+    """
+    from repowise.core.analysis.health.refactoring.split_file import may_split
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.ingestion.git_indexer.function_blame import _MIN_COMMITS_FOR_BLAME
+    from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
+
+    try:
+        if git_tier and not GitIndexTier(git_tier).includes_blame:
+            return 0
+    except ValueError:
+        pass
+    paths: list[str] = []
+    for pf in parsed_files:
+        path = pf.file_info.path
+        meta = git_meta_map.get(path)
+        if (
+            meta is None
+            or "function_commit_shas" in meta
+            or (meta.get("commit_count_total") or 0) < _MIN_COMMITS_FOR_BLAME
+        ):
+            continue
+        top_level = sum(
+            1 for s in pf.symbols if s.kind in ("class", "function") and not s.parent_name
+        )
+        try:
+            line_count = Path(pf.file_info.abs_path).read_bytes().count(b"\n") + 1
+        except OSError:
+            continue
+        if may_split(path, pf.file_info.language, line_count, top_level):
+            paths.append(path)
+    try:
+        blamed = GitIndexer(repo_path).blame_indexes(paths)
+    except Exception as exc:
+        logger.debug("commit_set_blame_failed", error=str(exc))
+        return 0
+    for path, idx in blamed.items():
+        git_meta_map[path]["commit_set_blame"] = idx
+    return len(blamed)
 
 
 # ---------------------------------------------------------------------------

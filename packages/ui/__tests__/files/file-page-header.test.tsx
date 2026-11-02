@@ -137,6 +137,37 @@ describe("FilePageHeader documentation door", () => {
   });
 });
 
+describe("FilePageHeader owner shares", () => {
+  function owned(git: Record<string, unknown>) {
+    return makeData({
+      git: { primary_owner: "Ada", commit_count_total: 40, ...git } as never,
+    });
+  }
+
+  it("labels the line share and the commit share apart", () => {
+    render(
+      <FilePageHeader
+        data={owned({ primary_owner_line_pct: 0.45, primary_owner_commit_pct: 0.6 })}
+        linkPrefix="/repos/r1"
+      />,
+    );
+    expect(
+      screen.getByText(/\(45% of current lines, 60% of commits\), across 40 commits\./),
+    ).toBeTruthy();
+  });
+
+  it("keeps the commit share alone when blame did not run", () => {
+    render(
+      <FilePageHeader
+        data={owned({ primary_owner_line_pct: null, primary_owner_commit_pct: 0.6 })}
+        linkPrefix="/repos/r1"
+      />,
+    );
+    expect(screen.getByText(/\(60% of commits\)/)).toBeTruthy();
+    expect(screen.queryByText(/current lines/)).toBeNull();
+  });
+});
+
 describe("fileTabsFor", () => {
   it("badges only what there is something to say about", () => {
     const tabs = fileTabsFor(makeData());

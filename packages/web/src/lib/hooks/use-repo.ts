@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { getRepo } from "@/lib/api/repos";
+import { getRepo, getRepoStats } from "@/lib/api/repos";
 import { ApiClientError } from "@/lib/api/client";
 import type { RepoResponse } from "@/lib/api/types";
 
@@ -28,4 +28,16 @@ export function useRepo(repoId: string | null) {
     { refreshInterval: 30_000, onErrorRetry: skipRetryOn404 },
   );
   return { repo: data, error, isLoading, mutate };
+}
+
+/**
+ * Files in the index, for naming the scope of a clean result ("across 5,612
+ * files"). Null until it lands or when it cannot load, so a caller falls back
+ * to copy without a count rather than claiming a number it never measured.
+ */
+export function useRepoFileCount(repoId: string): number | null {
+  const { data } = useSWR(`repo-stats:${repoId}`, () => getRepoStats(repoId), {
+    revalidateOnFocus: false,
+  });
+  return data?.file_count ?? null;
 }

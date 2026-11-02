@@ -35,17 +35,26 @@ character here roughly fifty times more expensive than a character in a tool
 response. It was 3,402 characters and bought a repowise MCP call before ~1.0%
 of edits under Claude Code.
 
-It is kept, and kept short, because the table is what reaches an agent under a
-harness that defers MCP schemas. Claude Code defers, so an agent there must
-issue a ``ToolSearch`` before a tool is even a candidate, and this table in
-CLAUDE.md is the only description it sees until then. Codex loads the schemas
-up front and needs the table least, but reads the same AGENTS.md block, so the
-rows must stay accurate for both. Adding a sentence here is a real cost; spend
+So the table is the opt-in ``tools`` section. By default the block carries
+``_tool_routing.j2`` instead: one line per task kind naming the call with its
+arguments, which is what an agent under a harness that defers MCP schemas
+(Claude Code) reads before its first ``ToolSearch``. When the table is opted
+in, its rows must stay accurate for CLAUDE.md and AGENTS.md alike. Adding a
+sentence here is a real cost; spend
 it in the tool's own schema description instead, which is paid only on use.
 Budgets in ``tests/unit/server/mcp/test_tool_table_drift.py``.
 """
 
 from __future__ import annotations
+
+#: Row text that is true only on a model-backed index. A keyless index answers
+#: every question at low confidence and serves full-text hits only, so these
+#: clauses are dropped there rather than steering the agent to distrust them.
+_KEYED_ONLY: dict[str, str] = {
+    "get_answer": 'Cite `confidence: "high"` or `grounding: "extracted"` directly; ',
+    "search_codebase": " A hit whose `sources` are `[fts]` only has no semantic agreement, "
+    "so verify it.",
+}
 
 # Tool name -> (signature shown in the table, agent-facing row text).
 TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
@@ -56,11 +65,10 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         # question with `confidence: "low"`, since confidence rates prose that
         # was never synthesised, and this row told the agent to distrust the
         # payload on the strength of it, so it re-searched after every call.
-        # `retrieval_quality` is the field that rates what such a payload does
-        # carry. Reworded, not lengthened: 186 chars against the 179 it replaced.
-        'First call for any how/where/why question. Cite `confidence: "high"` or '
-        '`grounding: "extracted"` directly; `degraded` means judge by '
-        "`retrieval_quality`. `symbol_bodies` has live bodies.",
+        # `confidence` there is graded from the evidence such a payload does carry.
+        "First call; one per how/where/why question. "
+        + _KEYED_ONLY["get_answer"]
+        + "`degraded` means no prose; `confidence` rates the evidence. `symbol_bodies` has live bodies.",
     ),
     "get_context": (
         "get_context(targets=[...])",
@@ -77,8 +85,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     "search_codebase": (
         "search_codebase(query)",
         "Hybrid search, auto-routed by query shape; force with "
-        "`mode=symbol|path|concept|hybrid`. A hit whose `sources` are `[fts]` only "
-        "has no semantic agreement, so verify it.",
+        "`mode=symbol|path|concept|hybrid`." + _KEYED_ONLY["search_codebase"],
     ),
     "get_why": (
         "get_why(query, targets?)",
@@ -86,7 +93,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "rationale comments. Call before a refactor or a pattern divergence.",
     ),
     "get_risk": (
-        "get_risk(targets, changed_files?, include?)",
+        "get_risk(targets?, changed_files?, include?)",
         "File history and structural reach. PR mode leads with `directive`; its "
         "0-10 structural heuristic is uncalibrated, not a probability. Read typed "
         "test recommendations and coverage state first.",
@@ -115,9 +122,11 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
 }
 
 
-def render_tool_table() -> str:
+def render_tool_table(*, keyless: bool = False) -> str:
     """Markdown table of the tool rows, in the dict's curated order."""
     lines = ["| Tool | When and why |", "|------|--------------|"]
-    for signature, row in TOOL_TABLE_ROWS.values():
+    for name, (signature, row) in TOOL_TABLE_ROWS.items():
+        if keyless and name in _KEYED_ONLY:
+            row = row.replace(_KEYED_ONLY[name], "")
         lines.append(f"| `{signature}` | {row} |")
     return "\n".join(lines)

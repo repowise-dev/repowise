@@ -34,7 +34,7 @@ repowise init --provider opencode --yes
 Fast smoke without LLM wiki generation (index + graph/git/health only):
 
 ```bash
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 Then upgrade pages later with OpenCode:

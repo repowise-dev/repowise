@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatMessage } from "../../src/chat/chat-message.js";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 
@@ -30,15 +30,78 @@ describe("ChatMessage", () => {
     ).toBeNull();
   });
 
-  it("renders the user on the opposite side with a neutral identity surface", () => {
-    render(<ChatMessage message={USER} repoId="r1" />);
+  it("renders the user on the opposite side as a borderless bubble with no label or avatar", () => {
+    const { container } = render(<ChatMessage message={USER} repoId="r1" />);
     const turn = screen.getByRole("article", { name: "You" });
-    expect(turn.className).toContain("justify-end");
+    expect(turn.className).toContain("items-end");
     expect(turn).toHaveAttribute("data-chat-role", "user");
-    expect(screen.getByText("You")).toBeInTheDocument();
-    expect(screen.getByText("Where is auth handled?").className).toContain(
-      "bg-[var(--color-bg-surface)]",
+    expect(screen.queryByText("You")).toBeNull();
+    expect(container.querySelector("img, svg.lucide-user-round")).toBeNull();
+    const bubble = screen.getByText("Where is auth handled?");
+    expect(bubble.className).toContain("bg-[var(--color-bg-elevated)]");
+    expect(bubble.className).not.toContain("border");
+  });
+
+  it("renders the answer without a label or avatar", () => {
+    const { container } = render(<ChatMessage message={ASSISTANT} repoId="r1" />);
+    expect(screen.queryByText("Repowise")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("names the model only when it changed from the previous answer", () => {
+    const withModel = { ...ASSISTANT, provider: "anthropic", model: "claude" };
+    const view = render(<ChatMessage message={withModel} repoId="r1" />);
+    expect(screen.queryByText(/anthropic/)).toBeNull();
+    view.rerender(<ChatMessage message={withModel} repoId="r1" modelChanged />);
+    expect(screen.getByText(/Model changed to anthropic · claude/)).toBeInTheDocument();
+  });
+
+  it("offers copy and retry, with no canned follow up", () => {
+    render(<ChatMessage message={ASSISTANT} repoId="r1" isLatest onRetry={() => {}} />);
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /follow up/i })).toBeNull();
+    // The newest answer never hides its actions behind hover.
+    const group = screen.getByRole("group", { name: "assistant message actions" });
+    expect(group.className).not.toContain("opacity-0");
+  });
+
+  it("reveals actions on hover or focus for older turns, never only on hover for touch", () => {
+    render(<ChatMessage message={ASSISTANT} repoId="r1" />);
+    const group = screen.getByRole("group", { name: "assistant message actions" });
+    expect(group.className).toContain("pointer-fine:opacity-0");
+    expect(group.className).toContain("group-focus-within/turn:opacity-100");
+  });
+
+  it("shows an inline error with Retry when the answer failed before any text", () => {
+    let retried = 0;
+    render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text: "" }}
+        repoId="r1"
+        error="The provider rejected the request."
+        onRetry={() => {
+          retried += 1;
+        }}
+      />,
     );
+    expect(screen.getByRole("alert")).toHaveTextContent("The provider rejected the request.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retried).toBe(1);
+  });
+
+  it("resends an edit with the primary action, not the model colour", () => {
+    render(
+      <ChatMessage
+        message={{ ...USER, serverId: "s1" }}
+        repoId="r1"
+        onEditAndResend={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }));
+    const submit = screen.getByRole("button", { name: "Fork and resend" });
+    expect(submit.className).toContain("action-primary");
+    expect(submit.className).not.toContain("color-model");
   });
 
   it("renders assistant text as markdown", () => {
@@ -107,5 +170,64 @@ describe("ChatMessage truncation", () => {
       />,
     );
     expect(container.querySelector('[data-working-orb="true"]')).not.toBeNull();
+  });
+
+  it("marks an unverified figure with a dotted underline and screen-reader text", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          ...ASSISTANT,
+          text: "It has **3 fixes** and 17 callers.",
+          unverifiedFigures: [{ text: "17", start: 23, end: 25 }],
+        }}
+        repoId="r1"
+      />,
+    );
+    const flagged = container.querySelector("[data-flagged]");
+    expect(flagged?.textContent).toBe("17 (Not found in this turn's tool results)");
+    expect(flagged?.className).toContain("decoration-dotted");
+    expect(flagged).toHaveAttribute("title", "Not found in this turn's tool results");
+    expect(container.querySelectorAll("[data-flagged]")).toHaveLength(1);
+    expect(container.querySelector("[data-chat-unverified-figures]")).not.toBeNull();
+  });
+
+  it.each([
+    ["inside emphasis", "Fixed **17** times.", 8],
+    ["inside a link", "See [17 callers](https://example.com).", 5],
+  ])("marks a figure %s", (_label, text, start) => {
+    const { container } = render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text, unverifiedFigures: [{ text: "17", start, end: start + 2 }] }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector("[data-flagged]")?.firstChild?.textContent).toBe("17");
+  });
+
+  it("leaves text it cannot map by offset unmarked", () => {
+    // The escape makes the text node shorter than its source, so offsets no longer line up.
+    const { container } = render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text: String.raw`3 \* 17 callers`, unverifiedFigures: [{ text: "17", start: 5, end: 7 }] }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector("[data-flagged]")).toBeNull();
+    expect(container.textContent).toContain("3 * 17 callers");
+  });
+
+  it("holds the flags back while the answer streams", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          ...ASSISTANT,
+          text: "17 callers",
+          isStreaming: true,
+          unverifiedFigures: [{ text: "17", start: 0, end: 2 }],
+        }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector("[data-flagged]")).toBeNull();
   });
 });

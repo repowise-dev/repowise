@@ -147,13 +147,11 @@ class AnalysisIndexStore(ABC):
 
     @abstractmethod
     async def recompute_decision_staleness(
-        self, repository_id: str, git_meta_map: dict[str, dict]
+        self, repository_id: str, git_meta_map: dict[str, dict], repo_path: str | None = None
     ) -> int: ...
 
     @abstractmethod
-    async def get_stale_decisions(
-        self, repository_id: str, threshold: float = 0.5
-    ) -> list[DecisionRecord]: ...
+    async def get_stale_decisions(self, repository_id: str) -> list[DecisionRecord]: ...
 
     @abstractmethod
     async def get_decision_health_summary(self, repository_id: str) -> dict: ...
@@ -219,7 +217,7 @@ class AnalysisIndexStore(ABC):
         self,
         repository_id: str,
         *,
-        hotspot_health: float,
+        hotspot_health: float | None,
         average_health: float,
         worst_performer_path: str | None,
         worst_performer_score: float | None,

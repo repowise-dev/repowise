@@ -42,10 +42,9 @@ from repowise.server.mcp_server import _watchdog
         "bash",
         "powershell.exe",
         "pwsh",
-        None,
     ],
 )
-def test_launcher_names(name: str | None) -> None:
+def test_launcher_names(name: str) -> None:
     assert _watchdog._is_launcher(name) is True
 
 
@@ -74,6 +73,7 @@ def test_watch_set_stops_at_client(monkeypatch: pytest.MonkeyPatch) -> None:
         ProcInfo(pid=104, name="explorer.exe", create_token="e"),
     ]
     monkeypatch.setattr(_watchdog, "ancestor_chain", lambda _pid: chain)
+    monkeypatch.setattr(_watchdog, "pid_alive", lambda _pid: True)
 
     watch = _watchdog.compute_watch_set()
 
@@ -93,8 +93,65 @@ def test_watch_set_all_launchers_keeps_whole_chain(
         ProcInfo(pid=101, name="python3", create_token="b"),
     ]
     monkeypatch.setattr(_watchdog, "ancestor_chain", lambda _pid: chain)
+    monkeypatch.setattr(_watchdog, "pid_alive", lambda _pid: True)
 
     assert [w.pid for w in _watchdog.compute_watch_set()] == [100, 101]
+
+
+def test_watch_set_stops_before_an_unnamed_ancestor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Windows the chain's last entry is nameless when that ancestor had
+    already exited before the snapshot was read (#3106) — it must never be
+    watched, and nothing above it in the chain is lost by stopping there."""
+    chain = [
+        ProcInfo(pid=100, name="python.exe", create_token="a"),
+        ProcInfo(pid=101, name="bash.exe", create_token="b"),
+        ProcInfo(pid=102, name=None, create_token="c"),
+    ]
+    monkeypatch.setattr(_watchdog, "ancestor_chain", lambda _pid: chain)
+    monkeypatch.setattr(_watchdog, "pid_alive", lambda _pid: True)
+
+    assert [w.pid for w in _watchdog.compute_watch_set()] == [100, 101]
+
+
+def test_watch_set_stops_at_an_unnamed_ancestor_in_the_middle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = [
+        ProcInfo(pid=100, name="python.exe", create_token="a"),
+        ProcInfo(pid=101, name=None, create_token="b"),
+        ProcInfo(pid=102, name="claude.exe", create_token="c"),
+    ]
+    monkeypatch.setattr(_watchdog, "ancestor_chain", lambda _pid: chain)
+    monkeypatch.setattr(_watchdog, "pid_alive", lambda _pid: True)
+
+    assert [w.pid for w in _watchdog.compute_watch_set()] == [100]
+
+
+def test_watch_set_skips_an_ancestor_already_dead_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process gone before the set is even computed can never later tell
+    us the client left, so there is nothing gained by watching it (#3106)."""
+    chain = [
+        ProcInfo(pid=100, name="python.exe", create_token="a"),
+        ProcInfo(pid=101, name="claude.exe", create_token="b"),
+    ]
+    monkeypatch.setattr(_watchdog, "ancestor_chain", lambda _pid: chain)
+    monkeypatch.setattr(_watchdog, "pid_alive", lambda pid: pid != 101)
+
+    assert [w.pid for w in _watchdog.compute_watch_set()] == [100]
+
+
+def test_watch_set_unknown_liveness_is_not_treated_as_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail open: a liveness probe that can't tell must not shrink the
+    watch set, matching the module's overall conservative failure policy."""
+    chain = [ProcInfo(pid=100, name="claude.exe", create_token="a")]
+    monkeypatch.setattr(_watchdog, "ancestor_chain", lambda _pid: chain)
+    monkeypatch.setattr(_watchdog, "pid_alive", lambda _pid: None)
+
+    assert [w.pid for w in _watchdog.compute_watch_set()] == [100]
 
 
 # ---------------------------------------------------------------------------

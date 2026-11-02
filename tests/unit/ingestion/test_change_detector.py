@@ -337,7 +337,8 @@ class TestAffectedPagesPagerankParam:
         result = d.get_affected_pages(
             [self._diff("f0.py")], graph=g, cascade_budget=3, pagerank=pr
         )
-        assert result.regenerate == ["f5.py", "f4.py", "f0.py"]
+        # The changed file first, then importers by the supplied pagerank.
+        assert result.regenerate == ["f0.py", "f5.py", "f4.py"]
         assert set(result.decay_only) == {"f1.py", "f2.py", "f3.py"}
 
     def test_without_pagerank_falls_back_to_internal_computation(
@@ -447,3 +448,42 @@ class TestAffectedPagesStalenessPriority:
             pagerank=pr,
         )
         assert result.regenerate[0] == "a.py"
+
+
+# ---------------------------------------------------------------------------
+# parse_bytes — language from the blob in hand
+# ---------------------------------------------------------------------------
+
+
+class TestParseBytesLanguage:
+    def test_a_dclgen_blob_is_cobol_from_any_working_directory(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The blob exists nowhere on disk and the cwd is not the repo, so only
+        # the bytes passed in can decide the language.
+        repo, elsewhere = tmp_path / "repo", tmp_path / "elsewhere"
+        repo.mkdir()
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        blob = (
+            b"           EXEC SQL DECLARE CARDDEMO.TRANSACTION_TYPE TABLE\n"
+            b"           ( TR_TYPE CHAR(2) NOT NULL ) END-EXEC.\n"
+            b"       01  DCLTRTYP.\n"
+            b"           10 TR-TYPE              PIC X(2).\n"
+        )
+
+        parsed = ChangeDetector(repo).parse_bytes(blob, "app/dcl/DCLTRTYP.dcl")
+
+        assert parsed is not None
+        assert parsed.file_info.language == "cobol"
+
+    def test_an_objectivec_header_blob_is_routed_by_its_bytes(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        blob = b"#import <Foundation/Foundation.h>\n@interface Widget\n@end\n"
+
+        parsed = ChangeDetector(tmp_path / "repo").parse_bytes(blob, "Widget.h")
+
+        assert parsed is not None
+        assert parsed.file_info.language == "objectivec"

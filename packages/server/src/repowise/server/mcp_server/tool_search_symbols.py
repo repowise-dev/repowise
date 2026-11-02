@@ -19,13 +19,23 @@ graph node.
 from __future__ import annotations
 
 import re
-from typing import Any
+from collections import Counter
+from collections.abc import Sequence
+from typing import Any, NamedTuple
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
+from repowise.core.code_origin import prefer_production
+from repowise.core.persistence.crud.tombstoned_pages import deleted_file_paths
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
+from repowise.core.stack_trace import (
+    frame_basenames,
+    map_to_repo_paths,
+    parse_trace,
+)
 from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.server.mcp_server._graph_files import per_index
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _get_exclude_spec,
@@ -33,7 +43,19 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
-from repowise.server.mcp_server._query_shape import _name_lookup_keys, _qual_norm
+from repowise.server.mcp_server._query_shape import (
+    _name_lookup_keys,
+    _names_symbol,
+    _qual_norm,
+    defined_identifiers,
+    is_issue_shaped,
+    path_tokens,
+)
+from repowise.server.mcp_server._retrieval_rank import (
+    _identifier_words,
+    path_word_counts,
+    path_words,
+)
 from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 
 # Candidate ceiling: scoring/sorting happens in Python, so the SQL pre-filter
@@ -64,6 +86,29 @@ def _tokens(text: str | None) -> set[str]:
     return out
 
 
+def _stem(word: str) -> str:
+    """``files`` -> ``file``: enough inflection folding to match prose to names."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+def _singulars(word: str) -> set[str]:
+    """*word* and each singular a regular plural of it could come from.
+
+    ``classes`` -> ``{classes, classe, class}``, ``factories`` adds ``factory``.
+    Two words match when their sets overlap, so ``caches`` still meets
+    ``cache`` and ``responses`` meets ``response``, which no single rule for
+    ``-es`` gets right for both. Ceiling: regular English plurals.
+    """
+    out = {word}
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        out.add(word[:-1])
+        if len(word) > 4 and word.endswith("es"):
+            out.add(word[:-2])
+        if len(word) > 4 and word.endswith("ies"):
+            out.add(word[:-3] + "y")
+    return out
+
+
 def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str) -> float:
     """Rank a candidate symbol against the query (higher = better).
 
@@ -74,7 +119,9 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
     """
     name = (row.name or "").lower()
     qn = _qual_norm(row.qualified_name)
-    stoks = _tokens(row.name) | _tokens(row.qualified_name)
+    # Plurals folded on both sides, so ``type`` covers ``declared_types_in``.
+    forms = set().union(*map(_singulars, _tokens(row.name) | _tokens(row.qualified_name)))
+    covered = sum(1 for t in qtokens if _singulars(t) & forms)
 
     score = 0.0
     # Exact match on the bare name or the (separator-normalised) qualified name.
@@ -86,9 +133,8 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
         score += 40.0
     # Token coverage: how much of the query the symbol's tokens account for.
     if qtokens:
-        matched = qtokens & stoks
-        score += 30.0 * (len(matched) / len(qtokens))
-        if qtokens <= stoks:  # every query token is present
+        score += 30.0 * (covered / len(qtokens))
+        if covered == len(qtokens):  # every query token is present
             score += 20.0
     # Substring fallback for partial identifiers ("index_re").
     if qnorm and (qnorm in name or qnorm in qn):
@@ -147,8 +193,17 @@ def _candidate_filter(qtokens: set[str], qnorm: str):
         clauses.append(
             WikiSymbol.qualified_name.ilike(f"%{escape_like(qnorm)}%", escape=LIKE_ESCAPE)
         )
-    for tok in qtokens:
-        esc = escape_like(tok)
+    # Every singular form, so ``classes`` still finds ``MyClass``, and a ``-y``
+    # word cut to its stem, so ``factory`` still finds ``createFactories``. A
+    # form that contains another adds nothing to a substring match.
+    forms = {
+        f[:-1] if len(f) > 3 and f.endswith("y") else f
+        for f in set().union(*map(_singulars, qtokens))
+    }
+    for form in forms:
+        if any(other != form and other in form for other in forms):
+            continue
+        esc = escape_like(form)
         clauses.append(WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE))
         clauses.append(WikiSymbol.qualified_name.ilike(f"%{esc}%", escape=LIKE_ESCAPE))
     return or_(*clauses) if clauses else None
@@ -172,20 +227,6 @@ def _symbol_result(row: WikiSymbol, score: float) -> dict:
     }
 
 
-async def _tombstoned_paths(session, repo_id: str, paths: set[str]) -> set[str]:
-    """File paths whose page is tombstoned (deleted/renamed since indexing)."""
-    if not paths:
-        return set()
-    res = await session.execute(
-        select(Page.target_path).where(
-            Page.repository_id == repo_id,
-            Page.target_path.in_(paths),
-            Page.freshness_status == "tombstone",
-        )
-    )
-    return {row[0] for row in res.all()}
-
-
 async def indexed_names(contexts: list, query: str) -> set[str]:
     """The indexed symbol names ``query`` could name, each also lowered: the
     ``names`` container ``_embedded_identifiers`` validates against."""
@@ -206,6 +247,105 @@ async def indexed_names(contexts: list, query: str) -> set[str]:
             )
             names.update(name for (name,) in res.all() if name)
     return names | {name.lower() for name in names}
+
+
+# Names so common, or so generic, that a definition of one says nothing about
+# the question.
+_COMMON_NAMES = frozenset(
+    {"__init__", "__call__", "__main__", "main", "init", "test", "setup", "close", "start", "stop",
+     "handle", "call", "name", "value", "data", "self", "index", "create", "update", "delete",
+     "load", "save", "read", "write", "open", "parse", "build", "execute", "process", "invoke",
+     "config", "result", "error", "client", "model", "utils", "types", "base", "manager",
+     "handler", "options", "settings", "context", "request", "response"}
+)
+_MAX_NAMED_LOOKUPS = 5
+# An identifier defined in more files than this names none of them.
+_MAX_DEFINING_FILES = 3
+# Basenames per query, so a long trace stays far under SQLite's expression limits.
+_BASENAME_CHUNK = 20
+
+
+class IssueFiles(NamedTuple):
+    traced: list[str]  # on a pasted stack trace, innermost user frame first
+    named: list[str]  # defining an identifier the question names, not already traced
+
+
+def _named_lookups(text: str, names: set[str]) -> list[str]:
+    out: list[str] = []
+    for token in defined_identifiers(text, names):
+        leaf = token.rsplit(".", 1)[-1]
+        if len(leaf) >= 4 and leaf.lower() not in _COMMON_NAMES and leaf not in out:
+            out.append(leaf)
+    return out[:_MAX_NAMED_LOOKUPS]
+
+
+async def _traced_files(session, repo_id: str, frames: list) -> list[str]:
+    bases = sorted(frame_basenames(frames))
+    indexed: list[str] = []
+    for i in range(0, len(bases), _BASENAME_CHUNK):
+        res = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type == "file",
+                or_(
+                    *(
+                        or_(
+                            GraphNode.node_id == base,
+                            GraphNode.node_id.like(f"%/{escape_like(base)}", escape=LIKE_ESCAPE),
+                        )
+                        for base in bases[i : i + _BASENAME_CHUNK]
+                    )
+                ),
+            )
+        )
+        indexed.extend(node_id for (node_id,) in res.all())
+    return map_to_repo_paths(frames, indexed)
+
+
+async def _defining_files(session, repo_id: str, idents: list[str]) -> list[str]:
+    res = await session.execute(
+        select(WikiSymbol.name, WikiSymbol.file_path).where(
+            WikiSymbol.repository_id == repo_id,
+            func.lower(WikiSymbol.name).in_({i.lower() for i in idents}),
+        )
+    )
+    rows = res.all()
+    out: list[str] = []
+    for ident in idents:
+        files = sorted({fp for name, fp in rows if fp and _names_symbol(ident, {name, name.lower()})})
+        files = prefer_production(files)
+        if len(files) <= _MAX_DEFINING_FILES:
+            out.extend(f for f in files if f not in out)
+    return out
+
+
+async def issue_files(ctx: Any, text: str, names: set[str] | None = None) -> IssueFiles:
+    """Files ``text`` names as an issue would: those on a pasted stack trace,
+    and those defining an identifier it names.
+
+    Empty when ``is_issue_shaped`` says no; then nothing past ``indexed_names``
+    is queried. ``names`` is that set when the caller already loaded it. The
+    trace is parsed once here and shared with the shape check.
+    """
+    frames = parse_trace(text)
+    if names is None:
+        names = await indexed_names([ctx], text)
+    if not is_issue_shaped(text, names, frames):
+        return IssueFiles([], [])
+    idents = _named_lookups(text, names)
+    traced: list[str] = []
+    named: list[str] = []
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        if frames:
+            traced = await _traced_files(session, repository.id, frames)
+        if idents:
+            named = [p for p in await _defining_files(session, repository.id, idents) if p not in traced]
+    spec = _get_exclude_spec(ctx.path)
+    return IssueFiles(
+        [p for p in traced if not is_excluded(p, spec)],
+        [p for p in named if not is_excluded(p, spec)],
+    )
 
 
 async def search_symbols_single(
@@ -252,12 +392,12 @@ async def search_symbols_single(
         )
         gmap = {g.node_id: g for g in gres.scalars().all()}
 
-        tombstoned = await _tombstoned_paths(session, repository.id, {r.file_path for r in rows})
+        deleted = await deleted_file_paths(session, repository.id, {r.file_path for r in rows})
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, WikiSymbol]] = []
     for row in rows:
-        if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
+        if is_excluded(row.file_path, spec) or row.file_path in deleted:
             continue
         g = gmap.get(row.symbol_id)
         # The union here, unlike the ranking penalty above: ``kind`` splits the
@@ -302,31 +442,121 @@ def _path_score(target_path: str, qnorm: str) -> float:
         score += 40.0
     if qnorm in tp:
         score += 20.0
+    # A whole directory name ("filters_toml", "src/utils") lists that folder.
+    if f"/{qnorm.strip('/')}/" in f"/{tp}":
+        score += 10.0
     # Prefer the shallower / shorter path among equal matches.
     score -= len(tp) * 0.001
     return score
 
 
+def _word_path_score(path: str, words: list[str]) -> float | None:
+    """Score ``path`` when every query word names one of its words (the last
+    may be a prefix), else ``None``. Below any substring hit: filename words
+    count above directory words, shorter paths first."""
+    low = path.lower()
+    if not all(w in low for w in words):
+        return None
+    every = path_words(path, min_len=1)
+    base = path_words(path.rsplit("/", 1)[-1], min_len=1)
+
+    def names(i: int, pool: set[str]) -> bool:
+        w = words[i]
+        return w in pool or (i == len(words) - 1 and any(p.startswith(w) for p in pool))
+
+    if not all(names(i, every) for i in range(len(words))):
+        return None
+    in_base = sum(names(i, base) for i in range(len(words)))
+    return 5.0 + 5.0 * in_base / len(words) - len(low) * 0.001
+
+
+_INNER_GLOB = re.compile(r"\w[*?]+\w")
+
+
+def _word_path_hits(query: str, paths: Sequence[str]) -> dict[str, float]:
+    """Paths a spaced or compound query names word by word (``poll backoff``
+    -> ``command-poll-backoff.ts``), best ``_MAX_CANDIDATES`` by score. A glob
+    at a word's edge is dropped (``filters_toml *.toml`` -> filters, toml); one
+    inside a word (``tool_*_overview``) is left to substring matching."""
+    if _INNER_GLOB.search(query):
+        return {}
+    words = _identifier_words(query)
+    if not words:
+        return {}
+    scored = {p: s for p in paths if (s := _word_path_score(p, words)) is not None}
+    return dict(sorted(scored.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_CANDIDATES])
+
+
+class PathIndex(NamedTuple):
+    paths: tuple[str, ...]  # every file page's path
+    word_counts: Counter[str]  # path word -> how many paths carry it
+
+
+async def file_path_index(session: Any, repo_id: str) -> PathIndex:
+    """The repo's file paths and their word counts, built once per index state."""
+
+    async def build() -> PathIndex:
+        res = await session.execute(
+            select(Page.target_path).where(
+                Page.repository_id == repo_id, Page.page_type == "file_page"
+            )
+        )
+        paths = tuple(p for (p,) in res.all() if p)
+        return PathIndex(paths, path_word_counts(list(paths)))
+
+    return await per_index(session, repo_id, "search_file_paths", build)
+
+
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
-    """Path search against one repo context. Returns ranked file result dicts."""
+    """Path search against one repo context. Returns ranked file result dicts.
+
+    Only the path-shaped words of ``query`` are matched (``path_tokens``), so
+    words around a path do not empty the result; the whole query is matched
+    when it carries none, as a substring and then word by word.
+    """
     # Path mode is substring matching, so boundary ``*?`` markers carry no
     # information and are stripped. Mid-string globs (``src/*/main.py``) are
     # left alone: a substring match cannot honour them, so stripping there
     # would change the query.
-    qnorm = query.strip().lower().replace("\\", "/").strip("*?")
-    if not qnorm:
-        return []
-
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        index = await file_path_index(session, repository.id)
+        tokens = path_tokens(query, index.paths)
+        qnorms = [
+            q
+            for q in (t.strip().lower().replace("\\", "/").strip("*?") for t in tokens or [query])
+            if q
+        ]
+        if not qnorms:
+            return []
+        # Config, data and test files are indexed without a file page, so the
+        # page table alone never lists them.
+        pageless = await _indexed_files(
+            session, repository.id, qnorms, [] if tokens else _identifier_words(query)
+        )
+        # A query carrying no path also matches paths by their words.
+        word_hits = {} if tokens else _word_path_hits(query, [*index.paths, *pageless])
         res = await session.execute(
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
                 Page.page_type == "file_page",
-                Page.target_path.ilike(f"%{escape_like(qnorm)}%", escape=LIKE_ESCAPE),
+                or_(
+                    *(
+                        Page.target_path.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE)
+                        for q in qnorms
+                    ),
+                    Page.target_path.in_(list(word_hits)),
+                ),
             )
         )
         rows = res.all()
+        paged = {target_path for _, _, target_path, _ in rows}
+        rows += [
+            (None, None, path, None)
+            for path in pageless
+            if path not in paged
+            and (path in word_hits or any(q in path.lower() for q in qnorms))
+        ]
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, Any]] = []
@@ -335,17 +565,45 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
             continue
         if is_excluded(target_path, spec):
             continue
-        scored.append((_path_score(target_path, qnorm), (page_id, title, target_path)))
+        substring = max(_path_score(target_path, q) for q in qnorms)
+        score = max(substring, word_hits.get(target_path, substring))
+        scored.append((score, (page_id, title, target_path)))
 
     scored.sort(key=lambda pair: (-pair[0], pair[1][2]))
     return [
         {
             "type": "file",
-            "page_id": page_id,
-            "title": title,
+            **({"page_id": page_id, "title": title} if page_id else {}),
             "file": target_path,
             "score": round(score, 4),
             "next": "get_context",
         }
         for score, (page_id, title, target_path) in scored[:limit]
     ]
+
+
+async def _indexed_files(
+    session: Any, repo_id: str, qnorms: list[str], words: list[str]
+) -> list[str]:
+    """Live indexed file paths holding one of *qnorms*, or every one of *words*.
+
+    Shortest first, so the candidate cap keeps the paths that rank best.
+    """
+
+    def holds(part: str) -> Any:
+        return GraphNode.node_id.ilike(f"%{escape_like(part)}%", escape=LIKE_ESCAPE)
+
+    every_word = [and_(*map(holds, words))] if words else []
+    res = await session.execute(
+        select(GraphNode.node_id)
+        .where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            or_(*map(holds, qnorms), *every_word),
+        )
+        .order_by(func.length(GraphNode.node_id), GraphNode.node_id)
+        .limit(_MAX_CANDIDATES)
+    )
+    paths = [node_id for (node_id,) in res.all() if node_id]
+    deleted = await deleted_file_paths(session, repo_id, set(paths))
+    return [p for p in paths if p not in deleted]

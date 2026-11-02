@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from repowise.server.chat_suggestions import (
+    MAX_COLLECTION_SUGGESTIONS,
     MAX_FOLLOW_UPS,
     MAX_PAGE_SUGGESTIONS,
+    collection_datasets,
+    collection_suggestions,
     conversation_title,
     follow_up_suggestions,
     page_suggestions,
@@ -68,7 +71,7 @@ def test_risk_names_a_biomarker_and_the_function_it_sits_in():
             }
         }
     }
-    assert "Explain the nested complexity finding in _db_messages_to_llm_format" in _texts(
+    assert "Explain the deep nesting finding in _db_messages_to_llm_format" in _texts(
         page_suggestions("get_risk", "src/a.py", result)
     )
 
@@ -151,14 +154,14 @@ def test_decision_health_mode_has_no_single_decision_to_name():
 def test_a_commit_names_its_rating_without_the_gated_drivers_block():
     result = {
         "ref": "9f52f0a",
-        "classification": "elevated",
+        "classification": "Above-typical diff size",
         "review_priority": "high",
         "risk_percentile": 88,
         "is_fix": True,
     }
     texts = _texts(page_suggestions("get_change_risk", "9f52f0a", result))
 
-    assert "Why is 9f52f0a rated elevated at p88?" in texts
+    assert "What makes 9f52f0a above-typical diff size at p88?" in texts
     assert "What did 9f52f0a fix?" in texts
 
 
@@ -265,6 +268,127 @@ def test_a_malformed_stored_call_is_skipped_rather_than_raising():
         "Which files are riskiest to modify?",
         "What architectural decisions have been made?",
     ]
+
+
+# ---------------------------------------------------------------------------
+# A page with no target quotes the datasets a chart already read
+# ---------------------------------------------------------------------------
+
+
+def _files(*bands: str, hotspots: int = 0, fixed: int = 0) -> list[dict]:
+    rows = [{"health_band": band, "is_hotspot": False, "fix_count": 0} for band in bands]
+    for i in range(hotspots):
+        rows[i]["is_hotspot"] = True
+    for i in range(fixed):
+        rows[i]["fix_count"] = 2
+    return rows
+
+
+def test_a_health_page_quotes_the_at_risk_files_and_the_package_count():
+    rows = {
+        "files": _files("at risk", "at risk", "at risk", "good"),
+        "coverage": [{"package": "core"}, {"package": "cli"}, {"package": "core"}],
+    }
+    suggestions = collection_suggestions("health", rows)
+
+    assert _texts(suggestions) == [
+        "Chart the 3 at-risk files by package",
+        "Which of the 2 packages has the lowest coverage?",
+    ]
+    assert all(e["source"] == "page" and e["toolHint"] == "chart" for e in suggestions)
+
+
+def test_a_dataset_no_chart_has_read_earns_no_question():
+    assert collection_suggestions("health", {}) == []
+    assert collection_suggestions("dead-code", {"files": _files("at risk", "at risk")}) == []
+
+
+def test_a_count_too_small_to_chart_earns_no_question():
+    rows = {"files": _files("at risk", "good"), "coverage": [{"package": "core"}]}
+    assert collection_suggestions("health", rows) == []
+
+
+def test_large_counts_read_with_separators_and_the_tier_is_capped():
+    rows = {
+        "files": _files(*(["at risk"] * 1200)),
+        "coverage": [{"package": "a"}, {"package": "b"}],
+        "findings": [{}] * 12503,
+    }
+    suggestions = collection_suggestions("health", rows)
+
+    assert "Chart the 1,200 at-risk files by package" in _texts(suggestions)
+    assert len(suggestions) == MAX_COLLECTION_SUGGESTIONS
+
+
+def test_a_risk_page_names_bug_fixes_and_hotspots_never_a_score():
+    rows = {"files": _files(*(["good"] * 20), hotspots=4, fixed=12)}
+    assert _texts(collection_suggestions("risk", rows)) == [
+        "Top 10 of the 12 files with bug fixes, rest as Other",
+        "Chart the 4 hotspot files by package",
+    ]
+
+
+def test_each_collection_kind_reads_only_the_datasets_it_quotes():
+    assert collection_datasets("health") == ["files", "coverage", "findings"]
+    assert collection_datasets("dead-code") == ["dead_code"]
+    assert collection_datasets("settings") == []
+
+
+# ---------------------------------------------------------------------------
+# Charts earn follow-ups about what they drew
+# ---------------------------------------------------------------------------
+
+
+def test_a_chart_follow_up_names_its_dataset_and_a_breakdown_it_did_not_draw():
+    calls = [{"name": "chart", "arguments": {"dataset": "findings", "x": "severity"}}]
+    assert _texts(follow_up_suggestions(calls)) == [
+        "Which of these findings should we fix first?",
+        "Show severity by package as a stacked bar",
+    ]
+
+
+def test_a_chart_of_files_or_one_with_a_series_breaks_its_rows_down():
+    by_file = [{"name": "chart", "arguments": {"dataset": "files", "x": "file", "y": "fix_count"}}]
+    with_series = [
+        {"name": "chart", "arguments": {"dataset": "dead_code", "x": "kind", "series": "tier"}}
+    ]
+    assert _texts(follow_up_suggestions(by_file))[1] == "Break the files down by package"
+    assert _texts(follow_up_suggestions(with_series))[1] == (
+        "Break the dead-code findings down by package"
+    )
+
+
+def test_a_chart_already_by_package_offers_a_table_instead():
+    calls = [{"name": "chart", "arguments": {"dataset": "coverage", "x": "package"}}]
+    assert _texts(follow_up_suggestions(calls)) == [
+        "Where should we add tests first?",
+        "Show this as a table",
+    ]
+
+
+def test_a_history_chart_breaks_down_by_category():
+    calls = [{"name": "chart", "arguments": {"dataset": "changes", "x": "week"}}]
+    assert _texts(follow_up_suggestions(calls)) == [
+        "Break the merged changes down by category",
+        "Show this as a table",
+    ]
+
+
+def test_a_table_is_not_offered_as_a_table_again():
+    calls = [
+        {"name": "chart", "arguments": {"dataset": "layers", "x": "layer", "kind": "table"}}
+    ]
+    assert follow_up_suggestions(calls) == []
+
+
+def test_a_chart_discovery_call_drew_nothing_and_earns_nothing():
+    assert follow_up_suggestions([{"name": "chart", "arguments": {"dataset": "files"}}]) == []
+    assert follow_up_suggestions([{"name": "chart", "arguments": {"dataset": "nope", "x": "a"}}]) == []
+
+
+def test_a_redrawn_view_asks_what_to_fix_first():
+    calls = [{"name": "show_view", "arguments": {"artifact_id": "v1", "view": "chart"}}]
+    assert _texts(follow_up_suggestions(calls)) == ["What should we fix first here?"]
 
 
 # ---------------------------------------------------------------------------

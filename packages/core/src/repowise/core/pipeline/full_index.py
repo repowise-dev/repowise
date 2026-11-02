@@ -12,11 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+from repowise.core.pipeline.index_persistence import publish_index_persistence
+
 
 async def index_repo_full(
     repo_path: Path,
     *,
-    commit_depth: int = 500,
+    commit_depth: int = _DEFAULT_COMMIT_LIMIT,
     exclude_patterns: list[str] | None = None,
     include_submodules: bool = False,
     include_nested_repos: bool = False,
@@ -36,6 +39,7 @@ async def index_repo_full(
         create_session_factory,
         get_session,
         init_db,
+        refresh_planner_stats,
         upsert_repository,
     )
     from repowise.core.persistence.database import resolve_db_url
@@ -73,6 +77,7 @@ async def index_repo_full(
                 session,
                 name=result.repo_name,
                 local_path=str(repo_path),
+                stamp_head=True,
             )
             stale_page_ids = (
                 await persist_pipeline_result(
@@ -80,9 +85,21 @@ async def index_repo_full(
                     session,
                     repo.id,
                     replace_full_git_history=require_git_success,
+                    scan_commit_health=False,
                 )
                 or []
             )
+        # After commit, so the scan never holds the write lock; the rest drains in the background.
+        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
+
+        await refresh_commit_health_after_update(sf, repo.id, str(repo_path), background=True)
+        # Every store is final: the views the overview and dashboard read. Written
+        # after the commit-health rows, whose commit would otherwise drop them.
+        from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+
+        async with get_session(sf) as session:
+            await write_read_snapshots(session, repo.id)
+        await refresh_planner_stats(engine)
 
         from repowise.core.pipeline.cleanup_debt import (
             clear_cleanup_debt,
@@ -131,4 +148,5 @@ async def index_repo_full(
 
         save_knowledge_graph_json(repo_path, kg)
 
+    await publish_index_persistence(repo.id, repo_path)
     return result

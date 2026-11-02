@@ -3,8 +3,10 @@
 A query with no ``limit``/``range``/``single`` in its chain, run once, whose
 result a loop deduplicates per key, pays to transfer every row to keep a
 handful. The loop may sit in the same function or in one same-file helper the
-result is passed to. Python only: the dialect names the bounding methods, and
-every other dialect names none.
+result is passed to. A read filtered to a set of input keys holds the rows of
+those keys, so it counts only when the loop keeps one row per that same key.
+Python only: the dialect names the bounding methods, and every other dialect
+names none.
 """
 
 from __future__ import annotations
@@ -19,7 +21,14 @@ from ..complexity.ast_utils import _collect_function_nodes, _find_function_entry
 from ..complexity.models import PerfHit
 from .dialects import PERF_DIALECTS
 from .io_boundaries import collect_io_names
-from .reduction_idioms import field_text, ident, reduces_per_key, walk
+from .reduction_idioms import (
+    field_text,
+    ident,
+    key_fields,
+    reduces_per_key,
+    reduction_key,
+    walk,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -60,12 +69,33 @@ class _FileScan:
             == "db"
         )
 
-    def is_bounded(self, stmt: Node) -> bool:
+    def read_calls(self, stmt: Node) -> list[Node]:
+        """The calls of the read, including a statement or result bound before it
+        (``rows = session.execute(stmt)``, ``for e in res.scalars()``)."""
         chain = stmt.child_by_field_name("right")
-        return chain is not None and any(
-            n.type == "call" and self.dialect.callee_method_name(n) in self.bound_methods
-            for n in walk(chain)
-        )
+        if chain is None:
+            return []
+        parts = [chain]
+        for name in _statement_names(chain):
+            value = self.dialect.reaching_value(stmt, name)
+            if value is not None:
+                parts.append(value)
+        return [n for part in parts for n in walk(part) if n.type == "call"]
+
+    def is_bounded(self, calls: list[Node]) -> bool:
+        return any(self.dialect.callee_method_name(n) in self.bound_methods for n in calls)
+
+    def bounded_by_keys(self, stmt: Node, calls: list[Node], loop: Node) -> bool:
+        """A read filtered to a set of input keys holds the rows of those keys.
+        Keeping one row per that same key still drops every other row each key
+        has (the latest build per repo), so only that shape stays unbounded."""
+        keyed = {col for n in calls if (col := self.dialect.read_key_column(n, stmt))}
+        if not keyed:
+            return False
+        key = reduction_key(loop)
+        fields = key_fields(loop, key) if key is not None else frozenset()
+        # ``id`` keys one row each, so reducing per id drops nothing.
+        return not (len(fields) == 1 and fields <= keyed - {"id"})
 
 
 def collect_unbounded_reductions(
@@ -116,7 +146,7 @@ def _function_hits(fn: Node, name: str | None, scan: _FileScan) -> list[PerfHit]
     body = fn.child_by_field_name("body")
     if body is None:
         return []
-    hits: list[PerfHit] = []
+    found_at: list[tuple[Node, str, Node]] = []
     seen: set[tuple[int, int]] = set()
     for call in walk(body, scan.scopes):
         if call.type != "call" or not scan.is_db_read(call):
@@ -127,19 +157,25 @@ def _function_hits(fn: Node, name: str | None, scan: _FileScan) -> list[PerfHit]
             continue
         stmt, var = site
         seen.add((stmt.start_byte, stmt.end_byte))
-        reducer = None if scan.is_bounded(stmt) else _reducer(stmt, var, fn, scan)
-        if reducer is not None:
-            hits.append(
-                PerfHit(
-                    _KIND,
-                    stmt.start_point[0] + 1,
-                    name,
-                    "db",
-                    func_start=fn.start_point[0] + 1,
-                    path=(reducer,) if reducer else (),
-                )
-            )
-    return hits
+        calls = scan.read_calls(stmt)
+        found = None if scan.is_bounded(calls) else _reducer(stmt, var, fn, scan)
+        if found is not None and not scan.bounded_by_keys(stmt, calls, found[1]):
+            found_at.append((stmt, *found))
+    # ``res = execute(...)`` then ``for r in res.scalars()`` is one read: the
+    # loop header only unwraps it, so the assignment carries the hit.
+    unwraps = {(loop.start_byte, loop.end_byte) for stmt, _, loop in found_at if loop != stmt}
+    return [
+        PerfHit(
+            _KIND,
+            stmt.start_point[0] + 1,
+            name,
+            "db",
+            func_start=fn.start_point[0] + 1,
+            path=(reducer,) if reducer else (),
+        )
+        for stmt, reducer, _ in found_at
+        if (stmt.start_byte, stmt.end_byte) not in unwraps
+    ]
 
 
 def _in_loop_body(node: Node, fn: Node) -> bool:
@@ -168,15 +204,39 @@ def _read_site(call: Node, fn: Node) -> tuple[Node, str | None] | None:
     return None
 
 
-def _reducer(stmt: Node, var: str | None, fn: Node, scan: _FileScan) -> str | None:
-    """``""`` when *fn* reduces the rows itself, a helper's name, or ``None``."""
+def _statement_names(chain: Node) -> list[bytes]:
+    """Names the read runs or unwraps: ``execute(stmt)``'s first argument and the
+    receiver of a method call (``res.scalars()``). A name the query only
+    compares against (``== repo.id``) is not the read."""
+    names = []
+    for node in walk(chain):
+        parent = node.parent
+        if node.type != "identifier" or not node.text or parent is None:
+            continue
+        receiver = (
+            parent.type == "attribute"
+            and parent.child_by_field_name("object") == node
+            and parent.parent is not None
+            and parent.parent.type == "call"
+        )
+        first_arg = parent.type == "argument_list" and parent.named_children[0] == node
+        if receiver or first_arg:
+            names.append(node.text)
+    return names
+
+
+def _reducer(
+    stmt: Node, var: str | None, fn: Node, scan: _FileScan
+) -> tuple[str, Node] | None:
+    """The reducing loop, named ``""`` when *fn* reduces the rows itself and by
+    its helper's name otherwise, or ``None``."""
     if var is None:
-        return "" if reduces_per_key(stmt) else None
+        return ("", stmt) if reduces_per_key(stmt) else None
     if _rebound_after(fn, var, stmt.end_byte, scan.scopes):
         return None
     loop = _consuming_loop(fn, var, scan.scopes)
     if loop is not None and reduces_per_key(loop):
-        return ""
+        return "", loop
     return _reducing_helper(fn, var, scan)
 
 
@@ -261,17 +321,17 @@ def _bound_param(args: Node, var: str, helper: Node) -> str | None:
     return None
 
 
-def _reducing_helper(fn: Node, var: str, scan: _FileScan) -> str | None:
+def _reducing_helper(fn: Node, var: str, scan: _FileScan) -> tuple[str, Node] | None:
     for call in walk(fn, scan.scopes):
         name = ident(call.child_by_field_name("function")) if call.type == "call" else None
         helper = scan.functions.get(name) if name else None
         args = call.child_by_field_name("arguments")
-        if helper is None or helper == fn or args is None:
+        if name is None or helper is None or helper == fn or args is None:
             continue
         param = _bound_param(args, var, helper)
         loop = _consuming_loop(helper, param, scan.scopes) if param else None
         if loop is not None and reduces_per_key(loop):
-            return name
+            return name, loop
     return None
 
 

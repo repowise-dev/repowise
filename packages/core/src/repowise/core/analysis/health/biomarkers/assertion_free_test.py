@@ -31,14 +31,13 @@ predicate; it is deliberately not folded into ``assertion_count``, which is
 calibrated.
 
 **This marker is advisory and never deducts.** See ``ADVISORY_DIMENSION`` in
-``scoring.py``, and LANGUAGE_SUPPORT.md#code-health-coverage for the measured
+``scoring.py``, and docs/architecture/language-support.md#test-quality-markers-per-language for the measured
 per-language precision and the false positives it does not separate.
 """
 
 from __future__ import annotations
 
 from ..asserts.predicate import checks_something
-from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -51,7 +50,7 @@ from .base import BiomarkerResult, FileContext
 #: sitting outside that pass's admitted set. Re-admitting either language is a
 #: measurement of its own, on its own hand-labelled sample, not a consequence of
 #: this one.
-#: Figures and the reasoning: LANGUAGE_SUPPORT.md#code-health-coverage.
+#: Figures and the reasoning: docs/architecture/language-support.md#test-quality-markers-per-language.
 SHIPPING_LANGUAGES = frozenset({"javascript", "python", "tsx", "typescript"})
 
 
@@ -62,7 +61,7 @@ class AssertionFreeTestDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         if ctx.language not in SHIPPING_LANGUAGES:
             return []
-        if not is_test_file(ctx.file_path):
+        if not ctx.is_test_material:
             return []
         out: list[BiomarkerResult] = []
         oracles = _asserting_names(ctx)
@@ -108,10 +107,11 @@ def _asserting_names(ctx: FileContext) -> frozenset[str]:
     method on a test-local double suppresses against a module-level function of
     that name. Both directions hide a real finding rather than invent one,
     which is the tolerable way round for an advisory marker, but neither is
-    free. A helper nested inside the test body is still not collected as a
-    function at all, so it suppresses nothing *by name* -- but its calls now
-    roll up into the enclosing test's own ``called_names``, so the test it
-    sits in is answered directly rather than through this set.
+    free. A helper nested inside a test body has a row of its own and is in
+    this set like any other function, so it answers for the test that calls it
+    and, the file being one namespace, for any other test calling that name.
+    Its calls also roll up into the enclosing test's own ``called_names``,
+    which is what answers a test that hands the helper on without calling it.
 
     Same file only, and by name. The cross-file half of the same question --
     a shared JS fixture, an inherited base-class helper -- is answered from the

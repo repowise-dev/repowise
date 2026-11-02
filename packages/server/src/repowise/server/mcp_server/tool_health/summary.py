@@ -1,38 +1,58 @@
-"""Repository summaries for get_health: KPIs, gap analysis, per-file leads, the directive."""
+"""Repository summaries for get_health: KPIs, gap analysis and per-file leads."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
+from repowise.core.analysis.health.grading import (
+    TARGET_SCORE,
+    analysed_share,
+    headline_band,
+    headline_scope,
+)
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
-from repowise.core.analysis.health.rows import split_tests
+from repowise.core.analysis.health.ranking import worst_kpis
 from repowise.core.analysis.health.scoring import (
+    headline_split,
     hotspot_health,
     nloc_weighted_attr,
+    production_average,
 )
+from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 from repowise.core.persistence.models import HealthFileMetric
 
-# ``fix_first`` plus the two in ``then``. The plan lookup, the lead set and the
-# directive must agree on it.
-_DIRECTIVE_CANDIDATES = 3
 
-
-def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
+def _leads_by_file(
+    findings: list[Any], withheld: list[Any] | None = None
+) -> dict[str, dict[str, Any]]:
     """Reduce each file's findings to its dominant cause + pre-clamp magnitude.
 
     ``primary_*`` is the one reason to lead with; ``total_deduction`` (summed
     ``health_impact``) tells apart two files that both floor at 1.0. The
     selection rule lives in ``analysis.health.models.primary_finding``.
+
+    *withheld* rows, of types the registry keeps off this surface, never lead.
+    The score counted them, so they add to ``total_deduction`` and show as
+    ``withheld_deduction``: the card always accounts for what lowered the score.
     """
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
+    hidden: dict[str, float] = {}
+    for f in withheld or ():
+        hidden[f.file_path] = hidden.get(f.file_path, 0.0) + float(f.health_impact or 0.0)
     leads: dict[str, dict[str, Any]] = {}
-    for path, fs in by_file.items():
+    for path in by_file.keys() | hidden.keys():
+        fs = by_file.get(path, [])
+        withheld_points = round(hidden.get(path, 0.0), 3)
+        total = round(sum(float(x.health_impact or 0.0) for x in fs) + withheld_points, 3)
+        extra = {"withheld_deduction": withheld_points} if withheld_points else {}
         primary = primary_finding(fs)
         if primary is None:
+            if withheld_points:
+                leads[path] = {"total_deduction": total, **extra}
             continue
         # No edit resolves a history marker, so ``actionable_*`` uses code shape
         # alone and ``watch_*`` carries history as context.
@@ -46,105 +66,10 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
             "actionable_reason": actionable.reason if actionable else None,
             "watch_biomarker": watch.biomarker_type if watch else None,
             "watch_reason": watch.reason if watch else None,
-            "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
+            "total_deduction": total,
+            **extra,
         }
     return leads
-
-
-def _directive(
-    by_leverage: list[HealthFileMetric],
-    leads: dict[str, dict[str, Any]],
-    gap_points: int,
-    plan_biomarkers_by_path: dict[str, set[str]] | None = None,
-    plan_count_by_path: dict[str, int] | None = None,
-) -> dict[str, Any] | None:
-    """The one file to fix first, and what fixing it buys.
-
-    Every other block ranks and describes; this one recommends, like
-    ``get_risk``'s ``directive``. Ranked by ``weighted_deficit`` (``score``
-    floors at 1.0), so it names the file that moves the repo average.
-    """
-    if not by_leverage:
-        return None
-    # The highest-leverage file with something an edit can remove, else the
-    # top file, flagged below rather than given an invented task.
-    top = next(
-        (m for m in by_leverage if (leads.get(m.file_path) or {}).get("actionable_biomarker")),
-        by_leverage[0],
-    )
-    recovers = round(max(TARGET_SCORE - top.score, 0.0) * max(top.nloc, 1))
-    lead = leads.get(top.file_path) or {}
-    # Does a plan behind ``plan_via`` address the cause in ``reason``? Some
-    # biomarkers (e.g. ``coverage_gradient``) have no plan kind at all.
-    lead_biomarker = lead.get("actionable_biomarker")
-    available = (plan_biomarkers_by_path or {}).get(top.file_path, set())
-    addresses = bool(lead_biomarker) and lead_biomarker in available
-    out = {
-        "fix_first": top.file_path,
-        "reason": lead.get("actionable_reason") or f"scores {round(top.score, 2)}",
-        # What this file recovers at target, and its share of the gross gap
-        # (see ``_gap_analysis`` for the denominator).
-        "recovers_weighted_deficit_points": recovers,
-        "recovers_points": recovers,
-        "recovers_points_compatibility": {
-            "deprecated": True,
-            "replacement": "recovers_weighted_deficit_points",
-            "equivalent_value": True,
-        },
-        "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
-        "then": [m.file_path for m in by_leverage if m.file_path != top.file_path][:2],
-        # Projected with ``only``: the bare ``include`` call restates the whole
-        # dashboard and can exceed the MCP token cap.
-        "plan_via": "get_health(include=['refactoring'], only=['refactoring_plans'])",
-        "plan_addresses_reason": addresses,
-    }
-    # Context, not a task: no edit to this file settles history.
-    if lead.get("watch_biomarker"):
-        out["watch"] = {
-            "biomarker": lead["watch_biomarker"],
-            "reason": lead.get("watch_reason"),
-            "note": "History-derived. Read it as context; there is nothing here to fix.",
-        }
-    if not lead_biomarker:
-        # No file has a code-shape lead: the deficit is history.
-        out["next_action"] = (
-            "No file's leading cause is code shape; the deficit on this one is "
-            "history. Read watch for what is moving and leave it alone."
-        )
-        return out
-    if addresses:
-        out["next_action"] = "inspect matching plan via plan_via"
-        return out
-    out["plan_note"] = _plan_note(
-        lead_biomarker, available, (plan_count_by_path or {}).get(top.file_path, 0)
-    )
-    out["next_action"] = f"investigate {lead_biomarker}"
-    return out
-
-
-def _plan_note(lead_biomarker: str, available: set[str], n_plans: int) -> str:
-    """Name the gap rather than leaving the caller to diff two biomarker vocabularies.
-
-    The three branches call for different next moves: plans for other causes,
-    plans with no recorded cause, or no plans.
-    """
-    if available:
-        # Not "only X, Y": plans with an empty ``source_biomarker`` cannot be named.
-        return (
-            f"No stored plan addresses {lead_biomarker!r}; the plans on this file "
-            f"target {', '.join(sorted(available))}. Treat plan_via as related "
-            f"cleanup, not the fix for reason."
-        )
-    if n_plans:
-        return (
-            f"No stored plan addresses {lead_biomarker!r}; this file's {n_plans} "
-            f"plan(s) record no source biomarker. Treat plan_via as related "
-            f"cleanup, not the fix for reason."
-        )
-    return (
-        f"No plan addresses {lead_biomarker!r}; this file has no plans. "
-        "Use the finding itself."
-    )
 
 
 def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
@@ -186,6 +111,8 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         }
 
     def _files_for(points: float) -> int:
+        if points <= 0:
+            return 0
         acc = 0.0
         for i, d in enumerate(below, 1):
             acc += d
@@ -195,10 +122,11 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
 
     # At or above target there is nothing to reach, but the gross gap still
     # stands while any file is below target.
-    reachable = max(net_gap, 0)
+    # Rounded first, so a gap reported as 0 never needs a file to close it.
+    reachable = round(max(net_gap, 0))
     return {
         "target_score": TARGET_SCORE,
-        "weighted_gap_points": round(max(net_gap, 0)),
+        "weighted_gap_points": reachable,
         "weighted_gross_gap_points": round(gross_gap),
         "files_below_target": len(below),
         "files_to_reach_target": _files_for(reachable),
@@ -206,18 +134,16 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     }
 
 
-def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict[str, Any]:
-    """The honest performance headline: finding count + density + coverage.
+def _perf_kpis(
+    causes: PerformanceHeadline | None, coverage: PerfCoverage | None
+) -> dict[str, Any]:
+    """The honest performance headline: the open causes + coverage.
 
     Says how much of the code the perf pass ran on, so a bare
     ``performance_average`` near 10 is not read as "fast" on thin coverage.
     """
-    density: float | None = None
-    if coverage is not None and coverage.covered_nloc > 0:
-        density = round(10000.0 * performance_findings / coverage.covered_nloc, 2)
     return {
-        "performance_findings": performance_findings,
-        "performance_findings_density_per_10k_loc": density,
+        "performance_causes": causes.as_dict() if causes is not None else None,
         "performance_coverage_pct": (
             coverage.pct_loc if (coverage and coverage.analyzed_files) else None
         ),
@@ -234,19 +160,32 @@ def _avg(metrics: list[HealthFileMetric], attr: str) -> float | None:
     return round(value, 2) if value is not None else None
 
 
+def _split_kpis(metrics: list[HealthFileMetric]) -> dict[str, float | None]:
+    """The headline's code-shape and history halves, in deduction points."""
+    halves = headline_split(metrics)
+    keys = ("structure_average", "history_average")
+    return {k: round(v, 2) if v is not None else None for k, v in zip(keys, halves, strict=True)}
+
+
 def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
     hotspot_paths: set[str] | None = None,
-    performance_findings: int = 0,
+    performance_causes: PerformanceHeadline | None = None,
     coverage: PerfCoverage | None = None,
+    unanalysed: int = 0,
+    deductions: dict[str, float],
 ) -> dict[str, Any]:
+    """*metrics* are scored rows; *unanalysed* counts the files left out of
+    them because health has no dialect for their language. *deductions* is the
+    worst-first tiebreak ``get_health_metrics`` ranks with."""
     if not metrics:
         return {
             "file_count": 0,
             "average_health": None,
             "band": None,
-            "analysis_status": "unavailable",
+            # A repository of only unsupported languages is not missing data.
+            "analysis_status": NO_DIALECT_STATUS if unanalysed else "unavailable",
             "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
@@ -256,33 +195,43 @@ def _compute_kpis(
             "performance_average": None,
             "structure_average": None,
             "history_average": None,
-            **_perf_kpis(0, None),
+            **_perf_kpis(None, None),
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
-    # Production first; test files are ranked apart and named on their own.
-    production, tests = split_tests(metrics)
-    worst = min(production or metrics, key=lambda r: r.score)
-    worst_test = min(tests, key=lambda r: r.score) if tests else None
+    share = analysed_share(len(metrics), unanalysed)
+    production, production_count = production_average(metrics)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # Production code alone, weighted the same way; only said while
+        # ``average_health`` also holds tests, tooling or other non-shipping code.
+        **(
+            {"production_average": production}
+            if production is not None and production_count < len(metrics)
+            else {}
+        ),
         # ``None`` with no hotspot files, not an empty set averaged to 10.0.
         "hotspot_health": hotspot_health(metrics, hotspot_paths or set()),
         # Weighted vs plain mean: a gap means a few large files hold it down.
         "average_health_weighting": "nloc",
         "average_health_unweighted": round(sum(m.score for m in metrics) / len(metrics), 2),
-        "band": band_for(round(avg, 2)),
-        "worst_performer_path": worst.file_path,
-        "worst_performer_score": round(worst.score, 2),
-        "worst_test_path": worst_test.file_path if worst_test else None,
-        "worst_test_score": round(worst_test.score, 2) if worst_test else None,
+        # Withheld when too few code files were analysed to grade the repo.
+        "band": headline_band(round(avg, 2), share),
+        # Only said when some files were left out, as ``unanalysed_file_count`` is.
+        **({"analysed_share": share} if unanalysed else {}),
+        # Beside a score most code files did not feed.
+        **(
+            {"average_health_scope": scope}
+            if (scope := headline_scope(len(metrics), unanalysed))
+            else {}
+        ),
+        # The heads of ``worst_files`` and ``test_worst_files``, as REST names them.
+        **worst_kpis(metrics, deductions),
         # ``None`` until the pillar is measured.
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),
-        # The headline's code-shape and history halves, in deduction points.
-        "structure_average": _avg(metrics, "structure_deduction"),
-        "history_average": _avg(metrics, "history_deduction"),
-        # Performance leads with count + density + coverage, not the diluted /10.
-        **_perf_kpis(performance_findings, coverage),
+        **_split_kpis(metrics),
+        # Performance leads with the causes worth fixing now and coverage, not the diluted /10.
+        **_perf_kpis(performance_causes, coverage),
     }

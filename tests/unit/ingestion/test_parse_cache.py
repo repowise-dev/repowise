@@ -134,7 +134,7 @@ def test_corrupt_cache_falls_back_to_full_parse(repo):
 def test_fingerprint_mismatch_invalidates(repo, tmp_path):
     _build(repo)
     cache_file = _cache_path(repo)
-    payload = pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))
+    payload = pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))  # repowise-security-ignore: pickle_loads
     assert payload["fingerprint"] == parser_fingerprint()
     payload["fingerprint"] = "stale-fingerprint"
     cache_file.write_bytes(seal(pickle.dumps(payload), domain=_CACHE_DOMAIN))
@@ -162,7 +162,7 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     _build(repo)  # populate the cache under the current fingerprint
     cache_file = _cache_path(repo)
     assert (
-        pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))["fingerprint"]
+        pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))["fingerprint"]  # repowise-security-ignore: pickle_loads
         == parser_fingerprint()
     )
 
@@ -177,7 +177,7 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     try:
         assert (
             parser_fingerprint()
-            != pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))[
+            != pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))[  # repowise-security-ignore: pickle_loads
                 "fingerprint"
             ]
         )
@@ -240,7 +240,7 @@ def test_deleted_files_age_out_of_cache(repo):
     _build(repo)
     (repo / "other.py").unlink()
     _build(repo)  # rewrite keeps only entries touched this run
-    payload = pickle.loads(unseal(_cache_path(repo).read_bytes(), domain=_CACHE_DOMAIN))
+    payload = pickle.loads(unseal(_cache_path(repo).read_bytes(), domain=_CACHE_DOMAIN))  # repowise-security-ignore: pickle_loads
     cached_paths = {path for path, _hash in payload["files"]}
     assert "other.py" not in cached_paths
     assert "main.py" in cached_paths
@@ -311,3 +311,30 @@ def test_cache_hit_stamps_content_hash(repo):
     hit = cache.get(fi, content_hash)
     assert hit is not None
     assert hit.content_hash == content_hash
+
+
+def test_parse_without_grammar_is_not_cached(repo, monkeypatch):
+    """A file parsed while its grammar was unavailable (a failed download, a
+    missing package) must re-parse once the grammar loads, not be served
+    symbol-less from the cache."""
+    from repowise.core.ingestion import parser as parser_mod
+    from repowise.core.ingestion.parser import ASTParser
+
+    fi = _make_file_info(repo / "util.py", "util.py")
+    source = (repo / "util.py").read_bytes()
+    content_hash = compute_content_hash(source)
+
+    monkeypatch.setattr(parser_mod, "_get_language", lambda _tag: None)
+    degraded = ASTParser().parse_file(fi, source)
+    assert degraded.grammar_missing and degraded.symbols == []
+
+    cache = ParseCache(repo / ".repowise")
+    cache.put(degraded, content_hash)
+    cache.save()
+    monkeypatch.undo()
+
+    cache = ParseCache(repo / ".repowise")
+    cache.load()
+    assert cache.get(fi, content_hash) is None
+    parsed = ASTParser().parse_file(fi, source)
+    assert not parsed.grammar_missing and parsed.symbols

@@ -210,13 +210,18 @@ def _objc_declares_name(node: Node, name: str, src: str) -> bool:
 
     A declarator nests (``void (^block)(int)``, ``Handler done = ^{}``), so
     every identifier under the node is checked rather than only the direct
-    children. The node is a parameter or a declaration, never a body, so the
+    children, excluding initializer values that reference rather than bind
+    names. The node is a parameter or a declaration, never a body, so the
     walk stays small; a nested block body is skipped for the same reason.
     """
     stack = [node]
     while stack:
         current = stack.pop()
-        if current.type in ("identifier", "field_identifier"):
+        if current.type == "init_declarator":
+            declarator = current.child_by_field_name("declarator")
+            if declarator is not None:
+                stack.append(declarator)
+        elif current.type in ("identifier", "field_identifier"):
             if node_text(current, src).strip() == name:
                 return True
         elif current.type != "compound_statement":

@@ -85,6 +85,7 @@ class PatchCoverageFileCounts(_Strict):
     not_in_report: int
     no_line_data: int
     no_coverable_changes: int
+    stale_file: int
     out_of_scope: int
 
 

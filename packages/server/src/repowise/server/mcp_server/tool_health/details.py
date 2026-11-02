@@ -7,9 +7,15 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.refactoring.recipe import build_recipe
+from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
-from repowise.core.persistence.crud import get_health_finding_by_public_id
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
+from repowise.core.persistence.crud import get_health_finding_by_public_id, get_health_findings
+from repowise.core.persistence.crud.analysis.actions import load_action
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import HealthFinding
+from repowise.server.mcp_server._helpers import _cross_repo_cut
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_health.analysis_meta import _attach_repository_analysis_meta
 from repowise.server.mcp_server.tool_health.pillars import (
@@ -24,11 +30,11 @@ from repowise.server.mcp_server.tool_health.serialize import (
     _legacy_health_finding_id,
     _serialize_finding,
 )
-from repowise.server.services.performance_health import (
-    PerformanceHealthService,
-    evidence_block,
-)
+from repowise.server.services.performance_health import PerformanceHealthService
 from repowise.server.services.refactoring_health import RefactoringHealthService
+
+#: Prefix of the Do next action ids ``get_overview``'s ``next_actions`` hands out.
+_ACTION_ID_PREFIX = "act_"
 
 
 async def _detail_response(
@@ -39,15 +45,19 @@ async def _detail_response(
     finding_id: str | None,
     plan_id: str | None,
     opportunity_id: str | None,
+    fix_id: str | None = None,
     only_set: set[str],
     limit: int,
     cursor: int,
+    recipe: bool = False,
 ) -> dict[str, Any] | None:
     """Answer a lookup by id, or ``None`` when no selector was passed.
 
     At most one selector is set by the time this runs: ``_selector_conflict``
     refuses two before any read.
     """
+    if fix_id:
+        return await _fix_detail_response(session, repository, fix_id, reference_repository)
     if finding_id:
         return await _finding_detail_response(
             session, repository, reference_repository, finding_id
@@ -73,8 +83,56 @@ async def _detail_response(
             cursor=cursor,
         )
     if plan_id:
-        return await _plan_detail_response(session, repository, reference_repository, plan_id)
+        return await _plan_detail_response(
+            session, repository, reference_repository, plan_id, recipe=recipe
+        )
     return None
+
+
+#: Id prefixes as minted (fix_first/model.py, finding_identity.py,
+#: refactoring/identity.py and opportunity.py, perf/causal.py), each with the
+#: selector that resolves it. Ordered so ``refac`` never shadows ``refop``.
+_SELECTOR_OF_PREFIX: tuple[tuple[str, str, str], ...] = (
+    ("fix", "fix_id", "fix_first ids (fix1_...)"),
+    (_ACTION_ID_PREFIX, "fix_id", f"next_actions ids ({_ACTION_ID_PREFIX}...)"),
+    ("finding_", "finding_id", "finding ids (finding_...)"),
+    (
+        _REFACTORING_OPPORTUNITY_PREFIX,
+        "opportunity_id",
+        f"refactoring opportunity ids ({_REFACTORING_OPPORTUNITY_PREFIX}...)",
+    ),
+    ("refac", "plan_id", "refactoring plan ids (refac...)"),
+    ("perf", "opportunity_id", "performance opportunity ids (perf...)"),
+)
+
+
+def _wrong_selector_hint(passed: str, value: str) -> str | None:
+    """Name the selector *value*'s prefix belongs to, when it is not *passed*."""
+    for prefix, selector, label in _SELECTOR_OF_PREFIX:
+        if value.startswith(prefix):
+            return f"Pass {label} as {selector}, not {passed}." if selector != passed else None
+    return None
+
+
+def _hint_wrong_selector(result: dict[str, Any], **selectors: str | None) -> None:
+    """On a miss, name the selector the id was minted for. Never resolved under
+    that selector instead: the caller swapped an argument, and answering anyway
+    would hide it."""
+    if result.get("found") or result.get("resolved"):
+        return
+    for name, value in selectors.items():
+        if value and (hint := _wrong_selector_hint(name, value)):
+            result["hint"] = hint
+
+
+async def _lower_priority(session: Any, repository_id: str, finding: Any) -> str | None:
+    """The finding's tier reason, measured over its file's open findings as
+    the list measured it: file-held rows included, as the list reads them."""
+    peers = await get_health_findings(
+        session, repository_id, file_path=finding.file_path, file_holds=False
+    )
+    reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
+    return LOW_PRIORITY_LABEL.get(reasons.get(finding.id) or "")
 
 
 async def _finding_detail_response(
@@ -85,7 +143,14 @@ async def _finding_detail_response(
         "mode": "finding",
         "finding_id": finding_id,
         "finding": (
-            _serialize_finding(match, reference_repository) if match else None
+            _serialize_finding(
+                match,
+                reference_repository,
+                await _lower_priority(session, repository.id, match),
+                with_actions=True,
+            )
+            if match
+            else None
         ),
         "resolved": match is not None,
         "_meta": _build_meta(
@@ -97,10 +162,63 @@ async def _finding_detail_response(
     return result
 
 
-async def _plan_detail_response(
-    session: Any, repository: Any, reference_repository: str, plan_id: str
+_FIX_NOT_FOUND = (
+    "get_health() lists the current fix_first ids (fix1_...); "
+    "get_overview() lists the next_actions ids (act_...)"
+)
+
+
+async def _fix_detail_response(
+    session: Any, repository: Any, fix_id: str, alias: str | None = None
 ) -> dict[str, Any]:
-    """One stored plan, and the composed opportunity it is a step of, if any.
+    """One Fix-first item in full: action steps, verify, risk, context.
+
+    An ``act_`` id is a Do next action, the same one the REST actions route
+    reads: its evidence rows and commands.
+    """
+    if fix_id.startswith(_ACTION_ID_PREFIX):
+        return await _action_detail_response(session, repository, fix_id, alias)
+    item = (await load_fix_first(session, repository.id, item_id=fix_id)).find(fix_id)
+    result = {
+        "mode": "fix_item",
+        "fix_id": fix_id,
+        "item": item.as_dict() if item else None,
+        "found": item is not None,
+        "_meta": _build_meta(
+            repository=repository, targets=[item.target.file_path] if item else None
+        ),
+    }
+    if item is None:
+        result["next_action"] = _FIX_NOT_FOUND
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+async def _action_detail_response(
+    session: Any, repository: Any, action_id: str, alias: str | None = None
+) -> dict[str, Any]:
+    """One Do next action in full, serialized as the REST actions route does."""
+    action = await load_action(session, repository.id, action_id, **_cross_repo_cut(alias))
+    result = {
+        "mode": "action",
+        "fix_id": action_id,
+        "action": action.as_dict() if action else None,
+        "found": action is not None,
+        "_meta": _build_meta(
+            repository=repository, targets=[action.target_path] if action and action.target_path else None
+        ),
+    }
+    if action is None:
+        result["next_action"] = _FIX_NOT_FOUND
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+async def _plan_detail_response(
+    session: Any, repository: Any, reference_repository: str, plan_id: str, *, recipe: bool
+) -> dict[str, Any]:
+    """One stored plan, and the composed opportunity it is a step of, if any;
+    with *recipe*, also the plan as the recipe an agent applies.
 
     An indexed seek and one hydration, not a scan of every open plan.
     """
@@ -110,6 +228,8 @@ async def _plan_detail_response(
     if plan is not None:
         plan.setdefault("id", plan_id)
         plan["repository"] = reference_repository
+        if recipe:
+            plan["recipe"] = build_recipe(plan)
     result = {
         "mode": "refactoring_plan",
         "plan_id": plan_id,
@@ -145,7 +265,7 @@ def _selector_conflict(**selectors: str | None) -> dict[str, Any] | None:
         "resolved": False,
         "reason": "mutually_exclusive_selectors",
         "selectors": named,
-        "detail": "Pass exactly one of finding_id, plan_id, opportunity_id.",
+        "detail": "Pass exactly one of fix_id, finding_id, plan_id, opportunity_id.",
     }
 
 
@@ -233,7 +353,7 @@ async def _performance_detail_response(
         return {
             "mode": "performance_evidence",
             "opportunity_id": opportunity_id,
-            "resolved": total > 0,
+            "found": total > 0,
             **evidence_block(rows, total, cursor),
             "_meta": _build_meta(repository=repository),
         }
@@ -274,7 +394,7 @@ async def _refactoring_detail_response(
         result = {
             "mode": "refactoring_evidence",
             "opportunity_id": opportunity_id,
-            "resolved": bool(detail.get("resolved")),
+            "found": bool(detail.get("found")),
             **block,
             "_meta": _build_meta(repository=repository),
         }
@@ -297,7 +417,7 @@ async def _refactoring_detail_response(
         evidence_limit=_REFACTORING_EVIDENCE_CAP,
     )
     file_path = detail.get("file_path")
-    if not detail.get("resolved"):
+    if not detail.get("found"):
         detail.setdefault(
             "model_state", _refactoring_model_state(opportunity_id)
         )

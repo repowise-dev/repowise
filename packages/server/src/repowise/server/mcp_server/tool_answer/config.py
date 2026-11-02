@@ -77,6 +77,21 @@ _HOMONYM_UNION_BODY_MAX_LINES = 120
 # cases is wide, so this is not tuned to an exact count.
 _HOMONYM_UNION_PROSE_DEF_CEILING = 6
 
+# Exact-identifier trust. On a prose question, a definition named by the
+# question but outside these top retrieved files must earn its anchor: its
+# location shares a word with the question, or the identifier is specific.
+_ANCHOR_TOPICAL_FILES = 5
+# An identifier written in more production files than this names a role many
+# files share (a field, a parameter, a local), not one definition. Both the
+# trust rule above and the literal leg below read it.
+_SPECIFIC_TOKEN_MAX_FILES = 3
+# Identifier-shaped words naming no indexed symbol (a string literal, a key, an
+# environment variable) are scanned for in live source, and the definitions
+# holding them anchored, up to the inline-body cap. Scans per question:
+_LITERAL_SCAN_MAX_TOKENS = 3
+# Definition kinds an exact question name may anchor.
+_ANCHOR_KINDS = ("function", "method", "class", "interface")
+
 # Data-shape grounding: "what fields does each entry in <blob> contain" is
 # answered by mining the field set from source, precision-ordered:
 #   * a documented {...} shape near the identifier (confidence high);
@@ -124,10 +139,23 @@ _AGREEMENT_TOP_RANK_MAX = 1
 _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
+# Agreement fires near a 1.0 ratio, so on its own it starts "high" only above
+# this top score. Correct agreement highs on the answer gate scored 4.2 and
+# above; a wrong one, whose excerpt stopped before the branch it described,
+# scored 3.27.
+_AGREEMENT_HIGH_SCORE_FLOOR = 4.0
+
+# A keyless answer whose lead file sits below this many files of the unreranked
+# hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
+# in the top 4 were right 38-60% of the time per rank, leads below it 17%, under
+# the 27% the "low" tier already scored.
+_LEAD_HYBRID_TOP_K = 4
 
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
-# A match downgrades confidence to "low" and drops the retrieval payload, since
-# a consumer told to read the source gains nothing from it in the cache.
+# Before the answer names any code, a match downgrades confidence to "low" and
+# drops the retrieval payload, since a consumer told to read the source gains
+# nothing from it in the cache. After a grounded claim it is a caveat
+# (_GAP_MARKERS below).
 _HEDGE_MARKERS = (
     "do not contain",
     "does not contain",
@@ -177,6 +205,29 @@ _HEDGE_MARKERS = (
     "did not surface",
     "was not surfaced",
     "was not found in",
+)
+
+# Phrases that admit part of what was asked is outside the evidence. Like a
+# hedge, one before the answer names any code is a non-answer ("low"); after a
+# grounded claim it is a caveat, held at "medium": "high" tells the agent not to
+# re-read, which the answer itself disputes. The bare "is not included/shown"
+# form is matched in confidence.py, where a following "in the checksum" marks
+# it as a statement about the code instead; so is "truncated in the excerpts".
+_GAP_MARKERS = (
+    "not in the retrieved",
+    "not in the excerpts",
+    "not in the evidence",
+    "outside the retrieved",
+    "outside the excerpts",
+    "not present in the provided",
+    "not present in the retrieved",
+    "not defined in the provided",
+    "not defined in the retrieved",
+    "not directly included",
+    "not fully included",
+    "not fully visible",
+    "not fully shown",
+    "cannot be definitively",
 )
 
 # Page content chars attached per top hit, for synthesis and the pointer payload.
@@ -264,6 +315,14 @@ _DOMAIN_PENALTY = 0.5
 # weak retrieval, so it grades "medium". Useful wiki hits routinely score >1.5.
 _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 
+# Share of the question's words, weighted by rarity across the retrieved hits,
+# the answering hit must mention before confidence may rest on it. Dominance
+# only compares hits with each other, so an off-topic page beating a worse one
+# still dominates. Chosen on one repo's questions, where it kept every top hit
+# that answered and dropped most off-topic and wrong-file ones, then checked on
+# repos in other languages.
+_ANSWER_COVERAGE_FLOOR = 0.5
+
 # Schema version stamped on every cached payload. Bump whenever the synthesised
 # response shape or the meaning of a field (including `confidence` and `note`)
 # changes: a cached row at a lower version is a miss and re-synthesises, since
@@ -271,7 +330,61 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # Degraded (no-provider / synthesis-failed) payloads are never cached, so changes
 # confined to them need no bump; a needless bump costs every keyed install a
 # round of provider spend.
-_ANSWER_SCHEMA_VERSION = 17
+# 18: rows carry ``candidate_files``, the ranked paths-only list.
+# 19: rows carry ``_candidate_file_facts``; low answers serve slim best_guesses rows.
+# 20: caller questions carry ``graph_callers`` and synthesise with them.
+# 21: impact questions carry ``graph_neighbors``, the users of the lead file.
+# 22: ``confidence`` also asks whether the top hit covers the question's words.
+# 23: bodies include the function holding a literal the question writes, and an
+#     exact name off the topic no longer anchors its definition; a question-named
+#     body grounds the answer only when it carries what else was asked;
+#     constructors fold into their class and a file the question rules out is
+#     dropped.
+# 24: an admission after a grounded claim is a caveat (medium), not a hedge; a
+#     verified constant line the answer states earns high; a question name no
+#     code defines or writes grades low.
+# 25: a question name defined in several files holds a high answer at medium
+#     unless the answer tells them apart; a name written as an owner
+#     (``Client.get``) anchors its definition; candidate_files skips files only
+#     the graph walk added.
+# 26: a value set inside a function body anchors that function; each later
+#     clause of a compound question adds its best file to the served hits.
+# 27: hedge phrases match through markdown markup; agreement alone starts high
+#     only above its own score floor; a scoped question's name nothing under
+#     the scope writes grades low.
+# 28: a stated value line earns high under the score floor and at any rank;
+#     held-at-medium notes for the identifier gate and a weak dominant top.
+# 29: a reply stopped at the token cap is retried once with a larger cap; an
+#     answer whose text was cut off is held at medium.
+# 30: an answer saying the code it describes was cut from its excerpts
+#     ("not fully visible", "truncated in the retrieved") admits a gap.
+# 31: a clause saying only that the excerpts carry no line numbers admits no
+#     gap; a stated value line keeps high past an admitted gap, and past the
+#     identifier gate when a top hit serves it.
+# 32: the synthesis prompt asks for a gap only when it limits the answer to
+#     the question, and for no remarks on missing line numbers.
+# 33: each served body shows its line range, so answers cite lines; a prose
+#     line citation is not an asserted value.
+_ANSWER_SCHEMA_VERSION = 33
+
+# Above this a whole-file Read costs more than the answer, so the low-confidence
+# hint names a ranged Read or a skeleton instead.
+_LARGE_FILE_BYTES = 40_000
+
+# How many paths ``candidate_files`` serves: the knee of measured coverage
+# gained per extra file, past which each path mostly costs precision. A high
+# answer already names its files, so it keeps fewer.
+_CANDIDATE_FILES_HIGH = 3
+_CANDIDATE_FILES_MAX = 5
+# The raw list is longer than either cap, so paths the citations already name
+# can be removed without leaving the served list short.
+_CANDIDATE_FILES_POOL = 10
+# A path scoring under this share of the top hit is not served in
+# candidate_files. Swept on 53 labelled candidates from 13 questions over four
+# repositories: the lowest file worth opening scored 0.38 of the top, and three
+# unrelated files scored under 0.2. Set below that lowest real file, not at it,
+# since a dropped file costs the agent a search and a served one costs a path.
+_CANDIDATE_FILES_SCORE_FLOOR = 0.3
 
 # Backstop TTL for cache rows. Commit stamping is the primary freshness gate;
 # this covers rows without a stamp (older rows, repos without git metadata).
@@ -302,15 +415,15 @@ _STOPWORDS = STOPWORDS
 _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
-# the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so the
-# env override lets such a model be given room. Low temperature: the answer
+# the token cap is headroom. A thinking model spends hidden reasoning from the
+# same cap before the first answer token, so the cap leaves room for both.
+# Providers bill the tokens produced, not the cap. Low temperature: the answer
 # must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
-_SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
+_SYNTHESIS_MAX_TOKENS_DEFAULT = 4096
 
 
-def _synthesis_max_tokens() -> int:
+def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
     """The synthesis token budget, from env or the hosted-model default.
 
     An unparseable or non-positive value warns and keeps the default instead
@@ -318,19 +431,22 @@ def _synthesis_max_tokens() -> int:
     """
     raw = os.environ.get(_SYNTHESIS_MAX_TOKENS_ENV, "").strip()
     if not raw:
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     try:
         value = int(raw)
     except ValueError:
         value = 0
     if value <= 0:
         _log.warning("Ignoring unusable %s=%r", _SYNTHESIS_MAX_TOKENS_ENV, raw)
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     return value
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
 _SYNTHESIS_TEMPERATURE = 0.2
+# A reply stopped at the token cap is asked for once more with this many times
+# the cap. Kept small so the retry stays inside common model output limits.
+_SYNTHESIS_RETRY_TOKEN_FACTOR = 2
 
 _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "
@@ -352,7 +468,11 @@ _SYSTEM_PROMPT = (
     "language ('entirely', 'the sole', 'the only place', 'depends only on') "
     "is not justified from a top-k slice — omit it unless the retrieved "
     "material itself (an assertion, a type constraint, or an explicit "
-    "comment) says so. Never invent file paths."
+    "comment) says so. Never invent file paths. Do not remark on what the "
+    "excerpts leave out unless it limits the answer to this question: say "
+    "nothing about missing line numbers or other excerpt metadata, and do "
+    "not list bodies, call sites or details the question did not ask about. "
+    "When a gap does limit the answer, name what is missing once."
 )
 
 _USER_TEMPLATE = """\
@@ -363,7 +483,9 @@ Project wiki excerpts (top {n} retrieval hits):
 {context}
 
 Answer thoroughly (150–400 words). Cite file paths inline and line
-numbers when the excerpt provides them. Prefer a structured layout
+numbers when the excerpt provides them; when it does not, say nothing
+about line numbers. Mention a gap in the excerpts only when it limits
+the answer to this question. Prefer a structured layout
 (headings, bullets, short code block from the source body) on
 mechanism / architecture questions. Only hedge about having enough
 material if no signature, docstring, or source body in the excerpts is

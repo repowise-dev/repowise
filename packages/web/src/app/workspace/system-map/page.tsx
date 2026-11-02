@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { Waypoints } from "lucide-react";
 import {
   SystemMap,
   SYSTEM_MAP_CANVAS_HEIGHT,
+  SystemMapEvidenceNotice,
   SystemMapFindings,
   SystemMapLensControl,
   SystemMapLensResults,
@@ -14,8 +16,11 @@ import {
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
   buildConformanceOverlay,
-  plural,
+  drawnFamilies,
+  parseMapView,
   selectionRepo,
+  writeMapView,
+  type MapViewState,
   type ContractRef,
   type RepoHealth,
   type SegmentOption,
@@ -23,23 +28,27 @@ import {
   type SystemMapSelection,
 } from "@repowise-dev/ui/workspace/system-map";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { PageLede } from "@repowise-dev/ui/shared/page-lede";
-import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
-import { OverviewSection } from "@repowise-dev/ui/overview/section";
+import { StatRibbon } from "@repowise-dev/ui/stats/stat-ribbon";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
-import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
+import type { ConformanceReport, NodeArchitectureRole, SystemGraph } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
+  useWorkspaceDiagnostics,
   useWorkspaceGraph,
   useWorkspaceBlastRadius,
   useWorkspaceBreakingChanges,
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
+import { markSystemMap, useSystemMapPerfMarks } from "@/lib/system-map-perf";
+import { mapLede, mapRibbon, useListJoin, type Translator } from "./map-summary";
 import { useRepoContracts } from "./use-repo-contracts";
+import { useServiceLinks } from "./use-service-links";
+import { loadRouteLinks, useSystemMapNavCopy } from "./use-system-map-nav";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
+/** URL params a selection is written to, one per selection type. */
+const SELECTION_PARAMS = ["node", "edge", "group", "band"] as const;
 
 function contractHref(ref: ContractRef): string {
   const params = new URLSearchParams({ contract: ref.contract_id, repo: ref.repo });
@@ -52,34 +61,53 @@ function contractsHref(repo: string): string {
 }
 
 export default function SystemMapPage() {
+  const t = useTranslations("systemMap");
+  const tLinks = useTranslations("linkCoverage");
+  const navCopy = useSystemMapNavCopy();
+  const join = useListJoin();
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // One wave above the fold: the graph, repo health, and the three small
-  // reports the lede, the lens counts and "Needs attention" all read. Blast
-  // radius and per-repo contracts are fetched only when asked for.
-  const { data: graph, isLoading, error } = useWorkspaceSystemGraph();
+  // One wave above the fold: the map's lean graph, repo health, and the three
+  // small reports the lede, the lens counts and "Needs attention" all read.
+  // Diagnostics follow the graph; a server without the lean view sends them
+  // inside it. Blast radius and per-repo contracts are fetched only when asked for.
+  const { data: graph, isLoading, error } = useWorkspaceSystemGraph("map");
+  const { data: fetchedDiagnostics } = useWorkspaceDiagnostics(Boolean(graph && !graph.diagnostics));
+  const diagnostics = graph?.diagnostics ?? fetchedDiagnostics;
   const { data: repoGraph } = useWorkspaceGraph();
   const { data: architecture, error: architectureError } = useWorkspaceArchitecture();
   const { data: conformance, error: conformanceError } = useWorkspaceConformance();
   const { data: breaking, error: breakingError } = useWorkspaceBreakingChanges();
 
-  // Selection, lens and blast target live in the URL, so a view can be linked to.
+  useSystemMapPerfMarks(graph);
+
+  // Selection, level, lens and blast target live in the URL, so a view can be linked to.
   const selection = useMemo<SystemMapSelection>(() => {
-    const node = searchParams.get("node");
-    if (node) return { type: "node", id: node };
-    const edge = searchParams.get("edge");
-    if (edge) return { type: "edge", id: edge };
+    for (const type of SELECTION_PARAMS) {
+      const id = searchParams.get(type);
+      if (id) return { type, id };
+    }
     return null;
   }, [searchParams]);
+  const mapView = useMemo(() => parseMapView((key) => searchParams.get(key)), [searchParams]);
   const lensOptions = useMemo(
     () =>
-      lensOptionsFor(graph, breaking, conformance, architecture, {
+      lensOptionsFor(t, graph, breaking, conformance, architecture, {
         breaking: Boolean(breakingError),
         conformance: Boolean(conformanceError),
         architecture: Boolean(architectureError),
       }),
-    [graph, breaking, conformance, architecture, breakingError, conformanceError, architectureError],
+    [
+      t,
+      graph,
+      breaking,
+      conformance,
+      architecture,
+      breakingError,
+      conformanceError,
+      architectureError,
+    ],
   );
   // A lens from the URL that cannot act here (0 findings, or its report
   // failed) reads as no lens, rather than a checked option nobody can reach.
@@ -90,11 +118,18 @@ export default function SystemMapPage() {
       : "none";
   const blastTarget = lens === "blast" ? searchParams.get("from") : null;
 
+  // The query last written but not yet rendered: a second edit in the same
+  // tick builds on it, so neither edit is lost.
+  const pendingQuery = useRef<string | null>(null);
+  useEffect(() => {
+    pendingQuery.current = null;
+  }, [searchParams]);
   const replaceParams = useCallback(
     (edit: (p: URLSearchParams) => void) => {
-      const params = new URLSearchParams(searchParams.toString());
+      const params = new URLSearchParams(pendingQuery.current ?? searchParams.toString());
       edit(params);
       const query = params.toString();
+      pendingQuery.current = query;
       // `replace`, not `push`: exploring a diagram should not fill the back button.
       router.replace(query ? `?${query}` : "/workspace/system-map", { scroll: false });
     },
@@ -104,10 +139,13 @@ export default function SystemMapPage() {
   const onSelectionChange = useCallback(
     (next: SystemMapSelection) =>
       replaceParams((p) => {
-        p.delete("node");
-        p.delete("edge");
+        for (const key of SELECTION_PARAMS) p.delete(key);
         if (next) p.set(next.type, next.id);
       }),
+    [replaceParams],
+  );
+  const onViewChange = useCallback(
+    (next: MapViewState) => replaceParams((p) => writeMapView(p, next)),
     [replaceParams],
   );
 
@@ -129,6 +167,7 @@ export default function SystemMapPage() {
 
   const focusRepo = useMemo(() => selectionRepo(graph, selection), [graph, selection]);
   const { data: repoContracts, isLoading: repoContractsLoading } = useRepoContracts(focusRepo);
+  const loadLinksBetween = useServiceLinks();
 
   const roleByNodeId = useMemo<Map<string, NodeArchitectureRole>>(() => {
     const m = new Map<string, NodeArchitectureRole>();
@@ -138,12 +177,14 @@ export default function SystemMapPage() {
 
   // Repo health by alias; the repo graph's node `name` is the alias.
   const { healthByRepo, repoIdByAlias } = useMemo(() => {
-    const health = new Map<string, RepoHealth>();
-    const ids = new Map<string, string>();
-    for (const n of repoGraph?.nodes ?? []) {
-      health.set(n.name, { score: n.health_score, source: n.health_score_source });
-      ids.set(n.name, n.repo_id);
-    }
+    const nodes = repoGraph?.nodes ?? [];
+    // An unscored repo has no entry, so its nodes read "No health score".
+    const health = new Map<string, RepoHealth>(
+      nodes.flatMap((n) =>
+        n.health_score == null ? [] : [[n.name, { score: n.health_score }] as const],
+      ),
+    );
+    const ids = new Map<string, string>(nodes.map((n) => [n.name, n.repo_id]));
     return { healthByRepo: health, repoIdByAlias: ids };
   }, [repoGraph]);
 
@@ -174,24 +215,27 @@ export default function SystemMapPage() {
       coChangesHref: "/workspace/co-changes",
       LinkComponent: Link,
       onShowBlastRadius: (id: string) => setLens("blast", id),
+      diagnostics,
     }),
-    [repoContracts, repoContractsLoading, conformance, repoIdByAlias, setLens],
+    [repoContracts, repoContractsLoading, conformance, repoIdByAlias, setLens, diagnostics],
   );
 
   return (
     <PageShell
-      title="System map"
-      icon={<Waypoints className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="Services and the typed relationships between them, rebuilt from code and git history on every workspace update."
+      title={t("title")}
+      icon={<Waypoints />}
+      // One sentence above the map, stated for the families it draws; the figures follow the map.
+      description={mapLede(t, join, graph, drawnFamilies(mapView)) ?? t("description")}
       maxWidth="wide"
     >
-      {graph && <Lede graph={graph} architecture={architecture} conformance={conformance} />}
-      {graph && <StatRibbon stats={ribbon(graph, architecture)} LinkComponent={Link} />}
-
-      <OverviewSection
-        title="Services and relationships"
-        description="Each box is a service; each line is a contract, import or co-change between two of them. Pick a lens to ask the map one question at a time."
-      >
+      {/* The map is the page's subject: its heading shares the lens row, straight under the lede. */}
+      <section className="flex flex-col gap-3" aria-label={t("section.title")}>
+        {/* Said once, beside the map it qualifies; the score below reads "–" when not determined. */}
+        <SystemMapEvidenceNotice
+          evidence={architecture?.evidence}
+          partialLabel={t("evidence.partial")}
+          insufficientLabel={t("evidence.insufficient")}
+        />
         {isLoading ? (
           // Same rows as the loaded map: lens, filters, legend, then the canvas.
           <div className="flex flex-col gap-3" aria-hidden>
@@ -209,7 +253,15 @@ export default function SystemMapPage() {
             {...(overlay ? { overlay } : {})}
             selection={selection}
             onSelectionChange={onSelectionChange}
+            view={mapView}
+            onViewChange={onViewChange}
+            title={t("section.title")}
+            estateLabel={t("estate")}
+            onPhase={markSystemMap}
             drawer={drawer}
+            loadLinksBetween={loadLinksBetween}
+            loadRoutes={loadRouteLinks}
+            navCopy={navCopy}
             toolbar={
               <SystemMapLensControl
                 value={lens}
@@ -224,7 +276,9 @@ export default function SystemMapPage() {
             }
           />
         )}
-      </OverviewSection>
+      </section>
+
+      {graph && <StatRibbon stats={mapRibbon(t, tLinks, join, graph, architecture, diagnostics)} LinkComponent={Link} />}
 
       {graph && (
         <SystemMapLensResults
@@ -250,7 +304,7 @@ export default function SystemMapPage() {
           graph={graph}
           conformance={conformance}
           breaking={breaking}
-          diagnostics={graph.diagnostics}
+          diagnostics={diagnostics}
           conformanceError={Boolean(conformanceError)}
           breakingError={Boolean(breakingError)}
           onSelect={onSelectionChange}
@@ -266,6 +320,7 @@ export default function SystemMapPage() {
 
 /** Counts and disabled reasons for each lens, from data already on the page. */
 function lensOptionsFor(
+  t: Translator,
   graph: SystemGraph | null,
   breaking: ReturnType<typeof useWorkspaceBreakingChanges>["data"],
   conformance: ConformanceReport | null,
@@ -276,145 +331,55 @@ function lensOptionsFor(
   const breakingTotal = breaking ? breaking.breaking_count + breaking.warning_count : 0;
   const findings = conformance ? conformance.violation_count + (conformance.total_cycles ?? conformance.cycle_count) : 0;
   return [
-    { value: "none", label: "None", hint: "The map as extracted, no lens" },
+    { value: "none", label: t("lens.none.label"), hint: t("lens.none.hint") },
     {
       value: "blast",
-      label: "Blast radius",
-      hint: "What depends on one service, directly or through others",
-      disabledReason: hasEdges ? undefined : "No relationships to trace yet.",
+      label: t("lens.blast.label"),
+      hint: t("lens.blast.hint"),
+      disabledReason: hasEdges ? undefined : t("lens.blast.disabled"),
     },
     {
       value: "breaking",
-      label: "Breaking changes",
+      label: t("lens.breaking.label"),
       count: breaking ? String(breakingTotal) : undefined,
       disabledReason: failed.breaking
-        ? "Could not load the breaking-change report."
+        ? t("lens.breaking.disabledFailed")
         : !breaking
-        ? "Loading the breaking-change report."
+        ? t("lens.breaking.disabledLoading")
         : !breaking.generated_at
-          ? "Breaking-change detection has not run. Run a workspace update."
+          ? t("lens.breaking.disabledNotRun")
           : breakingTotal === 0
-            ? "No provider contract changed incompatibly in the most recent update."
+            ? t("lens.breaking.disabledNone")
             : undefined,
     },
     {
       value: "conformance",
-      label: "Conformance",
+      label: t("lens.conformance.label"),
       count: conformance ? String(findings) : undefined,
-      hint: "Rule violations and dependency cycles",
+      hint: t("lens.conformance.hint"),
       disabledReason: failed.conformance
-        ? "Could not load the conformance report."
+        ? t("lens.conformance.disabledFailed")
         : !conformance
-        ? "Loading the conformance report."
+        ? t("lens.conformance.disabledLoading")
         : !conformance.generated_at
-          ? "Conformance has not been checked. Run a workspace update."
+          ? t("lens.conformance.disabledNotRun")
           : findings === 0
-            ? "No rule violations or dependency cycles."
+            ? t("lens.conformance.disabledNone")
             : undefined,
     },
     {
       value: "core",
-      label: "Core",
-      count: architecture ? String(architecture.core_size) : undefined,
-      hint: "The largest group of services that all depend on each other, and every service's role",
+      label: t("lens.core.label"),
+      // Null when the graph's evidence is insufficient; the lens then says why.
+      count: architecture?.core_size != null ? String(architecture.core_size) : undefined,
+      hint: t("lens.core.hint"),
       disabledReason: failed.architecture
-        ? "Could not load the architecture metrics."
+        ? t("lens.core.disabledFailed")
         : !architecture
-          ? "Loading architecture metrics."
+          ? t("lens.core.disabledLoading")
           : architecture.core_size === 0 && architecture.roles.length === 0
-            ? "No services to classify."
+            ? t("lens.core.disabledNone")
             : undefined,
-    },
-  ];
-}
-
-function Lede({
-  graph,
-  architecture,
-  conformance,
-}: {
-  graph: SystemGraph;
-  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"];
-  conformance: ConformanceReport | null;
-}) {
-  const name = (id: string) => graph.nodes.find((n) => n.id === id)?.name ?? id;
-  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
-  const structural = graph.edges.filter((e) => e.structural).length;
-  const behavioral = graph.edges.length - structural;
-  const cycles = conformance?.cycles ?? [];
-  const totalCycles = conformance ? (conformance.total_cycles ?? conformance.cycle_count) : 0;
-  const first = cycles[0];
-
-  return (
-    <PageLede
-      label="Architecture score"
-      labelHint="A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled."
-      value={architecture ? architecture.score.toFixed(1) : "–"}
-      unit="out of 10"
-      layout="beside"
-    >
-      <p>
-        {plural(graph.nodes.length, "service", "services")} in {plural(repos, "repository", "repositories")}, joined by{" "}
-        {plural(graph.edges.length, "relationship", "relationships")}: {structural} structural (a contract or import
-        in code) and {behavioral} co-change (files that change in the same commits, not a call).
-      </p>
-      {first ? (
-        <p>
-          <span className="font-medium text-[var(--color-text-primary)]">
-            {first.nodes.map(name).join(" and ")} depend on each other
-          </span>
-          , a dependency cycle: none of them can change a contract, build or deploy alone.
-          {totalCycles > 1 ? ` ${plural(totalCycles - 1, "more cycle is", "more cycles are")} listed under Needs attention.` : " It is listed under Needs attention with a prompt to break it."}
-        </p>
-      ) : conformance?.generated_at ? (
-        <p>No dependency cycles: every service can change without a loop back to itself.</p>
-      ) : null}
-      {architecture && (
-        <p>
-          On average a service reaches {architecture.propagation_cost_pct.toFixed(1)}% of the others through
-          dependencies, and {architecture.core_size > 0 ? `${plural(architecture.core_size, "service forms", "services form")} the cyclic core` : "there is no cyclic core"}
-          . Those two figures drive the score.
-        </p>
-      )}
-    </PageLede>
-  );
-}
-
-function ribbon(
-  graph: SystemGraph,
-  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
-): RibbonStat[] {
-  const diag = graph.diagnostics;
-  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
-  const structural = graph.edges.filter((e) => e.structural).length;
-  return [
-    {
-      label: "Services",
-      value: formatNumber(graph.nodes.length),
-      sub: `in ${plural(repos, "repository", "repositories")}`,
-    },
-    {
-      label: "Relationships",
-      value: formatNumber(graph.edges.length),
-      sub: `${structural} structural, ${graph.edges.length - structural} co-change`,
-    },
-    {
-      label: "Propagation cost",
-      value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
-      sub: "of other services the average one reaches",
-      hint: "The share of other services the average service can reach through structural dependencies. 0% is fully decoupled, 100% is everything reaching everything.",
-    },
-    {
-      label: "Contract links",
-      value: diag ? formatNumber(diag.total_links) : "–",
-      sub: diag ? `from ${formatNumber(diag.total_providers)} providers, ${formatNumber(diag.total_consumers)} consumers` : undefined,
-      hint: "Consumer calls matched to the provider that serves them, across services.",
-    },
-    {
-      label: "Unmatched consumers",
-      value: diag ? formatNumber(diag.unmatched_consumers.length) : "–",
-      sub: "calls with no provider in the workspace",
-      hint: "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service.",
     },
   ];
 }

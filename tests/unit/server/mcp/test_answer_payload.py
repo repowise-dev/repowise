@@ -145,6 +145,22 @@ class TestSerializeHits:
         [entry] = serialize_hits([dict(RAW_HIT)], summary_chars=160)
         assert len(entry["summary"]) <= 160
 
+    def test_snippet_starts_below_the_page_heading(self) -> None:
+        hit = dict(
+            RAW_HIT,
+            summary="",
+            snippet="# pkg/mod.py\n\n## Overview\n\nParses the config.",
+        )
+        [entry] = serialize_hits([hit])
+        assert entry["snippet"] == "Parses the config."
+
+    def test_a_row_carries_one_text(self) -> None:
+        [served] = serialize_hits([dict(RAW_HIT, excerpt="# pkg/mod.py\n\nBody.")])
+        assert served["excerpt"] == "# pkg/mod.py\n\nBody."
+        assert "summary" not in served and "snippet" not in served
+        [plain] = serialize_hits([dict(RAW_HIT)])
+        assert "summary" in plain and "snippet" not in plain
+
     def test_limit(self) -> None:
         hits = [dict(RAW_HIT), dict(RAW_HIT), dict(RAW_HIT)]
         assert len(serialize_hits(hits, limit=2)) == 2
@@ -163,7 +179,9 @@ class TestSerializeHits:
         # The cut is a field cut, not a row cut: every path still ships, which is
         # what keeps a withheld excerpt one follow-up call away rather than lost.
         assert [r["path"] for r in rows] == [f"pkg/m{i}.py" for i in range(5)]
-        assert all({"title", "summary", "snippet", "score"} <= set(r) for r in rows)
+        assert all({"title", "score"} <= set(r) for r in rows)
+        # A withheld excerpt falls back to the summary, so no row goes textless.
+        assert ["summary" in r for r in rows] == [False, False, False, True, True]
 
     def test_excerpt_rows_unset_serves_every_excerpt(self) -> None:
         hits = [dict(RAW_HIT, target_path=f"pkg/m{i}.py", excerpt="E" * 1500) for i in range(5)]
@@ -199,7 +217,7 @@ def _patch_pipeline(monkeypatch, answer_mod, scores=(5.0, 4.0)):
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Summary text for the page. " * 12
+            h["summary"] = "Summary of the beta module function. " * 12
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:
@@ -247,6 +265,26 @@ async def test_high_confidence_drops_retrieval_block(setup_mcp, monkeypatch):
         "evidence"
     ]
     _assert_no_underscore_keys(result)
+
+
+@pytest.mark.asyncio
+async def test_a_hit_without_target_path_does_not_break_citations(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, scores=(5.0, 4.0))
+    hydrate = answer_mod._hydrate_hits
+
+    async def _pathless_second(hits, ctx, *, scope=None):
+        hits = await hydrate(hits, ctx, scope=scope)
+        hits[1].pop("target_path")
+        return hits
+
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _pathless_second)
+    _patch_provider(monkeypatch, answer_mod, "The go() function drives it (pkg/beta/one.py).")
+
+    result = await get_answer("how does the beta module go function work")
+    assert "pkg/beta/one.py" in result["citations"]
 
 
 @pytest.mark.asyncio

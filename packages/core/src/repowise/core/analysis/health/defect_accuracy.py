@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .ranking import sort_metrics_worst_first
-from .rows import detail_map, field
+from .rows import detail_map, field, scored_rows
 
 _DEFAULT_K = 20
 _MIN_FILES = 25          # below this a precision@K headline is noise
@@ -65,7 +65,9 @@ def compute_defect_accuracy(
     is still total and deterministic, but the floor-tied band is ordered by path
     and so need not match the worst-files list this stat validates.
     """
-    scored = [m for m in metrics if field(m, "file_path")]
+    # Unscored files (no health dialect for their language) have no place in a
+    # worst-first ranking, so they are not part of what this stat validates.
+    scored = [m for m in scored_rows(metrics) if field(m, "file_path")]
     n = len(scored)
     fix_counts, window_days = _recent_fix_counts(findings)
     total_defect_files = sum(1 for m in scored if fix_counts.get(field(m, "file_path"), 0) > 0)

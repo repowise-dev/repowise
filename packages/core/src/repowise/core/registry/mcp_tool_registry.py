@@ -33,10 +33,34 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from .plugins import note_registration
+
+if TYPE_CHECKING:
+    from .tool_selection import AvailabilityFacts
 
 TOOL_TIERS = frozenset({"canonical", "utility", "specialist"})
 TOOL_SAFETY_KINDS = frozenset({"read_only", "generative", "mutating"})
+
+# MCP annotation hints per tool safety kind, expressed as plain keyword
+# arguments for ``ToolAnnotations``. Kept as dicts (not ``ToolAnnotations``
+# instances) because this module lives in ``packages/core``, which does not
+# declare the ``mcp`` SDK; the surface layer materialises them with the real
+# import and hands the result to :meth:`MCPToolRegistry.apply` via
+# ``annotations_for``. ``generative`` tools leave the repository untouched
+# but call an external provider (``openWorldHint``), while ``mutating`` tools
+# replace earlier decisions, so clients should confirm them
+# (``destructiveHint``) even though repeating the same write is idempotent.
+SAFETY_TO_ANNOTATION_HINTS: dict[str, dict[str, bool]] = {
+    "read_only": {"readOnlyHint": True, "openWorldHint": False},
+    "generative": {"readOnlyHint": True, "openWorldHint": True},
+    "mutating": {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -57,6 +81,9 @@ class ToolEntry:
     marks whether the tool is part of the curated default surface; opt-in tools
     set it ``False``. ``requires_workspace`` marks tools that only do useful
     work in workspace mode, so they are hidden from single-repo servers.
+    ``available_when``, when set, is a predicate over
+    :class:`~repowise.core.registry.tool_selection.AvailabilityFacts`; the tool
+    is hidden whenever it returns ``False``.
     """
 
     fn: Callable[..., Any]
@@ -71,6 +98,7 @@ class ToolEntry:
     presentation: str = "generic"
     safety: str = "read_only"
     evidence_basis: str = "unknown"
+    available_when: Callable[[AvailabilityFacts], bool] | None = None
 
 
 class MCPToolRegistry:
@@ -80,6 +108,8 @@ class MCPToolRegistry:
         self._entries: list[ToolEntry] = []
         self._applied_to: list[Any] = []
 
+    # The keyword list mirrors ToolEntry field by field and is due to collapse
+    # into a single metadata object once another field joins it.
     def register(
         self,
         *args: Any,
@@ -93,14 +123,15 @@ class MCPToolRegistry:
         presentation: str = "generic",
         safety: str = "read_only",
         evidence_basis: str = "unknown",
+        available_when: Callable[[AvailabilityFacts], bool] | None = None,
         **kwargs: Any,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         """Decorator that schedules a function for FastMCP registration.
 
         Supports both decorator forms — bare ``@register`` and
-        ``@register()`` — so call sites read naturally. ``default`` and
-        ``requires_workspace`` annotate the tool for the selection layer
-        (see :class:`ToolEntry`); any other keyword arguments are reserved
+        ``@register()`` — so call sites read naturally. ``default``,
+        ``requires_workspace`` and ``available_when`` annotate the tool for
+        the selection layer (see :class:`ToolEntry`); any other keyword arguments are reserved
         for future ``description=`` / ``name=`` overrides and ignored.
         """
 
@@ -143,9 +174,11 @@ class MCPToolRegistry:
                     presentation=presentation,
                     safety=safety,
                     evidence_basis=evidence_basis,
+                    available_when=available_when,
                 )
             )
             fn.__dict__["__repowise_trust_kind__"] = trust_kind
+            note_registration("mcp-tool", fn.__name__)
             return fn
 
         # Bare-decorator form: @mcp_tool_registry.register
@@ -165,6 +198,7 @@ class MCPToolRegistry:
         self,
         mcp: Any,
         middleware: Callable[[Callable[..., Any]], Callable[..., Any]] | None = None,
+        annotations_for: Callable[[str], Any] | None = None,
     ) -> None:
         """Attach every registered tool to *mcp* via ``mcp.tool()``.
 
@@ -178,12 +212,22 @@ class MCPToolRegistry:
         this way so the registry stays decoupled from it. A signature-
         preserving wrapper is the caller's responsibility (FastMCP reads
         each tool's signature to build its schema). Defaults to identity.
+
+        *annotations_for*, when given, maps a tool's safety kind to the
+        ``ToolAnnotations`` object the surface layer built from
+        :data:`SAFETY_TO_ANNOTATION_HINTS`; returning ``None`` registers
+        the tool without annotations.
         """
         if mcp in self._applied_to:
             return
         for entry in self._entries:
             wrapped = middleware(entry.fn) if middleware is not None else entry.fn
-            mcp.tool()(wrapped)
+            kwargs: dict[str, Any] = {}
+            if annotations_for is not None:
+                annotations = annotations_for(entry.safety)
+                if annotations is not None:
+                    kwargs["annotations"] = annotations
+            mcp.tool(**kwargs)(wrapped)
         self._applied_to.append(mcp)
 
     def reset(self) -> None:

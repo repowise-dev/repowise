@@ -22,9 +22,10 @@ import json
 import re
 from typing import Any
 
+from ..biomarker_names import identity_biomarker
 from ..rows import field
 
-REFACTORING_MODEL_VERSION = 2
+REFACTORING_MODEL_VERSION = 4
 """Version of the identity semantics. v1 was the fresh-UUID-per-index era.
 
 The version is the id prefix rather than a hash input, so a stale id is
@@ -171,9 +172,13 @@ def _extract_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel
     The span itself is line-based, so only its length participates. Two spans in
     one function that agree on signature and length collide; :func:`assign_public_ids`
     breaks that tie deterministically rather than letting the ids merge.
+
+    A staged plan's top-level signature is only its first stage's, so it also
+    carries its stage count and each stage's span length: a different split is
+    a different plan. A single-span plan's kernel is unchanged.
     """
     plan = _plan_of(suggestion)
-    return (
+    kernel: RefactoringKernel = (
         "extract_method",
         file_path,
         field(suggestion, "target_symbol") or "",
@@ -181,6 +186,14 @@ def _extract_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel
         tuple(str(name) for name in (plan.get("returns") or [])),
         _span_length(suggestion),
     )
+    stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
+    if not stages:
+        return kernel
+    lengths = tuple(
+        (s.get("span") or {}).get("end", 0) - (s.get("span") or {}).get("start", 0)
+        for s in stages
+    )
+    return (*kernel, len(stages), lengths)
 
 
 def _move_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel:
@@ -217,7 +230,7 @@ def refactoring_kernel(suggestion: Any) -> RefactoringKernel:
     """
     kind = str(field(suggestion, "refactoring_type") or "")
     file_path = str(field(suggestion, "file_path") or "")
-    biomarker = str(field(suggestion, "source_biomarker") or "")
+    biomarker = identity_biomarker(str(field(suggestion, "source_biomarker") or ""))
 
     if kind == "performance_fix":
         # The performance layer already owns a versioned causal id for this

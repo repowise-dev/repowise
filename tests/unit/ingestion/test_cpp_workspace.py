@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.cpp import (
@@ -126,6 +127,72 @@ class COFFEE_EXPORT Brewer { };
 
     index = build_cpp_workspace_index(ctx)
     assert "COFFEE_EXPORT" in index.project_export_macros
+
+
+def _ffi_plugin_fixture(tmp_path, extra_header: str = ""):
+    _write(tmp_path, "src/health_connect/CMakeLists.txt", """
+        cmake_minimum_required(VERSION 3.10)
+        project(health_connect VERSION 0.0.1 LANGUAGES C)
+        add_library(health_connect SHARED
+          "./health_connect.c"
+        )
+    """)
+    _write(tmp_path, "src/health_connect/dartjni.h", """
+#pragma once
+#if _WIN32
+#define FFI_PLUGIN_EXPORT __declspec(dllexport)
+#else
+#define FFI_PLUGIN_EXPORT
+#endif
+FFI_PLUGIN_EXPORT int SpawnJvm(int args);
+""" + extra_header)
+    _write(tmp_path, "src/health_connect/health_connect.c", """
+#include "dartjni.h"
+FFI_PLUGIN_EXPORT
+int SpawnJvm(int args) { return args + 1; }
+""")
+    paths = [
+        "src/health_connect/CMakeLists.txt",
+        "src/health_connect/dartjni.h",
+        "src/health_connect/health_connect.c",
+    ]
+    return _make_ctx(tmp_path, paths)
+
+
+def test_export_macro_found_in_header_beside_sources(tmp_path):
+    # Flutter FFI plugin layout: no public headers declared, no include/.
+    index = build_cpp_workspace_index(_ffi_plugin_fixture(tmp_path))
+    assert "FFI_PLUGIN_EXPORT" in index.project_export_macros
+
+
+@pytest.mark.parametrize("header", ["api.hh", "api.h++", "api.hpp", "api.hxx"])
+def test_export_macro_found_in_other_header_extensions(tmp_path, header):
+    _write(tmp_path, "CMakeLists.txt", "add_library(coffee SHARED src/brew.cc)\n")
+    _write(tmp_path, f"src/{header}", "#define COFFEE_EXPORT __declspec(dllexport)\n")
+    _write(tmp_path, "src/brew.cc", "")
+    paths = [f"src/{header}", "src/brew.cc", "CMakeLists.txt"]
+    index = build_cpp_workspace_index(_make_ctx(tmp_path, paths))
+    assert "COFFEE_EXPORT" in index.project_export_macros
+
+
+def test_non_export_macro_beside_sources_is_filtered(tmp_path):
+    ctx = _ffi_plugin_fixture(tmp_path, "#define BUFFER_SIZE 4096\n")
+    index = build_cpp_workspace_index(ctx)
+    assert "BUFFER_SIZE" not in index.project_export_macros
+    assert "FFI_PLUGIN_EXPORT" in index.project_export_macros
+
+
+def test_include_dir_fallback_unchanged_by_source_dir_scan(tmp_path):
+    # include/ still wins; a header beside the sources is not scanned.
+    _write(tmp_path, "CMakeLists.txt", "add_library(coffee STATIC src/brew.cc)\n")
+    _write(tmp_path, "include/coffee/api.h",
+           "#define COFFEE_EXPORT __declspec(dllexport)\n")
+    _write(tmp_path, "src/brew.cc", "")
+    _write(tmp_path, "src/local.h", "#define LOCAL_EXPORT __declspec(dllexport)\n")
+    paths = ["include/coffee/api.h", "src/brew.cc", "src/local.h", "CMakeLists.txt"]
+    index = build_cpp_workspace_index(_make_ctx(tmp_path, paths))
+    assert "COFFEE_EXPORT" in index.project_export_macros
+    assert "LOCAL_EXPORT" not in index.project_export_macros
 
 
 def test_no_workspace_falls_back_to_stem(tmp_path):

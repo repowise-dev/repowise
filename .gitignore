@@ -121,3 +121,7 @@ ehthumbs.db
 
 # Claude Code
 .claude/
+
+# Written by Claude Code into a plugin dir it loads a mod from
+plugins/claude-code/.claude-plugin/types/
+plugins/claude-code/tsconfig.json

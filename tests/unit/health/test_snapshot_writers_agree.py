@@ -61,6 +61,9 @@ def test_every_writer_records_the_depth_as_well_as_the_score() -> None:
     missing = []
     for path, call in _snapshot_calls():
         kwargs = {kw.arg for kw in call.keywords}
+        # ``**fields`` is ``trends.snapshot_fields``, which carries both maps.
+        if None in kwargs:
+            continue
         if not {"per_file_scores", "per_file_deductions"} <= kwargs:
             missing.append(f"{path.name}:{call.lineno} passes {sorted(kwargs)}")
     assert not missing, "snapshot writers that would record a different history: " + "; ".join(

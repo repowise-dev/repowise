@@ -1,6 +1,6 @@
 """Community detection on dependency graphs.
 
-Uses Leiden (graspologic) when available, falls back to Louvain (networkx).
+Uses Leiden (graspologic's native core) when available, falls back to Louvain (networkx).
 Supports both file-level and symbol-level community detection with:
 - Oversized community splitting (second pass on communities >25% of graph)
 - Cohesion scoring (intra-community edge density)
@@ -9,20 +9,23 @@ Supports both file-level and symbol-level community detection with:
 
 from __future__ import annotations
 
-import contextlib
 import inspect
-import io
-import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 import networkx as nx
 import structlog
 
+from repowise.core.analysis._leiden import leiden_partition
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 from repowise.core.ids import is_external
-from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    FILE_DEPENDENCY_EDGE_TYPES,
+    SYMBOL_USE_EDGE_TYPES,
+    TEMPORAL_EDGE_TYPES,
+)
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
 
@@ -34,6 +37,29 @@ log = structlog.get_logger(__name__)
 
 _MAX_COMMUNITY_FRACTION = 0.30
 _MIN_SPLIT_SIZE = 20
+
+# Stored community id for a node the partition leaves out. Persisted rows carry
+# a NOT NULL id defaulting to 0, which is the largest real community, so an
+# external node must not fall through to it.
+NO_COMMUNITY = -1
+
+
+def stored_community_id(assignment: dict[str, int], node_id: str) -> int:
+    """Community id to persist for *node_id*: its own, else 0, or ``NO_COMMUNITY`` for external code."""
+    if node_id in assignment:
+        return assignment[node_id]
+    return NO_COMMUNITY if is_external(node_id) else 0
+
+
+def has_community(community_id: int | None) -> bool:
+    """True when *community_id* names a real community.
+
+    ``None`` (never assigned) and ``NO_COMMUNITY`` (external code, left out of
+    the partition) both mean no community, so readers must not treat them as a
+    cluster.
+    """
+    return community_id is not None and community_id >= 0
+
 
 # Edge types to include when building file-level community subgraph.
 # Was {imports, framework, dynamic, extends, implements}: "dynamic" matched no
@@ -80,27 +106,6 @@ class CommunityInfo:
 
 
 # ---------------------------------------------------------------------------
-# Output suppression (Windows PowerShell 5.1 ANSI fix)
-# ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _suppress_graspologic_output():
-    """Suppress stdout/stderr during graspologic calls.
-
-    graspologic's leiden() emits ANSI escape sequences that corrupt
-    PowerShell 5.1's scroll buffer on Windows.
-    """
-    old_stderr = sys.stderr
-    try:
-        sys.stderr = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()):
-            yield
-    finally:
-        sys.stderr = old_stderr
-
-
-# ---------------------------------------------------------------------------
 # Partition (Leiden / Louvain)
 # ---------------------------------------------------------------------------
 
@@ -123,17 +128,11 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
 def _partition(graph: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
-    Tries Leiden (graspologic) first, falls back to Louvain (networkx),
+    Tries Leiden (graspologic_native) first, falls back to Louvain (networkx),
     then to directory-based grouping as a last resort.
     """
     try:
-        from graspologic.partition import leiden
-
-        leiden_kwargs: dict = {}
-        if "random_seed" in inspect.signature(leiden).parameters:
-            leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
-        with _suppress_graspologic_output():
-            result = leiden(graph, **leiden_kwargs)
+        result = leiden_partition(graph, seed=42)  # determinism (matches louvain's seed)
         return result, "leiden"
     except ImportError:
         pass
@@ -495,9 +494,18 @@ def _assign_tests_to_communities(
         # The community most of the linked production files belong to, one
         # vote per linked file, either direction. Ties break on community id:
         # edge iteration order is insertion order and varies between runs.
+        # Co-change is history, not a link, and init adds it after this runs.
         votes: Counter[int] = Counter()
-        linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
-        linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
+        linked = {
+            t
+            for _, t, kind in graph.out_edges(test_path, data="edge_type")
+            if t in prod_assignment and kind not in TEMPORAL_EDGE_TYPES
+        }
+        linked |= {
+            s
+            for s, _, kind in graph.in_edges(test_path, data="edge_type")
+            if s in prod_assignment and kind not in TEMPORAL_EDGE_TYPES
+        }
         for prod_path in linked:
             votes[prod_assignment[prod_path]] += 1
 
@@ -529,12 +537,14 @@ def detect_file_communities(
         - communities_info: {community_id: CommunityInfo}
         - algorithm_used: "leiden" or "louvain"
     """
-    # Extract file nodes (exclude external nodes — they're structural noise)
+    # Extract file nodes. External and framework nodes are stored as files but
+    # are code we do not own: left in, they join the partition (two files that
+    # both import `os` get pulled together through it) and inflate members/size.
     # Sorted: node order seeds the undirected graph's insertion order, and
     # Louvain/Leiden partitions depend on iteration order even when seeded.
     file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
-        if d.get("node_type", "file") == "file"
+        if d.get("node_type", "file") == "file" and not is_external(n)
     )
 
     if not file_nodes:
@@ -641,19 +651,11 @@ def detect_file_communities(
     # Labels and conductance come from the production members: tests were kept
     # out of the partition so they would not shape a community, and they must
     # not name it either. The non-core catch-all is labelled from what it has.
-    #
-    # External and framework nodes are stored as files, so they reach the
-    # partition, but they must not name a community either. They have no
-    # directory, so a big community with no dominant segment fell through to
-    # the filename-stem strategy, where eight `external:rich.*` imports share
-    # the stem `external:rich` and won: this repo's largest community was
-    # labelled after a third-party library that every view hides.
     label_members: dict[int, list[str]] = {}
     for cid, members in community_members.items():
         sorted_members = sorted(members)
         prod_members = [m for m in sorted_members if not non_core[m]]
-        owned = [m for m in prod_members if not is_external(m)]
-        label_members[cid] = owned or prod_members or sorted_members
+        label_members[cid] = prod_members or sorted_members
         communities_info[cid] = CommunityInfo(
             community_id=cid,
             label=_heuristic_label(label_members[cid], cid, extra_generic),
@@ -678,6 +680,28 @@ def detect_file_communities(
     )
 
     return file_assignment, communities_info, algorithm
+
+
+def file_community_labels(graph_builder: Any) -> dict[str, str]:
+    """``{file path: community label}`` off *graph_builder*'s cached file communities.
+
+    The refactoring detectors key foreign modules by this label, so every path
+    that writes refactoring plans (init, update, re-score, ``repowise health``)
+    must pass the same map or the same file gets a different plan. Empty when
+    community detection fails.
+    """
+    try:
+        assignment = graph_builder.community_detection()
+        info = graph_builder.community_info()
+    except Exception as exc:
+        log.debug("file_community_labels_failed", error=str(exc))
+        return {}
+    labels: dict[str, str] = {}
+    for node_id, community_id in assignment.items():
+        label = getattr(info.get(community_id), "label", None)
+        if label:
+            labels[node_id] = label
+    return labels
 
 
 # ---------------------------------------------------------------------------

@@ -53,3 +53,16 @@ export interface RepoSummaryRow {
 export interface ReposSummaryResponse {
   repos: RepoSummaryRow[];
 }
+
+/**
+ * Normalizes a repo path (e.g. a server-reported `local_path`) for equality
+ * comparison: forward slashes, no trailing slash, and lowercase on Windows,
+ * where paths are case-insensitive. On Windows both `\` and `/` count as
+ * separators; elsewhere `\` is an ordinary filename character and is kept.
+ * Pure: resolving relative paths and symlinks is the caller's job.
+ */
+export function normalizeRepoPath(p: string, isWindows: boolean): string {
+  const slashed = isWindows ? p.replace(/\\/g, "/") : p;
+  const trimmed = slashed.replace(/\/+$/, "");
+  return isWindows ? trimmed.toLowerCase() : trimmed;
+}

@@ -1,32 +1,23 @@
 "use client";
 
-import { useState, type ElementType, type ReactNode } from "react";
+import { useCallback, useState, type ElementType, type ReactNode } from "react";
 import { ArrowUpRight, BellOff, Check, X } from "lucide-react";
-import type {
-  ActionDetail,
-  ActionStateValue,
-  ActionSurface,
-  NextAction,
+import {
+  ACTION_TIER_LABELS,
+  type ActionDetail,
+  type ActionStateValue,
+  type ActionSurface,
+  type NextAction,
 } from "@repowise-dev/types/actions";
 
 import { AiPromptBlock } from "../health/ai-prompt-modal";
-import { buildActionPrompt } from "../health/ai-prompts/action-prompt";
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { biomarkerLabel } from "../health/biomarker-glossary";
+import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
-
-const TIER_LABEL: Record<NextAction["tier"], string> = {
-  act_now: "Do now",
-  plan: "Worth planning",
-  improve_signal: "Improve what Repowise can see",
-};
-
-const EFFORT_LABEL: Record<NextAction["effort"], string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-};
+import { formatNumber } from "../lib/format";
 
 /** What the evidence link opens, named for the place it lands. */
 const EVIDENCE_LABEL: Record<ActionSurface, string> = {
@@ -56,7 +47,10 @@ export interface ActionDrawerProps {
   fileHref?: ((path: string) => string | null) | undefined;
   /** Omit to hide the done, snooze and dismiss verbs. */
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
-  repoName?: string | undefined;
+  /** The agent prompt for an action, as core renders it. Omit to hide the prompt. */
+  loadPrompt?: ((action: NextAction, flavor: AiPromptFlavor) => Promise<string>) | undefined;
+  /** Show each command's CLI line. Set false for a host with no CLI; agent calls stay. */
+  showCliCommands?: boolean | undefined;
   LinkComponent?: ElementType | undefined;
   renderTitle: (title: string) => ReactNode;
 }
@@ -84,13 +78,19 @@ export function ActionDrawer({
   evidenceHref,
   fileHref,
   onAnswer,
-  repoName,
+  loadPrompt,
+  showCliCommands = true,
   LinkComponent,
   renderTitle,
 }: ActionDrawerProps) {
+  // Only rendered with both set; stable per action so the block fetches once per flavor.
+  const promptSource = useCallback(
+    (flavor: AiPromptFlavor) => loadPrompt!(action!, flavor),
+    [loadPrompt, action],
+  );
   const Link = LinkComponent ?? "a";
   const linkCls =
-    "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+    "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
   return (
     <AdaptivePanel
@@ -98,7 +98,7 @@ export function ActionDrawer({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      eyebrow={action ? TIER_LABEL[action.tier] : "Next action"}
+      eyebrow={action ? ACTION_TIER_LABELS[action.tier] : "Next action"}
       title={action ? renderTitle(action.title) : "Next action"}
       widthClassName="md:max-w-[680px]"
     >
@@ -142,7 +142,7 @@ export function ActionDrawer({
 
             {action.details.length > 0 ? (
               <Section
-                title={`Evidence (${action.details_total.toLocaleString()})`}
+                title={`Evidence (${formatNumber(action.details_total)})`}
               >
                 <EvidenceList
                   key={action.id}
@@ -214,7 +214,7 @@ export function ActionDrawer({
                   {action.commands.map((c) => (
                     <li key={c.purpose} className="space-y-1">
                       <p className="text-sm text-[var(--color-text-secondary)]">{c.purpose}</p>
-                      {c.cli ? (
+                      {showCliCommands && c.cli ? (
                         <pre className="overflow-x-auto rounded bg-[var(--color-bg-inset)] px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
                           {c.cli}
                         </pre>
@@ -231,16 +231,13 @@ export function ActionDrawer({
               </Section>
             ) : null}
 
-            <Section title="Hand it to an agent">
-              <div className="-mx-5">
-                <AiPromptBlock
-                  bleed="px-5"
-                  getPrompt={(flavor) =>
-                    buildActionPrompt({ action, flavor, ...(repoName ? { repoName } : {}) })
-                  }
-                />
-              </div>
-            </Section>
+            {loadPrompt ? (
+              <Section title="Hand it to an agent">
+                <div className="-mx-5">
+                  <AiPromptBlock bleed="px-5" getPrompt={null} promptSource={promptSource} />
+                </div>
+              </Section>
+            ) : null}
           </div>
 
           {onAnswer ? (
@@ -259,7 +256,7 @@ export function ActionDrawer({
                     onAnswer(state, message);
                     onClose();
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" />
                   {label}
@@ -307,7 +304,7 @@ function EvidenceList({
                 {href ? (
                   <Link
                     href={href}
-                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                   >
                     {where}
                   </Link>
@@ -338,13 +335,13 @@ function EvidenceList({
             <button
               type="button"
               onClick={() => setAll((a) => !a)}
-              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
-              {all ? "Show fewer" : `Show all ${details.length.toLocaleString()}`}
+              {all ? "Show fewer" : `Show all ${formatNumber(details.length)}`}
             </button>
           ) : null}
           {total > details.length ? (
-            <span>{`${(total - details.length).toLocaleString()} more; "Look closer" below lists them.`}</span>
+            <span>{`${formatNumber(total - details.length)} more; "Look closer" below lists them.`}</span>
           ) : null}
         </p>
       ) : null}

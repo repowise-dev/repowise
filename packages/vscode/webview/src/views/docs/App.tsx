@@ -1,12 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  AlertCircle,
-  BookOpen,
-  FileCode,
-  Loader2,
-  PanelLeft,
-  PanelLeftClose,
-} from "lucide-react";
+import { BookOpen, FileCode, PanelLeft, PanelLeftClose } from "lucide-react";
+import { ApiError, EmptyState, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { DocsTree } from "@repowise-dev/ui/docs/docs-tree";
 import { DocsReader, type ReaderLinkComponent } from "@repowise-dev/ui/docs/docs-reader";
@@ -107,30 +101,29 @@ export function App({ host, repo, params, refreshToken }: ViewProps<"docs">) {
 
   if (error) {
     return (
-      <CenteredState
-        icon={<AlertCircle className="h-8 w-8 text-[var(--color-error)]" />}
-        title="Could not load docs"
-        detail={error}
-      />
+      <div className="flex h-full items-center justify-center px-8">
+        <ApiError title="Could not load docs" message={error} />
+      </div>
     );
   }
 
   if (!pages) {
     return (
-      <CenteredState
-        icon={<Loader2 className="h-6 w-6 animate-spin text-[var(--color-accent-primary)]" />}
-        title="Loading docs…"
-      />
+      <div className="flex h-full items-center justify-center">
+        <OrbLoader state={ORB_STATE.page} size={64} label="Loading docs" />
+      </div>
     );
   }
 
   if (pages.length === 0) {
     return (
-      <CenteredState
-        icon={<BookOpen className="h-8 w-8 text-[var(--color-text-tertiary)]" />}
-        title="No documentation yet"
-        detail="Run a Repowise generation for this repository to browse its docs here."
-      />
+      <div className="flex h-full items-center justify-center px-8">
+        <EmptyState
+          icon={<BookOpen />}
+          title="No documentation yet"
+          description="Run a Repowise generation for this repository to browse its docs here."
+        />
+      </div>
     );
   }
 
@@ -238,24 +231,4 @@ function makeLink(host: WebviewHost, navigate: (pageId: string) => void): Reader
       </a>
     );
   };
-}
-
-function CenteredState({
-  icon,
-  title,
-  detail,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  detail?: string;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-      {icon}
-      <p className="text-[15px] font-semibold text-[var(--color-text-primary)]">{title}</p>
-      {detail && (
-        <p className="max-w-sm text-xs text-[var(--color-text-secondary)]">{detail}</p>
-      )}
-    </div>
-  );
 }

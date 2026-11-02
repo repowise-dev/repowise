@@ -14,10 +14,16 @@ import pytest
 
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
+    MAX_TESTS_PER_TARGET,
     CallGraphView,
+    ReachDistance,
     call_graph_from_graph,
     files_reached_by_tests,
     files_with_paired_tests,
+    rank_reaching,
+)
+from repowise.core.analysis.test_reachability import (
+    tests_matching_by_name as name_match,
 )
 
 
@@ -180,14 +186,27 @@ def test_a_test_importing_a_barrel_pairs_what_it_re_exports() -> None:
     g = _dep_graph(
         ("test/router.test.ts", "src/index.ts", "imports"),
         ("src/index.ts", "src/router.ts", "imports"),
-        ("src/router.ts", "src/util.ts", "imports"),
+        ("src/router.ts", "src/lib/util.ts", "imports"),
         ("test/leaf.test.ts", "src/leaf.ts", "imports"),
-        ("src/leaf.ts", "src/deep.ts", "imports"),
+        ("src/leaf.ts", "src/lib/deep.ts", "imports"),
     )
-    paths = {"src/index.ts", "src/router.ts", "src/util.ts", "src/leaf.ts", "src/deep.ts"}
+    paths = {"src/index.ts", "src/router.ts", "src/lib/util.ts", "src/leaf.ts", "src/lib/deep.ts"}
     paired = files_with_paired_tests(g, paths, {"test/router.test.ts", "test/leaf.test.ts"})
-    # The barrel and what it re-exports; one hop only, never the whole closure.
+    # The barrel and what it re-exports; never the whole closure into another package.
     assert paired == {"src/index.ts", "src/router.ts", "src/leaf.ts"}
+
+
+def test_a_module_a_test_loads_through_its_package_pairs() -> None:
+    """The health pass clears the same bar ``pr_blast.file_tests`` does (the package walk)."""
+    g = _dep_graph(
+        ("tests/test_why.py", "src/tool_why/__init__.py", "imports"),
+        ("src/server.py", "src/tool_why/__init__.py", "imports"),
+        ("src/tool_why/__init__.py", "src/tool_why/tool.py", "imports"),
+        ("src/tool_why/tool.py", "src/tool_why/workspace.py", "imports"),
+        ("web/app/page.tsx", "web/components/view.tsx", "imports"),
+    )
+    paths = {"src/tool_why/workspace.py", "web/components/view.tsx"}
+    assert files_with_paired_tests(g, paths, {"tests/test_why.py"}) == {"src/tool_why/workspace.py"}
 
 
 def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
@@ -197,6 +216,30 @@ def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
     paired = files_with_paired_tests(g, paths, {"tests/distill/test_engine.py"})
     assert "src/distill/engine.py" in paired
     assert "src/health/engine.py" not in paired
+
+
+def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
+    files = {
+        "src/utils/jwt/index.ts",
+        "src/middleware/jwt/index.ts",
+        "src/middleware/jwt/index.test.ts",
+    }
+    found = name_match(
+        ["src/utils/jwt/index.ts", "src/middleware/jwt/index.ts"],
+        {"src/middleware/jwt/index.test.ts"},
+        files,
+    )
+
+    assert "src/utils/jwt/index.ts" not in found
+    assert found["src/middleware/jwt/index.ts"].tests == ["src/middleware/jwt/index.test.ts"]
+
+
+def test_a_test_without_a_sibling_source_still_matches_across_directories() -> None:
+    found = name_match(
+        ["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"}
+    )
+
+    assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
 
 
 def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> None:
@@ -217,3 +260,80 @@ def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> No
     assert files_with_paired_tests(None, {"src/lonely.py"}, {"tests/test_lonely.py"}) == {
         "src/lonely.py"
     }
+
+
+# ---------------------------------------------------------------------------
+# rank_reaching: the order a capped reverse list keeps
+# ---------------------------------------------------------------------------
+
+
+def test_rank_puts_a_test_the_change_edits_first() -> None:
+    reach = {"tests/test_far.py": ReachDistance(3, 1), "tests/test_near.py": ReachDistance(1, 1)}
+    ranked = rank_reaching(
+        "src/a.py", reach, reach=reach, changed={"src/a.py", "tests/test_far.py::test_x"}
+    )
+    assert ranked == ["tests/test_far.py", "tests/test_near.py"]
+
+
+def test_rank_puts_fewer_hops_before_more_callers_and_names() -> None:
+    reach = {
+        "tests/test_a.py": ReachDistance(3, 9),
+        "tests/zz/test_b.py": ReachDistance(1, 1),
+        "tests/test_mid.py": ReachDistance(2, 1),
+    }
+    assert rank_reaching("src/a.py", reach, reach=reach) == [
+        "tests/zz/test_b.py",
+        "tests/test_mid.py",
+        "tests/test_a.py",
+    ]
+
+
+def test_rank_puts_a_test_without_a_distance_after_every_measured_one() -> None:
+    reach = {"tests/zz/test_far.py": ReachDistance(5, 1)}
+    assert rank_reaching("src/a.py", ["tests/test_a.py", "tests/zz/test_far.py"], reach=reach) == [
+        "tests/zz/test_far.py",
+        "tests/test_a.py",
+    ]
+
+
+def test_rank_puts_a_direct_importer_before_a_transitive_one() -> None:
+    tests = ["tests/test_a.py", "tests/zz/test_direct.py"]
+    assert rank_reaching("src/a.py", tests, direct={"tests/zz/test_direct.py"}) == [
+        "tests/zz/test_direct.py",
+        "tests/test_a.py",
+    ]
+
+
+def test_rank_breaks_a_hop_tie_by_callers() -> None:
+    reach = {"tests/test_a.py": ReachDistance(2, 1), "tests/zz/test_b.py": ReachDistance(2, 4)}
+    assert rank_reaching("src/a.py", reach, reach=reach) == [
+        "tests/zz/test_b.py",
+        "tests/test_a.py",
+    ]
+
+
+def test_rank_falls_back_to_the_name_then_the_path() -> None:
+    tests = ["tests/zz/test_b.py", "tests/test_other.py", "tests/zz/test_a.py", "src/test_x.py"]
+    # Named for the target first, then directory overlap with it, then path.
+    assert rank_reaching("src/x.py", tests) == [
+        "src/test_x.py",
+        "tests/test_other.py",
+        "tests/zz/test_a.py",
+        "tests/zz/test_b.py",
+    ]
+
+
+def test_rank_reads_the_file_part_of_symbol_targets_and_test_ids() -> None:
+    reach = {"tests/test_a.py": ReachDistance(1, 1), "tests/test_b.py": ReachDistance(2, 1)}
+    ranked = rank_reaching(
+        "src/a.py::run", ["tests/test_b.py::t", "tests/test_a.py::t"], reach=reach
+    )
+    assert ranked == ["tests/test_a.py::t", "tests/test_b.py::t"]
+
+
+def test_a_cap_after_rank_keeps_the_closest_tests() -> None:
+    """A hub's direct tests sort after many path-earlier far ones by name alone."""
+    reach = {f"tests/a/test_{i:03}.py": ReachDistance(3, 1) for i in range(MAX_TESTS_PER_TARGET)}
+    reach["tests/z/test_direct.py"] = ReachDistance(1, 1)
+    kept = rank_reaching("src/hub.py", reach, reach=reach)[:MAX_TESTS_PER_TARGET]
+    assert kept[0] == "tests/z/test_direct.py"

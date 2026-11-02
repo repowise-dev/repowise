@@ -13,11 +13,12 @@ import json
 from collections import Counter
 from typing import Any
 
+from repowise.core.author_identity import author_identity_key, identity_kind, is_bot
+
 from ._constants import (
     _DECISION_SIGNAL_WORDS,
     _HARD_SKIP_PREFIXES,
     _MIN_MESSAGE_LEN,
-    _SKIP_AUTHORS,
     _SOFT_SKIP_PREFIXES,
     HOTSPOT_HIGH_COMMITS_90D,
     HOTSPOT_MIN_COMMITS_90D,
@@ -84,7 +85,7 @@ def get_blame_ownership(repo: Any, file_path: str) -> tuple[str | None, str | No
     return top_name, emails.get(top_name), pct
 
 
-def is_significant_commit(message: str, author: str) -> bool:
+def is_significant_commit(message: str, author: str, email: str | None = None) -> bool:
     """Return True if the commit is considered significant.
 
     Filtering rules:
@@ -103,11 +104,9 @@ def is_significant_commit(message: str, author: str) -> bool:
     for prefix in _HARD_SKIP_PREFIXES:
         if msg.startswith(prefix):
             return False
-    # Always skip bot authors
-    author_lower = author.lower()
-    for skip in _SKIP_AUTHORS:
-        if skip in author_lower:
-            return False
+    # Always skip bot authors; a coding agent's commit can still carry a decision.
+    if identity_kind(author, email) == "bot":
+        return False
     # Soft-skip conventional prefixes unless decision signal present
     for prefix in _SOFT_SKIP_PREFIXES:
         if msg.startswith(prefix):
@@ -153,7 +152,7 @@ def meets_hotspot_floors(meta: dict) -> bool:
 
 
 def count_active_contributors(metadata_list: list[dict], *, window_days: int = 90) -> int | None:
-    """Count distinct non-bot authors active in the trailing *window_days*.
+    """Count distinct human authors active in the trailing *window_days*.
 
     Reads each file's ``top_authors_json`` (per-author ``last_commit_ts``)
     and anchors the window to the most recent author timestamp seen across
@@ -182,14 +181,15 @@ def count_active_contributors(metadata_list: list[dict], *, window_days: int = 9
             if not isinstance(ts, int | float) or ts <= 0:
                 continue
             name = str(a.get("name") or "").strip()
-            if not name:
+            email = a.get("email")
+            key = author_identity_key(name, email)
+            if not key:
                 continue
-            lowered = name.lower()
-            if any(skip in lowered for skip in _SKIP_AUTHORS):
+            if is_bot(name, email):
                 continue
-            prev = author_last_ts.get(name)
+            prev = author_last_ts.get(key)
             if prev is None or ts > prev:
-                author_last_ts[name] = int(ts)
+                author_last_ts[key] = int(ts)
 
     if not author_last_ts:
         return None
@@ -267,42 +267,65 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     if not metadata_list:
         return
 
-    # Sort by temporal_hotspot_score (primary) then commit_count_90d (tiebreak)
-    sorted_by_churn = sorted(
-        range(len(metadata_list)),
-        key=lambda i: (
-            metadata_list[i].get("temporal_hotspot_score") or 0.0,
-            metadata_list[i].get("commit_count_90d", 0),
-        ),
-    )
+    # Non-code history-tier files do not participate in code churn rankings.
+    code_metas = [m for m in metadata_list if not m.get("history_only")]
+    for meta in metadata_list:
+        if meta.get("history_only"):
+            meta["churn_percentile"] = 0.0
+            meta["is_hotspot"] = False
+            meta.setdefault("change_entropy_pct", 0.0)
+            meta.setdefault("co_change_scatter_pct", 0.0)
+            meta.setdefault("prior_defect_pct", 0.0)
 
-    total = len(metadata_list)
-    for rank, idx in enumerate(sorted_by_churn):
-        meta = metadata_list[idx]
-        churn_pct = rank / total if total > 0 else 0.0
-        meta["churn_percentile"] = churn_pct
-        # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
-        # activity floors — without the floors, a quiet repo's top quartile is
-        # just "every file touched in 90 days" (issue #361). Folded into the
-        # rank loop so the list is scanned once.
-        if churn_pct >= 0.75 and meets_hotspot_floors(meta):
-            meta["is_hotspot"] = True
+    if not code_metas:
+        return
+
+    total = len(code_metas)
+    if total < 2:
+        for meta in code_metas:
+            meta["churn_percentile"] = 0.0
+    else:
+        # Group keys to mirror SQL PERCENT_RANK() with tie-awareness:
+        # (RANK() - 1) / (total - 1)
+        keys = [
+            (
+                float(m.get("temporal_hotspot_score") or 0.0),
+                int(m.get("commit_count_90d") or 0),
+            )
+            for m in code_metas
+        ]
+        key_counts = Counter(keys)
+        rank_lookup: dict[tuple[float, int], float] = {}
+        running = 0
+        for key in sorted(key_counts):
+            rank_lookup[key] = running / (total - 1)
+            running += key_counts[key]
+
+        for meta, key in zip(code_metas, keys, strict=True):
+            churn_pct = min(rank_lookup[key], 1.0)
+            meta["churn_percentile"] = churn_pct
+            # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
+            # activity floors — without the floors, a quiet repo's top quartile is
+            # just "every file touched in 90 days" (issue #361). Folded into the
+            # rank loop so the list is scanned once.
+            if churn_pct >= 0.75 and meets_hotspot_floors(meta):
+                meta["is_hotspot"] = True
 
     # Files with zero entropy — every file on the ESSENTIAL tier, plus
     # FULL-tier files that only ever changed alone — stay at 0.0 so the
     # change_entropy biomarker is silent for them.
     _rank_within_eligible(
-        metadata_list, source_key="change_entropy", target_key="change_entropy_pct"
+        code_metas, source_key="change_entropy", target_key="change_entropy_pct"
     )
 
     # Ranked on the decayed partner mass, not the count: a count saturates at
     # the storage cap and never retires, so it can only ever ratchet up.
     _rank_within_eligible(
-        metadata_list, source_key="co_change_mass", target_key="co_change_scatter_pct"
+        code_metas, source_key="co_change_mass", target_key="co_change_scatter_pct"
     )
 
     # Bug-fix history, ranked over every file: a file with no fixes in the
     # window is a measured zero, not a missing signal.
     _rank_over_population(
-        metadata_list, source_key="prior_defect_count", target_key="prior_defect_pct"
+        code_metas, source_key="prior_defect_count", target_key="prior_defect_pct"
     )

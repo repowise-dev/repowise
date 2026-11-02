@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Report unreachable files, unused exports, and zombie packages, tiered by confidence.
-    allowed-tools: Bash, Read
+    allowed-tools: Bash(repowise dead-code:*), Read
 ---
 
 # Repowise Dead Code

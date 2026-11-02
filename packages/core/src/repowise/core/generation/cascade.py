@@ -1,7 +1,8 @@
 """Cascade policy for scoped generation.
 
 Regenerating a file page makes the pages that summarize it drift: its module
-page, the cycle (SCC) pages it belongs to, and the repo-wide overview and
+page, the cycle (SCC) pages it belongs to, the flow pages that walk through
+it, and the repo-wide overview and
 onboarding pages. Backlinks on other
 pages that point at it also go stale. The healer ``backfill_related_pages``
 repairs backlinks LLM-free after any run; this module decides what to do about
@@ -48,14 +49,18 @@ class PageDependencies:
     module_page_of: dict[str, str] = field(default_factory=dict)
     scc_pages_of: dict[str, tuple[str, ...]] = field(default_factory=dict)
     repo_wide_ids: tuple[str, ...] = ()
+    # Flow pages whose traced steps live in the file: an edit to any step's
+    # source makes the walkthrough describe code that has moved.
+    flow_pages_of: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def containers_of(self, file_path: str) -> set[str]:
-        """Module + SCC page ids that summarize *file_path*."""
+        """Module, SCC and flow page ids that summarize *file_path*."""
         ids: set[str] = set()
         mod = self.module_page_of.get(file_path)
         if mod:
             ids.add(mod)
         ids.update(self.scc_pages_of.get(file_path, ()))
+        ids.update(self.flow_pages_of.get(file_path, ()))
         return ids
 
 
@@ -77,6 +82,7 @@ def build_page_dependencies(
     module_groups: Iterable[Any],
     scc_groups: Iterable[tuple[str, Iterable[str]]],
     repo_wide_ids: Iterable[str] = (),
+    flow_pages_of: dict[str, tuple[str, ...]] | None = None,
 ) -> PageDependencies:
     """Invert the selection groups into per-file container page ids.
 
@@ -100,6 +106,7 @@ def build_page_dependencies(
         module_page_of=module_page_of,
         scc_pages_of={p: tuple(v) for p, v in scc_pages_of.items()},
         repo_wide_ids=tuple(repo_wide_ids),
+        flow_pages_of=dict(flow_pages_of or {}),
     )
 
 

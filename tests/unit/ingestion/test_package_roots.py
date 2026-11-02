@@ -7,9 +7,9 @@ inferred from the indexed file list — because the traverser drops 18 manifest
 names it cannot language-detect, which silently cost Go, Maven, Groovy-Gradle,
 Ruby, Scala, Clojure and Erlang monorepos any package attribution at all.
 
-.NET is not among them: its package file is the ``.csproj`` glob, which an
-exact-filename list cannot express, so every name C# declares is build
-configuration and is excluded as such.
+.NET's package file is the ``.csproj`` glob, which an exact-filename list
+cannot express: the scan matches it in the same walk and records each project's
+file name, while every exact name C# declares stays build configuration.
 """
 
 from __future__ import annotations
@@ -20,6 +20,9 @@ from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.package_roots import (
     module_for,
     package_manifest_names,
+    package_roots_above,
+    package_roots_from_paths,
+    scan_package_manifests,
     scan_package_roots,
 )
 from repowise.core.ingestion.traverser import FileTraverser
@@ -118,6 +121,33 @@ def test_a_directory_with_only_build_config_is_not_a_root(tmp_path):
     assert scan_package_roots(tmp_path) == {"app"}
 
 
+def test_a_csproj_directory_is_a_root_holding_its_project_file(tmp_path):
+    """The glob is matched in the same walk, ignoring case, and records the file
+    name, which is what a ``dotnet test`` command needs."""
+    _write(tmp_path, "src/Shop/Shop.csproj", "<Project/>")
+    _write(tmp_path, "tests/Shop.Tests/Shop.Tests.CSPROJ", "<Project/>")
+    _write(tmp_path, "solution/Directory.Build.props", "<Project/>")
+    _write(tmp_path, "Root.csproj", "<Project/>")
+    assert scan_package_manifests(tmp_path) == {
+        "src/Shop": frozenset({"Shop.csproj"}),
+        "tests/Shop.Tests": frozenset({"Shop.Tests.CSPROJ"}),
+    }
+    assert module_for("src/Shop/Models/Cart.cs", scan_package_roots(tmp_path)) == "src/Shop"
+    assert package_roots_from_paths({"src/Shop/Shop.csproj", "src/Shop/Cart.cs"}) == {"src/Shop"}
+    assert not any("csproj" in name for name in package_manifest_names())
+
+
+def test_a_csproj_is_not_a_monorepo_package(tmp_path):
+    """Monorepo detection reads a manifest by its exact name; a project file
+    adds a module root, never a package to the repo structure."""
+    _write(tmp_path, "src/Shop/Shop.csproj", "<Project/>")
+    _write(tmp_path, "src/Api/Api.csproj", "<Project/>")
+    _write(tmp_path, "web/package.json", '{"name":"web"}')
+    structure = FileTraverser(tmp_path).get_repo_structure()
+    assert [p.path for p in structure.packages] == ["web"]
+    assert structure.is_monorepo is False
+
+
 def test_a_nested_package_is_found_at_any_depth(tmp_path):
     """``RepoStructure.packages`` stops at depth 2; module attribution must not.
 
@@ -167,3 +197,62 @@ def test_a_nested_gitignore_prunes_the_scan(tmp_path):
     traverser = FileTraverser(tmp_path)
     assert traverser.dir_chain_skipped(Path("packages/tool/.test-fixtures"))
     assert traverser.package_root_dirs() == {"packages/tool"}
+
+
+def test_one_commit_is_walked_once_and_a_new_commit_again(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    import repowise.core.ingestion.package_roots as package_roots
+
+    _write(tmp_path, "web/package.json", '{"name":"web"}')
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "commit", "-qm", "a"], cwd=tmp_path, check=True)
+    walks: list[Path] = []
+    walk = package_roots._walk_manifests
+    monkeypatch.setattr(package_roots, "_SCANS", {})
+    monkeypatch.setattr(
+        package_roots, "_walk_manifests", lambda root, *a: walks.append(root) or walk(root, *a)
+    )
+    assert package_roots.scan_package_roots(tmp_path) == {"web"}
+    assert package_roots.scan_package_manifests(tmp_path) == {"web": frozenset({"package.json"})}
+    assert len(walks) == 1
+    _write(tmp_path, "api/package.json", '{"name":"api"}')
+    subprocess.run([*git, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "commit", "-qm", "b"], cwd=tmp_path, check=True)
+    assert package_roots.scan_package_roots(tmp_path) == {"web", "api"}
+    assert len(walks) == 2
+
+
+def test_roots_above_some_paths_agree_with_the_full_scan(tmp_path):
+    """The narrow lookup must give every path the module the full scan gives it,
+    across each way the walk prunes: a pruned name, an ignored directory, a
+    nested checkout, and a vendored tree."""
+    _write(tmp_path, "services/api/go.mod", "module api\n")
+    _write(tmp_path, "services/api/internal/tools/go.mod", "module tools\n")
+    _write(tmp_path, "web/Shop/Shop.csproj", "<Project/>\n")
+    _write(tmp_path, "node_modules/dep/package.json", '{"name":"dep"}\n')
+    _write(tmp_path, "vendor/lib/go.mod", "module lib\n")
+    _write(tmp_path, "packages/tool/package.json", '{"name":"tool"}\n')
+    _write(tmp_path, "packages/tool/.gitignore", ".fixtures/\n")
+    _write(tmp_path, "packages/tool/.fixtures/v/package.json", '{"name":"v"}\n')
+    _write(tmp_path, "nested/.git", "gitdir: elsewhere\n")
+    _write(tmp_path, "nested/pkg/package.json", '{"name":"n"}\n')
+    paths = [
+        "services/api/main.go",
+        "services/api/internal/tools/t.go",
+        "web/Shop/Program.cs",
+        "node_modules/dep/index.js",
+        "vendor/lib/lib.go",
+        "packages/tool/src/a.ts",
+        "packages/tool/.fixtures/v/x.js",
+        "nested/pkg/n.js",
+        "scripts/run.py",
+        "gone/deleted.py",
+        "root.py",
+    ]
+    full = scan_package_roots(tmp_path)
+    above = package_roots_above(tmp_path, paths)
+    assert above == {"services/api", "services/api/internal/tools", "web/Shop", "packages/tool"}
+    assert [module_for(p, above) for p in paths] == [module_for(p, full) for p in paths]

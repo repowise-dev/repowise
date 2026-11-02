@@ -25,7 +25,7 @@ export function AgentBadge({ agentName, tier, confidence, className }: AgentBadg
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--color-accent-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-accent-primary)]",
+        "inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--color-selection-wash)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-text-secondary)]",
         className,
       )}
       title={`Attributed to ${agentName}${tierLabel ? ` (${tierLabel})` : ""}${

@@ -53,7 +53,7 @@ describe("describeStaleness", () => {
 
   it("gives one file its own sentence instead of a plural with the s removed", () => {
     expect(describeStaleness(["a.ts"], 0).sentence).toBe(
-      "The one file it names is still tracked and unchanged since it was recorded.",
+      "The one file it names is still tracked and unchanged since it was recorded or last accepted.",
     );
     expect(describeStaleness(["a.ts"], 1).sentence).toContain(
       "The one file it names has changed",

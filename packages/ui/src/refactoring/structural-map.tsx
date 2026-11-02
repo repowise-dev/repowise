@@ -34,9 +34,8 @@
  *   six `--color-refactor-*` accents separating categories where two types were
  *   96% of the data, one of them the same green as the health badge beside it -
  *   was against six hues over the whole plan list, and does not reach a two-hue
- *   pair over the four structural types. The sequential `--color-ramp-*` steps
- *   stay out of it: globals.css reserves them for magnitude, and they would add
- *   orange rather than reduce it.
+ *   pair over the four structural types. The `--color-series-*` palette
+ *   stays out of it: eight equal hues would flatten the attention ranking.
  *
  *   Every mark also carries a separating stroke, which is what actually makes
  *   it visible: the neutral tiers sit under 2.5:1 against the page in both
@@ -48,6 +47,7 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { median } from "../lib/math";
 import { typeMeta } from "./meta";
 import {
   MARK_STROKE,
@@ -110,12 +110,6 @@ function markPath(type: string, cx: number, cy: number, r: number): string | nul
 function axisCeiling(max: number): number {
   const step = max > 800 ? 400 : max > 200 ? 100 : max > 40 ? 20 : 5;
   return Math.max(step, Math.ceil(max / step) * step);
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 export function StructuralMap({

@@ -16,6 +16,7 @@ function pair(overrides: Partial<WorkspaceCoChangeEntry> = {}): WorkspaceCoChang
     strength: 0.694,
     frequency: 3,
     last_date: "2026-09-01",
+    evidence: null,
     ...overrides,
   };
 }
@@ -143,6 +144,28 @@ describe("buildCoChangeRepoPairAiPrompt", () => {
     });
     expect(p).toContain("File pairs: **1**");
     expect(p).not.toContain("the miner keeps");
+  });
+});
+
+describe("co-change prompt Verify", () => {
+  it("asks for the tests over both files of the pair", () => {
+    const p = buildCoChangePairAiPrompt({ pair: pair() });
+    expect(p).toContain("Treat each item as a lead, not ground truth.");
+    expect(p).toContain(
+      "## Verify\n\nNo test data came with this prompt. Find the tests that exercise `app/models/schemas/repos.py`, `src/lib/api/types.ts`",
+    );
+    expect(p.indexOf("## Verify")).toBeLessThan(p.indexOf("## Hard constraints"));
+  });
+
+  it("points the read-first flavors at the files and at `git log` in each repository", () => {
+    for (const flavor of ["generic", "claude-code", "cursor"] as const) {
+      const opening = buildCoChangePairAiPrompt({ pair: pair(), flavor }).split("\n")[0]!;
+      expect(opening).toContain("Run `git log` on each file in its own repository");
+      expect(opening).not.toContain("the commits that touched them before");
+    }
+    expect(buildCoChangePairAiPrompt({ pair: pair(), flavor: "claude-code" })).toContain(
+      "Open and search the files it names before planning edits",
+    );
   });
 });
 

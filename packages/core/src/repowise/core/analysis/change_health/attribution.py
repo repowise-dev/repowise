@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from ..health import HealthFindingData
 from .models import ATTRIBUTION_CONFIDENCE, AttributionBasis
+from .moves import SymbolKey
 from .sources import FileChange
 
 
@@ -47,7 +48,15 @@ class FindingAttributor:
         *,
         changed_symbols: set[tuple[str, str]] | None = None,
         changed_call_edge: str | None = None,
+        moved_from: SymbolKey | None = None,
     ) -> Attribution:
+        if moved_from is not None:
+            # Ahead of new_file: a split's new file holds code the change only carried.
+            return Attribution(
+                "moved",
+                ATTRIBUTION_CONFIDENCE["moved"],
+                f"Moved here from {moved_from[0]} ({moved_from[1]}).",
+            )
         change = self.changes.get(finding.file_path)
         if change is None:
             return _UNKNOWN

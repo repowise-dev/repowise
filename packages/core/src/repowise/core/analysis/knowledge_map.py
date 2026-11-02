@@ -18,6 +18,14 @@ SILO_OWNER_PCT = 0.8
 #: Onboarding targets returned per repository.
 ONBOARDING_LIMIT = 10
 
+#: Graph node ids that are not a file a reader can open: an import outside the
+#: repo, a framework entry, or a symbol (``path::Name``).
+_NOT_A_FILE = ("external:", "framework:")
+
+
+def _is_file(node_id: str) -> bool:
+    return not node_id.startswith(_NOT_A_FILE) and "::" not in node_id
+
 
 def rank_silos(git_rows: Iterable[Any]) -> list[dict[str, Any]]:
     """Files whose primary owner holds more than :data:`SILO_OWNER_PCT`, riskiest first.
@@ -58,7 +66,8 @@ def onboarding_targets(
     """High-centrality files carrying the least documentation.
 
     ``file_nodes`` are non-test graph nodes with ``node_id`` and ``pagerank``;
-    nodes without a positive pagerank are skipped. ``doc_size`` maps a path to
+    nodes without a positive pagerank, and nodes that are not files (external
+    imports, framework entries, symbols), are skipped. ``doc_size`` maps a path to
     its file page's word count, or any measure that ranks like one; 0 or absent
     when undocumented. Rows report it as ``doc_words``, so a caller ranking by a
     proxy must swap exact words in. Sorted by size, then pagerank descending;
@@ -71,7 +80,7 @@ def onboarding_targets(
             "doc_words": doc_size.get(field(n, "node_id"), 0),
         }
         for n in file_nodes
-        if (field(n, "pagerank") or 0.0) > 0.0
+        if (field(n, "pagerank") or 0.0) > 0.0 and _is_file(field(n, "node_id"))
     ]
     candidates.sort(key=lambda c: (c["doc_words"], -c["pagerank"]))
     return candidates[:limit]

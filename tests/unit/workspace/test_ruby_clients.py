@@ -23,6 +23,7 @@ from repowise.core.workspace.extractors.http.ruby_clients import (
     net_http_calls,
 )
 from repowise.core.workspace.matching import match_contracts
+from repowise.core.workspace.origins import ContractOrigin
 
 HTTPARTY_RB = """\
 class Dyte
@@ -184,7 +185,7 @@ class TestRubyClientsRecognition:
 
     def test_connection_receiver_comes_from_faraday_new(self) -> None:
         rows = list(faraday_connection_calls(FARADAY_RB))
-        assert [(r.method, r.confidence) for r in rows] == [("GET", 0.65)]
+        assert [(r.method, r.origin) for r in rows] == [("GET", ContractOrigin.NAME_HEURISTIC)]
 
 
 class TestRubyClientsContracts:

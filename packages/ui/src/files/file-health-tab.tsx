@@ -21,6 +21,9 @@ import { FileSignalsPanel } from "../health/file-signals-panel";
 import { FindingOpportunityLink } from "../health/file-opportunity";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { SeverityMark } from "../health/severity-mark";
+import { VerificationTag } from "../health/verification-tag";
+import { LowerPriorityTag } from "../health/lower-priority-tag";
+import { PreviewBadge } from "../health/preview-badge";
 import { formatNumber } from "../lib/format";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
@@ -245,6 +248,9 @@ export function FileHealthTab({
                     <span className="text-sm font-semibold text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
+                    <VerificationTag verification={f.verification} />
+                    <LowerPriorityTag reason={f.lower_priority} />
+                    <PreviewBadge note={f.preview} />
                     {/* Category and pillar are machine-produced labels, so they
                         are mono micro-labels rather than two tinted chips —
                         rule 9, nothing here responds to a click. */}
@@ -287,7 +293,7 @@ export function FileHealthTab({
                           onClick={() => setStatus(f.id, opt.value)}
                           className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                             status === opt.value
-                              ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                              ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                               : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
                           }`}
                         >

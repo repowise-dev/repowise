@@ -19,8 +19,10 @@ RUBY = _REGISTRY.extensions_for(["ruby"])
 PHP = _REGISTRY.extensions_for(["php"])
 GO = _REGISTRY.extensions_for(["go"])
 CSHARP = _REGISTRY.extensions_for(["csharp"])
+VBNET = _REGISTRY.extensions_for(["vbnet"])
 RUST = _REGISTRY.extensions_for(["rust"])
 PROTO = _REGISTRY.extensions_for(["proto"])
+APEX = _REGISTRY.extensions_for(["apex"])
 
 # A JS / TS module file's extension, which an import specifier leaves off.
 JS_EXTENSION_RE = re.compile(r"\.(?:[cm]?[jt]sx?)$")

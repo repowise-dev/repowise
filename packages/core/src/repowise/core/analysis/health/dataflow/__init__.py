@@ -63,7 +63,7 @@ from .gating import (
 )
 from .lookup import function_analysis_at
 from .reaching import ReachingDefinitions, compute_reaching
-from .slice import Extraction, find_extractions
+from .slice import Extraction, FunctionFacts, body_tally, find_extractions, function_facts
 
 __all__ = [
     "CFG",
@@ -84,12 +84,14 @@ __all__ = [
     "FunctionAnalysis",
     "FunctionCFG",
     "FunctionDefUse",
+    "FunctionFacts",
     "Occurrence",
     "ReachingDefinitions",
     "Statement",
     "StatementDefUse",
     "analyze_file",
     "analyze_function",
+    "body_tally",
     "build_cfg",
     "build_cfgs_for_file",
     "compute_def_use",
@@ -97,6 +99,7 @@ __all__ = [
     "derive_facts",
     "find_extractions",
     "function_analysis_at",
+    "function_facts",
     "get_defuse_dialect",
     "is_flagged",
     "is_flagged_function",

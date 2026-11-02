@@ -9,6 +9,7 @@ import {
   getDecisionSettings,
   updateDecisionSettings,
 } from "@/lib/api/decisions";
+import { useTranslations } from "next-intl";
 
 /**
  * The host half of the capture settings: the fetch, the write, and the
@@ -25,6 +26,8 @@ export function DecisionCaptureSettingsWrapper({ repoId }: { repoId: string }) {
     [`/api/repos/${repoId}/decisions/settings`],
     () => getDecisionSettings(repoId),
   );
+
+  const t = useTranslations("decisions");
 
   const onChange = React.useCallback(
     async (update: DecisionSettingsUpdate) => {
@@ -44,14 +47,14 @@ export function DecisionCaptureSettingsWrapper({ repoId }: { repoId: string }) {
         if (!/409|conflict/i.test(message)) {
           toast.error(
             message
-              ? `Couldn't save capture settings: ${message}`
-              : "Couldn't save capture settings.",
+              ? t("capture.saveFailedWithMessage", { message })
+              : t("capture.saveFailed"),
           );
         }
         throw err;
       }
     },
-    [repoId, mutate],
+    [repoId, mutate, t],
   );
 
   return (

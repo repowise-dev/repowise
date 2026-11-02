@@ -127,9 +127,9 @@ def test_js_suite_and_setup_callbacks_are_not_test_cases() -> None:
     assert "localHelper" not in cases
     assert "it callback" in cases
     assert "test callback" in cases
-    # ``it.each([1,2])`` carries its arguments in the entry name; the first
-    # dotted segment is still the framework function.
-    assert "it.each([1, 2]) callback" in cases
+    # ``it.each([1,2])`` is named by its dotted path, arguments left out; the
+    # first segment is still the framework function.
+    assert "it.each callback" in cases
 
 
 def test_a_language_with_no_row_classifies_nothing() -> None:
@@ -167,6 +167,30 @@ def test_fires_on_a_test_that_asserts_nothing() -> None:
 def test_silent_when_the_test_asserts() -> None:
     _require("python")
     assert _flagged("def test_ok():\n    assert 1 == 1\n") == []
+
+
+def test_silent_on_an_ava_test_that_asserts_on_the_handle() -> None:
+    _require("typescript")
+    source = """
+import test from 'ava';
+test('base url', async t => {
+  t.is(1, 1);
+  t.deepEqual([1], [1]);
+  await t.throwsAsync(() => f());
+});
+"""
+    assert _flagged(source, "test/base-url.ts", "typescript") == []
+
+
+def test_fires_on_an_ava_test_that_only_logs() -> None:
+    _require("typescript")
+    source = """
+import test from 'ava';
+test('logs only', t => {
+  t.log('nothing checked');
+});
+"""
+    assert _flagged(source, "test/logs.ts", "typescript") == ["test callback"]
 
 
 def test_silent_on_a_production_file() -> None:
@@ -852,11 +876,11 @@ def test_an_expect_bound_to_a_const_still_counts_as_checking_something() -> None
 
 
 def test_an_assertion_inside_a_nested_function_helper_is_not_lost() -> None:
-    """A function nested in a test body is collected as nobody's entry.
+    """The test hands its inline helper on and never calls it by name.
 
-    ``_collect_function_nodes`` does not descend past a function, so an inline
-    ``function`` helper is never a walked function of its own, and the counts
-    stop at it. Its calls would otherwise be recorded nowhere at all."""
+    The counts stop at the nested ``function``, whose assertions are its own
+    row's, so the test is answered by the helper's calls rolling up into its
+    own ``called_names``."""
     _require("typescript")
     src = (
         "it('checks in a helper', () => {\n"
@@ -934,3 +958,32 @@ def test_a_bare_python_reraise_is_not_an_oracle() -> None:
         "        raise\n"
     )
     assert _flagged(src) == ["test_reraises"]
+
+
+# --------------------------------------------------------------------------
+# Which files are test files: the stamped flag, not the name
+# --------------------------------------------------------------------------
+
+
+def _detect_with_flag(source: str, path: str, is_test: bool | None):
+    fc = walk_file(path, "python", source.encode("utf-8"))
+    ctx = FileContext(
+        file_path=path,
+        language="python",
+        nloc=fc.file_nloc,
+        has_test_file=True,
+        module=None,
+        is_test=is_test,
+        all_functions=tuple(fc.functions),
+    )
+    return [f.function_name for f in BIOMARKER.detect(ctx)]
+
+
+def test_production_module_named_like_a_test_is_not_judged() -> None:
+    # ``core/test_reachability.py`` is production code that pytest does not
+    # collect. Ingestion stamps it is_test=False; its ``tests_reaching``-style
+    # functions are not test cases that forgot to assert.
+    _require("python")
+    source = "def tests_reaching(graph):\n    return {}\n"
+    assert _detect_with_flag(source, "pkg/core/test_reachability.py", False) == []
+    assert _detect_with_flag(source, "tests/test_sample.py", True) == ["tests_reaching"]

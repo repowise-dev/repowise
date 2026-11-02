@@ -176,6 +176,14 @@
   !body
 ) @import.statement
 
+;; A macro call at the top of a file (`cfg_if! { if #[cfg(unix)] { mod unix; } }`)
+;; can declare child modules in its tokens; the parser reads them out.
+(source_file
+  (macro_invocation (token_tree) @import.module) @import.statement)
+(source_file
+  (expression_statement
+    (macro_invocation (token_tree) @import.module) @import.statement))
+
 ;; extern crate foo; / extern crate foo as bar;
 (extern_crate_declaration
   name: (identifier) @import.module

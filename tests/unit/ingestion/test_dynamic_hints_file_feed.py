@@ -21,6 +21,7 @@ import pytest
 
 from repowise.core.fs_walk import PRUNED_DIRS_DERIVED, WalkSnapshot
 from repowise.core.ingestion.dynamic_hints import HintRegistry
+from repowise.core.ingestion.dynamic_hints.base import DynamicHintExtractor
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -39,12 +40,6 @@ def repo(tmp_path: Path) -> Path:
     _write(tmp_path, "config/settings/base.py", 'INSTALLED_APPS = ["myapp"]\n')
     _write(tmp_path, "package.json", '{"name": "x", "main": "./index.js"}\n')
     _write(tmp_path, "index.js", "module.exports = {}\n")
-    _write(
-        tmp_path,
-        "conftest.py",
-        "import pytest\n@pytest.fixture\ndef db():\n    return 1\n",
-    )
-    _write(tmp_path, "test_app.py", "def test_x(db):\n    assert db\n")
     _write(tmp_path, "src/Foo.cs", "public class Foo { }\npublic interface IFoo { }\n")
     _write(
         tmp_path,
@@ -70,7 +65,6 @@ class TestFileFeedEquivalence:
         sources = {e.hint_source for e in walked}
         assert "django_settings" in sources
         assert "node_package" in sources
-        assert "pytest_conftest" in sources
         assert any(s.startswith("dotnet") for s in sources)
 
     def test_excluded_files_emit_no_edges(self, repo: Path) -> None:
@@ -107,3 +101,40 @@ class TestFileFeedEquivalence:
             if "Bar.Designer" not in e.target + e.source
             and "local_settings" not in e.target + e.source
         ]
+
+
+class _SettingsProbe(DynamicHintExtractor):
+    """Records which ``settings.py`` files the hint walk reaches."""
+
+    name = "settings_probe"
+
+    def __init__(self) -> None:
+        self.found: list[str] = []
+
+    def extract(self, repo_root: Path) -> list:
+        self.found = sorted(
+            p.relative_to(repo_root).as_posix() for p in self._rglob(repo_root, "settings.py")
+        )
+        return []
+
+
+class TestOutputNamedDirectories:
+    """A source package named ``build`` is walked; a ``dist`` bundle is not (#3237)."""
+
+    @pytest.fixture
+    def tree(self, tmp_path: Path) -> Path:
+        _write(tmp_path, "src/build/__init__.py", "")
+        _write(tmp_path, "src/build/settings.py", 'INSTALLED_APPS = ["myapp"]\n')
+        _write(tmp_path, "dist/index.js", "module.exports = {}\n")
+        _write(tmp_path, "dist/lib/settings.py", 'INSTALLED_APPS = ["myapp"]\n')
+        return tmp_path
+
+    def test_registry_snapshot(self, tree: Path) -> None:
+        probe = _SettingsProbe()
+        HintRegistry([probe]).extract_all(tree)
+        assert probe.found == ["src/build/settings.py"]
+
+    def test_live_walk(self, tree: Path) -> None:
+        probe = _SettingsProbe()
+        probe.extract(tree)
+        assert probe.found == ["src/build/settings.py"]

@@ -31,6 +31,8 @@ from typing import Any
 
 from repowise.core import fs_walk
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.core.fsutils import repo_relative
+from repowise.core.ingestion.traverser import is_output_dir
 
 from .grouping import ConceptGroup
 
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 #: These are root-anchored on purpose. Glob patterns containing ``/`` match a
 #: path *tail*, so a pattern like ``docs/*.md`` also matches
 #: ``some/vendored/thing/docs/notes.md`` — which on this repository pulled
-#: planning notes and marketing copy into the glossary and bound terms like
+#: planning notes and marketing copy into the mined terms and bound terms like
 #: "Headline facts updated" to source directories.
 DOC_FILES: tuple[str, ...] = (
     "README.md",
@@ -287,18 +289,11 @@ class HouseTerm:
     #: "was it built". It is deliberately not added to ``doc_frequency`` —
     #: see :func:`extract_house_terms`.
     code_frequency: int
-    #: Whether the codebase has a symbol by this name. A term that is also a
-    #: symbol can be rendered in backticks; a coined one cannot, because the
-    #: grounding pass strips backticks off tokens it cannot resolve.
-    is_indexed_symbol: bool
 
 
 def _rel(path: Path, repo_root: Path) -> str:
     """Repo-relative posix path, or the bare name when it is not under root."""
-    try:
-        return path.relative_to(repo_root).as_posix()
-    except ValueError:  # pragma: no cover — path came from repo_root
-        return path.name
+    return repo_relative(path, repo_root) or path.name
 
 
 def _exclude_spec(repo_root: Path) -> Any:
@@ -901,7 +896,9 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
     truncated = False
     spec = _exclude_spec(repo_root)
 
-    for dirpath, dirnames, filenames in fs_walk.walk_repo(repo_root, prune_dirs=_EXTRA_PRUNED_DIRS):
+    for dirpath, dirnames, filenames in fs_walk.walk_repo(
+        repo_root, prune_dirs=_EXTRA_PRUNED_DIRS, prune=is_output_dir
+    ):
         # Hidden directories are tool and agent territory — CI definitions,
         # editor state, hook configuration — never the subsystem prose that
         # answers "was this term built". The walker already prunes the named
@@ -1061,7 +1058,6 @@ def extract_house_terms(
     repo_root: Path,
     *,
     max_terms: int = 200,
-    known_symbols: frozenset[str] | set[str] | None = None,
 ) -> list[HouseTerm]:
     """The repository's own words for its own subsystems, ranked and gated.
 
@@ -1082,13 +1078,7 @@ def extract_house_terms(
 
     **A term must look like a name.** No pronouns, no repository name, and a
     single word must be shaped like one or be spelled in a directory.
-
-    ``known_symbols`` are the names the codebase defines; a term is marked
-    ``is_indexed_symbol`` when it matches one. Pass nothing and every term
-    reports ``False``, which is the safe direction — an unbackticked term
-    renders as plain prose, a wrongly-backticked one is silently demoted.
     """
-    symbols = {s.lower() for s in known_symbols} if known_symbols else set()
     excluded = _repo_own_names(repo_root)
 
     candidates = _harvest(
@@ -1154,7 +1144,6 @@ def extract_house_terms(
                 source_paths=doc_paths + tuple(hits[:_MAX_CODE_PATHS]),
                 doc_frequency=len(doc_paths),
                 code_frequency=len(hits),
-                is_indexed_symbol=key in symbols,
             )
         )
 

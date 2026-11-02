@@ -5,7 +5,7 @@ whether the index is current *right now*. This handler closes that gap with a
 short per-session block so the agent starts with calibrated trust instead of
 discovering staleness mid-task:
 
-  * index current  → one line saying so, plus the core-tool pointer;
+  * index current  → one line saying so;
   * update running → positive "catching up" notice (never a stale scare);
   * index behind   → indexed vs HEAD with a changed-file count, and the
     target-scoped trust rule (stale_warning only when a served file changed).
@@ -18,7 +18,7 @@ it is scored against what this session is about to touch.
 
 Same operational rules as the rest of augment: stdlib + git subprocess only,
 any failure returns None, and a git failure never produces a false "current"
-claim (it degrades to the freshness-free reminder).
+claim (it degrades to a line without the freshness fact).
 """
 
 from __future__ import annotations
@@ -26,9 +26,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+# The leaf module, not the ``helpers`` facade: the facade imports rich and
+# asyncio, which every hook call would pay at import.
+from repowise.cli._helpers.git import as_commit_id
+
 from ._shared import _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
-from .decision_inject import _session_decision_block
+from .decision_inject import _session_decision_block as _decision_block
+from .fast_lookup import index_locked
+
+
+def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
+    """The standing-decisions block, or None while another process locks the index.
+
+    A locked index fails every decision query anyway, each after its own busy
+    wait; one probe answers the same within one wait.
+    """
+    if index_locked(repo_path):
+        return None
+    return _decision_block(repo_path, session_id)
 
 #: The tools this block points a fresh session at. **Entry points only.**
 #:
@@ -60,6 +76,9 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     freshness = _freshness_block(repo_path, last_sync)
     if freshness is None:
         return None
+    off_path = _distill_off_path_note()
+    if off_path:
+        freshness = f"{freshness} {off_path}"
 
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
@@ -68,6 +87,31 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     except Exception:
         decisions = None
     return f"{freshness}\n{decisions}" if decisions else freshness
+
+
+#: Said when the rewrite hook is installed but every command it would rewrite
+#: passes through, because the ``repowise distill`` it emits would not start.
+_DISTILL_OFF_PATH = "Command distilling is off: repowise is not on PATH."
+
+
+def _distill_off_path_note() -> str:
+    """:data:`_DISTILL_OFF_PATH` when the rewrite hook cannot rewrite, else "".
+
+    The rewrite hook runs from a pinned path but emits a bare ``repowise``, so
+    it passes every command through when that name is not on PATH. This
+    process has the same PATH as the hook. Only the user settings are read:
+    a plugin's hooks use bare names, so off PATH this hook would not be
+    running either. The common path pays one PATH lookup.
+    """
+    import shutil
+
+    if shutil.which("repowise") is not None:
+        return ""
+    try:
+        settings = (Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return _DISTILL_OFF_PATH if "repowise-rewrite" in settings else ""
 
 
 def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
@@ -85,19 +129,13 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
     """
     tag = f"[repowise {emitting_build()}]"
     head = _git_head(repo_path)
+    # No "prefer the MCP tools" sentence on the two lines below: agents did not
+    # act on it, and the generated CLAUDE.md already carries the tool table.
     if head is None:
-        return (
-            f"{tag} This repository has a local codebase index. Prefer the "
-            f"repowise MCP tools ({_CORE_TOOLS}) over raw file reads for locating "
-            "and understanding code before you edit."
-        )
+        return f"{tag} This repository has a local codebase index."
 
     if head == last_sync:
-        return (
-            f"{tag} Codebase index is current (HEAD {head[:8]}). The MCP tools "
-            f"({_CORE_TOOLS}) serve content verified against this exact tree; prefer "
-            "them over raw file reads for locating and understanding code before you edit."
-        )
+        return f"{tag} Codebase index is current (HEAD {head[:8]})."
 
     in_flight = _read_in_flight_marker(repo_path)
     if in_flight is not None:
@@ -144,9 +182,11 @@ def _changed_file_count(repo_path: Path, indexed: str, live: str) -> int | None:
     """Files changed between the indexed commit and live HEAD, or None."""
     import subprocess
 
+    if as_commit_id(indexed) is None or as_commit_id(live) is None:
+        return None
     try:
         out = subprocess.run(
-            ["git", "diff", "--name-only", indexed, live],
+            ["git", "diff", "--name-only", "--end-of-options", indexed, live],
             cwd=str(repo_path),
             capture_output=True,
             text=True,

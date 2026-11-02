@@ -33,6 +33,40 @@ def _is_accepted_row(row: Any) -> bool:
     return isinstance(row, dict) and row.get("authority") == "accepted"
 
 
+def _decision_rows(result: dict) -> list:
+    """Every decision row served: the top-level lane and each card's rules."""
+    return [
+        *(result.get("decisions") or []),
+        *(
+            r
+            for e in (result.get("target_context") or {}).values()
+            if isinstance(e, dict)
+            for r in (e.get("governing_decisions") or [])
+        ),
+    ]
+
+
+def _answers(row: Any, mode: Any) -> bool:
+    """Whether an accepted *row* answers the call, not just governs a named file.
+
+    A question is answered only by a row that cleared its relevance floor, and
+    those are the rows served with their ``decision`` text: a semantic hit
+    carries a snippet, a card's off-question rule only its title. Without a
+    question (path mode) the path is the question, so every rule answers it.
+    """
+    return _is_accepted_row(row) and (mode != "search" or "decision" in row)
+
+
+def rests_on_decision(result: dict) -> bool:
+    """Whether *result* serves an accepted decision that answers it.
+
+    The one fact behind ``answer_basis: "decision"`` and behind any prose that
+    says no record covers the call, so the two cannot disagree.
+    """
+    mode = result.get("mode")
+    return any(_answers(r, mode) for r in _decision_rows(result))
+
+
 def _stamp_answer_basis(result: dict) -> dict:
     """Name the strongest lane the response actually rests on.
 
@@ -49,22 +83,20 @@ def _stamp_answer_basis(result: dict) -> dict:
     entries = [
         e for e in (result.get("target_context") or {}).values() if isinstance(e, dict)
     ]
-    decision_rows = [
-        *(result.get("decisions") or []),
-        *(r for e in entries for r in (e.get("governing_decisions") or [])),
-    ]
     candidate_rows = [
         *(r for e in entries for r in (e.get("candidate_decisions") or [])),
-        *(r for r in decision_rows if not _is_accepted_row(r)),
+        *(r for r in result.get("decisions") or [] if not _is_accepted_row(r)),
     ]
-    if any(_is_accepted_row(r) for r in decision_rows):
+    if rests_on_decision(result):
         result["answer_basis"] = "decision"
     elif result.get("episodes"):
         result["answer_basis"] = "episode"
     elif result.get("code_rationale"):
         result["answer_basis"] = "rationale"
-    elif _has_archaeology(result.get("git_archaeology")) or any(
-        _has_archaeology(e.get("git_archaeology")) for e in entries
+    elif (
+        _has_archaeology(result.get("git_archaeology"))
+        or result.get("key_commits")
+        or any(_has_archaeology(e.get("git_archaeology")) for e in entries)
     ):
         result["answer_basis"] = "archaeology"
     elif result.get("related_documentation"):

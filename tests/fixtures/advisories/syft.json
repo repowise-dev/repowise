@@ -1,0 +1,10 @@
+{
+  "artifacts": [
+    {"name": "requests", "version": "2.31.0", "type": "python", "purl": "pkg:pypi/requests@2.31.0"},
+    {"name": "urllib3", "version": "2.0.7", "type": "python", "purl": "pkg:pypi/urllib3@2.0.7"},
+    {"name": "left-pad", "version": "1.3.0", "type": "npm", "purl": "pkg:npm/left-pad@1.3.0"}
+  ],
+  "source": {"type": "directory", "target": "."},
+  "descriptor": {"name": "syft", "version": "1.0.0"},
+  "schema": {"version": "16.0.0"}
+}
