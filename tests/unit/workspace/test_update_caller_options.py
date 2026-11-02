@@ -330,3 +330,27 @@ def _snapshot_count(repo) -> int:
             await engine.dispose()
 
     return asyncio.run(_read())
+
+
+def test_update_reports_phase_timings(tmp_path, forbid_full_pipeline):  # noqa: F811
+    repo = _indexed_repo_with_new_commit(tmp_path)
+
+    result = asyncio.run(update_single_repo_index(repo, rescore_health=True))
+
+    timings = result.phase_timings
+    assert timings is not None
+    for phase in (
+        "run",
+        "diff",
+        "rebuild",
+        "analysis.stored_reads",
+        "analysis.dead_code",
+        "analysis.doc_drift",
+        "knowledge_graph",
+        "persist",
+        "rescore",
+    ):
+        assert phase in timings, phase
+    assert any(name.startswith("rescore.") for name in timings)
+    assert all(seconds >= 0 for seconds in timings.values())
+    assert timings["run"] >= timings["persist"]
