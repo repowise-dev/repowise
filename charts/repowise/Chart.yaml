@@ -1,0 +1,17 @@
+apiVersion: v2
+name: repowise
+description: Repowise — codebase intelligence for developers and AI. Deploys the API server and web UI from the official Docker image.
+type: application
+version: 0.1.0
+appVersion: "0.47.0"
+keywords:
+  - repowise
+  - codebase
+  - intelligence
+  - mcp
+home: https://repowise.dev
+sources:
+  - https://github.com/repowise-dev/repowise
+maintainers:
+  - name: repowise-dev
+    url: https://github.com/repowise-dev
