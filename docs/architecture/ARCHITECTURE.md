@@ -18,7 +18,7 @@ package is and where its code lives. The detail is in this document and in
 |---------|--------|----------------|
 | `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, analysis, generation, persistence and providers |
 | `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | The `repowise` command; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
-| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | REST API, the MCP server (18 registered tools, 10 on by default), webhooks, scheduler |
+| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | REST API, the MCP server (19 registered tools, 10 on by default), webhooks, scheduler |
 | `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | The local dashboard and how to run it in development |
 
 ---
@@ -80,7 +80,7 @@ package is and where its code lives. The detail is in this document and in
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (18 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (19 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB,    │   │  (init, update, watch,                  │

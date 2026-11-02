@@ -25,6 +25,7 @@ DEFAULT_SECTIONS: frozenset[str] = frozenset(
         "health",
         "decisions",
         "how_to_work",
+        "vocabulary",
     }
 )
 

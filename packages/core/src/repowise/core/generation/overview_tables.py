@@ -21,6 +21,7 @@ import structlog
 
 from ..support_paths import DOC_EXTENSIONS
 from .concept_tree.vocabulary import HouseTerm
+from .declared_glossary import DeclaredTerm
 from .house_vocabulary import SelectedTerm, cell, clamp, select_terms
 
 log = structlog.get_logger(__name__)
@@ -124,17 +125,25 @@ def select_capabilities(
     module_names: Iterable[str],
     *,
     limit: int = MAX_CAPABILITY_ROWS,
+    declared: Sequence[DeclaredTerm] = (),
 ) -> list[Capability]:
     """The terms worth putting on the front page, in the order they go there.
 
-    The head of :func:`~house_vocabulary.select_terms`. Only terms a document defines: a front-page row reading "—" says nothing,
-    and a docstring describes one function rather than what the product does
-    ("Decisions are co-located in the page vector store ..." was the whole
-    table here once). Filtered before the cap so defined terms fill it.
+    The head of :func:`~house_vocabulary.select_terms`. Only terms a document
+    defines: a front-page row reading "—" says nothing, and a docstring
+    describes one function rather than what the product does ("Decisions are
+    co-located in the page vector store ..." was the whole table here once).
+    Filtered before the cap so defined terms fill it.
+
+    ``declared`` is the vocabulary the team authored, when there is one. It
+    goes through the same selection the mined terms do, so a declared term
+    leads the table and a word the glossary marks ``_Avoid_`` is demoted rather
+    than published as a capability: a front page naming a synonym the glossary
+    rules out is the failure this is here to prevent.
     """
     defined = [
         t
-        for t in select_terms(house_terms, module_names)
+        for t in select_terms(house_terms, module_names, declared=declared)
         if t.definition and PurePosixPath(t.source_path).suffix.lower() in DOC_EXTENSIONS
     ]
     return defined[:limit]

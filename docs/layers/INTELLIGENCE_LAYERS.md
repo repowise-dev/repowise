@@ -155,7 +155,7 @@ impact and architecture rules you can gate in CI. See
 | What can be deleted? | `repowise dead-code` | `get_dead_code` |
 | Which tests matter? | `repowise impacted-tests` | `get_risk(changed_files=[...])` |
 
-18 MCP tools are registered; a single-repo server exposes 10 by default and the rest
+19 MCP tools are registered; a single-repo server exposes 10 by default and the rest
 are opt-in. See [MCP_TOOLS.md](../agent/MCP_TOOLS.md) and the
 [CLI reference](../reference/CLI_REFERENCE.md). Every derived metric is defined in
 the [computed glossary](../reference/COMPUTED_GLOSSARY.md).
