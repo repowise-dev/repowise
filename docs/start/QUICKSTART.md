@@ -229,13 +229,13 @@ one, search is full-text, and every run names the command that turns it on.
 | `claude_cli`, `codex_cli`, `opencode` | your logged-in subscription | no |
 
 When nothing names an embedder, repowise takes the first one with a key set,
-in the order gemini, openai, openrouter, ollama, edenai, and every model run
-prints which embedder it uses and why. init reads each logged-in Claude Code,
-Codex or OpenCode's auth status and offers it with its call count, time and
-billing (plan quota, or per token for an API key), Claude Code first. A Codex
-signed in through ChatGPT stays in the picker but is not offered. An agent
-CLI is used only when you pick it or pass `--provider`. Keys, models and base URLs:
-[Config](../reference/CONFIG.md).
+in the order gemini, openai, openrouter, ollama, edenai, voyage, and every
+model run prints which embedder it uses and why. init reads each logged-in
+Claude Code, Codex or OpenCode's auth status and offers it with its call
+count, time and billing (plan quota, or per token for an API key), Claude Code
+first. A Codex signed in through ChatGPT stays in the picker but is not
+offered. An agent CLI is used only when you pick it or pass `--provider`.
+Keys, models and base URLs: [Config](../reference/CONFIG.md).
 
 ## Keeping it fresh
 

@@ -22,12 +22,12 @@ This is useful when:
 
 ## Available flags
 
-- `--embedder gemini|openai|openrouter|ollama|edenai|mock|auto`: embedding provider. `auto` (the default) keeps the repo's embedder, or picks one from the keys present when the repo has none yet
+- `--embedder gemini|openai|openrouter|ollama|edenai|voyage|mock|auto`: embedding provider. `auto` (the default) keeps the repo's embedder, or picks one from the keys present when the repo has none yet
 - `--batch-size N`: pages per embedding batch, must be 1 or greater (default: 32)
 
 ## Requirements
 
-Semantic search needs a real embedder: a key for `gemini` (`GEMINI_API_KEY`/`GOOGLE_API_KEY`), `openai`, `openrouter` or `edenai`, or a local Ollama with `OLLAMA_EMBEDDING_MODEL` set. When none is available, `repowise reindex` exits 1 and prints the command that turns semantic search on; relay it and ask the user to set the key themselves, never in the chat. On an Index only repo there is no documentation to embed yet: `repowise update --full` builds it first.
+Semantic search needs a real embedder: a key for `gemini` (`GEMINI_API_KEY`/`GOOGLE_API_KEY`), `openai`, `openrouter`, `edenai` or `voyage`, or a local Ollama with `OLLAMA_EMBEDDING_MODEL` set. When none is available, `repowise reindex` exits 1 and prints the command that turns semantic search on; relay it and ask the user to set the key themselves, never in the chat. On an Index only repo there is no documentation to embed yet: `repowise update --full` builds it first.
 
 ## Handling $ARGUMENTS
 

@@ -393,7 +393,7 @@ def test_a_broken_login_check_counts_as_not_signed_in(clean_env, monkeypatch):
 def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path, monkeypatch):
     from repowise.core.providers.embedding import registry
 
-    monkeypatch.setitem(registry._custom_embedders, "voyage", lambda **_kw: None)
+    monkeypatch.setitem(registry._custom_embedders, "acme-embed", lambda **_kw: None)
     clean_env["REPOWISE_EMBEDDER"] = "Gemini"
     status = pc.list_provider_status()
     by_id = {e["id"]: e for e in status["embedders"]}
@@ -402,7 +402,10 @@ def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path,
     assert status["embedders"][0]["id"] == registry.DEFAULT_EMBEDDER
     assert by_id["gemini"]["env_vars"] == ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
     assert by_id["mock"] == {"id": "mock", "env_vars": [], "semantic": False}
-    assert by_id["voyage"] == {"id": "voyage", "env_vars": [], "semantic": True}
+    # A custom embedder declares no credential; voyage is built in and
+    # embedding-only, so its env var comes from the shared embedder map.
+    assert by_id["acme-embed"] == {"id": "acme-embed", "env_vars": [], "semantic": True}
+    assert by_id["voyage"] == {"id": "voyage", "env_vars": ["VOYAGE_API_KEY"], "semantic": True}
     assert status["active"]["embedder"] == "gemini"
 
 

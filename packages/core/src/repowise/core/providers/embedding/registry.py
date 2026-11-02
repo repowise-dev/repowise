@@ -9,13 +9,14 @@ Built-in embedders:
     ollama      -> OllamaEmbedder      (embeddinggemma default, local, no key)
     openrouter  -> OpenRouterEmbedder  (google/gemini-embedding-001 default)
     edenai      -> EdenAIEmbedder      (openai/text-embedding-3-small via Eden AI's EU gateway)
+    voyage      -> VoyageEmbedder      (voyage-3 default; embeddings only, no chat)
     mock        -> KeylessEmbedder     (keyless runs and tests; no semantic signal)
 
 Custom embedder registration:
     from repowise.core.providers.embedding import register_embedder
 
-    register_embedder("voyage", lambda **kw: VoyageEmbedder(**kw))
-    embedder = get_embedder("voyage", api_key="pa-...")
+    register_embedder("cohere", lambda **kw: CohereEmbedder(**kw))
+    embedder = get_embedder("cohere", api_key="...")
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "ollama": ("repowise.core.providers.embedding.ollama", "OllamaEmbedder"),
     "openrouter": ("repowise.core.providers.embedding.openrouter", "OpenRouterEmbedder"),
     "edenai": ("repowise.core.providers.embedding.edenai", "EdenAIEmbedder"),
+    "voyage": ("repowise.core.providers.embedding.voyage", "VoyageEmbedder"),
     "mock": ("repowise.core.providers.embedding.base", "KeylessEmbedder"),
 }
 
@@ -102,6 +104,7 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
         "ollama": "httpx",
         "openrouter": "openai",  # openrouter uses the openai package
         "edenai": "openai",  # edenai uses the openai package
+        "voyage": "voyageai",
     }
     try:
         module = importlib.import_module(module_path)

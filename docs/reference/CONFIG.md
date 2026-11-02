@@ -63,7 +63,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 |-----|---------|--------------|
 | `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `edenai`, `claude_cli`, `codex_cli`, `copilot_cli`, `opencode`. |
 | `model` | provider default | Model id passed to the provider. |
-| `embedder` | `mock` (if no key found) | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock`; see [Embeddings](#embeddings-for-semantic-search). |
+| `embedder` | `mock` (if no key found) | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `voyage`, `mock`; see [Embeddings](#embeddings-for-semantic-search). |
 | `embedding_model` | provider default | Embedding model id. |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; see [below](#reasoning). |
 | `max_tokens` | `16384` | Most output tokens per model-written documentation page. |
@@ -959,6 +959,7 @@ The embedder is separate from the LLM provider.
 | `openrouter` | `OPENROUTER_API_KEY` | Routed through OpenRouter |
 | `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local, no API key |
 | `edenai` | `EDENAI_API_KEY` | See [Eden AI](#eden-ai-hosted-with-an-eu-endpoint) |
+| `voyage` | `VOYAGE_API_KEY` | `voyage-3`, 1024 dims; needs `pip install voyageai` |
 | `mock` | n/a | No semantic search; default when no key is found |
 
 ```bash
@@ -968,8 +969,9 @@ repowise reindex --embedder gemini   # switch embedder and rebuild index
 
 Resolution, first match wins: `--embedder`, `REPOWISE_EMBEDDER`, the
 `embedder` pin in `.repowise/config.yaml`, the first key present (gemini,
-openai, openrouter, ollama, edenai), `embedder` in `~/.repowise/config.yaml`,
-then `mock`. `reindex` skips a `mock` pin when a real embedder is found.
+openai, openrouter, ollama, edenai, voyage), `embedder` in
+`~/.repowise/config.yaml`, then `mock`. `reindex` skips a `mock` pin when a
+real embedder is found.
 
 - The pin records what built the vector store. `search`, `serve` and MCP read
   it first and use the environment only when unpinned; otherwise a keyless
@@ -980,6 +982,12 @@ then `mock`. `reindex` skips a `mock` pin when a real embedder is found.
 - `REPOWISE_EMBEDDING_MODEL`, `REPOWISE_EMBEDDING_DIMS` and
   `REPOWISE_EMBEDDING_TIMEOUT` apply to the active embedder; [provider-prefixed
   variants](#embeddings) take precedence for theirs.
+- `voyage` embeds with `voyage-3` (1024 dims) and needs its own SDK:
+  `pip install voyageai`. Voyage serves no chat completions, so it is an
+  embedder only and never appears as a `provider`. Name another model with
+  `REPOWISE_EMBEDDING_MODEL`; when its width is not the default,
+  `REPOWISE_EMBEDDING_DIMS` declares it, and the adapter raises rather than
+  store vectors of a different width than the table was built for.
 
 ## BYOK (Bring Your Own Key)
 
@@ -1035,7 +1043,7 @@ yields a client error instead of Repowise's "synthesis exceeded its budget".
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_EMBEDDER` | `gemini`, `openai`, `ollama`, `openrouter`, `edenai` or `mock` |
+| `REPOWISE_EMBEDDER` | `gemini`, `openai`, `ollama`, `openrouter`, `edenai`, `voyage` or `mock` |
 | `REPOWISE_EMBEDDING_MODEL` | Embedding model for any embedder |
 | `REPOWISE_EMBEDDING_DIMS` | Output dimensions (optional; inferred from the model) |
 | `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout, seconds (default `30` for `ollama`, `10` elsewhere) |

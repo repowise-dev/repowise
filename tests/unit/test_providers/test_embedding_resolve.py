@@ -18,6 +18,7 @@ _VARS = (
     "OPENROUTER_API_KEY",
     "EDENAI_API_KEY",
     "OLLAMA_EMBEDDING_MODEL",
+    "VOYAGE_API_KEY",
 )
 
 
@@ -43,6 +44,8 @@ def test_key_env_map_comes_from_the_provider_specs():
         name: PROVIDER_SPECS[name].api_key_envs
         for name in ("openai", "gemini", "openrouter", "edenai")
     }
+    # voyage is embeddings-only, so it has no ProviderSpec to read the var from.
+    expected["voyage"] = ("VOYAGE_API_KEY",)
     assert dict(resolve.EMBEDDER_KEY_ENVS) == expected
 
 
@@ -82,6 +85,19 @@ def test_kwargs_pass_the_resolved_key_and_model(tmp_path, monkeypatch):
         "model": "gemini-embedding-002",
         "api_key": "g-key",
     }
+
+
+def test_voyage_is_detected_from_its_key_and_never_outranks_an_incumbent(
+    tmp_path, monkeypatch
+):
+    """``VOYAGE_API_KEY`` alone selects voyage; any other key still wins."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "pa-key")
+    assert resolve.resolve_embedder_name() == ("voyage", "autodetect")
+    assert resolve.embedder_reason("voyage", "autodetect") == "VOYAGE_API_KEY is set"
+    assert resolve.resolve_embedder_key("voyage").key == "pa-key"
+
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    assert resolve.resolve_embedder_name() == ("gemini", "autodetect")
 
 
 def test_every_entry_point_resolves_the_same_embedder(tmp_path, monkeypatch):
