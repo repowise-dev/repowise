@@ -241,10 +241,23 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
       setStatus(newStatus);
       setPendingStatus(null);
       setRefused(null);
-      // Accepting has no inverse on the server: taking authority back is a
-      // dismissal, so its undo opens that, with the dialog saying what it does.
-      const undo =
-        newStatus === "active"
+      // Where the host can reverse a review, Undo puts the decision back where
+      // it was. Otherwise accepting has no inverse on the server: taking
+      // authority back is a dismissal, so its undo opens that, with the dialog
+      // saying what it does.
+      const undoReview = adapter.undoReview;
+      const reversible = undoReview && (newStatus === "active" || newStatus === "dismissed");
+      const undo = reversible
+        ? async () => {
+            try {
+              await undoReview();
+              setStatus(previous);
+              toast.success("Undone. It is back where it was.");
+            } catch (err) {
+              toast.error(`Couldn't undo: ${toFriendlyMessage(err)}`);
+            }
+          }
+        : newStatus === "active"
           ? () => setPendingStatus("dismissed")
           : async () => {
               try {

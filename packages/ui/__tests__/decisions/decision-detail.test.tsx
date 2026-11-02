@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { ReactElement } from "react";
 import { DecisionDetail } from "../../src/decisions/decision-detail.js";
@@ -103,6 +103,52 @@ describe("DecisionDetail", () => {
       "Decision accepted",
       expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) }),
     );
+  });
+
+  // The Undo the toast offers after a review, pressed.
+  async function pressToastUndo(label: string) {
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(label, expect.anything()));
+    const call = toastSuccess.mock.calls.find((c) => c[0] === label)!;
+    await act(async () => {
+      (call[1] as { action: { onClick: () => void } }).action.onClick();
+    });
+  }
+
+  it("puts an accepted decision back where it was when the host can undo a review", async () => {
+    const undoReview = vi.fn(async () => undefined);
+    const adapter = makeAdapter({ undoReview });
+    renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await pressToastUndo("Decision accepted");
+
+    await waitFor(() => expect(undoReview).toHaveBeenCalledTimes(1));
+    expect(toastSuccess).toHaveBeenCalledWith("Undone. It is back where it was.");
+    expect(adapter.patchDecision).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+  });
+
+  it("puts a dismissed decision back too", async () => {
+    const undoReview = vi.fn(async () => undefined);
+    renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter({ undoReview })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
+    await pressToastUndo("Decision dismissed");
+
+    await waitFor(() => expect(undoReview).toHaveBeenCalledTimes(1));
+    expect(toastSuccess).toHaveBeenCalledWith("Undone. It is back where it was.");
+  });
+
+  it("asks to dismiss instead when the host cannot undo a review", async () => {
+    renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await pressToastUndo("Decision accepted");
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(toastSuccess).not.toHaveBeenCalledWith("Undone. It is back where it was.");
   });
 
   it("dismisses a proposal as a tombstone, not as a deprecation", async () => {

@@ -40,6 +40,12 @@ export interface DecisionDetailAdapter {
   listModuleSuggestions(): Promise<string[]>;
   /** Persist a status and/or linkage change. */
   patchDecision(patch: DecisionStatusUpdate): Promise<void>;
+  /**
+   * Reverses the reader's own latest accept or dismiss, returning the
+   * decision to where it was before. Given, the Undo after an accept or a
+   * dismiss calls it; without it, undoing an accept asks to dismiss instead.
+   */
+  undoReview?(): Promise<void>;
 
   /** href to the decisions list. */
   decisionsHref(): string;
