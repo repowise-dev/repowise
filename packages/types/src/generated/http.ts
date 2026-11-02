@@ -1774,6 +1774,7 @@ export interface DecisionSourceState {
  */
 export interface DecisionStatusUpdate {
   status?: string | null;
+  reason?: string | null;
   superseded_by?: string | null;
   affected_modules?: string[] | null;
   affected_files?: string[] | null;

@@ -90,19 +90,19 @@ describe("DecisionDetail", () => {
     );
   });
 
-  it("confirms a proposed decision through the dialog and patches via the adapter", async () => {
+  it("confirms a proposed decision in one click and offers an undo", async () => {
     const adapter = makeAdapter();
     renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
 
-    // The action button opens a confirm dialog (shares its label) — scope to it.
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
 
     await waitFor(() =>
       expect(adapter.patchDecision).toHaveBeenCalledWith({ status: "active" }),
     );
-    expect(toastSuccess).toHaveBeenCalled();
+    expect(toastSuccess).toHaveBeenCalledWith(
+      "Decision accepted",
+      expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) }),
+    );
   });
 
   it("dismisses a proposal as a tombstone, not as a deprecation", async () => {
@@ -233,7 +233,7 @@ describe("DecisionDetail", () => {
   it("explains what Confirm/Dismiss do next to the buttons", () => {
     renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
     expect(
-      screen.getByText(/Confirm marks this as an accurate, current decision/),
+      screen.getByText(/Confirm saves this as a decision your team follows/),
     ).toBeInTheDocument();
   });
 

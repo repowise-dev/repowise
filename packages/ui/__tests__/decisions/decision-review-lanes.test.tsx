@@ -216,8 +216,7 @@ describe("a candidate is a review request, not an instruction", () => {
     // row already knows all three, so the button says so before it is pressed
     // rather than reporting it in an error toast afterwards.
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByText(/no scope: name the files or modules it governs/))
-      .toBeInTheDocument();
+    expect(screen.getByText(/names no files/)).toBeInTheDocument();
     // Dismissing stays available: an unacceptable candidate is exactly the one
     // worth tombstoning.
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeEnabled();
@@ -232,8 +231,7 @@ describe("a candidate is a review request, not an instruction", () => {
 
     // The row reads the title fallback, but acceptance reads the stored text.
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByText(/no decision text: state what was chosen/))
-      .toBeInTheDocument();
+    expect(screen.getByText(/doesn't say what was chosen/i)).toBeInTheDocument();
   });
 
   it("leaves Accept enabled on a candidate that carries what the contract needs", () => {
