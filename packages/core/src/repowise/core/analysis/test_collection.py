@@ -598,7 +598,7 @@ def _record_inferred(
         f for f in graph_targets if not candidates.get(f) and f not in has_rows and f in changed
     ]
     # One name index for every file that needs a guess, not one per file.
-    guesses = tests_matching_by_name(unanswered, repo_keys) if unanswered else {}
+    guesses = tests_matching_by_name(unanswered, repo_keys, repo_keys) if unanswered else {}
     asked = set(unanswered)
     for source_file in graph_targets:
         found = candidates.get(source_file)

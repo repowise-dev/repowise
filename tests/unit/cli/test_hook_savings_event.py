@@ -100,6 +100,38 @@ def test_a_repository_without_a_sidecar_records_nothing(tmp_path: Path) -> None:
     assert not recorder.sidecar_path(tmp_path).exists()
 
 
+def test_an_opted_in_repository_without_a_sidecar_gets_one(tmp_path: Path) -> None:
+    """A repo indexed before the sidecar existed still records its hook savings."""
+    (tmp_path / ".repowise").mkdir()
+    _record(tmp_path)
+    assert len(_events(tmp_path)) == 1
+
+
+def test_a_ledger_that_cannot_be_created_costs_the_hook_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed create drops the event; the hook still returns normally."""
+
+    def refuse(repo_root: object) -> None:
+        raise OSError("read-only filesystem")
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(recorder, "ensure_sidecar", refuse)
+    _record(tmp_path)
+    assert not recorder.sidecar_path(tmp_path).exists()
+
+
+def test_a_store_left_without_tables_is_repaired_by_the_hook(tmp_path: Path) -> None:
+    """Another process created the file but had not initialized it yet."""
+    import sqlite3
+
+    db_path = recorder.sidecar_path(tmp_path)
+    db_path.parent.mkdir(parents=True)
+    sqlite3.connect(db_path).close()
+    _record(tmp_path)
+    assert len(_events(tmp_path)) == 1
+
+
 def test_two_replacements_stay_two_interactions(repo: Path) -> None:
     _record(repo)
     _record(repo)

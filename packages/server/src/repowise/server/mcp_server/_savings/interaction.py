@@ -52,7 +52,8 @@ class Interaction:
     request_id: str | None = None
     #: The counterfactual the answer replaced, when one could be derived.
     baseline_input_tokens: int | None = None
-    #: Raw tool output, before any budget shed anything.
+    #: Raw tool output before any budget shed anything, sized in the shape it
+    #: is delivered in (trust envelope and lean pass applied to a copy).
     pre_budget_input_tokens: int | None = None
     #: Why an in-band ``{"error": ...}`` reply failed, as a fixed slug for
     #: telemetry. Set where the error payload is built; see :data:`ERROR_REASONS`.

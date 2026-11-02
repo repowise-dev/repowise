@@ -230,3 +230,35 @@ async def test_commits_are_the_fallback_when_no_comment_answers(setup_mcp, tmp_p
     assert [c["message"] for c in commits] == ["Use node buffer instead of safe-buffer"]
     assert result["git_archaeology"]["summary"].startswith("No recorded rationale")
     assert result["answer_basis"] == "archaeology"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_names_where_the_code_it_asks_about_is_defined(setup_mcp, tmp_path):
+    """Nothing answers, but the question names an indexed class: the refusal
+    says which file defines it and gives the targeted call that reads it."""
+    from repowise.server.mcp_server import get_why
+
+    _repo(tmp_path, {"svc/client.py": _RETRY_SOURCE}, ["init"])
+    query = "why does AuthService keep a persistent token cache across restarts"
+
+    result = await get_why(query)
+
+    assert result["decisions"] == []
+    assert result["defined_in"] == [
+        {"name": "AuthService", "path": "src/auth/service.py", "line": 10}
+    ]
+    assert result["next_call"] == (
+        f'get_why(query="{query}", targets=["src/auth/service.py"])'
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_naming_no_indexed_code_stays_bare(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_why
+
+    _repo(tmp_path, {"svc/client.py": _RETRY_SOURCE}, ["init"])
+
+    result = await get_why("why does the cache persist between restarts on disk")
+
+    assert "defined_in" not in result
+    assert "next_call" not in result

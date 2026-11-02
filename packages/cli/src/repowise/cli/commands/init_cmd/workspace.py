@@ -9,6 +9,7 @@ same helpers as the single-repo flow.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -72,7 +73,11 @@ from repowise.core.workspace.update import stamp_workspace_entry
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._workspace_config import WorkspacePick, build_workspace_config
 from ._workspace_plan import WorkspaceAnswers, WorkspacePlan, run_workspace_plan_screen
 from ._workspace_repos import repos_primary_line, select_workspace_repos
@@ -1046,6 +1051,14 @@ def _save_workspace(
         no_editor_setup=not editor_setup,
     ):
         register_editor_clients(console, primary_path)
+        # The repos' .mcp.json files were written before the user-scope entry
+        # existed; drop each one that entry now serves, as single-repo init does.
+        from repowise.cli.agent_targets.targets.claude_code import sync_project_mcp_config
+
+        for repo in selected:
+            # Best effort: a malformed .mcp.json was already reported when written.
+            with contextlib.suppress(Exception):
+                sync_project_mcp_config(Path(repo.path))
 
 
 def _resolve_workspace_provider(
@@ -1177,6 +1190,9 @@ def _offer_workspace_hooks(
         distill_hook,
         yes=yes,
         no_editor_setup=not editor_setup,
+    )
+    warn_unresolved_hooks(
+        console, [r.path for r in selected], no_editor_setup=not editor_setup
     )
 
 

@@ -22,7 +22,7 @@ For the exact settings entries each install writes, see the
 |------|--------|--------------|----------|--------------|
 | **Post-commit auto-sync** | git | `repowise init` by default (`--no-hook` skips it), or `repowise hook install` | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
 | **Pre-commit security check** | git | `repowise hook install --security` (opt-in) | every `git commit` | Runs `repowise security check --staged` and blocks a commit that adds a finding at or above `high` ([details](../layers/SECURITY.md#before-a-commit---staged)) |
-| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line, core-tool pointer, and the standing decisions relevant to this session |
+| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line and the standing decisions relevant to this session |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it lands as a candidate |
@@ -66,6 +66,19 @@ Existing user hooks are preserved, and older repowise entries are updated in
 place on the next `init` or `update`. They all run the `repowise-augment` entry
 point, which does not load the full CLI.
 
+Each hook names the entry point by the absolute path of the install that wrote
+it, with a PATH lookup as the fallback, so a CLI installed in a virtual
+environment that is not on PATH still runs its hooks. When another install runs
+and the pinned one is gone, the hook is repointed. `repowise doctor` warns
+("Agent hook scripts") and `init` prints a line when a hook's entry point cannot
+be found. That covers these hooks, the plugin's, and the repo's own
+`.claude/settings.local.json` and `.codex/hooks.json` hooks. `repowise agents
+refresh` repoints the hooks in `~/.claude/settings.json` at the install you run
+it from. The plugin and repo-local hooks keep the bare name, since a plugin
+ships without the CLI and repo files may be committed, so for those the fix is
+to put the install's scripts directory on PATH.
+The Codex and Cursor rewrite hooks pin the same way.
+
 `repowise init --no-editor-setup` skips this group, along with the MCP server
 registration in the same file. Use it for a scratch clone, a worktree or a
 benchmark loop where you do not want machine-wide config to change.
@@ -77,7 +90,7 @@ either way; re-run `repowise init` without the flag to register the repo later.
 The generated `CLAUDE.md` is static between reindexes, so it cannot say whether
 the index is current right now. This hook adds a short block at session start:
 
-- **Index current**: one line saying so, plus the core-tool pointer.
+- **Index current**: one line saying so, with the indexed `HEAD`.
 - **Update running**: a "catching up" notice.
 - **Index behind**: indexed commit vs `HEAD` with a changed-file count, and the
   trust rule (a `stale_warning` fires only when a file a response served has
@@ -117,26 +130,31 @@ context from the index:
     Git: HOTSPOT, bus-factor=1, owner=alice
 ```
 
-**Search-flood digests.** A grep that returns 50 or more lines also gets a
-per-file digest: each matched file with its match count and anchor line
-numbers, ranked by graph centrality when the index can rank them, with a
-`(N more files, M matches)` tail past the top ten. With `hooks.search_digest:
-true`, the digest replaces the raw match list. Single-file context greps (`-C`,
+**Search-flood digests.** With `hooks.search_digest: true`, a grep that
+returns 50 or more lines across three or more files comes back as a per-file
+digest in place of the raw match list: each matched file with its match count
+and anchor line numbers, ranked by graph centrality when the index can rank
+them, with a `(N more files, M matches)` tail past the top ten. With the flag
+off, the hook adds nothing to such a grep. Single-file context greps (`-C`,
 `-A`, `-B`) and `files_with_matches` results are never digested.
 
 **Read notices.** On a `Read` of an indexed file, repowise warns when the file
 changed after the session's previous read of it, and points at
 `get_context(..., include=["skeleton"])` for structure-level questions.
 
-**Skeleton reads** (opt-in, `hooks.read_skeleton: true`). An unbounded `Read`
+**Skeleton reads** (`hooks.read_skeleton`). An unbounded `Read`
 of a large indexed file returns the file's skeleton, once per file per session.
 Signatures keep their real line numbers; bodies collapse to `... N lines (a-b)`
-markers, so the agent can range-read any elided span. Reading the file again
+markers, so the agent can range-read any elided span. When a file's skeleton
+is too long to serve, it comes back as an outline instead: one line per symbol
+at its real line number, long signatures cut short, and for the largest files
+only as many symbols as fit, with the count stated. A file edited since the last
+index is passed through whole. Reading the file again
 with no range returns it whole. A skeleton read still satisfies Claude Code's
 read-before-edit check, so an `Edit` or `Write` on such a file raises a one-line
 warning, once per file, until the file is read in full.
 
-**Re-read collapse** (opt-in, `hooks.read_reread: true`). A `Read` of a file
+**Re-read collapse** (`hooks.read_reread`). A `Read` of a file
 the session already read comes back as a short notice naming the earlier read.
 It applies only when the same range was served, no `Edit` or `Write` came
 between, and the bytes hash the same. When the bytes differ, the agent gets the
@@ -161,8 +179,8 @@ followed or contradicted that guidance and adjusts the decision's staleness, so
 guidance that stops being true stops being injected. See
 [decisions](../layers/DECISIONS.md).
 
-The three opt-in read and search keys are written by the rewrite-hook question
-in `repowise init`, and toggled per repo with `repowise hook read-skeleton`,
+The three read and search keys are written by the rewrite-hook question in
+`repowise init` (on by default, see below), and toggled per repo with `repowise hook read-skeleton`,
 `hook read-reread` and `hook search-digest` (`install | uninstall | status`).
 Each one's savings appear in `repowise saved` under its own filter, and a repo
 with the key off still gets the counterfactual number. Key details:
@@ -194,8 +212,13 @@ rewrites noisy `Bash` / `PowerShell` commands to
 before the agent reads it, keeps the exit code, and makes every omission
 reversible.
 
+`repowise init` installs it for Claude Code by default: an interactive run asks
+(default Yes), and `--yes` or a run with no terminal installs it and prints the
+undo. `--no-distill-hook` and `--no-editor-setup` leave it off, and a repo that
+opted out stays off. The Claude Code plugin ships the same hook.
+
 ```bash
-repowise hook rewrite install     # or answer Yes at the `repowise init` prompt
+repowise hook rewrite install
 repowise hook rewrite status
 repowise hook rewrite uninstall
 ```
@@ -257,7 +280,7 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `~/.claude/settings.json` |
-| Claude Code | `PreToolUse` (opt-in rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json` |
+| Claude Code | `PreToolUse` (rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |

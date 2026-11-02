@@ -47,10 +47,13 @@ RATIO_FLOOR: dict[str, float] = {
     "lint_output": 0.30,
     "git_status": 0.15,
     "git_log": 0.80,
-    "git_diff": 0.50,
+    # Every changed line is kept up to a 14k-char budget; a month of agent
+    # diffs saved a median 26% per distilled output.
+    "git_diff": 0.20,
     "git_diff_stat": 0.50,
     "search_results": 0.40,
     "file_listing": 0.60,
+    "file_read": 0.60,
     "logs": 0.50,
     # Data-driven filters (filters_toml/*.toml). Conservative floors well under
     # their measured medians (install ~99%, infra plan ~80%) so estimates

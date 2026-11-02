@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusResponse,
+  ChangeBlastRadiusResponse,
+  ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
+} from "@repowise-dev/types/blast-radius";
 
 /** A hotspot suggestion chip — only the path is rendered. */
 export interface ImpactHotspot {
@@ -22,16 +28,37 @@ export interface ImpactAdapter {
   listHotspots(limit: number): Promise<ImpactHotspot[]>;
   /** Typeahead source for the file picker — resolves a query to candidate paths. */
   searchFiles(query: string): Promise<string[]>;
-  /** Run the blast-radius analysis for the proposed change. */
+  /**
+   * Run the blast-radius analysis for a hand-picked set of files. A server
+   * that returns `affected_signals` gets health and hotspot marks on the map.
+   */
   analyze(input: {
     changedFiles: string[];
     maxDepth: number;
-  }): Promise<BlastRadiusResponse>;
+  }): Promise<BlastRadiusResponse & { affected_signals?: AffectedSignal[] }>;
 
   /**
-   * Rich reviewer panel for the analyzed changeset. Kept as a slot so each app
-   * supplies its own reviewer fetch (or omits it entirely — hosted may have no
-   * reviewer endpoint, which degrades to no panel rather than an error).
+   * Changes to pick from: work in progress, branches, recent commits. With
+   * this and {@link analyzeChange}, the view leads with the list and opens the
+   * most relevant change; without them it falls back to picking files.
+   */
+  listChanges?(): Promise<ChangeCandidatesResponse>;
+  /** Analyze one change from {@link listChanges} by its id. */
+  analyzeChange?(input: { changeId: string; maxDepth: number }): Promise<ChangeBlastRadiusResponse>;
+
+  /**
+   * Run `repowise health check` on a listed change. Needs a checkout, so a
+   * host without one leaves it out and the view shows no health check.
+   */
+  checkHealth?(changeId: string): Promise<ChangeHealthCheckResponse>;
+
+  /** Where a file on the map or in the verdict links to; omit for plain text. */
+  fileHref?(path: string): string;
+
+  /**
+   * @deprecated Not rendered: the review's "Who to ask" block names the
+   * changed files' owners from the analysis itself, so owners show once.
+   * Kept so a host that still passes it type-checks.
    */
   renderReviewers?(changedFiles: string[]): ReactNode;
 }

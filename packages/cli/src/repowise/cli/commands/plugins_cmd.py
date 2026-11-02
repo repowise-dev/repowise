@@ -15,6 +15,7 @@ BUILTIN_SEAM_MODULES = (
     "repowise.core.changes.outcomes",
     "repowise.core.changes.source",
     "repowise.core.events.sinks",
+    "repowise.core.ingestion.document_extractors",
     "repowise.core.inventory.advisories",
     "repowise.core.ownership.directory",
     "repowise.core.pipeline.index_persistence",
@@ -59,16 +60,20 @@ def plugins_command(fmt: str) -> None:
 
     _import_builtin_seams()
     records = load_plugins()
+    from repowise.core.ingestion.document_extractors import document_extractor_claims
+
     seam_rows = {
         name: {"default": registry.default, "implementations": registry.names}
         for name, registry in sorted(seams().items())
     }
+    extractor_claims = document_extractor_claims()
     if fmt == "json":
         emit_json(
             {
                 "api_version": PLUGIN_API_VERSION,
                 "plugins": [asdict(r) for r in records],
                 "seams": seam_rows,
+                "document_extractors": extractor_claims,
             }
         )
         return
@@ -91,3 +96,7 @@ def plugins_command(fmt: str) -> None:
     for name, row in seam_rows.items():
         others = ", ".join(row["implementations"])
         console.print(f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})")
+    for extension, name in sorted(extractor_claims.items()):
+        console.print(
+            f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}"
+        )

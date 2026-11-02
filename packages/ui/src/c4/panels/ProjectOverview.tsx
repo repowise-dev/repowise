@@ -7,6 +7,7 @@ import { getTone } from "../../graph-primitives/tone-styles";
 import { THEME } from "../theme/theme-variables";
 import { ProportionBar } from "../../shared/proportion-bar";
 import { Section, Title, Sub, Pill, ActionButton } from "./panel-atoms";
+import { formatNumber } from "../../lib/format";
 
 export function ProjectOverview() {
   const view = useArchitectureStore((s) => s.view);
@@ -207,7 +208,7 @@ export function ProjectOverview() {
               key: k,
               label: k.charAt(0).toUpperCase() + k.slice(1),
               value: complexityCounts[k],
-              detail: complexityCounts[k].toLocaleString(),
+              detail: formatNumber(complexityCounts[k]),
               color: THEME.complexity[k],
             }))}
           />

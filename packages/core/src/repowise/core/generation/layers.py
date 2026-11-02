@@ -195,6 +195,18 @@ def is_adjacent_layer(layer: str) -> bool:
     return layer_key(layer) in _ADJACENT_KEYS
 
 
+def is_fallback_layer(layer_id: str, layer_ids: Iterable[str]) -> bool:
+    """True for :data:`DEFAULT_LAYER` in a curated set, the files no path rule placed.
+
+    A community layer (the uncurated path) takes its slug from a directory
+    name and can read ``application`` too, so the set counts as curated only
+    when every id in *layer_ids* is a spine layer.
+    """
+    if layer_key(layer_id) != layer_key(DEFAULT_LAYER):
+        return False
+    return all(layer_key(other) in _CANONICAL_RANK_BY_KEY for other in layer_ids)
+
+
 def _is_pinned(layer: str) -> bool:
     return layer_key(layer) in _PINNED_KEYS
 
@@ -375,6 +387,31 @@ def import_balance(
         balance[gd] += 1
         balance[gs] -= 1
     return balance
+
+
+# Reading order of the runtime layers for a table of contents: the engine a
+# newcomer has to understand first, then what it stores, then the surfaces
+# people use it through, then the shared code everything leans on. A curated or
+# community layer (a name this table does not know) reads with the engine.
+_READING_BUCKET: dict[str, int] = {
+    layer_key(name): bucket
+    for bucket, names in enumerate(
+        (
+            ("Service", "Middleware", DEFAULT_LAYER),
+            ("Data",),
+            ("CLI", "API", "UI"),
+            ("Types", "Config", "Utility"),
+        )
+    )
+    for name in names
+}
+
+
+def reading_bucket(layer: str) -> int:
+    """Where a section on *layer* sits in reading order; lower reads first."""
+    if _is_pinned(layer):
+        return len(set(_READING_BUCKET.values()))
+    return _READING_BUCKET.get(layer_key(layer), 0) if layer else 0
 
 
 def is_support_layer(layer: str) -> bool:

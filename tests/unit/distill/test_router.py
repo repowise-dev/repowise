@@ -99,3 +99,31 @@ def test_content_sniff_fallback_when_no_command(load_fixture) -> None:
 def test_disabled_filters_are_skipped() -> None:
     assert select_filter("git status").name == "git_status"
     assert select_filter("git status", disabled=("git_status",)) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git show origin/main:packages/core/src/engine.py",
+        "git show HEAD~2:README.md | sed -n 165,215p",
+        "git show v0.59.0:src/app.py",
+        "git show :src/app.py",
+    ],
+)
+def test_git_show_of_a_file_blob_is_not_routed_as_a_diff(command: str) -> None:
+    blob = "\n".join(f"line {i}: def f{i}(): pass" for i in range(60))
+    chosen = select_filter(command, blob)
+    assert chosen is None or chosen.name != "git_diff"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git show HEAD",
+        "git show HEAD -- src/app.py",
+        "git show --format=%H:%s HEAD",
+        "git show HEAD -- C:/repo/src/app.py",
+    ],
+)
+def test_git_show_of_a_commit_still_routes_as_a_diff(command: str) -> None:
+    assert select_filter(command, "").name == "git_diff"

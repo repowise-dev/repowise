@@ -456,3 +456,14 @@ def test_is_support_path_covers_doc_dirs():
     # Real code is not support — names containing "docs" don't fire.
     assert not is_support_path("src/docs_generator.py")
     assert not is_support_path("lib/init.lua")
+
+
+def test_is_fallback_layer_only_in_a_curated_set():
+    from repowise.core.generation.layers import is_fallback_layer
+
+    curated = ["layer:ui", "layer:application", "layer:service", "layer:test"]
+    assert is_fallback_layer("layer:application", curated)
+    assert not is_fallback_layer("layer:service", curated)
+    # A community set: ids come from directory names.
+    communities = ["layer:web-components", "layer:application", "layer:core-ingestion"]
+    assert not is_fallback_layer("layer:application", communities)

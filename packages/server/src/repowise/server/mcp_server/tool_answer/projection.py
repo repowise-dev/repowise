@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_MAX,
     _LARGE_FILE_BYTES,
 )
+from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
 from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
 
@@ -796,10 +798,10 @@ def _served_paths(payload: dict[str, Any]) -> list[str]:
 def _hint_with_update_pointer(
     hint: Any, confidence: Any, freshness: dict[str, Any]
 ) -> Any:
-    """Add the update pointer to a low-confidence hint served off a behind index."""
+    """Add the behind-index fact to a low-confidence hint."""
     if freshness.get("index_behind") is not True or confidence != "low":
         return hint
-    # A stale_warning already names the command, so don't say it twice.
+    # A stale_warning already states the index commit, so don't say it twice.
     if freshness.get("stale_warning"):
         return hint
     from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
@@ -866,11 +868,15 @@ def _file_size(root: Path, path: str) -> tuple[int | None, int] | None:
         abs_path = (root / path).resolve()
         # An index row is not a trust boundary; refuse anything outside the repo.
         abs_path.relative_to(root.resolve())
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
         if not abs_path.is_file():
             return None
         size = abs_path.stat().st_size
         if size > _LINE_COUNT_MAX_BYTES:
             return None, size
+        if is_extracted_document(root / path):
+            return None
         lines, last = 0, b""
         with abs_path.open("rb") as handle:
             while chunk := handle.read(65536):
@@ -983,12 +989,34 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
         )
         await _refresh_freshness(payload, repo)
+        # The lean projection may drop flow_path; the raw reply still says it walked a chain.
+        await attach_pointers(payload, repo, question, chain=bool(raw.get("flow_path")))
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
+        await _declare_replaced_reads(payload, root, repo)
         return payload
 
     return _wrapped
+
+
+async def _declare_replaced_reads(
+    payload: dict[str, Any], root: Path | None, repo: str | None
+) -> None:
+    """Credit what this reply served with the real Read cost of its files. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import answer_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    if payload.get("error"):
+        return
+    try:
+        root = root or await _resolve_root(repo)
+        read_cost = (lambda p: file_read_tokens(root, p)) if root is not None else None
+        tokens = await asyncio.to_thread(answer_replaced_tokens, payload, read_cost)
+    except Exception:  # savings accounting never breaks a tool call
+        return
+    declare_replaced(payload, tokens)
 
 
 __all__ = ["project_answer_payload", "projected_answer"]

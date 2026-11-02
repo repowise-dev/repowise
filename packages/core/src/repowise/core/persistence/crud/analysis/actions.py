@@ -10,7 +10,8 @@ The reads here only narrow; the row-to-fact rule is the pure builder in
 Index and update store the rules' output as a read snapshot
 (:func:`write_actions_snapshot`), kept only until a store the facts come from
 is written (``persistence.read_snapshots``); a read that finds it ranks the
-stored actions and skips the facts and the rules.
+stored actions and skips the facts and the rules. A read that finds none
+builds it and stores it for the next one.
 """
 
 from __future__ import annotations
@@ -79,7 +80,13 @@ from ...models import (
     PerformanceOpportunity,
     SecurityFinding,
 )
-from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
+from ...read_snapshots import (
+    build_and_store,
+    mark_current,
+    read_snapshot,
+    refresh_snapshot,
+    snapshot_key,
+)
 from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
@@ -688,7 +695,9 @@ async def load_actions_view(
     The rules' output is the stored snapshot while it is current, else built
     from the facts here. While a finding stored deletion-ready reads not safe
     as served (in a workspace, *lookup* and *alias* apply the cross-repo cut),
-    the view is built live instead. Never writes.
+    the view is built live instead. A missing snapshot is built and stored
+    for the next process (:func:`build_and_store`); in a workspace the build
+    carries the cut, so it is not stored.
     """
     try:
         async with session.begin_nested():
@@ -697,6 +706,11 @@ async def load_actions_view(
         states = {}
     when = now or datetime.now(UTC)
     stored = await read_snapshot(session, repo_id, SNAPSHOT_KIND, _KEY)
+    if stored is None and lookup is None and alias is None:
+        ruled = await build_and_store(
+            session, repo_id, SNAPSHOT_KIND, _KEY, lambda s: _ruled(s, repo_id)
+        )
+        return _view(ruled, states, when)
     if stored is not None and await _stored_dead_overstated(session, repo_id, lookup, alias):
         stored = None
     view = _stored_view(stored, states, when)

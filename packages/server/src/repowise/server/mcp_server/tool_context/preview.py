@@ -7,6 +7,7 @@ live file that was never indexed.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -164,6 +165,10 @@ def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
     head = [ln.rstrip() for ln in lines if ln.strip()]
     content = [ln for ln in head if not ln.lstrip().startswith(_COMMENT_PREFIXES)]
     return "head", content or head
+
+
+async def _file_preview_async(repo_root: Any, file_path: str) -> dict[str, Any] | None:
+    return await asyncio.to_thread(_file_preview, repo_root, file_path)
 
 
 def _file_preview(repo_root: Any, file_path: str) -> dict[str, Any] | None:

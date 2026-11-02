@@ -1,7 +1,8 @@
 """Read snapshots: the Fix first queue and the actions view stored at index time.
 
 Written once the stores are final, served while current, dropped by any write
-to a store they read, equal to a live build, and never written on read.
+to a store they read, equal to a live build, and stored by a reader that
+finds one missing only while no input write lands during its build.
 """
 
 from __future__ import annotations
@@ -229,7 +230,7 @@ async def test_a_payload_an_older_build_wrote_is_a_miss(async_session, kind) -> 
     assert _wire(await load_actions_view(async_session, rid, now=NOW)) == view
 
 
-async def test_a_read_never_writes_a_snapshot(async_session) -> None:
+async def test_a_read_of_a_store_it_cannot_reopen_writes_nothing(async_session) -> None:
     rid = await _seed(async_session)
     await async_session.commit()
     await _live(async_session, rid)
@@ -451,3 +452,162 @@ def test_the_actions_view_skips_no_table_the_queue_reads() -> None:
     from repowise.core.persistence.read_snapshots import NOT_READ_BY
 
     assert NOT_READ_BY.get("actions", frozenset()) <= NOT_READ_BY["fix_first"]
+
+
+# A reader that finds the actions view missing stores what it built, on a
+# file store; the in-memory fixtures above cannot be reopened, so they build
+# live and write nothing.
+
+
+@pytest.fixture
+async def file_factory(tmp_path):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from repowise.core.persistence.database import create_engine, init_db
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'wiki.db').as_posix()}")
+    await init_db(engine)
+    yield async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    await engine.dispose()
+
+
+async def _seeded(factory) -> str:
+    async with factory() as session:
+        rid = await _seed(session)
+        await session.commit()
+    return rid
+
+
+async def _read_view(factory, rid: str, **cut) -> dict:
+    async with factory() as session:
+        return await load_actions_view(session, rid, now=NOW, **cut)
+
+
+async def _actions_key(factory) -> str | None:
+    async with factory() as session:
+        query = select(ReadSnapshot.key).where(ReadSnapshot.kind == "actions")
+        return (await session.execute(query)).scalar_one_or_none()
+
+
+async def test_a_read_that_finds_no_view_stores_it_for_the_next(
+    file_factory, no_live_build
+) -> None:
+    rid = await _seeded(file_factory)
+    first = await _read_view(file_factory, rid)
+    assert await _actions_key(file_factory) == actions_loader._KEY
+
+    no_live_build()
+    assert _wire(await _read_view(file_factory, rid)) == _wire(first)
+
+
+async def test_an_input_write_during_the_build_is_not_stored_over(
+    file_factory, monkeypatch
+) -> None:
+    rid = await _seeded(file_factory)
+    real = actions_loader._ruled
+
+    async def racing(session, repo_id, *args, **kwargs):
+        built = await real(session, repo_id, *args, **kwargs)
+        async with file_factory() as other:  # lands after the build read the stores
+            await _triage(other, repo_id)
+            await other.commit()
+        return built
+
+    monkeypatch.setattr(actions_loader, "_ruled", racing)
+    await _read_view(file_factory, rid)
+    assert await _actions_key(file_factory) is None
+
+
+async def test_a_later_readers_claim_wins(file_factory, monkeypatch) -> None:
+    from repowise.core.persistence import read_snapshots
+
+    rid = await _seeded(file_factory)
+    real = actions_loader._ruled
+    engine = file_factory.kw["bind"]
+
+    async def overtaken(session, repo_id, *args, **kwargs):
+        await read_snapshots._claim(engine, repo_id, "actions", "claim:later")
+        return await real(session, repo_id, *args, **kwargs)
+
+    monkeypatch.setattr(actions_loader, "_ruled", overtaken)
+    await _read_view(file_factory, rid)
+    assert await _actions_key(file_factory) == "claim:later"
+
+
+async def test_a_locked_store_skips_the_store_without_waiting(file_factory, tmp_path) -> None:
+    import sqlite3
+    import time
+
+    rid = await _seeded(file_factory)
+    holder = sqlite3.connect(tmp_path / "wiki.db")
+    try:
+        holder.execute("BEGIN IMMEDIATE")
+        started = time.perf_counter()
+        view = await _read_view(file_factory, rid)
+        assert time.perf_counter() - started < 10  # the store's busy timeout is 30 s
+    finally:
+        holder.rollback()
+        holder.close()
+    assert view["unavailable"] == {}
+    assert await _actions_key(file_factory) is None
+
+
+async def test_a_read_only_store_builds_and_writes_nothing(file_factory, tmp_path) -> None:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from repowise.core.persistence.database import create_engine
+
+    rid = await _seeded(file_factory)
+    uri = f"sqlite+aiosqlite:///file:{(tmp_path / 'wiki.db').as_posix()}?mode=ro&uri=true"
+    engine = create_engine(uri)
+    try:
+        read_only = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        assert (await _read_view(read_only, rid))["unavailable"] == {}
+    finally:
+        await engine.dispose()
+    assert await _actions_key(file_factory) is None
+
+
+async def test_a_workspace_read_with_the_cut_stores_nothing(file_factory) -> None:
+    rid = await _seeded(file_factory)
+    await _read_view(file_factory, rid, alias="member")
+    assert await _actions_key(file_factory) is None
+
+
+async def test_a_claim_left_behind_is_a_miss_the_next_read_replaces(file_factory) -> None:
+    from repowise.core.persistence import read_snapshots
+
+    rid = await _seeded(file_factory)
+    engine = file_factory.kw["bind"]
+    assert await read_snapshots._claim(engine, rid, "actions", "claim:abandoned")
+    await _read_view(file_factory, rid)
+    assert await _actions_key(file_factory) == actions_loader._KEY
+
+
+async def test_a_build_that_cannot_be_stored_is_still_served(file_factory, monkeypatch) -> None:
+    rid = await _seeded(file_factory)
+    real = actions_loader._ruled
+
+    async def unserialisable(session, repo_id, *args, **kwargs):
+        return {**await real(session, repo_id, *args, **kwargs), "odd": object()}
+
+    monkeypatch.setattr(actions_loader, "_ruled", unserialisable)
+    assert (await _read_view(file_factory, rid))["unavailable"] == {}
+    assert await _actions_key(file_factory) != actions_loader._KEY
+
+
+async def test_a_session_with_its_own_input_writes_stores_nothing(file_factory) -> None:
+    rid = await _seeded(file_factory)
+    async with file_factory() as session:
+        await _new_secret(session, rid)  # pending, not committed
+        await load_actions_view(session, rid, now=NOW)
+        await session.rollback()
+    assert await _actions_key(file_factory) is None
+
+
+async def test_a_file_store_without_the_table_builds_live(file_factory) -> None:
+    rid = await _seeded(file_factory)
+    async with file_factory() as session:
+        await session.execute(text("DROP TABLE read_snapshots"))
+        await session.commit()
+    assert (await _read_view(file_factory, rid))["unavailable"] == {}

@@ -10,6 +10,8 @@ zero external dependencies.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import math
 import os
@@ -278,3 +280,27 @@ def store_has_semantic_vectors(store: object) -> bool:
     if store is None:
         return False
     return is_semantic_embedder(getattr(store, "_embedder", None))
+
+
+#: Ceiling on the start-up embed; past it the first search pays the rest.
+WARMUP_TIMEOUT_S = 5.0
+
+
+async def warm_query_embedder(embedder: Embedder | None) -> None:
+    """Embed one short text so the first real search finds the client warm.
+
+    The first query embed in a process pays for client setup and the TLS
+    handshake: about 2s against a hosted provider, where a warm one takes
+    about 0.25s. Bounded by :data:`WARMUP_TIMEOUT_S`; never raises.
+
+    Embedded as a document: a failed warm-up must not arm the query
+    cool-down in :class:`~repowise.core.providers.embedding.caching.CachingEmbedder`,
+    so one start-up blip does not switch off the first minute of searches.
+    """
+    if embedder is None or not is_semantic_embedder(embedder):
+        return
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(
+            embedder.embed(["code search"], kind="document"),
+            timeout=WARMUP_TIMEOUT_S,
+        )

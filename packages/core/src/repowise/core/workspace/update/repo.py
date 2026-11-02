@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 import sqlite3
@@ -188,22 +189,20 @@ async def _incremental_repo_update(
     Raises on failure — the caller falls back to the full pipeline.
     """
     from ...pipeline.incremental import persist_incremental_index, rebuild_graph_and_git
+    from ...pipeline.incremental.feature import incremental_graph_enabled
     from ...pipeline.phases.git import drop_transient_git_signals
+    from ...repo_config import load_repo_config
 
     alias = repo_path.name
-    file_diffs, working_tree_paths = _changed_file_diffs(
-        repo_path, state, base_ref, include_working_tree
+    cfg = load_repo_config(repo_path)
+    merged_excludes = await _merged_repo_excludes(repo_path, exclude_patterns)
+    file_diffs, working_tree_paths = await asyncio.to_thread(
+        _changed_file_diffs, repo_path, state, base_ref, include_working_tree, merged_excludes
     )
     if not file_diffs and not force_full_git:
         # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
         return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
-
-    # Per-repo config; workspace-level ``exclude_patterns`` apply on top.
-    from ...repo_config import load_repo_config
-
-    cfg = load_repo_config(repo_path)
-    merged_excludes = await _merged_repo_excludes(repo_path, exclude_patterns)
 
     # Decay-only rows for idle files, persisted beside the changed rows but kept
     # out of git_meta_map so partial health's repo-wide aggregates are unaffected.
@@ -228,6 +227,9 @@ async def _incremental_repo_update(
         force_full_git=force_full_git,
         git_summary_sink=full_git_summaries,
         log=_log.info,
+        # Same switch as the CLI update: it also invalidates the seed snapshot
+        # before persistence rewrites the graph rows the snapshot mirrors.
+        patch_graph=incremental_graph_enabled(),
     )
 
     partial_health_report, dead_code_report, doc_drift_report = await _partial_analysis(
@@ -327,7 +329,11 @@ async def _rescore_repo_health(
 
 
 def _changed_file_diffs(
-    repo_path: Path, state: dict[str, Any], base_ref: str, include_working_tree: bool
+    repo_path: Path,
+    state: dict[str, Any],
+    base_ref: str,
+    include_working_tree: bool,
+    exclude_patterns: list[str] | None = None,
 ) -> tuple[list, list[str] | None]:
     """The ``base_ref..HEAD`` diffs, plus working-tree ones when asked.
 
@@ -338,7 +344,12 @@ def _changed_file_diffs(
 
     head = get_head_commit(repo_path) or "HEAD"
 
-    detector = ChangeDetector(repo_path)
+    detector = ChangeDetector(
+        repo_path,
+        exclude_patterns=exclude_patterns,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+    )
     working_tree_diffs: list = []
     working_tree_paths: list[str] | None = None
     if include_working_tree:
@@ -631,6 +642,8 @@ async def _try_incremental_update(
     rescore_health: bool = False,
 ) -> tuple[RepoUpdateResult | None, str | None]:
     """The incremental update's result, or ``None`` and the error to fall back on."""
+    from ...ingestion.document_extractors import DocumentExtractionError
+
     try:
         result = await _incremental_repo_update(
             repo_path,
@@ -642,6 +655,8 @@ async def _try_incremental_update(
             products_sink=products_sink,
             rescore_health=rescore_health,
         )
+    except DocumentExtractionError:
+        raise
     except Exception as exc:
         _log.warning(
             "Incremental update failed for %s — falling back to the full pipeline",

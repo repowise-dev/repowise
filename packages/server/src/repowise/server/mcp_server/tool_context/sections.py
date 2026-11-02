@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.attribution import attribution_enabled, file_share
+from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
 from repowise.core.persistence.crud import (
     accepted_predicate,
@@ -159,6 +160,8 @@ def _identity_section(card: CardState) -> None:
         data["path"] = path_identity(resolved.file_path)
     if resolved.target_type == "module" and card.page is None:
         data["index_status"] = "directory_without_module_page"
+        if card.wants("full_doc"):
+            data["full_doc_basis"] = "no_module_page"
     meta = resolved.live_file_meta
     if meta is not None:
         data["index_status"] = "live_file_without_wiki_page"
@@ -376,50 +379,51 @@ async def _last_change_section(card: CardState) -> None:
     if card.dir_path is not None:
         card.data["last_change"] = await _directory_last_change(card)
         return
-    last_change: dict[str, Any] = {}
     meta = await _git_meta_row(card, card.git_path)
-    if meta:
-        last_change["date"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
-        last_change["author"] = meta.primary_owner_name
-        last_change["days_ago"] = await _days_since_last_change(
-            card.session, card.repo_id, meta.last_commit_at, card.query.as_of_ts
-        )
-    else:
-        last_change["date"] = None
-        last_change["author"] = None
-        last_change["days_ago"] = None
-    card.data["last_change"] = last_change
+    card.data["last_change"] = await _change_of(card, meta)
 
 
 async def _directory_last_change(card: CardState) -> dict[str, Any]:
-    """The newest commit under a directory: its date and the file it touched.
-
-    ``author`` is the author whose own newest commit on that file is at that
-    moment, and is absent when no stored author matches.
-    """
+    """The newest commit under a directory, as a file's, plus the file it touched."""
     dated = [r for r in await card.dir_rows() if r.last_commit_at]
     if not dated:
-        return {"date": None, "days_ago": None}
+        return await _change_of(card, None)
     newest = max(dated, key=lambda r: (_as_utc(r.last_commit_at), r.file_path))
-    last_change: dict[str, Any] = {
-        "date": newest.last_commit_at.isoformat(),
-        "path": newest.file_path,
+    return {**await _change_of(card, newest), "path": newest.file_path}
+
+
+async def _change_of(card: CardState, row: Any) -> dict[str, Any]:
+    """A file's newest commit from its git row: date, days since, and author.
+
+    ``author`` is the stored author whose own newest commit is that one, and is
+    absent when none matches: the primary owner is not who made the change.
+    """
+    if row is None or row.last_commit_at is None:
+        return {"date": None, "days_ago": None}
+    change: dict[str, Any] = {
+        "date": row.last_commit_at.isoformat(),
         "days_ago": await _days_since_last_change(
-            card.session, card.repo_id, newest.last_commit_at, card.query.as_of_ts
+            card.session, card.repo_id, row.last_commit_at, card.query.as_of_ts
         ),
     }
-    author = _author_at(newest.top_authors_json, _as_utc(newest.last_commit_at))
+    author = _author_at(row.top_authors_json, _as_utc(row.last_commit_at))
     if author:
-        last_change["author"] = author
-    return last_change
+        change["author"] = author
+    return change
 
 
 def _author_at(top_authors_json: str | None, moment: datetime) -> str | None:
-    """The stored author whose newest commit on the file is at *moment*."""
+    """The one stored author whose newest commit on the file is at *moment*;
+    None when none or several match, since a tie cannot say which made it."""
     with contextlib.suppress(TypeError, ValueError):
-        for a in json.loads(top_authors_json or "[]"):
-            if int(a.get("last_commit_ts") or -1) == int(moment.timestamp()):
-                return a.get("name")
+        ts = int(moment.timestamp())
+        names = {
+            a.get("name")
+            for a in json.loads(top_authors_json or "[]")
+            if int(a.get("last_commit_ts") or -1) == ts
+        }
+        if len(names) == 1:
+            return names.pop()
     return None
 
 
@@ -575,34 +579,47 @@ async def _kg_section(card: CardState) -> None:
     kg_layers = await get_kg_layers(card.session, card.repo_id)
     if not kg_layers:
         return
+    await _layer_block(card, file_path, kg_layers)
+    await _tour_block(card, file_path)
+
+
+async def _layer_block(card: CardState, file_path: str, kg_layers: list) -> None:
     for _l in kg_layers:
         _l._parsed_node_ids = json.loads(_l.node_ids_json) if _l.node_ids_json else []
     file_layer = _find_layer_for_file(file_path, kg_layers)
-    if file_layer:
-        edge_res = await card.session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == card.repo_id,
-                GraphEdge.target_node_id == file_path,
-                GraphEdge.edge_type == "imports",
-            )
+    # The fallback layer's name, model written or not, describes the bucket's
+    # majority, not this file.
+    ids = [layer.layer_id or "" for layer in kg_layers]
+    if not file_layer or is_fallback_layer(file_layer.layer_id or "", ids):
+        return
+    edge_res = await card.session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == card.repo_id,
+            GraphEdge.target_node_id == file_path,
+            GraphEdge.edge_type == "imports",
         )
-        incoming_edges = list(edge_res.scalars())
-        card.data["architectural_layer"] = {
-            "name": file_layer.name,
-            "description": (file_layer.description or "")[:200],
-            "role": _classify_file_role(file_path, file_layer, incoming_edges),
-        }
+    )
+    incoming_edges = list(edge_res.scalars())
+    card.data["architectural_layer"] = {
+        "name": file_layer.name,
+        "description": (file_layer.description or "")[:200],
+        "role": _classify_file_role(file_path, file_layer, incoming_edges),
+    }
+
+
+async def _tour_block(card: CardState, file_path: str) -> None:
     kg_tour = await get_kg_tour_steps(card.session, card.repo_id)
-    if kg_tour:
-        for _s in kg_tour:
-            _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
-        file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
-        if file_tour_step:
-            card.data["tour_context"] = {
-                "step": file_tour_step.step_order,
-                "title": file_tour_step.title,
-                "why": (file_tour_step.description or "")[:200],
-            }
+    if not kg_tour:
+        return
+    for _s in kg_tour:
+        _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
+    file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
+    if file_tour_step:
+        card.data["tour_context"] = {
+            "step": file_tour_step.step_order,
+            "title": file_tour_step.title,
+            "why": (file_tour_step.description or "")[:200],
+        }
 
 
 async def _call_graph_section(card: CardState) -> None:

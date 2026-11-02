@@ -13,6 +13,7 @@ gate reads live beside it.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections import Counter
 from collections.abc import Collection
@@ -26,7 +27,10 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
-from repowise.server.mcp_server._query_terms import STOPWORDS, split_humps
+from repowise.server.mcp_server._query_terms import (
+    QUESTION_FRAME_VERBS,
+    paths_the_question_names,
+)
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_HIGH_SCORE_FLOOR,
@@ -49,6 +53,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _flag_on,
     _opt_in,
 )
+from repowise.server.mcp_server.tool_answer.cut_off import answer_cut_off
 from repowise.server.mcp_server.tool_answer.hydration import (
     _stem,
     _stem_hit,
@@ -81,10 +86,20 @@ _MARKDOWN_MARKUP_RE = re.compile(r"[*`]+|(?<!\w)_+|_+(?!\w)")
 
 def _normalized(answer_text: str) -> str:
     """Lower-cased, without markdown markup, with curly apostrophes folded and
-    spaces collapsed, so every phrase marker matches however the prose is styled."""
+    spaces collapsed, so every phrase marker matches however the prose is styled.
+    "The excerpts don't" reads as "the excerpts do not"; a contraction about the
+    code ("the loop doesn't include a backoff") is left alone."""
     text = _MARKDOWN_MARKUP_RE.sub("", (answer_text or "").lower())
     text = text.replace("\u2019", "'").replace("\u02bc", "'")
+    text = _EXCERPT_CONTRACTION_RE.sub(r"\1 \2 not", text)
     return re.sub(r"\s+", " ", text)
+
+
+# "The (retrieved) excerpts don't ...": the contraction says what the evidence lacks.
+_EXCERPT_CONTRACTION_RE = re.compile(
+    r"\b((?:excerpts?|evidence|material|snippets?)(?: (?:shown|provided|retrieved|here|above))?)"
+    r" (do|does)n't\b"
+)
 
 
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -99,15 +114,64 @@ _BARE_GAP_RE = re.compile(
 )
 
 
+# "truncated in the (retrieved) excerpts", ending the clause or followed by a
+# preposition. "truncated in the excerpt builder" describes code instead.
+_TRUNCATED_GAP_RE = re.compile(
+    r"\btruncated in the (?:(?:retrieved|provided) )?(?:excerpts?|evidence|material|snippets?)"
+    r"(?=\s*(?:$|[^\w\s]|(?:of|for|from|in|at|before|after|so|and|but|which|here)\b))"
+)
+
+
 def _sentences(answer_text: str) -> list[str]:
     return [s for s in (p.strip() for p in _SENTENCE_BREAK_RE.split(answer_text or "")) if s]
 
 
+_LINE_NUMBER_RE = re.compile(
+    r"\bline[- ]?numbers?\b|\bline[- ]numbered\b|\bline ranges?\b|\bcite (?:the )?(?:exact|specific) lines?\b"
+)
+_CLAUSE_BREAK_RE = re.compile(r"([,;:()]|\bso\b)")
+# The words a "no line numbers" clause is made of; any other word names something missing.
+_LINE_CLAUSE_FILLER = frozenset((
+    "a", "an", "the", "it", "its", "their", "these", "those", "this", "them", "they", "i",
+    "here", "there", "given", "any", "no", "not", "do", "does", "did", "is", "are", "was",
+    "were", "isn't", "aren't", "can't", "cannot", "cite", "exact", "specific", "lines", "line",
+    "include", "includes", "included", "show", "shows", "shown", "give", "gives", "carry",
+    "carries", "have", "has", "provide", "provides", "provided", "list", "lists", "listed",
+    "for", "in", "of", "with", "excerpt", "excerpts", "retrieved", "summary", "wiki",
+    "declaration", "declarations", "body", "available", "unknown",
+))
+# A clause going on with what else is missing (", nor the validator").
+_LIST_GOES_ON_RE = re.compile(r"\s*(?:nor|or|and|plus|as well as|along with|let alone)\b")
+
+
+def _line_number_only(clause: str) -> bool:
+    """Does *clause* say nothing but that the excerpts carry no line numbers?"""
+    if not _LINE_NUMBER_RE.search(clause):
+        return False
+    words = re.findall(r"[a-z][a-z']*", _LINE_NUMBER_RE.sub(" ", clause))
+    return all(w in _LINE_CLAUSE_FILLER for w in words)
+
+
 def _is_admission(sentence: str) -> bool:
-    """Does *sentence* say something asked is not in the evidence?"""
-    low = _normalized(sentence)
+    """Does *sentence* say something asked is not in the evidence?
+
+    A clause that only says the excerpts carry no line numbers is not one:
+    the code is served, only its location is missing.
+    """
+    # Clauses at even indices, their delimiters kept between them, so every other
+    # marker reads the sentence as written.
+    parts = _CLAUSE_BREAK_RE.split(_normalized(sentence))
+    low = "".join(
+        ""
+        if i % 2 == 0
+        and _line_number_only(p)
+        and not (i + 2 < len(parts) and _LIST_GOES_ON_RE.match(parts[i + 2]))
+        else p
+        for i, p in enumerate(parts)
+    )
     return (
         _BARE_GAP_RE.search(low) is not None
+        or _TRUNCATED_GAP_RE.search(low) is not None
         or any(marker in low for marker in _HEDGE_MARKERS)
         or any(marker in low for marker in _GAP_MARKERS)
     )
@@ -138,6 +202,28 @@ _VALUE_QUESTION_RE = re.compile(
 # not value assertions and must not feed the grounding check.
 _FILE_LINE_REF_RE = re.compile(r"[\w./-]+:\d+(?:-\d+)?")
 
+# "(line 27)", "`a.go`, lines 26-27", "at line 40": the prompt prints each body's
+# line range, so answers cite it in prose. Only a citation context counts, so
+# "max lines 500" or "set to line 30" still assert their number.
+_PROSE_LINE_REF_RE = re.compile(
+    r"\b(?:lines?|L)\s*\d+(?:\s*(?:-|–|to|and|through)\s*L?\d+)?\b", re.IGNORECASE
+)
+_LINE_REF_LEAD_RE = re.compile(
+    r"(?:[(,]|\b(?:at|on|in|see|from|of|source)|\.\w{1,5}`?|^)\s*$", re.IGNORECASE
+)
+
+
+def _strip_line_refs(text: str) -> str:
+    """*text* with citation line refs blanked, file:line and prose forms alike."""
+    text = _FILE_LINE_REF_RE.sub(" ", text)
+
+    def blank_citation(m: re.Match) -> str:
+        lead = text[max(0, m.start() - 40) : m.start()]
+        return " " if _LINE_REF_LEAD_RE.search(lead) else m[0]
+
+    return _PROSE_LINE_REF_RE.sub(blank_citation, text)
+
+
 # Standalone numbers (int or decimal). Lookarounds keep version-ish and
 # identifier-embedded digits (v2, utf-8, sha256, 2.5.1) out while still
 # matching sentence-final numbers ("the default is 3.").
@@ -159,7 +245,7 @@ def _asserted_numbers(answer_text: str) -> set[str]:
     Shared by :func:`_ungrounded_numbers` and the value-grounding gate so the
     two never disagree about what counts as an asserted value.
     """
-    return _numbers_in(_FILE_LINE_REF_RE.sub(" ", answer_text or ""))
+    return _numbers_in(_strip_line_refs(answer_text or ""))
 
 
 def _is_value_question(question: str) -> bool:
@@ -555,16 +641,13 @@ def is_dominant(hits: list[dict], *, agreement_dominant: bool = False) -> bool:
 
 
 # Kept apart from `_query_terms.STOPWORDS` on purpose: these are dropped for
-# coverage only, retrieval still searches them.
-# Words that frame what is asked ("how does X work", "where is X implemented")
-# rather than name it. Code rarely says them, so a hit that answers the question
-# would otherwise read as missing its rarest word.
+# coverage only, retrieval still searches them. The frame verbs plus words a
+# coverage check should not demand of a hit ("code", "logic").
 _QUESTION_FRAME_STEMS = frozenset(
     _stem(w)
     for w in (
-        "work", "works", "working", "implement", "implemented", "implements",
-        "implementation", "handle", "handled", "handles", "handling", "happen",
-        "happens", "use", "used", "uses", "using", "way", "done", "code", "logic",
+        *QUESTION_FRAME_VERBS, "implements",
+        "use", "used", "uses", "using", "way", "done", "code", "logic",
     )
 )
 
@@ -793,6 +876,8 @@ class _Grade(NamedTuple):
     unhydrated_names: tuple[str, ...] = ()
     #: Dominant, but the top score is under the floor high needs.
     under_floor: bool = False
+    #: The answer text stops mid-sentence (see :func:`answer_cut_off`).
+    cut_off: bool = False
 
 
 @dataclass
@@ -830,6 +915,13 @@ class _GradeState:
     #: The file an earned high rests on, when the route names one.
     earned_path: str | None = None
     unhydrated_names: tuple[str, ...] = ()
+    stop_reason: str | None = None
+    cut_off: bool = False
+
+    @functools.cached_property
+    def value_line(self) -> dict | None:
+        """The verified value line the answer states for the constant the question names."""
+        return stated_value_line(self.question, self.question_ids, self.answer_text, self.hits)
 
 
 def _earned_high(
@@ -1018,6 +1110,17 @@ def _hedge_gate(s: _GradeState) -> None:
         s.confidence = "medium" if s.served_named_body else "low"
 
 
+def _cut_off_gate(s: _GradeState) -> None:
+    """The answer text was cut off before it finished.
+
+    Whatever the missing part said is not in the answer, so it is not one to
+    cite unread.
+    """
+    s.cut_off = s.confidence == "high" and answer_cut_off(s.answer_text, s.stop_reason)
+    if s.cut_off:
+        s.confidence = "medium"
+
+
 def _admitted_gap_gate(s: _GradeState) -> None:
     """The answer says part of what was asked is not in its evidence.
 
@@ -1027,6 +1130,11 @@ def _admitted_gap_gate(s: _GradeState) -> None:
     if s.confidence != "high" or s.hedged:
         return
     s.admitted_gap = _admitted_gap(s.answer_text)
+    # The answer states the verified value of the constant the question names:
+    # what was asked is in hand, so the admission is about something else
+    # (where it is read, its line number).
+    if s.admitted_gap and s.value_line:
+        s.admitted_gap = None
     if s.admitted_gap:
         s.confidence = "medium"
 
@@ -1055,10 +1163,15 @@ def _identifier_gate(s: _GradeState) -> None:
 
     A name no symbol carries (``HTTP``, ``TypeScript``) cannot be hydrated, so
     only indexed names count. The file an earned high rests on counts as a top
-    hit: its line is the evidence, wherever it ranked.
+    hit: its line is the evidence, wherever it ranked. A top hit whose value
+    line the answer states hydrates what was asked: that line is the answer,
+    and its page carries every other word of the question.
     """
     names = s.question_ids - s.unindexed_names
     if s.confidence != "high" or not names:
+        return
+    top_paths = {h.get("target_path") for h in s.hits[:_ENRICH_TOP_N_HITS]}
+    if s.value_line and s.value_line["path"] in top_paths:
         return
     top_n = [
         h
@@ -1102,16 +1215,8 @@ def _split_settled(name: str, paths: list[str], question: str, answer_text: str)
 
     if all(named(p) for p in paths):
         return True
-    asked = _path_words(question) - _path_words(name)
-    picked = [p for p in paths if asked & _path_words(p.rsplit(".", 1)[0])]
+    picked = paths_the_question_names(name, paths, question)
     return len(picked) == 1 and named(picked[0])
-
-
-def _path_words(text: str) -> set[str]:
-    """Lower-case words of a path or sentence, stopwords dropped. Two letters
-    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
-    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
-    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
 
 
 def _clause_gate(s: _GradeState) -> None:
@@ -1269,6 +1374,7 @@ def _non_dominant_ceiling(s: _GradeState) -> None:
 _GRADE_GATES = (
     _hedge_gate,
     _absent_name_gate,
+    _cut_off_gate,
     _admitted_gap_gate,
     _identifier_gate,
     _split_name_gate,
@@ -1317,6 +1423,7 @@ def _grade_answer(
     unindexed_names: Collection[str] = (),
     absent_names: Collection[str] = (),
     split_names: dict[str, list[str]] | None = None,
+    stop_reason: str | None = None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -1331,7 +1438,8 @@ def _grade_answer(
     question identifiers no symbol carries; ``absent_names`` the code-shaped
     ones no production line writes either (``unindexed_question_names``).
     ``split_names`` maps a question name to the files that define it, for names
-    defined in more than one.
+    defined in more than one. ``stop_reason`` is the synthesis stop reason, None
+    when the provider does not report one.
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
@@ -1363,6 +1471,7 @@ def _grade_answer(
         lead_off_top=lead_off_top,
         agreement_only=dominance == "agreement" and not earn_high,
         top_score=top_score,
+        stop_reason=stop_reason,
     )
     for gate in _GRADE_GATES:
         gate(s)
@@ -1377,6 +1486,7 @@ def _grade_answer(
         weak_agreement=s.weak_agreement,
         unhydrated_names=s.unhydrated_names,
         under_floor=dominant and not (vouched or earn_high),
+        cut_off=s.cut_off,
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

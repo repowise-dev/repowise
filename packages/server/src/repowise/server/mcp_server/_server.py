@@ -25,10 +25,15 @@ from repowise.core.persistence.database import (
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
-from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
+from repowise.core.providers.embedding.base import (
+    KeylessEmbedder,
+    is_semantic_embedder,
+    warm_query_embedder,
+)
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
+from repowise.server.mcp_server._checkout import close_own_index_contexts
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
     SERVER_FAULT,
@@ -37,6 +42,7 @@ from repowise.server.mcp_server._transport import (
     guard_stdout,
     log_outcome,
 )
+from repowise.server.mcp_server._why_pointer import decisions_line
 
 _log = __import__("logging").getLogger("repowise.mcp")
 
@@ -419,16 +425,21 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         from pathlib import Path
 
         lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
+        has_index = lance_dir is not None and lance_dir.exists()
+        # Overlaps the import and open below; awaited before ready is set.
+        warmup = _asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
             await _asyncio.to_thread(__import__, "lancedb")
 
             from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            if lance_dir is not None and lance_dir.exists():
+            if has_index:
                 vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                 # Step 2: pre-connect so first search() is instant.
                 await vs._ensure_connected()
+                # Step 3: a warm embedder, so the first vector leg fits the grace.
+                await warmup
                 vector_store = vs
                 _state._vector_store_errors.pop("", None)
         except Exception as exc:
@@ -436,6 +447,8 @@ async def _load_vector_stores(repo_path: str | None) -> None:
             # is as broken as an unreadable one. No index is a keyless repo.
             if lance_dir is not None and lance_dir.exists():
                 _mark_vector_store_unreadable(exc)
+        finally:
+            warmup.cancel()  # a no-op once awaited; stops it on a failed open
 
         # decision_store is repointed to the shared page store — decisions are
         # now embedded under the "decision:" namespace within the same table.
@@ -505,6 +518,13 @@ def _detect_workspace(repo_path: str | None):
     except Exception:
         _log.debug("Workspace detection failed", exc_info=True)
         return None, None, None
+
+
+def _warm_savings_pricing(repo_path: str | None) -> None:
+    """Price the first calls' savings: starts a daemon thread, never awaited."""
+    from repowise.core.savings.pricing import warm_pricing_snapshot
+
+    warm_pricing_snapshot(repo_path)
 
 
 @asynccontextmanager
@@ -602,6 +622,7 @@ async def _lifespan(server: FastMCP):
 
         await close_test_impact_indexes()
         await registry.close()
+        await close_own_index_contexts()
         _state._registry = None
         _state._workspace_root = None
         return
@@ -678,6 +699,7 @@ async def _lifespan(server: FastMCP):
     # the server starts accepting connections without blocking on disk I/O.
     _state._vector_store_ready = asyncio.Event()
     _bg_task = asyncio.create_task(_load_vector_stores(_state._repo_path))
+    _warm_savings_pricing(_state._repo_path)
     _log.info("repowise MCP: ready (vector stores loading in background)")
 
     yield
@@ -688,6 +710,7 @@ async def _lifespan(server: FastMCP):
     _state._lancedb_ready = None
     _state._served_repo_id = None
 
+    await close_own_index_contexts()
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.
     await _state._vector_store.close()
@@ -759,24 +782,20 @@ _INSTRUCTIONS = (
     "repowise indexes this repository's code graph, git history and "
     "decisions. One call here often replaces several text searches and "
     "file reads.\n"
-    "- Use search_codebase(query) to find an identifier or literal: it "
-    "returns `lines` (path, line, kind, text; definitions first) read from "
-    "live files, and `complete: true` means that is every match. Path-like "
-    "and concept queries rank files.\n"
+    "- Use search_codebase(query) to find an identifier or literal: `lines` "
+    "(path, line, kind, text) are read from live files; `complete: true` "
+    "means every match.\n"
     '- Use get_context(targets=[symbol], include=["references"]) before a '
-    "rename or an update-all-callers change: it lists the definition, "
-    "imports and calls, and a `complete` list is the whole edit set.\n"
-    "- Use get_answer(question) for a how/where/why question: one cited "
-    "answer.\n"
-    "- Use get_risk before a non-trivial edit to a widely imported file, "
-    "get_change_risk before committing a multi-file change, and get_why "
-    "before changing an established pattern. Skip them for one-line fixes.\n"
-    "- Targets with uncommitted edits are flagged; the index is stale for "
-    "them until `repowise update --working-tree` runs.\n"
-    "If the tools report that the repo has no index, tell the user to run "
-    "'repowise init --yes --no-prose' in the repo root; it needs no API key "
-    "and makes no model calls. Suggest it, "
-    "do not run it yourself."
+    "rename: a `complete` list is the whole edit set. On a directory, "
+    'include=["files"] lists its files and tests.\n'
+    "- Use get_answer(question) for one how/where/why question per call.\n"
+    "- Use get_risk before editing a widely imported file, get_change_risk "
+    "before committing a multi-file change, get_why before changing an "
+    "established pattern. Skip them for one-line fixes.\n"
+    "- Targets with uncommitted edits are flagged: index facts for them "
+    "predate the edit.\n"
+    "No index: tell the user to run 'repowise init --yes --no-prose' (no "
+    "API key or model calls). Suggest it, do not run it yourself."
 )
 
 #: Opt-in workspace tools, named only once the selected surface has them.
@@ -786,12 +805,16 @@ _WORKSPACE_TOOL_LINES = {
 }
 
 
-def _instructions(enabled: Iterable[str] = ()) -> str:
-    """The server instructions, naming a workspace tool only when it is served."""
+def _instructions(enabled: Iterable[str] = (), repo_line: str | None = None) -> str:
+    """The server instructions, naming a workspace tool only when it is served.
+
+    *repo_line* says what get_why holds for the served repository.
+    """
+    text = f"{_INSTRUCTIONS}\n{repo_line}" if repo_line else _INSTRUCTIONS
     lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
     if not lines:
-        return _INSTRUCTIONS
-    return f"{_INSTRUCTIONS}\nIn this workspace, use {' and '.join(lines)}."
+        return text
+    return f"{text}\nIn this workspace, use {' and '.join(lines)}."
 
 
 mcp = _RepowiseMCP(
@@ -830,7 +853,7 @@ def create_mcp_server(
     ensure_full_surface()
 
     enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-    mcp._mcp_server.instructions = _instructions(enabled)
+    mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
     return mcp
 
 
@@ -1041,7 +1064,7 @@ def run_mcp(
 
         ensure_full_surface()
         enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-        mcp._mcp_server.instructions = _instructions(enabled)
+        mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 

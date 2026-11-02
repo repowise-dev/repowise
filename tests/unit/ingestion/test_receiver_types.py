@@ -1006,6 +1006,7 @@ def test_the_language_set_is_what_the_patterns_declare() -> None:
         "go",
         "java",
         "kotlin",
+        "pascal",
         "python",
         "rust",
         "swift",

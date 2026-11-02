@@ -37,6 +37,7 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "folder_coverage",
             "generation_context",
             "enable_onboarding",
+            "context_window",
         }
     ),
     # Agent-surface preferences. init records `hooks` and `editor_files` after

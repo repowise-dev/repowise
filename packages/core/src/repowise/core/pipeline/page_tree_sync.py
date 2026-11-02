@@ -23,11 +23,11 @@ logger = structlog.get_logger(__name__)
 
 
 async def rebuild_page_tree(session: Any, repo_id: str) -> int:
-    """Recompute and store parent, order and section for every page of a repo.
+    """Recompute and store placement and layer metadata for every page of a repo.
 
-    Returns the number of rows whose placement changed. Safe to call after any
-    write to wiki_pages, and cheap enough to call unconditionally: it reads
-    four small columns plus metadata and writes only what moved.
+    Returns the number of rows whose placement or metadata changed. Safe to
+    call after any write to wiki_pages, and cheap enough to call
+    unconditionally: it reads tree fields and metadata and writes only changes.
     """
     from sqlalchemy import select
 
@@ -46,6 +46,7 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
                     Page.display_order,
                     Page.section_number,
                     Page.freshness_status,
+                    Page.title,
                 ).where(Page.repository_id == repo_id)
             )
         )
@@ -57,8 +58,9 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
 
     nodes: list[TreeNode] = []
     before: dict[str, tuple[str | None, int, str | None]] = {}
+    metadata_before: dict[str, dict[str, Any]] = {}
 
-    for pid, page_type, target, meta_json, parent, order, section, freshness in rows:
+    for pid, page_type, target, meta_json, parent, order, section, freshness, title in rows:
         # A tombstoned page documents a file that no longer exists. Leaving it
         # in the tree would show deleted files in the navigation, so it keeps
         # its row and its content but loses its place.
@@ -70,24 +72,31 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
         except (json.JSONDecodeError, TypeError):
             metadata = {}
         before[pid] = (parent, order, section)
+        metadata_before[pid] = metadata.copy() if isinstance(metadata, dict) else {}
         nodes.append(
             TreeNode(
                 page_id=pid,
                 page_type=page_type or "",
                 target_path=target or "",
                 metadata=metadata if isinstance(metadata, dict) else {},
+                title=title or "",
             )
         )
 
     assign_page_tree(nodes)
 
     placed = {n.page_id: (n.parent_page_id, n.display_order, n.section_number) for n in nodes}
+    metadata_updates = {
+        n.page_id: json.dumps(n.metadata)
+        for n in nodes
+        if n.metadata != metadata_before[n.page_id]
+    }
     changed = 0
     for pid, current in before.items():
         # A tombstoned page is not in ``placed``; unplace it rather than
         # leaving whatever it carried from when its file still existed.
         wanted = placed.get(pid, (None, 0, None))
-        if wanted != current:
+        if wanted != current or pid in metadata_updates:
             changed += 1
 
     if not changed:
@@ -100,6 +109,8 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
         page.parent_page_id = parent
         page.display_order = order
         page.section_number = section
+        if page.id in metadata_updates:
+            page.metadata_json = metadata_updates[page.id]
 
     logger.info("page_tree_rebuilt", repo_id=repo_id, pages=len(nodes), changed=changed)
     return changed

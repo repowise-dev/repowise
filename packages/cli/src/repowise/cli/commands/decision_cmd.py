@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -320,10 +321,56 @@ def decision_add(
             f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
-    _report_added(repo_path, stored, fmt)
+    warnings = _collect_add_warnings(repo_path, fields, stored.kind)
+    _report_added(repo_path, stored, fmt, warnings=warnings)
 
 
-def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
+def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
+    """Return True if raw_path resolves to an existing file or directory under repo_root."""
+    clean = raw_path.strip()
+    if not clean:
+        return True
+    try:
+        target = (repo_root / clean).resolve()
+        return target.is_relative_to(repo_root) and target.exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _collect_path_warnings(repo_path: Path, paths: list[str]) -> list[str]:
+    """Return advisory warnings for any affected paths not found under repo_path."""
+    resolved_root = repo_path.resolve()
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for p in paths:
+        if not p.strip() or _is_path_under_repo(resolved_root, p) or p in seen:
+            continue
+        seen.add(p)
+        warnings.append(f"affects path not found: {p}")
+    return warnings
+
+
+def _collect_add_warnings(
+    repo_path: Path, fields: _DecisionFields, kind: str
+) -> list[str]:
+    """Collect non-blocking advisory warnings for missing rationale or affects paths.
+
+    An unresolvable ``--affects`` path still persists because the file may be
+    created later in the branch, but surfaces a warning so the author knows the
+    record currently governs nothing. Agreements govern conduct rather than files
+    and are exempt from path checks.
+    """
+    warnings: list[str] = []
+    if kind != AGREEMENT_KIND:
+        warnings.extend(_collect_path_warnings(repo_path, fields.affected_files))
+    if not (fields.rationale and fields.rationale.strip()):
+        warnings.append("no rationale given")
+    return warnings
+
+
+def _report_added(
+    repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str] | None = None
+) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
         # The full id: a caller passes it back to `confirm` or `show`.
@@ -336,6 +383,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         }
         if stored.existed:
             payload["kept"] = stored.kept
+        if warnings:
+            payload["warnings"] = list(warnings)
         emit_json({"repo": str(repo_path), "decision": payload})
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
@@ -344,6 +393,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         f"\n[green]{verb}[/green] [dim]({stored.status}{kept})[/dim] — "
         f"ID: [bold]{stored.id[:8]}[/bold]"
     )
+    for warning in warnings or []:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _refuse_partial_flags(fmt: str, *given) -> None:
@@ -352,12 +403,36 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
     Falling through to the prompts would hang a caller that has no stdin.
     """
     if any(given) or fmt == "json":
+        is_non_interactive = fmt == "json" or not sys.stdin.isatty()
+
+        if is_non_interactive:
+            # given[0] corresponds to title, given[2] corresponds to decision_text
+            title = given[0] if len(given) > 0 else None
+            decision_text = given[2] if len(given) > 2 else None
+
+            missing = []
+            if not title:
+                missing.append("--title")
+            if not decision_text:
+                missing.append("--decision")
+
+            missing_str = " and ".join(missing) if missing else "required flags"
+            guidance = (
+                f"Pass {missing_str}, e.g. "
+                '`repowise decision add --title "<what>" --decision "<chosen>" '
+                "[--rationale ...] [--affects <path>]`."
+            )
+        else:
+            guidance = (
+                "Run `repowise decision add` with no flags to be "
+                "prompted for each field instead."
+            )
+
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
                 "decision without prompting.",
-                "guidance": "Run `repowise decision add` with no flags to be "
-                "prompted for each field instead.",
+                "guidance": guidance,
             },
             fmt,
         )

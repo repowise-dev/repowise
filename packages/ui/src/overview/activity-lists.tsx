@@ -1,5 +1,6 @@
 import * as React from "react";
-import { formatDateTime, formatRelativeTime, stripMarkdown } from "../lib/format";
+import { formatDateTime, stripMarkdown } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface CommitRow {
   sha: string;
@@ -65,7 +66,7 @@ export function CommitRows({
                 className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)]"
                 title={`${c.author_name} · ${formatDateTime(c.committed_at)}`}
               >
-                {formatRelativeTime(c.committed_at)}
+                <RelativeTime date={c.committed_at} />
               </span>
             )}
           </A>
@@ -113,7 +114,12 @@ export function DecisionRows({
             </span>
             <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)]">
               {d.status}
-              {d.created_at ? ` · ${formatRelativeTime(d.created_at)}` : ""}
+              {d.created_at && (
+                <>
+                  {" · "}
+                  <RelativeTime date={d.created_at} />
+                </>
+              )}
             </span>
           </A>
         </li>

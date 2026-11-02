@@ -310,8 +310,9 @@ file pages nest under their parent directory.
 | `className` | `string` | no | Forwarded to the outer container. |
 | `copy` | `Partial<DocsTreeCopy>` | no | Wording overrides for a host translating the tree; English defaults otherwise. |
 
-Behaviour: a pinned "Start here" group (overview, onboarding chapters,
-flow pages), a "Code reference" folder holding file pages with their
+Behaviour: a pinned "Start here" group (overview, onboarding chapters),
+a "Walkthroughs" group for flow pages and an "Other modules" group for
+modules no layer claims (both shut by default), a "Code reference" folder holding file pages with their
 symbols nested under each file, debounced search that renders 200 rows
 at a time, type filter, and status filter (`all` / `fresh` / `stale` /
 `outdated` / `unwritten`), also reachable from the counts beside the

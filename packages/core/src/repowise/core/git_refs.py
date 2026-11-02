@@ -25,6 +25,7 @@ __all__ = [
     "change_base",
     "changed_files",
     "commit_file_sets",
+    "common_dir",
     "current_branch",
     "default_base",
     "default_branch",
@@ -33,6 +34,7 @@ __all__ = [
     "is_ancestor",
     "is_shallow",
     "list_branches",
+    "ref_sha",
     "refs_containing",
     "refs_merged_into",
     "resolve",
@@ -77,6 +79,26 @@ def toplevel(repo_path: str) -> str:
     to resolve it before it can match a path against an index.
     """
     return _read(repo_path, ["rev-parse", "--show-toplevel"])
+
+
+def ref_sha(repo_path: str, refname: str) -> str:
+    """The commit the full refname *refname* points at, ``""`` when no such ref exists.
+
+    Exact: unlike :func:`resolve`, a range, a revision expression or a short
+    name is never read as a ref.
+    """
+    if not refname.startswith("refs/"):
+        return ""
+    return _read(repo_path, ["show-ref", "--verify", "--hash", refname])
+
+
+def common_dir(repo_path: str) -> str:
+    """The git directory every worktree of *repo_path* shares, ``""`` when it is not a repo.
+
+    Refs, packed refs and ``FETCH_HEAD`` live here, not in a worktree's own git dir.
+    """
+    found = _read(repo_path, ["rev-parse", "--git-common-dir"])
+    return str(Path(repo_path, found)) if found else ""
 
 
 def remote_name(repo_path: str) -> str:

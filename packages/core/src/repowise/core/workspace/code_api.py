@@ -235,8 +235,12 @@ def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
     return frozenset(name for rel in entry_files for name in dunder_all(repo_path / rel) or ())
 
 
-def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
-    """``[package].name`` and the crate root, which is the whole public surface."""
+def _cargo(text: str, root: str, crate_dir: Path) -> tuple[str, frozenset[str]] | None:
+    """``[package].name`` and the crate root, which is the whole public surface.
+
+    A crate with no ``[lib]`` table and no ``src/lib.rs`` is bin-only: a
+    program, not a library, so it publishes nothing.
+    """
     import tomllib
 
     try:
@@ -248,6 +252,8 @@ def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
     if not isinstance(name, str) or not name:
         return None
     lib = data.get("lib")
+    if not isinstance(lib, dict) and not (crate_dir / "src" / "lib.rs").is_file():
+        return None
     path = lib.get("path") if isinstance(lib, dict) else None
     entry = path if isinstance(path, str) else "src/lib.rs"
     return name, frozenset({f"{root}/{entry}" if root else entry})
@@ -293,7 +299,7 @@ def find_published_packages(
                 text = manifest.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            parsed = _read_manifest(ecosystem, text, root)
+            parsed = _read_manifest(ecosystem, text, root, dirpath)
             if parsed is None:
                 counts["code_unpublished_manifest"] = (
                     counts.get("code_unpublished_manifest", 0) + 1
@@ -340,7 +346,7 @@ def find_published_packages(
 
 
 def _read_manifest(
-    ecosystem: str, text: str, root: str
+    ecosystem: str, text: str, root: str, manifest_dir: Path
 ) -> tuple[str, frozenset[str], frozenset[str]] | None:
     if ecosystem == "npm":
         try:
@@ -353,7 +359,7 @@ def _read_manifest(
         return (npm[0], npm[1], frozenset()) if npm else None
     if ecosystem == "pypi":
         return _pypi(text, root)
-    cargo = _cargo(text, root)
+    cargo = _cargo(text, root, manifest_dir)
     return (cargo[0], cargo[1], frozenset()) if cargo else None
 
 

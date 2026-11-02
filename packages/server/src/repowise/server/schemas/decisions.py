@@ -60,6 +60,9 @@ class DecisionRecordResponse(BaseModel):
     # /evidence endpoint instead).
     evidence_count: int | None = None
     evidence_preview: EvidencePreview | None = None
+    # The named files that are churn hotspots. List endpoint only, like the
+    # evidence fields above; it is one of the signals the review order reads.
+    hotspot_files: list[str] | None = None
     # Effective currency from the acceptance, or None for a candidate. This is
     # the authority answer; ``status`` is the projection kept in step for
     # readers that predate the split. A record can be stored ``active`` and

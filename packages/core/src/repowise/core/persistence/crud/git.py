@@ -200,6 +200,22 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC)
 
 
+def git_metadata_dict(row: GitMetadata) -> dict:
+    """A stored row in the shape the git indexer hands analysis.
+
+    Keys are the column names the indexer writes; JSON columns stay as their
+    stored strings. Timestamps come back aware UTC like fresh ones: SQLite
+    returns them naive, and callers merge stored rows with fresh ones.
+    """
+    out: dict = {}
+    for col in row.__table__.columns:
+        if col.name in ("id", "repository_id"):
+            continue
+        value = getattr(row, col.name, None)
+        out[col.name] = _as_aware_utc(value) if isinstance(value, datetime) else value
+    return out
+
+
 async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) -> dict[str, dict]:
     """Return ``{file_path: {field: value}}`` for the dead-code scoring fields.
 

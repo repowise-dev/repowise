@@ -40,7 +40,7 @@ from repowise.server.mcp_server._symbol_lookup import (
     resolve_symbol_rows,
     symbol_id_variants,
 )
-from repowise.server.mcp_server.tool_context.preview import _file_preview
+from repowise.server.mcp_server.tool_context.preview import _file_preview_async
 
 
 @dataclass(frozen=True)
@@ -220,9 +220,13 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
             ),
         )
     )
-    # Deterministic pick among several matches: shortest path, then
-    # lexicographic.
-    candidates = sorted(res.scalars().all(), key=lambda p: (len(p.target_path), p.target_path))
+    # SQLite's LIKE ignores case; the exact segment test decides, as in
+    # _directory._git_rows_under. Deterministic pick among several matches:
+    # shortest path, then lexicographic.
+    candidates = sorted(
+        (p for p in res.scalars().all() if f"/{clean_target}/" in f"/{p.target_path}/"),
+        key=lambda p: (len(p.target_path), p.target_path),
+    )
     return candidates[0] if candidates else None
 
 
@@ -351,7 +355,7 @@ async def _git_metadata(q: TargetQuery) -> Resolution | None:
 async def _live_file(q: TargetQuery) -> Resolution | None:
     """A live file never indexed into git_metadata is still a valid public
     path; resolve it from the checkout."""
-    if _file_preview(q.repo_root, q.target) is not None:
+    if await _file_preview_async(q.repo_root, q.target) is not None:
         return ResolvedTarget("file", file_path=q.target, live_unindexed_file=True)
     return None
 

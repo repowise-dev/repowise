@@ -36,6 +36,7 @@ class UpdateOptions:
     progress: str = "rich"
     skip_cross_repo_hooks: bool = False
     include_working_tree: bool = False
+    defer_docs: bool = False
 
 
 @dataclass
@@ -52,6 +53,7 @@ class UpdateRun:
     cfg: dict = field(default_factory=dict)
     index_only: bool = False
     base_ref: str | None = None
+    defer_docs: bool = False
     head: str | None = None
     config: ConfigChanges | None = None
     prev_renderer_fp: str | None = None

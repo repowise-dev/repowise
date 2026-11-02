@@ -373,6 +373,7 @@ async function fetchFileContext(host, path) {
 // ../ui/src/lib/format.ts
 function parseDate(date) {
   if (date instanceof Date) return date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return /* @__PURE__ */ new Date(`${date.trim()}Z`);
   }
@@ -401,9 +402,19 @@ function relativeTimeParts(date) {
   if (months < 12) return { unit: "mo", value: months };
   return { unit: "y", value: Math.floor(months / 12) };
 }
-function formatRelativeTime(date) {
+var RELATIVE_TIME_WORDS = {
+  now: "just now",
+  s: "{value}s ago",
+  m: "{value}m ago",
+  h: "{value}h ago",
+  d: "{value}d ago",
+  w: "{value}w ago",
+  mo: "{value}mo ago",
+  y: "{value}y ago"
+};
+function formatRelativeTime(date, words = RELATIVE_TIME_WORDS) {
   const { unit, value } = relativeTimeParts(date);
-  return unit === "now" ? "just now" : `${value}${unit} ago`;
+  return (words[unit] ?? RELATIVE_TIME_WORDS[unit]).replace("{value}", String(value));
 }
 function formatRelativeTimeOrNull(iso, fallback = "—") {
   if (!iso) return fallback;

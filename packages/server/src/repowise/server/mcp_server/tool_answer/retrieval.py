@@ -25,6 +25,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
     _CANDIDATE_FILES_POOL,
+    _CANDIDATE_FILES_SCORE_FLOOR,
     _COVERAGE_FLOOR,
     _DEFINES_CHAR_BUDGET,
     _DOMAIN_PENALTY,
@@ -94,10 +95,12 @@ def serialize_candidate_files(hits: list[dict]) -> list[str]:
 
     A file only the 1-hop graph walk added is left out: it neighbours a top hit
     but nothing in the question matched it, so it is not a file to open next.
+    So is one scoring far below the top hit.
     """
+    floor = max((h.get("score") or 0.0 for h in hits), default=0.0) * _CANDIDATE_FILES_SCORE_FLOOR
     paths: list[str] = []
     for h in hits:
-        if h.get("_sources") == {"graph_expand"}:
+        if h.get("_sources") == {"graph_expand"} or (h.get("score") or 0.0) < floor:
             continue
         path = hit_file_path(h)
         if path and path not in paths:

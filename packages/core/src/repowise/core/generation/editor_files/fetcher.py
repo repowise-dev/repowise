@@ -57,7 +57,7 @@ from .sections import load_sections, resolve_sections
 from .tech_stack import detect_build_commands, detect_tech_stack
 
 # Maximum items per section: the block is read into every agent turn.
-_MAX_MODULES = 10
+_MAX_MODULES = 6
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 _MAX_DECISIONS = 3
@@ -152,7 +152,7 @@ class EditorFileDataFetcher:
     # ------------------------------------------------------------------
 
     async def _get_architecture_summary(self) -> str:
-        """Extract 2-4 sentences from the repo_overview wiki page."""
+        """The lead sentence of the repo_overview wiki page."""
         pages = await crud.list_pages(
             self._session,
             self._repo_id,
@@ -163,7 +163,7 @@ class EditorFileDataFetcher:
             return ""
         content = pages[0].content or ""
         skip_preamble = _is_structure_only(pages[0])
-        return _extract_sentences(content, max_sentences=4, skip_preamble=skip_preamble)
+        return _extract_sentences(content, max_sentences=1, skip_preamble=skip_preamble)
 
     async def _get_key_modules(self) -> list[KeyModule]:
         """Top modules by PageRank with owner from git metadata."""

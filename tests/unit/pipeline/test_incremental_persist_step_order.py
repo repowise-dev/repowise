@@ -132,7 +132,7 @@ async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(rep
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_graph_seed_persist_is_opt_in(repo, monkeypatch, enabled: bool) -> None:
+async def test_graph_seed_persist_follows_the_switch(repo, monkeypatch, enabled: bool) -> None:
     import repowise.core.pipeline.incremental.graph_seed as graph_seed
 
     calls = []
@@ -144,7 +144,7 @@ async def test_graph_seed_persist_is_opt_in(repo, monkeypatch, enabled: bool) ->
     if enabled:
         monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "1")
     else:
-        monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+        monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
     rec = StepRecorder(monkeypatch)
     install_shared_steps(rec)
 

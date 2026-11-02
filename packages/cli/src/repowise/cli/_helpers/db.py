@@ -99,6 +99,44 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
         yield opened
 
 
+async def adopt_moved_repo_best_effort(root: Path) -> bool:
+    """Point a moved or copied checkout's only repository row at *root*.
+
+    ``repowise update`` keys its repository row on ``local_path``. In a checkout
+    that was moved or copied after ``init`` that key misses, and the update
+    would insert a second row, which the MCP server then resolves to the old
+    tree. Running this once, before any update write, rewrites the one row so
+    every later lookup by path hits it. See
+    :func:`repowise.core.persistence.crud.adopt_moved_repository` for the rule.
+
+    Returns True when a row was rewritten. Never raises and never creates a
+    store: a missing store, a locked one or a storage error leaves the update
+    to behave exactly as it did before.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli import helpers as _facade  # patch point for tests
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import adopt_moved_repository, get_repository_by_path
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(root):
+        return False
+    engine = None
+    try:
+        engine = create_engine(_facade.get_db_url_for_repo(root))
+        factory = create_session_factory(engine)
+        async with get_session(factory) as session:
+            if await get_repository_by_path(session, str(root)) is not None:
+                return False
+            return await adopt_moved_repository(session, str(root)) is not None
+    except (SQLAlchemyError, OSError):
+        return False
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
 #: sized for bulk graph-edge writes; inheriting it here is a trap, because a
 #: read command opens several engines (``status`` four, ``doctor`` five) and a

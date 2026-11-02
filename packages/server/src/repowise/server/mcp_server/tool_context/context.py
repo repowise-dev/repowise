@@ -20,7 +20,7 @@ Optional ``include`` parameter widens the response:
   - include=["ownership"] → primary owner, bus factor, contributor count; on a
                             component target, declared owners against recent
                             activity, with findings
-  - include=["last_change"]→ last commit date and author
+  - include=["last_change"]→ last commit date, and its author when stored
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → decisions governing the target, in three labelled
@@ -39,6 +39,8 @@ Optional ``include`` parameter widens the response:
                             targets as a symptom, each with the signals that fired
   - include=["provenance"]→ a file's commits by source (agent, human-attested,
                             unknown) with coverage and the honest agent share
+  - include=["files"]     → on a directory, every file under it (capped, with
+                            ``complete`` and ``omitted``) and its tests
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -79,6 +81,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._packages import is_package_target, package_cards
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     needs_routing,
     route_targets,
@@ -114,6 +117,7 @@ _INCLUDE_BLOCKS = frozenset(
         "changes",
         "provenance",
         "suspects",
+        "files",
     }
 )
 
@@ -139,33 +143,23 @@ async def get_context(
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns title, summary, signatures with lines, hotspot bit and
-    decision_record titles. A symbol row without symbol_id is path::name.
-    fix_history (count, age, bug_magnet) appears only on files with counted
-    bug fixes; hotspot is churn. Either is a cue to call get_risk. episodes
-    counts the dated records bound to a target (absent at zero); get_why serves
-    the bodies. A symbol target counts as its file; a module aggregates all
-    beneath it. Batch targets in one call. No source bytes by default:
-    include=["skeleton"] gives the whole file body-elided and line-verified in
-    ONE call, or Read it. Do not call get_symbol per signature.
-    For a rename or update-all-callers task, include=["references"] is the
-    whole edit set when complete.
-
-    Defaults fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
-    ``_meta.recovery_unavailable`` names a storage failure.
-    Include-gated blocks are projections, not omissions.
+    Returns summary, signatures with lines, hotspot, fix_history and
+    decision titles; either risk cue means get_risk. Batch targets in one
+    call. Whole file, body-elided and line-verified: include=["skeleton"]
+    in ONE call, or Read it; do not call get_symbol per signature. Rename:
+    include=["references"] is the whole edit set when ``complete``. Which
+    files in a directory lack tests: include=["files"] on it.
 
     Args:
-        targets: paths, "path::Symbol" ids, "component:<name>",
+        targets: paths, "path::Symbol", "component:<name>",
             "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | references | metrics | community | decisions | skeleton
-            | skeleton+ | health | doc_drift (docs naming it) | symbols
-            (all, not top 15) | changes | provenance | suspects.
-        compact: False adds structure+imports+docstrings.
+        include: callers | callees | references | skeleton | skeleton+
+            | files | symbols (all, not top 15) | decisions | full_doc
+            | ownership | last_change | metrics | community | health
+            | doc_drift | changes | provenance | suspects.
+        compact: False adds structure, imports, docstrings.
+        symptom: issue text or stack trace to rank ``suspects`` on.
         repo: usually omitted.
-        symptom: issue text, error or stack trace suspects ranks on.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
@@ -225,12 +219,30 @@ async def get_context(
     }
     if suspects is not None:
         response["suspects"] = suspects
+    # include=["decisions"] lists the titles on each card already.
+    if "decisions" not in include_set:
+        await attach_why_pointer(response, ctx, targets)
     _attach_whole_files(response, results)
     _attach_cross_repo(response, ctx.alias)
     drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
+    await asyncio.to_thread(_declare_replaced_reads, response, ctx.path)
     return response
+
+
+def _declare_replaced_reads(response: dict[str, Any], repo_root: Any) -> None:
+    """Credit each file card with what one Read of its file costs. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import context_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    try:
+        tokens = context_replaced_tokens(response, lambda p: file_read_tokens(repo_root, p))
+    except Exception:  # savings accounting never breaks a tool call
+        _log.debug("get_context savings declaration failed", exc_info=True)
+        return
+    declare_replaced(response, tokens)
 
 
 def _include_set(include: list[str] | None, ignored: list[dict[str, Any]]) -> set[str]:

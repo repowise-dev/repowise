@@ -133,8 +133,9 @@ async def test_get_context_single_file(setup_mcp):
     assert t["ownership"]["primary_owner"] == "Alice"
     assert t["ownership"]["owner_pct"] == 0.65
     assert t["ownership"]["contributor_count"] == 2
-    # Last change
-    assert t["last_change"]["author"] == "Alice"
+    # Last change. The fixture's authors carry no commit time, so no author is
+    # named; the primary owner is not who made the last change.
+    assert "author" not in t["last_change"]
     # Days from the file's last commit to the repository's newest one, not the
     # file's age: this row is the newest, so nothing has changed since.
     assert t["last_change"]["days_ago"] == 0
