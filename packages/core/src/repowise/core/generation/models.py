@@ -148,6 +148,43 @@ def _normalize_evidence_files(
     return result
 
 
+#: Longest one-shot steering instruction a request may carry. Long enough for
+#: the paragraph a reader types about what the page should focus on, short
+#: enough that the prompt block it renders cannot crowd out the page's own
+#: material. Enforced at the request surface and accepted verbatim here, so a
+#: caller reaching the config directly gets the same bound as the REST route.
+MAX_STEERING_CHARS = 2000
+
+
+def _normalize_steering(
+    raw_steering: Mapping[str, Any], *, label: str = "steering"
+) -> dict[str, str]:
+    """Validate a page-id -> instruction mapping, framing errors with *label*.
+
+    Strict on purpose. Unlike ``source_evidence_files``, every entry here comes
+    from a single request rather than a checked-in config, so there is no
+    retired-key case to forgive: an entry that names no page, or carries no
+    text, is a caller bug whose only visible symptom would be a page that
+    regenerated exactly as before.
+    """
+    if not isinstance(raw_steering, Mapping):
+        raise ValueError(f"{label} must be a mapping of page id to instruction")
+    result: dict[str, str] = {}
+    for raw_page_id, raw_text in raw_steering.items():
+        page_id = str(raw_page_id).strip()
+        if not page_id or ":" not in page_id:
+            raise ValueError(f"{label} keys must be page ids such as 'module_page:src/core'")
+        if not isinstance(raw_text, str):
+            raise ValueError(f"{label}.{page_id} must be a string")
+        text = raw_text.strip()
+        if not text:
+            raise ValueError(f"{label}.{page_id} is empty")
+        if len(text) > MAX_STEERING_CHARS:
+            raise ValueError(f"{label}.{page_id} is longer than {MAX_STEERING_CHARS} characters")
+        result[page_id] = text
+    return result
+
+
 class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
     """Small immutable mapping that preserves the frozen config contract.
 
@@ -189,6 +226,45 @@ class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
         return hash(frozenset(self.items()))
 
     def __reduce__(self) -> tuple[type[_FrozenEvidenceFiles], tuple[dict[str, tuple[str, ...]]]]:
+        return type(self), (dict(self),)
+
+
+class _FrozenSteering(Mapping[str, str]):
+    """Page id -> one-shot instruction, held to the same frozen contract.
+
+    Same shape as ``_FrozenEvidenceFiles`` for the same reasons: the config is
+    hash-tested, so the stored value has to be immutable and hashable while
+    still reading as a mapping.
+    """
+
+    def __init__(self, values: Mapping[str, str] | None = None) -> None:
+        object.__setattr__(
+            self,
+            "_items",
+            MappingProxyType(dict(values or {})),
+        )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise TypeError("steering is immutable")
+
+    def __getitem__(self, key: str) -> str:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.items()))
+
+    def __reduce__(self) -> tuple[type[_FrozenSteering], tuple[dict[str, str]]]:
         return type(self), (dict(self),)
 
 
@@ -359,6 +435,11 @@ class GenerationConfig:
     # material budget at full size; a local model sets it (see
     # ``with_provider_window``) and ``material_budget`` shrinks to fit.
     context_window: int | None = None
+    # Page id -> instruction for this run only, appended to that page's prompt.
+    # A regenerate request carries it and nothing persists it: the stored
+    # ``human_notes`` stay display-only, so a note written before this existed
+    # never silently becomes a model instruction (issue #2289).
+    steering: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def input_token_limit(self) -> int | None:
@@ -399,6 +480,7 @@ class GenerationConfig:
         snapshot["source_evidence_files"] = {
             page_key: tuple(paths) for page_key, paths in self.source_evidence_files.items()
         }
+        snapshot["steering"] = dict(self.steering)
         return snapshot
 
     @classmethod
@@ -480,6 +562,7 @@ class GenerationConfig:
             "source_evidence_files",
             _FrozenEvidenceFiles(evidence_files),
         )
+        object.__setattr__(self, "steering", _FrozenSteering(_normalize_steering(self.steering)))
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 
 

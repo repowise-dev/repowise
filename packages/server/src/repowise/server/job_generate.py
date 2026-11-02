@@ -144,6 +144,11 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
     style / reasoning / language / concurrency, and therefore the same scope and
     cost. A per-request ``style`` override (carried in the job config) wins over
     the repo's default, matching the single-page regenerate contract.
+
+    A per-request ``steering`` instruction is keyed on the job's page id, which
+    is the identity the generator resolves when it writes the page. It is
+    deliberately not part of the estimate's cost: it adds prompt tokens to one
+    page, and the estimate prices pages.
     """
     from repowise.core.generation import GenerationConfig
     from repowise.core.generation.styles import resolve_style
@@ -152,6 +157,9 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
 
     repo_cfg = load_repo_config(repo_path)
     effective_style = resolve_style(config.get("style") or wiki_style, repo_path=repo_path).name
+    steering_text = (config.get("steering") or "").strip()
+    page_id = config.get("page_id")
+    steering = {page_id: steering_text} if steering_text and page_id else {}
     return GenerationConfig.from_repo_config(
         repo_cfg,
         reasoning=resolve_reasoning(config=repo_cfg),
@@ -159,6 +167,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
         language=repo_cfg.get("language", "en"),
         enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
         max_concurrency=int(config.get("concurrency") or 12),
+        steering=steering,
     )
 
 

@@ -49,6 +49,7 @@ from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headin
 from .pertype import PerTypeGenerationMixin
 from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .reuse import reuse_prior_response
+from .steering import apply_steering
 from .structural import (
     StructuralRenderMixin,
     register_filters,
@@ -427,7 +428,21 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         keyless stub, or a stub left by a failed provider call), it is never
         reused: copying a placeholder over a placeholder would keep the page
         unwritten forever and hide the failure from ``repowise generate``.
+
+        A one-shot steering instruction (issue #2289) is applied here rather
+        than at each caller, because every model-written page type reaches the
+        provider through this method and the instruction is keyed on the page id
+        this call already resolves. It is appended to the prompt and folded
+        into the reuse digest together, so a steered request never returns the
+        body the reader just asked to replace.
         """
+        user_prompt, reuse_content_hash = apply_steering(
+            self._config.steering,
+            page_type=page_type,
+            target_path=target_path,
+            user_prompt=user_prompt,
+            reuse_content_hash=reuse_content_hash,
+        )
         # Persistent cross-run cache: if the page exists from a prior run, was
         # produced by the same model, and still matches on its subject, reuse
         # the stored content without an LLM call.

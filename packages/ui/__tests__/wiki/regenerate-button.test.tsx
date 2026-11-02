@@ -95,4 +95,27 @@ describe("GenerateConfirmDialog (bulk overrides)", () => {
     expect(screen.queryByText("How much to write")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "All" })).not.toBeInTheDocument();
   });
+
+  it("offers the steering field only when the host can send one", () => {
+    const onSteeringChange = vi.fn();
+    const { rerender } = render(<GenerateConfirmDialog {...base} />);
+    expect(screen.queryByLabelText(/What should this page focus on/)).not.toBeInTheDocument();
+
+    rerender(<GenerateConfirmDialog {...base} steering="" onSteeringChange={onSteeringChange} />);
+    const field = screen.getByLabelText(/What should this page focus on/);
+    fireEvent.change(field, { target: { value: "focus on the CLI" } });
+    expect(onSteeringChange).toHaveBeenCalledWith("focus on the CLI");
+  });
+
+  it("keeps a typed instruction visible in the field", () => {
+    render(
+      <GenerateConfirmDialog
+        {...base}
+        steering="focus on the CLI"
+        onSteeringChange={vi.fn()}
+        steeringLabel="Focus for this run"
+      />,
+    );
+    expect(screen.getByLabelText("Focus for this run")).toHaveValue("focus on the CLI");
+  });
 });

@@ -1375,7 +1375,10 @@
     "pageGenerate": {
       "failed": "Couldn't start generation",
       "write": "Write this page with AI",
-      "rewrite": "Rewrite with AI"
+      "rewrite": "Rewrite with AI",
+      "steeringLabel": "What should this page focus on?",
+      "steeringHint": "Sent with this regeneration only. It does not change the page's notes.",
+      "steeringPlaceholder": "e.g. focus on the deployment path and the host profiles; skip the editor plugins"
     }
   },
   "zoom": {

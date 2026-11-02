@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.generation.models import MAX_STEERING_CHARS
 from repowise.core.generation.nav_titles import apply_outline_labels
 from repowise.core.generation.page_redirects import (
     SupersededError,
@@ -309,6 +310,13 @@ async def regenerate_page_by_query(
         "none",
         description="What to do with the pages that summarize this one: none / dependents / full.",
     ),
+    steering: str | None = Query(
+        None,
+        max_length=MAX_STEERING_CHARS,
+        description="Optional instruction for this regeneration only, such as which part of "
+        "the code the page should focus on. Carried in the job config and appended to this "
+        "page's prompt; never stored on the page.",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Force-regenerate a single wiki page (page_id as query param).
@@ -322,6 +330,11 @@ async def regenerate_page_by_query(
     and ``cascade`` controls whether the pages summarizing this one are refreshed
     too. Both are validated here and carried in the job config; the executor
     resolves them.
+
+    ``steering`` is the reader's lever for a page that came out wrong: a
+    sentence about what the page should cover, applied to this request and
+    dropped afterwards. The page's stored notes are a separate, display-only
+    field, so this never rewrites them (issue #2289).
     """
     from repowise.server.routers.repos import _accepted, _ensure_no_active_job, _launch_job_task
 
@@ -336,6 +349,9 @@ async def regenerate_page_by_query(
         )
 
     job_config: dict = {"mode": "single_page", "page_id": page_id, "cascade": cascade}
+    steering_text = (steering or "").strip()
+    if steering_text:
+        job_config["steering"] = steering_text
     if style is not None:
         from repowise.core.generation.styles import is_known_style, list_styles
 

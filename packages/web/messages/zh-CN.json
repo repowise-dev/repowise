@@ -1375,7 +1375,10 @@
     "pageGenerate": {
       "failed": "无法启动生成",
       "write": "用 AI 撰写此页面",
-      "rewrite": "用 AI 重写"
+      "rewrite": "用 AI 重写",
+      "steeringLabel": "希望此页面聚焦什么？",
+      "steeringHint": "仅在本次重新生成时发送，不会修改页面的备注。",
+      "steeringPlaceholder": "例如：聚焦部署流程和主机配置，跳过编辑器插件"
     }
   },
   "zoom": {
