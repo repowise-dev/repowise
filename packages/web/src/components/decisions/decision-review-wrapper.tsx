@@ -19,6 +19,7 @@ import {
   reaffirmDecision,
 } from "@/lib/api/decisions";
 import { reviewEach } from "@repowise-dev/ui/decisions";
+import { buildReviewCandidatesPrompt } from "@/lib/decision-prompts";
 import { useTranslations } from "next-intl";
 import { formatNumber, stripMarkdown } from "@repowise-dev/ui/lib/format";
 
@@ -138,6 +139,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       onDismiss={(d) => void review(d, "dismiss")}
       onReaffirm={(d) => void review(d, "reaffirm")}
       onDismissMany={dismissMany}
+      reviewPrompt={buildReviewCandidatesPrompt}
       pendingIds={pending}
       repoId={repoId}
       LinkComponent={Link}

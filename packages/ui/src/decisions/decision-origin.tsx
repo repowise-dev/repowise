@@ -12,6 +12,8 @@ type OriginFields = Pick<
   | "currency"
   | "status"
   | "accepter"
+  | "accepter_kind"
+  | "accepter_session"
   | "auto_accepted"
   | "applied_count"
   | "last_applied_at"
@@ -30,26 +32,59 @@ function safeHref(url: string | null | undefined): string | null {
   return url && /^https:\/\/\S+$/.test(url) ? url : null;
 }
 
-/**
- * Who accepted a decision that came in from GitHub, in the bot's own words.
- * Null for a record nobody accepted, or one accepted elsewhere.
- */
-export function githubAcceptedLine(d: OriginFields): string | null {
-  const accepted = d.currency != null ? d.currency !== "dismissed" : d.status === "active";
-  const login = githubLogin(d.accepter);
-  if (!accepted || !login) return null;
-  return d.auto_accepted ? `Accepted automatically from @${login}'s reply` : `Accepted by @${login}`;
+/** A recorded session or key label, clipped so a long one never swamps the line. */
+const SESSION_MAX = 40;
+
+function clip(text: string, max = SESSION_MAX): string {
+  // By code points, so the cut never splits a surrogate pair.
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}\u2026` : text;
 }
 
 /**
- * "From PR review" plus who accepted it. The one mark this adds to a record:
- * where a decision came from a review thread, the thread is the reason to
- * trust it, so it links there. Renders nothing for other sources.
+ * Who accepted a decision, when that can be said in plain words: an agent
+ * ("Accepted by your agent", plus the session or key label when one was
+ * recorded) or a GitHub login, in the bot's own words. Null for a record
+ * nobody accepted, or one a person accepted outside GitHub.
  */
-export function DecisionOrigin({ decision: d, className }: { decision: OriginFields; className?: string }) {
-  if (d.source !== "pr_review") return null;
+export function acceptedLine(d: OriginFields): string | null {
+  const accepted = d.currency != null ? d.currency !== "dismissed" : d.status === "active";
+  if (!accepted) return null;
+  if (d.accepter_kind === "agent") {
+    const session = d.accepter_session?.trim();
+    return session ? `Accepted by your agent (${clip(session)})` : "Accepted by your agent";
+  }
+  const login = githubLogin(d.accepter);
+  if (!login) return null;
+  return d.auto_accepted ? `Accepted automatically from @${login}'s reply` : `Accepted by @${login}`;
+}
+
+/** Who accepted it, as the quiet line beside the record's other marks. */
+export function DecisionAcceptedLine({ decision, className }: { decision: OriginFields; className?: string }) {
+  const who = acceptedLine(decision);
+  if (!who) return null;
+  return <span className={cn("text-xs text-[var(--color-text-tertiary)]", className)}>{who}</span>;
+}
+
+/**
+ * "From PR review" plus who accepted it. Where a decision came from a review
+ * thread, the thread is the reason to trust it, so the mark links there. Who
+ * accepted it shows for any source; `accepter={false}` leaves it to a host
+ * that draws it elsewhere, beside its Undo.
+ */
+export function DecisionOrigin({
+  decision: d,
+  accepter = true,
+  className,
+}: {
+  decision: OriginFields;
+  accepter?: boolean;
+  className?: string;
+}) {
+  const fromReview = d.source === "pr_review";
+  const who = accepter ? acceptedLine(d) : null;
+  if (!fromReview && !who) return null;
   const href = safeHref(d.source_url);
-  const who = githubAcceptedLine(d);
   const mark = (
     <>
       <GitPullRequest className="h-3 w-3" aria-hidden />
@@ -60,20 +95,21 @@ export function DecisionOrigin({ decision: d, className }: { decision: OriginFie
     "inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]";
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-x-2 gap-y-1", className)}>
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          // Its own target inside a clickable row.
-          onClick={(e) => e.stopPropagation()}
-          className={cn(markCls, "hover:text-[var(--color-text-primary)] hover:underline")}
-        >
-          {mark}
-        </a>
-      ) : (
-        <span className={markCls}>{mark}</span>
-      )}
+      {fromReview &&
+        (href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            // Its own target inside a clickable row.
+            onClick={(e) => e.stopPropagation()}
+            className={cn(markCls, "hover:text-[var(--color-text-primary)] hover:underline")}
+          >
+            {mark}
+          </a>
+        ) : (
+          <span className={markCls}>{mark}</span>
+        ))}
       {who && <span className="text-xs text-[var(--color-text-tertiary)]">{who}</span>}
     </span>
   );

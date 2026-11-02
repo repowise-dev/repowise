@@ -53,7 +53,7 @@ import type {
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 import { GapList, ReasonField, isKnownGap, isReasonGap, refusedGaps } from "./decision-confirm";
-import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+import { DecisionAcceptedLine, DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -229,6 +229,24 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   const otherGaps = gaps.filter((g) => !isReasonGap(g));
   const confirmable = otherGaps.length === 0 && (!needsReason || reason.trim() !== "");
 
+  // The host's undo, which puts the decision back where it was. The status
+  // shown after it is the one the host reports, not a guess at the earlier one.
+  const undoReview = adapter.undoReview;
+  const runUndoReview = async () => {
+    if (!undoReview) return;
+    setLoading(true);
+    try {
+      const now = await undoReview();
+      setStatus(now.status);
+      setRefused(null);
+      toast.success("Undone. It is back where it was.");
+    } catch (err) {
+      toast.error(`Couldn't undo: ${toFriendlyMessage(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const applyStatusChange = async (newStatus: DecisionStatus) => {
     const previous = status;
     const sentReason = newStatus === "active" ? reason.trim() : "";
@@ -241,10 +259,14 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
       setStatus(newStatus);
       setPendingStatus(null);
       setRefused(null);
-      // Accepting has no inverse on the server: taking authority back is a
-      // dismissal, so its undo opens that, with the dialog saying what it does.
-      const undo =
-        newStatus === "active"
+      // Where the host can reverse a review, Undo puts the decision back where
+      // it was. Otherwise accepting has no inverse on the server: taking
+      // authority back is a dismissal, so its undo opens that, with the dialog
+      // saying what it does.
+      const reversible = undoReview && (newStatus === "active" || newStatus === "dismissed");
+      const undo = reversible
+        ? runUndoReview
+        : newStatus === "active"
           ? () => setPendingStatus("dismissed")
           : async () => {
               try {
@@ -328,7 +350,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <DecisionStatusMark status={status} />
-            <DecisionOrigin decision={{ ...decision, status }} />
+            {/* Who accepted it is said beside Undo, below. */}
+            <DecisionOrigin decision={{ ...decision, status }} accepter={false} />
             {decision.verification && (
               <VerificationBadge verification={decision.verification} />
             )}
@@ -353,10 +376,18 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         <DecisionAppliedLine decision={decision} />
 
         <div className="flex flex-wrap items-center gap-2">
-          <AiPromptButton
-            label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
-            onClick={() => setPromptMode("verify")}
-          />
+          {/* One agent action per page: a candidate the host can write a
+              review prompt for gets that, copied in one click; otherwise the
+              shared verification prompt. */}
+          {status === "proposed" && adapter.reviewPrompt ? (
+            // The button's own label for a copy: "Copy prompt".
+            <AiPromptButton copyText={() => adapter.reviewPrompt!(decision)} />
+          ) : (
+            <AiPromptButton
+              label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
+              onClick={() => setPromptMode("verify")}
+            />
+          )}
           {status === "active" && (
             <AiPromptButton
               label="Enforce this decision"
@@ -525,7 +556,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             disabled={loading}
           />
         )}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {status === "proposed" && (
             <>
               <button
@@ -556,11 +587,14 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           )}
           {status === "active" && (
             <>
-              {/* Undo is a dismissal: there is no un-accept, and a decision
-                  accepted by mistake was never right, which is what dismiss
-                  records. Deprecate is for one that was right and is retired. */}
+              {/* Undo reverses the review where the host can, the same undo an
+                  agent gets. Otherwise it is a dismissal: a decision accepted
+                  by mistake was never right, which is what dismiss records.
+                  Deprecate is for one that was right and is retired. */}
               <button
-                onClick={() => handleStatusChange("dismissed")}
+                onClick={() =>
+                  undoReview ? void runUndoReview() : handleStatusChange("dismissed")
+                }
                 disabled={loading}
                 className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
               >
@@ -573,6 +607,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               >
                 Deprecate
               </button>
+              <DecisionAcceptedLine decision={{ ...decision, status }} className="ml-1" />
             </>
           )}
         </div>
@@ -588,7 +623,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         )}
         {status === "active" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Undo dismisses a decision accepted by mistake. Deprecate retires one
+            {undoReview
+              ? "Undo puts a decision you accepted back where it was."
+              : "Undo dismisses a decision accepted by mistake."}{" "}
+            Deprecate retires one
             that no longer holds: it stays for history but stops guiding work.
             Neither changes any code.
           </p>

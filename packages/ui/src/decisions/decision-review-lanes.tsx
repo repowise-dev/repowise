@@ -29,7 +29,8 @@ import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import { DecisionReviewDrawer } from "./decision-review-drawer";
 import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
-import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+import { DecisionAppliedLine, DecisionOrigin, acceptedLine } from "./decision-origin";
+import { AiPromptButton } from "../health/ai-prompt-button";
 
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -109,6 +110,12 @@ const LANE_EMPTY: Record<DecisionLane, string> = {
   history: "Nothing has been retired yet.",
 };
 
+/** The candidates lane's agent action. Hosts use the same words wherever they offer it. */
+export const REVIEW_WITH_AGENT_LABEL = "Review with your agent";
+
+/** The agent action for recording decisions nobody wrote down yet. */
+export const ADD_WITH_AGENT_LABEL = "Add decisions with your agent";
+
 export interface DecisionReviewLanesProps {
   lane: DecisionLane;
   onLaneChange: (lane: DecisionLane) => void;
@@ -180,6 +187,12 @@ export interface DecisionReviewLanesProps {
     decisions: DecisionRecord[],
     onProgress: (settled: number) => void,
   ) => Promise<BulkReviewResult>;
+  /**
+   * The prompt that hands the candidates to the reader's agent to review,
+   * built on click. Shown on the Candidates lane while it has rows; omit it
+   * and the lane offers no agent action.
+   */
+  reviewPrompt?: () => string;
 }
 
 export function DecisionReviewLanes({
@@ -202,6 +215,7 @@ export function DecisionReviewLanes({
   order,
   onReaffirm,
   onDismissMany,
+  reviewPrompt,
 }: DecisionReviewLanesProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const Link = LinkComponent as LinkLike;
@@ -264,26 +278,33 @@ export function DecisionReviewLanes({
             <p className="text-[var(--color-text-tertiary)]">{reviewOrderNote(lane)}</p>
           )}
         </div>
-        {/* Built from the shared source list rather than from the loaded rows:
-            a lane page is one window, so a source absent from it would become
-            unselectable, which is the same defect wearing a dynamic coat. */}
-        {onSourceChange && (
-          <select
-            value={source}
-            onChange={(e) => onSourceChange(e.target.value)}
-            aria-label="Filter by source"
-            className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
-          >
-            <option value="all">All sources</option>
-            {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
-              (s) => (
-                <option key={s} value={s}>
-                  {decisionSourceLabel(s)}
-                </option>
-              ),
-            )}
-          </select>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {/* The lane's one agent action: a queue of candidates is work an
+              agent can check against the code and history, one by one. */}
+          {reviewPrompt && lane === "candidates" && rows.length > 0 && (
+            <AiPromptButton copyText={reviewPrompt} label={REVIEW_WITH_AGENT_LABEL} />
+          )}
+          {/* Built from the shared source list rather than from the loaded rows:
+              a lane page is one window, so a source absent from it would become
+              unselectable, which is the same defect wearing a dynamic coat. */}
+          {onSourceChange && (
+            <select
+              value={source}
+              onChange={(e) => onSourceChange(e.target.value)}
+              aria-label="Filter by source"
+              className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+            >
+              <option value="all">All sources</option>
+              {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
+                (s) => (
+                  <option key={s} value={s}>
+                    {decisionSourceLabel(s)}
+                  </option>
+                ),
+              )}
+            </select>
+          )}
+        </div>
       </div>
 
       {error ? (
@@ -708,9 +729,11 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
  * Provenance and nothing else: it names the signer and the session without
  * sorting signers into kinds, so it reads the same whoever signed. A candidate
  * has no signer and renders nothing; its source is already in the header.
+ * Nor does a record whose accepter the drawer body already names ("Accepted
+ * by your agent", "Accepted by @x"), so the signer is said once.
  */
 function Provenance({ decision }: { decision: DecisionRecord }) {
-  if (decision.currency == null) return null;
+  if (decision.currency == null || acceptedLine(decision) !== null) return null;
   const who = decision.accepter?.trim();
   const session = decision.accepter_session?.trim();
   return (
