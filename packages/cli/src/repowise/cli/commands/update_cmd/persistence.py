@@ -1198,6 +1198,23 @@ def security_scanner_changed(state: dict) -> bool:
     return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
 
 
+def renderer_changed(
+    stored_fp: str | None, current_fp: str, docs_mode: str, *, index_only: bool
+) -> bool:
+    """Whether the structural pages were rendered by a different renderer.
+
+    A missing stamp counts as a change; an empty current fingerprint (computing
+    it failed) disables the gate. A wiki with no docs has nothing to re-render,
+    and a model wiki waits for a full update, the run that can re-render it.
+    """
+    return (
+        bool(current_fp)
+        and stored_fp != current_fp
+        and docs_mode != "none"
+        and not (index_only and docs_mode == "llm")
+    )
+
+
 def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
     """Full security rescan when the scanner changed, stamping ``state`` on success.
 

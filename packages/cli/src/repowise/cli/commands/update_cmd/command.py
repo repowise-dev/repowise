@@ -79,6 +79,7 @@ from .persistence import (
     heal_commit_offsets,
     health_analyzer_changed,
     parser_changed,
+    renderer_changed,
     rescan_security_if_changed,
     security_scanner_changed,
     stamp_file_page_scope,
@@ -881,17 +882,14 @@ def _check_config_and_renderer(run: UpdateRun) -> None:
     run.config = classify_config_changes(repo_path, run.state, run.cfg)
 
     # A renderer upgrade retires the "up to date" shortcut for one run so stale
-    # structural pages re-render. A missing stamp counts as a change; an empty
-    # current fingerprint (it failed) disables the gate.
+    # structural pages re-render.
     run.prev_renderer_fp = run.state.get("renderer_fingerprint")
     run.curr_renderer_fp = _current_renderer_fingerprint(repo_path)
-    # A model wiki waits for a full update, the run that can re-render it.
-    docs_mode = resolve_docs_mode(run.state)
-    run.renderer_changed = (
-        bool(run.curr_renderer_fp)
-        and run.prev_renderer_fp != run.curr_renderer_fp
-        and docs_mode != "none"
-        and not (run.index_only and docs_mode == "llm")
+    run.renderer_changed = renderer_changed(
+        run.prev_renderer_fp,
+        run.curr_renderer_fp,
+        resolve_docs_mode(run.state),
+        index_only=run.index_only,
     )
 
 
