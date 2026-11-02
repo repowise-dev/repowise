@@ -128,6 +128,9 @@ class RepoUpdateResult:
     # tree state has no ``last_sync_commit`` to diff against. None on the
     # commit-anchored path, which leaves the stored list alone.
     working_tree_paths: list[str] | None = None
+    # Seconds per phase of the incremental path (``PhaseTimings.totals``):
+    # ``run`` for the whole update and the CLI update's phase names below it.
+    # None on every other path.
     phase_timings: dict[str, float] | None = None
     # True when this run walked the whole git history and persisted every row,
     # so the caller stamps ``git_history_version``.
@@ -192,19 +195,25 @@ async def _incremental_repo_update(
     nothing. *rescore_health* re-scores every file's health after persisting,
     in place of the changed-files health pass that re-score would replace.
 
+    The result's ``phase_timings`` carries the seconds each phase took.
+
     Raises on failure — the caller falls back to the full pipeline.
     """
     from ...pipeline.incremental import persist_incremental_index, rebuild_graph_and_git
     from ...pipeline.incremental.feature import incremental_graph_enabled
+    from ...pipeline.phase_timing import PhaseTimings, timed
     from ...pipeline.phases.git import drop_transient_git_signals
     from ...repo_config import load_repo_config
 
     alias = repo_path.name
+    timings = PhaseTimings()
+    timings.start("run")
     cfg = load_repo_config(repo_path)
     merged_excludes = await _merged_repo_excludes(repo_path, exclude_patterns)
-    file_diffs, working_tree_paths = await asyncio.to_thread(
-        _changed_file_diffs, repo_path, state, base_ref, include_working_tree, merged_excludes
-    )
+    with timed(timings, "diff"):
+        file_diffs, working_tree_paths = await asyncio.to_thread(
+            _changed_file_diffs, repo_path, state, base_ref, include_working_tree, merged_excludes
+        )
     if not file_diffs and not force_full_git:
         # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
@@ -242,6 +251,7 @@ async def _incremental_repo_update(
         # Same switch as the CLI update: it also invalidates the seed snapshot
         # before persistence rewrites the graph rows the snapshot mirrors.
         patch_graph=incremental_graph_enabled(),
+        timings=timings,
     )
 
     partial_health_report, dead_code_report, doc_drift_report = await _partial_analysis(
@@ -253,6 +263,7 @@ async def _incremental_repo_update(
         graph_builder,
         git_meta_map,
         health=not rescore_health,
+        timings=timings,
     )
 
     # Drop the transient, non-serializable ``BlameIndex`` before persistence.
@@ -261,16 +272,17 @@ async def _incremental_repo_update(
     # Refresh the knowledge graph (layers/tour/entry points) when the graph shape changed.
     from ...pipeline.incremental import refresh_knowledge_graph
 
-    kg = await refresh_knowledge_graph(
-        repo_path,
-        parsed_files,
-        graph_builder,
-        _structure,
-        git_meta_map,
-        dead_code_report,
-        prior_fingerprint=(state.get("knowledge_graph") or {}).get("fingerprint"),
-        log=_log.info,
-    )
+    with timed(timings, "knowledge_graph"):
+        kg = await refresh_knowledge_graph(
+            repo_path,
+            parsed_files,
+            graph_builder,
+            _structure,
+            git_meta_map,
+            dead_code_report,
+            prior_fingerprint=(state.get("knowledge_graph") or {}).get("fingerprint"),
+            log=_log.info,
+        )
 
     # A full walk is stamped only when its rows reached the store.
     failed_steps: list[str] = []
@@ -292,15 +304,17 @@ async def _incremental_repo_update(
         full_git_summary=full_git_summaries[0] if full_git_summaries else None,
         failed_steps=failed_steps,
         log=_log.info,
+        timings=timings,
     )
 
     # Ceiling: a failed re-score leaves the changed files' stored health as it
     # was until the next re-score; the result says health was not re-scored.
-    rescored_report = (
-        await _rescore_repo_health(repo_path, graph_builder, parsed_files, merged_excludes)
-        if rescore_health
-        else None
-    )
+    rescored_report = None
+    if rescore_health:
+        with timed(timings, "rescore"):
+            rescored_report = await _rescore_repo_health(
+                repo_path, graph_builder, parsed_files, merged_excludes, timings
+            )
     if products_sink is not None:
         health_report = (
             rescored_report
@@ -321,12 +335,15 @@ async def _incremental_repo_update(
             )
         )
 
+    kg_state = _export_kg_state(repo_path, alias, kg)
+    timings.stop("run")
     return RepoUpdateResult(
         alias=alias,
         updated=True,
         file_count=file_count,
         symbol_count=sum(pf.symbol_count for pf in parsed_files),
-        kg_state=_export_kg_state(repo_path, alias, kg),
+        kg_state=kg_state,
+        phase_timings=timings.totals,
         working_tree_paths=working_tree_paths,
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
         health_rescored=rescored_report is not None,
@@ -335,7 +352,11 @@ async def _incremental_repo_update(
 
 
 async def _rescore_repo_health(
-    repo_path: Path, graph_builder: Any, parsed_files: list, exclude_patterns: list[str]
+    repo_path: Path,
+    graph_builder: Any,
+    parsed_files: list,
+    exclude_patterns: list[str],
+    timings: Any = None,
 ) -> Any:
     """Every file's health re-scored against the just-persisted history, or ``None``.
 
@@ -353,6 +374,7 @@ async def _rescore_repo_health(
             log=_log.info,
             # The changed-files health write that snapshots was skipped.
             snapshot=True,
+            timings=timings,
         )
     except Exception:
         _log.warning("Health re-score failed for %s", repo_path, exc_info=True)
@@ -435,6 +457,7 @@ async def _partial_analysis(
     git_meta_map: dict,
     *,
     health: bool = True,
+    timings: Any = None,
 ) -> tuple[Any, Any, Any]:
     """Partial health, dead-code and doc-drift reports over the changed files.
 
@@ -450,21 +473,23 @@ async def _partial_analysis(
         run_doc_drift_partial,
         run_partial_analysis,
     )
+    from ...pipeline.phase_timing import timed
 
     # Stored per-file git fields: ``git_meta_map`` covers only the changed files,
     # and an empty dict reads as "no commits in 90 days" to the dead-code analyzer.
-    stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
-    # Repo-wide p80, so the Function Hotspot gate scores against the full repo.
-    stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
-    performance_changed_paths = {diff.path for diff in file_diffs}
-    performance_changed_paths.update(
-        diff.old_path for diff in file_diffs if getattr(diff, "old_path", None)
-    )
-    stored_performance_callers = await load_stored_performance_callers(
-        repo_path, performance_changed_paths, log=_log.info
-    )
-    # Without a coverage_map the changed files would lose their stored coverage.
-    stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
+    with timed(timings, "analysis.stored_reads"):
+        stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
+        # Repo-wide p80, so the Function Hotspot gate scores against the full repo.
+        stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
+        performance_changed_paths = {diff.path for diff in file_diffs}
+        performance_changed_paths.update(
+            diff.old_path for diff in file_diffs if getattr(diff, "old_path", None)
+        )
+        stored_performance_callers = await load_stored_performance_callers(
+            repo_path, performance_changed_paths, log=_log.info
+        )
+        # Without a coverage_map the changed files would lose their stored coverage.
+        stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -479,12 +504,14 @@ async def _partial_analysis(
         coverage_map=stored_coverage_map,
         log=_log.info,
         health=health,
+        timings=timings,
     )
     doc_drift_report = run_doc_drift_partial(
         graph_builder,
         source_map,
         repo_path=repo_path,
         log=_log.info,
+        timings=timings,
         update=DocDriftUpdate.from_file_diffs(base_ref, file_diffs),
     )
     return partial_health_report, dead_code_report, doc_drift_report
