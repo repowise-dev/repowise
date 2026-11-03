@@ -21,6 +21,7 @@ but is not counted as a field.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
@@ -651,6 +652,50 @@ def _compute_lcom4(
     return max(sum(1 for g in components if g.fields), 1), field_count, components, tcc
 
 
+def _collect_namespace_names(root_node: Node) -> set[str]:
+    """Names of all declared C++ namespaces in the file."""
+    names: set[str] = set()
+    stack = [root_node]
+    while stack:
+        cur = stack.pop()
+        if cur.type == "namespace_definition":
+            name_node = cur.child_by_field_name("name")
+            if name_node is not None and name_node.text is not None:
+                full_name = name_node.text.decode("utf-8", errors="replace")
+                names.add(full_name)
+                for seg in full_name.split("::"):
+                    if seg:
+                        names.add(seg)
+        stack.extend(cur.children)
+    return names
+
+
+def _cpp_class_name_from_qualifier(fc_name: str, namespace_names: set[str]) -> str | None:
+    """Class name from a qualified C++ function name (e.g. ``DBImpl::Get`` -> ``DBImpl``).
+
+    Returns ``None`` if *fc_name* is not qualified or belongs to a namespace.
+    """
+    if "::" not in fc_name:
+        return None
+    qualifier, _ = fc_name.rsplit("::", 1)
+    parts: list[str] = []
+    for part in qualifier.split("::"):
+        clean_part = re.sub(r"<.*>$", "", part).strip()
+        if clean_part:
+            parts.append(clean_part)
+    if not parts:
+        return None
+    last = parts[-1]
+    if (
+        last in namespace_names
+        or last == "std"
+        or qualifier in namespace_names
+        or qualifier.startswith("std::")
+    ):
+        return None
+    return last
+
+
 def _collect_classes(
     class_nodes: list[Node],
     lmap: LanguageNodeMap,
@@ -658,6 +703,9 @@ def _collect_classes(
     fc_by_node_id: dict[int, FunctionComplexity],
     code_lines: CodeLineIndex,
     language: str,
+    *,
+    fn_nodes: list[Node] | None = None,
+    root_node: Node | None = None,
 ) -> list[ClassComplexity]:
     """Build ``ClassComplexity`` for every class-like node in the file.
 
@@ -668,11 +716,32 @@ def _collect_classes(
         return []
     source_str = source.decode("utf-8", errors="replace")
     classes: list[ClassComplexity] = []
+
+    out_of_line_by_class: dict[str, list[tuple[Node, FunctionComplexity]]] = {}
+    matched_classes: set[str] = set()
+    if language in ("cpp", "c") and fn_nodes is not None and root_node is not None:
+        namespace_names = _collect_namespace_names(root_node)
+        for fn_node in fn_nodes:
+            fc = fc_by_node_id.get(fn_node.id)
+            if fc is None:
+                continue
+            cname = _cpp_class_name_from_qualifier(fc.name, namespace_names)
+            if cname is not None:
+                out_of_line_by_class.setdefault(cname, []).append((fn_node, fc))
+
     # A class the grammar fused into a misread scope's head runs on over the
     # code after it, so its member list is not the class's own.
     trusted = [n for n in class_nodes if n.parent is None or not is_misread_scope(n.parent, lmap)]
     for class_node in trusted:
+        cname = _class_name(class_node)
         body = _collect_class_body(class_node, lmap, language, source_str)
+        ool_entries = out_of_line_by_class.get(cname, [])
+        ool_nodes = [n for n, _ in ool_entries]
+        ool_fcs = [fc for _, fc in ool_entries]
+        if ool_nodes:
+            matched_classes.add(cname)
+            body = body._replace(methods=body.methods + ool_nodes)
+
         method_fcs = [fc_by_node_id[m.id] for m in body.methods if m.id in fc_by_node_id]
         # Keep nodes and FCs aligned (a method missing from the function
         # pass — unusual — drops out of both).
@@ -680,20 +749,21 @@ def _collect_classes(
         # A partial class's other parts live in files this pass does not see;
         # a trait impl's methods are the trait's, so none can move out.
         contract_impl = is_trait_impl(class_node, lmap)
-        refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
+        refs = _class_member_refs(body, method_fcs, lmap, cname)
         if "partial" in _decl_words(class_node) or contract_impl:
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
             lcom4, field_count, components, tcc = _compute_lcom4(
                 body.methods, method_fcs, lmap, refs
             )
+        total_nloc = code_lines.count(class_node, source) + sum(fc.nloc for fc in ool_fcs)
         classes.append(
             ClassComplexity(
-                name=_class_name(class_node),
+                name=cname,
                 start_line=class_node.start_point[0] + 1,
                 end_line=class_node.end_point[0] + 1,
                 method_count=len(method_fcs),
-                total_nloc=code_lines.count(class_node, source),
+                total_nloc=total_nloc,
                 methods=method_fcs,
                 lcom4=lcom4,
                 max_method_ccn=max((fc.ccn for fc in method_fcs), default=0),
@@ -703,6 +773,32 @@ def _collect_classes(
                 contract_impl=contract_impl,
                 # A partial fragment's own fields still bind the methods that use them.
                 field_readers=_field_readers(method_fcs, refs),
+            )
+        )
+
+    for cname, entries in sorted(
+        out_of_line_by_class.items(), key=lambda it: min(fc.start_line for _, fc in it[1])
+    ):
+        if cname in matched_classes:
+            continue
+        fcs = [fc for _, fc in entries]
+        if not fcs:
+            continue
+        classes.append(
+            ClassComplexity(
+                name=cname,
+                start_line=min(fc.start_line for fc in fcs),
+                end_line=max(fc.end_line for fc in fcs),
+                method_count=len(fcs),
+                total_nloc=sum(fc.nloc for fc in fcs),
+                methods=fcs,
+                lcom4=1,
+                max_method_ccn=max((fc.ccn for fc in fcs), default=0),
+                field_count=0,
+                components=[],
+                tcc=1.0,
+                contract_impl=False,
+                field_readers=frozenset(),
             )
         )
     return classes

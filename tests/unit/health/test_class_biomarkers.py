@@ -280,3 +280,42 @@ def test_god_class_critical_severity():
     cls = _cls("Behemoth", method_count=26, total_nloc=450, methods=_brainy_methods())
     out = GodClassDetector().detect(_ctx([cls]))
     assert out[0].severity == "critical"  # total_nloc >= 400 AND methods >= 25
+
+
+def test_cpp_out_of_line_methods_counted_toward_class():
+    src = """
+class DBImpl {
+ public:
+  int Get(int k);
+  int Put(int k);
+  int inline_one() { return x_; }
+ private:
+  int x_;
+};
+int DBImpl::Get(int k) { return x_ + k; }
+int DBImpl::Put(int k) { x_ = k; return 0; }
+namespace ns {
+  int f();
+}
+int ns::f() { return 1; }
+"""
+    res = walk_file("db_impl.cc", "cpp", src.strip().encode())
+    assert len(res.classes) == 1
+    cl = res.classes[0]
+    assert cl.name == "DBImpl"
+    assert cl.method_count == 3
+    method_names = {m.name for m in cl.methods}
+    assert method_names == {"inline_one", "DBImpl::Get", "DBImpl::Put"}
+
+
+def test_cpp_out_of_line_methods_without_class_body_creates_synthetic_class():
+    src = """
+int DBImpl::Get(int k) { return x_ + k; }
+int DBImpl::Put(int k) { x_ = k; return 0; }
+"""
+    res = walk_file("db_impl.cc", "cpp", src.strip().encode())
+    assert len(res.classes) == 1
+    cl = res.classes[0]
+    assert cl.name == "DBImpl"
+    assert cl.method_count == 2
+    assert cl.lcom4 == 1
