@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from ..extractors.synthetic_symbols.cpp_macros import _FAST_REJECT_TOKENS as _SYNTHESIZED_MACROS
+from .preproc_arms import blank_unbalanced_preproc_arms
 
 _PASCAL_USES_IN_CLAUSE_RE = re.compile(rb"\bin\b[ \t]*'(?:[^'\r\n]|'')*'")
 
@@ -331,7 +332,12 @@ def prepare_cpp_source(source: bytes) -> bytes:
     over the rest of the file, a declaration read as typed by the macro before
     it, or a hidden field and a method named after the annotation. Spans are
     blanked in place, so offsets and line numbers outside them are unchanged.
+
+    First, the losing arms of ``#if`` groups whose arms do not balance their
+    braces go (see :mod:`.preproc_arms`), so the macro scans below read the
+    one arm the parser will.
     """
+    source = blank_unbalanced_preproc_arms(source)
     spans = [m.span(1) for m in _CPP_CLASS_HEAD_MACRO_RE.finditer(source)]
     spans += _ctor_macro_spans(source)
     spans += _macro_line_spans(source)
