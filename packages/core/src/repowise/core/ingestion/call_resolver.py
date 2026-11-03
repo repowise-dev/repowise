@@ -1551,33 +1551,21 @@ class CallResolver(
         """
         if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
-        parsed = self._parsed_files.get(file_path)
-        calls = parsed.calls if parsed else ()
-
-        idx = None
-        for i, c in enumerate(calls):
-            if c is call:
-                idx = i
-                break
-        if idx is None:
-            for i, c in enumerate(calls):
-                if (
-                    c.target_name == call.target_name
-                    and c.receiver_name == call.receiver_name
-                    and (c.argument_count == call.argument_count or call.argument_count is None)
-                    and c.start_byte == call.start_byte
-                    and c.line == call.line
-                ):
-                    idx = i
-                    break
-
-        candidate_calls = calls if idx is None else calls[:idx]
-        for c in reversed(candidate_calls):
-            if (
-                c.target_name == inner.target_name
-                and c.receiver_name == inner.receiver_name
-                and (inner.argument_count is None or c.argument_count == inner.argument_count)
-            ):
+        sites = self._chained_sites.get(file_path)
+        if sites is None:
+            parsed = self._parsed_files.get(file_path)
+            sites = {}
+            for c in parsed.calls if parsed else ():
+                if c.receiver_call is not None:
+                    sites.setdefault((c.line, c.receiver_name, c.target_name), []).append(c)
+            _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
+        matches = sites.get((call.line, inner.receiver_name, inner.target_name))
+        if not matches:
+            return None
+        if len(matches) == 1 and matches[0] is not call:
+            return matches[0].receiver_call
+        for c in reversed(matches):
+            if c is not call and (inner.argument_count is None or c.argument_count == inner.argument_count):
                 return c.receiver_call
         return None
 
