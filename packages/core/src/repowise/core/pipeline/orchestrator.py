@@ -175,6 +175,12 @@ class PipelineResult:
     untested until one does."""
 
 
+    analysis_reused: bool = False
+    """True when the analysis outputs were reused from a durable checkpoint."""
+
+    reused_health_available: bool = False
+    """Availability of checkpointed health, independent of the in-memory report."""
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -336,6 +342,8 @@ def _build_result(run: PipelineRun) -> PipelineResult:
         dead_code_report=run.dead_code_report,
         decision_report=run.decision_report,
         health_report=run.health_report,
+        analysis_reused=run.skip_analysis,
+        reused_health_available=run.reused_health_available,
         doc_drift_report=run.doc_drift_report,
         execution_flow_report=run.execution_flow_report,
         knowledge_graph_result=run.knowledge_graph_result,

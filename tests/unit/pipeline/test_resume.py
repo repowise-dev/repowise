@@ -500,3 +500,101 @@ async def test_stored_git_meta_for_reads_only_the_paths(sf):
         meta = await stored_git_meta_for(session, repo_id, ["src/b.py", "src/gone.py"])
 
     assert set(meta) == {"src/b.py"}
+
+
+@pytest.mark.parametrize("health_completed", [False, True])
+async def test_health_checkpoint_status_overrides_stale_rows(sf, monkeypatch, health_completed):
+    """A failed pass must not borrow success from a preceding run's metrics."""
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.models import HealthFileMetric
+
+    async def _ok(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_symbol_analysis", _ok)
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_analysis", _ok)
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        session.add(HealthFileMetric(repository_id=repo_id, file_path="old.py", score=9.0))
+    ctrl = ResumeController(sf, repo_id, resume=False)
+    await ctrl.checkpoint_analysis(
+        parsed_files=[],
+        dead_code_report=None,
+        health_report=SimpleNamespace(metrics=[]) if health_completed else None,
+        decision_report=None,
+        git_metadata_list=[],
+    )
+
+    # A new process need not have reached state.json before the interruption.
+    resumed = ResumeController(sf, repo_id, resume=True)
+    assert await resumed.has_persisted_health() is health_completed
+    job = await ResumeLedger(sf, repo_id).get_completed_job(ResumePhase.ANALYSIS)
+    assert job.metadata["health_analysis_completed"] is health_completed
+
+
+@pytest.mark.parametrize("has_rows", [False, True])
+async def test_legacy_health_checkpoint_is_unknown_even_with_rows(sf, has_rows):
+    from repowise.core.persistence.models import HealthFileMetric
+
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        other = await upsert_repository(session, name="other", local_path="/tmp/other")
+        session.add(HealthFileMetric(repository_id=other.id, file_path="other.py", score=8.0))
+        if has_rows:
+            session.add(HealthFileMetric(repository_id=repo_id, file_path="current.py", score=9.0))
+    await ResumeLedger(sf, repo_id).mark_completed(ResumePhase.ANALYSIS)
+
+    assert await ResumeController(sf, repo_id, resume=True).has_persisted_health() is None
+
+
+@pytest.mark.parametrize("health_completed", [False, True])
+async def test_decision_backfill_preserves_health_across_controllers(sf, health_completed):
+    repo_id = await _make_repo(sf)
+    await ResumeLedger(sf, repo_id).mark_completed(
+        ResumePhase.ANALYSIS,
+        metadata={
+            "health_analysis_completed": health_completed,
+            "decision_extraction_completed": False,
+            "other_evidence": "keep",
+        },
+    )
+    resumed = ResumeController(sf, repo_id, resume=True)
+    await resumed.mark_decision_extraction_completed(count=3)
+
+    job = await ResumeLedger(sf, repo_id).get_completed_job(ResumePhase.ANALYSIS)
+    assert job.metadata == {
+        "health_analysis_completed": health_completed,
+        "decision_extraction_completed": True,
+        "decisions_count": 3,
+        "other_evidence": "keep",
+    }
+    assert await ResumeController(sf, repo_id, resume=True).has_persisted_health() is health_completed
+
+
+async def test_persisted_health_read_error_propagates_for_recomputation(sf, monkeypatch):
+    from repowise.core.persistence.stores.sql_job_store import SqlJobStore
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("checkpoint read failed")
+
+    repo_id = await _make_repo(sf)
+    monkeypatch.setattr(SqlJobStore, "list_jobs", _boom)
+    with pytest.raises(RuntimeError, match="checkpoint read failed"):
+        await ResumeController(sf, repo_id, resume=True).has_persisted_health()
+
+
+async def test_legacy_failed_health_pass_cannot_borrow_stale_success(sf):
+    """Old checkpoint metadata records decisions even when health had failed."""
+    from repowise.core.persistence.models import HealthFileMetric
+
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        session.add(HealthFileMetric(repository_id=repo_id, file_path="stale.py", score=10.0))
+    ledger = ResumeLedger(sf, repo_id)
+    await ledger.mark_completed(
+        ResumePhase.ANALYSIS,
+        metadata={"decision_extraction_completed": True, "decisions_count": 0},
+    )
+
+    assert await ResumeController(sf, repo_id, resume=True).has_persisted_health() is None
