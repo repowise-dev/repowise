@@ -982,9 +982,15 @@ class OverloadSelectionMixin:
         elif language == "kotlin":
             closest = _exact_kotlin_fit(typed, argument_types)
         else:
-            type_params = self._member_type_parameters(found) if language == "java" else None
+            repo_types = self._jvm_lambda_type_map()
+            needs_type_params = language == "java" and any(
+                p in repo_types or p in _JAVA_KNOWN_TYPES
+                for _, params in typed
+                for p in params
+            )
+            type_params = self._member_type_parameters(found) if needs_type_params else None
             closest = _closest_fit(
-                typed, argument_types, expanded, self._jvm_lambda_type_map(), type_params
+                typed, argument_types, expanded, repo_types, type_params
             )
         return found if closest is None else [closest]
 
@@ -992,10 +998,18 @@ class OverloadSelectionMixin:
         """The type parameter names each Java member and its enclosing types declare."""
         if not hasattr(self, "_java_type_parameters"):
             return {}
-        return {
-            m: frozenset(self._java_type_parameters(symbol_id_path(m), m))
-            for m in members
-        }
+        cache = getattr(self, "_java_member_type_params_cache", None)
+        if cache is None:
+            cache = {}
+            self._java_member_type_params_cache = cache
+        result: dict[str, frozenset[str]] = {}
+        for m in members:
+            cached = cache.get(m)
+            if cached is None:
+                cached = frozenset(self._java_type_parameters(symbol_id_path(m), m))
+                cache[m] = cached
+            result[m] = cached
+        return result
 
     def _csharp_takers(self, found: list[str], argument_types: tuple[str | None, ...]) -> list[str]:
         """*found* narrowed to the C# members no argument's shape or type refuses.
