@@ -459,7 +459,6 @@ def _call_from_match(
         line=line,
         argument_count=argument_count,
         receiver_call=receiver_call,
-        start_byte=site_node.start_byte,
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
         scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,

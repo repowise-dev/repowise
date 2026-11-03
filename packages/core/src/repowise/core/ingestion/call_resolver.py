@@ -1503,7 +1503,6 @@ class CallResolver(
             line=call.line,
             argument_count=inner.argument_count,
             receiver_call=nested,
-            start_byte=call.start_byte,
         )
         cycles = self._chain_cycle_hits
         self._chain_links_in_flight.add(link)
