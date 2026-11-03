@@ -793,6 +793,10 @@ class TestGoCallAssignments:
             CallAssignment(4, "z", None, "New"),
         )
 
+    def test_a_generic_call_may_split_its_type_arguments_across_lines(self) -> None:
+        body = "func f() {\n\tx := New[\n\t\tPair[int, string],\n\t](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", None, "New"),)
+
     def test_a_multiple_result_call_names_its_first_result(self) -> None:
         body = "func f() {\n\td, err := New()\n}"
         assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)

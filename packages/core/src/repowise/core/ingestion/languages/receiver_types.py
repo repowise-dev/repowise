@@ -188,7 +188,7 @@ _GO_EMBEDDED_FIELD = re.compile(
 _GO_CALL_DECL = re.compile(
     rf"(?<![\w.])(?P<name>{_GO_NAME})\s*(?:,\s*{_GO_NAME}\s*)*:="
     r"[ \t]*(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)"
-    r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?\s*\("
+    r"(?:\[(?:[^\[\]]|\[[^\[\]]*\])*\])?\s*\("
 )
 
 # Kotlin annotates after the name, and `val x: Foo`, `var x: Foo`, parameters
