@@ -1418,12 +1418,39 @@ def _after_trailing_lambda(text: str, end: int) -> int:
     return end
 
 
-def _call_ends_statement(cleaned: str, opened: int, language: str, start: int = 0) -> bool:
-    """Does the call whose ``(`` ends just before *opened* end its statement?"""
-    end = _call_end(cleaned, opened)
-    if end >= 0 and language == "kotlin":
-        end = _after_trailing_lambda(cleaned, end)
-    return _ends_statement(cleaned, end, language, start)
+def _after_configure_await(text: str, end: int) -> int:
+    """Return past a following C# ``.ConfigureAwait(arg)`` call, if present."""
+    suffix = re.match(r"\.\s*ConfigureAwait\s*\(", text[end:])
+    if suffix is None:
+        return end
+    opened = end + suffix.end()
+    call_end = _call_end(text, opened)
+    if call_end < 0 or not text[opened : call_end - 1].strip():
+        return end
+    return call_end
+
+
+def _call_suffix_end(cleaned: str, end: int, language: str, awaited: bool) -> int:
+    """*end*, past the trailing call the language allows after a call."""
+    if language == "kotlin":
+        return _after_trailing_lambda(cleaned, end)
+    if language == "csharp" and awaited:
+        return _after_configure_await(cleaned, end)
+    return end
+
+
+def _assignment_call_end(cleaned: str, match: re.Match[str], language: str) -> int:
+    """Return the call end, including supported language-specific suffixes."""
+    end = _call_end(cleaned, match.end())
+    if end < 0:
+        return end
+    return _call_suffix_end(cleaned, end, language, bool(match.groupdict().get("awaited")))
+
+
+def _call_ends_statement(cleaned: str, match: re.Match[str], language: str) -> bool:
+    """Does a local's assigned call end its statement?"""
+    end = _assignment_call_end(cleaned, match, language)
+    return _ends_statement(cleaned, end, language, match.start())
 
 
 def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bool:
@@ -1452,6 +1479,14 @@ def _rust_call_ends(cleaned: str, opened: int) -> tuple[bool, bool]:
     return _ends_statement(cleaned, end, "rust"), unwrap is not None
 
 
+def _assignment_ends(cleaned: str, match: re.Match[str], language: str) -> tuple[bool, bool]:
+    """``(ends, awaited)`` for the call the local *match* assigns from."""
+    awaited = bool(match.groupdict().get("awaited"))
+    if language == "rust":
+        return _rust_call_ends(cleaned, match.end())
+    return _call_ends_statement(cleaned, match, language), awaited
+
+
 def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...]:
     """Every local *text* declares from a single call, in line order.
 
@@ -1465,11 +1500,7 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
-        awaited = bool(match.groupdict().get("awaited"))
-        if language == "rust":
-            ends, awaited = _rust_call_ends(cleaned, match.end())
-        else:
-            ends = _call_ends_statement(cleaned, match.end(), language, match.start())
+        ends, awaited = _assignment_ends(cleaned, match, language)
         if not ends:
             continue
         found.append(
