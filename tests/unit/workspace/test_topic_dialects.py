@@ -833,7 +833,7 @@ class TestDapr:
     def test_python_publish_event_needs_a_dapr_import_not_a_lookalike(self, tmp_path: Path) -> None:
         src = (
             "from daprlib import publish_event\n"
-            "publish_event(pubsub_name='p', topic_name='orders', data=d)\n"
+            "client.publish_event(pubsub_name='p', topic_name='orders', data=d)\n"
         )
         assert _extract(tmp_path, "daprlib.py", src) == []
 

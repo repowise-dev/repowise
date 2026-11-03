@@ -1,4 +1,4 @@
-"""Dapr pub/sub: a topic named on a component, which runs over any broker.
+"""Dapr pub/sub: a topic named on a component, which runs over any broker except BullMQ.
 
 ``[Topic("pubsub", "orders")]`` subscribes a handler and
 ``daprClient.PublishEventAsync("pubsub", "orders", evt)`` publishes. The first
