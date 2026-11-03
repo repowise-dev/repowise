@@ -5,7 +5,8 @@ resolved graph.  This module owns the part they must never reinterpret:
 
 * which edge types can transfer control;
 * which resolver origins are too weak to count as execution evidence;
-* file-to-symbol declarations and forward/reverse execution adjacency;
+* file-to-symbol declarations, forward/reverse execution adjacency, and
+  framework registration relationships;
 * source definition and call-site lookup; and
 * the bounded reverse walk used to explain a path to a sink.
 
@@ -22,7 +23,7 @@ from collections.abc import Callable, Container, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, MODULE_REGISTRATION_HINT
 
 UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique"})
 # Not a test classifier: flows also leave out demos, examples, scripts and
@@ -94,6 +95,25 @@ def _append_unique(
         adjacency.setdefault(source, []).append(target)
 
 
+def _is_file_registration(
+    graph: Any, source: str, target: str, attrs: Mapping[str, Any]
+) -> bool:
+    """A framework or registry edge that joins two file nodes."""
+    registered = (
+        attrs.get("edge_type") == "framework"
+        or attrs.get("hint_source") == MODULE_REGISTRATION_HINT
+    )
+    return (
+        registered
+        and _node_type(graph, source) == "file"
+        and _node_type(graph, target) == "file"
+    )
+
+
+def _node_type(graph: Any, node_id: str) -> str | None:
+    return graph.nodes.get(node_id, {}).get("node_type")
+
+
 def call_line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
     raw = attrs.get("call_lines")
     if raw is None:
@@ -134,7 +154,8 @@ class ExecutionGraphIndex:
 
     ``graph`` is normally the in-memory NetworkX graph.  ``declares`` and
     ``calls`` exist only as a compatibility construction path for small tests
-    and callers that already own adjacency maps.
+    and callers that already own adjacency maps. File-level framework
+    relationships are exposed separately as ``registrations``.
     """
 
     __slots__ = (
@@ -150,6 +171,7 @@ class ExecutionGraphIndex:
         "in_degree",
         "name",
         "nodes",
+        "registrations",
         "reverse",
         "spawn_only",
     )
@@ -161,6 +183,7 @@ class ExecutionGraphIndex:
         declares: Mapping[str, Iterable[str]] | None = None,
         calls: Mapping[str, Iterable[str]] | None = None,
         edge_rows: Iterable[tuple[str, str, str, str | None, Iterable[int] | None]] = (),
+        registrations: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         self.nodes: set[str] = set()
         self.name: dict[str, str] = {}
@@ -168,6 +191,7 @@ class ExecutionGraphIndex:
         reverse: dict[str, list[str]] = {}
         call_only: dict[str, list[str]] = {}
         declaration_map: dict[str, list[str]] = {}
+        registration_map: dict[str, list[str]] = {}
         by_caller_line: dict[tuple[str, int], list[str]] = {}
         by_file_line_candidates: dict[tuple[str, int], list[str]] = {}
         forward_seen: set[tuple[str, str]] = set()
@@ -207,6 +231,8 @@ class ExecutionGraphIndex:
             for source, target, data in graph_edges:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
+                if _is_file_registration(graph, source, target, attrs):
+                    _append_unique(registration_map, source, target)
                 lines = call_line_values(attrs) if edge_type == "calls" else ()
                 if lines:
                     lines = _split_spawned(
@@ -244,6 +270,9 @@ class ExecutionGraphIndex:
                 _append_unique(forward, source, target, forward_seen)
                 _append_unique(reverse, target, source, reverse_seen)
                 _append_unique(call_only, source, target, call_only_seen)
+        for source, targets in (registrations or {}).items():
+            for target in sorted(set(targets)):
+                _append_unique(registration_map, source, target)
         for source, target, edge_type, origin, call_lines in edge_rows:
             self._ingest_edge(
                 declaration_map,
@@ -268,6 +297,7 @@ class ExecutionGraphIndex:
         self.forward = {key: tuple(values) for key, values in forward.items()}
         self.calls = self.forward
         self.reverse = {key: tuple(values) for key, values in reverse.items()}
+        self.registrations = {key: tuple(values) for key, values in registration_map.items()}
         self._by_caller_line = {key: tuple(values) for key, values in by_caller_line.items()}
         self._call_only = {key: tuple(values) for key, values in call_only.items()}
         self._callers_with_site_metadata = frozenset(callers_with_site_metadata)

@@ -8,7 +8,7 @@ from repowise.core.analysis.execution_graph import (
     ExecutionGraphIndex,
     is_reliable_execution_edge,
 )
-from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, MODULE_REGISTRATION_HINT
 
 
 def _symbol(graph, node_id, path, name, start, end):
@@ -73,6 +73,26 @@ def test_recursion_is_no_caller_of_itself():
 
     assert "a.py::fact" not in index.forward
     assert index.in_degree.get("a.py::fact", 0) == 0
+
+
+def test_registry_edges_between_file_nodes_are_indexed_as_registrations():
+    graph = nx.DiGraph()
+    graph.add_node("app.py", node_type="file")
+    graph.add_node("router.py", node_type="file")
+    graph.add_node("tools.py", node_type="file")
+    _symbol(graph, "app.py::run", "app.py", "run", 1, 4)
+    _symbol(graph, "router.py::route", "router.py", "route", 1, 4)
+    graph.add_edge("app.py", "router.py", edge_type="framework")
+    graph.add_edge(
+        "app.py", "tools.py", edge_type="imports", hint_source=MODULE_REGISTRATION_HINT
+    )
+    graph.add_edge("app.py::run", "router.py::route", edge_type="framework")
+
+    index = ExecutionGraphIndex(graph)
+
+    assert index.registrations == {
+        "app.py": ("router.py", "tools.py"),
+    }
 
 
 def test_definition_lookup_prefers_exact_then_innermost_range():
