@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 # Google style is PascalCase, Qt is camelCase), so it keeps the snake_case
 # default rather than getting one answer that is wrong for most C++ repos.
 NAME_CONVENTION: dict[str, str] = {
+    "csharp": "PascalCase",
     "go": "camelCase",
     "java": "camelCase",
     "apex": "camelCase",
@@ -49,7 +50,8 @@ _SIBLING_DEPTH = 4
 
 def placeholder_names(language: str | None) -> Iterator[str]:
     """``extracted_helper``, ``extracted_helper_2``, ... (``extractedHelper``,
-    ``extractedHelper2`` where the language writes camelCase): the first one
+    ``extractedHelper2`` where the language writes camelCase, ``ExtractedHelper``
+    and ``ExtractedHelper2`` for C#): the first one
     free where the helper lands is its name (:meth:`ScopeNames.claim_first`)."""
     convention = NAME_CONVENTION.get(language or "", _SNAKE_CASE)
     yield join_identifier(_PLACEHOLDER_WORDS, convention)
