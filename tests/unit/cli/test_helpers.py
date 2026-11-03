@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -237,6 +238,48 @@ class TestStateFile:
     def test_save_creates_repowise_dir(self, tmp_path):
         save_state(tmp_path, {"key": "value"})
         assert (tmp_path / ".repowise" / "state.json").exists()
+
+    def _write_state(self, tmp_path, content):
+        ensure_repowise_dir(tmp_path)
+        state_path = tmp_path / ".repowise" / "state.json"
+        if isinstance(content, bytes):
+            state_path.write_bytes(content)
+        else:
+            state_path.write_text(content, encoding="utf-8")
+        return state_path
+
+    def test_load_valid_json_object(self, tmp_path):
+        self._write_state(tmp_path, '{"last_sync_commit": "abc123"}')
+        assert load_state(tmp_path) == {"last_sync_commit": "abc123"}
+
+    def test_load_malformed_json_returns_empty_and_warns(self, tmp_path, caplog):
+        self._write_state(tmp_path, "{invalid")
+        with caplog.at_level(logging.WARNING, logger="repowise.cli._helpers.state"):
+            assert load_state(tmp_path) == {}
+        assert "Could not parse state file" in caplog.text
+
+    def test_load_empty_file_returns_empty(self, tmp_path):
+        self._write_state(tmp_path, "")
+        assert load_state(tmp_path) == {}
+
+    def test_load_non_utf8_returns_empty(self, tmp_path):
+        self._write_state(tmp_path, b"\xff\xfe\x00garbage")
+        assert load_state(tmp_path) == {}
+
+    @pytest.mark.parametrize("content", ["[]", "null", '"text"', "42"])
+    def test_load_non_object_json_returns_empty(self, tmp_path, content):
+        self._write_state(tmp_path, content)
+        assert load_state(tmp_path) == {}
+
+    def test_load_does_not_swallow_os_errors(self, tmp_path, monkeypatch):
+        self._write_state(tmp_path, "{}")
+
+        def _boom(self, *args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+        with pytest.raises(PermissionError):
+            load_state(tmp_path)
 
 
 # ---------------------------------------------------------------------------
