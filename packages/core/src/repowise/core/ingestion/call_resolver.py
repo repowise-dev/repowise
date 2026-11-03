@@ -618,10 +618,14 @@ class CallResolver(
 
             if sym.language == "pascal":
                 extended = self._pascal_extended_type(path, sym)
-            elif sym.parent_name:
+            elif sym.language == "csharp":
                 extended = self._csharp_extended_type(sym)
-            else:
+            elif sym.language == "kotlin" and (
+                sym.parent_name is None or sym.kotlin_companion_member
+            ):
                 extended = self._kotlin_extended_type(sym)
+            else:
+                extended = None
             if extended is not None:
                 extensions[(extended, sym.name)].add((path, index_id))
 
@@ -676,11 +680,12 @@ class CallResolver(
         return helpers.get(sym.parent_name.lower())
 
     def _kotlin_extended_type(self, sym: Symbol) -> str | None:
-        """The type a top-level Kotlin extension function extends, a library one included.
+        """The type a Kotlin extension function extends, a library one included.
 
         Unlike C#, a library receiver is kept: Kotlin types a ``ByteArray`` or
         ``List`` receiver too, and only an extension can be the repo's callee.
-        A member extension is left out, since only its holder's scope sees it.
+        Ordinary member extensions are filtered before this helper; companion
+        members are admitted because their holder scope is modeled separately.
 
         Ceiling: the key is the bare type, so ``List<String>.f`` and
         ``List<Int>.f`` collide (and refuse as ambiguous), and ``Foo?`` keys as
