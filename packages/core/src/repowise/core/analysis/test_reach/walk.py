@@ -1,10 +1,11 @@
 # packages/core/src/repowise/core/analysis/test_reach/walk.py
 """Walks que responden “¿qué tests alcanzan este fichero?”.
 
-``call_walk`` e ``import_walk`` conservan exactamente su firma y contrato
-originales (``Walk[dict[str, set[str]]]``); ``registration_walk`` es una
-función nueva, puramente aditiva, que se apoya en el resultado de los
-walks anteriores vía ``prior``.
+``call_walk`` e ``import_walk`` conservan la firma original del repositorio
+base, incluidos los parámetros opcionales ``symbol_seeds`` y ``avoid``
+requeridos por ``db.py``. ``registration_walk`` es una función nueva,
+puramente aditiva, que se apoya en el resultado de los walks anteriores
+vía ``prior``.
 """
 from __future__ import annotations
 
@@ -20,31 +21,54 @@ from .maps import (
 
 
 # ---------------------------------------------------------------------------
-# Walk de llamadas — firma original, sin cambios (P1)
+# Walk de llamadas — firma original con symbol_seeds y avoid (P1)
 # ---------------------------------------------------------------------------
 def call_walk(
     seeds: list[str],
     test_files: Collection[str],
     max_depth: int = DEFAULT_CALL_DEPTH,
+    symbol_seeds: Collection[str] | None = None,
+    avoid: Collection[str] | None = None,
 ) -> Walk[dict[str, set[str]]]:
-    """Tests que llegan a *seeds* siguiendo aristas de ejecución."""
-    reached: dict[str, set[str]] = {seed: set() for seed in seeds}
-    frontier = list(seeds)
+    """Tests que llegan a *seeds* siguiendo aristas de ejecución.
+
+    *symbol_seeds* añade semillas adicionales (p.ej. ``"file::symbol"``);
+    *avoid* excluye ficheros/símbolos del recorrido y de sus resultados.
+    """
+    avoid_set: set[str] = set(avoid or ())
+
+    # Semillas efectivas = seeds + symbol_seeds, filtrando las evitadas.
+    effective_seeds: list[str] = []
+    for seed in list(seeds) + list(symbol_seeds or ()):
+        if seed in avoid_set:
+            continue
+        if seed not in effective_seeds:
+            effective_seeds.append(seed)
+
+    reached: dict[str, set[str]] = {seed: set() for seed in effective_seeds}
+    frontier = list(effective_seeds)
+
     for _ in range(max_depth):
         if not frontier:
             break
         level, frontier = frontier, []
         pairs: list[tuple[str, str]] = yield Need("callers", tuple(level))
         for caller, callee in pairs:
+            if caller in avoid_set:
+                continue
             if callee in reached:
                 reached[callee].add(caller)
                 if caller in test_files and caller not in frontier:
                     frontier.append(caller)
+
+    # Elimina del resultado cualquier nodo evitado (por seguridad).
+    if avoid_set:
+        reached = {k: v for k, v in reached.items() if k not in avoid_set}
     return reached
 
 
 # ---------------------------------------------------------------------------
-# Walk de importaciones — firma original, sin cambios (P1)
+# Walk de importaciones — firma original, sin cambios
 # ---------------------------------------------------------------------------
 def import_walk(
     seeds: list[str],
