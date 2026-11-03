@@ -218,15 +218,19 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
         ctx.page_count = run_async(_count_pages(ctx.repo_path))
         ctx.db_ok = True
     except Exception as e:
-        return [
-            _check(
-                "Database",
-                False,
-                f"cannot open the index at {ctx.repowise_dir / 'wiki.db'} ({e})",
-                check_id="database",
-                fix=_DB_RECOVERY_FIX,
-            )
-        ]
+        from repowise.cli.errors import is_unreadable_store_error
+
+        if is_unreadable_store_error(e):
+            return [
+                _check(
+                    "Database",
+                    False,
+                    f"cannot open the index at {ctx.repowise_dir / 'wiki.db'} ({e})",
+                    check_id="database",
+                    fix=_DB_RECOVERY_FIX,
+                )
+            ]
+        return [_check("Database", False, str(e), check_id="database")]
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 

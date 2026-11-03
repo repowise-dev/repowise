@@ -89,19 +89,22 @@ async def run_generation_with_persistence(
                 await upsert_repository(session, name=repo_name, local_path=str(repo_path))
             ).id
     except Exception as exc:
-        # A corrupt / unreadable wiki.db raises here. Dispose the engine so its
-        # aiosqlite worker thread does not outlive the process (which would hang
-        # the interpreter on exit), and turn the raw driver error into the same
-        # actionable recovery guidance doctor gives.
+        # Always dispose, so the aiosqlite worker thread cannot outlive the
+        # process and hang the interpreter on exit.
         await engine.dispose()
-        from repowise.cli.errors import reasoned_error
+        from repowise.cli.errors import is_unreadable_store_error, reasoned_error
 
-        raise reasoned_error(
-            f"Can't open the index at {repo_path}/.repowise/wiki.db ({exc}). If it is "
-            "corrupt, remove it and its sidecars, then re-run: "
-            "rm .repowise/wiki.db .repowise/wiki.db-wal .repowise/wiki.db-shm && repowise init",
-            reason="store_unreadable",
-        ) from exc
+        # Only an unreadable/corrupt store earns the remove-and-reindex guidance.
+        # Any other failure here (e.g. writing the repo row on a healthy db) must
+        # propagate unchanged, not tell the user to delete a good wiki.db.
+        if is_unreadable_store_error(exc):
+            raise reasoned_error(
+                f"Can't open the index at {repo_path}/.repowise/wiki.db ({exc}). "
+                "It looks corrupt; remove it and its sidecars, then re-run: "
+                "rm .repowise/wiki.db .repowise/wiki.db-wal .repowise/wiki.db-shm && repowise init",
+                reason="store_unreadable",
+            ) from exc
+        raise
 
     resume = bool(generation_kwargs.get("resume"))
     prior_pages: dict[str, Any] = {}

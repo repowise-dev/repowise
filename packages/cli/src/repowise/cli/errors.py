@@ -37,3 +37,24 @@ def reasoned_error(message: str, *, reason: str) -> click.ClickException:
     exc = click.ClickException(message)
     exc.reason = reason
     return exc
+
+
+def is_unreadable_store_error(exc: BaseException) -> bool:
+    """True when an error means the SQLite index file cannot be opened as a
+    database (corrupt, truncated, or not a database file) — the case the
+    remove-``wiki.db``-and-reindex recovery addresses.
+
+    A healthy-but-busy database (for example "database is locked") or any
+    unrelated failure is deliberately excluded, so callers never tell a user to
+    delete a good index over a problem that is not corruption.
+    """
+    text = f"{exc} {getattr(exc, 'orig', '')}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "file is not a database",
+            "not a database",
+            "database disk image is malformed",
+            "unable to open database file",
+        )
+    )

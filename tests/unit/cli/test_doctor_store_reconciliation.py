@@ -15,8 +15,9 @@ stayed invisible.
 from __future__ import annotations
 
 import asyncio
-import pytest
 from pathlib import Path
+
+import pytest
 
 from repowise.cli.commands.doctor_cmd import repo_checks
 from repowise.cli.commands.doctor_cmd._checks import stores
@@ -296,3 +297,23 @@ def test_init_persist_on_corrupt_wiki_db_raises_clean_error(tmp_path: Path) -> N
         )
     msg = str(excinfo.value)
     assert "wiki.db" in msg and "repowise init" in msg, msg
+
+
+def test_init_persist_non_corruption_error_propagates_unchanged(tmp_path: Path, monkeypatch) -> None:
+    """A failure that is NOT an unreadable store (e.g. writing the repo row on a
+    healthy db) must propagate as-is, not be reported as a corrupt index that the
+    user should delete. (repowise-bot P1 on #5263)"""
+    from repowise.cli.commands.init_cmd._generation_persist import (
+        run_generation_with_persistence,
+    )
+
+    repo_path = asyncio.run(_build_repo(tmp_path))  # healthy db
+
+    async def _boom(*_a, **_k):
+        raise ValueError("unrelated write failure")
+
+    # upsert_repository is imported from here at call time.
+    monkeypatch.setattr("repowise.core.persistence.upsert_repository", _boom)
+
+    with pytest.raises(ValueError, match="unrelated write failure"):
+        asyncio.run(run_generation_with_persistence(repo_path=repo_path, repo_name="repo"))
