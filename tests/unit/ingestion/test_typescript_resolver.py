@@ -424,6 +424,16 @@ class TestWorkspaceResolution:
         result = resolve_via_workspaces("@org/core", ctx)
         assert result == "packages/core/index.cts"
 
+    def test_resolves_workspace_main_under_dot_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "gen"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(
+            json.dumps({"name": "@acme/gen", "main": "./.generated/index.js"})
+        )
+        ctx = _ctx(tmp_path, ["packages/gen/.generated/index.js"])
+        assert resolve_via_workspaces("@acme/gen", ctx) == "packages/gen/.generated/index.js"
+
 
 class TestNestedSubPackage:
     """A workspace package with a sub-package nested inside its own tree,
@@ -462,6 +472,22 @@ class TestNestedSubPackage:
         ctx = _ctx(tmp_path, ["packages/solid/store/dist/store.js"])
         result = resolve_via_workspaces("solid-js/store", ctx)
         assert result == "packages/solid/store/dist/store.js"
+
+    def test_nested_subpackage_main_under_dot_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "store"
+        sub.mkdir()
+        (sub / "package.json").write_text(
+            json.dumps({"name": "solid-js/store", "main": "./.dist/index.js"})
+        )
+        ctx = _ctx(tmp_path, ["packages/solid/store/.dist/index.js"])
+        assert (
+            resolve_via_workspaces("solid-js/store", ctx)
+            == "packages/solid/store/.dist/index.js"
+        )
 
     def test_nested_subpackage_exports_field_is_honoured(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
@@ -536,6 +562,18 @@ class TestWorkspaceExportsField:
         assert (
             resolve_via_workspaces("@org/ui/lib/format", ctx)
             == "packages/ui/src/lib/format.ts"
+        )
+
+    def test_exports_subpath_resolves_under_dot_directory(self, tmp_path: Path) -> None:
+        _setup_workspace(
+            tmp_path,
+            "@acme/gen",
+            {"exports": {"./util": "./.generated/util.js"}},
+        )
+        ctx = _ctx(tmp_path, ["packages/gen/.generated/util.js"])
+        assert (
+            resolve_via_workspaces("@acme/gen/util", ctx)
+            == "packages/gen/.generated/util.js"
         )
 
     def test_exports_wildcard_pattern(self, tmp_path: Path) -> None:

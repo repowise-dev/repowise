@@ -293,6 +293,18 @@ class TestLuaurcAlias:
         got = resolve_luau_import("@nope", "src/main.luau", ctx)
         assert got == "external:@nope"
 
+    def test_dot_directory_and_parent_relative_aliases_resolve(self, tmp_path) -> None:
+        ctx = _repo_ctx(
+            tmp_path,
+            {".lune/util.luau", "shared/net.luau"},
+            {
+                ".luaurc": '{"aliases": {"lune": ".lune"}}',
+                "game/.luaurc": '{"aliases": {"shared": "../shared"}}',
+            },
+        )
+        assert resolve_luau_import("@lune/util", "src/main.luau", ctx) == ".lune/util.luau"
+        assert resolve_luau_import("@shared/net", "game/src/main.luau", ctx) == "shared/net.luau"
+
 
 class TestBareScriptParent:
     def test_spec_requires_sibling_init_module(self, tmp_path) -> None:

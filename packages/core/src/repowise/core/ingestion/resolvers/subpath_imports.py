@@ -80,7 +80,7 @@ def _build_index(ctx: ResolverContext) -> tuple[tuple[str, dict[str, str]], ...]
                     continue
                 target = _flatten(value)
                 if target:
-                    aliases[key] = target.lstrip("./")
+                    aliases[key] = target.removeprefix("./")
             if not aliases:
                 continue
             try:
