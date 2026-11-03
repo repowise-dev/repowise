@@ -83,8 +83,8 @@ away from it.
 
 ## 5. Health and change intelligence: what to fix, and what a change will do
 
-53 deterministic detectors score every file 1 to 10 across defect risk,
-maintainability and performance. 25 of them may move the defect score, calibrated
+59 deterministic detectors score every file 1 to 10 across defect risk,
+maintainability and performance. 23 of them may move the defect score, calibrated
 against real bug history. The same machinery judges a change before it merges.
 
 | Built on it | What you get | Read more |
