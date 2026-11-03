@@ -756,6 +756,17 @@ class TestDapr:
         c = _one(_extract(tmp_path, "sub.py", src), "consumer")
         assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
 
+    def test_python_subscribe_decorator_reads_a_positional_topic(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "app = App()\n"
+            + "@app.subscribe('pubsub', 'orders')\n"
+            + "def handle(event):\n"
+            + "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "pos_sub.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
     def test_python_publish_event_needs_the_dapr_import(self, tmp_path: Path) -> None:
         src = "client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
         assert _extract(tmp_path, "nodapr.py", src) == []
@@ -898,6 +909,51 @@ class TestDapr:
     def test_go_subscription_needs_the_dapr_import(self, tmp_path: Path) -> None:
         src = 'var sub = &common.Subscription{\n  Topic: "orders",\n}\n'
         assert _extract(tmp_path, "nodapr_sub.go", src) == []
+
+    def test_go_subscription_slice_reads_every_element(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "var subs = []common.Subscription{\n"
+            + '  {PubsubName: "pubsub", Topic: "orders"},\n'
+            + '  {PubsubName: "pubsub", Topic: "refunds"},\n'
+            + "}\n"
+        )
+        rows = _extract(tmp_path, "subs.go", src)
+        assert sorted((c.role, c.contract_id) for c in rows) == [
+            ("consumer", "topic::orders"),
+            ("consumer", "topic::refunds"),
+        ]
+
+    def test_a_gcp_pubsub_subscription_is_not_a_dapr_one(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "sub := &pubsubpb.Subscription{\n"
+            + '  Name:  "projects/p/subscriptions/s",\n'
+            + '  Topic: "projects/p/topics/t",\n'
+            + "}\n"
+        )
+        assert _extract(tmp_path, "gcp.go", src) == []
+
+    def test_go_subscription_is_bound_to_the_line_of_its_literal(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "var sub = &common.Subscription{\n"
+            + '  PubsubName: "pubsub",\n'
+            + '  Topic:      "orders",\n'
+            + "}\n"
+        )
+        c = _one(_extract(tmp_path, "line.go", src), "consumer")
+        assert (c.contract_id, c.line) == ("topic::orders", 5)
+
+    def test_an_unresolved_go_subscription_topic_is_counted(self, tmp_path: Path) -> None:
+        (tmp_path / "env_sub.go").write_text(
+            self._GO_IMPORT
+            + 'var sub = &common.Subscription{PubsubName: "pubsub", Topic: os.Getenv("T")}\n',
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        assert TopicExtractor().extract(tmp_path, "svc", stats=stats) == []
+        assert stats == {"topic_names_unresolved": 1}
 
     def test_js_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
         src = (

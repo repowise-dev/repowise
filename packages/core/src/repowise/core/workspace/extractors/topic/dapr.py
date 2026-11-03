@@ -5,6 +5,15 @@
 argument is the pub/sub component, the second the topic, so the topic is read
 from position 1. ``PublishEventAsync`` is too common to read on any receiver,
 so it is read only on the names the file declares as a ``DaprClient``.
+
+Java's ``publishEvent`` and JS's ``pubsub.publish`` / ``pubsub.subscribe`` are
+as generic, so they too are read only on a declared ``DaprClient`` or
+``DaprServer``. Python's ``publish_event`` and ``@app.subscribe`` and Go's
+``PublishEvent`` and ``Subscription{PubsubName: ...}`` are distinctive enough
+to read on any receiver, but only in a file importing the Dapr SDK. An app
+answering ``/dapr/subscribe`` itself needs no SDK, so its ``{pubsubname,
+topic}`` objects are read in a file naming that route instead; the route
+string and the objects must be in the same file.
 """
 
 from __future__ import annotations
@@ -106,7 +115,8 @@ DAPR = TopicDialect(
             role="consumer",
             label="subscribe",
             extensions=PYTHON,
-            name=Arg(keys=("topic",)),
+            # `App.subscribe(pubsub_name, topic)`, `DaprApp.subscribe(pubsub, topic)`
+            name=Arg(keys=("topic",), pos=1),
             requires=_DAPR_PY,
         ),
         TopicCall(
@@ -118,7 +128,11 @@ DAPR = TopicDialect(
             requires=_DAPR_GO,
         ),
         TopicCall(
-            head=re.compile(r"\b\w+\.Subscription\s*\{"),
+            # Anchored on the field Dapr requires, not the type: each element of
+            # a `[]common.Subscription{{...}, {...}}` slice is read on its own,
+            # under any import alias, and GCP's `pubsubpb.Subscription{Topic: t}`
+            # (no `PubsubName`) is not.
+            head=re.compile(r"\{(?=[^{}]*\bPubsubName\s*:)"),
             role="consumer",
             label="common.Subscription",
             extensions=GO,
