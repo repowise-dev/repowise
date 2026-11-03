@@ -212,8 +212,6 @@ async def _fused_retrieve(
         entry["_rrf"] += 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
     for rank, r in enumerate(fts_results):
-        if r.score < _MIN_RELEVANCE_SCORE:
-            continue
         entry = fused.setdefault(r.page_id, _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _RRF_K)
         entry["_sources"].add("fts")

@@ -85,7 +85,7 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
             item.get("symbol_id")
             if item.get("page_type") == "symbol_spotlight"
             else None
-        ) or item.get("target_path") or item.get("path", "")
+        ) or item.get("section_id") or item.get("target_path") or item.get("path", "")
         derived = f"{item.get('page_type', '')}:{target}"
         # A row for a file with no page has an id that names no page.
         if item.get("page_id") == derived or item.get("page_type") == PAGELESS_FILE:
@@ -162,11 +162,39 @@ async def _load_page_info(
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
-        select(Page.id, Page.target_path, Page.freshness_status).where(Page.id.in_(page_ids))
+        select(
+            Page.id,
+            Page.target_path,
+            Page.freshness_status,
+            Page.page_type,
+            Page.metadata_json,
+        ).where(Page.id.in_(page_ids))
     )
     rows = res.all()
     page_info = {row[0]: row[1] for row in rows}
     tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
+
+    import json
+    for item in output:
+        pid = item.get("page_id")
+        if not pid:
+            continue
+        for row in rows:
+            if row[0] == pid:
+                ptype = row[3]
+                if ptype:
+                    item["page_type"] = ptype
+                if ptype == "document_section" and row[4]:
+                    try:
+                        meta = json.loads(row[4])
+                        if isinstance(meta, dict):
+                            if "heading_trail" in meta:
+                                item["heading_trail"] = meta["heading_trail"]
+                            if "section_id" in meta:
+                                item["section_id"] = meta["section_id"]
+                    except Exception:
+                        pass
+                break
 
     git_map: dict[str, GitMetadata] = {}
     if with_git:
