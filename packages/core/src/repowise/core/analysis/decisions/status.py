@@ -1,10 +1,12 @@
 """What decision capture did, assembled from what capture actually persisted.
 
-There is no capture-run ledger, so every figure here is derived from a durable
-trace capture left behind, and the report omits what it cannot attribute rather
-than guessing at it.
-
-Lives in core rather than in the CLI so the API can answer the same question.
+There is no capture-run ledger for records or spend, so every figure here is
+derived from a durable trace capture left behind, and the report omits what it
+cannot attribute rather than guessing at it. The one run-level exception is
+the per-source commit-mining ledger in ``state.json``: it records the last
+attempt and failure for each history source, which records and cost rows
+cannot. Lives in core rather than in the CLI so the API can answer the same
+question.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from repowise.core.persistence.models import (
 from repowise.core.sessions.staging import default_store_path
 
 from .lifecycle import CANDIDATE_REVIEW_STATES
+from .mining_state import status_entries, status_fields
 from .policy import SOURCE_SPECS, SourceRuntime
 from .policy_store import load_policy
 from .provenance import RETIRED_SOURCES
@@ -263,6 +266,10 @@ async def capture_status(
     accepted = await accepted_decision_ids(session, repository_id)
     by_source = await _per_source(session, repository_id, accepted)
 
+    from repowise.core.workspace.update.state import read_repo_state
+
+    mining = status_entries(read_repo_state(repo_path))
+
     sources: list[dict[str, Any]] = []
     for runtime in policy.runtime(provider_available=provider_available):
         captured = by_source.get(runtime.key, {})
@@ -273,6 +280,7 @@ async def capture_status(
                 "accepted": captured.get("accepted", 0),
                 "candidates": captured.get("candidates", 0),
                 "last_captured": captured.get("last_captured"),
+                **status_fields(mining.get(runtime.key)),
             }
         )
     # A retired source keeps its stored rows, and a row whose source has no
@@ -306,6 +314,7 @@ async def capture_status(
                     ),
                 ).to_dict(),
                 **by_source[key],
+                **status_fields(mining.get(key)),
             }
         )
 
