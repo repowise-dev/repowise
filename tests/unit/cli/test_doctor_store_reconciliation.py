@@ -15,6 +15,7 @@ stayed invisible.
 from __future__ import annotations
 
 import asyncio
+import pytest
 from pathlib import Path
 
 from repowise.cli.commands.doctor_cmd import repo_checks
@@ -222,3 +223,76 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
     out = " ".join(" ".join(printed).split())
     assert "2 page(s) need embedding with openai" in out
     assert "repowise reindex" in out
+
+
+# ---------------------------------------------------------------------------
+# A corrupt/unreadable wiki.db must not hang doctor or init: every store helper
+# disposes its engine in `finally`, and the failing rows carry the recovery fix
+# instead of a raw driver error. (issue: doctor/init hang on a bad wiki.db)
+# ---------------------------------------------------------------------------
+
+def _corrupt_wiki_db(repo_path: Path) -> None:
+    (repo_path / ".repowise" / "wiki.db").write_bytes(b"this is not a sqlite database\n")
+
+
+def test_corrupt_wiki_db_database_row_carries_recovery_fix(tmp_path: Path) -> None:
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    _corrupt_wiki_db(repo_path)
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="json")
+    row = next(c for c in checks if c.id == "database")
+    assert row.ok is False, row
+    assert row.fix, "the database row must name a recovery fix"
+    assert "repowise init" in row.fix, row.fix
+
+
+def test_corrupt_wiki_db_doctor_exits_and_does_not_hang(tmp_path: Path) -> None:
+    """Faithful repro: a leaked aiosqlite worker thread blocks interpreter exit.
+    Run the real CLI in a subprocess and require it to finish within a timeout."""
+    import json as _json
+    import subprocess
+    import sys
+
+    exe = Path(sys.executable).with_name("repowise")
+    if not exe.exists():
+        import pytest
+
+        pytest.skip("repowise console script not installed next to the interpreter")
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    _corrupt_wiki_db(repo_path)
+
+    # Before the fix this hangs in threading._shutdown; the timeout is the test.
+    proc = subprocess.run(
+        [str(exe), "doctor", str(repo_path), "--format", "json", "--quick"],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    # A failing check makes doctor exit non-zero, but it must EXIT.
+    assert proc.returncode != 0, proc.stdout
+    payload = _json.loads(proc.stdout)
+    db = next(c for c in payload["checks"] if c["id"] == "database")
+    assert db["ok"] is False
+    assert db.get("fix") and "repowise init" in db["fix"], db
+
+
+def test_init_persist_on_corrupt_wiki_db_raises_clean_error(tmp_path: Path) -> None:
+    """init's store path turns an unreadable wiki.db into actionable guidance
+    (a ClickException) rather than a raw traceback, after disposing the engine."""
+    import click
+
+    from repowise.cli.commands.init_cmd._generation_persist import (
+        run_generation_with_persistence,
+    )
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    _corrupt_wiki_db(repo_path)
+
+    # init_db fails first, before any generation kwargs are used.
+    with pytest.raises(click.ClickException) as excinfo:
+        asyncio.run(
+            run_generation_with_persistence(repo_path=repo_path, repo_name="repo")
+        )
+    msg = str(excinfo.value)
+    assert "wiki.db" in msg and "repowise init" in msg, msg

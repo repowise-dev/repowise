@@ -80,11 +80,28 @@ async def run_generation_with_persistence(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
-    await init_db(engine)
-    sf = create_session_factory(engine)
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
 
-    async with get_session(sf) as session:
-        repo_id = (await upsert_repository(session, name=repo_name, local_path=str(repo_path))).id
+        async with get_session(sf) as session:
+            repo_id = (
+                await upsert_repository(session, name=repo_name, local_path=str(repo_path))
+            ).id
+    except Exception as exc:
+        # A corrupt / unreadable wiki.db raises here. Dispose the engine so its
+        # aiosqlite worker thread does not outlive the process (which would hang
+        # the interpreter on exit), and turn the raw driver error into the same
+        # actionable recovery guidance doctor gives.
+        await engine.dispose()
+        from repowise.cli.errors import reasoned_error
+
+        raise reasoned_error(
+            f"Can't open the index at {repo_path}/.repowise/wiki.db ({exc}). If it is "
+            "corrupt, remove it and its sidecars, then re-run: "
+            "rm .repowise/wiki.db .repowise/wiki.db-wal .repowise/wiki.db-shm && repowise init",
+            reason="store_unreadable",
+        ) from exc
 
     resume = bool(generation_kwargs.get("resume"))
     prior_pages: dict[str, Any] = {}

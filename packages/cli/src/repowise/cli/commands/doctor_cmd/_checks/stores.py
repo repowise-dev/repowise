@@ -186,33 +186,34 @@ async def _reconcile(
     from repowise.core.persistence import get_repository_by_path, get_session
 
     engine, sf = await open_store(repo_path)
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if not repo:
-            await engine.dispose()
-            return StoreDrift(), 0, None
-        sql = await _sql_side(session, repo_path, repo.id)
+    try:
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if not repo:
+                return StoreDrift(), 0, None
+            sql = await _sql_side(session, repo_path, repo.id)
 
-    lance_dir = repowise_dir / "lancedb"
-    vs_ids, vs_error = await _vector_ids(lance_dir)
-    fts_ids = await _fts_ids(engine)
-    await engine.dispose()
-    return (
-        StoreDrift(
-            # An index on disk that holds none of the indexable pages is every
-            # one of them missing. Only no index at all (fast mode, nothing
-            # embedded yet) has nothing to compare.
-            missing_from_vector=(
-                sql.vector_indexable_ids - vs_ids if lance_dir.exists() else set()
+        lance_dir = repowise_dir / "lancedb"
+        vs_ids, vs_error = await _vector_ids(lance_dir)
+        fts_ids = await _fts_ids(engine)
+        return (
+            StoreDrift(
+                # An index on disk that holds none of the indexable pages is every
+                # one of them missing. Only no index at all (fast mode, nothing
+                # embedded yet) has nothing to compare.
+                missing_from_vector=(
+                    sql.vector_indexable_ids - vs_ids if lance_dir.exists() else set()
+                ),
+                orphaned_vector=vs_ids - sql.vector_sql_ids,
+                missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
+                orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
+                vector_store_empty=lance_dir.exists() and vs_error is None and not vs_ids,
             ),
-            orphaned_vector=vs_ids - sql.vector_sql_ids,
-            missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
-            orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
-            vector_store_empty=lance_dir.exists() and vs_error is None and not vs_ids,
-        ),
-        sql.stub_count,
-        vs_error,
-    )
+            sql.stub_count,
+            vs_error,
+        )
+    finally:
+        await engine.dispose()
 
 
 def _drift_detail(missing: set[str], orphaned: set[str]) -> tuple[bool, str]:
@@ -317,21 +318,22 @@ async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath)
 
     engine, sf = await open_store(repo_path)
     vector_store = None
-    lance_dir = repowise_dir / "lancedb"
-    if lance_dir.exists():
-        with contextlib.suppress(Exception):
-            vector_store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
+    try:
+        lance_dir = repowise_dir / "lancedb"
+        if lance_dir.exists():
+            with contextlib.suppress(Exception):
+                vector_store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
 
-    async with get_session(sf) as session:
-        coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
-        result = await coord.health_check()
-        await _decision_aware_drift(session, repo_path, result, vector_store)
-
-    if vector_store is not None:
-        with contextlib.suppress(Exception):
-            await vector_store.close()
-    await engine.dispose()
-    return result
+        async with get_session(sf) as session:
+            coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
+            result = await coord.health_check()
+            await _decision_aware_drift(session, repo_path, result, vector_store)
+        return result
+    finally:
+        if vector_store is not None:
+            with contextlib.suppress(Exception):
+                await vector_store.close()
+        await engine.dispose()
 
 
 def _drift_color(drift: float | None) -> str:

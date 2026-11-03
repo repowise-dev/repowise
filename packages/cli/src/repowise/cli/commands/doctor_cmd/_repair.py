@@ -147,15 +147,17 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
 
 async def _repair_stores(ctx: CheckContext) -> int:
     engine, sf = await open_store(ctx.repo_path)
-    drift = ctx.drift
-    repaired = 0
-    if drift.missing_from_fts or drift.orphaned_fts:
-        repaired += await _repair_fts(engine, sf, drift)
-    lance_dir = ctx.repowise_dir / "lancedb"
-    if lance_dir.exists() and (drift.missing_from_vector or drift.orphaned_vector):
-        repaired += await _repair_vectors(sf, ctx.repo_path, drift)
-    await engine.dispose()
-    return repaired
+    try:
+        drift = ctx.drift
+        repaired = 0
+        if drift.missing_from_fts or drift.orphaned_fts:
+            repaired += await _repair_fts(engine, sf, drift)
+        lance_dir = ctx.repowise_dir / "lancedb"
+        if lance_dir.exists() and (drift.missing_from_vector or drift.orphaned_vector):
+            repaired += await _repair_vectors(sf, ctx.repo_path, drift)
+        return repaired
+    finally:
+        await engine.dispose()
 
 
 def _report_store_repair(ctx: CheckContext) -> None:

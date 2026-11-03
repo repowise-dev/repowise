@@ -10,6 +10,9 @@ from repowise.cli.helpers import db_configured, load_state, run_async
 from .._types import DoctorCheck, _check
 from .context import CheckContext, open_store
 
+# Recovery for an unreadable/corrupt wiki.db: drop the db + its sidecars, reindex.
+_DB_RECOVERY_FIX = "rm .repowise/wiki.db .repowise/wiki.db-wal .repowise/wiki.db-shm && repowise init"
+
 
 async def _page_count(session: object, repo_id: str) -> int:
     """Count this repository's pages in SQL.
@@ -194,11 +197,13 @@ async def _count_pages(repo_path: _DoctorPath) -> int:
 
     engine, sf = await open_store(repo_path)
     count = 0
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo:
-            count = await _page_count(session, repo.id)
-    await engine.dispose()
+    try:
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo:
+                count = await _page_count(session, repo.id)
+    finally:
+        await engine.dispose()
     return count
 
 
@@ -213,7 +218,15 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
         ctx.page_count = run_async(_count_pages(ctx.repo_path))
         ctx.db_ok = True
     except Exception as e:
-        return [_check("Database", False, str(e), check_id="database")]
+        return [
+            _check(
+                "Database",
+                False,
+                f"cannot open the index at {ctx.repowise_dir / 'wiki.db'} ({e})",
+                check_id="database",
+                fix=_DB_RECOVERY_FIX,
+            )
+        ]
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 
