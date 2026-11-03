@@ -319,3 +319,36 @@ int DBImpl::Put(int k) { x_ = k; return 0; }
     assert cl.name == "DBImpl"
     assert cl.method_count == 2
     assert cl.lcom4 == 1
+
+
+def test_cpp_forward_declaration_does_not_duplicate_out_of_line_methods():
+    src = """
+class Foo;
+class Foo {
+ public:
+  int m1();
+};
+int Foo::m1() { return 1; }
+"""
+    res = walk_file("foo.cc", "cpp", src.strip().encode())
+    # Forward decl Foo and class Foo both exist as class_specifier nodes,
+    # but out-of-line Foo::m1 should attach to Foo once.
+    foo_classes = [c for c in res.classes if c.name == "Foo"]
+    total_methods = sum(c.method_count for c in foo_classes)
+    assert total_methods == 1
+
+
+def test_cpp_specialization_matches_out_of_line_methods():
+    src = """
+template <>
+class Box<int> {
+ public:
+  int get();
+};
+int Box<int>::get() { return 42; }
+"""
+    res = walk_file("box.cc", "cpp", src.strip().encode())
+    assert len(res.classes) == 1
+    cl = res.classes[0]
+    assert cl.method_count == 1
+    assert cl.methods[0].name == "Box<int>::get"

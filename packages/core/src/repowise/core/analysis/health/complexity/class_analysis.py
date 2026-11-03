@@ -658,15 +658,15 @@ def _collect_namespace_names(root_node: Node) -> set[str]:
     stack = [root_node]
     while stack:
         cur = stack.pop()
-        if cur.type == "namespace_definition":
-            name_node = cur.child_by_field_name("name")
-            if name_node is not None and name_node.text is not None:
-                full_name = name_node.text.decode("utf-8", errors="replace")
-                names.add(full_name)
-                for seg in full_name.split("::"):
-                    if seg:
-                        names.add(seg)
         stack.extend(cur.children)
+        if cur.type != "namespace_definition":
+            continue
+        name_node = cur.child_by_field_name("name")
+        if name_node is None or name_node.text is None:
+            continue
+        full_name = name_node.text.decode("utf-8", errors="replace")
+        names.add(full_name)
+        names.update(seg for seg in full_name.split("::") if seg)
     return names
 
 
@@ -678,11 +678,8 @@ def _cpp_class_name_from_qualifier(fc_name: str, namespace_names: set[str]) -> s
     if "::" not in fc_name:
         return None
     qualifier, _ = fc_name.rsplit("::", 1)
-    parts: list[str] = []
-    for part in qualifier.split("::"):
-        clean_part = re.sub(r"<.*>$", "", part).strip()
-        if clean_part:
-            parts.append(clean_part)
+    parts = [re.sub(r"<.*>$", "", part).strip() for part in qualifier.split("::")]
+    parts = [p for p in parts if p]
     if not parts:
         return None
     last = parts[-1]
@@ -694,6 +691,44 @@ def _cpp_class_name_from_qualifier(fc_name: str, namespace_names: set[str]) -> s
     ):
         return None
     return last
+
+
+def _collect_cpp_out_of_line(
+    fn_nodes: list[Node],
+    fc_by_node_id: dict[int, FunctionComplexity],
+    root_node: Node,
+) -> dict[str, list[tuple[Node, FunctionComplexity]]]:
+    out: dict[str, list[tuple[Node, FunctionComplexity]]] = {}
+    namespaces = _collect_namespace_names(root_node)
+    for fn_node in fn_nodes:
+        fc = fc_by_node_id.get(fn_node.id)
+        if fc is None:
+            continue
+        cname = _cpp_class_name_from_qualifier(fc.name, namespaces)
+        if cname is not None:
+            out.setdefault(cname, []).append((fn_node, fc))
+    return out
+
+
+def _build_synthetic_class(
+    cname: str, entries: list[tuple[Node, FunctionComplexity]]
+) -> ClassComplexity:
+    fcs = [fc for _, fc in entries]
+    return ClassComplexity(
+        name=cname,
+        start_line=min(fc.start_line for fc in fcs),
+        end_line=max(fc.end_line for fc in fcs),
+        method_count=len(fcs),
+        total_nloc=sum(fc.nloc for fc in fcs),
+        methods=fcs,
+        lcom4=1,
+        max_method_ccn=max((fc.ccn for fc in fcs), default=0),
+        field_count=0,
+        components=[],
+        tcc=1.0,
+        contract_impl=False,
+        field_readers=frozenset(),
+    )
 
 
 def _collect_classes(
@@ -718,36 +753,26 @@ def _collect_classes(
     classes: list[ClassComplexity] = []
 
     out_of_line_by_class: dict[str, list[tuple[Node, FunctionComplexity]]] = {}
-    matched_classes: set[str] = set()
     if language in ("cpp", "c") and fn_nodes is not None and root_node is not None:
-        namespace_names = _collect_namespace_names(root_node)
-        for fn_node in fn_nodes:
-            fc = fc_by_node_id.get(fn_node.id)
-            if fc is None:
-                continue
-            cname = _cpp_class_name_from_qualifier(fc.name, namespace_names)
-            if cname is not None:
-                out_of_line_by_class.setdefault(cname, []).append((fn_node, fc))
+        out_of_line_by_class = _collect_cpp_out_of_line(fn_nodes, fc_by_node_id, root_node)
 
+    matched_classes: set[str] = set()
     # A class the grammar fused into a misread scope's head runs on over the
     # code after it, so its member list is not the class's own.
     trusted = [n for n in class_nodes if n.parent is None or not is_misread_scope(n.parent, lmap)]
     for class_node in trusted:
         cname = _class_name(class_node)
+        normalized_cname = re.sub(r"<.*>$", "", cname).strip() if language in ("cpp", "c") else cname
         body = _collect_class_body(class_node, lmap, language, source_str)
-        ool_entries = out_of_line_by_class.get(cname, [])
+        ool_entries = [] if normalized_cname in matched_classes else out_of_line_by_class.get(normalized_cname, [])
         ool_nodes = [n for n, _ in ool_entries]
         ool_fcs = [fc for _, fc in ool_entries]
         if ool_nodes:
-            matched_classes.add(cname)
+            matched_classes.add(normalized_cname)
             body = body._replace(methods=body.methods + ool_nodes)
 
         method_fcs = [fc_by_node_id[m.id] for m in body.methods if m.id in fc_by_node_id]
-        # Keep nodes and FCs aligned (a method missing from the function
-        # pass — unusual — drops out of both).
         body = body._replace(methods=[m for m in body.methods if m.id in fc_by_node_id])
-        # A partial class's other parts live in files this pass does not see;
-        # a trait impl's methods are the trait's, so none can move out.
         contract_impl = is_trait_impl(class_node, lmap)
         refs = _class_member_refs(body, method_fcs, lmap, cname)
         if "partial" in _decl_words(class_node) or contract_impl:
@@ -771,7 +796,6 @@ def _collect_classes(
                 components=components,
                 tcc=tcc,
                 contract_impl=contract_impl,
-                # A partial fragment's own fields still bind the methods that use them.
                 field_readers=_field_readers(method_fcs, refs),
             )
         )
@@ -779,28 +803,8 @@ def _collect_classes(
     for cname, entries in sorted(
         out_of_line_by_class.items(), key=lambda it: min(fc.start_line for _, fc in it[1])
     ):
-        if cname in matched_classes:
-            continue
-        fcs = [fc for _, fc in entries]
-        if not fcs:
-            continue
-        classes.append(
-            ClassComplexity(
-                name=cname,
-                start_line=min(fc.start_line for fc in fcs),
-                end_line=max(fc.end_line for fc in fcs),
-                method_count=len(fcs),
-                total_nloc=sum(fc.nloc for fc in fcs),
-                methods=fcs,
-                lcom4=1,
-                max_method_ccn=max((fc.ccn for fc in fcs), default=0),
-                field_count=0,
-                components=[],
-                tcc=1.0,
-                contract_impl=False,
-                field_readers=frozenset(),
-            )
-        )
+        if cname not in matched_classes and entries:
+            classes.append(_build_synthetic_class(cname, entries))
     return classes
 
 
