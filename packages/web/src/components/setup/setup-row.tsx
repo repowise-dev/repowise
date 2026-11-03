@@ -76,9 +76,11 @@ export function SetupRowView({ row, action, onOpenPrompt, children }: Props) {
         </h3>
         <RowDetail detail={text(row.detail)} />
         {children}
-        <div className="mt-1.5">
-          <SetupCommand command={row.command} />
-        </div>
+        {row.command && (
+          <div className="mt-1.5">
+            <SetupCommand command={row.command} />
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">
         {attention ? <AttentionPrompt row={row} /> : action}

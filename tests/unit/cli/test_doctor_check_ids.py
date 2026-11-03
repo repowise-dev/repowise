@@ -18,7 +18,8 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import doctor_cmd
 from repowise.cli.commands.doctor_cmd import collect_repo_checks, doctor_command, repo_checks
-from repowise.cli.commands.doctor_cmd._checks import integrations, providers
+from repowise.cli.commands.doctor_cmd._checks import core, integrations, providers, stores
+from repowise.cli.commands.doctor_cmd._checks.context import CheckContext
 from repowise.cli.commands.doctor_cmd._types import _check
 
 # "*" stands for a per-target or per-language suffix.
@@ -162,6 +163,37 @@ def test_collected_rows_have_unique_ids_and_consistent_levels(
         assert c.ok is (c.level != "fail")
 
 
+def test_non_ok_checks_have_a_fix_or_explain_manual_recovery(tmp_path: Path, no_mcp_launch) -> None:
+    checks = collect_repo_checks(_git_repo(tmp_path))
+    no_single_command = {
+        "database",
+        "distill-config",
+        "events-config",
+        "mcp-responds",
+        "omission-store",
+        "providers",
+        "repowise-dir",
+        "store-consistency",
+    }
+    no_fix = [check for check in checks if check.level != "ok" and check.fix is None]
+    missing = [
+        f"{check.id}: {check.detail}" for check in no_fix if check.id not in no_single_command
+    ]
+    assert not missing, (
+        "non-ok doctor rows need a fix or an explicit manual-recovery reason:\n"
+        + "\n".join(missing)
+    )
+    unexplained = [
+        f"{check.id}: {check.detail}"
+        for check in no_fix
+        if not check.detail.strip()
+        or check.detail.strip().lower() in {"could not check", "not available"}
+    ]
+    assert not unexplained, "no-fix rows need specific diagnostic detail:\n" + "\n".join(
+        unexplained
+    )
+
+
 def test_missing_post_commit_hook_is_a_warn_with_the_install_command(tmp_path: Path) -> None:
     row = repo_checks._autosync_hook_check(_git_repo(tmp_path))
     assert (row.id, row.level, row.ok) == ("post-commit-hook", "warn", True)
@@ -181,6 +213,74 @@ def test_missing_repowise_dir_is_a_fail_with_the_init_command(tmp_path: Path) ->
     row = repo_checks._repowise_dir_check(tmp_path / ".repowise")
     assert (row.id, row.level, row.ok) == ("repowise-dir", "fail", False)
     assert row.fix == "repowise init"
+
+
+def test_git_repository_failure_offers_git_init(tmp_path: Path) -> None:
+    row = core._git_check(tmp_path)
+    assert (row.id, row.level, row.fix) == ("git-repository", "fail", "git init")
+
+
+def test_missing_state_offers_init(tmp_path: Path, monkeypatch) -> None:
+    ctx = CheckContext(tmp_path, tmp_path / ".repowise")
+    monkeypatch.setattr(core, "load_state", lambda _path: {})
+    row = core._state_row(ctx)
+    assert (row.id, row.level, row.fix) == ("state-json", "fail", "repowise init")
+
+
+@pytest.mark.parametrize(
+    ("result", "fix"),
+    [
+        ({"sql_pages": 0, "vector_count": 37, "drift": 37.0}, "repowise init"),
+        ({"sql_pages": 34, "vector_count": 37, "drift": 0.088}, "repowise doctor --repair"),
+    ],
+)
+def test_coordinator_drift_offers_the_repair_for_its_store_state(
+    tmp_path: Path, monkeypatch, result: dict, fix: str
+) -> None:
+    ctx = CheckContext(tmp_path, tmp_path / ".repowise")
+
+    async def health(_repo_path, _repowise_dir):
+        return result
+
+    monkeypatch.setattr(stores, "_coordinator_health", health)
+    row = stores._coordinator_row(ctx)
+    assert row.fix == fix
+
+
+def test_vector_store_open_failure_offers_reindex(tmp_path: Path, monkeypatch) -> None:
+    from repowise.cli.commands.doctor_cmd._checks.context import StoreDrift
+
+    ctx = CheckContext(tmp_path, tmp_path / ".repowise")
+
+    async def reconcile(_repo_path, _repowise_dir):
+        return StoreDrift(), 0, "index files missing"
+
+    monkeypatch.setattr(stores, "_reconcile", reconcile)
+    rows = stores._consistency_rows(ctx)
+    vector_store = next(row for row in rows if row.id == "vector-store")
+    assert vector_store.fix == "repowise reindex"
+
+
+def test_stale_pages_offers_full_update(tmp_path: Path, monkeypatch) -> None:
+    ctx = CheckContext(tmp_path, tmp_path / ".repowise")
+
+    async def stale_counts(_repo_path):
+        return {"module_page": 2}
+
+    monkeypatch.setattr(providers, "_read_stale_counts", stale_counts)
+    row = providers._stale_pages_row(ctx)
+    assert row.fix == "repowise update --full"
+
+
+def test_hosted_account_failure_offers_login(monkeypatch) -> None:
+    from repowise.cli.platform import credentials
+
+    def fail_to_load():
+        raise RuntimeError("credentials unreadable")
+
+    monkeypatch.setattr(credentials, "load", fail_to_load)
+    row = providers._hosted_account_check()
+    assert row.fix == "repowise login"
 
 
 def test_registration_serving_another_repo_is_a_warn(tmp_path: Path, monkeypatch) -> None:

@@ -70,7 +70,11 @@ def test_misconfigured_provider_key_still_fails_its_own_check(
         warnings=["openai requires environment variables: OPENAI_API_KEY"],
     )
 
-    assert _rows(tmp_path)["Provider config"] == (
+    check = next(
+        row for row in repo_checks._provider_checks(tmp_path) if row.id == "provider-config"
+    )
+    assert (check.ok, check.detail, check.fix) == (
         False,
         "openai requires environment variables: OPENAI_API_KEY",
+        "repowise init",
     )

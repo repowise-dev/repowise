@@ -198,7 +198,12 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
             env=child_env,
         )
     except OSError as exc:
-        return _check(CHECK_NAME, False, f"could not launch {command}: {exc}", check_id=CHECK_ID)
+        return _check(
+            CHECK_NAME,
+            False,
+            f"could not launch registered command {command}: {exc}; inspect the MCP registration and executable PATH",
+            check_id=CHECK_ID,
+        )
 
     stderr_ring, stderr_reader = _drain_stderr(proc)
     try:
@@ -216,7 +221,12 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         if response is not None:
             error = response.get("error") or {}
             detail = f"initialize failed: {error.get('message', response)}"
-            return _check(CHECK_NAME, False, detail, check_id=CHECK_ID)
+            return _check(
+                CHECK_NAME,
+                False,
+                f"{detail}; inspect the registered MCP command",
+                check_id=CHECK_ID,
+            )
 
         # No response. Whether the process is gone (the crash-loop case) or up
         # and mute changes the remedy, so the detail says which.
@@ -229,7 +239,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
             return _check(
                 CHECK_NAME,
                 False,
-                f"no initialize response within {int(_SMOKE_TIMEOUT_S)}s (still running)",
+                f"no initialize response within {int(_SMOKE_TIMEOUT_S)}s (still running); inspect the registered MCP command",
                 check_id=CHECK_ID,
             )
         detail = f"server exited with code {exit_code}"
@@ -239,6 +249,8 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         stderr = _stderr_tail(stderr_ring)
         if stderr:
             detail += f": {stderr}"
-        return _check(CHECK_NAME, False, detail, check_id=CHECK_ID)
+        return _check(
+            CHECK_NAME, False, f"{detail}; inspect the registered MCP command", check_id=CHECK_ID
+        )
     finally:
         _shutdown(proc)

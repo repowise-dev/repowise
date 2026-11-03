@@ -134,8 +134,9 @@ describe("agent hook scripts row", () => {
     await screen.findByText("Agent hook scripts");
     const row = within(document.querySelector("[data-row='check-agent-hook-scripts']") as HTMLElement);
     expect(row.getByText(/Add C:\/env\/Scripts to PATH\./)).toBeTruthy();
-    // No single command fixes a PATH problem, so the row falls back to doctor.
-    expect(row.getByText("repowise doctor --format json")).toBeTruthy();
+    // A PATH problem has no single safe command to offer.
+    expect(row.queryByText("repowise doctor --format json")).toBeNull();
+    expect(row.queryByText("repowise agents refresh")).toBeNull();
   });
 });
 
