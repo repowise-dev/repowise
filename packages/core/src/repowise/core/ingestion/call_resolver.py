@@ -204,6 +204,9 @@ _NON_CALLABLE_KINDS = frozenset({"property"})
 # Languages whose ``variable`` is always a property (`val`/`var`/`let`): a data
 # member. Calling one invokes the value it holds, which is not this symbol.
 _PROPERTY_VARIABLE_LANGUAGES = frozenset({"kotlin", "swift"})
+# Languages whose ``variable`` symbols are class/struct data members (fields,
+# properties, events, enum members) rather than callable free functions.
+_DATA_MEMBER_VARIABLE_LANGUAGES = frozenset({"csharp", "pascal", "vbnet"})
 
 
 # Kotlin's call operator: ``f(x)`` on a value is ``f.invoke(x)`` when its type
@@ -226,7 +229,12 @@ def _is_kotlin_alias(sym: Symbol | None) -> bool:
 def _is_data_member(sym: Symbol) -> bool:
     if sym.kind in _NON_CALLABLE_KINDS:
         return True
-    return sym.kind == "variable" and sym.language in _PROPERTY_VARIABLE_LANGUAGES
+    if sym.kind == "variable":
+        return (
+            sym.language in _PROPERTY_VARIABLE_LANGUAGES
+            or sym.language in _DATA_MEMBER_VARIABLE_LANGUAGES
+        )
+    return False
 
 
 # A Rust ``impl`` or Swift ``extension`` block is named for the type it adds
