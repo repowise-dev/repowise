@@ -172,7 +172,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 | Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
 | Topics: JMS | Spring `JmsTemplate` / `JmsMessagingTemplate` `convertAndSend` / `send` / `sendAndReceive` / `convertSendAndReceive` on a receiver named for JMS (`jmsTemplate`, `orderJmsTemplate`, `getJmsTemplate()`) with a destination argument; ActiveMQ and IBM MQ `queue://` names read as the bare queue | `@JmsListener(destination = ...)`, `receive` / `receiveAndConvert`, `DefaultMessageListenerContainer.setDestinationName` |
-| Topics: Dapr | `DaprClient.PublishEventAsync` (C#), `daprClient.publishEvent(pubsub, topic, data)` (Java), `pubsub.publish` on a receiver the file declares as a `DaprClient` (JS/TS), `publish_event(...)` on any receiver, with the topic as `topic_name=` or the second positional argument, read only in a file importing the Dapr Python SDK (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, data)` on any receiver, read only in a file importing `github.com/dapr/go-sdk` (Go) | `[Topic]` (C#), `@Topic(name = ...)` (Java), `pubsub.subscribe` on a receiver the file declares as a `DaprServer` (JS/TS), `@app.subscribe(topic=...)` on any app object, read only in a file importing the Dapr Python SDK (Python), `&common.Subscription{Topic: ...}` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with (JS/TS, Python, Go), and `kind: Subscription` manifests |
+| Topics: Dapr | `DaprClient.PublishEventAsync` (C#), `daprClient.publishEvent(pubsub, topic, data)` (Java), `pubsub.publish` on a receiver the file declares as a `DaprClient` (JS/TS), `publish_event(...)` on any receiver, with the topic as `topic_name=` or the second positional argument, read only in a file importing a `dapr.*` module or `flask_dapr` (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, data)` on any receiver, read only in a file importing `github.com/dapr/go-sdk` (Go) | `[Topic]` (C#), `@Topic(name = ...)` (Java), `pubsub.subscribe` on a receiver the file declares as a `DaprServer` (JS/TS), `@app.subscribe(topic=...)` on any app object, read only in a file importing a `dapr.*` module or `flask_dapr` (Python), `&common.Subscription{Topic: ...}` under any import alias of `github.com/dapr/go-sdk/service/common` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with (JS/TS, Python, Go), and `kind: Subscription` manifests |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
 A topic, queue or route name is resolved when it is a literal or a constant the
@@ -187,10 +187,8 @@ one an **exact** link. The exact naming and matching rules for each transport
 table defaults, framework route prefixes, client base URLs) are in the
 [contract matching reference](../reference/WORKSPACE_CONTRACTS.md).
 
-A Dapr, Laravel or NestJS name runs over a transport the code does not show, so
-it links to a same-named Kafka, RabbitMQ, NATS or Redis destination; BullMQ is
-the exception, since only BullMQ reads the Redis keys its queue is made of. Any
-other two brokers must match.
+Which brokers can link to each other is in
+[Topics and queues](../reference/WORKSPACE_CONTRACTS.md#topics-and-queues).
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in
 the [system graph](#system-graph). The consumer side (SQL string matching) is

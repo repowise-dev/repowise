@@ -1317,14 +1317,13 @@ mislead the masker.
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 | **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
 | **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
-| **Topic (Dapr)** | `PublishEventAsync` (C#), `publishEvent` (Java), `pubsub.publish` on a declared `DaprClient` (JS/TS), `publish_event(...)` with the topic as `topic_name=` or the second positional argument, in a file importing the Dapr Python SDK (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, ...)` (Go) | `[Topic]` (C#), `@Topic` (Java), `pubsub.subscribe` on a declared `DaprServer` (JS/TS), `@app.subscribe(topic=...)` in a file importing the Dapr Python SDK (Python), `common.Subscription{Topic: ...}` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with, `Subscription` manifests |
+| **Topic (Dapr)** | `PublishEventAsync` (C#), `publishEvent` (Java), `pubsub.publish` on a declared `DaprClient` (JS/TS), `publish_event(...)` with the topic as `topic_name=` or the second positional argument, in a file importing a `dapr.*` module or `flask_dapr` (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, ...)` (Go) | `[Topic]` (C#), `@Topic` (Java), `pubsub.subscribe` on a declared `DaprServer` (JS/TS), `@app.subscribe(topic=...)` in a file importing a `dapr.*` module or `flask_dapr` (Python), `common.Subscription{Topic: ...}` under any import alias of `service/common` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with, `Subscription` manifests |
 
 RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
 a queue named through its declaration's result (`q.Name`).
 
-A Dapr, Laravel or NestJS name runs over a transport the code does not show, so
-it links to a same-named destination on Kafka, RabbitMQ, NATS or Redis; BullMQ
-excepted, since only BullMQ reads the Redis keys its queue is made of.
+Which brokers can link to each other is in
+[Topics and queues](../reference/WORKSPACE_CONTRACTS.md#topics-and-queues).
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
 workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,

@@ -29,10 +29,11 @@ if TYPE_CHECKING:
 
 _DAPR = ("Dapr",)
 _DAPR_GO = ("github.com/dapr/go-sdk",)
+_DAPR_GO_COMMON = ("github.com/dapr/go-sdk/service/common",)
 _DAPR_JAVA = ("io.dapr",)
 _DAPR_JS = ("@dapr/dapr",)
 _DAPR_SUBSCRIBE = ("/dapr/subscribe",)
-_DAPR_PY = ("dapr.clients", "dapr.ext.grpc")
+_DAPR_PY = ("from dapr.", "import dapr.", "flask_dapr")
 _TOPIC = Arg(keys=("name", "topicName"), pos=1)
 
 DAPR = TopicDialect(
@@ -93,7 +94,7 @@ DAPR = TopicDialect(
             requires=_DAPR_JAVA,
         ),
         TopicCall(
-            head=re.compile(r"\bpublish_event\s*\("),
+            head=re.compile(r"\.\s*publish_event\s*\("),
             role="provider",
             label="publish_event",
             extensions=PYTHON,
@@ -117,12 +118,12 @@ DAPR = TopicDialect(
             requires=_DAPR_GO,
         ),
         TopicCall(
-            head=re.compile(r"common\.Subscription\s*\{"),
+            head=re.compile(r"\b\w+\.Subscription\s*\{"),
             role="consumer",
             label="common.Subscription",
             extensions=GO,
             name=Arg(keys=("Topic",)),
-            requires=_DAPR_GO,
+            requires=_DAPR_GO_COMMON,
         ),
         TopicCall(
             head=re.compile(r"""\{(?=[^{}]*['"]?pubsubname['"]?\s*:)""", re.IGNORECASE),
