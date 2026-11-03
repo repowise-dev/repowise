@@ -15,6 +15,7 @@ class TestContractConfig:
         cfg = ContractConfig()
         assert cfg.detect_http is True
         assert cfg.detect_grpc is True
+        assert cfg.detect_soap is True
         assert cfg.detect_socket is True
         assert cfg.detect_topics is True
         assert cfg.manual_links == []
@@ -23,6 +24,7 @@ class TestContractConfig:
         cfg = ContractConfig.from_dict({"detect_http": False})
         assert cfg.detect_http is False
         assert cfg.detect_grpc is True
+        assert cfg.detect_soap is True
         assert cfg.detect_socket is True
         assert cfg.detect_topics is True
 
@@ -30,6 +32,7 @@ class TestContractConfig:
         cfg = ContractConfig(
             detect_http=True,
             detect_grpc=False,
+            detect_soap=False,
             detect_socket=True,
             detect_topics=True,
             manual_links=[
@@ -45,6 +48,7 @@ class TestContractConfig:
         d = cfg.to_dict()
         loaded = ContractConfig.from_dict(d)
         assert loaded.detect_grpc is False
+        assert loaded.detect_soap is False
         assert len(loaded.manual_links) == 1
         assert loaded.manual_links[0].from_repo == "worker"
 

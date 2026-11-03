@@ -120,7 +120,7 @@ class Contract:
 
     repo: str  # repo alias
     contract_id: str  # e.g. "http::GET::/api/users/{param}", "data::orders"
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code" | "soap"
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
     symbol_name: str  # handler name, service.method, etc. — display only
@@ -184,7 +184,7 @@ class ContractLink:
     """A matched provider↔consumer pair across repos."""
 
     contract_id: str
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code" | "soap"
     match_type: str  # "exact" | "candidate" | "manual", derived from ``strategy``
     confidence: float
     provider_repo: str
@@ -832,6 +832,7 @@ def _enabled_extractors(contract_config: Any) -> list[Any]:
         HttpExtractor,
         MassTransitExtractor,
         OpenApiExtractor,
+        SoapExtractor,
         SocketExtractor,
         TopicExtractor,
     )
@@ -842,6 +843,8 @@ def _enabled_extractors(contract_config: Any) -> list[Any]:
         extractors.append(OpenApiExtractor())
     if contract_config.detect_grpc:
         extractors.append(GrpcExtractor())
+    if contract_config.detect_soap:
+        extractors.append(SoapExtractor())
     if contract_config.detect_socket:
         extractors.append(SocketExtractor())
     if contract_config.detect_topics:

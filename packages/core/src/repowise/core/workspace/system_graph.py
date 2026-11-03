@@ -78,6 +78,7 @@ _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     # A package boundary is exactly what the existing "package" kind means,
     # so the graph, the conformance rules and the map need no new taxonomy.
     "code": "package",
+    "soap": "http",
 }
 
 #: Every edge kind the graph can carry, mapped to its family: ``runtime`` (a
