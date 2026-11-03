@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.ingestion.cobol import code_view, copy_statements, exec_blocks
+from repowise.core.ingestion.cobol import (
+    code_view,
+    copy_statements,
+    exec_blocks,
+    prepare_cobol_source,
+)
 from repowise.core.ingestion.cobol.fragments import is_procedure_fragment
 from repowise.core.ingestion.cobol.grammar_gaps import rewrite_gaps
 from repowise.core.ingestion.parser import ASTParser
@@ -100,6 +105,13 @@ def test_a_null_terminated_prefix_is_blanked_and_a_name_ending_in_z_is_kept() ->
     line = "           MOVE Z'A' TO BUZ. MOVE z\"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
 
     assert rewrite_gaps(line) == "           MOVE  'A' TO BUZ. MOVE  \"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
+
+
+def test_doubled_quotes_in_an_apostrophe_literal_are_left_alone() -> None:
+    source = _program(procedure="""           MOVE 'A""B' TO WS-A.""")
+
+    assert prepare_cobol_source(source) == source
+    assert _parse(source).parse_errors == []
 
 
 def test_sequence_numbers_and_comment_lines_are_ignored() -> None:
