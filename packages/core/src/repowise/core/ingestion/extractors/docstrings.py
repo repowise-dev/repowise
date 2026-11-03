@@ -153,15 +153,47 @@ def _python_module_doc(root: Node, src: str) -> str | None:
     return None
 
 
-def _go_module_doc(root: Node, src: str) -> str | None:
-    """The package comment: the ``//`` lines before ``package_clause``."""
-    lines: list[str] = []
+def _go_comment_text(node: Node, src: str) -> str:
+    text = node_text(node, src).strip()
+    if text.startswith("/*"):
+        return clean_jsdoc(text)
+    return text.lstrip("/ ").strip()
+
+
+def _is_adjacent_go_comment(node: Node, next_start_line: int) -> bool:
+    if node.type != "comment":
+        return False
+    return next_start_line - node.end_point[0] <= 1
+
+
+def _go_package_comments(root: Node) -> list[Node]:
+    before_pkg: list[Node] = []
+    pkg_line = -1
     for child in root.children:
-        if child.type == "comment":
-            lines.append(node_text(child, src).lstrip("/ ").strip())
-        elif child.type == "package_clause":
+        if child.type == "package_clause":
+            pkg_line = child.start_point[0]
             break
-    return "\n".join(lines) if lines else None
+        before_pkg.append(child)
+    if pkg_line < 0:
+        return []
+    comments: list[Node] = []
+    next_start_line = pkg_line
+    for node in reversed(before_pkg):
+        if not _is_adjacent_go_comment(node, next_start_line):
+            break
+        comments.append(node)
+        next_start_line = node.start_point[0]
+    comments.reverse()
+    return comments
+
+
+def _go_module_doc(root: Node, src: str) -> str | None:
+    """The package comment: the comment group directly above ``package_clause``."""
+    comments = _go_package_comments(root)
+    if not comments:
+        return None
+    joined = "\n".join(_go_comment_text(node, src) for node in comments).strip()
+    return joined if joined else None
 
 
 def _fsharp_module_doc(root: Node, src: str) -> str | None:
