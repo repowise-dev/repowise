@@ -9,7 +9,7 @@ so it is read only on the names the file declares as a ``DaprClient``.
 Java's ``publishEvent`` and JS's ``pubsub.publish`` / ``pubsub.subscribe`` are
 as generic, so they too are read only on a declared ``DaprClient`` or
 ``DaprServer``. Python's ``publish_event`` and ``@app.subscribe`` and Go's
-``PublishEvent`` and ``Subscription{PubsubName: ...}`` are distinctive enough
+``PublishEvent`` and ``<alias>.Subscription{PubsubName: ...}`` are distinctive enough
 to read on any receiver, but only in a file importing the Dapr SDK. An app
 answering ``/dapr/subscribe`` itself needs no SDK, so its ``{pubsubname,
 topic}`` objects are read in a file naming that route instead; the route
@@ -128,11 +128,12 @@ DAPR = TopicDialect(
             requires=_DAPR_GO,
         ),
         TopicCall(
-            # Anchored on the field Dapr requires, not the type: each element of
-            # a `[]common.Subscription{{...}, {...}}` slice is read on its own,
-            # under any import alias, and GCP's `pubsubpb.Subscription{Topic: t}`
-            # (no `PubsubName`) is not.
-            head=re.compile(r"\{(?=[^{}]*\bPubsubName\s*:)"),
+            # `<alias>.Subscription{` under any import alias, plus the type-elided
+            # elements of a `[]common.Subscription{{...}, {...}}` slice (a `{`
+            # after whitespace, `{` or `,`), each needing a `PubsubName:` field before
+            # any nested brace. GCP's `pubsubpb.Subscription{Topic: t}` and a
+            # local `Config{PubsubName: ...}` are not read.
+            head=re.compile(r"(?:\b\w+\.Subscription\s*|(?<![^\s{,]))\{(?=[^{}]*\bPubsubName\s*:)"),
             role="consumer",
             label="common.Subscription",
             extensions=GO,

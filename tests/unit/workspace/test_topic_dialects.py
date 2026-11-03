@@ -919,9 +919,9 @@ class TestDapr:
             + "}\n"
         )
         rows = _extract(tmp_path, "subs.go", src)
-        assert sorted((c.role, c.contract_id) for c in rows) == [
-            ("consumer", "topic::orders"),
-            ("consumer", "topic::refunds"),
+        assert sorted((c.role, c.contract_id, c.line) for c in rows) == [
+            ("consumer", "topic::orders", 6),
+            ("consumer", "topic::refunds", 7),
         ]
 
     def test_a_gcp_pubsub_subscription_is_not_a_dapr_one(self, tmp_path: Path) -> None:
@@ -933,6 +933,16 @@ class TestDapr:
             + "}\n"
         )
         assert _extract(tmp_path, "gcp.go", src) == []
+
+    def test_a_local_struct_with_a_pubsubname_field_is_not_a_subscription(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            self._GO_IMPORT
+            + 'cfg := Config{PubsubName: "pubsub", Topic: "orders"}\n'
+            + 'cfg2 := &myapp.Settings{PubsubName: "pubsub", Topic: "orders"}\n'
+        )
+        assert _extract(tmp_path, "config.go", src) == []
 
     def test_go_subscription_is_bound_to_the_line_of_its_literal(self, tmp_path: Path) -> None:
         src = (
