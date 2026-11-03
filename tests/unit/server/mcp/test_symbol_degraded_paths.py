@@ -110,6 +110,44 @@ async def test_omission_query_no_match_reports_unfiltered_lines_total(
 
 
 @pytest.mark.asyncio
+async def test_omission_query_no_match_omits_lines_total_when_raw_content_missing(
+    setup_mcp, omission_stores, monkeypatch
+):
+    """If the raw content cannot be retrieved, lines_total is omitted and note gives no false size."""
+    from repowise.core.distill.store import OmissionStore
+    from repowise.server.mcp_server import get_symbol
+
+    ref = _put(omission_stores["repo"], "alpha\nbeta\n")
+    monkeypatch.setattr(OmissionStore, "get", lambda self, r: None)
+    result = await get_symbol(f"repowise#{ref}", query="zeta")
+    assert not result["content"]
+    assert "lines_total" not in result
+    assert result["note"] == "No lines matched the query; omit query for the full content."
+
+
+@pytest.mark.asyncio
+async def test_omission_query_no_match_survives_raw_read_error(
+    setup_mcp, omission_stores, monkeypatch
+):
+    """If store.get raises an SQLite error, get_symbol survives and omits lines_total."""
+    import sqlite3
+
+    from repowise.core.distill.store import OmissionStore
+    from repowise.server.mcp_server import get_symbol
+
+    ref = _put(omission_stores["repo"], "alpha\nbeta\n")
+
+    def _broken_get(self, r):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(OmissionStore, "get", _broken_get)
+    result = await get_symbol(f"repowise#{ref}", query="zeta")
+    assert not result["content"]
+    assert "lines_total" not in result
+    assert result["note"] == "No lines matched the query; omit query for the full content."
+
+
+@pytest.mark.asyncio
 async def test_a_corrupt_repo_store_falls_through_to_the_home_store(setup_mcp, omission_stores):
     """Recovery must never make get_symbol fail; an unreadable store is just a miss."""
     from repowise.server.mcp_server import get_symbol
