@@ -62,6 +62,10 @@ _CONDITIONAL_KINDS = frozenset({"switch_expression", "switch_statement"})
 # Nested scopes whose identifiers belong to a different function. A
 # ``class_body`` covers anonymous-class methods inside an expression.
 _SCOPE_BOUNDARIES = frozenset({"lambda_expression", "class_body"})
+_LOOPS = frozenset({"for_statement", "enhanced_for_statement", "while_statement", "do_statement"})
+_STOP = frozenset(
+    {"class_body", "lambda_expression", "method_declaration", "constructor_declaration"}
+)
 
 
 class JavaDeclaredTypes(DeclaredTypes):
@@ -95,7 +99,9 @@ class JavaDefUseDialect(BaseDefUseDialect):
     member_access_kinds = frozenset({"field_access"})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
     declared_types = JavaDeclaredTypes(
-        frozenset({"formal_parameter", "local_variable_declaration", "enhanced_for_statement", "resource"}),
+        frozenset(
+            {"formal_parameter", "local_variable_declaration", "enhanced_for_statement", "resource"}
+        ),
         frozenset({"variable_declarator"}),
     )
     keyword_kinds = frozenset()  # Java has no keyword arguments.
@@ -263,6 +269,8 @@ class JavaDefUseDialect(BaseDefUseDialect):
             return
         if t in _CONDITIONAL_KINDS:
             self._process_may_def(node, defs, uses)
+            if _leaves_loop(node):
+                uses.extend(self._loop_state(node))
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; field name is not
@@ -290,6 +298,44 @@ class JavaDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._targets(child, defs, uses)
+
+    def _loop_state(self, switch: Node) -> list[Occurrence]:
+        """A read at *switch* of every name its enclosing loop mentions: a
+        ``continue`` or labelled ``break`` in an arm carries the state there to
+        the loop's exit or next iteration, which the CFG does not draw."""
+        loop = switch.parent
+        while loop is not None and loop.type not in _LOOPS:
+            if loop.type in _STOP:
+                return []
+            loop = loop.parent
+        if loop is None:
+            return []
+        line, column = switch.start_point[0] + 1, switch.start_point[1]
+        seen: dict[str, Occurrence] = {}
+        stack = [loop]
+        while stack:
+            cur = stack.pop()
+            if cur.type in self.identifier_kinds:
+                name = node_text(cur)
+                seen.setdefault(name, Occurrence(name, line, column))
+            stack.extend(cur.named_children)
+        return [seen[n] for n in sorted(seen)]
+
+
+def _leaves_loop(switch: Node) -> bool:
+    """Whether an arm of *switch* holds a ``continue`` or labelled ``break``
+    not inside an inner loop (so it leaves the loop around the switch)."""
+    stack = list(switch.named_children)
+    while stack:
+        cur = stack.pop()
+        if cur.type == "continue_statement":
+            return True
+        if cur.type == "break_statement" and cur.named_children:
+            return True
+        if cur.type in _LOOPS or cur.type in _STOP:
+            continue
+        stack.extend(cur.named_children)
+    return False
 
 
 DIALECT = JavaDefUseDialect()
