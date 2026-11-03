@@ -25,6 +25,7 @@ from .symbol_identity import (
     pair_overloads,
     parameter_type_arity,
     split_symbol_id,
+    symbol_id_path,
 )
 
 # Languages whose prototypes and bodies pair member by member, and whose
@@ -106,7 +107,10 @@ _NO_REPO_TYPES: Mapping[str, bool] = MappingProxyType({})
 
 
 def _argument_fit(
-    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+    parameter: str,
+    argument: str,
+    repo_types: Mapping[str, bool] = _NO_REPO_TYPES,
+    type_parameters: frozenset[str] = frozenset(),
 ) -> int | None:
     """How near a Java argument reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
 
@@ -123,18 +127,23 @@ def _argument_fit(
         return 0
     levels = _JAVA_LITERAL_LEVELS.get(argument)
     if levels is None:
-        return _reference_fit(parameter, argument, repo_types)
+        return _reference_fit(parameter, argument, repo_types, type_parameters)
     if parameter.endswith("[]"):
         return 1 if argument == "null" else None
     if parameter not in _JAVA_JUDGED_PARAMETERS:
-        return _unjudged_literal_fit(parameter, argument, repo_types)
+        return _unjudged_literal_fit(parameter, argument, repo_types, type_parameters)
     return levels.get(parameter)
 
 
-def _unjudged_literal_fit(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> int | None:
+def _unjudged_literal_fit(
+    parameter: str,
+    argument: str,
+    repo_types: Mapping[str, bool],
+    type_parameters: frozenset[str] = frozenset(),
+) -> int | None:
     """A literal reaching a class parameter: by boxing, or as a String; None where its class cannot."""
     boxed = _JAVA_BOXES.get(argument, argument)
-    if argument != "null" and not _final_may_reach(parameter, boxed, repo_types):
+    if argument != "null" and not _final_may_reach(parameter, boxed, repo_types, type_parameters):
         return None
     return _UNJUDGED_LEVEL[argument]
 
@@ -207,7 +216,10 @@ _JAVA_KNOWN_TYPES = _NO_LAMBDA_TARGETS | frozenset(
 
 
 def _reference_fit(
-    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+    parameter: str,
+    argument: str,
+    repo_types: Mapping[str, bool] = _NO_REPO_TYPES,
+    type_parameters: frozenset[str] = frozenset(),
 ) -> int | None:
     """How a value of class or array type *argument* reaches *parameter*.
 
@@ -223,17 +235,26 @@ def _reference_fit(
     if parameter in _JAVA_PRIMITIVES:
         return _unboxed_fit(parameter, argument)
     if argument.endswith("[]"):
-        return _array_fit(parameter, argument, repo_types)
+        return _array_fit(parameter, argument, repo_types, type_parameters)
     if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
         return None
-    if argument in _JAVA_FINAL_PARAMETERS and not _final_may_reach(parameter, argument, repo_types):
+    if argument in _JAVA_FINAL_PARAMETERS and not _final_may_reach(
+        parameter, argument, repo_types, type_parameters
+    ):
         return None
     return 1
 
 
-def _final_may_reach(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> bool:
+def _final_may_reach(
+    parameter: str,
+    argument: str,
+    repo_types: Mapping[str, bool],
+    type_parameters: frozenset[str] = frozenset(),
+) -> bool:
     """Whether a String or box *argument* may reach *parameter*: a supertype or a type variable."""
     if parameter in _JAVA_FINAL_SUPERTYPES or parameter == _JAVA_OWN_SUPERTYPE.get(argument):
+        return True
+    if parameter in type_parameters:
         return True
     return parameter not in _JAVA_KNOWN_TYPES and parameter not in repo_types
 
@@ -251,7 +272,10 @@ _JAVA_ARRAY_SUPERTYPES = frozenset({"Object", "Cloneable", "Serializable"})
 
 
 def _array_fit(
-    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+    parameter: str,
+    argument: str,
+    repo_types: Mapping[str, bool] = _NO_REPO_TYPES,
+    type_parameters: frozenset[str] = frozenset(),
 ) -> int | None:
     """``String[]`` reaches ``Object[]`` (1, covariance) and ``Object`` (2).
 
@@ -261,11 +285,13 @@ def _array_fit(
     if not parameter.endswith("[]"):
         if not parameter or parameter in _JAVA_ARRAY_SUPERTYPES:
             return 2
+        if parameter in type_parameters:
+            return 2
         return None if parameter in _JAVA_KNOWN_TYPES or parameter in repo_types else 2
     element, takes = argument.removesuffix("[]"), parameter.removesuffix("[]")
     if element in _JAVA_PRIMITIVES or takes in _JAVA_PRIMITIVES:
         return None
-    return None if _argument_fit(takes, element, repo_types) is None else 1
+    return None if _argument_fit(takes, element, repo_types, type_parameters) is None else 1
 
 
 def _closest_fit(
@@ -273,6 +299,7 @@ def _closest_fit(
     argument_types: tuple[str | None, ...],
     expanded: bool,
     repo_types: Mapping[str, bool] = _NO_REPO_TYPES,
+    type_parameters: Mapping[str, frozenset[str]] | None = None,
 ) -> str | None:
     """The one member the typed arguments fit most closely, or None on a tie.
 
@@ -284,9 +311,15 @@ def _closest_fit(
         return None
     ranked: dict[int, list[str]] = defaultdict(list)
     for member, parameters in members:
+        member_type_params = (
+            type_parameters.get(member, frozenset()) if type_parameters else frozenset()
+        )
         fits = [
             _argument_fit(
-                _parameter_taking(parameters, argument_types, index, expanded), argument, repo_types
+                _parameter_taking(parameters, argument_types, index, expanded),
+                argument,
+                repo_types,
+                member_type_params,
             )
             for index, argument in enumerate(argument_types)
             if argument is not None
@@ -949,8 +982,20 @@ class OverloadSelectionMixin:
         elif language == "kotlin":
             closest = _exact_kotlin_fit(typed, argument_types)
         else:
-            closest = _closest_fit(typed, argument_types, expanded, self._jvm_lambda_type_map())
+            type_params = self._member_type_parameters(found) if language == "java" else None
+            closest = _closest_fit(
+                typed, argument_types, expanded, self._jvm_lambda_type_map(), type_params
+            )
         return found if closest is None else [closest]
+
+    def _member_type_parameters(self, members: list[str]) -> dict[str, frozenset[str]]:
+        """The type parameter names each Java member and its enclosing types declare."""
+        if not hasattr(self, "_java_type_parameters"):
+            return {}
+        return {
+            m: frozenset(self._java_type_parameters(symbol_id_path(m), m))
+            for m in members
+        }
 
     def _csharp_takers(self, found: list[str], argument_types: tuple[str | None, ...]) -> list[str]:
         """*found* narrowed to the C# members no argument's shape or type refuses.
