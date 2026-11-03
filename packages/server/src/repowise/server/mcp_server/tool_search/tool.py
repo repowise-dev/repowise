@@ -47,6 +47,7 @@ from repowise.server.mcp_server.tool_search_symbols import (
 from .ordering import _collapse_by_file
 from .ranking import (
     _VALID_KINDS,
+    _cap_and_order_document_hits,
     _dedup_decisions,
     _downweight_decisions,
     _downweight_test_pages,
@@ -169,6 +170,7 @@ async def _concept_search(
     # Files the page retrievers cannot see (a private helper, a local name) get
     # the weakest tail slots.
     output = _reserve_symbol_tail(output, limit, kind)
+    output = _cap_and_order_document_hits(output, kind, limit)
     _drop_internal_ranking_fields(output)
     # The full ranked pool, kept so ``candidates`` can reach past the cut.
     ranked = list(output)
@@ -248,6 +250,8 @@ async def search_codebase(
     names = await _indexed_names(repo, fed, query)
     grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
+    if mode == "auto" and kind in ("doc", "documents"):
+        resolved_mode = "concept"
     issue = await _issue_files(repo, query, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):

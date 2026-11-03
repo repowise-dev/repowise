@@ -36,7 +36,7 @@ _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 # Page types whose target_path is a real file path. Shared with
 # related_pages, which widens the same index the same way.
-FILE_BACKED_PAGE_TYPES = frozenset({"file_page", "api_contract", "infra_page"})
+FILE_BACKED_PAGE_TYPES = frozenset({"file_page", "api_contract", "infra_page", "document_section"})
 
 
 # ---------------------------------------------------------------------------

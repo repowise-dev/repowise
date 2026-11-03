@@ -44,6 +44,7 @@ FILE_BACKED_PAGE_TYPES: frozenset[str] = frozenset(
         "symbol_spotlight",
         "api_contract",
         "infra_page",
+        "document_section",
     }
 )
 
@@ -51,14 +52,15 @@ FILE_BACKED_PAGE_TYPES: frozenset[str] = frozenset(
 def file_path_of(page_type: str | None, target_path: str | None) -> str | None:
     """The file *page_type*/*target_path* names, or ``None`` if it names none.
 
-    Splits a ``symbol_spotlight``'s ``file.py::Symbol`` back to ``file.py``.
+    Splits a ``symbol_spotlight``'s ``file.py::Symbol`` back to ``file.py``
+    and a ``document_section``'s ``file.pdf#section`` back to ``file.pdf``.
     Returns ``None`` rather than the raw string for every page type that is not
     file-backed, so a caller cannot accidentally serve a page id as a path by
     forgetting to check the type.
     """
     if page_type not in FILE_BACKED_PAGE_TYPES:
         return None
-    path = (target_path or "").split("::", 1)[0].strip()
+    path = (target_path or "").split("::", 1)[0].split("#", 1)[0].strip()
     return path or None
 
 

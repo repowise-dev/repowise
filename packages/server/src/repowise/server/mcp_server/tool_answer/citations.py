@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_PATH_RE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]*\w\.[A-Za-z0-9]{1,6})(?![\w/])")
+_PATH_RE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]*\w\.[A-Za-z0-9]{1,6}(?:#[\w.-]+)?)(?![\w/])")
 
 # A dismissal next to a path ("not in X", "X is not where ..."); a negated
 # description ("X has no backoff") explains a cause and rules nothing out.
@@ -68,20 +68,35 @@ def _resolve(named: str, hit_paths: list[str], known: list[str], repo_root: Path
     named = named.removeprefix("./")
     if ".." in named.split("/"):
         return None
+    if named in known:
+        return named
+    if "#" in named:
+        base, _ = named.split("#", 1)
+        if base in known or any(k.startswith(f"{base}#") for k in known):
+            return named
     if "/" not in named:
         same = [p for p in hit_paths if p.rsplit("/", 1)[-1] == named]
         return same[0] if len(same) == 1 else None
-    if named in known:
-        return named
     suffixed = [k for k in known if k.endswith("/" + named)]
     if len(suffixed) == 1:
         return suffixed[0]
     if repo_root is not None:
         try:
-            if (repo_root / named).is_file():
+            base_file = named.split("#", 1)[0]
+            if (repo_root / base_file).is_file():
                 return named
         except OSError:
             return None
+    return None
+
+
+def _hit_mention(h: dict, text: str) -> str | None:
+    sec_id = h.get("section_id")
+    if sec_id and sec_id in text:
+        return sec_id
+    tgt = h.get("target_path")
+    if tgt and tgt in text:
+        return sec_id or tgt
     return None
 
 
@@ -98,15 +113,30 @@ def answer_files(
     invented path is never cited. A file named positively anywhere stays cited.
     With nothing named, the top two fallback targets not ruled out are cited.
     """
-    hit_paths = [h["target_path"] for h in hits if h.get("target_path")]
-    known = list(dict.fromkeys(hit_paths + [h["target_path"] for h in pool if h.get("target_path")]))
+    hit_paths = [
+        h.get("section_id") or h["target_path"]
+        for h in hits
+        if h.get("target_path") or h.get("section_id")
+    ]
+    known = list(
+        dict.fromkeys(
+            hit_paths
+            + [
+                h.get("section_id") or h["target_path"]
+                for h in pool
+                if h.get("target_path") or h.get("section_id")
+            ]
+        )
+    )
     mentions = [
         (path, _is_ruled_out(answer_text, m.start(1), m.end(1)))
         for m in _PATH_RE.finditer(answer_text or "")
         if (path := _resolve(m.group(1), hit_paths, known, repo_root))
     ]
     named = [p for p, _ in mentions] + [
-        h["target_path"] for h in hits if h.get("target_path") and h["target_path"] in answer_text
+        target
+        for h in hits
+        if (target := _hit_mention(h, answer_text)) is not None
     ]
     ruled = {p for p, neg in mentions if neg} - {p for p, neg in mentions if not neg}
     citations = [p for p in dict.fromkeys(named) if p not in ruled]

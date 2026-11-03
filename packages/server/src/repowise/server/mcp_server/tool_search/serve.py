@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 from collections.abc import Container
 
 from sqlalchemy import select
@@ -85,7 +87,7 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
             item.get("symbol_id")
             if item.get("page_type") == "symbol_spotlight"
             else None
-        ) or item.get("target_path") or item.get("path", "")
+        ) or item.get("section_id") or item.get("target_path") or item.get("path", "")
         derived = f"{item.get('page_type', '')}:{target}"
         # A row for a file with no page has an id that names no page.
         if item.get("page_id") == derived or item.get("page_type") == PAGELESS_FILE:
@@ -151,6 +153,17 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
         item.pop("_raw_score", None)
 
 
+def _hydrate_section_meta(item: dict, ptype: str | None, raw_meta: str | None) -> None:
+    if ptype:
+        item["page_type"] = ptype
+    if ptype != "document_section" or not raw_meta:
+        return
+    with contextlib.suppress(Exception):
+        meta = json.loads(raw_meta)
+        if isinstance(meta, dict):
+            item.update({k: meta[k] for k in ("heading_trail", "section_id") if k in meta})
+
+
 async def _load_page_info(
     session, output: list[dict], *, with_git: bool = False
 ) -> tuple[dict, set, dict]:
@@ -162,11 +175,23 @@ async def _load_page_info(
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
-        select(Page.id, Page.target_path, Page.freshness_status).where(Page.id.in_(page_ids))
+        select(
+            Page.id,
+            Page.target_path,
+            Page.freshness_status,
+            Page.page_type,
+            Page.metadata_json,
+        ).where(Page.id.in_(page_ids))
     )
     rows = res.all()
     page_info = {row[0]: row[1] for row in rows}
     tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
+
+    row_by_id = {row[0]: row for row in rows}
+    for item in output:
+        row = row_by_id.get(item.get("page_id"))
+        if row:
+            _hydrate_section_meta(item, row[3], row[4])
 
     git_map: dict[str, GitMetadata] = {}
     if with_git:

@@ -256,7 +256,7 @@ def test_symlink_routing_uses_indexed_path(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("symlink", [False, True])
-async def test_skeleton_reader_skips_extracted_documents(tmp_path, extractor_registry, symlink):
+async def test_skeleton_reader_returns_outline_for_extracted_documents(tmp_path, extractor_registry, symlink):
     document = tmp_path / "spec.xyz"
     if symlink:
         (tmp_path / "implementation.py").write_text("VALUE = 1\n")
@@ -285,6 +285,6 @@ async def test_skeleton_reader_skips_extracted_documents(tmp_path, extractor_reg
         repo_root=tmp_path,
     )
 
-    assert result["skeleton"]["error"] == (
-        "Source skeletons are not available for extracted documents."
-    )
+    assert result["skeleton"]["mode"] == "outline"
+    assert result["skeleton"]["outline"]
+    assert result["skeleton"]["outline"][0]["title"] == "Extracted document"
