@@ -105,6 +105,9 @@ class InitRun:
     no_provider: bool = False
     total_phases: int = 4
     result: Any = None
+    # Built before indexing (decision mining calls the model) and reused by
+    # generation; None when the run calls no model.
+    cost_tracker: Any = None
     # PhaseTimingRecorder shared by every stage.
     recorder: Any = None
     run_warnings: list[str] = field(default_factory=list)
