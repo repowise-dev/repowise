@@ -3186,3 +3186,27 @@ async def test_meta_names_the_analyzer_the_stored_scores_came_from(
     dashboard = await get_health(only=["kpis"])
     for result in (scoped, dashboard):
         assert result["_meta"]["health_analysis"]["analyzer_version"] == HEALTH_ANALYZER_VERSION
+
+
+@pytest.mark.asyncio
+async def test_get_health_only_hint_names_targeted_keys(setup_mcp, health_data):
+    """Issue #4089: in targeted mode the hint names metrics, not fix_first."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py"], only=["files"])
+    assert result["unknown_only_keys"] == ["files"]
+    hint = result["unknown_only_keys_hint"]
+    assert "metrics" in hint
+    assert "findings" in hint
+    assert "trends" in hint
+    assert "fix_first" not in hint
+
+
+@pytest.mark.asyncio
+async def test_get_health_only_hint_keeps_dashboard_hint(setup_mcp, health_data):
+    """Issue #4089: dashboard mode still returns the current hint."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(only=["kpiz"])
+    assert result["unknown_only_keys"] == ["kpiz"]
+    assert "fix_first" in result["unknown_only_keys_hint"]

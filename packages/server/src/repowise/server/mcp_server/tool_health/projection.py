@@ -144,16 +144,55 @@ def _project(
     unknown = sorted(
         raw for raw, resolved in zip(req.only, req.only_list, strict=True) if resolved not in result
     )
+    # In targeted mode, the keys this call could have kept are the ones in
+    # the unprojected result, minus the always-kept orientation keys, _meta,
+    # and the *_total / *_emitted (and other) siblings of a kept key. Derived
+    # here, before the filter drops them, so a key added later is named
+    # without a code change. Dashboard mode keeps the fixed hint below.
+    keepable: list[str] | None = None
+    if result.get("mode") == "targets":
+        keepable = [
+            k
+            for k in result
+            if k not in _ALWAYS_KEPT
+            and k != "_meta"
+            and k not in ("scope", "counts")
+            and not any(
+                k.endswith(suffix)
+                for suffix in ("_total", "_emitted", "_reduced_reason", "_scope", "_hidden", "_counts")
+            )
+        ]
+        # The targeted mode's data blocks are metrics, findings and trends;
+        # trends is absent when there is no trend history, but it is still a
+        # key this call could have kept, so name it anyway.
+        for canonical in ("metrics", "findings", "trends"):
+            if canonical not in keepable:
+                keepable.append(canonical)
     result = {k: v for k, v in result.items() if k in keep}
     if unknown:
         result["unknown_only_keys"] = unknown
         _stamp_collection(result, "unknown_only_keys", total=len(unknown))
-        result["unknown_only_keys_hint"] = _unknown_only_hint(req, unknown)
+        result["unknown_only_keys_hint"] = _unknown_only_hint(req, unknown, keepable)
     return result
 
 
-def _unknown_only_hint(req: HealthRequest, unknown: list[str]) -> str:
-    """The generic hint, led by the include each include-gated miss needs."""
+def _unknown_only_hint(
+    req: HealthRequest, unknown: list[str], keepable: list[str] | None = None
+) -> str:
+    """The hint for an unknown ``only`` key.
+
+    In targeted mode, name the keys this call could have kept, derived from
+    the unprojected result — the fixed dashboard examples (fix_first and
+    friends) never exist in that mode, so naming them steers the caller
+    toward keys that return nothing here. Otherwise the generic hint, led
+    by the include each include-gated miss needs.
+    """
+    if keepable:
+        return (
+            "`only` names response keys for this targeted call, such as "
+            + ", ".join(keepable)
+            + ". See docs/agent/MCP_TOOLS.md."
+        )
     needs = [
         f'only=["{raw}"] needs include=["{include}"].'
         for raw, resolved in zip(req.only, req.only_list, strict=True)

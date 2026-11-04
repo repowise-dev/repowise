@@ -352,7 +352,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 - `fix_first` shows five items unless `limit` comes with `only=["fix_first"]`, which pages up to 25.
 - The response is bounded: pair `include` with `only` to keep one block, e.g. `get_health(include=["refactoring"], only=["refactoring_opportunities"])`.
 
-**Returns** `mode`, `fix_first`, `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files`, `top_findings`, `unresolved` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_health)). A due `fix_first` lead carries `first_step` and `verify`, so it can be started without a `fix_id` call.
+**Returns** `mode`, `fix_first`, `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files`, `top_findings`, `unresolved` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_health)). With `targets`, the per-file rows are `metrics`, with `findings` and `trends` alongside, instead of the dashboard queues. A due `fix_first` lead carries `first_step` and `verify`, so it can be started without a `fix_id` call.
 
 ```
 get_health(only=["fix_first"], limit=25)
