@@ -283,6 +283,141 @@ def test_hosted_account_failure_offers_login(monkeypatch) -> None:
     assert row.fix == "repowise login"
 
 
+def test_mcp_check_reports_registration_read_failure(monkeypatch) -> None:
+    integrations._mcp_responds_check.cache_clear()
+    monkeypatch.setattr(
+        integrations,
+        "_registered_mcp_entry",
+        lambda: (_ for _ in ()).throw(RuntimeError("bad config")),
+    )
+    try:
+        row = integrations._mcp_responds_check()
+    finally:
+        integrations._mcp_responds_check.cache_clear()
+    assert row.level == "warn"
+    assert "inspect the MCP registration manually" in row.detail
+
+
+def test_claude_registration_reports_read_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        integrations,
+        "_registered_mcp_entry",
+        lambda: (_ for _ in ()).throw(RuntimeError("bad config")),
+    )
+    row, repaired = integrations._claude_registration_check(tmp_path)
+    assert row.level == "warn"
+    assert repaired is False
+    assert "inspect the registration manually" in row.detail
+
+
+def test_claude_desktop_registration_reports_read_failure(monkeypatch) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    monkeypatch.setattr(
+        claude_config, "_stored_repowise_entry", lambda _path: {"command": "repowise"}
+    )
+    monkeypatch.setattr(
+        integrations,
+        "_registration_target",
+        lambda _entry: (_ for _ in ()).throw(RuntimeError("bad entry")),
+    )
+    row = integrations._claude_desktop_entry_row()
+    assert row is not None
+    assert row.level == "warn"
+    assert "inspect the registration manually" in row.detail
+
+
+def test_distill_config_reports_invalid_block(monkeypatch, tmp_path: Path) -> None:
+    from repowise.core import distill, repo_config
+
+    monkeypatch.setattr(
+        repo_config, "load_repo_config", lambda _repo: {"distill": {"enabled": "yes"}}
+    )
+    monkeypatch.setattr(
+        distill.config,
+        "validate_distill_config",
+        lambda _cfg: ["distill.enabled: must be a boolean"],
+    )
+    row, config = integrations._distill_config_row(tmp_path)
+    assert config == {"enabled": "yes"}
+    assert row.level == "fail"
+    assert "edit the distill block manually" in row.detail
+
+
+def test_provider_check_reports_provider_load_failure(monkeypatch, tmp_path: Path) -> None:
+    from repowise.cli import helpers
+    from repowise.core import providers as provider_module
+
+    monkeypatch.setattr(
+        provider_module,
+        "list_providers",
+        lambda: (_ for _ in ()).throw(RuntimeError("broken package")),
+    )
+    monkeypatch.setattr(helpers, "validate_provider_config", lambda repo_path: [])
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.registry.provider_available_for_repo", lambda _repo: False
+    )
+    rows = providers._provider_checks(tmp_path)
+    row = next(row for row in rows if row.id == "providers")
+    assert row.level == "fail"
+    assert "reinstall repowise" in row.detail
+
+
+def test_stale_pages_reports_database_read_failure(monkeypatch, tmp_path: Path) -> None:
+    ctx = CheckContext(tmp_path, tmp_path / ".repowise")
+    monkeypatch.setattr(
+        providers,
+        "_read_stale_counts",
+        lambda _repo: (_ for _ in ()).throw(RuntimeError("db offline")),
+    )
+    row = providers._stale_pages_row(ctx)
+    assert row.level == "warn"
+    assert "repository database" in row.detail
+
+
+def test_database_check_reports_store_open_failure(monkeypatch, tmp_path: Path) -> None:
+    ctx = CheckContext(tmp_path, tmp_path / ".repowise")
+    (ctx.repowise_dir).mkdir()
+    (ctx.repowise_dir / "wiki.db").write_text("", encoding="utf-8")
+
+    async def fail_count(_repo):
+        raise RuntimeError("db offline")
+
+    monkeypatch.setattr(core, "_count_pages", fail_count)
+    rows = core._database_rows(ctx)
+    assert rows[0].level == "fail"
+    assert "Could not open the repository database" in rows[0].detail
+
+
+def test_events_check_reports_config_read_failure(monkeypatch, tmp_path: Path) -> None:
+    from repowise.core.events import store
+
+    monkeypatch.setattr(
+        store, "load_event_settings", lambda _repo: (_ for _ in ()).throw(RuntimeError("bad yaml"))
+    )
+    row = core._events_config_check(tmp_path)
+    assert row is not None
+    assert row.level == "warn"
+    assert "inspect that file manually" in row.detail
+
+
+def test_runtime_grammar_check_reports_cache_read_failure(monkeypatch, tmp_path: Path) -> None:
+    import subprocess
+
+    from repowise.core.ingestion.parser import grammars
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "PAYROLL.cbl").write_text("       IDENTIFICATION DIVISION.\n", encoding="utf-8")
+    monkeypatch.setattr(
+        grammars,
+        "runtime_grammar_cache",
+        lambda _tag: (_ for _ in ()).throw(RuntimeError("cache unreadable")),
+    )
+    rows = core._runtime_grammar_rows(tmp_path)
+    assert rows[0].level == "fail"
+    assert "inspect cache permissions" in rows[0].detail
+
+
 def test_registration_serving_another_repo_is_a_warn(tmp_path: Path, monkeypatch) -> None:
     other = tmp_path / "other"
     other.mkdir()
