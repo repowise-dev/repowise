@@ -258,9 +258,9 @@ def git_run(
     pull blobs over the network. Pathspecs are literal unless *pathspec_magic*,
     for a caller passing its own ``:(exclude)`` patterns rather than file names.
     """
-    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
-    if not pathspec_magic:
-        env["GIT_LITERAL_PATHSPECS"] = "1"
+    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_LITERAL_PATHSPECS": "1"}
+    if pathspec_magic:
+        env.pop("GIT_LITERAL_PATHSPECS")
     try:
         proc = run_git(
             ["-C", str(root), "-c", "core.quotePath=false", *args],
