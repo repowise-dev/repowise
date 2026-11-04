@@ -644,12 +644,13 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
                     for target in statement.targets
                 )
             ):
-                # Do not treat an HTTP client created from a known
-                # HTTP library as an unrelated reassignment.
+                # An HTTP-client rebinding clears previous shadowing.
                 if (
                     isinstance(statement.value, ast.Call)
                     and _dotted(_root(statement.value)) in bound
                 ):
+                    latest_assignment = -1
+                    latest_import = statement.lineno
                     continue
 
                 latest_assignment = statement.lineno

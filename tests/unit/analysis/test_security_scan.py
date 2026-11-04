@@ -1648,3 +1648,19 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         from repowise.core.analysis.security_scan import mask_comments_and_strings
 
         assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
+
+
+
+
+
+    def test_tls_http_client_rebinding_clears_shadowing(self):
+        from repowise.core.analysis.security_scan import _tls_verify_off_lines
+
+        source = (
+            "import requests\n"
+            "s = None\n"
+            "s = requests.Session()\n"
+            "s.get('https://example.com', verify=False)\n"
+        )
+
+        assert _tls_verify_off_lines(source) == {4}
