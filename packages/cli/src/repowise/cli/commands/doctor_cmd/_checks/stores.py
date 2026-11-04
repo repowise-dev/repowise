@@ -217,8 +217,7 @@ async def _reconcile(
             missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
             orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
             vector_store_empty=(
-                expects_vectors
-                or (not store_missing and vs_error is None and not vs_ids)
+                expects_vectors or (not store_missing and vs_error is None and not vs_ids)
             ),
         ),
         sql.stub_count,
@@ -230,15 +229,15 @@ def _expects_vectors(repo_path: _DoctorPath) -> bool:
     """True when a missing vector store means vectors are expected.
 
     The repo's resolved embedder decides: ``mock`` means no semantic search
-    (fast mode), anything else means vectors are expected. A resolution
-    failure is treated as no expectation rather than failing the check.
+    (fast mode), anything else means vectors are expected. A broken
+    ``config.yaml`` or ``.env`` already resolves (their parsers fall back to
+    empty), so nothing is caught here: an unexpected failure must reach the
+    "Could not check" row rather than read as "in sync", the silent case this
+    check exists to close.
     """
-    try:
-        from repowise.cli.providers import resolve_embedder_for_repo
+    from repowise.cli.providers import resolve_embedder_for_repo
 
-        return resolve_embedder_for_repo(repo_path) != "mock"
-    except Exception:
-        return False
+    return resolve_embedder_for_repo(repo_path) != "mock"
 
 
 def _drift_detail(missing: set[str], orphaned: set[str]) -> tuple[bool, str]:
