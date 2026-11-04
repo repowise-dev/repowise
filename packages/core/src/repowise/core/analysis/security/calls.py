@@ -160,6 +160,29 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     if not bound:
         return set()
     
+    http_attributes: set[str] = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+
+        value = node.value
+        if not isinstance(value, ast.Call):
+            continue
+
+        if _dotted(_root(value)) not in bound:
+            continue
+
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in ("self", "cls")
+            ):
+                http_attributes.add(target.attr)
+    
     def is_shadowed(name: str, call_line: int) -> bool:
         """Check whether a module-level assignment replaced a bound name."""
         latest_import = -1
@@ -208,8 +231,11 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
                         isinstance(receiver, ast.Name)
                         and receiver.id in ("self", "cls")
                         and isinstance(func.value, ast.Attribute)
-                        and func.value.attr.lower()
-                        in ("http", "https", "client", "session")
+                        and (
+                            func.value.attr.lower()
+                            in ("http", "https", "client", "session")
+                            or func.value.attr in http_attributes
+                        )
                     )
                     or (
                         isinstance(func.value, ast.Call)

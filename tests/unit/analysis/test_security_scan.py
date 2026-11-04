@@ -1790,3 +1790,19 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         )
 
         assert _tls_verify_off_lines(source) == {4}
+
+
+
+    def test_tls_http_client_on_custom_attribute(self):
+        from repowise.core.analysis.security_scan import _tls_verify_off_lines
+
+        source = (
+            "import requests\n"
+            "class API:\n"
+            "    def __init__(self):\n"
+            "        self.api = requests.Session()\n"
+            "    def send(self):\n"
+            "        self.api.post('https://example.com', verify=False)\n"
+        )
+
+        assert _tls_verify_off_lines(source) == {6}
