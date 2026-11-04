@@ -222,6 +222,9 @@ from repowise.cli._helpers.state import (
 from repowise.cli._helpers.state import (
     stamp_offered_slots as stamp_offered_slots,
 )
+from repowise.cli._helpers.state import (
+    state_file_error as state_file_error,
+)
 from repowise.cli._helpers.target import (
     CommandTarget as CommandTarget,
 )

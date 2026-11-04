@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path as _DoctorPath
 
-from repowise.cli.helpers import db_configured, load_state, run_async
+from repowise.cli.helpers import db_configured, load_state, run_async, state_file_error
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext, open_store
@@ -218,15 +218,37 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
 
 
 def _state_row(ctx: CheckContext) -> DoctorCheck:
+    from repowise.cli._helpers.paths import STATE_FILENAME
+
+    error = state_file_error(ctx.repo_path)
+    if error is not None:
+        # load_state treats this as absent so init and update can recover;
+        # the row still says why, so the user is not told to re-run init
+        # blindly for a file that is present but corrupt.
+        ctx.state = {}
+        ctx.state_ok = False
+        state_path = ctx.repowise_dir / STATE_FILENAME
+        return _check(
+            "state.json",
+            False,
+            f"unreadable: {state_path}: {error}",
+            check_id="state-json",
+            fix="repowise init",
+        )
     ctx.state = load_state(ctx.repo_path)
     ctx.state_ok = bool(ctx.state)
+    if ctx.state_ok:
+        detail = f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
+    elif (ctx.repowise_dir / STATE_FILENAME).exists():
+        detail = "empty"
+    else:
+        detail = "missing"
     return _check(
         "state.json",
         ctx.state_ok,
-        f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
-        if ctx.state_ok
-        else "Not found or empty",
+        detail,
         check_id="state-json",
+        fix=None if ctx.state_ok else "repowise init",
     )
 
 

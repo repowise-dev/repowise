@@ -249,7 +249,7 @@ def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
     got = _by_name(rows)
     assert got[".repowise/ directory"][0] is False
     assert got["Database"] == (False, "wiki.db not found")
-    assert got["state.json"] == (False, "Not found or empty")
+    assert got["state.json"] == (False, "missing")
 
 
 def test_missing_state_drops_store_format_row(env, tmp_path) -> None:
@@ -257,7 +257,7 @@ def test_missing_state_drops_store_format_row(env, tmp_path) -> None:
     (repo / ".repowise" / "state.json").unlink()
     rows = _rows(repo)
     assert "Store format" not in [r[0] for r in rows]
-    assert _by_name(rows)["state.json"] == (False, "Not found or empty")
+    assert _by_name(rows)["state.json"] == (False, "missing")
 
 
 def test_drift_rows_and_coordinator(env, tmp_path) -> None:

@@ -13,12 +13,46 @@ from repowise.cli._helpers.paths import STATE_FILENAME, ensure_repowise_dir, get
 # ---------------------------------------------------------------------------
 
 
-def load_state(repo_path: Path) -> dict[str, Any]:
-    """Load ``.repowise/state.json`` or return an empty dict if absent."""
+def _read_state_file(repo_path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse ``.repowise/state.json``; ``(None, error)`` when it cannot be read.
+
+    Absent is ``({}, None)``. A file that cannot be read, does not parse, or
+    does not hold a JSON object is unreadable, not empty: callers that already
+    handle a missing file must not crash on it either.
+    """
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
-    if state_path.exists():
-        return json.loads(state_path.read_text(encoding="utf-8"))
-    return {}
+    if not state_path.exists():
+        return {}, None
+    try:
+        parsed = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, str(exc)
+    if not isinstance(parsed, dict):
+        return None, f"expected a JSON object, got {type(parsed).__name__}"
+    return parsed, None
+
+
+def load_state(repo_path: Path) -> dict[str, Any]:
+    """Load ``.repowise/state.json`` or return an empty dict if absent.
+
+    An unreadable or non-dict file is treated as absent: every caller already
+    handles a missing file, and none of them guards this call, so a truncated
+    file used to crash ``doctor``, ``init`` and ``update`` before any of them
+    could report anything. Use :func:`state_file_error` when the distinction
+    between missing and unreadable matters.
+    """
+    state, _error = _read_state_file(repo_path)
+    return state if state is not None else {}
+
+
+def state_file_error(repo_path: Path) -> str | None:
+    """Why ``.repowise/state.json`` is unreadable, or ``None`` when it is not.
+
+    ``None`` covers both absent and valid files: only a present-but-unreadable
+    file has an error to report.
+    """
+    _state, error = _read_state_file(repo_path)
+    return error
 
 
 #: Slots the last whole-repo generation put in front of this repository's
