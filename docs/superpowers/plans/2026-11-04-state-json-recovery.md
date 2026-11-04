@@ -49,7 +49,8 @@
 ### Task 4: Verify existing caller compatibility
 
 - [x] Run the focused helper and doctor suites: 51 passed.
-- [ ] Run the CLI package unit suite with `uv run pytest tests/unit/cli -q` to cover existing `load_state()` consumers, including init/update paths. Attempted, but stopped at 66% after failures/errors appeared in unrelated test modules.
+- [x] Run the CLI package unit suite with `uv run pytest tests/unit/cli -q -n 4` on the PR branch: `4555 passed, 74 failed, 16 skipped, 10 errors`.
+- [x] Run the same suite on `origin/main`: `4540 passed, 74 failed, 16 skipped, 10 errors`. The 15-test difference is the new regression coverage; failure and error counts match the base branch and are confined to existing Windows subprocess, worktree, and encoding-sensitive tests.
 - [x] Run the changed-file Ruff check; all checks passed.
 - [x] Run `git diff --check`; no whitespace errors.
 
