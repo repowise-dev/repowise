@@ -35,6 +35,7 @@ from repowise.core.analysis.git_cat_file import cat_file_batch
 from repowise.core.ingestion.change_detector import ChangeDetector
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.models import ParsedFile
+from repowise.core.owned_paths import OWNED_PATTERNS
 from repowise.core.test_paths import is_test_related_path
 
 from .constants import MARKDOWN_SUFFIXES
@@ -61,6 +62,19 @@ _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SOURCE_EXTS = REGISTRY.extensions_for(REGISTRY.code_languages())
 
 _OVER_BUDGET = "over-budget"
+
+
+def _exclude_pathspec(pattern: str) -> str:
+    """A gitignore-style *pattern* as a ``git grep`` exclude pathspec."""
+    body = pattern.rstrip("/")
+    glob = body if "/" in body else f"**/{body}"
+    return f":(exclude,glob){glob}/**" if pattern.endswith("/") else f":(exclude,glob){glob}"
+
+
+#: repowise's own output (the index, its caches) names every indexed symbol, so
+#: a grep that read it would find every name still mentioned. Git skips it only
+#: when it is ignored, which a clone need not do.
+_NOT_OWNED = (".", *(_exclude_pathspec(p) for p in OWNED_PATTERNS))
 
 
 @dataclass(frozen=True)
@@ -342,8 +356,8 @@ def _grep(root: Path, revs: Sequence[str], names: Sequence[str]) -> list[tuple[s
     pattern = f"(^|[^A-Za-z0-9_])({alternation})([^A-Za-z0-9_]|$)\n".encode()
     where = list(revs) or ["--untracked"]
     ran = git_run(
-        root, "grep", "-E", "-I", "-z", "-f", "-", *where,
-        stdin=pattern, timeout=_GIT_TIMEOUT_SECONDS,
+        root, "grep", "-E", "-I", "-z", "-f", "-", *where, "--", *_NOT_OWNED,
+        stdin=pattern, timeout=_GIT_TIMEOUT_SECONDS, pathspec_magic=True,
     )
     if ran is None or ran[0] not in (0, 1):
         return None

@@ -193,6 +193,17 @@ def test_deleted_symbol_is_missing_without_a_suggestion(history: Path):
 
 
 @git_required
+def test_repowise_state_left_unignored_hides_no_removed_symbol(history: Path):
+    # A clone that never git-ignored .repowise/: its index names every symbol.
+    state = history / ".repowise" / "cache.json"
+    state.parent.mkdir()
+    state.write_text('{"symbols": ["load_items", "parse_config"]}\n', encoding="utf-8")
+    outcomes = _outcomes(history)
+    assert outcomes["load_items"][0].verdict is DriftVerdict.MISSING
+    assert outcomes["Loader.parse_config"][0].verdict is DriftVerdict.MISSING
+
+
+@git_required
 def test_names_that_never_named_a_symbol_are_not_references(history: Path):
     outcomes = _outcomes(history)
     assert outcomes["my_func"] is None
