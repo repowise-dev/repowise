@@ -23,6 +23,7 @@ import structlog
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.errors import reasoned_error
+from repowise.cli.exit_codes import EXIT_CODES_HELP
 from repowise.cli.helpers import (
     adopt_moved_repo_best_effort,
     clear_update_queued,
@@ -279,7 +280,7 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
         record_reindex_notice_shown(repo_path, verdict)
 
 
-@click.command("update")
+@click.command("update", epilog=EXIT_CODES_HELP)
 @click.argument("path", required=False, default=None)
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
@@ -455,30 +456,46 @@ def update_command(
     force single-repo mode and --workspace to force workspace mode.
     """
     # Click ignores the return value, so don't forward run_update's outcome
-    # here (keeps this command's ``-> None`` annotation honest).
-    run_update(
-        path=path,
-        provider_name=provider_name,
-        model=model,
-        since=since,
-        reasoning=reasoning,
-        cascade_budget=cascade_budget,
-        dry_run=dry_run,
-        workspace=workspace,
-        no_workspace=no_workspace,
-        repo_alias=repo_alias,
-        index_only=index_only,
-        docs_flag=docs_flag,
-        full=full,
-        yes=yes,
-        agents_md=agents_md,
-        concurrency=concurrency,
-        no_cost_tracking=no_cost_tracking,
-        verbose=verbose,
-        progress=progress,
-        include_working_tree=include_working_tree,
-        defer_docs=defer_docs,
-    )
+    # here (keeps this command's ``-> None`` annotation honest). The exit
+    # code, however, is this command's to set: a run that finished with
+    # degraded steps exits 2, an interrupted run exits 130, and anything
+    # else exits 0 — the same contract ``repowise init`` documents. The
+    # mapping lives here only: init, watch and the workspace loop call
+    # run_update directly and must not inherit a shell exit code.
+    from repowise.cli.commands.init_cmd._exit import exit_interrupted, exit_on_gaps
+
+    degraded: list[str] = []
+    try:
+        run_update(
+            path=path,
+            provider_name=provider_name,
+            model=model,
+            since=since,
+            reasoning=reasoning,
+            cascade_budget=cascade_budget,
+            dry_run=dry_run,
+            workspace=workspace,
+            no_workspace=no_workspace,
+            repo_alias=repo_alias,
+            index_only=index_only,
+            docs_flag=docs_flag,
+            full=full,
+            yes=yes,
+            agents_md=agents_md,
+            concurrency=concurrency,
+            no_cost_tracking=no_cost_tracking,
+            verbose=verbose,
+            progress=progress,
+            include_working_tree=include_working_tree,
+            defer_docs=defer_docs,
+            degraded_out=degraded,
+        )
+    except KeyboardInterrupt:
+        # Click would otherwise turn this into "Aborted!" with exit 1.
+        exit_interrupted(note="Interrupted. Re-run `repowise update` to continue.")
+    # No-op when nothing degraded; raises SystemExit(2) with a one-line
+    # summary naming the gaps when the run finished with any.
+    exit_on_gaps(degraded)
 
 
 class UpdateOutcome(StrEnum):
@@ -725,6 +742,10 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
             "--repo <alias>.",
             reason="full_needs_one_repo",
         )
+    # Docs members report their degraded steps back here (core members have
+    # no degraded list to report yet), so the Click command's exit-2 mapping
+    # covers workspace mode too.
+    member_degraded: list[str] = []
     with _errors_reported(run):
         _workspace_update(
             target,
@@ -742,7 +763,9 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
             no_cost_tracking=opts.no_cost_tracking,
             progress=opts.progress,
             include_working_tree=opts.include_working_tree,
+            degraded_out=member_degraded,
         )
+    run.degraded.extend(member_degraded)
     return _emit_done(run, UpdateOutcome.REGENERATED)
 
 
@@ -2278,6 +2301,7 @@ def run_update(
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
     defer_docs: bool = False,
+    degraded_out: list[str] | None = None,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2295,96 +2319,111 @@ def run_update(
     saves and then only ever diffing commit-to-commit is what made the watcher
     a no-op until you committed. ``repowise update --working-tree`` sets it on
     request.
+
+    ``degraded_out``, when given, is filled with the run's degraded steps
+    on every exit path (left untouched when the run never started). The
+    return value stays :class:`UpdateOutcome`, so init, watch and the
+    workspace loop are unaffected; only the Click command reads this list.
     """
-    opts = UpdateOptions(
-        path=path,
-        provider_name=provider_name,
-        model=model,
-        since=since,
-        reasoning=reasoning,
-        cascade_budget=cascade_budget,
-        dry_run=dry_run,
-        workspace=workspace,
-        no_workspace=no_workspace,
-        repo_alias=repo_alias,
-        index_only=index_only,
-        docs_flag=docs_flag,
-        full=full,
-        yes=yes,
-        agents_md=agents_md,
-        concurrency=concurrency,
-        no_cost_tracking=no_cost_tracking,
-        verbose=verbose,
-        progress=progress,
-        skip_cross_repo_hooks=skip_cross_repo_hooks,
-        include_working_tree=include_working_tree,
-        defer_docs=defer_docs,
-    )
-    if opts.defer_docs and (
-        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
-    ):
-        raise reasoned_error(
-            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
-            reason="defer_docs_needs_index_only",
+    # Set before the try so the finally below can tell a run that never
+    # started (e.g. the --defer-docs validation) from a finished one.
+    run: UpdateRun | None = None
+    try:
+        opts = UpdateOptions(
+            path=path,
+            provider_name=provider_name,
+            model=model,
+            since=since,
+            reasoning=reasoning,
+            cascade_budget=cascade_budget,
+            dry_run=dry_run,
+            workspace=workspace,
+            no_workspace=no_workspace,
+            repo_alias=repo_alias,
+            index_only=index_only,
+            docs_flag=docs_flag,
+            full=full,
+            yes=yes,
+            agents_md=agents_md,
+            concurrency=concurrency,
+            no_cost_tracking=no_cost_tracking,
+            verbose=verbose,
+            progress=progress,
+            skip_cross_repo_hooks=skip_cross_repo_hooks,
+            include_working_tree=include_working_tree,
+            defer_docs=defer_docs,
         )
-    run = _start_run(opts)
-    target = _resolve_target(opts)
-    if target.is_workspace:
-        if opts.defer_docs:
+        if opts.defer_docs and (
+            not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
+        ):
             raise reasoned_error(
-                "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
-                reason="defer_docs_needs_one_repo",
+                "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
+                reason="defer_docs_needs_index_only",
             )
-        return _update_workspace_target(opts, run, target)
+        run = _start_run(opts)
+        target = _resolve_target(opts)
+        if target.is_workspace:
+            if opts.defer_docs:
+                raise reasoned_error(
+                    "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
+                    reason="defer_docs_needs_one_repo",
+                )
+            return _update_workspace_target(opts, run, target)
 
-    # --- Single-repo path from here on. ---
-    run.repo_path = target.repo_path
-    assert run.repo_path is not None  # single mode always sets repo_path
-    _prepare_repo(run.repo_path)
-    if not opts.dry_run:
-        # A moved or copied checkout still names its old path; adopt the store's
-        # only row before any write keys on the new one and adds a second row.
-        run_async(adopt_moved_repo_best_effort(run.repo_path))
+        # --- Single-repo path from here on. ---
+        run.repo_path = target.repo_path
+        assert run.repo_path is not None  # single mode always sets repo_path
+        _prepare_repo(run.repo_path)
+        if not opts.dry_run:
+            # A moved or copied checkout still names its old path; adopt the store's
+            # only row before any write keys on the new one and adds a second row.
+            run_async(adopt_moved_repo_best_effort(run.repo_path))
 
-    # --full reuses the persisted graph instead of diffing changed files.
-    if opts.full:
-        return _full_upgrade(opts, run)
-    _load_sync_base(opts, run)
-    _check_config_and_renderer(run)
-    if not opts.defer_docs:
-        resolve_wiki_rebuild(opts, run)
-    _collect_working_tree(opts, run)
-    _repair_before_detection(opts, run)
-    _assess_staleness(opts, run)
-    if run.git_is_current and not (
-        run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
-    ):
-        return _already_up_to_date(opts, run)
+        # --full reuses the persisted graph instead of diffing changed files.
+        if opts.full:
+            return _full_upgrade(opts, run)
+        _load_sync_base(opts, run)
+        _check_config_and_renderer(run)
+        if not opts.defer_docs:
+            resolve_wiki_rebuild(opts, run)
+        _collect_working_tree(opts, run)
+        _repair_before_detection(opts, run)
+        _assess_staleness(opts, run)
+        if run.git_is_current and not (
+            run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
+        ):
+            return _already_up_to_date(opts, run)
 
-    deferred = _acquire_update_lock(run)
-    if deferred is not None:
-        return deferred
-    _prepare_locked_run(opts, run)
+        deferred = _acquire_update_lock(run)
+        if deferred is not None:
+            return deferred
+        _prepare_locked_run(opts, run)
 
-    _stage(run, "detect_changes")
-    _detect_changes(opts, run)
-    if _nothing_to_do(run):
-        return _no_changed_files(opts, run)
+        _stage(run, "detect_changes")
+        _detect_changes(opts, run)
+        if _nothing_to_do(run):
+            return _no_changed_files(opts, run)
 
-    if run.config.health_changed:
-        console.print("[yellow]Config files changed. Re-running health analysis.[/yellow]")
-    if _config_change_only(run):
-        return _config_only_update(opts, run)
+        if run.config.health_changed:
+            console.print("[yellow]Config files changed. Re-running health analysis.[/yellow]")
+        if _config_change_only(run):
+            return _config_only_update(opts, run)
 
-    render_changed_files(run.file_diffs, verbose=opts.verbose)
-    _rebuild_index(run)
-    _plan_pages(opts, run)
-    if opts.dry_run:
-        console.print("[yellow]Dry run: no pages regenerated.[/yellow]")
-        return _emit_done(run, UpdateOutcome.DRY_RUN)
-    _analyze_changes(run)
-    _refresh_knowledge_graph_stage(run)
-    if run.index_only:
-        return _index_only_update(opts, run)
+        render_changed_files(run.file_diffs, verbose=opts.verbose)
+        _rebuild_index(run)
+        _plan_pages(opts, run)
+        if opts.dry_run:
+            console.print("[yellow]Dry run: no pages regenerated.[/yellow]")
+            return _emit_done(run, UpdateOutcome.DRY_RUN)
+        _analyze_changes(run)
+        _refresh_knowledge_graph_stage(run)
+        if run.index_only:
+            return _index_only_update(opts, run)
 
-    return _docs_update(opts, run)
+        return _docs_update(opts, run)
+    finally:
+        # Every exit path funnels through here, so the Click command learns
+        # the run's degraded steps without run_update's return value changing.
+        if degraded_out is not None and run is not None:
+            degraded_out.clear()
+            degraded_out.extend(run.degraded)

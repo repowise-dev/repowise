@@ -20,17 +20,29 @@ COST_UNCONFIRMED_BUILT = f"documentation built from code, {_NO_TERMINAL}"
 COST_UNCONFIRMED_KEPT = f"documentation kept as it was, {_NO_TERMINAL}"
 
 
-def exit_interrupted() -> NoReturn:
-    """Ctrl-C at any point: one line, then the shell's interrupt code."""
+def exit_interrupted(note: str | None = None) -> NoReturn:
+    """Ctrl-C at any point: one line, then the shell's interrupt code.
+
+    With no ``note``, the init wording is kept (indexed work saved, resume
+    with ``repowise init --resume``). Other commands pass their own one
+    line instead of printing an init resume instruction that does not
+    apply to them.
+    """
     from repowise.cli.hints import maybe_hint
     from repowise.cli.ui import mascot
 
     console.print()
-    console.print(
-        mascot.mini_text(mascot.INTERRUPTED),
-        f"[{WARN}]Interrupted.[/] Indexed work so far is saved. Run "
-        "[bold]repowise init --resume[/] to continue where it stopped.",
-    )
+    if note is not None:
+        console.print(
+            mascot.mini_text(mascot.INTERRUPTED),
+            f"[{WARN}]{escape(note)}[/]",
+        )
+    else:
+        console.print(
+            mascot.mini_text(mascot.INTERRUPTED),
+            f"[{WARN}]Interrupted.[/] Indexed work so far is saved. Run "
+            "[bold]repowise init --resume[/] to continue where it stopped.",
+        )
     maybe_hint("interrupt")
     raise SystemExit(EXIT_INTERRUPTED)
 

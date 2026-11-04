@@ -254,7 +254,7 @@ def test_update_recovers_idle_file_decayed_health(tmp_path: Path, monkeypatch) -
 
 def test_update_degrades_visibly_when_a_step_fails(tmp_path: Path, monkeypatch) -> None:
     """A failing best-effort persist step must surface in the degraded list
-    (exit 0, warning block rendered) instead of being silently swallowed."""
+    (exit 2, warning block rendered) instead of being silently swallowed."""
     repo = _make_git_repo(tmp_path)
     _index_full(repo)
 
@@ -276,7 +276,8 @@ def test_update_degrades_visibly_when_a_step_fails(tmp_path: Path, monkeypatch) 
 
     result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
 
-    assert result.exit_code == 0, result.output
+    # A degraded run exits 2 (issue #4277); the warning block still renders.
+    assert result.exit_code == 2, result.output
     assert "degraded step(s)" in result.output
     assert "Graph nodes persist" in result.output
 

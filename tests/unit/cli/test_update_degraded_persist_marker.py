@@ -50,7 +50,9 @@ def test_degraded_git_persist_records_the_range_it_missed(tmp_path: Path, monkey
     monkeypatch.setattr(crud, "upsert_git_metadata_bulk", _boom)
 
     result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
-    assert result.exit_code == 0, result.output
+    # A degraded run exits 2 (issue #4277) while still advancing the pointer
+    # and leaving the repair marker for the next run to re-cover.
+    assert result.exit_code == 2, result.output
     assert "next update will re-cover it" in result.output
 
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
@@ -99,7 +101,9 @@ def test_degraded_docs_update_leaves_a_marker_the_next_update_re_covers(
     result = CliRunner().invoke(
         cli, ["update", str(repo), "--docs", "--provider", "mock", "--no-workspace"]
     )
-    assert result.exit_code == 0, result.output
+    # A degraded run exits 2 (issue #4277); the marker still lets the next
+    # run re-cover the missed range.
+    assert result.exit_code == 2, result.output
     assert "next update will re-cover it" in result.output
 
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))

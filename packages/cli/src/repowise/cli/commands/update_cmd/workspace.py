@@ -64,6 +64,7 @@ def _workspace_update(
     no_cost_tracking: bool = False,
     progress: str = "rich",
     include_working_tree: bool = False,
+    degraded_out: list[str] | None = None,
 ) -> None:
     """Update stale repos in a workspace.
 
@@ -149,6 +150,7 @@ def _workspace_update(
             no_cost_tracking=no_cost_tracking,
             progress=progress,
             include_working_tree=include_working_tree,
+            degraded_out=degraded_out,
         )
         return
     _workspace_index_only_update(
@@ -492,6 +494,7 @@ def _workspace_docs_update(
     no_cost_tracking: bool,
     progress: str,
     include_working_tree: bool = False,
+    degraded_out: list[str] | None = None,
 ) -> None:
     """Update a workspace where at least one stale repo wants docs.
 
@@ -520,7 +523,8 @@ def _workspace_docs_update(
         ws_root,
         ws_config,
         docs_aliases,
-        dict(
+        degraded_out=degraded_out,
+        update_kwargs=dict(
             provider_name=provider_name,
             model=model,
             since=since,
@@ -622,9 +626,18 @@ def _update_core_members(
 
 
 def _update_docs_members(
-    ws_root: Path, ws_config: Any, docs_aliases: set[str], update_kwargs: dict[str, Any]
+    ws_root: Path,
+    ws_config: Any,
+    docs_aliases: set[str],
+    update_kwargs: dict[str, Any],
+    *,
+    degraded_out: list[str] | None = None,
 ) -> _DocsTally:
-    """Docs members, one at a time, through the full single-repo update."""
+    """Docs members, one at a time, through the full single-repo update.
+
+    Each member's degraded steps are reported with its alias prefixed, so
+    the workspace run's one-line gap summary names the repo that degraded.
+    """
     from .command import UpdateOutcome, run_update
 
     tally = _DocsTally()
@@ -633,12 +646,17 @@ def _update_docs_members(
             continue
         repo_path = (ws_root / entry.path).resolve()
         console.print(f"  Updating [bold]{entry.alias}[/bold] (docs)...")
+        member_degraded: list[str] = []
         try:
-            outcome = run_update(path=str(repo_path), **update_kwargs)
+            outcome = run_update(
+                path=str(repo_path), degraded_out=member_degraded, **update_kwargs
+            )
         except Exception as exc:
             tally.failed += 1
             console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
             continue
+        if degraded_out is not None:
+            degraded_out.extend(f"{entry.alias}: {step}" for step in member_degraded)
         # A deferred run regenerated nothing, and run_update already printed
         # its in-flight note. Only a real regeneration feeds the cross-repo pass.
         if outcome == UpdateOutcome.DEFERRED:
