@@ -302,9 +302,9 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     return "implementation"
 
 
-# Every value :func:`_classify_hit_kind` can return; anything else can only ever
-# match nothing, which is why an unknown kind is dropped rather than filtered on.
-_VALID_KINDS = frozenset({"implementation", "test", "config", "doc", "code", "documents"})
+# Every value :func:`_classify_hit_kind` can return, plus "code" for code-only search;
+# anything else can only ever match nothing, which is why an unknown kind is dropped.
+_VALID_KINDS = frozenset({"implementation", "test", "config", "doc", "code"})
 
 
 def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:

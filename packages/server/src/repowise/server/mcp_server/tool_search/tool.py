@@ -90,6 +90,8 @@ def _resolve_kind_and_mode(
     kind: str | None, mode: str, ignored: list[dict[str, Any]]
 ) -> tuple[str | None, str]:
     """Validate ``kind`` and ``mode``; an unknown value is dropped and reported."""
+    if kind == "documents":
+        kind = "doc"
     kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
     # Modes are case-insensitive; only a genuine miss is dropped, under its own spelling.
     if mode is not None and mode.lower() in _VALID_MODES:
