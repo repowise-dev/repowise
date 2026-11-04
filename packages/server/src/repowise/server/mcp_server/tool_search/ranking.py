@@ -175,7 +175,7 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
     for r in results:
         if r.page_type == "decision_record":
             continue
-        if src == "vector" and r.score < _MIN_RELEVANCE_SCORE:
+        if r.score < _MIN_RELEVANCE_SCORE:
             continue
         out.append(
             {

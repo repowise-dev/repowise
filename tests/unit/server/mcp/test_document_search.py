@@ -51,8 +51,34 @@ async def _seed_page(
         await session.commit()
 
 
+async def _seed_dummy_corpus(count: int = 25) -> None:
+    dummies = []
+    for i in range(count):
+        pid = f"file_page:src/dummy_{i}.py"
+        await _seed_page(
+            page_id=pid,
+            target_path=f"src/dummy_{i}.py",
+            page_type="file_page",
+            title=f"Dummy Module {i}",
+            content=f"class Dummy{i}: def compute_{i}(self): return {i}",
+            summary=f"Dummy summary {i}",
+        )
+        dummies.append(
+            (
+                pid,
+                f"Dummy Module {i}",
+                f"class Dummy{i}: def compute_{i}(self): return {i}",
+                f"Dummy summary {i}",
+                f"src/dummy_{i}.py",
+                f"Dummy digest {i}",
+            )
+        )
+    await mcp_mod._fts.index_many(dummies)
+
+
 @pytest.mark.asyncio
 async def test_search_codebase_returns_document_section_hits(setup_mcp):
+    await _seed_dummy_corpus()
     sec_id = "document_section:docs/payments-spec.pdf#refunds"
     await _seed_page(
         page_id=sec_id,
@@ -92,6 +118,7 @@ async def test_search_codebase_returns_document_section_hits(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_search_codebase_kind_filter(setup_mcp):
+    await _seed_dummy_corpus()
     code_id = "file_page:src/billing/service.py"
     doc_id = "document_section:docs/billing.md#refunds"
 
@@ -145,6 +172,7 @@ async def test_search_codebase_kind_filter(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_search_codebase_ranking_caps_documents(setup_mcp):
+    await _seed_dummy_corpus()
     code_id = "file_page:src/search.py"
     await _seed_page(
         page_id=code_id,
