@@ -222,6 +222,9 @@ def test_json_rows_carry_id_level_and_fix(tmp_path: Path, no_mcp_launch) -> None
     by_id = {c["id"]: c for c in payload["checks"]}
     assert by_id["repowise-dir"]["level"] == "fail"
     assert by_id["repowise-dir"]["fix"] == "repowise init"
+    assert by_id["state-json"]["level"] == "fail"
+    assert by_id["state-json"]["detail"] == "missing"
+    assert by_id["state-json"]["fix"] == "repowise init"
     assert by_id["post-commit-hook"]["level"] == "warn"
     assert by_id["git-repository"] == {
         "id": "git-repository",
@@ -231,3 +234,18 @@ def test_json_rows_carry_id_level_and_fix(tmp_path: Path, no_mcp_launch) -> None
         "detail": str(tmp_path),
         "fix": None,
     }
+
+
+def test_json_corrupt_state_row_is_actionable(tmp_path: Path, no_mcp_launch) -> None:
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    state_path = repowise_dir / "state.json"
+    state_path.write_text("{not json", encoding="utf-8")
+    result = CliRunner().invoke(
+        doctor_command, [str(_git_repo(tmp_path)), "--no-workspace", "--format", "json"]
+    )
+    payload = json.loads(result.output[result.output.index("{") :])
+    row = next(check for check in payload["checks"] if check["id"] == "state-json")
+    assert row["level"] == "fail"
+    assert row["fix"] == "repowise init"
+    assert row["detail"].startswith(f"unreadable: {state_path}:")
