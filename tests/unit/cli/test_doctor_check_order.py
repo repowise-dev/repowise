@@ -294,9 +294,16 @@ def test_expired_and_cached_hosted_identity(env, monkeypatch, tmp_path) -> None:
     repo = asyncio.run(_build(tmp_path))
     monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: {"stale": True})
     assert _by_name(_rows(repo))["Hosted account"] == (
-        False,
+        True,
         "Session expired or revoked; run repowise login",
     )
+    # An expired hosted session is a warning, not a failure: hosted is
+    # optional, so doctor must still exit 0 and keep the login fix.
+    _ok, checks = repo_checks._run_repo_checks(repo, repair=False, fmt="json")
+    assert _ok is True
+    hosted = next(c for c in checks if c.name == "Hosted account")
+    assert hosted.level == "warn"
+    assert hosted.fix == "repowise login"
     monkeypatch.setattr(
         "repowise.cli.platform.credentials.load",
         lambda: {"account": {"email": "a@b.test", "tier": "pro"}},

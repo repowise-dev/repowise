@@ -119,11 +119,14 @@ def _hosted_account_check() -> DoctorCheck:
                 check_id=check_id,
             )
         if creds.get("stale"):
+            # Hosted is optional (signed-out is already OK), so an expired
+            # session warns instead of failing the whole doctor run.
             return _check(
                 name,
-                False,
+                True,
                 "Session expired or revoked; run repowise login",
                 check_id=check_id,
+                warn=True,
                 fix="repowise login",
             )
         account = auth.fetch_account()
