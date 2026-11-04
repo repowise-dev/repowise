@@ -36,3 +36,11 @@ def test_an_unknown_marker_reads_with_spaces() -> None:
 
     assert biomarker_label("primitive_obsession") == "Long parameter list"
     assert biomarker_label("made_up_marker") == "made up marker"
+
+
+def test_every_registered_detector_has_a_label() -> None:
+    from repowise.core.analysis.health.biomarker_labels import BIOMARKER_LABELS
+    from repowise.core.analysis.health.biomarkers.registry import registered_biomarkers
+
+    unlabelled = [b.name for b in registered_biomarkers() if b.name not in BIOMARKER_LABELS]
+    assert unlabelled == [], f"add a label to biomarker_labels.py for: {unlabelled}"

@@ -41,6 +41,94 @@ This is the raw material. Every algorithm below operates on the file subgraph un
 
 ---
 
+## Call edges: capture, resolution and measurement
+
+The algorithms below trust the symbol-level edges they walk, so this section
+covers how a call edge is made and how its accuracy is measured. The resolver
+internals (strategy seam, origin table, receiver typing) are in
+[language-support.md](language-support.md#call-resolution).
+
+### Why every edge carries an origin
+
+For `user.save()` a tool has three options: emit nothing (a dead-code pass then
+offers to delete `save`), guess by picking one of the repo's methods named
+`save` (with `User.save`, `Draft.save` and `Session.save` that is a two in three
+chance of the wrong file), or work out what `user` is and resolve `save` on that
+type. A graph that presents a guess the same way as a certainty produces wrong
+arrows that look like answers, and a wrong arrow is worse than a missing one.
+repowise resolves by type where it can, falls back to a name match where it
+must, and labels which one happened on every edge.
+
+### Two stages that fail differently
+
+**Capture** notices that a call was written at all. It is a tree-sitter query
+per language listing the source shapes that count as a call site:
+
+```scheme
+; Go method call: obj.Method(args)
+(call_expression
+  function: (selector_expression
+    operand: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+```
+
+A shape that no query matches is absent from the graph, not low confidence or
+unresolved, and nothing downstream can recover it. Go lists a plain call, a
+method call, a package-qualified call, a chained call, and a function passed as
+an argument; the last is captured as a reference, since passing a handler is
+not invoking it.
+
+**Resolution** turns a captured name and receiver (`save` on `repo` in
+`repo.save(draft)`) into one declaration in one file. This is where the 39
+resolution origins live.
+
+A missed capture is silent, since nothing internal knows the call existed, so
+capture is measured against an outside answer key (a compiler). A bad
+resolution is visible, because the origin names the strategy that produced it,
+so a wrong class of edge is found and fixed once for every call site that
+strategy touched. At the bottom of the ladder the resolver declines to guess,
+trading recall for precision.
+
+### Why `references` and `framework_binds` are separate edge types
+
+A handler in a dispatch table is never called anywhere a parser can see.
+Counting that as "no use" would report whole registration layers as safe to
+delete, so a handle to a function is a `references` edge. `framework_binds`
+separates the opposite case: a fixture nobody calls and a collaborator nobody
+constructs are both used, by the container, but an inferred wiring hop is not
+source, and rendering it as a call would put it into an execution flow as
+though someone had written it.
+
+### How accuracy is measured
+
+- **Against a compiler, Go and TypeScript.** Seven cells over five
+  repositories, 37,853 compiler edges from the Go team's RTA call graph and
+  `tsc`'s own resolution, compared across five tools. Precision is 0.976 to
+  0.995. No tool that finds as much of the call graph gets more of it right in
+  any cell; two tools post higher precision in some cells by drawing much
+  smaller graphs. Recall leads in three of the seven cells. Most misses are
+  dynamic dispatch, which no tool in the comparison resolves without emitting
+  several wrong edges for each right one.
+- **Against compiler indexes for more languages.** Java reads 0.898 to
+  1.000 precision against javac across seven repositories. C on git,
+  a repository held out from all tuning, reads 0.979 precision at
+  0.837 recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
+  static analyser) are in the same table.
+
+Unused methods are not reported for any language because method-level precision
+does not hold up under this measurement, and reporting them would mean
+recommending wrong deletions. `global_unique` stays at 0.50 because a labelled
+guess serves reachability better than a missing edge.
+
+Tables, intervals and pre-registrations are in
+[BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language) and
+[repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph).
+
+---
+
 ## 1. PageRank
 
 ### What question does it answer?
@@ -265,7 +353,12 @@ if n > 30_000:  # _LARGE_REPO_THRESHOLD
 
 Instead of computing exact betweenness using all N×N pairs, it samples 500 random source nodes and approximates. Research shows this gives good results; the ranking of "which files are most bridge-like" stays accurate even with sampling, just the exact scores shift slightly.
 
-For repos under 30,000 nodes, exact computation is used.
+For graphs with at most 30,000 nodes, exact computation is used. Symbol
+betweenness runs the exact kernel only on nodes with call or heritage edges.
+Isolated symbols receive `0.0`, and normalization still uses the full symbol
+node count, so removing isolated nodes from the computation preserves scores.
+The sampling threshold, sampling population and disk-cache signature continue
+to use the full graph.
 
 ### How Repowise uses betweenness
 
@@ -367,7 +460,7 @@ Think of it as automated "package detection." Even if your code doesn't use clea
 
 `detect_file_communities()` in `core/analysis/communities.py` tries three partitioners in order:
 
-1. **Leiden** (`graspologic.partition.leiden`, `random_seed=42`). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
+1. **Leiden** (`graspologic_native.leiden`, seed 42, called directly for the same partition as `graspologic.partition.leiden` without importing the full graspologic package). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
 2. **Louvain** (`networkx.community.louvain_communities`, `seed=42`, `threshold=1e-4`, `max_level=10`). This is what a default install runs.
 3. **Directory grouping**: if Louvain raises, files are grouped by their first path segment.
 

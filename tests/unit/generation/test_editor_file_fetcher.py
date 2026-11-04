@@ -79,7 +79,9 @@ async def _add_graph_node(session, repo_id, node_id, *, is_entry_point=False, pa
     return node
 
 
-async def _add_page(session, repo_id, page_id, page_type, target_path, content):
+async def _add_page(
+    session, repo_id, page_id, page_type, target_path, content, *, provider_name="mock"
+):
     page = Page(
         id=page_id,
         repository_id=repo_id,
@@ -89,7 +91,7 @@ async def _add_page(session, repo_id, page_id, page_type, target_path, content):
         target_path=target_path,
         source_hash="abc",
         model_name="mock",
-        provider_name="mock",
+        provider_name=provider_name,
         generation_level=0,
         confidence=0.9,
         freshness_status="fresh",
@@ -192,6 +194,15 @@ async def test_fetch_repo_name(session, repo, tmp_path):
     fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
     data = await fetcher.fetch()
     assert data.repo_name == "test-repo"
+
+
+async def test_fetch_indexed_at_is_the_sync_date_not_today(session, repo, tmp_path):
+    # A re-render without a sync (a rebase hook, `repowise claude-md`) must
+    # keep the date the index last synced.
+    repo.updated_at = datetime(2026, 10, 18, 23, 30, tzinfo=UTC)
+    await session.flush()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    assert data.indexed_at == "2026-10-18"
 
 
 async def test_fetch_architecture_summary(session, repo, tmp_path):
@@ -326,7 +337,7 @@ async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
     assert paths == ["src/broken.py", "src/busy.py"]  # fix evidence leads
     assert data.hotspots[0].fix_count == 4
     assert data.hotspots[0].bug_magnet is True
-    assert data.hotspots[0].last_fix_age == "2 weeks ago"
+    assert data.hotspots[0].last_fix_date == (datetime.now(UTC) - timedelta(days=14)).strftime("%Y-%m-%d")
 
 
 async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session, repo, tmp_path):
@@ -340,7 +351,7 @@ async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert [h.path for h in data.hotspots] == ["src/high.py", "src/low.py"]
-    assert all(h.fix_count == 0 and h.last_fix_age is None for h in data.hotspots)
+    assert all(h.fix_count == 0 and h.last_fix_date is None for h in data.hotspots)
 
 
 async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
@@ -362,7 +373,7 @@ async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.hotspots[0].bug_magnet is False
-    assert data.hotspots[0].last_fix_age is None
+    assert data.hotspots[0].last_fix_date is None
 
 
 async def test_fetch_active_decisions_only(session, repo, tmp_path):
@@ -601,7 +612,7 @@ async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_p
             taken_at=_now() + timedelta(days=day),
         )
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=["code_health"]).fetch()
 
     assert data.code_health.hotspot_trend == "declining"
 
@@ -623,21 +634,143 @@ async def test_code_health_names_production_files_only(session, repo, tmp_path):
         [
             {
                 "file_path": path,
-                "biomarker_type": "brain_method",
+                "biomarker_type": "complex_method",
                 "severity": "high",
                 "function_name": "f",
                 "line_start": 1,
                 "line_end": 130,
                 "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 2.0,
-                "reason": "brain method",
+                "reason": "complex method",
             }
             for path in ("tests/test_a.py", "src/a.py")
         ],
     )
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=["+fix_first"])
+    data = await fetcher.fetch()
 
     assert data.code_health.worst_path == "src/a.py"
     assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
-    assert data.code_health.fix_first[0]["title"] == "Split f into smaller functions"
+    assert data.code_health.fix_first[0]["title"] == "Reduce the branching in f"
+
+
+# ---------------------------------------------------------------------------
+# Sections: the fetcher reads only what the configured block renders
+# ---------------------------------------------------------------------------
+
+
+def _write_config(root: Path, text: str) -> None:
+    (root / ".repowise").mkdir(exist_ok=True)
+    (root / ".repowise" / "config.yaml").write_text(text, encoding="utf-8")
+
+
+async def test_the_lean_default_skips_commands_and_caps_decisions(session, repo, tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
+    for i in range(5):
+        await _add_decision(session, repo.id, f"Decision {i}")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.build_commands == {}
+    assert len(data.decisions) == 3
+    assert "commands" not in data.sections
+
+
+async def test_config_sections_add_commands_back(session, repo, tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
+    _write_config(tmp_path, "editor_files:\n  sections: [+commands]\n")
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.build_commands == {"test": "npm run test"}
+    assert "hotspots" in data.sections and "commands" in data.sections
+
+
+async def test_a_section_left_out_is_never_queried(session, repo, tmp_path):
+    _touch(tmp_path, "src/a.py")
+    await _add_git_meta(session, repo.id, "src/a.py", is_hotspot=True)
+    await _add_decision(session, repo.id, "Use JWT")
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=["tools"]).fetch()
+
+    assert data.hotspots == [] and data.decisions == [] and data.code_health is None
+
+
+async def test_the_default_health_line_skips_the_detail_queries(session, repo, tmp_path):
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.average_health == 7.0
+    assert data.code_health.worst_path == "src/a.py"
+    assert data.code_health.maintainability_average is None
+    assert data.code_health.fix_first == []
+
+
+async def test_structure_only_module_purpose_has_no_metadata_and_no_newline(
+    session, repo, tmp_path
+):
+    content = (
+        "# billing\n\n`billing`\n\n"
+        "**Language:** python | **Files:** 6 | **Public symbols:** 5 / 5\n\n"
+        "Covers the 6 source files in billing.\n\n"
+        "## Overview\n\n"
+        "billing covers 6 python files, exposing 5 public symbols.\n"
+    )
+    await _add_page(
+        session, repo.id, "module_page:billing", "module_page", "billing",
+        content, provider_name="template",
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    (module,) = data.key_modules
+    assert "**Language:**" not in module.purpose
+    assert "Covers the" not in module.purpose
+    assert "\n" not in module.purpose
+    assert module.purpose == "billing covers 6 python files, exposing 5 public symbols"
+
+
+async def test_structure_only_overview_skips_the_preamble(session, repo, tmp_path):
+    content = (
+        "# Repository Overview: fx2\n\n"
+        "**Files:** 19 | **Lines:** 43\n\n"
+        "Covers the whole repository.\n\n"
+        "## Project Summary\n\n"
+        "`fx2` is a python codebase of 19 files. Execution starts at `main.py`.\n"
+    )
+    await _add_page(
+        session,
+        repo.id,
+        "repo_overview:.",
+        "repo_overview",
+        ".",
+        content,
+        provider_name="template",
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.architecture_summary.startswith("fx2 is a python codebase of 19 files.")
+    assert "Covers the whole" not in data.architecture_summary
+    assert "\n" not in data.architecture_summary
+
+
+async def test_model_written_module_keeps_its_opening_sentence(session, repo, tmp_path):
+    content = (
+        "# billing\n\n"
+        "billing covers 6 python files, exposing 5 public symbols.\n\n"
+        "## Overview\n\nMore detail.\n"
+    )
+    await _add_page(session, repo.id, "module_page:billing", "module_page", "billing", content)
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.key_modules[0].purpose == "billing covers 6 python files, exposing 5 public symbols"

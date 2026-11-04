@@ -50,6 +50,8 @@ _KNOWN_INCLUDES = frozenset(
         "accuracy",
         "signals",
         "churn_complexity",
+        # Functions ranked by CRAP; measured only unless ``unverified`` too.
+        "untested_complexity",
         "doc_drift",
         "performance",
         "defect",
@@ -62,6 +64,8 @@ _KNOWN_INCLUDES = frozenset(
         "semantics",
         # With ``plan_id``: the plan as preconditions, steps and postconditions.
         "recipe",
+        # Points each fix would recover, per worst file and for the repo.
+        "what_if",
     }
 )
 

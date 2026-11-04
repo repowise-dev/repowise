@@ -136,3 +136,19 @@ async def test_crud_reads_leave_withheld_types_out(session, health_data, monkeyp
     assert "complex_method" in every
     kinds = {f.kind for f in await get_dead_code_findings(session, health_data)}
     assert kinds == {"unreachable_file"}
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_does_not_leak_pooled_connection_after_gc(setup_mcp, caplog):
+    import gc
+
+    from repowise.server.mcp_server import _basis, get_dead_code
+
+    _basis.reset_cache()
+    first = await get_dead_code(min_confidence=0.0)
+    gc.collect()
+    second = await get_dead_code(min_confidence=0.0)
+
+    assert first["summary"]["total_findings"] == second["summary"]["total_findings"]
+    assert "non-checked-in connection" not in caplog.text
+

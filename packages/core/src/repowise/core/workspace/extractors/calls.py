@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from .strings import (
     call_arguments,
@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 
     from .base import ScanContext
     from .strings import Arg, StringSyntax
+
+
+class _HasOffset(Protocol):
+    offset: int
+
+
+_Located = TypeVar("_Located", bound=_HasOffset)
 
 
 class CallShape(Protocol):
@@ -109,6 +116,24 @@ def file_strings(ctx: ScanContext) -> FileStrings | None:
     return FileStrings(ctx.content, syntax) if syntax is not None else None
 
 
+def code_matches(ctx: ScanContext, pattern: re.Pattern[str]) -> Iterator[re.Match[str]]:
+    """Every match of *pattern* in *ctx*'s file that does not start in a comment.
+
+    The one match loop a recogniser should use instead of a bare ``finditer``:
+    the comment check is the file's, built once and only when something matched.
+    """
+    for m in pattern.finditer(ctx.content):
+        if not ctx.in_comment(m.start()):
+            yield m
+
+
+def outside_comments(ctx: ScanContext, found: Iterable[_Located]) -> Iterator[_Located]:
+    """The matches in *found* (a shared recogniser's, carrying ``offset``) not in a comment."""
+    for item in found:
+        if not ctx.in_comment(item.offset):
+            yield item
+
+
 def call_sites(
     ctx: ScanContext,
     calls: Iterable[CallShape],
@@ -118,20 +143,19 @@ def call_sites(
 ) -> Iterator[tuple[CallShape, list[str], re.Match[str], FileStrings]]:
     """Each call in *ctx* one of *calls* recognises, with its argument list.
 
-    A call with no arguments is skipped unless *empty* is set: for a decorator
-    such as ``@Get()`` the missing argument is the answer. Pass *strings* when
-    the caller already holds the file's, so its constants are read once.
+    A row is tried only on a file holding one of its ``requires`` tokens,
+    each looked up once per file across every dialect, and a call in a
+    comment is skipped. A call with no arguments is skipped unless *empty* is
+    set: for a decorator such as ``@Get()`` the missing argument is the
+    answer. Pass *strings* when the caller already holds the file's, so its
+    constants are read once.
     """
-    present: dict[tuple[str, ...], bool] = {}  # rows of one library share a gate
     for call in calls:
         if ctx.suffix not in call.extensions:
             continue
-        if call.requires:
-            if call.requires not in present:
-                present[call.requires] = any(r in ctx.content for r in call.requires)
-            if not present[call.requires]:
-                continue
-        for m in call.head.finditer(ctx.content):
+        if call.requires and not ctx.has_any(call.requires):
+            continue
+        for m in code_matches(ctx, call.head):
             args = call_arguments(ctx.content, m.end() - 1)
             if args is None or not (args or empty):
                 continue
@@ -229,6 +253,54 @@ def typed_receivers(content: str, type_re: re.Pattern[str]) -> list[str]:
     return names
 
 
+# `KafkaTemplate<String, Order> template;` (Java, C#): the type's generics (two
+# levels deep), then the name, then what ends a field, parameter or local.
+_GENERIC_ARGS_RE = re.compile(r"<(?:[^<>()]|<(?:[^<>()]|<[^<>()]*>)*>)*>")
+_DECLARED_NAME_RE = re.compile(r"\??[ \t]+(?P<name>[A-Za-z_]\w*)[ \t]*[;,)=]")
+# `producer = Producer(conf)`, `self._p = Producer(conf)`,
+# `var p = new ProducerBuilder<K, V>(cfg)`: a constructed client assigned to a name.
+_ASSIGNED_RE = re.compile(
+    r"(?<![\w$.])(?:(?:this|self)\s*\.\s*)?(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?"
+    r"(?<![=!<>])=\s*(?:await\s+)?(?:new\s+)?$"
+)
+_CONSTRUCTED_RE = re.compile(r"\s*(?:<(?:[^<>()]|<[^<>()]*>)*>)?\s*\(")
+
+
+def declared_receivers(content: str, type_re: re.Pattern[str]) -> list[str]:
+    """Names declared with, or assigned a new instance of, a type *type_re* matches.
+
+    The Java / C# declaration ``KafkaTemplate<K, V> template``, the assignment
+    ``p = Producer(conf)`` / ``var p = new ProducerBuilder<K, V>(cfg)``, and the
+    annotation ``producer: Producer`` (Python, Kotlin, TypeScript). *type_re*
+    bounds its own names (``\\bProducer\\b``) and spells any module qualifier
+    it accepts (``(?:confluent_kafka\\.)?``): a type reached through another
+    member (``other.Producer``) is not the client's. A member of an instance
+    (``self.p = ...``) is named without its qualifier.
+
+    Ceiling: a name holds for the whole file, so a second variable of the same
+    name in another method is read as the client too. The caller's gate (the
+    client's import) and its verbs keep that rare; scoping names to the
+    declaring method is the upgrade path.
+    """
+    names: dict[str, None] = {}
+    for m in type_re.finditer(content):
+        start, end = m.start(), m.end()
+        before = content[max(0, start - _DECLARATION_WINDOW) : start]
+        if before.endswith("."):
+            continue
+        generics = _GENERIC_ARGS_RE.match(content, end)
+        declared = _DECLARED_NAME_RE.match(content, generics.end() if generics else end)
+        if declared is not None:
+            found = declared
+        elif _CONSTRUCTED_RE.match(content, end):
+            found = _ASSIGNED_RE.search(before)
+        else:
+            found = _TYPED_RE.search(before)
+        if found is not None:
+            names[found.group("name")] = None
+    return list(names)
+
+
 # Whitespace and comments between decorators and the member they decorate.
 _GAP_RE = re.compile(r"(?:\s+|//[^\n]*|/\*.*?\*/)*", re.DOTALL)
 _DECORATOR_NAME_RE = re.compile(r"@[\w$.]+")
@@ -265,8 +337,11 @@ __all__ = [
     "FileStrings",
     "call_chain",
     "call_sites",
+    "code_matches",
+    "declared_receivers",
     "decorated_member",
     "file_strings",
+    "outside_comments",
     "receiver_at",
     "receiver_name",
     "typed_receivers",

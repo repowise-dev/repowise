@@ -36,7 +36,7 @@ export function GraphCommunityPanel({
       // Code Health's triage map takes `?file=` and opens on that row, so a hot
       // member gets an exact destination rather than a repo-wide page.
       healthHrefFor={(path) =>
-        `/repos/${repoId}/code-health?tab=triage&file=${encodeURIComponent(path)}`
+        `/repos/${repoId}/code-health?file=${encodeURIComponent(path)}`
       }
       deadCodeHref={`/repos/${repoId}/code-health?tab=dead-code`}
       codeHealthHref={`/repos/${repoId}/code-health`}

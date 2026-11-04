@@ -64,6 +64,10 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "kind_unaudited": 0,
         "terminal_flow": 0,
         "moderate_quiet": 0,
+        "unmeasured_cost": 0,
+        "cold_role": 0,
+        "background_unproven": 0,
+        "unconfirmed_cost": 0,
     }
     assert queue.totals.dormant == 0
     assert queue.totals.eligible == 3
@@ -126,7 +130,7 @@ def test_an_excluded_plan_leaves_the_files_findings_to_compete() -> None:
 def test_tiers_follow_value_confidence_and_readiness() -> None:
     by_kind = {i.kind: i for i in _build().items}
     assert by_kind["refactor"].tier == "now"
-    assert by_kind["perf_fix"].tier == "next"  # advisory plan: needs judgment
+    assert by_kind["perf_fix"].tier == "now"  # a plan-ready cause with a proven plan
     assert by_kind["finding"].tier == "later"
     assert all(i.why_ranked[-1].factor == "tier" for i in by_kind.values())
 
@@ -157,10 +161,13 @@ def test_no_kind_takes_more_than_three_of_the_first_five() -> None:
         row["file_path"] = f"src/core{n}.py"
         row["details"]["steps"] = row["details"]["steps"][:1]
         refactors.append(row)
-    # A loop that grows but no request, message or job is known to run:
-    # worth doing, ranked below the refactors' value.
+    # A loop that grows, reached from an entry point, but no request, message
+    # or job is known to run: worth doing, ranked below the refactors' value.
     perf = _perf("perf2_a", "s", execution_role="unknown")
-    perf["details"] = {**perf["details"], "facets": {"loop_magnitude": "grows_with_data"}}
+    perf["details"] = {**perf["details"], "facets": {
+        "loop_magnitude": "grows_with_data", "growth_source": "loop",
+        "exposure": "entry_reachable",
+    }}
     queue = _build(refactoring=refactors, performance=[perf], findings=[])
     # The fourth place goes to the perf fix; the fifth back to a refactor,
     # since no other kind has anything left at value 2 or above.
@@ -605,6 +612,54 @@ def test_a_finding_whose_plan_is_below_the_worth_floor_leads_with_that_plan() ->
     )
 
 
+def _object_plans(**obj_over) -> list:
+    """A staged plan whose first stage reads three values off ``ctx``."""
+    plans = _staged_plans()
+    body = plans[0]["plan"]
+    body["params"] = ["ctx", "rows"]
+    body["new_symbol"] = {
+        "signature_text": "def sum_rows(ctx: _RunContext, rows):",
+        "notes": ["Read a, b, limit in the helper as ctx.a, ctx.b, ctx.limit."],
+    }
+    body["call_site"] = {"new_text": "total = sum_rows(ctx, rows)"}
+    body["parameter_object"] = {
+        "name": "_RunContext", "var": "ctx",
+        "declaration_text": "@dataclass(frozen=True)\nclass _RunContext:\n    a: int",
+        "construct_text": "ctx = _RunContext(a=a, b=b, limit=limit)",
+        "notes": ["Import dataclass from dataclasses."],
+        **obj_over,
+    }
+    return plans
+
+
+def test_a_step_reading_the_parameter_object_declares_and_builds_it() -> None:
+    # Without them the call names a variable and a type that do not exist.
+    core = next(i for i in _build(plans=_object_plans()).items if i.kind == "refactor")
+    step = core.action.steps[0]
+    assert step.signature == (
+        "@dataclass(frozen=True)\nclass _RunContext:\n    a: int\n\n"
+        "def sum_rows(ctx: _RunContext, rows):"
+    )
+    assert step.call == "ctx = _RunContext(a=a, b=b, limit=limit)\ntotal = sum_rows(ctx, rows)"
+    assert step.notes == (
+        "Add the _RunContext declaration above the helper, and the line building ctx just before "
+        "the call, as shown.",
+        "Import dataclass from dataclasses.",
+        "Read a, b, limit in the helper as ctx.a, ctx.b, ctx.limit.",
+    )
+    # The compact row stays the edit only.
+    assert set(core.compact()["first_step"]) == {"action", "line"}
+
+
+def test_a_step_whose_parameter_object_cannot_be_written_is_not_offered() -> None:
+    queue = _build(plans=_object_plans(declaration_text=None))
+    assert "refac2_big" not in {p for i in queue.items for p in i.source.plan_ids}
+    plans = _object_plans(construct_text="")
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    assert lone.action.steps[0].call is None
+
+
 def test_a_staged_plan_leading_a_finding_names_its_helpers() -> None:
     run = _run(*_hidden_plan(_staged_plans()))
     assert run.title == "Split run into 3 helpers"
@@ -679,3 +734,13 @@ def test_history_matches_the_items_qualified_symbol() -> None:
     # File-level rows and items keep everything; a bare name matches by name.
     assert _about(None, "Engine.run") and _about("Other.run", None)
     assert _about("run", "Engine.run") and not _about("walk", "Engine.run")
+
+
+def test_a_plan_targets_its_symbol_span_like_a_finding_does() -> None:
+    """The target is the function's own span for every kind; the first edit's
+    line belongs to the first step."""
+    by_kind = {i.kind: i for i in _build(limit=None).items}
+    refactor, finding = by_kind["refactor"], by_kind["finding"]
+    assert (refactor.target.line_start, refactor.target.line_end) == (10, 60)
+    assert refactor.action.steps[0].line == 20
+    assert (finding.target.line_start, finding.target.line_end) == (5, 40)

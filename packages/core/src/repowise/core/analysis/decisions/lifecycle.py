@@ -20,6 +20,7 @@ __all__ = [
     "ACCEPTANCE_ACTIONS",
     "ACCEPTER_KINDS",
     "ACCEPTER_SESSION_MAX",
+    "AGENT_ACCEPTANCE_DISABLED_BLOCKER",
     "AGENT_ACCEPTANCE_REMEDY",
     "AGREEMENT_KIND",
     "AGREEMENT_SCOPE",
@@ -31,6 +32,10 @@ __all__ = [
     "GRANTING_ACTIONS",
     "HISTORY_CURRENCIES",
     "NEEDS_REVIEW_STALENESS",
+    "NO_ACCEPTANCE_IDENTITY_BLOCKER",
+    "NO_DECISION_BLOCKER",
+    "NO_EVIDENCE_BLOCKER",
+    "NO_RATIONALE_BLOCKER",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
@@ -174,10 +179,14 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     "superseded",
     "dismissed",
     "returned_to_review",
+    # A withdrawal like ``dismissed``, stored at the same currency; the action
+    # is what tells a retired decision from a rejected one.
+    "deprecated",
 )
 
-#: Actions that create or renew authority, against the three that withdraw it.
+#: Actions that create or renew authority, against the ones that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
+_GRANTING_ACTION_VERBS = {"accepted": "accept", "reaffirmed": "reaffirm", "merged": "merge"}
 
 #: Who signed an acceptance. ``person`` is a human, ``agent`` a coding agent
 #: or a pipeline stage, ``import`` a tracked artifact or manifest speaking for
@@ -194,12 +203,18 @@ UNRECORDED_ACCEPTER_KIND = ""
 #: a longer id rather than hand Postgres a truncation error.
 ACCEPTER_SESSION_MAX = 64
 
-#: What fixes a :func:`machine_grant_blocker` refusal. Addressed to a person,
-#: because the party reading it is the agent that was just refused.
+#: What fixes a :func:`machine_grant_blocker` refusal. The agent reading it
+#: cannot fix it alone: the repository switched agent grants off on purpose.
 AGENT_ACCEPTANCE_REMEDY = (
-    "Someone who owns this repository can allow it with "
-    "`repowise decision config agent-acceptance --on`, or accept it themselves."
+    "Agent acceptance is off for this repository. Ask a person to accept it, or to "
+    "turn agent acceptance back on with `repowise decision config agent-acceptance --on`."
 )
+
+#: Stable blocker phrases shared with the CLI so remedy selection does not depend
+#: on duplicating human-readable messages in another module.
+AGENT_ACCEPTANCE_DISABLED_BLOCKER = "agent acceptance is off for this repository"
+NO_RATIONALE_BLOCKER = "no rationale or explicit constraint reason"
+NO_EVIDENCE_BLOCKER = "no evidence reference"
 
 
 def accepter_kind_blocker(kind: str) -> str | None:
@@ -214,16 +229,15 @@ def accepter_kind_blocker(kind: str) -> str | None:
 def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | None:
     """Why an agent may not take *action*, or ``None``.
 
-    A machine revokes but does not grant: withdrawing narrows what a record
-    claims and re-accepting undoes it, while granting mints a constraint
-    nobody agreed to. Stated rather than left true by omission.
+    Agents grant by default, signed as themselves. *granted* is ``False`` only
+    where the repository turned agent acceptance off: then an agent still
+    withdraws authority, since withdrawing narrows what a record claims and
+    re-accepting undoes it, but granting waits for a person.
     """
     if kind != "agent" or action not in GRANTING_ACTIONS or granted:
         return None
-    return (
-        f"an agent may not record a {action!r} acceptance: machines withdraw "
-        "authority but do not grant it"
-    )
+    verb = _GRANTING_ACTION_VERBS[action]
+    return f"an agent may not {verb} here: {AGENT_ACCEPTANCE_DISABLED_BLOCKER}"
 
 
 #: The fraction of a decision's files that must have moved before the decision
@@ -318,34 +332,47 @@ class AcceptanceRequirement:
     #: inferred. Then the entry itself is the provenance, and demanding a
     #: separate reference would make manual capture impossible.
     self_authored: bool = False
+    #: What was chosen. ``None`` when the action grants nothing new, so a
+    #: record with no text can still be withdrawn or carried over by an import.
+    #: A self-authored record needs it too: a title names the choice, it does
+    #: not state it.
+    decision: str | None = None
 
 
 #: Named because the review row's ``scope_unresolved`` flag is this exact
 #: verdict, and re-deriving it would be a second opinion about scope.
 NO_SCOPE_BLOCKER = "no scope: name the files or modules it governs"
 
+NO_DECISION_BLOCKER = "no decision text: state what was chosen"
+NO_ACCEPTANCE_IDENTITY_BLOCKER = "no accepter or tracked-artifact identity"
+
 
 def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     """Return the reasons *req* cannot become an acceptance, empty if it can.
 
-    The same four checks the ``decision_acceptances`` CHECK constraints
-    enforce, stated once in prose so a caller can explain a refusal instead of
-    surfacing an IntegrityError.
+    Reason, scope, evidence and identity are the checks the
+    ``decision_acceptances`` CHECK constraints enforce, stated once in prose so
+    a caller can explain a refusal instead of surfacing an IntegrityError. The
+    decision-text check is enforced here only: a fresh grant of a mined record
+    needs it, because one that never says what was chosen binds nobody to it,
+    whether it was mined or typed.
     """
     blockers: list[str] = []
+    if req.decision is not None and not req.decision.strip():
+        blockers.append(NO_DECISION_BLOCKER)
     if not req.reason.strip():
-        blockers.append("no rationale or explicit constraint reason")
+        blockers.append(NO_RATIONALE_BLOCKER)
     if not [s for s in req.scope if s and s.strip()]:
         blockers.append(NO_SCOPE_BLOCKER)
     if not req.self_authored and not [e for e in req.evidence if e and e.strip()]:
-        blockers.append("no evidence reference")
+        blockers.append(NO_EVIDENCE_BLOCKER)
     if not req.accepter.strip() and not req.artifact.strip():
-        blockers.append("no accepter or tracked-artifact identity")
+        blockers.append(NO_ACCEPTANCE_IDENTITY_BLOCKER)
     return blockers
 
 
 # The readers below take a mapping keyed ``affected_files``, ``affected_modules``,
-# ``kind``, ``rationale``, ``context``, ``source``, ``evidence_commits``,
+# ``kind``, ``rationale``, ``context``, ``decision``, ``source``, ``evidence_commits``,
 # ``evidence_file``; list fields may be stored JSON text. ORM rows go through
 # ``crud.authority.decision_fields``.
 
@@ -419,8 +446,12 @@ def requirement(
     evidence: list[str] | None = None,
     accepter: str = "",
     artifact: str = "",
+    grant: bool = False,
 ) -> AcceptanceRequirement:
-    """What the acceptance contract would be asked to take for *rec*."""
+    """What the acceptance contract would be asked to take for *rec*.
+
+    *grant* asks for the decision text too: it is what a new acceptance binds.
+    """
     # A record somebody typed is its own provenance: the accepter did not read
     # an inference, they wrote the claim. Everything mined from a transcript, a
     # commit or a document still has to say what it rests on.
@@ -437,6 +468,7 @@ def requirement(
         accepter=accepter,
         artifact=artifact,
         self_authored=self_authored,
+        decision=(rec.get("decision") or "") if grant else None,
     )
 
 
@@ -447,7 +479,7 @@ def record_blockers(rec: Mapping[str, Any]) -> list[str]:
     act, so this asks with an identity in hand: what is left is what a person
     has to go and fill in first.
     """
-    return acceptance_blockers(requirement(rec, accepter="reviewer"))
+    return acceptance_blockers(requirement(rec, accepter="reviewer", grant=True))
 
 
 #: How the pre-split ``decision_records.status`` column maps onto currency, and

@@ -77,6 +77,23 @@ def test_hook_entry_point_imports_nothing_heavy() -> None:
     assert heavy == "", f"the augment hook entry point pulled in:\n{heavy}"
 
 
+def test_the_dispatcher_imports_no_console_or_event_loop() -> None:
+    """The entry point imports the dispatcher on every call; it must stay light.
+
+    ``rich`` and ``asyncio`` are not on the heavy list because the CLI uses
+    them everywhere, but here they cost ~100ms per fire. They came in once
+    through the ``repowise.cli.helpers`` facade for a one-line git helper.
+    The ORM paths import asyncio inside the function that runs them.
+    """
+    probe = (
+        "import sys; import repowise.cli.commands.augment_cmd; "
+        "print('\\n'.join(sorted(m for m in sys.modules "
+        " if m.split('.')[0] in ('rich', 'asyncio', 'sqlalchemy'))))"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "", f"the augment dispatcher pulled in:\n{out.stdout}"
+
+
 def test_the_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
     """``migrate_claude_code_hooks`` runs after *every* hook invocation.
 
@@ -603,3 +620,46 @@ def test_the_ledger_write_does_not_import_the_store(tmp_path: Path) -> None:
         assert con.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
     finally:
         con.close()
+
+
+def test_a_captured_edit_imports_nothing_heavy(tmp_path: Path) -> None:
+    """Capture on is paid on every hooked edit, so it stays off the sessions stack too."""
+    repo = tmp_path / "repo"
+    cfg = "attribution:\n  capture: local\n  agents: [claude-code]\n"
+    for root in (repo, tmp_path):
+        (root / ".repowise").mkdir(parents=True, exist_ok=True)
+        (root / ".repowise" / "config.yaml").write_text(cfg, encoding="utf-8")
+    target = str(repo / "a.py")
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "cwd": str(repo),
+        "session_id": "s1",
+        "tool_input": {"file_path": target, "old_string": "x = 1", "new_string": "x = 2"},
+        "tool_response": {
+            "filePath": target,
+            "structuredPatch": [
+                {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                 "lines": ["-x = 1", "+x = 2"]}
+            ],
+        },
+    }
+    probe = tmp_path / "payload.json"
+    probe.write_text(json.dumps(payload), encoding="utf-8")
+    prefixes = (*_HEAVY_PREFIXES, "repowise.core.sessions")
+    code = (
+        "import sys, json; "
+        "from repowise.cli.commands.augment_cmd.command import _adapter; "
+        "from repowise.cli.commands.augment_cmd.edit_capture import capture_edit; "
+        f"payload = json.loads(open({str(probe)!r}, encoding='utf-8').read()); "
+        "print(capture_edit(_adapter(None).name, payload)); "
+        f"heavy = sorted(m for m in sys.modules if m.startswith({prefixes!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    env = _fake_home(tmp_path)
+    env.pop("DO_NOT_TRACK", None)
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env
+    )
+    assert out.stdout.strip() == "1", "the probe did not record the edit"
+    assert out.stderr.strip() == "", f"a captured edit pulled in:\n{out.stderr}"

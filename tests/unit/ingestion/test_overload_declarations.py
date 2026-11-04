@@ -88,7 +88,11 @@ class TestPythonOverloads:
         parsed, _ = parsed_graph
         types = _overload_return_types({"py_overload_init.py": parsed})
         assert {"str", "bytes"} <= set().union(
-            *(v for (_, parent, name, _), v in types.items() if (parent, name) == (None, "parse"))
+            *(
+                v
+                for (_, parent, _, name, _), v in types.items()
+                if (parent, name) == (None, "parse")
+            )
         )
 
     def test_stub_is_not_paired_with_a_same_named_definition_elsewhere(

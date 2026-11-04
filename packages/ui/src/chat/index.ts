@@ -23,3 +23,4 @@ export * from "./source-citation";
 export * from "./source-citations";
 export * from "./tool-call-block";
 export * from "./tool-call-group";
+export * from "./view-part";

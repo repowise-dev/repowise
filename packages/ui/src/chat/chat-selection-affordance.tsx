@@ -205,7 +205,7 @@ export function ChatSelectionAffordance({
         setPlacement(null);
       }}
       style={{ top: placement.top, left: placement.left }}
-      className="fixed z-[calc(var(--z-modal)-1)] inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-2.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-md)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="fixed z-[calc(var(--z-modal)-1)] inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-2.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-md)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       <MessageCircleQuestion className="h-3.5 w-3.5" aria-hidden />
       {label}

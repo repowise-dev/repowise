@@ -1,4 +1,5 @@
-"""HTTP client libraries for JS / TS: axios, ky, got, ofetch and Angular's HttpClient.
+"""HTTP client libraries for JS / TS: axios, ky, got, ofetch, Angular's HttpClient,
+Node's request, superagent and needle, and AngularJS ``$http``.
 
 A call goes straight through the library (``axios.post(url)``, ``ky.get(url)``,
 ``got(url, { method })``) or through an instance created with a base
@@ -27,19 +28,31 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import TYPE_CHECKING
+
+from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..calls import Call, call_sites, file_strings, receiver_at
 from ..langs import JS_EXTENSION_RE, JS_TS
-from ..strings import NAME_RE, Arg, call_arguments, js_class_fields, select_argument
+from ..strings import (
+    NAME_RE,
+    Arg,
+    call_arguments,
+    js_class_fields,
+    js_local_value,
+    select_argument,
+)
 from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
 from .client_calls import VERBS, is_rooted_url, method_from_argument
+from .commonjs import imported_exports
 from .dialect import build_consumer_contract
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from repowise.core.workspace.contracts import Contract
 
     from ..base import ScanContext
@@ -61,6 +74,10 @@ class _Library:
     typed: bool = False
     request: str = ""  # `request({ url, method })` ("config") or `request('GET', url)` ("method")
     body_first: bool = False  # post / put / patch take a body before their options
+    url_keys: tuple[str, ...] = ("url",)  # the option a config object names its URL by
+    # Names the client is reachable by with no import: a browser global, or
+    # what a framework injects by name (AngularJS `$http`).
+    globals: tuple[str, ...] = ()
 
     @property
     def package(self) -> str:
@@ -68,7 +85,10 @@ class _Library:
 
 
 _LIBRARY_LIST = (
-    _Library("axios", ("create",), "baseURL", request="config", body_first=True),
+    # A global axios: a script tag, Laravel's `window.axios`, Nuxt's `$axios`.
+    _Library(
+        "axios", ("create",), "baseURL", request="config", body_first=True, globals=("axios", "$axios")
+    ),
     _Library("ky", ("create", "extend"), "prefixUrl"),
     _Library("got", ("extend",), "prefixUrl"),
     _Library("ofetch", ("create",), "baseURL", verbs=False, exports=("ofetch", "$fetch")),
@@ -80,17 +100,25 @@ _LIBRARY_LIST = (
         request="method",
         body_first=True,
     ),
+    # `request(url, cb)`, `request({ uri, method }, cb)`, `request.post(url, cb)`.
+    _Library("request", url_keys=("uri", "url")),
+    _Library("request-promise", url_keys=("uri", "url")),
+    _Library("superagent"),
+    _Library("needle", request="method", body_first=True),
+    # AngularJS injects `$http` by name; no import names it. Vue's
+    # vue-resource and Nuxt's http module call theirs `$http` too.
+    _Library("angularjs", exports=(), request="config", body_first=True, globals=("$http",)),
 )
 _LIBRARIES = {lib.package: lib for lib in _LIBRARY_LIST}
 # A library's specifier in quotes, so `ky` is not read out of every word holding it.
 _SPECIFIERS = tuple(f"{q}{package}{q}" for package in _LIBRARIES for q in "'\"")
-# axios is also a global (a script tag, Laravel's `window.axios`, Nuxt's `$axios`).
-_AXIOS_GLOBALS = ("axios.", "axios(")
+_GLOBALS = tuple((g, lib) for lib in _LIBRARY_LIST for g in lib.globals)
 # Qualifiers a client is called through: its own class, the browser global, Vue.
 _QUALIFIER_RE = re.compile(r"(?:this|window|Vue)\s*\.\s*$")
 
-_URL_KEY = Arg(keys=("url",))
 _METHOD_KEY = Arg(keys=("method",))
+# A local a call's URL or options may be held in; a dotted name is a member, not a local.
+_LOCAL_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
 _MOUNT_NAMED = "http-client:"
 _MOUNT_DEFAULT = "http-client-default:"
@@ -113,7 +141,8 @@ _IMPORT_RE = re.compile(
 )
 # `const x = require('m')`, the binding read back from the `require`.
 _REQUIRE_RE = re.compile(r"""require(?<![\w$]require)\s*\(\s*['"](?P<spec>[^'"]+)['"]\s*\)""")
-_REQUIRE_BIND_RE = re.compile(r"(?:const|let|var)\s+(?P<default>[A-Za-z_$][\w$]*)\s*=\s*$")
+# A declaration's first binding, or a later one in a comma list (`, request = require(...)`).
+_REQUIRE_BIND_RE = re.compile(r"(?:(?:const|let|var)\s|,)\s*(?P<default>[A-Za-z_$][\w$]*)\s*=\s*$")
 # What `<client>.create(` is assigned to, read back from the call on its line.
 _FACTORY_BIND_RE = re.compile(
     r"(?:(?P<default>export\s+default)|(?P<export>export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"
@@ -246,11 +275,9 @@ def _file_clients(
             value = ctx.mounts.get(_key(_module_name(spec), imported))
             if value is not None:
                 clients[local] = _decode(value)
-    axios = _LIBRARIES["axios"]
-    if "axios" not in clients and any(g in content for g in _AXIOS_GLOBALS):
-        clients["axios"] = _Client(axios, "", direct=True)
-    if "$axios" in content:
-        clients.setdefault("$axios", _Client(axios, "", direct=True))
+    for name, library in _GLOBALS:
+        if name not in clients and (f"{name}." in content or f"{name}(" in content):
+            clients[name] = _Client(library, "", direct=True)
     exported: dict[str, _Client] = {}
     if not clients or (".create" not in content and ".extend" not in content):
         return _FileClients(clients, exported)
@@ -306,17 +333,30 @@ def client_mounts(ctx: ScanContext) -> dict[str, str]:
 _BODY_VERBS = frozenset({"post", "put", "patch"})
 
 
+def _local(content: str, pos: int, raw: str) -> str:
+    """*raw*, or the value it holds at *pos* when it is a plain local name."""
+    if _LOCAL_NAME_RE.fullmatch(raw):
+        return js_local_value(content, raw, pos) or raw
+    return raw
+
+
 def _request(
-    verb: str | None, args: list[str], client: _Client, strings: FileStrings
+    verb: str | None,
+    args: list[str],
+    client: _Client,
+    strings: FileStrings,
+    local: Callable[[str], str],
 ) -> tuple[str, str] | None:
     """``(method, url)`` a call names: ``x.post(url)``, ``x(url, { method })``,
     ``x({ url, method })``, ``x.request('GET', url)``.
 
     A base in the call's own options (``axios.get(url, { baseURL })``) wins over
-    the client's, as it does at run time.
+    the client's, as it does at run time. *local* reads a local name the
+    config object or the URL is held in (``request(options, cb)``).
     """
     if not args:
         return None
+    args = [local(args[0]), *args[1:]]
     library = client.library
     if verb is not None and verb != "request":
         url_raws, method = args[:1], verb.upper()
@@ -330,11 +370,11 @@ def _request(
         config = args[0].startswith("{")
         if verb == "request" and not config:
             return None  # `request` takes a config object
-        url_raws = select_argument(args[:1], _URL_KEY) if config else args[:1]
+        url_raws = select_argument(args[:1], Arg(keys=library.url_keys)) if config else args[:1]
         options = args[:1] if config else args[1:2]
         methods = select_argument(options, _METHOD_KEY)
         method = (method_from_argument(methods[0]) if methods else None) or "GET"
-    url = strings.text(url_raws[0]) if url_raws else None
+    url = strings.text(local(url_raws[0])) if url_raws else None
     if url is None:
         return None
     base = _base(options, library, strings)
@@ -385,7 +425,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     content = ctx.content
     if not (
         any(s in content for s in _SPECIFIERS)
-        or "axios" in content
+        or any(name in content for name, _ in _GLOBALS)
         or (_MOUNT_ANY in ctx.mounts and ("import" in content or "require" in content))
     ):
         return [], frozenset()
@@ -394,6 +434,7 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
         return [], frozenset()
     imports = _imports(content)
     strings.settled.update(imported_environment(ctx, imports))
+    strings.settled.update(imported_exports(ctx, imports))
     clients = _file_clients(ctx, imports, strings).callable
     # `ofetch(url)` is a fetch call the fetch reader already reads.
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))
@@ -413,14 +454,19 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
             continue
         if verb == "request" and not library.request:
             continue
-        request = _request(verb, args, client, strings)
+        request = _request(verb, args, client, strings, partial(_local, content, m.start()))
         if request is None:
             continue
         method, url = request
         if not is_rooted_url(url):
             continue  # relative to a base this cannot see
         c = build_consumer_contract(
-            ctx, method=method, url=url, client=client.library.name, line=line_at(content, m.start())
+            ctx,
+            method=method,
+            url=url,
+            client=client.library.name,
+            line=line_at(content, m.start()),
+            origin=ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.CLIENT_CALL,
         )
         if c is not None:
             out.append(c)

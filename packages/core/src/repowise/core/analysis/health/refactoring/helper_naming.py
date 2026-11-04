@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 NAME_CONVENTION: dict[str, str] = {
     "go": "camelCase",
     "java": "camelCase",
+    "apex": "camelCase",
     "typescript": "camelCase",
     "tsx": "camelCase",
     "javascript": "camelCase",

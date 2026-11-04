@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import _embedder, _frontend, _lock, _ports, _web_assets
 
 
 @pytest.fixture
@@ -25,11 +26,11 @@ def stub_serve(monkeypatch) -> dict:
         captured["repowise_host_env"] = os.environ.get("REPOWISE_HOST")
 
     monkeypatch.setattr("uvicorn.run", fake_run)
-    monkeypatch.setattr(serve_cmd, "_load_local_provider_config", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_setup_embedder", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_serve_lock_path", lambda: None)
+    monkeypatch.setattr(_embedder, "_load_local_provider_config", lambda: None)
+    monkeypatch.setattr(_embedder, "_setup_embedder", lambda: None)
+    monkeypatch.setattr(_lock, "_serve_lock_path", lambda: None)
     # No real sockets: the port probe is not what these tests are about.
-    monkeypatch.setattr(serve_cmd, "_find_free_port", lambda _host, port, _label: port)
+    monkeypatch.setattr(_ports, "_find_free_port", lambda _host, port, _label: port)
     monkeypatch.delenv("REPOWISE_API_KEY", raising=False)
     # The command auto-detects `./.repowise/wiki.db` and assigns
     # REPOWISE_DB_URL straight onto os.environ. Under CliRunner the cwd is the
@@ -77,7 +78,7 @@ def test_web_ui_takes_the_api_bind(monkeypatch, tmp_path) -> None:
         return None
 
     (tmp_path / "server.js").write_text("")
-    monkeypatch.setattr(serve_cmd.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(serve_cmd, "_WEB_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(_frontend.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(_web_assets, "_WEB_CACHE_DIR", tmp_path)
     serve_cmd._start_frontend("node", 7337, 3000, local_web=None, host="127.0.0.1")
     assert captured["hostname"] == "127.0.0.1"

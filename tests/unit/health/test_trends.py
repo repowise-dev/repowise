@@ -42,9 +42,9 @@ def _series(values: list[float]) -> list[_S]:
     return [_S(taken_at=_ts(i), hotspot_health=v, average_health=v) for i, v in enumerate(values)]
 
 
-def test_diff_empty_history_neutral():
+def test_diff_empty_history_has_no_hotspot_figure():
     summary = diff_snapshots([])
-    assert summary.current_hotspot_health == 10.0
+    assert summary.current_hotspot_health is None
     assert summary.hotspot_delta is None
     assert summary.alerts == []
 
@@ -700,3 +700,11 @@ def test_the_memo_needs_nothing_of_the_snapshot_object():
 
     snaps = [_Slotted(_ts(0), {"a.py": 9.0}), _Slotted(_ts(1), {"a.py": 7.0})]
     assert file_trend(snaps, "a.py").delta == -2.0
+
+
+def test_recent_kpis_carries_the_analyzer_version_only_when_asked():
+    snaps = _series([5.0, 6.0])
+    snaps[1].analyzer_version = 42
+    assert "analyzer_version" not in recent_kpis(snaps)[0]
+    rows = recent_kpis(snaps, analyzer_version=True)
+    assert [r["analyzer_version"] for r in rows] == [42, None]

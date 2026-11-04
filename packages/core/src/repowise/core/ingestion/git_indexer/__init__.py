@@ -27,6 +27,7 @@ from ...lazy_exports import lazy_exports
 
 if TYPE_CHECKING:
     from ._constants import (
+        GIT_HISTORY_BACKFILL_REWALK,
         GIT_HISTORY_VERSION,
         GIT_HISTORY_VERSION_KEY,
         HOTSPOT_HALFLIFE_DAYS,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     from .tiers import GitIndexTier
 
 _EXPORTS: dict[str, str] = {
+    "GIT_HISTORY_BACKFILL_REWALK": "._constants",
     "GIT_HISTORY_VERSION": "._constants",
     "GIT_HISTORY_VERSION_KEY": "._constants",
     "HOTSPOT_HALFLIFE_DAYS": "._constants",
@@ -120,6 +122,7 @@ __getattr__, __dir__ = lazy_exports(__name__, _EXPORTS, globals())
 
 __all__ = [
     "BACKFILL_PHASE",
+    "GIT_HISTORY_BACKFILL_REWALK",
     "GIT_HISTORY_VERSION",
     "GIT_HISTORY_VERSION_KEY",
     "HOTSPOT_HALFLIFE_DAYS",

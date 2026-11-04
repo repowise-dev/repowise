@@ -11,7 +11,7 @@ workspace overlays, MCP responses, and CLI output.
 
 | Area | Main code paths | What gets computed |
 | --- | --- | --- |
-| Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser.py`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
+| Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser/`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
 | Graph construction | `packages/core/src/repowise/core/ingestion/graph.py`, `call_resolver.py`, `heritage_resolver.py`, `framework_edges.py`, `dynamic_hints/` | File and symbol nodes, import/call/heritage/framework/dynamic/co-change edges, centrality, SCCs, communities, execution flows |
 | Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer/` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
 | Analysis | `packages/core/src/repowise/core/analysis/` | Dead-code findings, decision records, decision staleness, security findings, PR blast radius, execution flows, communities |
@@ -24,13 +24,13 @@ workspace overlays, MCP responses, and CLI output.
 
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
-| Includable source file | A file that survives ignore rules, blocked patterns, size limit, binary detection, generated-file detection, and language detection. | `FileTraverser._build_file_info()` | `packages/core/src/repowise/core/ingestion/parser.py` |
+| Includable source file | A file that survives ignore rules, blocked patterns, size limit, binary detection, generated-file detection, and language detection. | `FileTraverser._build_file_info()` | `packages/core/src/repowise/core/ingestion/traverser.py` |
 | `FileInfo` | Per-file metadata used by the parser and graph builder. | `FileTraverser.traverse()` | `{path: "src/app.py", language: "python", is_test: false, is_entry_point: true}` |
 | Language tag | Canonical language value from file extension, special filename, or shebang. | `ingestion/models.py`, `traverser.py`, `languages/registry.py` | `python`, `typescript`, `go`, `terraform`, `openapi`, `unknown` |
 | Test file flag | Whether a file looks like a test/spec/fixture file. | `FileTraverser._build_file_info()` and community/test-gap helpers | `tests/test_auth.py -> is_test=true` |
 | Config file flag | Whether a file is classified as configuration. | `FileTraverser._build_file_info()` | `pyproject.toml -> is_config=true` |
 | API contract flag | Whether a file is an API contract format. | `FileTraverser._build_file_info()` | `openapi.yaml -> is_api_contract=true` |
-| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no |
+| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no | <!-- repowise-drift-ignore -->
 | Traversal stats | Counts of included files and skip reasons. | `TraversalStats` in `traverser.py` | `{included: 240, skipped_binary: 3, skipped_generated: 12}` |
 | Package info | A package/workspace detected from manifests near the repo root. | `FileTraverser._detect_monorepo()` | `{name: "core", path: "packages/core", manifest_file: "pyproject.toml"}` |
 | Repo structure | High-level structure summary used by overview generation. | `FileTraverser.get_repo_structure()` | `{is_monorepo: true, total_files: 820, entry_points: ["packages/cli/src/.../main.py"]}` |
@@ -72,6 +72,8 @@ workspace overlays, MCP responses, and CLI output.
 | Symbol node | Graph node for an extracted symbol. | `GraphBuilder.add_file()` | `{node_type: "symbol", kind: "function", name: "main"}` |
 | External node | Node for third-party or unresolvable dependencies. | Import resolution paths | `external:react` |
 | Synthetic module symbol | Symbol node for top-level calls in a file. | `GraphBuilder.add_file()` | `src/app.py::__module__` |
+| File count | The "files" figure on `repowise status`, the dashboard, Stats and workspace views: one per file the index read, in any language. Import-target nodes (third-party packages, and paths an import names that traversal never parsed) are not counted. Health's "code files" is the code-language subset of these, inside the health exclude rules. | `count_files()` | `6,363 files` |
+| Symbol count | The "symbols" figure on `repowise status`, the dashboard, workspace views and `get_overview`: one per distinct symbol id in the symbol index. An overload set counts once, and the synthetic module symbol is not counted. | `count_symbols()` | `76,924 symbols` |
 | `defines` edge | File-to-symbol containment. | `GraphBuilder.add_file()` | `src/app.py -> src/app.py::main` |
 | `imports` edge | File-to-file import relationship. | `GraphBuilder.build()` | `src/app.py -> src/settings.py` |
 | `imported_names` edge payload | Names imported along an import edge. | `GraphBuilder.build()` | `["Settings", "load_config"]` |
@@ -167,7 +169,7 @@ workspace overlays, MCP responses, and CLI output.
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
 | File page context | Template data for one important source file. | `ContextAssembler.assemble_file_page()` | `{file_path, symbols, imports, dependencies, pagerank_score}` |
-| Symbol spotlight context | Template data for a top public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, source body, callers |
+| Symbol spotlight context | Template data for a most-called public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, docstring, resolved callers |
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
 | SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |
@@ -238,7 +240,7 @@ workspace overlays, MCP responses, and CLI output.
 | Risk type | Human bucket for the kind of risk. | `tool_risk._classify_risk_type()` | `bug-prone`, `churn-heavy`, `bus-factor-risk`, `high-coupling`, `stable` |
 | Change pattern | Human label from dominant commit category. | `tool_risk._derive_change_pattern()` | `feature-active`, `fix-heavy`, `dependency-churn`, `mixed-activity` |
 | Impact surface | PageRank-ranked structural reverse-dependency reach within two hops. It preserves distance and does not claim runtime breakage. | `tool_risk._compute_impact_surface()` | `[{file_path: "src/api.py", distance: 2, claim: "structural_reach"}]` |
-| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - hotspot score 88% (increasing), 6 direct dependents...` |
+| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - churn hotspot, top 12% (increasing), 6 direct dependents...` |
 | Top hotspots | Highest churn/hotspot files returned for context. | `get_risk()` | `[{file_path: "src/db.py", hotspot_score: 0.94}]` |
 
 ## Code Health And Defect-Score Benchmark Metrics
@@ -263,8 +265,8 @@ workspace overlays, MCP responses, and CLI output.
 | Answer payload | Cached `get_answer` result. | `get_answer()` | `{answer, citations, confidence, fallback_targets, retrieval}` |
 | Retrieval hit | Search hit hydrated with page metadata and summary. | `tool_answer.py` retrieval pipeline | `{target_path: "src/auth.py", score: 3.2, summary: "..."}` |
 | Retrieval dominance | Gating logic comparing top and second search scores. | `tool_answer.py` | Top score high enough to answer from dominant hit |
-| Federated RRF score | Reciprocal rank fusion score for workspace search across repos. | `tool_search.py` | `rrf_score: 0.0164` |
-| Confidence score | Normalized workspace search confidence. | `tool_search.py` | `confidence_score: 0.87` |
+| Federated RRF score | Reciprocal rank fusion score for workspace search across repos. | `tool_search/retrieval.py` | `rrf_score: 0.0164` |
+| Confidence score | Normalized workspace search confidence. | `tool_search/retrieval.py` | `confidence_score: 0.87` |
 
 ## Persistence Tables And Stored Entities
 

@@ -629,7 +629,11 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       "low_value_kind": 0,
       "kind_unaudited": 0,
       "terminal_flow": 0,
-      "moderate_quiet": 0
+      "moderate_quiet": 0,
+      "unmeasured_cost": 0,
+      "cold_role": 0,
+      "background_unproven": 0,
+      "unconfirmed_cost": 0
     },
     "dormant": 0
   },

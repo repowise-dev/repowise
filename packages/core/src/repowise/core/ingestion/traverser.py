@@ -9,6 +9,8 @@ source file that should be documented.  It respects:
   4. Binary file detection
   5. File-size limit
   6. Generated-file detection (header markers + filename suffixes)
+  7. Repowise's own output (``owned_paths``), so a re-run never indexes what
+     init and its editor setup wrote
 
 It also detects monorepo structure and returns a RepoStructure.
 """
@@ -16,21 +18,36 @@ It also detects monorepo structure and returns a RepoStructure.
 from __future__ import annotations
 
 import configparser
+import functools
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pathspec
 import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
-from ..code_origin import is_generated_header
-from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..code_origin import CONTENT_TEST_SUFFIXES, declares_test, is_generated_header
+from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
+from ..entry_candidacy import (
+    APPLICATION_MAIN_LANGUAGES,
+    boots_application,
+    conventional_entry_stems,
+    not_an_execution_start,
+)
+from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
+from ..phpunit_roots import (
+    PHPUNIT_CONFIG_NAMES,
+    PhpunitConfigUnreadableError,
+    PhpunitRoots,
+    parse_phpunit_options,
+    phpunit_roots,
+)
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
     PytestRoots,
@@ -39,10 +56,14 @@ from ..pytest_roots import (
     pytest_roots,
 )
 from ..test_paths import is_test_related_path
+from .cobol.source import is_cobol_dclgen
 from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .languages.specs.aura import is_aura_markup_path
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from .languages.specs.salesforce_flow import is_legacy_flow_path
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    NAME_SUFFIX_TO_LANGUAGE,
     SPECIAL_FILENAMES,
     FileInfo,
     LanguageTag,
@@ -68,7 +89,7 @@ class _OversizeSkip(NamedTuple):
 
 
 class SkippedSourceFile(NamedTuple):
-    """A file with a real parser that traversal dropped on size.
+    """A parseable file dropped on size, or a document whose Markdown is too large.
 
     Carried as a record rather than folded into ``skipped_oversized`` because
     the count alone is what let this hide: "39 oversized" reads as lockfiles
@@ -80,7 +101,7 @@ class SkippedSourceFile(NamedTuple):
 
     path: str
     size_kb: int
-    reason: str  # "over_max_size" | "minified"
+    reason: str  # "over_max_size" | "minified" | "unreadable" | "extracted_over_max_size"
 
 
 class _DirIgnore(NamedTuple):
@@ -93,6 +114,7 @@ class _DirIgnore(NamedTuple):
 
     gitignore: pathspec.PathSpec
     extra: pathspec.PathSpec
+    reincluded: tuple[re.Pattern[str], ...] = ()
 
 
 class _TrackedPaths(NamedTuple):
@@ -118,6 +140,7 @@ class TraversalStats:
     skipped_blocked_pattern: int = 0
     skipped_unknown_language: int = 0
     skipped_dir_ignore: int = 0
+    skipped_repowise_output: int = 0
     skipped_submodule: int = 0
     skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
@@ -172,7 +195,10 @@ class TraversalStats:
         out skips the same generated files every run.
         """
         return [
-            *((s.path, s.reason) for s in (*self.skipped_source_files, *self.unknown_language_files)),
+            *(
+                (s.path, s.reason)
+                for s in (*self.skipped_source_files, *self.unknown_language_files)
+            ),
             *((path, "generated") for path in sorted(self.generated_files)),
         ]
 
@@ -237,13 +263,6 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         ".eggs",
         "site-packages",
         ".cache",
-        # Unity generated state / editor data
-        "Library",
-        "Temp",
-        "Logs",
-        "UserSettings",
-        "MemoryCaptures",
-        "Builds",
         ".idea",
         ".vscode",
         # Test dirs (tests/, spec/, __tests__/, e2e/) are indexed on purpose
@@ -295,6 +314,10 @@ _BLOCKED_FILENAME_PATTERNS: list[str] = [
 _BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
     "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
 )
+
+#: Paths repowise writes whole, and the shared files it writes into.
+_OWNED_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines("gitwildmatch", OWNED_PATTERNS)
+_MANAGED_FILES: frozenset[str] = frozenset(MANAGED_FILES)
 
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
@@ -349,12 +372,30 @@ _SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_language
 #: no evidence: bundlers write one beside their output.
 _OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"build", "coverage", "dist", "target"})
 
+#: Unity generated state and editor data. Pruned only directly inside a Unity
+#: project root (see :func:`is_unity_state_dir`): .NET and C++ repos keep
+#: source in ``Library/``, ``Logs/`` and ``Builds/`` folders.
+_UNITY_STATE_DIR_NAMES: frozenset[str] = frozenset(
+    {"Library", "Temp", "Logs", "UserSettings", "MemoryCaptures", "Builds"}
+)
+
 #: Languages a build or report writes (bundles, generated C, HTML reports),
 #: so their files are no evidence that an output-named directory is source.
-_EMITTED_LANGUAGES: frozenset[str] = _SKIP_GENERATED_CHECK | {"c", "cpp", "javascript", "objectivec"}
+_EMITTED_LANGUAGES: frozenset[str] = _SKIP_GENERATED_CHECK | {
+    "c",
+    "cpp",
+    "javascript",
+    "objectivec",
+}
 
 #: Filename endings a compiler emits in otherwise hand-written languages.
-_EMITTED_SUFFIXES: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts", ".qmltypes", *_GENERATED_SUFFIXES)
+_EMITTED_SUFFIXES: tuple[str, ...] = (
+    ".d.ts",
+    ".d.mts",
+    ".d.cts",
+    ".qmltypes",
+    *_GENERATED_SUFFIXES,
+)
 
 
 class FileTraverser:
@@ -370,7 +411,7 @@ class FileTraverser:
         extra_ignore_filename: Name of an additional gitignore-syntax file.
             Defaults to ``.repowiseIgnore``.
         extra_exclude_patterns: Additional gitignore-style patterns to exclude
-            (from CLI ``--exclude`` flags or ``repo.settings["exclude_patterns"]``).
+            (from CLI ``--exclude`` flags or ``.repowise/config.yaml exclude_patterns``).
         include_submodules: When False (default), directories listed in
             ``.gitmodules`` are skipped during traversal.
         include_nested_repos: When False (default), any subdirectory that is
@@ -407,10 +448,22 @@ class FileTraverser:
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
         self._extra_exclude = _compile_gitignore(patterns)
+        root_ignore_lines: list[str] = []
+        root_ignore_file = self.repo_root / extra_ignore_filename
+        if root_ignore_file.exists():
+            root_ignore_lines = root_ignore_file.read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines()
+        self._reincluded_patterns: tuple[re.Pattern[str], ...] = _compile_reincluded_patterns(
+            (*root_ignore_lines, *patterns)
+        )
+        self._output_dir_cache: dict[Path, bool] = {}
         # Absolute dir path -> that directory's nested ignore spec. The root is
         # pre-seeded because its files are already loaded above.
         self._dir_ignore_cache: dict[str, _DirIgnore] = {
-            str(self.repo_root): _DirIgnore(_compile_gitignore([]), self._extra_ignore),
+            str(self.repo_root): _DirIgnore(
+                _compile_gitignore([]), self._extra_ignore, self._reincluded_patterns
+            ),
         }
         # Lazy: read only once a .gitignore rule matches something.
         self._tracked: _TrackedPaths | None = None
@@ -432,6 +485,9 @@ class FileTraverser:
         self._count_lock = threading.Lock()
         self._console_scripts_lock = threading.Lock()
         self._dir_ignore_lock = threading.Lock()
+        # Repo-relative dir -> whether it holds a package manifest; asked only
+        # about test-helper-named dirs (see :meth:`_is_package_root_dir`).
+        self._package_root_cache: dict[str, bool] = {}
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -471,6 +527,16 @@ class FileTraverser:
     def pytest_roots(self) -> PytestRoots:
         """Where pytest collects, from the configs the console-script pass read."""
         return self._console_script_tables().pytest_roots
+
+    @property
+    def phpunit_roots(self) -> PhpunitRoots:
+        """Where PHPUnit collects, from the configs the console-script pass read."""
+        return self._console_script_tables().phpunit_roots
+
+    @property
+    def dotnet_test_projects(self) -> DotnetTestProjects:
+        """The .NET test projects, from the .csproj files the config pass read."""
+        return self._console_script_tables().dotnet_test_projects
 
     @property
     def _console_script_names(self) -> frozenset[str]:
@@ -520,11 +586,14 @@ class FileTraverser:
 
         lang_counts: dict[str, int] = {}
         entry_points: list[str] = []
+        application_mains: list[str] = []
 
         for f in files:
             lang_counts[f.language] = lang_counts.get(f.language, 0) + 1
             if f.is_entry_point:
                 entry_points.append(f.path)
+                if f.is_application_main:
+                    application_mains.append(f.path)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
@@ -541,6 +610,7 @@ class FileTraverser:
             total_files=len(files),
             total_loc=total_loc,
             entry_points=sorted(entry_points),
+            application_mains=sorted(application_mains),
         )
 
     # ------------------------------------------------------------------
@@ -558,9 +628,7 @@ class FileTraverser:
 
             # Prune ignored directories in-place (affects os.walk recursion)
             dirnames[:] = sorted(
-                d
-                for d in dirnames
-                if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
+                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
             )
 
             for filename in sorted(filenames):
@@ -583,6 +651,7 @@ class FileTraverser:
             spec = _DirIgnore(
                 load_extra_ignore_spec(dirpath, ".gitignore"),
                 load_extra_ignore_spec(dirpath, self._extra_ignore_filename),
+                _load_dir_reincluded_patterns(dirpath, self._extra_ignore_filename),
             )
             with self._dir_ignore_lock:
                 # Keep the first published spec so every caller shares one object.
@@ -617,28 +686,45 @@ class FileTraverser:
         tracked = self._tracked_paths()
         return rel_str in (tracked.dirs if is_dir else tracked.files)
 
+    def _in_blocked_dir(self, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
+        return in_blocked_dir(
+            rel_str,
+            self.repo_root,
+            self._output_dir_cache,
+            reincluded_patterns=self._reincluded_patterns,
+            is_dir=True,
+            dir_ignore=dir_ignore,
+            extra_ignore_filename=self._extra_ignore_filename,
+        )
+
+    def _is_dir_ignored(self, dirname: str, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
+        dir_slash = f"{dirname}/"
+        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude.match_file(
+            f"{rel_str}/"
+        ):
+            return True
+        if dir_ignore is not None and dir_ignore.extra.match_file(dir_slash):
+            return True
+        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dir_slash)
+        return self._dir_gitignored(rel_str, nested)
+
     def _should_skip_dir(
         self,
         dirname: str,
         rel_path: Path,
         dir_ignore: _DirIgnore | None = None,
     ) -> bool:
-        if dirname in _BLOCKED_DIRS:
-            return True
         rel_str = rel_path.as_posix()
+        # Submodules and nested repos are hard boundaries; negation rules never bypass them.
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True
-        dir_pattern = rel_str + "/"
-        if self._extra_ignore.match_file(dir_pattern) or self._extra_exclude.match_file(
-            dir_pattern
-        ):
+        if dirname in _BLOCKED_DIRS:
+            return self._in_blocked_dir(rel_str, dir_ignore)
+        if self._is_dir_ignored(dirname, rel_str, dir_ignore):
             return True
-        # Per-directory ignore: pattern is relative to the parent directory.
-        if dir_ignore is not None and dir_ignore.extra.match_file(dirname + "/"):
-            return True
-        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dirname + "/")
-        # Last, so a gitignored output tree is pruned before anything lists it.
-        return self._dir_gitignored(rel_str, nested) or is_output_dir(self.repo_root / rel_path)
+        if dirname in _OUTPUT_DIR_NAMES or dirname in _UNITY_STATE_DIR_NAMES:
+            return self._in_blocked_dir(rel_str, dir_ignore)
+        return False
 
     def _dir_gitignored(self, rel_str: str, nested_match: bool) -> bool:
         """Whether ``.gitignore`` prunes the directory, which it may not if git tracks a file in it."""
@@ -681,9 +767,13 @@ class FileTraverser:
     # Internal: FileInfo construction
     # ------------------------------------------------------------------
 
-    def _oversize_skip_reason(self, abs_path: Path, size_bytes: int) -> _OversizeSkip | None:
+    def _oversize_skip_reason(
+        self, abs_path: Path, size_bytes: int, source: bytes | None = None
+    ) -> _OversizeSkip | None:
         """This traverser's size verdict for one file. See :func:`size_verdict`."""
-        return size_verdict(abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes)
+        return size_verdict(
+            abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes, source=source
+        )
 
     def _record_skipped_source(
         self, records: list[SkippedSourceFile], cap: int, record: SkippedSourceFile
@@ -739,6 +829,8 @@ class FileTraverser:
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
+        if is_repowise_output(abs_path, rel_str):
+            return "skipped_repowise_output"
         return None
 
     def _root_gitignored(self, rel_str: str) -> bool:
@@ -760,16 +852,24 @@ class FileTraverser:
         """The file's language, or None (counted) when it is binary or unparseable."""
         # Name/extension lookup does no I/O; only an unrecognised extension
         # pays for binary and shebang sniffing.
-        language = _language_from_name_or_ext(abs_path)
-        # A .h may be Objective-C by content.
-        if language == "cpp":
-            return _objc_header_language(abs_path) or language
-        if language is not None:
+        language = _content_language(abs_path, _language_from_name_or_ext(abs_path))
+        shebang_language = None
+        if language in (None, "unknown"):
+            binary = _is_binary(abs_path)
+            if not binary:
+                shebang_language = _detect_by_shebang(abs_path)
+                if shebang_language != "unknown":
+                    return shebang_language
+            from .document_extractors import document_extractor_for_path
+
+            if document_extractor_for_path(abs_path) is not None:
+                return "markdown"
+            if binary:
+                self._count("skipped_binary")
+                return None
+        if language not in (None, "unknown"):
             return language
-        if _is_binary(abs_path):
-            self._count("skipped_binary")
-            return None
-        language = _detect_by_shebang(abs_path)
+        language = shebang_language or _detect_by_shebang(abs_path)
         if language == "unknown" and abs_path.suffix.lower() not in self._keep_unparsed:
             self._note_unknown_language(abs_path, rel_str, size_bytes)
             return None
@@ -821,15 +921,28 @@ class FileTraverser:
         language = self._resolve_language(abs_path, rel_str, size_bytes)
         if language is None or self._skip_generated(abs_path, rel_str, language):
             return None
+        extractor_name, extractor_version = _extractor_identity(abs_path, language)
 
         manifest_entry = (
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
+        tables = self._console_script_tables()
         is_test = is_test_related_path(
-            rel_str, language, self._console_script_tables().pytest_roots
+            rel_str,
+            language,
+            roots=tables.pytest_roots,
+            dotnet_projects=tables.dotnet_test_projects,
+            phpunit_roots=tables.phpunit_roots,
+            package_root=self._is_package_root_dir,
+        ) or (
+            # An Apex ``@IsTest`` class is test code whatever its name.
+            rel_str.lower().endswith(CONTENT_TEST_SUFFIXES)
+            and declares_test(rel_str, _read_head(abs_path))
         )
-        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
+        # A test-scoped ``@SpringBootApplication`` boots a test context, not the system.
+        app_main = not is_test and _boots_application(abs_path, language)
+        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry or app_main
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -844,7 +957,37 @@ class FileTraverser:
             is_entry_point=entry and not is_test,
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
+            is_application_main=app_main,
+            extractor_name=extractor_name,
+            extractor_version=extractor_version,
         )
+
+    def document_source_eligible(self, path: str, source: bytes) -> bool:
+        """Apply current traversal policy to supplied document bytes, even after deletion."""
+        relative = Path(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return False
+        abs_path = self.repo_root / relative
+        if self.dir_chain_skipped(relative.parent):
+            return False
+        if self._excluding_rule(abs_path, relative.as_posix()) is not None:
+            return False
+        return self._oversize_skip_reason(abs_path, len(source), source) is None
+
+    def _is_package_root_dir(self, rel_dir: str) -> bool:
+        """Whether *rel_dir* holds a package manifest, so it ships as a package.
+
+        :mod:`..test_paths` asks this only about a ``test-utils/``-style
+        directory, so it is a few stats per such directory rather than the full
+        :meth:`package_manifests` scan. Racing workers compute the same answer,
+        so the cache needs no lock.
+        """
+        cached = self._package_root_cache.get(rel_dir)
+        if cached is None:
+            base = self.repo_root / rel_dir
+            cached = any((base / name).is_file() for name in _MANIFEST_FILES)
+            self._package_root_cache[rel_dir] = cached
+        return cached
 
     # ------------------------------------------------------------------
     # Internal: monorepo detection
@@ -954,7 +1097,39 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     filename = abs_path.name
     if filename in SPECIAL_FILENAMES:
         return SPECIAL_FILENAMES[filename]
-    return EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
+    language = _language_from_name_suffix(filename) or EXTENSION_TO_LANGUAGE.get(
+        abs_path.suffix.lower()
+    )
+    # Aura markup suffixes are generic (`.app`, `.tokens`), so they route by
+    # their bundle directory rather than by a repository-wide extension claim.
+    if language is None and is_aura_markup_path(abs_path.as_posix()):
+        return "aura"
+    # ``.flow`` is also Flow's ``.js.flow``: a legacy Salesforce flow routes by its directory.
+    if language is None and is_legacy_flow_path(abs_path.as_posix()):
+        return "salesforce_flow"
+    return language
+
+
+def _extractor_identity(abs_path: Path, language: LanguageTag) -> tuple[str | None, str | None]:
+    """The claiming document extractor's ``(name, version)``, or ``(None, None)``."""
+    if language != "markdown" or _language_from_name_or_ext(abs_path) is not None:
+        return None, None
+    from .document_extractors import document_extractor_for_path
+
+    claim = document_extractor_for_path(abs_path)
+    if claim is None:
+        return None, None
+    name, extractor = claim
+    return name, extractor.version
+
+
+def _language_from_name_suffix(filename: str) -> LanguageTag | None:
+    """The language a multi-dot name ending (``.flow-meta.xml``) claims, if any."""
+    lowered = filename.lower()
+    for suffix, tag in NAME_SUFFIX_TO_LANGUAGE.items():
+        if lowered.endswith(suffix):
+            return tag
+    return None
 
 
 # A declaration or an import that opens its own line, matched after comments
@@ -973,7 +1148,18 @@ _C_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?(?:\*/|\Z)", re.DOTALL)
 _OBJC_HEADER_SNIFF_BYTES = 16384
 
 
-def _objc_header_language(abs_path: Path) -> LanguageTag | None:
+def _head(abs_path: Path, source: bytes | None, size: int) -> bytes | None:
+    """The first *size* bytes of *source* when given, else of the file; ``None`` if unreadable."""
+    if source is not None:
+        return source[:size]
+    try:
+        with open(abs_path, "rb") as f:
+            return f.read(size)
+    except OSError:
+        return None
+
+
+def _objc_header_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
     """``objectivec`` for a ``.h`` that reads as Objective-C, else ``None``.
 
     One extension maps to one language for the whole repository, and ``.h``
@@ -987,32 +1173,116 @@ def _objc_header_language(abs_path: Path) -> LanguageTag | None:
     """
     if abs_path.suffix.lower() != ".h":
         return None
-    try:
-        with open(abs_path, "rb") as f:
-            head = f.read(_OBJC_HEADER_SNIFF_BYTES)
-    except OSError:
+    head = _head(abs_path, source, _OBJC_HEADER_SNIFF_BYTES)
+    if head is None:
         return None
     # Blank the comments in place so line starts are preserved.
     head = _C_COMMENT_RE.sub(lambda m: b" " * len(m.group(0)), head)
     return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
 
 
-def _detect_language(abs_path: Path) -> LanguageTag:
+# Unlike .inl/.ipp/.tpp, .inc is shared with PL/I, Pascal and PHP. Keep the
+# extension's C++ default only when the head contains a C/C++ construct.
+_CPP_INC_SNIFF_BYTES = 16384
+_CPP_INC_SIGNAL_RE = re.compile(
+    rb"^[ \t]*#[ \t]*(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error|line)\b"
+    rb"|\bnamespace\s+[A-Za-z_]|\btemplate\s*<"
+    rb"|\b[A-Za-z_]\w*::[A-Za-z_]"
+    rb"|\b(?:class|struct|union|enum)\s+[A-Za-z_]"
+    rb"|\b(?:void|bool|char|short|int|long|float|double|auto)(?:\s+|\s*[*&]+\s*)[A-Za-z_]",
+    re.MULTILINE,
+)
+_C_COMMENT_OR_STRING_RE = re.compile(
+    rb"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+    re.DOTALL,
+)
+
+
+def _inc_declarations(head: bytes) -> bytes:
+    """Blank nested brace blocks and Pascal comments, retaining declarations.
+
+    A brace alone cannot distinguish C++ code from a Pascal comment. C++
+    declarations outside a body still supply evidence; text inside Pascal
+    comments must not supply it, even when comments nest.
+    """
+    blanked = bytearray(head)
+    closers: list[bytes] = []
+    start = 0
+    for m in re.finditer(rb"\{|\}|\(\*|\*\)", head):
+        token = m.group()
+        if token in (b"{", b"(*"):
+            if not closers:
+                start = m.start()
+            closers.append(b"}" if token == b"{" else b"*)")
+        elif closers and token == closers[-1]:
+            closers.pop()
+            if not closers:
+                blanked[start : m.end()] = re.sub(rb"[^\n]", b" ", head[start : m.end()])
+    if closers:
+        blanked[start:] = re.sub(rb"[^\n]", b" ", head[start:])
+    return bytes(blanked)
+
+
+def _cpp_inc_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``cpp`` for an .inc with C++ evidence outside comments and strings, else None.
+
+    Includes in an unsupported language must stay unindexed, rather than
+    becoming C++ files whose missing importers look like dead code.
+    """
+    head = _head(abs_path, source, _CPP_INC_SNIFF_BYTES)
+    if head is None:
+        return None
+    head = _C_COMMENT_OR_STRING_RE.sub(lambda m: re.sub(rb"[^\n]", b" ", m.group(0)), head)
+    if b"<?" in head:
+        return None  # PHP's opening tags override any C++-like declarations.
+    return "cpp" if _CPP_INC_SIGNAL_RE.search(_inc_declarations(head)) else None
+
+
+# DCLGEN writes the table declaration, then the ``01`` record, at the top of a
+# member; a 750-column table (the DB2 maximum) declares in about 62 KB.
+_DCLGEN_SNIFF_BYTES = 131072
+
+
+def _dclgen_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``cobol`` for a ``.dcl`` DCLGEN member written for COBOL, else ``None``.
+
+    ``.dcl`` is also PL/I DCLGEN output and OpenVMS DCL, so the extension
+    alone claims nothing.
+    """
+    if abs_path.suffix.lower() != ".dcl":
+        return None
+    head = _head(abs_path, source, _DCLGEN_SNIFF_BYTES)
+    return "cobol" if head is not None and is_cobol_dclgen(head) else None
+
+
+def _content_language(
+    abs_path: Path, language: LanguageTag | None, source: bytes | None = None
+) -> LanguageTag | None:
+    """*language* from the name, or what content says for a shared extension.
+
+    *source* is the file's bytes when the caller already holds them (a blob),
+    so the working tree is not read in their place.
+    """
+    if language == "cpp":
+        if abs_path.suffix.lower() == ".inc":
+            return _cpp_inc_language(abs_path, source)
+        return _objc_header_language(abs_path, source) or language
+    return language or _dclgen_language(abs_path, source)
+
+
+def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag:
     """Detect the language of a file from name, extension, content, or shebang."""
-    lang = _language_from_name_or_ext(abs_path)
-    if lang is not None:
-        if lang == "cpp":
-            return _objc_header_language(abs_path) or lang
-        return lang
-    return _detect_by_shebang(abs_path)
+    lang = _content_language(abs_path, _language_from_name_or_ext(abs_path), source)
+    return lang if lang is not None else _detect_by_shebang(abs_path, source)
 
 
-def _detect_by_shebang(abs_path: Path) -> LanguageTag:
-    try:
-        with open(abs_path, encoding="utf-8", errors="ignore") as f:
-            first_line = f.readline(200)
-    except OSError:
+def _detect_by_shebang(abs_path: Path, source: bytes | None = None) -> LanguageTag:
+    """Classify an interpreter line from the bytes supplied by the caller."""
+    head = _head(abs_path, source, 800)
+    if head is None:
         return "unknown"
+    text = head.decode("utf-8", errors="ignore")
+    first_line = text.splitlines()[0][:200] if text else ""
     if not first_line.startswith("#!"):
         return "unknown"
     for spec in _LANG_REGISTRY.all_specs():
@@ -1035,12 +1305,16 @@ def size_verdict(
     size_bytes: int,
     *,
     max_file_size_bytes: int = _DEFAULT_MAX_FILE_SIZE_BYTES,
+    source: bytes | None = None,
 ) -> _OversizeSkip | None:
     """Whether this file is excluded on size, and why. None means "index it".
 
     Which ceiling applies depends on whether anything can actually read the
     file. A parserless file (lockfile, changelog, image, video) is bounded by
-    *max_file_size_bytes*, the caller-facing knob. A file whose language has a
+    *max_file_size_bytes*, the caller-facing knob, unless it resolves to a
+    document an extractor claims and that extractor declares its own ceiling
+    (*source*, when given, is the bytes to sniff instead of the file on disk;
+    see :func:`~.document_extractors.document_source_ceiling`). A file whose language has a
     parser is bounded by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, which is
     deliberately *not* configurable: it is a memory budget (~95 MB of peak RSS
     per MB of source, times an 8-worker parse pool), not a preference, so
@@ -1050,6 +1324,11 @@ def size_verdict(
     the same code that made it missing.
     """
     language = _language_from_name_or_ext(abs_path)
+    if language is None:
+        # A document extractor's claim may declare its own source ceiling.
+        from .document_extractors import document_source_ceiling
+
+        max_file_size_bytes = document_source_ceiling(abs_path, max_file_size_bytes, source=source)
     # No parser, so size is the only signal.
     if language is None or language in _SKIP_GENERATED_CHECK:
         if size_bytes > max_file_size_bytes:
@@ -1109,6 +1388,15 @@ def _is_generated(abs_path: Path) -> bool:
     return is_generated_header(header)
 
 
+def _read_head(abs_path: Path) -> bytes:
+    """The first 4 KB of a file, which is what a content rule reads; empty if unreadable."""
+    try:
+        with open(abs_path, "rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""
+
+
 def _is_config_file(language: LanguageTag) -> bool:
     return language in ("yaml", "toml", "json", "dockerfile", "makefile")
 
@@ -1162,8 +1450,21 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
     return named_entry and not not_an_execution_start(rel_str, language)
 
 
+# Ceiling: a bootstrap call past the first 16 KB is missed. An application
+# main is a short file; reading every JVM file whole would double the walk's I/O.
+_APPLICATION_MAIN_SNIFF_BYTES = 16384
+
+
+def _boots_application(abs_path: Path, language: str) -> bool:
+    """Whether the file starts a framework application (:func:`boots_application`)."""
+    if language not in APPLICATION_MAIN_LANGUAGES:
+        return False
+    head = _head(abs_path, None, _APPLICATION_MAIN_SNIFF_BYTES)
+    return head is not None and boots_application(language, head.decode("utf-8", errors="ignore"))
+
+
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's Python project configs yields."""
+    """What one pass over the repo's Python and .NET project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1175,6 +1476,10 @@ class ConsoleScriptTables(NamedTuple):
     """Repo-relative ``__init__.py`` of each distribution's own import package."""
     pytest_roots: PytestRoots = PytestRoots()
     """Where a bare pytest run collects tests, which decides a test-named module."""
+    phpunit_roots: PhpunitRoots = PhpunitRoots()
+    """Where PHPUnit collects tests, which decides a test-named PHP class."""
+    dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
+    """.NET test projects, which govern .cs files beneath them."""
 
 
 def _collect_console_scripts(
@@ -1188,7 +1493,8 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) come off this one walk and one read each.
+    ``pyproject.toml``) and PHPUnit configs (``phpunit.xml``,
+    ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1198,33 +1504,59 @@ def _collect_console_scripts(
     inits: set[str] = set()
     pytest_configs: list[tuple[str, dict]] = []
     unreadable: list[str] = []
+    phpunit_configs: list[tuple[str, Any]] = []
+    phpunit_unreadable: list[str] = []
+    csproj_files: list[tuple[str, str]] = []
+    manifest_patterns = (*PYTEST_CONFIG_NAMES, *PHPUNIT_CONFIG_NAMES, "*.csproj")
     try:
         config_files = list(
-            iter_glob(repo_root, tuple(PYTEST_CONFIG_NAMES), prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
-        project, options, parsed = _read_python_config(config_file)
-        rel = config_file.relative_to(repo_root).as_posix()
-        if options is not None:
-            pytest_configs.append((rel, options))
-        if not parsed:
-            unreadable.append(rel)
-        if project is None:
+        name = config_file.name
+        if name.endswith(".csproj"):
+            rel = config_file.relative_to(repo_root).as_posix()
+            try:
+                text = config_file.read_text(encoding="utf-8", errors="replace")
+                csproj_files.append((rel, text))
+            except Exception:
+                csproj_files.append((rel, ""))
             continue
-        dist = project.get("name")
-        if isinstance(dist, str) and dist.strip():
-            distributions.add(dist.strip())
-            if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
-                inits.add(init)
-        _add_script_targets(project, names, modules)
+        rel = config_file.relative_to(repo_root).as_posix()
+        if name in PHPUNIT_CONFIG_NAMES:
+            try:
+                text = config_file.read_text(encoding="utf-8")
+                options = parse_phpunit_options(text)
+                if options is not None:
+                    phpunit_configs.append((rel, options))
+                else:
+                    phpunit_unreadable.append(rel)
+            except (OSError, UnicodeDecodeError, PhpunitConfigUnreadableError):
+                phpunit_unreadable.append(rel)
+        if name in PYTEST_CONFIG_NAMES:
+            project, options, parsed = _read_python_config(config_file)
+            if options is not None:
+                pytest_configs.append((rel, options))
+            if not parsed:
+                unreadable.append(rel)
+            if project is None:
+                continue
+            dist = project.get("name")
+            if isinstance(dist, str) and dist.strip():
+                distributions.add(dist.strip())
+                if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                    inits.add(init)
+            _add_script_targets(project, names, modules)
     return ConsoleScriptTables(
         frozenset(names),
         frozenset(modules),
         frozenset(distributions),
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
+        phpunit_roots(phpunit_configs, phpunit_unreadable),
+        read_dotnet_test_projects(csproj_files),
     )
 
 
@@ -1354,9 +1686,7 @@ def _package_files(
     from repowise.core.fs_walk import walk_repo
 
     try:
-        for dirpath, dirnames, filenames in walk_repo(
-            directory, prune_nested_git=prune_nested_git
-        ):
+        for dirpath, dirnames, filenames in walk_repo(directory, prune_nested_git=prune_nested_git):
             # Prune in place so the walk never descends, matching
             # scan_package_roots. Candidates are repo-relative because
             # dir_chain_skipped tests each level against the repo root.
@@ -1418,15 +1748,177 @@ def is_output_dir(abs_dir: Path) -> bool:
         return False
     try:
         with os.scandir(abs_dir) as entries:
-            return not any(
-                _is_handwritten_source_name(e.name) and e.is_file() for e in entries
-            )
+            return not any(_is_handwritten_source_name(e.name) and e.is_file() for e in entries)
     except OSError:
         return False
 
 
+def is_unity_state_dir(abs_dir: Path) -> bool:
+    """Whether *abs_dir* is a Unity state directory (see ``_UNITY_STATE_DIR_NAMES``).
+
+    Its parent must be a Unity project root: ``ProjectSettings/ProjectVersion.txt``,
+    or ``ProjectSettings/`` beside ``Assets/``. Checking the parent, not the
+    repo root, also covers a Unity project nested in a monorepo.
+    """
+    if abs_dir.name not in _UNITY_STATE_DIR_NAMES:
+        return False
+    settings = abs_dir.parent / "ProjectSettings"
+    return (settings / "ProjectVersion.txt").is_file() or (
+        settings.is_dir() and (abs_dir.parent / "Assets").is_dir()
+    )
+
+
+def _compile_reincluded_patterns(lines: Iterable[str]) -> tuple[re.Pattern[str], ...]:
+    """Compile '!' gitignore patterns to exact directory matchers.
+
+    Standard GitWildMatchPattern appends recursive descendant wildcards
+    (e.g. '.*$'), which would treat '!src/build/' as matching
+    'src/build/node_modules/x.js'. Replacing the trailing descendant wildcard
+    with an optional trailing slash ensures only the explicitly negated
+    directory itself is re-included.
+    """
+    patterns: list[re.Pattern[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("!"):
+            continue
+        try:
+            regex_str, _ = GitWildMatchPattern.pattern_to_regex(stripped)
+            if regex_str:
+                trimmed = re.sub(
+                    r"(\(\?:\(\?P<ps_d>/\)\.\*\)\?|\(\?P<ps_d>/\)\.\*|/\.\*)\$$",
+                    r"(?:/)?$",
+                    regex_str,
+                )
+                patterns.append(re.compile(trimmed))
+        except GitWildMatchPatternError:
+            continue
+    return tuple(patterns)
+
+
+@functools.lru_cache(maxsize=1024)
+def _compile_reincluded_file(filepath: str, mtime_ns: int) -> tuple[re.Pattern[str], ...]:
+    try:
+        lines = Path(filepath).read_text(encoding="utf-8", errors="ignore").splitlines()
+        return _compile_reincluded_patterns(lines)
+    except OSError:
+        return ()
+
+
+def _load_dir_reincluded_patterns(
+    dirpath: Path, filename: str = REPOWISE_IGNORE_FILENAME
+) -> tuple[re.Pattern[str], ...]:
+    """Re-included directory patterns loaded from a directory's ignore file.
+
+    Keyed by file path and modification time so changes to nested ignore files
+    refresh automatically across traversals without stale cache hits.
+    """
+    ignore_file = dirpath / filename
+    try:
+        mtime_ns = ignore_file.stat().st_mtime_ns
+    except OSError:
+        return ()
+    return _compile_reincluded_file(str(ignore_file), mtime_ns)
+
+
+def _is_dir_reincluded(
+    rel_dir: str,
+    dirname: str,
+    root_patterns: Sequence[re.Pattern[str]],
+    parent_dir: Path | None = None,
+    dir_ignore: _DirIgnore | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
+) -> bool:
+    """Whether directory *rel_dir* (POSIX, repo-relative) or *dirname* is re-included."""
+    if any(pat.match(rel_dir) for pat in root_patterns):
+        return True
+    if dir_ignore is not None:
+        return any(pat.match(dirname) for pat in dir_ignore.reincluded)
+    if parent_dir is not None:
+        return any(
+            pat.match(dirname)
+            for pat in _load_dir_reincluded_patterns(parent_dir, extra_ignore_filename)
+        )
+    return False
+
+
+def _check_output_dir_cached(
+    abs_dir: Path,
+    is_leaf_file: bool,
+    leaf_name: str,
+    cache: dict[Path, bool] | None,
+) -> bool:
+    """Whether *abs_dir* is an output root, using *cache* when provided."""
+    cached = None if cache is None else cache.get(abs_dir)
+    if cached is None or (cached and is_leaf_file and _is_handwritten_source_name(leaf_name)):
+        cached = is_output_dir(abs_dir)
+        if cache is not None:
+            cache[abs_dir] = cached
+    return bool(cached)
+
+
+def _resolve_root_reincluded_patterns(
+    repo_root: Path | None,
+    extra_exclude_patterns: Sequence[str] | None,
+    extra_ignore_filename: str,
+) -> tuple[re.Pattern[str], ...]:
+    """Compile root negation patterns from ignore file and exclude patterns."""
+    lines: list[str] | tuple[str, ...] = ()
+    if repo_root is not None:
+        root_ignore = repo_root / extra_ignore_filename
+        if root_ignore.exists():
+            lines = root_ignore.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return _compile_reincluded_patterns((*lines, *(extra_exclude_patterns or ())))
+
+
+def _is_segment_blocked(
+    dirs: Sequence[str],
+    depth: int,
+    part: str,
+    leaf_name: str,
+    is_dir: bool,
+    repo_root: Path | None,
+    root_patterns: Sequence[re.Pattern[str]],
+    dir_ignore: _DirIgnore | None,
+    extra_ignore_filename: str,
+    cache: dict[Path, bool] | None,
+) -> bool:
+    """Whether directory segment *part* at *depth* within *dirs* is blocked."""
+    is_blocked_name = part in _BLOCKED_DIRS
+    is_output_name = part in _OUTPUT_DIR_NAMES
+    is_unity_name = part in _UNITY_STATE_DIR_NAMES
+    if not (is_blocked_name or is_output_name or is_unity_name):
+        return False
+
+    cur_rel = "/".join(dirs[:depth])
+    parent_dir = None
+    if repo_root is not None:
+        parent_dir = repo_root if depth == 1 else repo_root.joinpath(*dirs[: depth - 1])
+    active_dir_ignore = dir_ignore if (is_dir and depth == len(dirs)) else None
+    if _is_dir_reincluded(
+        cur_rel, part, root_patterns, parent_dir, active_dir_ignore, extra_ignore_filename
+    ):
+        return False
+
+    if is_blocked_name or repo_root is None:
+        return True
+
+    abs_dir = repo_root.joinpath(*dirs[:depth])
+    if is_unity_name:
+        return is_unity_state_dir(abs_dir)
+    is_leaf = not is_dir and depth == len(dirs)
+    return _check_output_dir_cached(abs_dir, is_leaf, leaf_name, cache)
+
+
 def in_blocked_dir(
-    rel_path: str, repo_root: Path | None, cache: dict[Path, bool] | None = None
+    rel_path: str,
+    repo_root: Path | None = None,
+    cache: dict[Path, bool] | None = None,
+    extra_exclude_patterns: Sequence[str] | None = None,
+    reincluded_patterns: Sequence[re.Pattern[str]] | None = None,
+    is_dir: bool = False,
+    dir_ignore: _DirIgnore | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether a directory on *rel_path* (POSIX, repo-relative) is blocklisted.
 
@@ -1436,56 +1928,102 @@ def in_blocked_dir(
     once. A hand-written file directly in a directory cached as output lists
     it again, since that file may be what makes it source; build output never
     has such a name, so a burst of it stays cached.
+
+    A directory matched by a '!' pattern in .repowiseIgnore or
+    extra_exclude_patterns is re-included and not considered blocked, unless a
+    sub-directory beneath it is itself in the blocklist without its own
+    negation pattern.
     """
-    *dirs, name = rel_path.split("/")
-    for depth, part in enumerate(dirs, 1):
-        if part in _BLOCKED_DIRS:
-            return True
-        if part not in _OUTPUT_DIR_NAMES:
-            continue
-        if repo_root is None:
-            return True
-        abs_dir = repo_root.joinpath(*dirs[:depth])
-        cached = None if cache is None else cache.get(abs_dir)
-        if cached is None or (
-            cached and depth == len(dirs) and _is_handwritten_source_name(name)
-        ):
-            cached = is_output_dir(abs_dir)
-            if cache is not None:
-                cache[abs_dir] = cached
-        if cached:
-            return True
-    return False
+    posix = rel_path.replace("\\", "/")
+    parts = posix.split("/")
+    dirs = parts if is_dir else parts[:-1]
+    if not dirs:
+        return False
+
+    root_pats = reincluded_patterns
+    if root_pats is None:
+        root_pats = _resolve_root_reincluded_patterns(
+            repo_root, extra_exclude_patterns, extra_ignore_filename
+        )
+
+    leaf_name = parts[-1] if not is_dir else ""
+    return any(
+        _is_segment_blocked(
+            dirs,
+            depth,
+            part,
+            leaf_name,
+            is_dir,
+            repo_root,
+            root_pats,
+            dir_ignore,
+            extra_ignore_filename,
+            cache,
+        )
+        for depth, part in enumerate(dirs, 1)
+    )
+
+
+def is_repowise_output(
+    abs_path: Path, rel_str: str, committed: Callable[[], str] | None = None
+) -> bool:
+    """Whether repowise wrote the whole file: an owned path, or a shared one holding only its part.
+
+    A shared file (``CLAUDE.md``, ``.mcp.json``) with anything the user wrote
+    stays indexed, repowise's block included, since the user's part is theirs.
+    *committed* returns the file's text at ``HEAD``, so a working-tree check
+    can tell repowise's refresh of a tracked file from the user's edit; it is
+    only called for a managed file.
+    """
+    if _OWNED_SPEC.match_file(rel_str):
+        return True
+    if rel_str not in _MANAGED_FILES:
+        return False
+    try:
+        text = abs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return only_repowise_differs(rel_str, committed() if committed else "", text)
 
 
 def is_candidate_source_path(
-    rel_path: str, repo_root: Path | None = None, cache: dict[Path, bool] | None = None
+    rel_path: str,
+    repo_root: Path | None = None,
+    cache: dict[Path, bool] | None = None,
+    extra_exclude_patterns: Sequence[str] | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether *rel_path* is shaped like a file this repo would index.
 
-    Path-shape only: the directory blocklist, the blocked extensions/filename
-    patterns, and the known-language extension map. No gitignore, no
-    binary/size/generated checks, so a ``True`` answer means "worth handing to
-    the pipeline", never "will be indexed". :class:`FileTraverser` still
-    applies the full test on the files it walks. The only disk access is the
-    output-directory listing of :func:`in_blocked_dir`, given *repo_root*
-    (and memoized in *cache* when given).
+    Path-shape check: the directory blocklist, blocked extensions/filename
+    patterns, known-language extensions and registered document-extractor
+    claims. A ``True`` answer means "worth handing to the pipeline", never
+    "will be indexed"; :class:`FileTraverser` still applies the full test.
+    The only disk access is the output-directory listing of
+    :func:`in_blocked_dir`, given *repo_root* (and memoized in *cache* when
+    given).
 
     It serves the change sources that only see a path: the working-tree diff
     and the file watcher.
 
-    One known false negative: an extensionless script that :class:`FileTraverser`
-    accepts by shebang is rejected here, since deciding that means reading it.
+    Extensionless scripts are still rejected because deciding whether they
+    have a supported shebang would require reading them.
     """
     posix = rel_path.replace("\\", "/")
     parts = Path(posix).parts
     if not parts:
         return False
-    if in_blocked_dir(posix, repo_root, cache):
+    if in_blocked_dir(
+        posix,
+        repo_root,
+        cache,
+        extra_exclude_patterns=extra_exclude_patterns,
+        extra_ignore_filename=extra_ignore_filename,
+    ):
         return False
 
     name = parts[-1]
-    if name in SPECIAL_FILENAMES:
+    if name in SPECIAL_FILENAMES or _language_from_name_suffix(name) or is_legacy_flow_path(posix):
         return True
 
     suffix = Path(name).suffix.lower()
@@ -1493,7 +2031,11 @@ def is_candidate_source_path(
         return False
     if _BLOCKED_FILENAME_SPEC.match_file(name):
         return False
-    return suffix in EXTENSION_TO_LANGUAGE
+    if suffix in EXTENSION_TO_LANGUAGE or is_aura_markup_path(posix):
+        return True
+    from .document_extractors import document_extractor_claims
+
+    return suffix in document_extractor_claims()
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:

@@ -2,6 +2,7 @@ import { Flame } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { fileEntityPath, symbolEntityPath } from "../shared/entity/routes";
 import { EntityHeader } from "../shared/entity";
+import { FilePath } from "../shared/file-path";
 import type { BreadcrumbSegment } from "../shared/breadcrumb";
 import type {
   SymbolDetailData,
@@ -143,10 +144,9 @@ export function SymbolPage({
             />
             <a
               href={fileEntityPath(prefix, s.file_path)}
-              title={`${s.file_path}:${s.start_line}`}
-              className="block max-w-full truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+              className="max-w-full text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
             >
-              {s.file_path}:{s.start_line}
+              <FilePath path={s.file_path} line={s.start_line} mode="full" />
             </a>
             <AskAboutThis
               context={{

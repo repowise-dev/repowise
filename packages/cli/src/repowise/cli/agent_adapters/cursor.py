@@ -35,12 +35,15 @@ SHELL_TOOL_MATCHER: str = "|".join(sorted(SHELL_TOOL_NAMES))
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 _EVENT = "preToolUse"
 
-#: Bare command on PATH, as Claude Code's and Codex's entries are.
-_REWRITE_HOOK_ENTRY = {
-    "command": f"{_REWRITE_HOOK_COMMAND} --agent cursor",
-    "matcher": SHELL_TOOL_MATCHER,
-    "timeout": 5,
-}
+def _rewrite_hook_entry() -> dict:
+    """The entry, pinned to the running install's script like Claude Code's and Codex's."""
+    from repowise.cli.mcp_config import hook_direct_command
+
+    return {
+        "command": hook_direct_command(_REWRITE_HOOK_COMMAND, "--agent cursor"),
+        "matcher": SHELL_TOOL_MATCHER,
+        "timeout": 5,
+    }
 
 
 class CursorAdapter(AgentAdapter):
@@ -162,6 +165,23 @@ def _write(path: Path, doc: dict) -> None:
     write_json_config(path, doc)
 
 
+def _refresh_rewrite_command(entries: list) -> bool:
+    """Point our entry at the running install's script. True when it moved."""
+    from repowise.cli.mcp_config import refreshed_direct_command
+
+    changed = False
+    for entry in entries:
+        command = entry.get("command") if isinstance(entry, dict) else None
+        if isinstance(command, str):
+            want = refreshed_direct_command(
+                command, _REWRITE_HOOK_COMMAND, "--agent cursor", repin=True
+            )
+            if want is not None:
+                entry["command"] = want
+                changed = True
+    return changed
+
+
 def install_cursor_rewrite_hook() -> Path | None:
     """Register the rewrite entry under ``preToolUse``; the path, or None on failure."""
     path = user_hooks_path()
@@ -175,7 +195,9 @@ def install_cursor_rewrite_hook() -> Path | None:
         entries = hooks.setdefault(_EVENT, [])
         if not any(_is_rewrite_hook(entry) for entry in entries):
             doc.setdefault("version", 1)
-            entries.append(dict(_REWRITE_HOOK_ENTRY))
+            entries.append(_rewrite_hook_entry())
+            _write(path, doc)
+        elif _refresh_rewrite_command(entries):
             _write(path, doc)
         return path
     except Exception:
@@ -207,11 +229,14 @@ def uninstall_cursor_rewrite_hook() -> bool:
             hooks[event] = kept
         else:
             hooks.pop(event)
-    if not changed:
-        return False
+    return changed and _save_or_remove(path, doc)
+
+
+def _save_or_remove(path: Path, doc: dict) -> bool:
+    """Write *doc* back after removing our entry; True unless the write failed."""
     try:
         # A file holding nothing but our entry was ours; leave no stub behind.
-        if not hooks and set(doc) <= {"version", "hooks"}:
+        if not doc["hooks"] and set(doc) <= {"version", "hooks"}:
             path.unlink()
         else:
             _write(path, doc)
@@ -238,3 +263,90 @@ def cursor_rewrite_hook_matcher() -> str | None:
             matcher = entry.get("matcher")
             return matcher if isinstance(matcher, str) else ""
     return None
+
+
+# ---------------------------------------------------------------------------
+# Opt-in edit capture: ``afterFileEdit`` in ~/.cursor/hooks.json.
+# ---------------------------------------------------------------------------
+
+_CAPTURE_EVENT = "afterFileEdit"
+_CAPTURE_HOOK_ENTRY = {"command": "repowise augment --client cursor", "timeout": 5}
+
+
+def _is_capture_hook(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    parts = command.replace("\\", "/").split()
+    if len(parts) < 2:
+        return False
+    exe = parts[0].strip("\"'").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    return exe == "repowise" and parts[1] == "augment"
+
+
+def _load_hooks_doc(path: Path) -> dict | None:
+    """The hooks file, ``{}`` when absent, None when unreadable or not a JSON object."""
+    from click import ClickException
+
+    if not path.exists():
+        return {}
+    try:
+        return _load(path)
+    except ClickException:
+        return None
+
+
+def _capture_entries(doc: dict | None) -> list | None:
+    hooks = doc.get("hooks") if doc else None
+    entries = hooks.get(_CAPTURE_EVENT) if isinstance(hooks, dict) else None
+    return entries if isinstance(entries, list) else None
+
+
+def cursor_capture_hook_installed() -> bool:
+    entries = _capture_entries(_load_hooks_doc(user_hooks_path()))
+    return entries is not None and any(_is_capture_hook(e) for e in entries)
+
+
+def install_cursor_capture_hook() -> Path | None:
+    """Register the capture entry under ``afterFileEdit``; the path, or None on failure.
+
+    Only written once the user has opted Cursor into capture: Cursor starts a
+    process per agent file edit, which nobody should pay for a feature they
+    have not turned on. A hooks file of another shape is left alone.
+    """
+    path = user_hooks_path()
+    doc = _load_hooks_doc(path)
+    hooks = doc.setdefault("hooks", {}) if doc is not None else None
+    entries = hooks.setdefault(_CAPTURE_EVENT, []) if isinstance(hooks, dict) else None
+    if doc is None or not isinstance(entries, list):
+        return None
+    if any(_is_capture_hook(entry) for entry in entries):
+        return path
+    doc.setdefault("version", 1)
+    entries.append(dict(_CAPTURE_HOOK_ENTRY))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write(path, doc)
+    except OSError:
+        return None
+    return path
+
+
+def uninstall_cursor_capture_hook() -> bool:
+    """Remove our ``afterFileEdit`` entry; True when the file changed."""
+    path = user_hooks_path()
+    doc = _load_hooks_doc(path)
+    entries = _capture_entries(doc)
+    if doc is None or entries is None:
+        return False
+    kept = [entry for entry in entries if not _is_capture_hook(entry)]
+    if len(kept) == len(entries):
+        return False
+    hooks = doc["hooks"]
+    if kept:
+        hooks[_CAPTURE_EVENT] = kept
+    else:
+        hooks.pop(_CAPTURE_EVENT)
+    return _save_or_remove(path, doc)

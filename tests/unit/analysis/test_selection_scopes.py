@@ -463,3 +463,56 @@ def test_read_checkout_with_a_head_answers_exists_for_that_commit(tmp_path) -> N
     at_head = read_checkout(tmp_path, head)
     assert at_head.exists("test_a.py")
     assert not at_head.exists("test_b.py")
+
+
+def test_read_checkout_exists_answers_a_deleted_tracked_file_from_git(tmp_path) -> None:
+    """Tracked files are answered from git's listing, a deletion on disk included."""
+    import subprocess
+
+    from repowise.core.analysis.test_collection import read_checkout
+
+    for name in ("test_kept.py", "test_gone.py"):
+        (tmp_path / name).write_text("def test_x():\n    pass\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    (tmp_path / "test_gone.py").unlink()
+    (tmp_path / "test_new.py").write_text("", encoding="utf-8")
+
+    checkout = read_checkout(tmp_path)
+    assert checkout.exists("test_kept.py")
+    assert not checkout.exists("test_gone.py")
+    assert checkout.exists("test_new.py")  # untracked: read from disk
+    assert not checkout.exists("test_never.py")
+
+
+def test_an_empty_untracked_code_file_needs_no_tests(tmp_path) -> None:
+    """Nothing can run a new file with no content; an empty package init still matters."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import plan_scopes, read_checkout
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    for name, text in (("empty.py", ""), ("blank.py", "\n  \n"), ("__init__.py", "")):
+        (tmp_path / "pkg" / name).write_text(text, encoding="utf-8")
+    (tmp_path / "pkg" / "mod.py").write_text("", encoding="utf-8")  # tracked: keeps its rule
+    changed = ("pkg/empty.py", "pkg/blank.py", "pkg/__init__.py", "pkg/mod.py")
+
+    def change(head):
+        files = {p: FileDiff(path=p) for p in changed}
+        return ChangeSet(files=files, deleted=set(), label="t", base=None, head=head)
+
+    checkout = read_checkout(tmp_path)
+    scopes = plan_scopes(change(None), _NONE, checkout).scopes
+    assert {p for p, s in scopes.items() if s.needs_no_tests} == {"pkg/empty.py", "pkg/blank.py"}
+    # A committed change is not read from the working tree.
+    committed = plan_scopes(change("abc"), _NONE, checkout).scopes
+    assert not any(s.needs_no_tests for s in committed.values())
+
+    only = {"pkg/empty.py": scopes["pkg/empty.py"]}
+    sel = select_tests(SelectionInput(list(only), (), _tiers(), _NONE, scopes=only))
+    assert not sel.run_all
+    assert "1 changed file(s) are new and empty: no tests needed." in sel.reasons

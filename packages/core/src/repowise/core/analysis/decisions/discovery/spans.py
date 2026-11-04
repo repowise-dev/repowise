@@ -15,12 +15,8 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from repowise.core.sessions.events import (
-    Event,
-    event_files,
-    is_prose_user_text,
-    relative_files,
-)
+from repowise.core.fsutils import relative_files
+from repowise.core.sessions.events import Event, event_files, is_prose_user_text
 from repowise.core.sessions.staging import SessionStagingStore
 
 __all__ = ["ProseSpan", "SpanCollector", "span_id_for"]

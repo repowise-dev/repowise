@@ -542,7 +542,7 @@
         "mechanical_steps": 1,
         "judgment_steps": 1,
         "recoverable_health": 2.5,
-        "ordering_note": "A step carrying `relocated_by` names a symbol an earlier step moves.",
+        "ordering_note": "A step marked 'Moved by an earlier step' names a symbol an earlier step relocates.",
         "steps": [
           {
             "plan_id": "refac4_aaaaaaaaaaaaaaaaaaaa",

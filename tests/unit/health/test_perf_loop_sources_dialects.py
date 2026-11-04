@@ -1,4 +1,4 @@
-"""What a perf loop walks, and the magnitude that proves, in Go, Java, C# and Ruby.
+"""What a perf loop walks, and the magnitude that proves, in Go, Java, C#, Pascal and Ruby.
 
 Through the real walker. Each shape that grows or is bounded is paired with one
 the syntax does not settle, which must stay ``unknown``: no reader takes
@@ -134,6 +134,164 @@ class A {
 )
 def test_csharp_loop_sources(line, expected):
     assert _loops("A.cs", "csharp", _CS)[line] == expected
+
+
+_PASCAL = """unit Orders;
+interface
+uses FireDAC.Comp.Client;
+procedure Sync(Q: TFDQuery; const Ids: array of Integer; Flag: Boolean);
+implementation
+procedure Sync(Q: TFDQuery; const Ids: array of Integer; Flag: Boolean);
+var
+  I, N: Integer;
+begin
+  Q.SQL.Text := 'SELECT id FROM orders';
+  Q.Open;
+  while not Q.Eof do
+  begin
+    Q.ExecSQL;
+    Q.Next;
+  end;
+  for I := 0 to High(Ids) do
+    Q.ExecSQL;
+  N := 3;
+  for I := 1 to N do
+    Q.ExecSQL;
+  if Flag then
+    N := Length(Ids);
+  for I := 1 to N do
+    Q.ExecSQL;
+end;
+end.
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (14, ("grows_with_data", "query")),  # a data set opened on an uncapped SELECT
+        (18, ("unknown", "parameter")),
+        (21, ("bounded", "constant")),
+        (25, ("unknown", "unknown")),  # N rebound under a branch before the loop
+    ],
+)
+def test_pascal_loop_sources(line, expected):
+    assert _loops("Orders.pas", "pascal", _PASCAL)[line] == expected
+
+
+_PASCAL_SHAPES = """unit Shapes;
+interface
+uses FireDAC.Comp.Client, System.IOUtils;
+implementation
+procedure Run(D: TFDQuery; L: TStringList; RepoRoot, Dir: string; Flag: Boolean);
+var
+  One, Top, Form, Lines, Branch, Arg, Rep: TFDQuery;
+  S: string; I, N, M, K: Integer; E: TColor; Names: TArray<string>;
+begin
+  One.SQL.Text := 'SELECT * FROM t WHERE id = :id';
+  One.Open;
+  while not One.Eof do begin D.ExecSQL; One.Next; end;
+  Top.SQL.Text := 'SELECT * FROM t LIMIT 10';
+  Top.Open;
+  while not Top.Eof do begin D.ExecSQL; Top.Next; end;
+  while not D.Eof do begin D.ExecSQL; D.Next; end;
+  Form.Open;
+  while not Form.Eof do begin D.ExecSQL; Form.Next; end;
+  Lines.SQL.Add('SELECT id');
+  Lines.SQL.Add('FROM orders');
+  Lines.Open;
+  while not Lines.Eof do begin D.ExecSQL; Lines.Next; end;
+  if Flag then Branch.Open;
+  while not Branch.Eof do begin D.ExecSQL; Branch.Next; end;
+  Arg.Open('SELECT id FROM orders');
+  while not (Arg.Eof) do begin D.ExecSQL; Arg.Next; end;
+  Rep.CommandText := 'SELECT id FROM orders';
+  Rep.Open();
+  repeat D.ExecSQL; Rep.Next; until Rep.Eof;
+  for S in L do D.ExecSQL;
+  for I in [1, 2, 3] do D.ExecSQL;
+  for E in TColor do D.ExecSQL;
+  for E := Low(TColor) to High(TColor) do D.ExecSQL;
+  for I := 0 to L.Count - 1 do D.ExecSQL;
+  for I := L.Count - 1 downto 0 do D.ExecSQL;
+  n := 3;
+  for I := 1 to N do D.ExecSQL;
+  M := 3;
+  Inc(M);
+  for I := 1 to M do D.ExecSQL;
+  for I := 1 to K do D.ExecSQL;
+  Names := ['a', 'b'];
+  for S in Names do D.ExecSQL;
+  for S in TDirectory.GetFiles(RepoRoot, '*.pas', TSearchOption.soAllDirectories) do D.ExecSQL;
+  for S in TDirectory.GetFiles(Dir) do D.ExecSQL;
+end;
+end.
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (12, ("bounded", "caller_key")),
+        (15, ("unknown", "query")),  # a capped read is as large as its cap
+        (16, ("unknown", "parameter")),  # a data set the caller opened
+        # The statement text is in a form file, or added line by line: unread.
+        (18, ("unknown", "query")),
+        (22, ("unknown", "query")),
+        (24, ("unknown", "unknown")),  # an Open under a branch proves nothing
+        (26, ("grows_with_data", "query")),  # Open('SELECT ...')
+        (29, ("grows_with_data", "query")),  # repeat ... until Rep.Eof
+        (30, ("unknown", "parameter")),
+        (31, ("bounded", "constant")),
+        (32, ("bounded", "constant")),  # the values of an enumerated type
+        (33, ("bounded", "constant")),
+        (34, ("unknown", "parameter")),  # Count - 1: the inclusive bound of L
+        (35, ("unknown", "parameter")),  # downto: the size is the start value
+        (37, ("bounded", "constant")),  # n and N are one name
+        (40, ("unknown", "unknown")),  # stepped after its literal
+        (41, ("unknown", "unknown")),  # a local never bound
+        (43, ("bounded", "constant")),
+        (44, ("grows_with_data", "listing")),
+        (45, ("unknown", "listing")),
+    ],
+)
+def test_pascal_data_sets_and_counted_loops(line, expected):
+    assert _loops("Shapes.pas", "pascal", _PASCAL_SHAPES)[line] == expected
+
+
+_PASCAL_CASE = """unit Names;
+interface
+uses FireDAC.Comp.Client;
+implementation
+procedure F(Q: TFDQuery; n: Integer; items: TStringList);
+var I: Integer; E: TColor; S: string; total, tmp: Integer;
+begin
+  for I := 1 to N do Q.ExecSQL;
+  for I := 0 to Items.Count - 1 do Q.ExecSQL;
+  for S in ITEMS do Q.ExecSQL;
+  for E in tcolor do Q.ExecSQL;
+  for I := 1 to High(tmp) do Q.ExecSQL;
+  for I := 1 to total do Q.ExecSQL;
+end;
+end.
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (8, ("unknown", "parameter")),  # N is the parameter n
+        (9, ("unknown", "parameter")),
+        (10, ("unknown", "parameter")),
+        # A type is told from a variable by its spelling alone, so a lower-cased
+        # one reads like ``tmp`` and ``total`` and bounds nothing.
+        (11, ("unknown", "unknown")),
+        (12, ("unknown", "unknown")),
+        (13, ("unknown", "unknown")),
+    ],
+)
+def test_pascal_names_match_without_case_but_a_type_needs_its_spelling(line, expected):
+    assert _loops("Names.pas", "pascal", _PASCAL_CASE)[line] == expected
 
 
 _RUBY = """require "active_record"

@@ -1,6 +1,6 @@
 """Community detection on dependency graphs.
 
-Uses Leiden (graspologic) when available, falls back to Louvain (networkx).
+Uses Leiden (graspologic's native core) when available, falls back to Louvain (networkx).
 Supports both file-level and symbol-level community detection with:
 - Oversized community splitting (second pass on communities >25% of graph)
 - Cohesion scoring (intra-community edge density)
@@ -9,10 +9,7 @@ Supports both file-level and symbol-level community detection with:
 
 from __future__ import annotations
 
-import contextlib
 import inspect
-import io
-import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -21,9 +18,14 @@ from typing import Any
 import networkx as nx
 import structlog
 
+from repowise.core.analysis._leiden import leiden_partition
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 from repowise.core.ids import is_external
-from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    FILE_DEPENDENCY_EDGE_TYPES,
+    SYMBOL_USE_EDGE_TYPES,
+    TEMPORAL_EDGE_TYPES,
+)
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
 
@@ -104,27 +106,6 @@ class CommunityInfo:
 
 
 # ---------------------------------------------------------------------------
-# Output suppression (Windows PowerShell 5.1 ANSI fix)
-# ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _suppress_graspologic_output():
-    """Suppress stdout/stderr during graspologic calls.
-
-    graspologic's leiden() emits ANSI escape sequences that corrupt
-    PowerShell 5.1's scroll buffer on Windows.
-    """
-    old_stderr = sys.stderr
-    try:
-        sys.stderr = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()):
-            yield
-    finally:
-        sys.stderr = old_stderr
-
-
-# ---------------------------------------------------------------------------
 # Partition (Leiden / Louvain)
 # ---------------------------------------------------------------------------
 
@@ -147,17 +128,11 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
 def _partition(graph: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
-    Tries Leiden (graspologic) first, falls back to Louvain (networkx),
+    Tries Leiden (graspologic_native) first, falls back to Louvain (networkx),
     then to directory-based grouping as a last resort.
     """
     try:
-        from graspologic.partition import leiden
-
-        leiden_kwargs: dict = {}
-        if "random_seed" in inspect.signature(leiden).parameters:
-            leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
-        with _suppress_graspologic_output():
-            result = leiden(graph, **leiden_kwargs)
+        result = leiden_partition(graph, seed=42)  # determinism (matches louvain's seed)
         return result, "leiden"
     except ImportError:
         pass
@@ -519,9 +494,18 @@ def _assign_tests_to_communities(
         # The community most of the linked production files belong to, one
         # vote per linked file, either direction. Ties break on community id:
         # edge iteration order is insertion order and varies between runs.
+        # Co-change is history, not a link, and init adds it after this runs.
         votes: Counter[int] = Counter()
-        linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
-        linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
+        linked = {
+            t
+            for _, t, kind in graph.out_edges(test_path, data="edge_type")
+            if t in prod_assignment and kind not in TEMPORAL_EDGE_TYPES
+        }
+        linked |= {
+            s
+            for s, _, kind in graph.in_edges(test_path, data="edge_type")
+            if s in prod_assignment and kind not in TEMPORAL_EDGE_TYPES
+        }
         for prod_path in linked:
             votes[prod_assignment[prod_path]] += 1
 

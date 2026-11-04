@@ -384,7 +384,7 @@ async def test_overview_layer_file_count(setup_mcp_with_kg):
 
 
 @pytest.mark.asyncio
-async def test_overview_layers_carry_names_and_counts_only(setup_mcp_with_kg):
+async def test_overview_layers_carry_names_counts_and_roots_only(setup_mcp_with_kg):
     from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
@@ -393,7 +393,7 @@ async def test_overview_layers_carry_names_and_counts_only(setup_mcp_with_kg):
     # The layer prose restated the overview essay; get_context on a layer file
     # is the route to it now.
     for layer in layers:
-        assert set(layer) == {"name", "file_count"}
+        assert set(layer) <= {"name", "file_count", "root"}
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +419,38 @@ async def test_context_edge_connector_role(setup_mcp_with_kg):
     result = await get_context(targets=["src/core/graph.py"])
     t = result["targets"]["src/core/graph.py"]
     assert t["architectural_layer"]["role"] == "edge_connector"
+
+
+@pytest.mark.asyncio
+async def test_context_omits_the_fallback_layer(setup_mcp_with_kg, session: AsyncSession):
+    """A file no path rule placed sits in the fallback layer, whose name
+    describes the bucket's majority; the card does not claim it for the file."""
+    from repowise.server.mcp_server import get_context
+
+    (await session.get(KnowledgeGraphLayer, "kgl1")).layer_id = "layer:service"
+    layer = await session.get(KnowledgeGraphLayer, "kgl2")
+    layer.layer_id, layer.name = "layer:application", "Shared Types and Utilities"
+    await session.flush()
+
+    result = await get_context(targets=["src/core/graph.py", "src/utils/helpers.py"])
+    targets = result["targets"]
+    assert "architectural_layer" not in targets["src/utils/helpers.py"]
+    assert targets["src/core/graph.py"]["architectural_layer"]["name"] == "Core Ingestion"
+
+
+@pytest.mark.asyncio
+async def test_context_keeps_a_community_layer_named_application(
+    setup_mcp_with_kg, session: AsyncSession
+):
+    """Community layers take their id from a directory name, so an
+    ``application`` directory is a real layer there, not the fallback."""
+    from repowise.server.mcp_server import get_context
+
+    (await session.get(KnowledgeGraphLayer, "kgl2")).layer_id = "layer:application"
+    await session.flush()
+
+    result = await get_context(targets=["src/utils/helpers.py"])
+    assert result["targets"]["src/utils/helpers.py"]["architectural_layer"]["name"] == "Utilities"
 
 
 @pytest.mark.asyncio

@@ -173,7 +173,8 @@ class AgentCliProvider(BaseProvider):
         self._model = normalize_model(model, self.provider_name, self.default_model)
         if self._model is not None and self.validates_model_name:
             validate_model_name(self.provider_name, self._model)
-        # Where the CLI is pointed (``--cd`` / ``--dir``); claude_cli ignores it.
+        # Where the CLI is pointed (``--cd`` for codex, the subprocess cwd for
+        # opencode); claude_cli ignores it.
         self._repo_path = (
             Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
         )
@@ -230,12 +231,15 @@ class AgentCliProvider(BaseProvider):
                 return candidate
         return self.stdout_error(stdout) or f"{self.command_label} exited with {returncode}"
 
+    @classmethod
+    def process_limit(cls) -> int:
+        """How many CLI processes run at once, whatever ``--concurrency`` says."""
+        return resolve_concurrency(cls.concurrency_env, cls.provider_name)
+
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._semaphore_loop is not loop:
-            self._semaphore = asyncio.Semaphore(
-                resolve_concurrency(self.concurrency_env, self.provider_name)
-            )
+            self._semaphore = asyncio.Semaphore(self.process_limit())
             self._semaphore_loop = loop
         return self._semaphore  # type: ignore[return-value]
 

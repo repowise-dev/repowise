@@ -145,8 +145,8 @@ def test_available_model_options_are_labelled(claude_on_path):
     options = ClaudeCliProvider().available_model_options()
     assert [o.model for o in options] == [
         "claude_cli/claude-haiku-5-5",
-        "claude_cli/claude-sonnet-4-6",
-        "claude_cli/claude-opus-4-6",
+        "claude_cli/claude-sonnet-5-5",
+        "claude_cli/claude-opus-5-5",
     ]
     assert sum(1 for o in options if o.recommended) == 1
     assert all(
@@ -642,3 +642,19 @@ def test_resolves_through_the_registry(claude_on_path):
     provider = get_provider("claude_cli")
     assert provider.provider_name == "claude_cli"
     assert provider.model_name == "claude_cli/claude-haiku-5-5"
+
+
+def test_nested_session_markers_are_stripped(claude_on_path, monkeypatch):
+    """Run from inside Claude Code, the child must not inherit the parent session."""
+    for name in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN"):
+        monkeypatch.setenv(name, "parent")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "keep")
+
+    env = ClaudeCliProvider().subprocess_env()
+
+    assert "CLAUDECODE" not in env
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert "CLAUDE_CODE_MESSAGING_TOKEN" not in env
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert env["ANTHROPIC_MODEL"] == "keep"

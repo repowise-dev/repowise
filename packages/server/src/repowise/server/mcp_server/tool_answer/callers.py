@@ -21,6 +21,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
+from repowise.server.mcp_server._graph_files import graph_file_paths
 from repowise.server.mcp_server._helpers import filter_dicts_by_key
 from repowise.server.mcp_server._query_shape import _unmistakably_code
 from repowise.server.mcp_server._wrapper_callers import (
@@ -29,6 +30,7 @@ from repowise.server.mcp_server._wrapper_callers import (
     forwarding_wrapper_callers,
 )
 from repowise.server.mcp_server.tool_answer.config import _RELEVANCE_NAME_WEIGHT
+from repowise.server.mcp_server.tool_answer.hydration import _text_stems
 
 _SUBJECT = (
     r"\b(?:who|which|what)(?:\s+(?:non-test|production|source|other|file|files|function|"
@@ -144,7 +146,7 @@ def _qualifier_matches(node: GraphNode, qualifier: str) -> bool:
 
 
 async def _named_targets(
-    session: AsyncSession, repo_id: str, names: list[str]
+    session: AsyncSession, repo_id: str, names: list[str], question: str = ""
 ) -> list[GraphNode]:
     res = await session.execute(
         select(GraphNode).where(
@@ -158,10 +160,15 @@ async def _named_targets(
     for node in res.scalars().all():
         if node.file_path and not is_test_path(node.file_path, node.language):
             by_leaf.setdefault(node.name, []).append(node)
+    modules = await _modules_meant(session, repo_id, names, question)
     out: list[GraphNode] = []
     for name in names:
         qualifier, _, leaf = name.rpartition(".")
         defs = by_leaf.get(leaf, [])
+        if leaf in modules:
+            paths, rest = modules[leaf]
+            # A same-named def elsewhere stays only when its own location is on topic.
+            defs = [n for n in defs if n.file_path in paths or rest & _owner_words(n)]
         # A qualifier that matches no definition drops the name rather than
         # widening it to every same-named symbol.
         if qualifier:
@@ -169,6 +176,61 @@ async def _named_targets(
         if 0 < len(defs) <= _MAX_DEFS_PER_NAME:
             out.extend(n for n in sorted(defs, key=lambda n: n.node_id) if n not in out)
     return out[:_MAX_TARGETS]
+
+
+async def _modules_meant(
+    session: AsyncSession, repo_id: str, names: list[str], question: str
+) -> dict[str, tuple[set[str], set[str]]]:
+    """Bare names the question uses for a module of that file stem.
+
+    ``symbol_identity`` can be a module and a function in another file. The
+    question means the module when the rest of its words name the module's own
+    definitions ("how does symbol_identity assign discriminators" names
+    ``symbol_discriminator``). Maps each name to the module's files and those
+    other words. Lowercase names only: a capitalised one names a type, whose
+    file is often named after it.
+    """
+    files = await _module_files(
+        session, repo_id, {n for n in names if "." not in n and n[:1].islower()}
+    )
+    if not files:
+        return {}
+    res = await session.execute(
+        select(GraphNode.file_path, GraphNode.name).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.file_path.in_(set().union(*files.values())),
+        )
+    )
+    defined: dict[str, set[str]] = {}
+    for path, name in res.all():
+        defined.setdefault(path, set()).update(_text_stems(name or ""))
+    # The caller phrase ("where is it called") says nothing about the topic.
+    topic = _NAMED_CALLER_QUESTION.sub(" ", _CALLER_QUESTION.sub(" ", question))
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    for name, paths in files.items():
+        rest = _text_stems(topic) - _text_stems(name)
+        if rest & set().union(*(defined.get(p, set()) for p in paths)):
+            out[name] = (paths, rest)
+    return out
+
+
+async def _module_files(session: AsyncSession, repo_id: str, names: set[str]) -> dict[str, set[str]]:
+    """The production files each of *names* is the file stem of."""
+    files: dict[str, set[str]] = {}
+    if not names:
+        return files
+    for path in await graph_file_paths(session, repo_id):
+        stem = PurePosixPath(path).stem
+        if stem in names and not is_test_path(path):
+            files.setdefault(stem, set()).add(path)
+    return files
+
+
+def _owner_words(node: GraphNode) -> set[str]:
+    """The words of a def's file name and its own scoped name."""
+    local = node.node_id.split("::", 1)[-1]
+    return _text_stems(f"{PurePosixPath(node.file_path or '').stem} {local}")
 
 
 async def _retrieved_targets(
@@ -265,7 +327,7 @@ async def caller_evidence(
     if not is_caller_question(question, question_ids):
         return NO_EVIDENCE
     named = _named_ids(question_ids)
-    targets = await _named_targets(session, repo_id, named) if named else []
+    targets = await _named_targets(session, repo_id, named, question) if named else []
     cross_file = not targets
     if cross_file:
         if not _CALLER_QUESTION.search(question):

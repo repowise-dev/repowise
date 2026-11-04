@@ -25,7 +25,7 @@ def no_tests(path, function, start, end) -> dict:
     """What the loader's test lookup answers for a finding no seeded test reaches."""
     return {
         "prerequisite": (
-            f"No test reaches this; add a characterization test for `{function}` before the edit."
+            f"No test reaches `{function}`; add a characterization test before the edit."
         )
     }
 
@@ -351,7 +351,7 @@ async def test_a_finding_item_with_no_tests_stays_unknown(async_session) -> None
     assert (walk.verify.tests, walk.verify.basis, walk.verify.command) == ((), "unknown", None)
     # The step to take before the edit, since no test pins today's behaviour.
     assert walk.verify.prerequisite == (
-        "No test reaches this; add a characterization test for `walk` before the edit."
+        "No test reaches `walk`; add a characterization test before the edit."
     )
 
 

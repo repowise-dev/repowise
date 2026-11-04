@@ -9,6 +9,15 @@ describe("MetricCard", () => {
     expect(screen.getByText("42")).toBeInTheDocument();
   });
 
+  it("keeps block nodes in the label and description out of a <p>", () => {
+    // StatGridSkeleton passes a Skeleton <div> for both; inside a <p> that is
+    // invalid HTML and a hydration error.
+    const { container } = render(
+      <MetricCard label={<div>label</div>} value="1" description={<div>desc</div>} />,
+    );
+    expect(container.querySelector("p div")).toBeNull();
+  });
+
   it("renders an optional description when provided", () => {
     render(<MetricCard label="Coverage" value="87%" description="last 30 days" />);
     expect(screen.getByText("last 30 days")).toBeInTheDocument();

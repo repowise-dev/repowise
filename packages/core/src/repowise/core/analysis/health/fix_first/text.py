@@ -28,7 +28,7 @@ PROBLEM: dict[str, str] = {
     "brain_method": f"is long and branchy; {SPLIT_GAIN}",
     "complex_method": f"has many paths; {SPLIT_GAIN}",
     "nested_complexity": f"nests deeply; {SPLIT_GAIN}",
-    "bumpy_road": f"does several jobs side by side; {SPLIT_GAIN}",
+    "repeated_nesting": f"does several jobs side by side; {SPLIT_GAIN}",
     "large_method": f"is long; {SPLIT_GAIN}",
     "god_class": f"holds much of its subsystem; {SPLIT_GAIN}",
     "low_cohesion": "holds groups of methods that share little state",
@@ -38,6 +38,7 @@ PROBLEM: dict[str, str] = {
     "error_handling": "handles an exception in a way that can hide a failure",
     "coverage_gap": "has low measured test coverage",
     "untested_hotspot": "changes often and has low measured test coverage",
+    "untested_complexity": "is complex and little of it runs under test",
     "function_hotspot": "is complex and keeps changing",
     "split_file": "holds several loosely related parts in one file",
     "break_cycle": "sits in an import cycle",
@@ -48,7 +49,7 @@ FINDING_TITLE: dict[str, str] = {
     "brain_method": "Split {where} into smaller functions",
     "complex_method": "Reduce the branching in {where}",
     "nested_complexity": "Flatten the nesting in {where}",
-    "bumpy_road": "Split {where} into stages",
+    "repeated_nesting": "Split {where} into stages",
     "large_method": "Shorten {where}",
     "god_class": "Break up the {where} class",
     "low_cohesion": "Split {where} along its unrelated method groups",
@@ -58,6 +59,7 @@ FINDING_TITLE: dict[str, str] = {
     "error_handling": "Fix the exception handling in {where}",
     "coverage_gap": "Add tests for {where}",
     "untested_hotspot": "Add tests for {where}",
+    "untested_complexity": "Test the branches of {where}",
     "function_hotspot": "Simplify {where}, which keeps changing",
 }
 
@@ -295,7 +297,7 @@ HISTORY_LABEL: dict[str, str] = {
     "hidden_coupling": "hidden coupling",
     "churn_risk": "churn",
     "ownership_risk": "ownership",
-    "knowledge_loss": "knowledge loss",
+    "knowledge_loss": "fading ownership",
     "developer_congestion": "many hands",
     "prior_defect": "past bugs",
     "function_hotspot": "keeps changing",
@@ -350,7 +352,7 @@ def history_fact(marker: str, details: dict, function: str | None = None) -> str
     if marker == "code_age_volatility":
         return "old code that still changes often"
     if marker == "stale_governance":
-        return "a decision that covers it is out of date"
+        return "a decision that covers it predates changes to the files it governs"
     if marker == "contradictory_decision":
         return "decisions that cover it disagree"
     return None

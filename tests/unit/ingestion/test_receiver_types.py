@@ -103,6 +103,42 @@ class TestCsharpShapes:
         body = "public void Go() { if (thing is Placeholder p) { p.Name(); } }"
         assert declared_types(body, "csharp")["p"] == "Placeholder"
 
+    def test_pascal_case_properties_and_fields_are_class_scope(self) -> None:
+        source = (
+            "class V {\n"
+            "    public TrackingCollection<Rule> Rules { get; } = new();\n"
+            "    protected Box? Current { private set; get; }\n"
+            "    public Box Shown => _box;\n"
+            "    internal readonly ICircuitController<int> BreakerController;\n"
+            "    void Run() { }\n"
+            "}"
+        )
+        assert fields(source, "csharp", [(6, 6)]) == {
+            "Rules": "TrackingCollection`1",
+            "Current": "Box",
+            "Shown": "Box",
+            "BreakerController": "ICircuitController`1",
+        }
+
+    def test_a_type_or_method_header_declares_no_member(self) -> None:
+        source = (
+            "class V : Base {\n"
+            "    public Box Make(int n) => new Box();\n"
+            "    public Result Check { get { return Ok; } }\n"
+            "    bool Same(Box a) => a == Other;\n"
+            "}"
+        )
+        assert fields(source, "csharp", []) == {"Check": "Result"}
+
+    def test_title_case_words_mid_line_declare_no_member(self) -> None:
+        source = (
+            "class V {\n"
+            '    private const string Label = "Order Items;";\n'
+            "    int Area(Shape s) => s switch { Circle C => 1, _ => 0 };\n"
+            "}"
+        )
+        assert fields(source, "csharp", []) == {}
+
 
 class TestPythonShapes:
     """Python annotates after the name and constructs without a keyword.
@@ -744,6 +780,35 @@ class TestGoFields:
         assert declared_types(body, "go") == {}
 
 
+class TestKotlinTrailingLambda:
+    """A trailing lambda is the call's last argument, not more expression (#3761)."""
+
+    def test_a_call_with_a_trailing_lambda_is_a_call_assignment(self) -> None:
+        body = 'fun f() {\n    val n = build(1) { x -> println(")}") }\n    n.go()\n}'
+        assert scan_call_assignments(body, "kotlin") == (CallAssignment(2, "n", None, "build"),)
+
+    def test_a_lambda_across_lines_still_ends_the_statement(self) -> None:
+        body = 'fun f() {\n    val n = build("a") {\n        println("x")\n    }\n    n.go()\n}'
+        assert [a.name for a in scan_call_assignments(body, "kotlin")] == ["n"]
+
+    def test_a_chain_after_the_lambda_is_not_the_call(self) -> None:
+        for rest in ("{ }.bar()", "{ } ?: y", "{ }\n        .bar()"):
+            body = f"fun f() {{\n    val n = build(1) {rest}\n}}"
+            assert scan_call_assignments(body, "kotlin") == (), rest
+
+    def test_a_constructor_with_only_a_trailing_lambda(self) -> None:
+        body = 'fun f() {\n    val c = Client {\n        println("}")\n    }\n    c.get()\n}'
+        assert declared_types(body, "kotlin")["c"] == "Client"
+
+    def test_a_constructor_lambda_followed_by_a_chain_is_not_a_construction(self) -> None:
+        body = "fun f() {\n    val c = Client { }.build()\n}"
+        assert "c" not in declared_types(body, "kotlin")
+
+    def test_a_lowercase_lambda_only_call_is_not_a_construction(self) -> None:
+        body = "fun f() {\n    val x = remember { Foo() }\n}"
+        assert "x" not in declared_types(body, "kotlin")
+
+
 class TestGoCallAssignments:
     """``x := f(..)``: the call the resolver reads a return type from."""
 
@@ -845,6 +910,39 @@ class TestKotlinSwiftDartCallAssignments:
         body = "f() {\n  val r = make()\n  r.load()\n}"
         assert scan_call_assignments(body, "kotlin") == (CallAssignment(2, "r", None, "make"),)
 
+    @pytest.mark.parametrize(
+        ("statement", "expected"),
+        [
+            ("if let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+            ("if var r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+            ("guard let r = findRepo() else { return }", CallAssignment(2, "r", None, "findRepo")),
+            ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+        ],
+    )
+    def test_swift_optional_binding(
+        self, statement: str, expected: CallAssignment
+    ) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, "swift") == (expected,)
+
+    def test_swift_optional_binding_multiple_clauses(self) -> None:
+        body = "f() {\n  if let o = makeRepo(), let r = findRepo() {\n  }\n}"
+        assert scan_call_assignments(body, "swift") == (
+            CallAssignment(2, "o", None, "makeRepo"),
+            CallAssignment(2, "r", None, "findRepo"),
+        )
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "let r = makeRepo() { Other() }",
+            "if case let .some(r) = findRepo() {",
+        ],
+    )
+    def test_swift_call_without_a_binding_is_refused(self, statement: str) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, "swift") == ()
+
 
 class TestClassScope:
     """What counts as a field, given that a class span contains every method.
@@ -901,12 +999,14 @@ class TestClassScope:
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
     assert set(RECEIVER_TYPE_LANGUAGES) == {
+        "apex",
         "cpp",
         "csharp",
         "dart",
         "go",
         "java",
         "kotlin",
+        "pascal",
         "python",
         "rust",
         "swift",
@@ -1009,13 +1109,13 @@ class TestCppWrapperUnwrapping:
         assert declared_types("val c: Column<Thing> = x", "kotlin") == {"c": "Column"}
 
 
-def test_cpp_is_not_a_field_language() -> None:
-    """C++ declares its fields in a header, away from the call that reads them.
+def test_cpp_is_a_field_language() -> None:
+    """C++ names a field bare, and declares it in a header away from the call.
 
-    Registering it would promise a scope the scan cannot answer from, which is
-    the condition that disqualified python on the same constant.
+    An out-of-line body reads its fields from the class its includes declare
+    (``CppFieldOwners._field_owner``), so class scope answers for it too.
     """
-    assert "cpp" not in IMPLICIT_FIELD_LANGUAGES
+    assert "cpp" in IMPLICIT_FIELD_LANGUAGES
 
 
 def test_c_has_no_shapes_of_its_own() -> None:

@@ -61,19 +61,15 @@ def coverage_suggest_gates(repo: str | None, fmt: str) -> None:
 
 
 def _codeowners(root: Path):
-    from repowise.core.analysis.patch_coverage.suggest import (
-        CODEOWNERS_PATHS,
-        GateSource,
-        codeowners_gates,
-    )
+    from repowise.core.analysis.patch_coverage.suggest import GateSource, codeowners_gates
+    from repowise.core.ownership.codeowners import read_codeowners
 
-    for rel in CODEOWNERS_PATHS:
-        path = root / rel
-        if path.is_file():
-            gates = codeowners_gates(path.read_text(encoding="utf-8", errors="replace"))
-            detail = rel if gates else f"{rel} names no owned paths"
-            return GateSource("codeowners", detail, gates)
-    return GateSource("codeowners", "no CODEOWNERS file")
+    found = read_codeowners(root)
+    if found is None:
+        return GateSource("codeowners", "no CODEOWNERS file")
+    rel, text = found
+    gates = codeowners_gates(text)
+    return GateSource("codeowners", rel if gates else f"{rel} names no owned paths", gates)
 
 
 def _layout(root: Path):

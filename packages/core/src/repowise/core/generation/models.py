@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Iterator, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Literal
@@ -33,7 +33,7 @@ PageType = Literal[
     "file_page",
     "scc_page",
     "module_page",
-    "layer_page",
+    "flow_page",
     "repo_overview",
     "architecture_diagram",
     "infra_page",
@@ -50,7 +50,9 @@ GENERATION_LEVELS: dict[str, int] = {
     "file_page": 2,
     "scc_page": 3,
     "module_page": 4,
-    "layer_page": 5,
+    # After the module pages, so a walkthrough can name the page each step
+    # belongs to by the title the namer gave it.
+    "flow_page": 5,
     "repo_overview": 6,
     "architecture_diagram": 6,
     "infra_page": 7,
@@ -60,15 +62,23 @@ GENERATION_LEVELS: dict[str, int] = {
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET = 8000
+# Answer room kept out of a limited window when sizing page material.
+_ANSWER_RESERVE = 4096
+
+
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def _source_evidence_page_keys() -> set[str]:
     """Return synthesis page keys that have a model-written consumer."""
-    from .onboarding.slots import ONBOARDING_ORDER, PROMOTED_SLOTS
+    from .onboarding.slots import ONBOARDING_SLOTS, PROMOTED_SLOTS
 
     promoted = set(PROMOTED_SLOTS.values())
     return {"repo_overview"} | {
-        f"onboarding/{slot}" for slot in ONBOARDING_ORDER if slot not in promoted
+        f"onboarding/{slot}" for slot in ONBOARDING_SLOTS if slot not in promoted
     }
 
 
@@ -206,7 +216,7 @@ class GenerationConfig:
         cache_enabled:            In-memory SHA256 prompt deduplication.
         staleness_threshold_days: Days before a page is considered stale.
         expiry_threshold_days:    Days before a page is considered expired.
-        top_symbol_percentile:    Top N% by PageRank → symbol_spotlight.
+        top_symbol_percentile:    Top N% of eligible symbols by use → symbol_spotlight.
         jobs_dir:                 Directory for job checkpoint JSON files.
     """
 
@@ -233,18 +243,16 @@ class GenerationConfig:
     coverage_pct: float = 0.20
     max_pages_pct: float = 0.20
     #
-    # The fraction of public symbols, highest PageRank first, that get a
-    # ``symbol_spotlight``. A spotlight repeats what its file's page already
+    # The fraction of spotlight-eligible symbols, most used first, that get a
+    # ``symbol_spotlight`` (ranking and floors: selection/scoring.py
+    # ``score_symbol``). A spotlight repeats what its file's page already
     # says, so taking all of them buries the pages that say something new.
-    # This bound used to be a side effect of the budget's 0.15 share.
     #
-    # Lowered 0.20 -> 0.10 on the evidence of a large monorepo: a 5.3k-file
-    # repo produced 4,996 spotlights inside a 14,027-page wiki. Doubling down
-    # on the strongest decile keeps the pages that say something new and drops
-    # the ones that restate their file's page. Small repos are unaffected in
-    # practice: the selector floors the bucket at one, so a repo with few
-    # public symbols still gets a spotlight.
-    top_symbol_percentile: float = 0.10
+    # Eligible means the symbol adds something to its file page: resolved
+    # production callers or a docstring past its first sentence. 0.12 of that
+    # pool is ~1.7k pages on a 54k-public-symbol monorepo (5.3k under the old
+    # file-PageRank top decile). A small repository keeps ``MIN_SPOTLIGHTS``.
+    top_symbol_percentile: float = 0.12
     # The most ``file_page`` pages a run will emit, highest importance score
     # first. Three states, resolved in selection/selector.py:
     #
@@ -263,6 +271,13 @@ class GenerationConfig:
     # structure and cost no tokens -- it reduces pages, bytes, embedding calls
     # and retrieval dilution.
     max_file_pages: int | None = None
+    # Folder-specific documentation floors: ``((glob, pct), ...)`` where each
+    # rule promises that at least ``pct`` of the code files under *glob* get a
+    # file_page, whatever their global importance score. A floor, not a cap:
+    # the pinned files are unioned into the selection additively and never
+    # displace global picks. ``src/core=1.0`` means every code file under
+    # src/core gets a page regardless of its score (issue #633).
+    folder_coverage: tuple[tuple[str, float], ...] = field(default_factory=tuple)
     file_page_min_symbols: int = 1
     skip_trivial_files: bool = True
     dedupe_near_clones: bool = True
@@ -337,6 +352,46 @@ class GenerationConfig:
     # Page key -> explicit repository-relative files to add. Supported keys are
     # ``repo_overview`` and ``onboarding/<slot>``.
     source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # False on ``init --force``: no prior pages are loaded, so the reuse gate
+    # has nothing to carry over and every page is regenerated (issue #1089).
+    reuse_prior_pages: bool = True
+    # Tokens (prompt plus answer) the model runs with. None keeps every
+    # material budget at full size; a local model sets it (see
+    # ``with_provider_window``) and ``material_budget`` shrinks to fit.
+    context_window: int | None = None
+
+    @property
+    def input_token_limit(self) -> int | None:
+        """Largest page prompt, in 4-characters-per-token estimates, the window takes.
+
+        Local tokenizers run nearer 3 characters per token on code, so the
+        estimate counts a quarter fewer tokens than the window will.
+        """
+        if not self.context_window:
+            return None
+        answer = min(self.max_tokens, _ANSWER_RESERVE, self.context_window // 2)
+        return (self.context_window - answer) * 3 // 4
+
+    def material_budget(self, cap: int, prompt_at_cap: int) -> int:
+        """*cap*, cut by however far a prompt of *prompt_at_cap* tokens overshoots the limit.
+
+        Each page type passes the cap on its largest material block and the
+        size its whole prompt reaches with that block full. The block absorbs
+        the overshoot, down to a quarter of its size; the builders already put
+        their least important material last, so that is what drops.
+        """
+        limit = self.input_token_limit
+        if limit is None or prompt_at_cap <= limit:
+            return cap
+        return max(cap // 4, cap - (prompt_at_cap - limit))
+
+    def with_provider_window(self, provider: Any) -> GenerationConfig:
+        """This config with the provider's window filled in, unless the repo config names one."""
+        if self.context_window:
+            return self
+        window = provider.context_window() if hasattr(provider, "context_window") else None
+        valid = isinstance(window, int) and not isinstance(window, bool) and window > 0
+        return replace(self, context_window=window) if valid else self
 
     def to_dict(self) -> dict[str, Any]:
         """Return the supported plain, rehydratable configuration snapshot."""
@@ -387,6 +442,15 @@ class GenerationConfig:
             values["source_evidence_files"] = _normalize_evidence_files(
                 raw_files, label="generation_context.files"
             )
+
+        if config.get("context_window") is not None:
+            values["context_window"] = _positive_int(config["context_window"], "context_window")
+
+        raw_folder_coverage = config.get("folder_coverage")
+        if raw_folder_coverage is not None:
+            from .folder_coverage import parse_folder_coverage
+
+            values["folder_coverage"] = parse_folder_coverage(raw_folder_coverage)
 
         values.update(overrides)
         return cls(**values)
@@ -577,15 +641,21 @@ def compute_page_id(page_type: str, target_path: str) -> str:
 # stamps ``structural_key`` on these pages, and the persist layer sweeps them,
 # because an identity that can move strands the old row as a duplicate on the
 # next index. A new page type of this shape belongs here and nowhere else.
-STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = ("module_page", "layer_page", "scc_page")
+STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = (
+    "module_page",
+    "scc_page",
+    # Keyed by the entry symbol it walks; which operations get a page moves
+    # with the call graph, so a deselected one has to be swept.
+    "flow_page",
+)
 
 # The page types a model writes as prose. Every other type renders from
 # structure and is permanently ``provider_name='template'``, so "does this page
-# have prose yet" is only a meaningful question for these four. A stub is one of
+# have prose yet" is only a meaningful question for these. A stub is one of
 # these still stamped ``template``; a written one carries a real provider. The
-# CLI keeps its own mirror in ``generate_cmd/engine.py``.
+# web reader mirrors this in ``ui/src/lib/page-types.ts``.
 MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
-    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
+    {"module_page", "flow_page", "repo_overview", "architecture_diagram", "onboarding"}
 )
 
 # Metadata key holding the provider error a page fell back to its stub over.
@@ -594,6 +664,10 @@ MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
 # to write. The distinction is what lets the level runner record the page as
 # failed while still handing back a row.
 STUB_FALLBACK_ERROR = "stub_fallback_error"
+
+# Metadata key holding the user-facing hint (``{"kind", "message"}``) for a
+# stub whose error was a recognised provider failure, such as a rejected key.
+STUB_FALLBACK_HINT = "stub_fallback_hint"
 
 
 def is_stub_fallback(page: Any) -> bool:
@@ -611,6 +685,23 @@ def count_stub_fallbacks(pages: Iterable[Any]) -> int:
     back into counting a failure as a success, which is the bug itself.
     """
     return sum(1 for page in pages if is_stub_fallback(page))
+
+
+def dominant_stub_fallback_hint(pages: Iterable[Any]) -> dict | None:
+    """The provider hint most of *pages*' failed stubs share, or ``None``.
+
+    One rejected key fails every page the same way, so the most common hint
+    is the one worth showing for the whole run.
+    """
+    counts: dict[tuple[tuple[str, str], ...], int] = {}
+    for page in pages:
+        hint = (getattr(page, "metadata", None) or {}).get(STUB_FALLBACK_HINT)
+        if isinstance(hint, dict) and hint.get("message"):
+            key = tuple(sorted((str(k), str(v)) for k, v in hint.items()))
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return dict(max(counts, key=counts.__getitem__))
 
 
 def member_structural_key(members: Iterable[str], *, prefix: str) -> str:

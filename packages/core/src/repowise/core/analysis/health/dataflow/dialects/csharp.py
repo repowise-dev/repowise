@@ -299,10 +299,11 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             start = len(defs)
             name_node = child.child_by_field_name("name")
             self._targets(name_node, defs, uses)
-            self._declare(defs, start, child)
-            for sub in child.named_children:
-                if sub != name_node:
-                    self._process(sub, defs, uses)
+            rest = [sub for sub in child.named_children if sub != name_node]
+            # ``int x;``: definite assignment makes a read before a write an error.
+            self._declare(defs, start, child, valueless=not rest)
+            for sub in rest:
+                self._process(sub, defs, uses)
 
     def _invocation(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
         fn = _callee(node)

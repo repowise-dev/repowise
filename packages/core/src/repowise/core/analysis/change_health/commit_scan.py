@@ -11,6 +11,8 @@ by a wall clock instead, leaving older commits unscanned.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,7 +20,7 @@ from typing import Any
 from repowise.core.repo_config import health_rules_fingerprint
 
 from .models import ChangeFinding, ChangeHealthDelta
-from .service import ChangeHealthDeltaService, DeltaRequest
+from .service import MAX_CHANGED_FILES, ChangeHealthDeltaService, DeltaRequest
 
 #: Findings kept per commit. The delta row carries the true totals, so a
 #: capped commit still reports honestly how much it is not showing.
@@ -27,6 +29,55 @@ MAX_FINDINGS_PER_COMMIT = 50
 #: Statuses worth a row. A comparison that could not run is not a clean
 #: commit, and storing it would make "no findings" ambiguous forever.
 _STORED_STATUSES = frozenset({"available", "partial"})
+
+#: A commit touching more files than this is not analysed. The budget below is
+#: only checked *between* commits, so a single bulk commit (an initial import
+#: of tens of thousands of files) would otherwise run for many minutes and
+#: ignore it. The default is the comparison's own ceiling. It counts every
+#: changed file, while the comparison counts only eligible code files, so a
+#: commit of many non-code files is skipped here where it used to be analysed;
+#: that is intended, since reading its change shape is the cost being avoided.
+#: ``0`` removes the cap.
+def max_files_per_commit() -> int:
+    raw = os.environ.get("REPOWISE_COMMIT_HEALTH_MAX_FILES")
+    if raw is None:
+        return MAX_CHANGED_FILES
+    try:
+        value = int(raw)
+    except ValueError:
+        return MAX_CHANGED_FILES
+    return value if value >= 0 else MAX_CHANGED_FILES
+
+
+def changed_file_count(repo_path: str, sha: str) -> int | None:
+    """Files *sha* changes against its first parent (all of them for a root commit).
+
+    ``None`` when git cannot answer, so the caller analyses the commit as it
+    always did rather than skipping one it merely failed to measure.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "diff-tree",
+                "--root",
+                "-r",
+                "-m",
+                "--first-parent",
+                "--name-only",
+                "--no-commit-id",
+                "-z",
+                sha,
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return len({name for name in out.split(b"\0") if name})
 
 
 @dataclass(slots=True)
@@ -51,6 +102,8 @@ def _delta_row(sha: str, delta: ChangeHealthDelta, kept: int) -> dict:
         "introduced_count": delta.introduced_total,
         "worsened_count": delta.worsened_total,
         "resolved_count": delta.resolved_total,
+        "improved_count": delta.improved_total,
+        "moved_count": delta.moved_total,
         "files_analyzed": delta.scope.analyzed,
         "files_skipped": delta.scope.skipped,
         "findings_stored": kept,
@@ -90,6 +143,8 @@ def _finding_rows(sha: str, findings: list[ChangeFinding]) -> list[dict]:
             "attribution_basis": f.attribution_basis,
             "health_impact": float(f.health_impact or 0.0),
             "reason": f.reason,
+            "moved_from_path": (f.moved_from or {}).get("path"),
+            "moved_from_symbol": (f.moved_from or {}).get("symbol"),
         }
         for position, f in enumerate(findings)
     ]
@@ -118,10 +173,16 @@ def scan_commits(
         repo_path=repo_path, rules_fingerprint=health_rules_fingerprint(repo_path)
     )
     started = time.monotonic()
+    file_cap = max_files_per_commit()
     for sha in shas:
         if budget_seconds and time.monotonic() - started >= budget_seconds:
             scan.exhausted_budget = True
             break
+        if file_cap:
+            count = changed_file_count(repo_path, sha)
+            if count is not None and count > file_cap:
+                scan.skipped += 1
+                continue
         try:
             delta = service.compare(DeltaRequest(repo_path, sha))
         except Exception:

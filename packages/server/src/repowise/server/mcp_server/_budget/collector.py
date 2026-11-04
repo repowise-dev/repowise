@@ -26,11 +26,9 @@ logger = logging.getLogger(__name__)
 
 #: Repeated verbatim in every ``_meta.omitted`` block, so it is billed on every
 #: response that omits anything. Both recovery routes survive; the prose around
-#: them does not. The CLI route is already spelled out with a concrete ref in
-#: the omission marker itself (``core/distill/markers.py:18``) — what only this
-#: line carries is the ``get_symbol`` route, which is how a shell-less client
-#: (e.g. Claude Desktop) recovers.
-_RESTORE_HINT = '`repowise expand <ref>`, or get_symbol("repowise#<ref>", query=...)'
+#: them does not. The ``get_symbol`` route leads: a client reading this has the
+#: MCP tools, and may have no shell for the CLI route.
+_RESTORE_HINT = 'get_symbol("repowise#<ref>", query=...), or `repowise expand <ref>`'
 
 _DOC_SECTION_RULE = "==== {label} ===="
 def render_chunk(label: str, value: Any) -> str:

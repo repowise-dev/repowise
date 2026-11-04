@@ -268,6 +268,15 @@ class DoctorReport:
         }
 
 
+@dataclass(frozen=True)
+class InstallOptions:
+    """How :meth:`AgentTarget.install` treats what is already there."""
+
+    #: Move a user-level entry that serves another repo to this one. Only an
+    #: explicit ``agents add`` sets it; ``init`` and ``refresh`` keep that entry.
+    retarget: bool = False
+
+
 @runtime_checkable
 class AgentTarget(Protocol):
     """One agent repowise can wire up.
@@ -293,6 +302,12 @@ class AgentTarget(Protocol):
     #: out of the Full tier.
     hook_adapter: str | None
     session_adapter: str | None
+    #: Named entry in ``core.edit_capture.edits``: turns this agent's edit hook
+    #: payload into an edit event for opt-in AI attribution. ``None`` means its
+    #: edits are attributed only through the markers it leaves in git (git-ai
+    #: notes, Agent Trace files, trailers). Not a tier input: capture is off
+    #: unless the user turns it on, so it adds no depth the agent always gets.
+    capture_adapter: str | None
 
     #: Routes this target can be wired through, in preference order.
     methods: tuple[InstallMethod, ...]
@@ -349,7 +364,8 @@ class AgentTarget(Protocol):
 
         *repo_path* is keyword-only and required in practice for every scope: a
         project install writes into it, and a user-scope MCP registration has to
-        record which repo the server should serve.
+        record which repo the server should serve. *options* is an
+        :class:`InstallOptions` or None.
         """
         ...
 

@@ -7,12 +7,18 @@ import pytest
 from repowise.core.analysis.health.biomarkers.base import BiomarkerResult, FileContext
 from repowise.core.analysis.health.biomarkers.hidden_coupling import HiddenCouplingDetector
 from repowise.core.analysis.health.biomarkers.untested_hotspot import UntestedHotspotDetector
-from repowise.core.analysis.health.models import Severity, split_by_origin
+from repowise.core.analysis.health.models import (
+    HealthFileMetricData,
+    Severity,
+    split_by_origin,
+)
 from repowise.core.analysis.health.scope import parse_scope, scores_language
 from repowise.core.analysis.health.scoring import (
     SCORE_MAX,
     attach_impacts,
+    compute_kpis,
     deduction_split,
+    headline_split,
     score_file,
     unclamped_score,
 )
@@ -124,6 +130,47 @@ def test_history_alone_can_hold_a_score_down() -> None:
     structure, history = deduction_split(attach_impacts(results, deductions))
     assert structure == 0.0
     assert history > 0
+
+
+def _row(path: str, score: float, structure: float, history: float, nloc: int = 100):
+    return HealthFileMetricData(
+        file_path=path,
+        score=score,
+        max_ccn=1,
+        max_nesting=1,
+        nloc=nloc,
+        has_test_file=False,
+        structure_deduction=structure,
+        history_deduction=history,
+    )
+
+
+def test_a_floored_file_splits_only_the_points_it_lost() -> None:
+    """Unclamped 12.71 = 9.21 + 3.5, floored at 1.0: the halves share 9.0."""
+    structure, history = headline_split([_row("a.py", 1.0, 9.21, 3.5)])
+    assert structure is not None and history is not None
+    assert round(structure + history, 6) == SCORE_MAX - 1.0
+    assert round(structure / history, 6) == round(9.21 / 3.5, 6)
+
+
+def test_the_headline_halves_add_up_to_its_deficit() -> None:
+    rows = [
+        _row("floored.py", 1.0, 9.21, 3.5, nloc=300),
+        _row("fine.py", 8.5, 1.0, 0.5, nloc=200),
+        _row("clean.py", 10.0, 0.0, 0.0, nloc=50),
+    ]
+    kpis = compute_kpis(rows, {"floored.py"})
+    for scope, headline in (("average", "average_health"), ("hotspot", "hotspot_health")):
+        halves = kpis[f"structure_{scope}"] + kpis[f"history_{scope}"]
+        assert abs(halves - (SCORE_MAX - kpis[headline])) <= 0.011
+
+
+def test_the_split_is_unknown_before_files_carry_it() -> None:
+    legacy = HealthFileMetricData(
+        file_path="a.py", score=5.0, max_ccn=1, max_nesting=1, nloc=10, has_test_file=False
+    )
+    assert headline_split([legacy]) == (None, None)
+    assert headline_split([legacy, _row("b.py", 8.0, 1.5, 0.5)]) == (None, None)
 
 
 def test_a_floored_file_still_shows_its_depth() -> None:

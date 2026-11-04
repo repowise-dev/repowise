@@ -1,4 +1,8 @@
-"""The one savings report every first-party surface reads.
+"""The read side of the savings ledger: the one report, and per-agent call times.
+
+``load_agent_calls`` answers a narrower question from the same sidecar (when
+did each agent last read the index), so it shares the read-only handle below
+and adds no second aggregation of savings.
 
 Before this, three consumers each aggregated and priced the ledger themselves:
 the costs endpoint, the repository overview headline and ``repowise saved``.
@@ -43,20 +47,10 @@ def load_report(
     a CLI command, neither of which should fail because a sidecar is locked,
     truncated or written by a newer build.
     """
-    if repo_root is None:
-        return None
-    database = sidecar_path(repo_root)
-    if not database.is_file():
+    connection = _open_read_only(repo_root)
+    if connection is None:
         return None
     moment = as_of or datetime.now(UTC)
-    try:
-        # A read-only URI handle never contends with the hook and MCP writers,
-        # and never runs the schema upgrade a read path has no business doing.
-        connection = sqlite3.connect(
-            f"file:{database.as_posix()}?mode=ro", uri=True, timeout=1
-        )
-    except sqlite3.Error:
-        return None
     try:
         return SavingsRepository(connection).report(
             # The recorder files events under the path it wrote to, so the
@@ -77,3 +71,37 @@ def load_report(
         return None
     finally:
         connection.close()
+
+
+def load_agent_calls(repo_root: str | Path | None) -> dict[str, tuple[str, str]] | None:
+    """``{agent slug: (first, last)}`` times of the calls that read *repo_root*'s index.
+
+    ``None`` when there is no ledger to read, same contract as
+    :func:`load_report`. ``unknown`` is the slug of calls whose client did not
+    announce a name the identity registry knows.
+    """
+    connection = _open_read_only(repo_root)
+    if connection is None:
+        return None
+    try:
+        rows = SavingsRepository(connection).index_call_window(str(Path(repo_root)))
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    return {str(agent): (str(first), str(last)) for agent, first, last in rows}
+
+
+def _open_read_only(repo_root: str | Path | None) -> sqlite3.Connection | None:
+    """A read-only handle on the sidecar, or ``None`` when there is none."""
+    if repo_root is None:
+        return None
+    database = sidecar_path(repo_root)
+    if not database.is_file():
+        return None
+    try:
+        # A read-only URI handle never contends with the hook and MCP writers,
+        # and never runs the schema upgrade a read path has no business doing.
+        return sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None

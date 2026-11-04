@@ -431,9 +431,9 @@ class RefactoringHealthService:
         # say the symbol has to be located again before the step is applied.
         if any(step.get("relocated_by") for step in page):
             payload["ordering_note"] = (
-                "A step carrying `relocated_by` names a symbol an earlier step moves. "
-                "Locate it again before applying the step; its file and span describe "
-                "where the symbol was."
+                "A step marked 'Moved by an earlier step' names a symbol an earlier step "
+                "relocates. Locate it again before applying the step; its file and span "
+                "describe where the symbol was."
             )
         return payload
 

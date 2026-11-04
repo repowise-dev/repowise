@@ -17,7 +17,11 @@ from repowise.core.ingestion.resolvers.ts_workspace import (
     build_workspace_map,
     resolve_via_workspaces,
 )
-from repowise.core.ingestion.resolvers.typescript import resolve_ts_js_import
+from repowise.core.ingestion.resolvers.typescript import (
+    detect_platform_files,
+    resolve_ts_js_import,
+    resolve_ts_js_import_all,
+)
 
 
 def _ctx(repo: Path, paths: list[str], has_sfc: bool = False) -> ResolverContext:
@@ -29,6 +33,7 @@ def _ctx(repo: Path, paths: list[str], has_sfc: bool = False) -> ResolverContext
         repo_path=repo,
         has_sfc_files=has_sfc
         or any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+        has_platform_files=detect_platform_files(path_set),
     )
 
 
@@ -956,3 +961,87 @@ class TestMtsCtsResolution:
     def test_directory_import_resolves_to_index_cts(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path, ["src/pkg/index.cts", "src/main.ts"])
         assert resolve_ts_js_import("./pkg", "src/main.ts", ctx) == "src/pkg/index.cts"
+
+
+_RN_PATHS = [
+    "index.js",
+    "src/App.tsx",
+    "src/components/Button.ios.tsx",
+    "src/components/Button.android.tsx",
+    "src/components/haptics.ts",
+    "src/components/haptics.native.ts",
+]
+
+
+class TestReactNativePlatformFiles:
+    """Metro picks ``X.<ios|android|native|web>.<ext>`` over ``X.<ext>`` (#3603)."""
+
+    def test_flag_set_only_when_a_platform_file_exists(self, tmp_path: Path) -> None:
+        assert _ctx(tmp_path, _RN_PATHS).has_platform_files is True
+        assert _ctx(tmp_path, ["src/foo.ts", "src/foo.test.ts"]).has_platform_files is False
+
+    @pytest.mark.parametrize("name", ["ios", "android", "native", "web"])
+    def test_flag_recognises_each_platform_segment(self, tmp_path: Path, name: str) -> None:
+        assert _ctx(tmp_path, [f"src/a.{name}.ts"]).has_platform_files is True
+
+    def test_flag_ignores_non_trailing_platform_segment(self, tmp_path: Path) -> None:
+        # ``ios`` as a directory or a mid-name token is not a platform extension.
+        ctx = _ctx(tmp_path, ["src/ios/util.ts", "src/ios.config.ts", "src/web.json"])
+        assert ctx.has_platform_files is False
+
+    def test_platform_only_import_resolves_to_every_platform_file(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        assert resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx) == (
+            "src/components/Button.android.tsx",
+            "src/components/Button.ios.tsx",
+        )
+
+    def test_plain_file_comes_first_then_sorted_platform_files(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        assert resolve_ts_js_import_all("./components/haptics", "src/App.tsx", ctx) == (
+            "src/components/haptics.ts",
+            "src/components/haptics.native.ts",
+        )
+
+    def test_index_form_resolves_through_directory(self, tmp_path: Path) -> None:
+        ctx = _ctx(
+            tmp_path,
+            [
+                "src/App.tsx",
+                "src/components/Button/index.ios.tsx",
+                "src/components/Button/index.android.tsx",
+            ],
+        )
+        assert resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx) == (
+            "src/components/Button/index.android.tsx",
+            "src/components/Button/index.ios.tsx",
+        )
+
+    def test_parent_relative_specifier(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["src/screens/Home.tsx", "src/ui/Card.web.tsx", "src/ui/Card.ios.tsx"])
+        assert resolve_ts_js_import_all("../ui/Card", "src/screens/Home.tsx", ctx) == (
+            "src/ui/Card.ios.tsx",
+            "src/ui/Card.web.tsx",
+        )
+
+    def test_unrelated_platform_files_are_not_picked_up(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [*_RN_PATHS, "src/components/Other.ios.tsx"])
+        targets = resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx)
+        assert "src/components/Other.ios.tsx" not in targets
+
+    def test_repo_without_platform_files_matches_single_resolver(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["src/foo.ts", "src/main.ts"])
+        assert ctx.has_platform_files is False
+        assert resolve_ts_js_import_all("./foo", "src/main.ts", ctx) == ("src/foo.ts",)
+        assert resolve_ts_js_import_all("./missing", "src/main.ts", ctx) == ()
+
+    def test_probing_is_gated_on_the_context_flag(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        ctx.has_platform_files = False
+        assert resolve_ts_js_import_all("./components/Button", "src/App.tsx", ctx) == ()
+
+    def test_non_relative_specifiers_are_unchanged(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, _RN_PATHS)
+        assert resolve_ts_js_import_all("react-native", "src/App.tsx", ctx) == (
+            "external:react-native",
+        )

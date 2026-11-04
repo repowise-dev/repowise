@@ -143,3 +143,80 @@ export function buildCouplingAiPrompt({
       : "Start by reading both files and `git log` for the commits that changed them together. The co-change count is a symptom; find the shared concern driving it before you restructure anything.",
   ]);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Area coupling prompt (one or more area pairs)
+// ─────────────────────────────────────────────────────────────────────
+
+/** One area pair as the coupling view holds it. */
+export interface AreaCouplingPromptPair {
+  source: string;
+  target: string;
+  pairs: number;
+  unexplained_pairs: number;
+  co_changes: number;
+  last_co_change?: string | null;
+  /** The strongest file pairs, unexplained first. */
+  top_pairs?: CouplingPromptEdge[];
+}
+
+export interface BuildAreaCouplingPromptOptions {
+  areaPairs: AreaCouplingPromptPair[];
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+function areaName(path: string): string {
+  return path ? `\`${path}/\`` : "the repository root";
+}
+
+function filePairLine(edge: CouplingPromptEdge): string {
+  const verdict =
+    edge.structural === "unexplained" ? "no dependency joins them" : (edge.structural ?? "unlabelled");
+  const support = edge.support ? `, ${edge.support} shared commits` : "";
+  return `\`${edge.source}\` ↔ \`${edge.target}\` (${verdict}${support})`;
+}
+
+function areaPairSection(pair: AreaCouplingPromptPair): string {
+  const last = pair.last_co_change ? `, last on ${pair.last_co_change.slice(0, 10)}` : "";
+  return [
+    `### ${areaName(pair.source)} ↔ ${areaName(pair.target)}`,
+    "",
+    bulletList([
+      `${pair.pairs} file pairs change together across these areas, and no dependency joins the two areas in either direction; **${pair.unexplained_pairs}** of the pairs are files that could have carried one.`,
+      `${pair.co_changes} shared commits summed over those pairs${last}.`,
+      ...(pair.top_pairs ?? []).map(filePairLine),
+    ]),
+  ].join("\n");
+}
+
+const AREA_EXPECTED = [
+  "1. Per area pair: the shared concern behind the hidden coupling (a wire contract, a duplicated constant, a feature split across layers), named with evidence from the commits.",
+  "2. Which of it is legitimate (two halves of one feature, a generated mirror) and which is accidental.",
+  "3. For the accidental part: a decoupling plan, smallest-risk first, and the first behavior-preserving change with its tests.",
+];
+
+/**
+ * A prompt asking an agent to investigate why whole areas change together
+ * with no dependency between their files, and to decouple what is accidental.
+ */
+export function buildAreaCouplingAiPrompt({
+  areaPairs,
+  flavor = "generic",
+  repoName,
+}: BuildAreaCouplingPromptOptions): string {
+  const first = areaPairs[0];
+  return joinSections([
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Hidden coupling between areas${repoSuffix(repoName)}`,
+    "",
+    "Files in these directories keep changing in the same commits although no file in one area imports, uses or wires a file in the other. Across languages that usually means an unwritten contract (a wire format, a schema mirrored by hand, a command a script runs). Source: repowise co-change analysis of git history; treat it as a lead, not proof. Test files are left out, since a test is expected to change with its code.",
+    "",
+    ...areaPairs.flatMap((pair) => [areaPairSection(pair), ""]),
+    ...closingSections(CONSTRAINTS, AREA_EXPECTED),
+    flavor === "claude-code-mcp" && first
+      ? `Call \`get_context(['${first.source}', '${first.target}'])\` and \`get_risk\` on the file pairs above before planning: repowise already holds the dependency graph and co-change history.`
+      : "Start with `git log` for the commits that touched both sides of a pair. The co-change count is a symptom; find the shared concern before restructuring anything.",
+  ]);
+}

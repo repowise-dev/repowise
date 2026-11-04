@@ -44,7 +44,9 @@ From git history over the {{ signals.get("files", 0) }} files this page covers.
 {% endif %}
 {%- if signals.get("bus_factor_one") %}- Files with a bus factor of one: {{ signals.get("bus_factor_one") }}
 {% endif %}
-{%- if signals.get("bug_fixes") %}- Bug-fix commits: {{ signals.get("bug_fixes") }}{% if signals.get("most_fixed_file") %}, most in `{{ signals.get("most_fixed_file") }}`{% endif %}
+{#- Summed over the files' own fix counts, so a fix touching two files counts
+    twice: a count of fixes per file, not of distinct commits. -#}
+{%- if signals.get("bug_fixes") %}- Bug fixes in the last {{ fix_window }}, counted per file: {{ signals.get("bug_fixes") }}{% if signals.get("most_fixed_file") %}, most in `{{ signals.get("most_fixed_file") }}`{% endif %}
 {% endif %}
 {%- if signals.get("stable") %}- Stable files: {{ signals.get("stable") }}
 {% endif %}

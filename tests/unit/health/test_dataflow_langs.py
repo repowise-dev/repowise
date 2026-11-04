@@ -679,6 +679,35 @@ def test_java_extract_method_fires():
     assert best.slice_nloc >= 6
 
 
+def test_java_span_never_shares_a_line_with_a_compact_block_brace():
+    # A block opened on its header's line and closed on its last statement's
+    # line: a span over its statements would lift the header and the brace.
+    src = """
+    class Demo {
+        int f(int[] xs, int limit) {
+            int total = 0;
+            int extra = 0;
+            for (int x : xs) {
+                total += x;
+            }
+            if (limit > 0) { extra = limit * 2;
+                if (extra > 9) {
+                    extra = 9;
+                }
+                total += extra;
+                total += 1; }
+            return total;
+        }
+    }
+    """
+    lmap = get_language_map("java")
+    lines = textwrap.dedent(src).splitlines()
+    header = next(i for i, ln in enumerate(lines, 1) if "if (limit > 0) {" in ln)
+    brace = next(i for i, ln in enumerate(lines, 1) if "total += 1; }" in ln)
+    for e in find_extractions(_first("java", src), lmap):
+        assert e.start_line != header and e.end_line != brace
+
+
 def test_java_extractions_are_deterministic():
     lmap = get_language_map("java")
     fn = _first("java", _JAVA_PROCESS)
@@ -820,6 +849,46 @@ def test_rust_def_use_classification():
     assert "Vec" not in uses
     assert "new" not in uses
 
+
+@pytest.mark.parametrize(
+    "import_stmt",
+    [
+        "use foo;",
+        "use foo as bar;",
+        "use Shape::{Circle, Square};",
+        "use std::fmt;",
+        "use Shape::*;",
+    ],
+)
+def test_rust_imports_are_not_variable_reads(import_stmt):
+    fn = _first(
+        "rust",
+        f"""
+        fn main() {{
+            {import_stmt}
+            let a = 1;
+        }}
+        """,
+    )
+
+    assert not _use_names(fn), (
+        f"Import {import_stmt!r} should not create variable reads; "
+        f"got {_use_names(fn)}"
+    )
+
+
+def test_rust_import_does_not_read_local_with_same_name():
+    fn = _first(
+        "rust",
+        """
+        fn main() {
+            let io = 1;
+            use std::{fs, io};
+        }
+        """,
+    )
+
+    assert "io" not in _use_names(fn)
 
 def test_rust_while_let_binder_is_a_may_def():
     fn = _first(
@@ -1480,6 +1549,112 @@ def test_csharp_extract_method_fires():
     assert best.slice_nloc >= 6
 
 
+# A ``using var`` is disposed at the end of the block that declares it, so a
+# helper holding it would dispose it when the helper returns (#3452).
+_CSHARP_USING_DECLARATION = """
+class Demo {
+    int Process(string path, int[] records, int threshold) {
+        %s var stream = System.IO.File.OpenRead(path);
+        int total = 0;
+        int count = 0;
+        foreach (int v in records) {
+            if (v > threshold) {
+                total += v + (int)stream.Position;
+                count++;
+            } else {
+                total -= v;
+            }
+        }
+        if (count > 0) {
+            total = total / count;
+        }
+        if (total > 100) {
+            total = 100;
+        }
+        System.IO.File.Delete(path);
+        return total;
+    }
+}
+"""
+
+
+@pytest.mark.parametrize("keyword", ["using", "await using"])
+def test_csharp_span_never_ends_a_using_declaration_early(keyword):
+    _require("csharp")
+    src = _CSHARP_USING_DECLARATION % keyword
+    using_line = next(n for n, ln in enumerate(src.splitlines(), 1) if "var stream" in ln)
+    extractions = find_extractions(_first("csharp", src), get_language_map("csharp"))
+    assert not [
+        (e.start_line, e.end_line) for e in extractions if e.start_line <= using_line <= e.end_line
+    ]
+    # A span after the declaration takes the resource as a parameter.
+    assert any(e.start_line == using_line + 1 and "stream" in e.params for e in extractions)
+
+
+def test_csharp_span_inside_a_using_block_is_still_offered():
+    _require("csharp")
+    src = """
+class Demo {
+    int Process(string path, int[] records, int threshold) {
+        using (var stream = System.IO.File.OpenRead(path)) {
+            int total = 0;
+            int count = 0;
+            foreach (int v in records) {
+                if (v > threshold) {
+                    total += v + (int)stream.Position;
+                    count++;
+                } else {
+                    total -= v;
+                }
+            }
+            if (count > 0) {
+                total = total / count;
+            }
+            if (total > 100) {
+                total = 100;
+            }
+            System.IO.File.Delete(path);
+            return total;
+        }
+    }
+}
+"""
+    lines = src.splitlines()
+    block_start = next(n for n, ln in enumerate(lines, 1) if "using (" in ln)
+    block_end = next(n for n, ln in enumerate(lines, 1) if "return total;" in ln) + 1
+    extractions = find_extractions(_first("csharp", src), get_language_map("csharp"))
+    assert any(block_start < e.start_line and e.end_line < block_end for e in extractions)
+
+
+def test_csharp_stage_never_ends_a_using_declaration_early():
+    _require("csharp")
+    from repowise.core.analysis.health.dataflow.stages import find_stages
+
+    section = """
+        if (a > {n}) {{
+            total += {n};
+        }} else {{
+            total -= {n};
+        }}
+        if (total > {n}0) {{
+            total = {n};
+        }}"""
+    src = (
+        "class Demo {\n    int Run(string path, int a) {\n        int total = 0;\n"
+        "        using var stream = System.IO.File.OpenRead(path);"
+        + "".join(section.format(n=k) for k in range(1, 7))
+        + "\n        System.IO.File.Delete(path);\n        return total;\n    }\n}\n"
+    )
+    using_line = next(n for n, ln in enumerate(src.splitlines(), 1) if "using var" in ln)
+    plan = find_stages(_first("csharp", src), get_language_map("csharp"))
+    assert plan.stages
+    assert not [
+        (st.start_line, st.end_line)
+        for st in plan.stages
+        if st.start_line <= using_line <= st.end_line
+    ]
+
+
 def test_csharp_extractions_are_deterministic():
     lmap = get_language_map("csharp")
     fn = _first("csharp", _CSHARP_PROCESS)
@@ -1676,6 +1851,462 @@ def test_c_extraction_never_spans_a_goto_label():
     ).count("\n") + 1
     for e in find_extractions(fn, lmap):
         assert not (e.start_line <= label_line <= e.end_line)
+
+
+# == PHP =========================================================================
+
+# Every PHP write shape in one function: plain assignment, compound assign,
+# update (++/--), static declaration, foreach binders (key => value), list
+# and array destructuring -- plus the target shapes that bind NO local (properties,
+# array elements, method calls, static member calls).
+_PHP_SHAPES = """<?php
+function processShapes(array $input, int $base, $cfg) {
+    $acc = $base;
+    $a = 1;
+    $b = 2;
+    $errors = 0;
+    $errors += 1;
+    $errors .= "suffix";
+    $val ??= 2;
+    $acc++;
+    --$acc;
+    static $cache = 0;
+    foreach ($input as $k => $item) {
+        $acc += $item;
+    }
+    list($x, $y) = [$a, $b];
+    [$u, $v] = [$x, $y];
+    ["key" => $z] = ["key" => $u];
+    $cfg->count = $acc;
+    $obj->field = $acc;
+    $arr[$a] = $b;
+    $lam = function($elem) use ($base) { return $elem + $base; };
+    return $acc;
+}
+"""
+
+
+def test_php_def_use_classification():
+    fn = _first("php", _PHP_SHAPES)
+    defs = _def_names(fn)
+    assert {"input", "base", "cfg"} <= defs  # parameters seeded as entry defs
+    assert {
+        "acc",
+        "a",
+        "b",
+        "errors",
+        "val",
+        "cache",
+        "k",
+        "item",
+        "x",
+        "y",
+        "u",
+        "v",
+        "z",
+        "lam",
+    } <= defs
+    assert "count" not in defs
+    assert "field" not in defs
+
+    uses = _use_names(fn)
+    assert {"base", "acc", "input", "a", "b", "cfg", "obj", "arr", "item", "x", "y", "u"} <= uses
+    assert "array" not in uses
+    assert "processShapes" not in uses
+
+
+def test_php_reads_a_member_callee_receiver_but_not_the_method():
+    fn = _first(
+        "php",
+        """<?php
+        function run($db, $id) {
+            $n = 0;
+            $n += $db->execute($id);
+            $n += helper($id);
+            return $n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "db" in uses  # the receiver is a real read
+    assert "execute" not in uses  # the method name is not a variable
+    assert "helper" not in uses  # global function name is not a variable read
+
+
+def test_php_reads_member_call_and_nullsafe_call_arguments_without_method_names():
+    fn = _first(
+        "php",
+        """<?php
+        function run($db, $id, $item) {
+            $n = 0;
+            $n += $db->execute($id);
+            $n += $db?->executeOther($item);
+            return $n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "db" in uses
+    assert "id" in uses
+    assert "item" in uses
+    assert "execute" not in uses
+    assert "executeOther" not in uses
+
+
+
+def test_php_delegate_call_is_a_variable_read():
+    fn = _first(
+        "php",
+        """<?php
+        function executeDelegate($fn, $arg) {
+            $n = 0;
+            $n += $fn($arg);
+            return $n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "fn" in uses  # delegate variable is a read
+    assert "arg" in uses
+
+
+def test_php_lambda_body_is_a_separate_scope():
+    fn = _first(
+        "php",
+        """<?php
+        function run($items, $base) {
+            $total = $base;
+            $lam = function($x) use ($total) {
+                $inner = $x * 2;
+                return $inner + $total;
+            };
+            return $total;
+        }
+        """,
+    )
+    defs = _def_names(fn)
+    assert "inner" not in defs  # scoped inside the closure
+    assert "x" not in defs  # closure parameter
+    captured = {u.name for u in fn.def_use.captured.reads}
+    assert "total" in captured
+    assert "x" not in captured
+
+
+def test_php_extract_method_fires():
+    fn = _first(
+        "php",
+        """<?php
+        function process($records, $threshold) {
+            $results = [];
+            $errors = 0;
+            foreach ($records as $r) {
+                if ($r === null) {
+                    $errors += 1;
+                    continue;
+                }
+                $results[] = $r;
+            }
+            $total = 0;
+            $count = 0;
+            foreach ($results as $v) {
+                if ($v > $threshold) {
+                    $total += $v;
+                    $count += 1;
+                } else {
+                    $total -= $v;
+                }
+            }
+            $average = $count ? $total / $count : 0;
+            return $average;
+        }
+        """,
+    )
+    lmap = get_language_map("php")
+    assert lmap is not None
+    extractions = find_extractions(fn, lmap)
+    assert extractions
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params
+    assert "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+    # Deterministic ordering: re-running yields identical candidates
+    assert [(e.start_line, e.end_line) for e in find_extractions(fn, lmap)] == [
+        (e.start_line, e.end_line) for e in extractions
+    ]
+
+
+def test_php_flagged_only_gate_skips_small_functions():
+    _require("php")
+    src = b"""<?php
+    function small($a, $b) {
+        if ($a > $b) {
+            return $a;
+        }
+        return $b;
+    }
+    """
+    res = analyze_file("small.php", "php", src, flagged_only=True)
+    assert res.stats.functions_seen == 1
+    assert len(res.functions) == 0  # not flagged (low complexity)
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "yield $v;",
+        "$$v = 1;",
+        "global $cfg;",
+        "static $s = 0;",
+        "$alias = &$total;",
+    ],
+)
+def test_php_spans_holding_disallowed_constructs_are_refused(stmt: str):
+    code = f"""<?php
+    function process($records, $threshold) {{
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {{
+            if ($r === null) {{
+                $errors += 1;
+                continue;
+            }}
+            $results[] = $r;
+        }}
+        $total = 0;
+        $count = 0;
+        {stmt}
+        foreach ($results as $v) {{
+            if ($v > $threshold) {{
+                $total += $v;
+                $count += 1;
+            }} else {{
+                $total -= $v;
+            }}
+        }}
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }}
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn, lmap)
+    # The statement at line 14 should not be included in any offered extraction span
+    assert not any(e.start_line <= 14 <= e.end_line for e in spans)
+
+
+def test_php_byref_parameter_mutation_refuses_when_returning_another():
+    code_byref = """<?php
+    function process(array &$out, $records, $threshold) {
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {
+            if ($r === null) {
+                $errors += 1;
+                continue;
+            }
+            $results[] = $r;
+        }
+        $total = 0;
+        $count = 0;
+        foreach ($results as $v) {
+            if ($v > $threshold) {
+                $total += $v;
+                $count += 1;
+                $out = [$v];
+            } else {
+                $total -= $v;
+            }
+        }
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }
+    """
+    code_byval = code_byref.replace("&$out", "$out")
+    lmap = get_language_map("php")
+    assert lmap is not None
+
+    fn_byval = _first("php", code_byval)
+    assert len(find_extractions(fn_byval, lmap)) > 0
+
+    fn_byref = _first("php", code_byref)
+    assert len(find_extractions(fn_byref, lmap)) == 0
+
+
+def test_php_byref_foreach_is_refused():
+    code = """<?php
+    function process($records, $threshold) {
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {
+            if ($r === null) {
+                $errors += 1;
+                continue;
+            }
+            $results[] = $r;
+        }
+        $total = 0;
+        $count = 0;
+        foreach ($results as &$v) {
+            if ($v > $threshold) {
+                $total += $v;
+                $count += 1;
+            } else {
+                $total -= $v;
+            }
+        }
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    # By-reference foreach makes the loop disqualified from extraction
+    assert len(find_extractions(fn, lmap)) == 0
+
+
+def test_php_subscript_writes_are_defs():
+    code = """<?php
+    function f($items, $limit) {
+        $out = [];
+        $n = count($items);
+        if ($n > $limit) {
+            $out[] = $items[0];
+            $n = $n - 1;
+        }
+        $total = $n + 1;
+        echo $total;
+        return $out;
+    }
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn, lmap)
+    # No offered span passes $out in without returning it
+    assert not any(
+        e.start_line <= 6 <= e.end_line and "out" in e.params and "out" not in e.returns
+        for e in spans
+    )
+    # Span 4-8 defines both $n and $out with both live-out -> multiple returns -> refused
+    assert not any(e.start_line == 4 and e.end_line == 8 for e in spans)
+
+
+def test_php_byref_builtins_mutate_arguments():
+    # sort($out) modifies $out in-place
+    code_sort = """<?php
+    function g($items, $limit) {
+        $out = [];
+        $n = count($items);
+        if ($n > $limit) {
+            sort($out);
+            $n = $n - 1;
+        }
+        $total = $n + 1;
+        echo $total;
+        return $out;
+    }
+    """
+    fn_sort = _first("php", code_sort)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn_sort, lmap)
+    assert not any(
+        e.start_line <= 6 <= e.end_line and "out" in e.params and "out" not in e.returns
+        for e in spans
+    )
+    assert not any(e.start_line == 4 and e.end_line == 8 for e in spans)
+
+    # preg_match writes the matches array (arg 2)
+    code_preg = """<?php
+    function h($re, $s) {
+        $m = [];
+        if (strlen($s) > 0) {
+            preg_match($re, $s, $m);
+        }
+        return $m;
+    }
+    """
+    fn_preg = _first("php", code_preg)
+    assert "m" in _def_names(fn_preg)
+
+
+def test_php_elseif_chain_cfg_and_defs():
+    code = """<?php
+    function test_branches($a, $b, $c) {
+        if ($a) {
+            $m = 1;
+        } elseif ($b) {
+            $m = 2;
+        } elseif ($c) {
+            $m = 3;
+        } else {
+            $m = 4;
+        }
+        return $m;
+    }
+    """
+    fn = _first("php", code)
+    defs = [(d.var, d.line) for d in fn.def_use.definitions]
+    # Defs from all arms (line 4, 6, 8, 10) must reach the CFG
+    m_lines = {line for var, line in defs if var == "m"}
+    assert m_lines == {4, 6, 8, 10}
+
+
+@pytest.mark.parametrize("fn_name", ["compact", "extract"])
+def test_php_compact_and_extract_refuse_spans(fn_name: str):
+    code = f"""<?php
+    function process($records, $threshold) {{
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {{
+            if ($r === null) {{
+                $errors += 1;
+                continue;
+            }}
+            $results[] = $r;
+        }}
+        $total = 0;
+        $count = 0;
+        {fn_name}($records);
+        foreach ($results as $v) {{
+            if ($v > $threshold) {{
+                $total += $v;
+                $count += 1;
+            }} else {{
+                $total -= $v;
+            }}
+        }}
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }}
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn, lmap)
+    assert not any(e.start_line <= 14 <= e.end_line for e in spans)
+
+
+def test_identifiers_preserves_dollar_in_ts_js():
+    from tree_sitter import Parser
+
+    from repowise.core.analysis.health.dataflow.slice import _identifiers
+    from repowise.core.ingestion.parser import _get_language
+
+    parser_ts = Parser(_get_language("typescript"))
+    tree_ts = parser_ts.parse(b"let $items = 1;")
+    names_ts = _identifiers(tree_ts.root_node)
+    assert "$items" in names_ts
+
+    parser_php = Parser(_get_language("php"))
+    tree_php = parser_php.parse(b"<?php $items = 1;")
+    names_php = _identifiers(tree_php.root_node)
+    assert "items" in names_php and "$items" not in names_php
 
 
 # ---------------------------------------------------------------------------
@@ -2260,6 +2891,18 @@ def test_ts_closure_parameter_is_not_a_read_of_the_outer_name():
             {"total", "k", "rows"},
             {"v", "w"},
         ),
+        (
+            "php",
+            """<?php
+            function f($rows, $k) {
+                $total = 1;
+                $fn = function($v) use ($total, $k) { return $v + $total + $k; };
+                return array_map($fn, $rows);
+            }
+            """,
+            {"total", "k"},
+            {"v"},
+        ),
     ],
 )
 def test_closure_reads_are_captured_per_language(language, src, captured, not_captured):
@@ -2793,3 +3436,511 @@ def test_csharp_lambda_writing_outer_local_records_def():
     assert any(occ.name == "tryCount" for occ in fn.def_use.captured.writes)
     extractions = find_extractions(fn, lmap)
     assert not any(x.start_line <= 4 and x.end_line >= 5 for x in extractions)
+
+
+def test_cpp_condition_declaration_records_use_of_initializer() -> None:
+    code = (
+        b"void f() {\n"
+        b"    if (auto v = settings.get(1)) {\n"
+        b"        use(v);\n"
+        b"    }\n"
+        b"    while (auto w = helper.next()) {\n"
+        b"        use(w);\n"
+        b"    }\n"
+        b"}\n"
+    )
+    import tree_sitter_cpp
+    from tree_sitter import Language, Parser
+
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+    from repowise.core.analysis.health.dataflow.dialects.cpp import CppDefUseDialect
+
+    parser = Parser(Language(tree_sitter_cpp.language()))
+    tree = parser.parse(code)
+    fn = tree.root_node.children[0]
+    body = fn.child_by_field_name("body")
+    if_stmt = body.children[1]
+    while_stmt = body.children[2]
+
+    lmap = get_language_map("cpp")
+    dialect = CppDefUseDialect()
+
+    if_sdu = dialect.statement_def_use(if_stmt, lmap, head_only=True)
+    assert any(d.name == "v" for d in if_sdu.defs)
+    assert any(u.name == "settings" for u in if_sdu.uses)
+
+    while_sdu = dialect.statement_def_use(while_stmt, lmap, head_only=True)
+    assert any(d.name == "w" for d in while_sdu.defs)
+    assert any(u.name == "helper" for u in while_sdu.uses)
+
+
+# == Scala ======================================================================
+
+# Every Scala write shape in one method: ``val`` / ``var`` / ``lazy val``, a tuple
+# pattern, plain and compound assignment, a ``for`` head with a guard and a ``=``
+# binder, a ``case`` binding, and targets that are not locals.
+_SCALA_SHAPES = """
+class Demo {
+  var field = 0
+  def shapes(input: List[Int], base: Int): Int = {
+    var total = 0
+    val (p, q) = (1, 2)
+    lazy val w = p + q
+    total = total + base
+    total += input.head
+    this.field = 3
+    input(0) = 4
+    for (i <- input if i > 0; j = i * 2) { total += j }
+    val r = base match { case a if a > 1 => a; case (b, c) => b; case _ => 0 }
+    total + w + r
+  }
+}
+"""
+
+
+def test_scala_def_use_classification():
+    fn = _first("scala", _SCALA_SHAPES)
+    defs = {(d.var, d.declares) for d in fn.def_use.definitions}
+    assert {("total", True), ("p", True), ("q", True), ("w", True), ("r", True)} <= defs
+    assert {("i", True), ("j", True)} <= defs  # for generator + ``=`` binder
+    assert {("a", True), ("b", True), ("c", True)} <= defs  # case pattern bindings
+    assert {"input", "base"} <= _def_names(fn)  # parameters
+    # ``this.field = ...`` and ``input(0) = ...`` bind no local.
+    assert "field" not in _def_names(fn)
+    uses = _use_names(fn)
+    assert {"input", "base", "total", "i", "w", "r"} <= uses
+    assert "this" not in uses  # the receiver, not a variable
+
+
+def test_scala_compound_assignment_is_found_by_operator_text():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(t: Int): Int = {
+            var x = 1
+            x += t
+            val sum = x + t
+            val le = x <= t
+            val ne = x != t
+            x *= 2
+            x
+          }
+        }
+        """,
+    )
+    writes = sorted(d.line for d in fn.def_use.definitions if d.var == "x" and not d.declares)
+    # Only ``x += t`` (line 5) and ``x *= 2`` (line 9): ``x + t``, ``x <= t`` and
+    # ``x != t`` are the same ``infix_expression`` and write nothing.
+    assert writes == [5, 9]
+    # A compound write also reads the old value.
+    assert any(u.name == "x" and u.line == 5 for b in fn.def_use.blocks.values() for u in b.uses)
+    assert not [d for d in fn.def_use.definitions if d.var in ("sum", "le", "ne") and d.may]
+
+
+def test_scala_collection_append_is_a_may_def_and_a_use():
+    # ``buf += x`` mutates a ListBuffer and rebinds nothing, but it is the same
+    # node as ``count += x`` on an ``Int`` var: both are a may-def plus a use.
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(t: Int): Int = {
+            val buf = scala.collection.mutable.ListBuffer.empty[Int]
+            buf += t
+            buf.size
+          }
+        }
+        """,
+    )
+    assert any(d.var == "buf" and d.may for d in fn.def_use.definitions)
+    assert any(u.name == "buf" and u.line == 5 for b in fn.def_use.blocks.values() for u in b.uses)
+
+
+def test_scala_named_argument_is_not_a_read_or_a_write():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(p: P): Int = {
+            val a = 1
+            val p2 = p.copy(a = 2)
+            a + p2.a
+          }
+        }
+        """,
+    )
+    # ``a = 2`` is a named argument: it neither rebinds ``a`` nor reads it, and
+    # ``p`` is read, not written.
+    assert [d.var for d in fn.def_use.definitions if d.var == "a"] == ["a"]
+    assert "p" not in {d.var for d in fn.def_use.definitions if not d.declares and d.may}
+    assert "p" in _use_names(fn)
+
+
+def test_scala_lambda_does_not_leak_its_identifiers():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(xs: List[Int], t: Int): Int = {
+            val g = xs.map { v => v + t }
+            g.sum
+          }
+        }
+        """,
+    )
+    assert "v" not in _use_names(fn)
+    assert "v" not in _def_names(fn)
+    assert "t" in {o.name for o in fn.def_use.captured.reads}  # a closure read still counts
+
+
+def test_scala_lambda_mutating_a_captured_var_is_a_closure_write():
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(xs: List[Int]): Int = {
+            var total = 0
+            xs.foreach { v => total += v }
+            total
+          }
+        }
+        """,
+    )
+    assert "total" in {o.name for o in fn.def_use.captured.writes}
+    assert "total" in {o.name for o in fn.def_use.captured.shared}
+
+
+def test_scala_catch_arm_writes_are_closure_writes():
+    # ``catch_kinds`` is empty for Scala, so the CFG never sees a handler arm; it
+    # is read as a closure instead of being dropped.
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(t: Int): Int = {
+            var x = 0
+            try { x = t } catch { case e: Exception => x = 1 }
+            x
+          }
+        }
+        """,
+    )
+    assert "x" in {o.name for o in fn.def_use.captured.writes}
+
+
+def test_scala_braceless_arms_keep_their_writes():
+    # ``if (c) errors += 1 else buf += r`` has no ``block``: the CFG builder hands
+    # over the arm's tokens one by one, so the dialect reads the arm whole.
+    fn = _first(
+        "scala",
+        """
+        class Demo {
+          def f(records: List[Int]): Int = {
+            var errors = 0
+            for (r <- records) if (r < 0) errors += 1 else println(r)
+            errors
+          }
+        }
+        """,
+    )
+    assert any(d.var == "errors" and d.may for d in fn.def_use.definitions)
+    assert not [u for b in fn.def_use.blocks.values() for u in b.uses if u.name == "+="]
+
+
+_SCALA_PROCESS = """
+class Demo {
+  def process(records: Array[Int], threshold: Int): Int = {
+    var errors = 0
+    val results = scala.collection.mutable.ListBuffer.empty[Int]
+    for (r <- records) {
+      if (r < 0) { errors += 1 } else { results += r }
+    }
+    var total = 0
+    var count = 0
+    for (v <- results) {
+      if (v > threshold) {
+        total += v
+        count += 1
+      } else {
+        total -= v
+      }
+    }
+    var average = 0
+    if (count > 0) {
+      average = total / count
+    }
+    average + errors
+  }
+}
+"""
+
+
+def test_scala_extract_method_fires():
+    lmap = get_language_map("scala")
+    extractions = find_extractions(_first("scala", _SCALA_PROCESS), lmap)
+    assert extractions, "expected at least one Scala extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+
+
+def test_scala_braceless_arm_plans_match_the_braced_ones():
+    lmap = get_language_map("scala")
+    braceless = _SCALA_PROCESS.replace(
+        "if (r < 0) { errors += 1 } else { results += r }", "if (r < 0) errors += 1 else results += r"
+    )
+
+    def spans(src):
+        return [(e.start_line, e.end_line, e.params, e.returns) for e in find_extractions(_first("scala", src), lmap)]
+
+    assert spans(braceless) == spans(_SCALA_PROCESS)
+
+
+def test_scala_span_ending_in_the_final_expression_is_refused():
+    lmap = get_language_map("scala")
+    src = _SCALA_PROCESS
+    last_stmt_line = src.splitlines().index("    average + errors") + 1
+    for e in find_extractions(_first("scala", src), lmap):
+        # The block's last expression is the function's value: a span holding it
+        # would drop it, so none ends on it.
+        assert e.end_line < last_stmt_line
+    # ...and a span stopping before it returns the local the tail reads.
+    assert any("average" in e.returns for e in find_extractions(_first("scala", src), lmap))
+
+
+def test_scala_span_with_return_or_throw_is_refused():
+    lmap = get_language_map("scala")
+    src = _SCALA_PROCESS.replace(
+        "      average = total / count\n", "      average = total / count\n      if (average > 99) return 0\n"
+    )
+    assert "return 0" in src
+    ret_line = src.splitlines().index("      if (average > 99) return 0") + 1
+    for e in find_extractions(_first("scala", src), lmap):
+        assert not e.start_line <= ret_line <= e.end_line
+
+
+_SCALA_LAMBDA_LATE = """
+class Demo {
+  def process(records: List[Int], threshold: Int): Int = {
+    var errors = 0
+    val results = scala.collection.mutable.ListBuffer.empty[Int]
+    for (r <- records) {
+      if (r < 0) { errors += 1 } else { results += r }
+    }
+    var total = 0
+    var count = 0
+    for (v <- results) {
+      if (v > threshold) {
+        total += v
+        count += 1
+      } else {
+        total -= v
+      }
+    }
+    records.foreach { x =>
+      if (x > 99) RETURN
+    }
+    var average = 0
+    if (count > 0) {
+      average = total / count
+    }
+    average + errors
+  }
+}
+"""
+# The same method with the lambda first, so the spans after it stay clear of it.
+_SCALA_LAMBDA_EARLY = """
+class Demo {
+  def process(records: List[Int], threshold: Int): Int = {
+    var errors = 0
+    records.foreach { x =>
+      if (x > 99) RETURN
+    }
+    val results = scala.collection.mutable.ListBuffer.empty[Int]
+    for (r <- records) {
+      if (r < 0) { errors += 1 } else { results += r }
+    }
+    var total = 0
+    var count = 0
+    for (v <- results) {
+      if (v > threshold) {
+        total += v
+        count += 1
+      } else {
+        total -= v
+      }
+    }
+    var average = 0
+    if (count > 0) {
+      average = total / count
+    }
+    average + errors
+  }
+}
+"""
+_SCALA_LAMBDA_BODY = _SCALA_LAMBDA_LATE
+_SCALA_LAMBDA_RETURN = _SCALA_LAMBDA_LATE.replace("RETURN", "return x")
+_SCALA_LAMBDA_LOCAL = _SCALA_LAMBDA_LATE.replace("RETURN", "println(x)")
+
+
+def _scala_span_jump(src: str, needle: str) -> bool:
+    """The span walk's jump bit for the one statement holding *needle*."""
+    from repowise.core.analysis.health.dataflow.slice import _scan_for, _span_metrics
+
+    lmap = get_language_map("scala")
+    fn = _first("scala", src).fn_node
+    stmt = next(
+        n for n in _walk_nodes(fn) if needle in n.text.decode() and n.parent is not None
+        and n.parent.type in lmap.block_kinds
+    )
+    return _span_metrics([stmt], _scan_for(lmap, None, fn)).jump
+
+
+def _walk_nodes(node):
+    yield node
+    for c in node.children:
+        yield from _walk_nodes(c)
+
+
+def _scala_spans(src: str):
+    return find_extractions(_first("scala", src), get_language_map("scala"))
+
+
+def test_scala_lambda_exit_kinds_is_set_for_scala_only():
+    assert get_language_map("scala").lambda_exit_kinds == {"return_expression"}
+    # Every other language keeps a lambda ``return`` local: the default is empty.
+    assert not get_language_map("python").lambda_exit_kinds
+    assert not get_language_map("java").lambda_exit_kinds
+
+
+def test_scala_return_inside_a_lambda_in_the_span_is_a_jump():
+    # ``return x`` in the ``foreach`` lambda leaves ``process``, so a helper
+    # holding it would return from itself instead.
+    assert _scala_span_jump(_SCALA_LAMBDA_RETURN, "records.foreach")
+    assert not _scala_span_jump(_SCALA_LAMBDA_LOCAL, "records.foreach")
+
+
+def test_scala_span_holding_a_lambda_return_is_refused():
+    ret_line = _SCALA_LAMBDA_RETURN.splitlines().index("      if (x > 99) return x") + 1
+    local = [e for e in _scala_spans(_SCALA_LAMBDA_LOCAL) if e.start_line <= ret_line <= e.end_line]
+    assert local, "control: without the return, spans over the lambda are offered"
+    assert not [
+        e for e in _scala_spans(_SCALA_LAMBDA_RETURN) if e.start_line <= ret_line <= e.end_line
+    ]
+
+
+def test_scala_return_in_a_lambda_outside_the_span_is_still_extractable():
+    src = _SCALA_LAMBDA_EARLY.replace("RETURN", "return x")
+    ret_line = src.splitlines().index("      if (x > 99) return x") + 1
+    spans = _scala_spans(src)
+    assert spans, "a span clear of the lambda is still offered"
+    assert not [e for e in spans if e.start_line <= ret_line <= e.end_line]
+
+
+def test_scala_return_in_a_nested_def_inside_the_span_is_not_a_jump():
+    # The ``return`` belongs to the local ``def`` inside the lambda, not to
+    # ``process``: the lambda walk stops at a function boundary.
+    src = _SCALA_LAMBDA_LATE.replace(
+        "      if (x > 99) RETURN\n",
+        "      def local(y: Int): Int = { return y }\n      local(x)\n",
+    )
+    assert "def local" in src and "return y" in src
+    assert not _scala_span_jump(src, "records.foreach")
+    # ...while a ``return`` beside that def, in the lambda itself, still counts.
+    both = src.replace("      local(x)\n", "      if (x > 99) return x\n      local(x)\n")
+    assert _scala_span_jump(both, "records.foreach")
+
+
+def test_scala_extractions_are_deterministic():
+    lmap = get_language_map("scala")
+    fn = _first("scala", _SCALA_PROCESS)
+
+    def serialize():
+        return [
+            (e.start_line, e.end_line, e.params, e.returns, e.ccn_removed)
+            for e in find_extractions(fn, lmap)
+        ]
+
+    first = serialize()
+    for _ in range(3):
+        assert serialize() == first
+
+
+def test_scala_flagged_only_gate_skips_small_functions():
+    _require("scala")
+    lines = ["class Demo {", "  def big(x: Int): Int = {", "    var y = 0"]
+    for i in range(12):
+        lines += [f"    if (x == {i}) {{", f"      y = {i}", "    }"]
+    lines += ["    y", "  }", "  def tiny(): Int = 1", "}"]
+    result = build_cfgs_for_file("m.scala", "scala", "\n".join(lines).encode())
+    if result.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for scala")
+    assert result.stats.functions_seen == 2
+    assert result.stats.functions_built == 1
+    assert [fc.name for fc in result.functions] == ["big"]
+
+
+_SCALA_COUNTERS = """
+class Demo {
+  def f(xs: List[Int]): Int = {
+    var total = 0
+    val buf = scala.collection.mutable.ListBuffer.empty[Int]
+    var pos = 0
+    var neg = 0
+    for (x <- xs) {
+      if (x > 0) { buf += x; pos += 1 } else { buf += -x; neg += 1 }
+    }
+    var zeros = 0
+    for (x <- xs) {
+      if (x == 0) { zeros += 1 } else if (x > 100) { zeros -= 1 }
+    }
+    var seen = 0
+    TOTAL_LINE
+    seen += 1
+    var avg = 0
+    if (total > 0) {
+      avg = total / 2
+    } else {
+      avg = 1
+    }
+    val n = buf.size
+    avg + total + n + pos + neg + zeros + seen
+  }
+}
+"""
+
+
+def test_scala_closure_write_to_a_captured_var_blocks_a_split():
+    # The control reads ``total`` where a plain write sets it, so the tail
+    # ``if`` is a clean extraction. When a lambda writes ``total`` instead, the
+    # write happens when the closure runs, not where it is written: the span
+    # would read a stale copy, so it is refused.
+    lmap = get_language_map("scala")
+
+    def spans(total_line):
+        fn = _first("scala", _SCALA_COUNTERS.replace("TOTAL_LINE", total_line))
+        return {(e.start_line, e.end_line) for e in find_extractions(fn, lmap)}
+
+    assert spans("total += xs.size")
+    assert not spans("xs.foreach { v => total += v }")
+
+
+def test_scala_implicit_parameter_is_carried_by_a_span_that_calls():
+    # An implicit is a use no call site writes: a span holding a call carries it
+    # as a parameter (the helper's author marks it ``implicit``).
+    src = _SCALA_PROCESS.replace(
+        "(records: Array[Int], threshold: Int)", "(records: Array[Int], threshold: Int)(implicit ec: Ec)"
+    ).replace("total += v", "total += load(v)")
+    call_line = src.splitlines().index("        total += load(v)") + 1
+    spans = find_extractions(_first("scala", src), get_language_map("scala"))
+    with_call = [e for e in spans if e.start_line <= call_line <= e.end_line]
+    assert with_call
+    assert all("ec" in e.params for e in with_call)
+    # No implicit, no extra parameter.
+    plain = _SCALA_PROCESS.replace("total += v", "total += load(v)")
+    spans = find_extractions(_first("scala", plain), get_language_map("scala"))
+    assert spans and all("ec" not in e.params for e in spans)

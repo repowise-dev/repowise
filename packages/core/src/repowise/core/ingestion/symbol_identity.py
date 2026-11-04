@@ -10,13 +10,20 @@ gains a discriminator:
   narrows to the member whose parameters admit its argument count. Members
   that share a count also carry their erased parameter types,
   ``StringUtil.java::StringUtil::append#1(String)``, so an inserted overload
-  never renames its siblings.
+  never renames its siblings. C# members those types still join spell each
+  generic type with its arity, ``When#2(Func`2)`` beside ``When#2(Func`3)``.
+  A Kotlin extension's receiver leads its types, as it leads the JVM
+  signature it compiles to: ``Byte.toHexString()`` is
+  ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
   mean any variant.
 - `` `<digits> `` on a type segment: the CLR generic arity that tells a C#
   ``IFoo<T>`` from a same-file ``IFoo``, ``IFoo.cs::IFoo`1``. Its members
   carry the suffix in ``parent_name`` and so in their own ids.
+- ``#setter`` / ``#deleter`` on a Python property's ``@x.setter`` or
+  ``@x.deleter`` def, ``m.py::C::x#setter``. The getter keeps the plain id,
+  and no call names the mutator, so the suffix is no payload to split off.
 
 ``Symbol.name``, ``qualified_name`` and the signature never change, and a name
 declared once keeps its plain id. Discriminators are registered per language
@@ -26,12 +33,13 @@ below, so a language without an entry is untouched by construction.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 
+from .decorator_names import property_mutator_role
 from .models import Symbol
 from .return_types import signature_parameter_count, signature_parameters
-from .type_names import strip_type_arguments
+from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
@@ -151,22 +159,159 @@ def erased_type(parameter: str) -> str:
     return "_".join(re.split(r"\.|::", w)[-1] for w in words) + marks
 
 
+# A Kotlin annotation's name, ``@StringRes`` or ``@param:Json``; its arguments
+# are skipped by bracket depth, since they may nest parentheses.
+_KOTLIN_ANNOTATION = re.compile(r"@[\w.:]+\s*")
+_OPENERS, _CLOSERS = "(<[{", ")>]}"
+
+
+def _depth_zero_split(text: str, separator: str) -> list[str]:
+    """*text* split on *separator* outside brackets; the ``>`` of ``->`` closes none."""
+    pieces: list[str] = []
+    depth = start = i = 0
+    while i < len(text):
+        at_arrow = text.startswith("->", i)
+        if depth == 0 and text.startswith(separator, i):
+            pieces.append(text[start:i])
+            i = start = i + len(separator)
+            continue
+        if at_arrow:
+            i += 2
+            continue
+        if text[i] in _OPENERS:
+            depth += 1
+        elif text[i] in _CLOSERS:
+            depth = max(0, depth - 1)
+        i += 1
+    pieces.append(text[start:])
+    return pieces
+
+
+def _strip_kotlin_annotations(text: str) -> str:
+    """*text* without its annotations, nested parentheses in their arguments included."""
+    out: list[str] = []
+    i = 0
+    while (found := _KOTLIN_ANNOTATION.search(text, i)) is not None:
+        out.append(text[i : found.start()])
+        i = found.end()
+        if text.startswith("(", i):
+            arguments = _depth_zero_split(text[i + 1 :], ")")
+            i += len(arguments[0]) + 2
+    out.append(text[i:])
+    return " ".join(out)
+
+
+def _kotlin_function_arity(written: str) -> int | None:
+    """``N`` of the ``FunctionN`` a Kotlin function type compiles to; None for another type.
+
+    ``Int.() -> Unit`` counts its receiver, and ``((Int) -> Unit)?`` its inner type.
+    """
+    arrow = _depth_zero_split(written, "->")
+    if len(arrow) < 2:
+        inner = written.rstrip("?").strip()
+        if inner.startswith("(") and inner.endswith(")"):
+            return _kotlin_function_arity(inner[1:-1].strip())
+        return None
+    left = arrow[0].strip()
+    if not left.endswith(")"):
+        return None
+    opened = _opening_paren(left)
+    params = [p for p in _depth_zero_split(left[opened + 1 : -1], ",") if p.strip()]
+    receiver = left[:opened].rstrip().endswith(".")
+    return len(params) + (1 if receiver else 0)
+
+
+def _opening_paren(text: str) -> int:
+    """The index of the ``(`` matching the ``)`` that ends *text*."""
+    depth = 0
+    for index in range(len(text) - 1, -1, -1):
+        if text[index] == ")":
+            depth += 1
+        elif text[index] == "(":
+            depth -= 1
+            if depth == 0:
+                return index
+    return 0
+
+
+def kotlin_erased_type(parameter: str) -> str:
+    """``vararg xs: List<Int>`` -> ``List[]``, ``f: (Int) -> Unit`` -> ``Function1``.
+
+    A function type erases to the ``FunctionN`` class it compiles to, its
+    receiver counted, and a nullable mark stays, as ``erased_type`` keeps it.
+    """
+    head, *rest = _depth_zero_split(_strip_kotlin_annotations(parameter), ":")
+    written = _depth_zero_split(":".join(rest), "=")[0].strip()
+    arity = _kotlin_function_arity(written)
+    if arity is not None:
+        erased = f"Function{arity}"
+    else:
+        # ``->`` goes first: type-argument stripping reads its ``>`` as a closer.
+        written = strip_type_arguments(written.replace("->", " "))
+        words = _WORD.findall(written)
+        erased = words[-1].rpartition(".")[2] if words else ""
+        erased += "?" if written.endswith("?") else ""
+    return erased + ("[]" if "vararg" in head.split() else "")
+
+
 def erased_parameter_types(symbol: Symbol) -> list[str]:
     """``["String", "int[]"]``: each parameter's erased type, as an id spells it."""
-    return [erased_type(p) for p in signature_parameters(symbol.signature or "") or []]
+    erase = kotlin_erased_type if symbol.language == "kotlin" else erased_type
+    return [erase(p) for p in signature_parameters(symbol.signature or "") or []]
 
 
 def _parameter_types(symbol: Symbol) -> str:
-    """``(String,int[])``: the erased types that split a same-count overload."""
-    return "(" + ",".join(erased_parameter_types(symbol)) + ")"
+    """``(String,int[])``: the erased types that split a same-count overload.
+
+    A Kotlin extension's receiver comes first, which is what tells
+    ``Byte.toHexString()`` from ``Int.toHexString()``.
+    """
+    receiver = [symbol.written_receiver] if symbol.written_receiver else []
+    return "(" + ",".join(receiver + erased_parameter_types(symbol)) + ")"
+
+
+def _normalize_cfg_whitespace(predicate: str) -> str:
+    """Remove whitespace outside quoted strings in a Rust cfg predicate."""
+    result: list[str] = []
+    quote: str | None = None
+    escaped = False
+
+    for char in predicate:
+        if quote is not None:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+            result.append(char)
+        elif not char.isspace():
+            result.append(char)
+
+    return "".join(result)
+
+
+def _rust_cfg_predicate(symbol: Symbol) -> str | None:
+    """A Rust item's ``cfg(...)`` predicate with whitespace stripped, or None."""
+    for decorator in symbol.decorators:
+        predicate = _normalize_cfg_whitespace(decorator)
+        if predicate.startswith("cfg(") and predicate.endswith(")"):
+            return predicate
+    return None
 
 
 # Which discriminator tells colliding members apart, per language. A build
 # variant (C ``#if`` branches, Rust ``cfg``) registers here as its own function.
 _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
+    "apex": _parameter_count,
     "csharp": _parameter_count,
     "cpp": _parameter_count,
+    "kotlin": _parameter_count,
+    "rust": _rust_cfg_predicate,
 }
 
 # Languages where a type may share its name with a sibling of another arity.
@@ -213,18 +358,84 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
                 symbol.id = f"{base}#{key}"
 
 
+def split_python_property_mutators(symbols: list[Symbol]) -> None:
+    """Give a property's setter and deleter their own ids beside its getter, in place.
+
+    All three share a name, so one graph node would hold all three bodies.
+    """
+    taken = Counter(symbol.id for symbol in symbols)
+    for symbol in symbols:
+        role = property_mutator_role(symbol.decorators)
+        if role is not None and taken[symbol.id] > 1:
+            symbol.id = f"{symbol.id}#{role}"
+
+
 def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
-    """Append parameter types to every count two members share, when they differ."""
+    """Append parameter types to every count two members share, when they differ.
+
+    A C# pair the erased types still join (``Func<T, bool>`` and ``Func<T,
+    Ctx<T>, bool>``) is told apart by each type's generic arity instead.
+    """
     typed: dict[str, dict[int, str]] = defaultdict(dict)
     for index, (symbol, key) in enumerate(keyed):
         if key is not None:
             typed[key][index] = f"{key}{_parameter_types(symbol)}"
     out = list(keyed)
-    for by_index in typed.values():
+    for count, by_index in typed.items():
+        if keyed[next(iter(by_index))][0].language == "csharp":
+            by_index = _split_by_generic_arity(keyed, count, by_index)
         if len(set(by_index.values())) > 1:
             for index, key in by_index.items():
                 out[index] = (keyed[index][0], key)
     return out
+
+
+def _split_by_generic_arity(
+    keyed: list[tuple[Symbol, str | None]], count: str, by_index: dict[int, str]
+) -> dict[int, str]:
+    """*by_index* with each key two members share respelled with CLR arities.
+
+    Only the members that collide change; a sibling that does not keeps its id.
+    """
+    seen = Counter(by_index.values())
+    return {
+        index: f"{count}{_clr_parameter_types(keyed[index][0])}" if seen[key] > 1 else key
+        for index, key in by_index.items()
+    }
+
+
+# The array, pointer and nullable marks that may follow an erased type's name.
+_ERASED_MARKS = "[]*&?"
+
+
+def _clr_parameter_types(symbol: Symbol) -> str:
+    """``(Func`2,int)``: each erased type with its type argument count, as the CLR names it."""
+    parameters = signature_parameters(symbol.signature or "") or []
+    return "(" + ",".join(clr_parameter_type(p) for p in parameters) + ")"
+
+
+def clr_parameter_type(parameter: str) -> str:
+    """``Func<A, B> f`` -> ``Func`2``: the erased type with its type argument count."""
+    arity = parameter_type_arity(parameter)
+    erased = erased_type(parameter)
+    name = erased.rstrip(_ERASED_MARKS)
+    return f"{name}`{arity}{erased[len(name):]}" if arity else erased
+
+
+def parameter_type_arity(parameter: str) -> int:
+    """How many type arguments a C# parameter's type is given: ``Func<A, B> f`` -> 2."""
+    written = parameter.partition("=")[0].split()
+    return type_argument_count(" ".join(written[:-1]) or parameter)
+
+
+def same_parameters(declared: Symbol, defined: Symbol) -> bool:
+    """Do both declare one parameter list, by count and erased types?"""
+    count = _parameter_count(declared)
+    return (
+        count is not None
+        and count == _parameter_count(defined)
+        and _parameter_types(declared) == _parameter_types(defined)
+    )
 
 
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:
@@ -298,12 +509,16 @@ def _reparent_members(symbols: list[Symbol], owner: Symbol, segment: str) -> Non
 
 __all__ = [
     "base_symbol_id",
+    "clr_parameter_type",
     "disambiguate_colliding_ids",
     "has_overload_identity",
     "id_segment_name",
+    "kotlin_erased_type",
     "outer_scope",
     "overload_sets",
     "pair_overloads",
+    "parameter_type_arity",
+    "split_python_property_mutators",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",

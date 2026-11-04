@@ -17,11 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.external_systems import build_registry
 from repowise.core.persistence.models import ExternalSystem
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._local_git import local_repo_path
 from repowise.server.schemas.external_systems import (
     ExternalSystemImportingFilesResponse,
     ExternalSystemRelationshipGraphResponse,
     ExternalSystemsResponse,
     ExternalSystemsSummaryResponse,
+    PackageUsageResponse,
 )
 from repowise.server.services.external_system_relationships import (
     DEFAULT_FILE_LIMIT,
@@ -60,6 +62,26 @@ async def summarize_external_systems(
     return await build_external_systems_summary(
         session, repo_id, scope=scope, limit=limit, offset=offset
     )
+
+
+@router.get(
+    "/{repo_id}/external-systems/{package_key:path}/usage",
+    response_model=PackageUsageResponse,
+)
+async def external_system_usage(
+    repo_id: str,
+    package_key: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> PackageUsageResponse:
+    """Where a package is imported; *package_key* is ``ecosystem:name`` or a bare name.
+
+    Reads the importing files from the local checkout for line numbers, so it
+    needs one (a 404 says when there is none)."""
+    from repowise.core.inventory.usage import package_usage
+
+    repo_root = await local_repo_path(session, repo_id)
+    doc = await package_usage(session, repo_id, repo_root, package_key)
+    return PackageUsageResponse.model_validate(doc)
 
 
 @router.get(

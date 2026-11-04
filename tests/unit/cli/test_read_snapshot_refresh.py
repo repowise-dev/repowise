@@ -40,13 +40,13 @@ def test_index_writes_and_update_restores_the_snapshots(tmp_path: Path) -> None:
     (repo / ".repowise").mkdir()
 
     asyncio.run(index_repo_full(repo))
-    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts"]
+    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts", "test_masks"]
     counts = _payload(repo, "fix_first_counts")
 
     with sqlite3.connect(repo / ".repowise" / "wiki.db") as db:
         db.execute("DELETE FROM read_snapshots")
     refresh_read_snapshots(repo)
-    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts"]
+    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts", "test_masks"]
     # The restored item counts are the ones the index stored.
     assert _payload(repo, "fix_first_counts") == counts
 
@@ -80,3 +80,34 @@ def test_the_up_to_date_outcome_refreshes_the_views(tmp_path: Path, monkeypatch)
     )
     _invoke_update(repo)
     assert calls.get("views") == 1
+
+
+def test_a_snapshot_not_written_is_named_with_its_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The update keeps the core log at ERROR, so the refresh says what failed itself."""
+    from contextlib import asynccontextmanager
+
+    from repowise.cli import helpers
+    from repowise.core.persistence.crud.analysis import actions
+
+    @asynccontextmanager
+    async def opened(_root):
+        yield (object(), "r1")
+
+    async def failing(_session, _repo_id):
+        return [("component", TypeError("key must be bytes [red]x[/red]\n  long traceback"))]
+
+    monkeypatch.setattr(helpers, "repo_index_session", opened)
+    monkeypatch.setattr(actions, "write_read_snapshots", failing)
+    refresh_read_snapshots(tmp_path)
+    shown = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("Snapshot not written")]
+    # Escaped, first line only; the full error goes to the debug log.
+    assert shown == ["Snapshot not written: component: TypeError: key must be bytes [red]x[/red]"]
+
+    @asynccontextmanager
+    async def broken(_root):
+        raise OSError("database is locked")
+        yield
+
+    monkeypatch.setattr(helpers, "repo_index_session", broken)
+    refresh_read_snapshots(tmp_path)
+    assert "read snapshots: OSError: database is locked" in capsys.readouterr().out

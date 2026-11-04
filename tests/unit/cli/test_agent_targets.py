@@ -159,6 +159,21 @@ def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
     assert derive_tier(_HooksOnly()) is Tier.GOOD
 
 
+def test_a_capture_adapter_does_not_move_the_tier() -> None:
+    """Capture is opt-in and off by default, so it is no depth an agent always has."""
+
+    class _Captured:
+        id = "captured"
+        display_name = "Captured"
+        docs_url = None
+        hook_adapter = "cursor"
+        session_adapter = None
+        capture_adapter = "cursor"
+        methods = get_target("cursor").methods
+
+    assert derive_tier(_Captured()) is derive_tier(get_target("cursor")) is Tier.GOOD
+
+
 @pytest.mark.parametrize(
     ("provides", "tier"),
     [
@@ -811,6 +826,83 @@ def test_plugin_detection_degrades_to_absent_on_a_broken_manifest(
     monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
 
     assert target_mod._plugin_installs() == []
+
+
+def test_claude_code_plugin_plus_desktop_is_not_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plugin install and a Claude Desktop config entry are not a duplicate.
+
+    Claude Code never reads Claude Desktop's config file; the two apps are
+    independent. Counting the Desktop entry as a second registration produces
+    a false warning and a fix command that touches neither file.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    desktop = tmp_path / "claude_desktop_config.json"
+    desktop.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "no_settings.json")
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: desktop)
+
+    report = target_mod.TARGET.doctor()
+    assert report.status is DoctorStatus.OK
+
+
+def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plugin install and a ~/.claude.json direct entry is a real duplicate.
+
+    Claude Code loads both, so MCP tools and hooks run twice. The doctor must
+    still surface this even after the desktop-entry exclusion is added.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    user_config = tmp_path / ".claude.json"
+    user_config.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: user_config)
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
+
+    report = target_mod.TARGET.doctor()
+    assert report.status is not DoctorStatus.OK
+    assert any("registered twice" in issue for issue in report.issues)
+    assert not any("—" in issue for issue in report.issues)
+    assert report.fix_command == "repowise agents remove --target=claude-code"
 
 
 # ---------------------------------------------------------------------------

@@ -175,11 +175,11 @@ function TreeNodeRow({
         width: "100%",
         padding: "3px 8px",
         paddingLeft: 8 + depth * 16 + 16,
-        background: isSelected ? "var(--color-accent-muted, rgba(245,149,32,0.2))" : "none",
+        background: isSelected ? "var(--color-selection-wash)" : "none",
         border: "none",
         cursor: "pointer",
         color: isSelected
-          ? "var(--color-accent-primary)"
+          ? "var(--color-text-primary)"
           : "var(--color-text-primary)",
         fontSize: 11,
         textAlign: "left",

@@ -314,3 +314,18 @@ def test_assistant_provider_content_is_replayed_verbatim():
     }
 
     assert _to_anthropic_messages([message]) == [{"role": "assistant", "content": blocks}]
+
+
+async def test_stream_chat_ends_with_the_calls_usage():
+    provider = AnthropicProvider(api_key="sk-ant-test", model="claude-haiku-5-5")
+    stream = _finished_stream([TextBlock(type="text", text="hi")])
+    usage = MagicMock(
+        input_tokens=200, output_tokens=80, cache_read_input_tokens=50, cache_creation_input_tokens=None
+    )
+    stream.get_final_message = AsyncMock(return_value=MagicMock(content=[], usage=usage))
+    provider._client = MagicMock()
+    provider._client.messages.stream = MagicMock(return_value=stream)
+
+    events = [e async for e in provider.stream_chat([], [], "sys")]
+
+    assert [(e.type, e.input_tokens, e.output_tokens) for e in events] == [("usage", 250, 80)]

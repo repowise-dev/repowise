@@ -303,3 +303,19 @@ def redirect_when_served(lanes: list[str], recall: str | None) -> dict[str, Any]
             f"unfiltered by the question: {recall}."
         )
     }
+
+
+def redirect_when_governed() -> dict[str, Any]:
+    """The reason for a miss that names a governed file.
+
+    The card lists the file's accepted rules by title because they bind it
+    whatever the question, but none of them answers it, so ``answer_basis``
+    stays unset and the redirect stands.
+    """
+    return {
+        "reason": (
+            "No decision record answers this question. The rules listed on the "
+            "named files govern them whatever the question; read them before "
+            "changing those files."
+        )
+    }

@@ -138,3 +138,33 @@ async def test_polling_fallback_offloads_repository_inspection(session_factory, 
         await polling_job.func()
 
     to_thread.assert_awaited_once_with(_inspect_repository, str(tmp_path))
+
+
+async def test_polling_fallback_skips_a_repo_while_an_update_holds_its_lock(
+    session_factory, tmp_path
+) -> None:
+    """A running `repowise update` advances the baseline; no sync job races it."""
+    from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
+
+    state_path = tmp_path / ".repowise" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(json.dumps({"last_sync_commit": "old-sha"}), encoding="utf-8")
+    async with get_session(session_factory) as session:
+        repo = await crud.upsert_repository(session, name="test-repo", local_path=str(tmp_path))
+        repo_id = repo.id
+
+    scheduler = setup_scheduler(session_factory, app_state=SimpleNamespace(background_tasks=set()))
+    polling_job = next(job for job in scheduler.get_jobs() if job.id == "polling_fallback")
+    head_result = SimpleNamespace(returncode=0, stdout="new-sha\n")
+    assert try_acquire_update_lock(tmp_path, "new-sha") is None
+    try:
+        with patch("subprocess.run", return_value=head_result):
+            await polling_job.func()
+    finally:
+        release_update_lock(tmp_path)
+
+    async with get_session(session_factory) as session:
+        result = await session.execute(
+            select(GenerationJob).where(GenerationJob.repository_id == repo_id)
+        )
+        assert result.scalars().all() == []

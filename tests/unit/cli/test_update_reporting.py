@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from rich.console import Console
 
 from repowise.cli.commands.update_cmd import reporting
+from repowise.cli.ui.brand import THEME
 
 
 class _Buffer:
@@ -23,7 +24,7 @@ class _Buffer:
 
     def __init__(self) -> None:
         self._buf = io.StringIO()
-        self._console = Console(file=self._buf, width=200, force_terminal=False)
+        self._console = Console(file=self._buf, width=200, force_terminal=False, theme=THEME)
 
     def print(self, *args, **kwargs):
         self._console.print(*args, **kwargs)
@@ -199,7 +200,7 @@ class TestCompletionPanels:
             git_files=12,
             elapsed=8.3,
         )
-        assert any("index-only update complete" in line for line in printed.lines)
+        assert any("Index updated" in line for line in printed.lines)
 
     def test_workspace_completion_renders(self, monkeypatch):
         printed = _capture(monkeypatch)
@@ -301,3 +302,16 @@ class TestDeadCodeCountsAreScopedToTheUpdate:
 
     def test_a_missing_report_counts_as_nothing(self):
         assert reporting._dead_code_counts(None, ["changed.py"]) == (0, 0)
+
+    def test_the_panel_line_names_its_scope_beside_the_repo_wide_total(self):
+        # The run log prints the repo-wide total; the scoped line must not contradict it.
+        assert reporting._dead_code_line(self._report(), ["changed.py"]) == (
+            "1 unreachable · 1 unused exports in changed files · 4 findings repo-wide"
+        )
+        assert reporting._dead_code_line(self._report(), ["other.py"]) == (
+            "0 unreachable · 0 unused exports in changed files · 4 findings repo-wide"
+        )
+        assert reporting._dead_code_line(None, ["changed.py"]) == (
+            "0 unreachable · 0 unused exports in changed files"
+        )
+        assert reporting._dead_code_line(self._report(), None) == "2 unreachable · 2 unused exports"

@@ -332,7 +332,7 @@ def test_load_git_ai_note_agents_parses_present_ref() -> None:
     note = _git_ai_note("cursor")
     repo.git.log.return_value = f"\x00sha_agent\x1f{note}\n\x00sha_human\x1f\n"
     agents = load_git_ai_note_agents(repo, 100)
-    assert agents == {"sha_agent": GitAiNote(agent="cursor")}
+    assert agents == {"sha_agent": GitAiNote(agent="cursor", model="m")}
 
 
 # ---------------------------------------------------------------------------

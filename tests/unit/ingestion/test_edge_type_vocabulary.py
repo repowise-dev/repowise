@@ -443,10 +443,13 @@ def test_the_removed_phantoms_stay_removed(phantom: str) -> None:
 
 
 def test_reads_edge_producer_is_strictly_file_level() -> None:
-    """`reads` is produced exclusively by csharp_member_reads at the file level."""
+    """`reads` is produced only at the file level: C# member access and Salesforce schema."""
     producers = [
         path for path, types in _edge_type_literals().items() if "reads" in types
     ]
-    assert producers == ["packages/core/src/repowise/core/ingestion/languages/csharp_member_reads.py"], (
+    assert sorted(producers) == [
+        "packages/core/src/repowise/core/ingestion/languages/csharp_member_reads.py",
+        "packages/core/src/repowise/core/ingestion/salesforce_schema.py",
+    ], (
         f"`reads` edge emitted by unexpected producers: {producers}"
     )

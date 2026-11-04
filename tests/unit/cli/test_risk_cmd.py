@@ -319,3 +319,42 @@ def test_target_mode_refuses_ci_formats_and_the_gate(tmp_path: Path) -> None:
     gate = _gate(repo, "--target", "src/f0.py", "--fail-above-percentile", "90")
     assert gate.exit_code == 2
     assert "gates a change" in gate.output
+
+
+def test_an_unknown_ref_reports_gits_message_not_the_exception(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    table = _gate(repo, "nosuchref")
+    assert table.exit_code == 2, table.output
+    assert "unknown revision" in table.output
+    assert "returned non-zero exit status" not in table.output
+    assert "Sampling" not in table.output
+
+    machine = _gate(repo, "nosuchref", "--format", "json")
+    assert machine.exit_code == 2, machine.output
+    assert json.loads(machine.stdout)["error"] == "change_unreadable"
+    assert "unknown revision" in machine.output
+
+
+def test_a_valid_ref_is_unaffected_by_the_ref_check(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    result = _gate(repo, "HEAD", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["ref"] == "HEAD"
+
+
+def test_fix_counts_print_their_window() -> None:
+    # A bare fix count beside 90-day churn reads as a 90-day figure.
+    from repowise.cli.commands.risk_cmd.card import _print_defects
+    from repowise.cli.commands.risk_cmd.target import _print_global_hotspots
+    from repowise.cli.helpers import console
+
+    with console.capture() as cap:
+        _print_defects({"fix_count": 4, "window": "6 months", "last_fix_days_ago": 2})
+        _print_global_hotspots(
+            [{"file_path": "a.py", "hotspot_score": 0.9, "fix_count": 4, "window": "6 months"}]
+        )
+    out = cap.get()
+    assert "4 bug fix(es) in 6 months, last 2 day(s) ago" in out
+    assert "Fixes (6 months)" in out

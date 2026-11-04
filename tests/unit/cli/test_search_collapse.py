@@ -157,7 +157,7 @@ RISK_PAYLOAD = {
             "commit_count_capped": False,
             "episodes": 22,
             "_base_dep_count": 52,
-            "risk_summary": "persist.py — 22 bug fixes in 6mo, hotspot score 100% (increasing)",
+            "risk_summary": "persist.py — 22 bug fixes in 6mo, churn hotspot, top 1% (increasing)",
         }
     },
     "global_hotspots": [
@@ -681,7 +681,7 @@ def test_risk_without_a_target_still_scores_a_revspec(monkeypatch, repo):
     """The collapse must not move the command's default subject."""
     called: list = []
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.score_live_change",
+        "repowise.cli.commands.risk_cmd.change.score_live_change",
         lambda *a, **k: called.append(a) or (_ for _ in ()).throw(RuntimeError("boom")),
     )
     result = CliRunner(mix_stderr=False).invoke(risk_command, ["HEAD", "--path", str(repo)])
@@ -804,11 +804,11 @@ def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
     from repowise.core.analysis.change_risk import ChangeRiskResult
 
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.change_risk_payload",
+        "repowise.cli.commands.risk_cmd.change_render.change_risk_payload",
         lambda r, **kw: {"risk": 4.2},
     )
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.score_live_change",
+        "repowise.cli.commands.risk_cmd.change.score_live_change",
         lambda *a, **k: _FakeChangeResult(),
     )
     result = CliRunner(mix_stderr=False).invoke(

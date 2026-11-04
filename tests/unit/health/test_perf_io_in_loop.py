@@ -117,6 +117,55 @@ _CASES = [
     ),
     (
         "python",
+        b"import sqlite3\n"
+        b"def f(conn):\n"
+        b"    for (t,) in conn.execute('SELECT name FROM sqlite_master').fetchall():\n"
+        b"        conn.execute(f'DROP TABLE \"{t}\"')\n"
+        b"    for t in conn.execute('SELECT name FROM t').fetchall():\n"
+        b"        sql = f'ALTER TABLE {t} ADD COLUMN c'\n"
+        b"        conn.execute(sql)\n"
+        b"        conn.execute(text('CREATE INDEX i ON t (c)'))\n",
+        [],
+        "a schema statement runs once per schema object, not per row",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"def f(conn, ids):\n"
+        b"    for i in ids:\n"
+        b"        conn.execute('SELECT * FROM t WHERE id = ?', (i,))\n"
+        b"        conn.execute(f'UPDATE t SET n = 1 WHERE id = {i}')\n",
+        [("io_in_loop", "db"), ("io_in_loop", "db")],
+        "a data statement in the same shape stays a sink",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b'_SCHEMA = """CREATE TABLE a (x); CREATE TABLE b (y)"""\n'
+        b"def f(conn):\n"
+        b"    for statement in _SCHEMA.split(';'):\n"
+        b"        conn.execute(statement)\n"
+        b"    for name in 'a b'.split():\n"
+        b"        conn.execute(name)\n",
+        [],
+        "a split of a module string literal is a constant loop",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"_ROWS = load()\n"
+        b"def f(conn, text):\n"
+        b"    for line in _ROWS.split():\n"
+        b"        conn.execute(line)\n"
+        b"    for line in text.split():\n"
+        b"        conn.execute(line)\n"
+        b"    for line in f'{text}'.split():\n"
+        b"        conn.execute(line)\n",
+        [("io_in_loop", "db"), ("io_in_loop", "db"), ("io_in_loop", "db")],
+        "a split of a name not bound to a literal is not constant",
+    ),
+    (
+        "python",
         b"from sqlalchemy import select\n"
         b"def f(repos):\n"
         b"    for r in repos:\n"

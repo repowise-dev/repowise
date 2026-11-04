@@ -52,14 +52,37 @@ def _save_state(repo_path: Path, state: dict) -> None:
     restamp_changed_sync_commit(repo_path, previous, state.get("last_sync_commit"))
 
 
-def _stamp_last_sync_commit(repo_path: Path) -> None:
+def _stamp_last_sync_commit(repo_path: Path, *, health_rescored: bool = False) -> None:
     """Record the synced HEAD so CLI incremental updates know the baseline."""
     head = _read_head_sha(repo_path)
     if not head:
         return
     state = _load_state(repo_path)
     state["last_sync_commit"] = head
+    if health_rescored:
+        _stamp_health_analyzer(state)
     _save_state(repo_path, state)
+
+
+def _stamp_health_analyzer(state: dict) -> None:
+    """Label the health rows a full index just wrote with this process's analyzer."""
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+
+
+def newer_health_analyzer(repo_path: Path) -> int | None:
+    """The stored ``health_analyzer_version`` when it is newer than this process's.
+
+    A server started before an upgrade still runs the old analyzer; its rows
+    must not replace the ones a newer CLI already wrote.
+    """
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    stored = _load_state(repo_path).get("health_analyzer_version")
+    if isinstance(stored, int) and stored > HEALTH_ANALYZER_VERSION:
+        return stored
+    return None
 
 
 def _persist_initial_index_state(
@@ -71,6 +94,7 @@ def _persist_initial_index_state(
     total_pages: int,
     wiki_style: str,
     exclude_patterns: list[str],
+    health_rescored: bool = False,
 ) -> None:
     """Write the ``repowise init`` baseline after a first API-driven index.
 
@@ -109,6 +133,8 @@ def _persist_initial_index_state(
         state["provider"] = getattr(llm_client, "provider_name", "")
         state["model"] = getattr(llm_client, "model_name", "")
     _stamp_store_format(state, repo_path)
+    if health_rescored:
+        _stamp_health_analyzer(state)
     state["config_fingerprint"] = config_fingerprint(repo_path)
     _save_state(repo_path, state)
 

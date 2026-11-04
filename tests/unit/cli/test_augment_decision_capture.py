@@ -1,7 +1,7 @@
 """The capture prompt: the gates, not the wording.
 
 An agent cannot decline a hook, so every gate is a cost control and each one
-is tested on its own. The contract: off unless the repository switched it on,
+is tested on its own. The contract: on unless the repository switched it off,
 at most once per session, only after a *fresh* commit in *this* repository,
 only on a message carrying two or more decision signals, and never for a
 commit a record already cites.
@@ -124,13 +124,13 @@ def test_a_second_session_gets_its_own_ask(repo: Path) -> None:
 # --- the switch -------------------------------------------------------------
 
 
-def test_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "repo"
     (root / ".repowise").mkdir(parents=True)
     _write_wiki(root, evidence=[])
     _fake_git(monkeypatch, root, _SHA, _MESSAGE)
 
-    assert _fire(root) is None
+    assert _fire(root) is not None
 
 
 def test_the_off_switch_turns_it_off(repo: Path) -> None:
@@ -139,17 +139,31 @@ def test_the_off_switch_turns_it_off(repo: Path) -> None:
     assert _fire(repo) is None
 
 
-def test_an_absent_key_resolves_to_off(tmp_path: Path) -> None:
+def test_an_absent_key_resolves_to_on(tmp_path: Path) -> None:
     """The parser's own default, not the dataclass field the parser overrides."""
     from repowise.core.analysis.decisions.policy_store import load_policy
 
     root = tmp_path / "unconfigured"
     (root / ".repowise").mkdir(parents=True)
 
+    assert load_policy(root).policy.capture_prompt is True
+
+
+def test_an_explicit_off_is_written_and_survives_a_reload(tmp_path: Path) -> None:
+    """The block omits a defaulted setting, so off must be written out."""
+    from repowise.core.analysis.decisions.policy import preset_policy
+    from repowise.core.analysis.decisions.policy_store import load_policy, write_policy
+    from repowise.core.repo_config import load_repo_config
+
+    root = tmp_path / "off"
+    (root / ".repowise").mkdir(parents=True)
+    write_policy(root, preset_policy("default").with_capture_prompt(False))
+
+    assert load_repo_config(root)["decisions"]["capture_prompt"] is False
     assert load_policy(root).policy.capture_prompt is False
 
 
-def test_a_non_boolean_switch_warns_and_stays_off(tmp_path: Path) -> None:
+def test_a_non_boolean_switch_warns_and_reads_as_off(tmp_path: Path) -> None:
     from repowise.core.analysis.decisions.policy_store import load_policy
 
     root = tmp_path / "typo"
@@ -380,6 +394,104 @@ def test_switching_on_adds_the_shell_entry(settings: Path) -> None:
     assert set_claude_code_capture_hook(True) == settings
 
     assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def _install_plugin(settings: Path, *, with_capture: bool) -> None:
+    """An enabled repowise plugin, in the layout Claude Code keeps it."""
+    from repowise.cli.editor_integrations import claude_config
+
+    install = settings.parent / "plugins" / "cache" / "repowise" / "repowise" / "9.9.9"
+    (install / "hooks").mkdir(parents=True)
+    post = [{"matcher": claude_config._AUGMENT_MATCHER, "hooks": [
+        {"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}]}]
+    if with_capture:
+        post.append(claude_config._capture_entry())
+    (install / "hooks" / "hooks.json").write_text(
+        json.dumps({"hooks": {"PostToolUse": post}}), encoding="utf-8"
+    )
+    (settings.parent / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"repowise@repowise": [
+            {"scope": "user", "installPath": str(install)}]}}),
+        encoding="utf-8",
+    )
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    payload["enabledPlugins"] = {"repowise@repowise": True}
+    settings.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_plugin_that_ships_the_entry_is_not_doubled(settings: Path) -> None:
+    """Claude Code runs a plugin hook and a settings hook separately."""
+    from repowise.cli.editor_integrations import claude_config
+
+    claude_config.set_claude_code_capture_hook(True)
+    _install_plugin(settings, with_capture=True)
+
+    assert claude_config.set_claude_code_capture_hook(True) == settings
+    assert "Bash|PowerShell" not in _post_matchers(settings)
+    assert claude_config.claude_code_capture_hook_installed() is True
+
+
+def test_an_older_plugin_without_the_entry_still_gets_ours(settings: Path) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    _install_plugin(settings, with_capture=False)
+
+    assert claude_config.set_claude_code_capture_hook(True) == settings
+    assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def test_an_entry_from_an_older_release_is_refreshed(settings: Path) -> None:
+    """The old command started Python on every shell call; the gate is the fix."""
+    from repowise.cli.editor_integrations import claude_config
+
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    payload["hooks"]["PostToolUse"].append({"matcher": "Bash|PowerShell", "hooks": [
+        {"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}]})
+    settings.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert claude_config.set_claude_code_capture_hook(True) == settings
+
+    entries = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]
+    assert [e for e in entries if e["matcher"] == "Bash|PowerShell"] == [
+        claude_config._capture_entry()
+    ]
+
+
+def test_init_installs_the_entry(settings: Path) -> None:
+    """The prompt ships on, so the hook that fires it is part of the install."""
+    from repowise.cli.editor_integrations import claude_config
+
+    claude_config.install_claude_code_hooks()
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def test_init_leaves_it_to_a_plugin_that_ships_it(settings: Path) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    _install_plugin(settings, with_capture=True)
+
+    claude_config.install_claude_code_hooks()
+
+    assert "Bash|PowerShell" not in _post_matchers(settings)
+
+
+def test_the_self_heal_adds_it_to_an_existing_install(settings: Path) -> None:
+    """Existing installs predate the default; the once-per-version heal reaches them."""
+    from repowise.cli.editor_integrations import claude_config
+
+    assert claude_config.migrate_claude_code_hooks() is True
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+    assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_a_coverage_entry_is_never_taken_for_the_capture_entry() -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    assert not claude_config._is_capture_entry(claude_config._coverage_entry())
+    assert not claude_config._is_capture_entry(claude_config._health_gate_entry())
+    assert claude_config._is_capture_entry(claude_config._capture_entry())
 
 
 def test_switching_off_removes_it(settings: Path) -> None:

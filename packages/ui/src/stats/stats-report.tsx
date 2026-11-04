@@ -1,7 +1,7 @@
 import * as React from "react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { PageLede } from "../shared/page-lede";
-import { formatAgeDays, formatDate, formatNumber } from "../lib/format";
+import { formatAgeDays, formatBytes, formatDate, formatNumber } from "../lib/format";
 import { ArrivalsTimeline } from "./arrivals-timeline";
 import { ChronotypeList } from "./chronotype-list";
 import { ChurnLedger } from "./churn-ledger";
@@ -205,6 +205,15 @@ function SizeLede({ data }: { data: StatsHighlights }) {
             .
           </>
         )}
+        {data.index_storage_bytes ? (
+          <>
+            {" "}Its Repowise index (documentation, symbols and vectors) takes{" "}
+            <strong className="font-semibold text-[var(--color-text-primary)]">
+              {formatBytes(data.index_storage_bytes)}
+            </strong>{" "}
+            on disk.
+          </>
+        ) : null}
       </p>
     </PageLede>
   );

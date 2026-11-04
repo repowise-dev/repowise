@@ -13,7 +13,9 @@ from repowise.core.analysis.signature_effect import (
     EFFECT_COMPATIBLE,
     EFFECT_NONE,
     EFFECT_UNKNOWN,
+    bound_names,
     classify_signature_change,
+    parameter_names,
 )
 
 BREAKS = {EFFECT_BREAKING, EFFECT_UNKNOWN}
@@ -37,6 +39,7 @@ def _effect(before: str, after: str, lang: str | None, kind: str | None = "funct
         ("function F(a, b int)", "function F(a int, b int)", "go"),
         # Reordering keyword-only parameters moves nothing a caller passes by position.
         ("def f(a, *, b=1, c=2)", "def f(a, *, c=2, b=1)", "python"),
+        ("void f(String a, Integer b)", "void f(\n    String a,\n    Integer b\n)", "apex"),
     ],
 )
 def test_text_only_changes_have_no_effect(before, after, lang):
@@ -81,6 +84,12 @@ def test_text_only_changes_have_no_effect(before, after, lang):
             "f(int a) -> void",
             "f(int b) -> void",
             "java",
+            "renamed `a` to `b`, which callers never name",
+        ),
+        (
+            "void f(String a) -> void",
+            "void f(String b) -> void",
+            "apex",
             "renamed `a` to `b`, which callers never name",
         ),
         ("function F(a int)", "function F(a int, opts ...Opt)", "go", "added `...opts`"),
@@ -200,6 +209,18 @@ def test_changes_every_existing_call_survives_are_compatible(before, after, lang
             "changed its return type from `int` to `string`",
         ),
         (
+            "foo(String a) -> void",
+            "foo(String a) -> Integer",
+            "apex",
+            "changed its return type from `void` to `Integer`",
+        ),
+        (
+            "foo(String[] a) -> void",
+            "foo(String a) -> void",
+            "apex",
+            "changed the type of `a` from `String[]` to `String`",
+        ),
+        (
             "function C({a}: {a: string})",
             "function C({a, b}: {a: string; b: number})",
             "typescript",
@@ -286,3 +307,9 @@ def test_a_widened_parameter_or_narrowed_return_type_is_compatible():
         "function f() -> string", "function f() -> string | null", "typescript"
     )
     assert widened_return.effect == EFFECT_BREAKING
+
+
+def test_apex_parameter_and_bound_names():
+    sig = "findByName(String name, List<Id> ids) -> List<Account>"
+    assert parameter_names(sig, "apex") == (None, ["name", "ids"])
+    assert bound_names(sig, "apex") == {"name", "ids"}

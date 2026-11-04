@@ -97,6 +97,27 @@ def test_developer_congestion_skips_quiet_files_for_this_repo():
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
 
 
+def _quiet_hotspot_meta(commits_90d: int) -> dict:
+    return {
+        "contributor_count": 5,
+        "churn_percentile": 0.9,
+        "commit_count_90d": commits_90d,
+        "primary_owner_commit_pct": 0.3,
+    }
+
+
+def test_developer_congestion_skips_files_with_no_recent_commits():
+    """A high percentile alone does not mean the file changed in the window."""
+    assert DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(0))) == []
+
+
+def test_developer_congestion_needs_the_hotspot_commit_floor():
+    assert DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(2))) == []
+    out = DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(3)))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+
+
 # ---- knowledge_loss ------------------------------------------------------
 
 

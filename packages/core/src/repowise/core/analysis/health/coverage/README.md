@@ -17,7 +17,7 @@ from repowise.core.analysis.health.coverage import (
 
 - `parse(text, format=None)` → `CoverageReport`. Auto-detects format
   when `format` is ``None``; pass an explicit ``"lcov" | "cobertura" |
-  "clover" | "repowise-json" | "go-coverprofile" | "jacoco"`` to override
+  "clover" | "repowise-json" | "go-coverprofile" | "jacoco" | "apex"`` to override
   (`detector.PARSERS` is the registry).
 - `parse_lcov(text)`, `parse_cobertura(text)`, `parse_clover(text)`,
   `parse_repowise_json(text)`, `parse_go_coverprofile(text)`,
@@ -28,6 +28,18 @@ from repowise.core.analysis.health.coverage import (
   percentage. JaCoCo XML is read from per-line `<sourcefile>` data (lines
   and branches); package paths such as `com/foo/Bar.java` and Go module
   paths are mapped to repo files by suffix matching.
+- `detect_format(text)`: returns the sniffed format or ``None``.
+- `is_test_file(path, source=None, *, roots=None)`: path + optional content
+  heuristic; pass pytest `roots` so a module pytest does not collect is not a
+  test. Callers holding the stored `is_test` flag use that instead.
+- `paired_test_file(path, all_paths)`: find the conventional test partner for
+  a source path.
+- `apex.py` (`parse_apex`, `parse_apex_contexts`): Salesforce CLI JSON. Paths
+  are `Name.cls` / `Name.trigger`, mapped to the one file of that name; the run
+  result's `ApexCodeCoverage` records are the per-test map.
+- `contexts.py` (`parse_contexts_file`, `parse_lcov_contexts`): per-test readers
+  for a coverage.py `.coverage` SQLite file with contexts and for per-test LCOV
+  `TN:` records; a report without contexts yields no records.
 
 ### Repowise normalized JSON (`repowise-coverage-v1`)
 
@@ -53,11 +65,8 @@ normalized once (keyed by repo-relative POSIX path) and fed to
 `files` may also be a list of the same objects, each with its own
 `file_path`. Tolerant: any two of `(line_coverage_pct, covered_lines,
 total_coverable_lines)` pin a file down; an entry that anchors none is
-skipped (absent ≠ zero).
-- `detect_format(text)` — returns the sniffed format or ``None``.
-- `is_test_file(path, source=None)` — path + optional content heuristic.
-- `paired_test_file(path, all_paths)` — find the conventional test
-  partner for a source path.
+skipped (absent ≠ zero). An optional `coverable_lines` array gives the
+executable-line set patch coverage needs.
 
 ## Discovery + path resolution (`discovery.py`)
 
@@ -94,28 +103,12 @@ writes paths relative to its own `<source>` root — so we reconcile them.
 
 ### Config (`.repowise/config.yaml`)
 
-All keys optional; the defaults give zero-config auto-discovery during
-`repowise init` / `repowise update`.
-
-```yaml
-coverage:
-  auto_discover: true          # discover reports during indexing
-  artifacts:                   # override the default discovery globs
-    - coverage/lcov.info
-  paths:                       # explicit report paths or globs (skip discovery)
-    - build/coverage/lcov.info
-    - {path: "api/**/lcov.info", path_prefix: api}   # per-report prefix
-  format: lcov                 # force a parser (else content-sniffed)
-  strip_prefix: build          # drop a leading prefix from report paths
-  path_prefix: packages/web    # prepend a prefix to report paths
-  ignore: ["gen/"]             # gitignore-style globs coverage leaves out
-  reingest_on_update: false    # re-parse on every update (else reuse DB rows)
-  fail_under: 80               # patch-coverage gate for `coverage check`
-  min_coverable_lines: 5       # small-change tolerance for that gate
-  gates:                       # path-scoped gates (PathGate); see below
-    - {name: api, paths: ["/services/api/"], fail_under: 85}
-```
-
+All keys are optional; the defaults give zero-config auto-discovery during
+`repowise init` / `repowise update`. The full `coverage:` block is in
+`docs/layers/TEST_INTELLIGENCE.md#configuration`; besides those keys, a
+top-level `path_prefix` prepends a prefix to every report path, and
+`reingest_on_update` re-reads reports on every update when `true`, never when
+`false`, and when one is newer than the last ingest when unset.
 `CoverageConfig.from_repo_config(load_repo_config(repo_path))` parses it.
 Each `gates` entry is `name`, `paths` (gitignore-style globs, at least one
 not a `!` exclusion), optional `fail_under` (0-100) and optional

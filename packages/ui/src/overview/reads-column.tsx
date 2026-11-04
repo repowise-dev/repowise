@@ -16,6 +16,9 @@ export interface ReadItem {
   href: string;
   /** Optional proportion bar — use only when the number genuinely splits. */
   bar?: ReadBarSegment[];
+  /** A success dot before the label, for a figure that is good news (a win).
+   *  The word in `label` still names it; the dot only adds tone. */
+  good?: boolean;
 }
 
 /**
@@ -60,7 +63,10 @@ export function ReadsColumn({
               value right on one baseline, which looks tidy in a mockup and is
               ragged with real data: a trailing unit shifts every number to a
               different x, so four figures in a column line up on nothing. */}
-          <span className="block font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            {item.good && (
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-success)]" />
+            )}
             {item.label}
           </span>
           <span className="mt-1 flex items-baseline gap-1.5">

@@ -503,6 +503,28 @@ def test_the_way_a_session_ended_reaches_the_invocation_outcome(
     assert result.exit_code == 0
     assert recorded["transport_outcome"] == "client_closed"
     assert recorded["transport"] == "stdio"
+    assert recorded["served_no_index"] is False
+
+
+def test_a_store_failure_reports_its_reason_code(monkeypatch, tmp_path: Path) -> None:
+    """A startup exit says which store failed, not only that the server faulted."""
+    from repowise.cli.platform import telemetry
+    from repowise.server.mcp_server._server import StoreUnavailableError
+
+    (tmp_path / ".repowise").mkdir()
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
+
+    def refuse(**_kw):
+        raise StoreUnavailableError("cannot open", reason="db_url_unreachable")
+
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", refuse)
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert recorded["transport_outcome"] == "server_fault"
+    assert recorded["failure_reason"] == "db_url_unreachable"
 
 
 def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -> None:
@@ -523,3 +545,35 @@ def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -
 
     assert result.exit_code == 0
     assert "Traceback" not in result.output
+
+
+def test_mcp_cli_sse_transport_prints_deprecation_notice(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """SSE still starts, and says what replaces it before it does."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--transport", "sse"])
+
+    assert result.exit_code == 0
+    # Normalised because rich wraps the notice to the console width.
+    flat = " ".join(result.output.split())
+    assert "sse is deprecated" in flat
+    assert "use --transport streamable-http" in flat
+
+
+def test_mcp_cli_streamable_http_prints_no_deprecation_notice(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
+
+    result = CliRunner().invoke(
+        cli, ["mcp", str(tmp_path), "--transport", "streamable-http"]
+    )
+
+    assert result.exit_code == 0
+    assert "deprecated" not in result.output

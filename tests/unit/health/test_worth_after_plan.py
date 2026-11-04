@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import repowise.core.analysis.health.refactoring  # noqa: F401  (import order: worth <-> perf)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.opportunity import compose_opportunities
 from repowise.core.analysis.health.refactoring.opportunity_rank import rank_sort_key

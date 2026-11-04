@@ -278,9 +278,9 @@ class PatchCoverage:
         verdicts = [self.flat_gate, self.risky_gate, self.branch_gate, project]
         if self.failing_path_gates or "fail" in verdicts:
             return "fail"
-        # An unapplied branch gate gives way to a project verdict.
-        if project != "not_set" and verdicts[2] == "no_data":
-            verdicts[2] = "not_set"
+        # An unapplied gate (no_data) ahead of the project gives way to a project verdict.
+        if project != "not_set":
+            verdicts[:3] = ["not_set" if v == "no_data" else v for v in verdicts[:3]]
         return next((v for v in verdicts if v != "not_set"), "not_set")
 
     @property

@@ -123,7 +123,8 @@ async def test_ts_lead_file_users_with_kinds(session, populated_db, tmp_path):
         ]
     )
     await session.flush()
-    _write(tmp_path, "src/handlers.ts", "\n" * 11 + "  handleCompactionEnd(ctx);\n")
+    _write(tmp_path, "src/handlers.ts",
+           "\n" * 4 + "export function createHandler() {\n" + "\n" * 6 + "  handleCompactionEnd(ctx);\n")
     _write(tmp_path, "src/lifecycle.ts",
            'export { handleCompactionEnd } from "./compaction.js";\n')
     _write(tmp_path, "src/runner.ts",

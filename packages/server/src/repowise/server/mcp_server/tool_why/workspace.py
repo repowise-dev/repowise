@@ -9,11 +9,11 @@ from repowise.server.mcp_server._budget import (
     OmissionCollector,
     cap_collection,
 )
+from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import (
     _decision_body,
     _get_exclude_spec,
     _get_repo,
-    _resolve_all_contexts,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._why_evidence import (
@@ -42,43 +42,25 @@ async def _why_workspace_search(query: str) -> dict:
     decide which store loses a slot, approximately. If that ever needs to be
     exact, sweep a floor against a pooled corpus rather than pool under this one.
     """
-    scored = await _score_workspace(query)
-    if not scored:
-        return {
-            "mode": "search",
-            "query": query,
-            "workspace": True,
-            "decisions": [],
-            **redirect_for(query),
-            "_meta": _build_meta(),
-        }
-
+    fed = Federation()
+    answered = await fed.run(lambda ctx: _score_repo(ctx, query))
     # The store's own key first; alias and id settle ties, for a stable order.
-    scored.sort(key=lambda t: (t[0], t[1], t[3]))
-    selected = scored
-    collector = OmissionCollector(
-        "get_why", repo_root=selected[0][2].path if selected else None
-    )
-    for selected_ctx in {entry[2].alias: entry[2] for entry in selected}.values():
-        selected_records = [entry[4] for entry in selected if entry[2] is selected_ctx]
-        async with get_session(selected_ctx.session_factory) as session:
-            await _attach_decision_evidence(session, selected_records)
-    decisions: list[dict] = []
-    entries_by_alias: dict[str, list[dict[str, Any]]] = {}
-    records_by_alias: dict[str, list[Any]] = {}
-    contexts_by_alias = {entry[1]: entry[2] for entry in selected}
-    for _, alias, _selected_ctx, _id, d, folded in selected:
-        entry = _workspace_entry(alias, d, folded)
-        entries_by_alias.setdefault(alias, []).append(entry)
-        records_by_alias.setdefault(alias, []).append(d)
-        decisions.append(entry)
-    for alias, entries in entries_by_alias.items():
-        await annotate_response_evidence_async(
-            {"decisions": entries},
-            alias,
-            records_by_alias[alias],
-            repo_root=contexts_by_alias[alias].path,
+    selected = merge_ranked((rows for _, rows in answered), key=lambda t: (t[0], t[1], t[2]))
+    if not selected:
+        return fed.annotate(
+            {
+                "mode": "search",
+                "query": query,
+                "workspace": True,
+                "decisions": [],
+                **redirect_for(query),
+                "_meta": _build_meta(),
+            }
         )
+
+    paths = {ctx.alias: ctx.path for ctx, _ in answered}
+    collector = OmissionCollector("get_why", repo_root=paths[selected[0][1]])
+    decisions = [entry for *_, entry in selected]
     result = {
         "mode": "search",
         "query": query,
@@ -86,6 +68,7 @@ async def _why_workspace_search(query: str) -> dict:
         "decisions": decisions,
         "_meta": _build_meta(),
     }
+    fed.annotate(result, decisions)
     cap_collection(
         result,
         "decisions",
@@ -98,23 +81,32 @@ async def _why_workspace_search(query: str) -> dict:
     return result
 
 
-async def _score_workspace(
-    query: str,
-) -> list[tuple[tuple[float, float, int], str, Any, str, Any, list[str]]]:
-    """Every store's relevant records, collapsed per store, with their sort keys."""
-    contexts = await _resolve_all_contexts()
-    scored: list[tuple[tuple[float, float, int], str, Any, str, Any, list[str]]] = []
-    for ctx in contexts:
-        async with get_session(ctx.session_factory) as session:
-            repository = await _get_repo(session)
-            records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
+async def _score_repo(
+    ctx: Any, query: str
+) -> list[tuple[tuple[float, float, int], str, str, dict[str, Any]]]:
+    """One store's relevant records, collapsed, as ``(key, alias, id, entry)`` best first."""
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
         ranked = _score_keyword_matches(records, query, set())
         # Collapsed per store: ``_evidence_key`` carries no repo, so stores
         # sharing a commit would fold into one across the merge.
         key_by_id = {d.id: key for key, d in ranked}
-        for d, folded in _collapse_restatements([d for _, d in ranked]):
-            scored.append((key_by_id[d.id], ctx.alias, ctx, d.id, d, folded))
-    return scored
+        collapsed = sorted(
+            _collapse_restatements([d for _, d in ranked]),
+            key=lambda pair: (key_by_id[pair[0].id], pair[0].id),
+        )
+        kept = [d for d, _ in collapsed]
+        await _attach_decision_evidence(session, kept)
+    entries = [_workspace_entry(ctx.alias, d, folded) for d, folded in collapsed]
+    if entries:
+        await annotate_response_evidence_async(
+            {"decisions": entries}, ctx.alias, kept, repo_root=ctx.path
+        )
+    return [
+        (key_by_id[d.id], ctx.alias, d.id, entry)
+        for (d, _), entry in zip(collapsed, entries, strict=True)
+    ]
 
 
 def _workspace_entry(alias: str, d: Any, folded: list[str]) -> dict[str, Any]:

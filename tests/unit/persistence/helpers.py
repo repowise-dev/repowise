@@ -6,7 +6,20 @@ from any test file without conftest import restrictions.
 
 from __future__ import annotations
 
-from repowise.core.persistence.models import Repository
+from repowise.core.persistence.models import Repository, WikiSymbol
+
+
+def make_wiki_symbol(repo_id: str, file_path: str, name: str, **overrides) -> WikiSymbol:
+    """One symbol index row, the rows ``crud.count_symbols`` counts."""
+    return WikiSymbol(
+        repository_id=repo_id,
+        file_path=file_path,
+        symbol_id=f"{file_path}::{name}",
+        name=name,
+        qualified_name=name,
+        kind="function",
+        **overrides,
+    )
 
 
 def make_repo_kwargs(**overrides) -> dict:

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server import _edit_sites, _line_hits, _meta, _state
 from repowise.server.mcp_server._budget import enforce_response_budget
 from repowise.server.mcp_server.tool_search import search_codebase
@@ -26,6 +26,7 @@ _FILES = {
         "    print('hello there')\n"
         "    return backend_of('m')\n"
         "x = 147821\n"
+        'USER_AGENT = "acme-cli/0.1.0"\n'
     ),
 }
 
@@ -127,14 +128,68 @@ async def test_literal_number_is_scanned_with_definition_first(tree):
     out = await search_codebase("47821")
 
     # Word-bounded: 147821 is not a match. deploy/config.yaml is committed but
-    # never indexed, and is read all the same.
+    # never indexed, and is read all the same. A data file's key is no definition.
     assert _rows(out) == [
-        ("deploy/config.yaml", 2, "definition"),
         ("pkg/catalog.py", 1, "definition"),
         ("app/widget.py", 4, "match"),
+        ("deploy/config.yaml", 2, "match"),
     ]
-    assert out["lines"][1]["text"] == "PORT = 47821"
+    assert out["lines"][0]["text"] == "PORT = 47821"
     assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_slash_literal_falls_back_from_path_mode(tree):
+    out = await search_codebase("acme-cli/0.1.0")
+
+    assert _rows(out) == [("app/widget.py", 8, "definition")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_slash_literal_is_scanned_in_hybrid_mode(tree):
+    out = await search_codebase("acme-cli/0.1.0", mode="hybrid")
+
+    assert _rows(out) == [("app/widget.py", 8, "definition")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_matching_path_query_does_not_add_line_hits(tree, session, setup_mcp):
+    # Path mode matches indexed file pages, so the file needs one to be found.
+    session.add(
+        Page(
+            id="file_page:app/widget.py",
+            repository_id=setup_mcp,
+            page_type="file_page",
+            title="Widget",
+            content="# Widget",
+            target_path="app/widget.py",
+            source_hash="widget",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=2,
+            confidence=0.8,
+            freshness_status="fresh",
+            metadata_json="{}",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    await session.commit()
+    out = await search_codebase("app/widget.py", mode="path")
+
+    assert any(result["path"] == "app/widget.py" for result in out["results"])
+    assert "lines" not in out
+
+
+@pytest.mark.parametrize("query", ["SomeName", "./", "../"])
+@pytest.mark.asyncio
+async def test_unmatched_path_query_only_falls_back_for_slash_literals(tree, query):
+    out = await search_codebase(query, mode="path")
+
+    assert out["results"] == []
+    assert "lines" not in out
 
 
 @pytest.mark.asyncio
@@ -181,6 +236,7 @@ async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
 @pytest.mark.asyncio
 async def test_cap_hit_marks_lines_incomplete(tree, monkeypatch):
     monkeypatch.setattr(_line_hits, "MAX_LINES_PER_FILE", 0)
+    monkeypatch.setattr(_line_hits, "SMALL_SET_LINES", 0)
 
     out = await search_codebase("47821")
 
@@ -263,7 +319,7 @@ async def test_explicit_excludes_make_the_scan_incomplete(tree):
 
 
 @pytest.mark.asyncio
-async def test_too_many_exact_symbols_ask_to_narrow(tree, session):
+async def test_too_many_exact_symbols_list_the_definitions(tree, session):
     rid = (await session.get(GraphNode, "lh_sym")).repository_id
     session.add_all(
         GraphNode(
@@ -283,11 +339,21 @@ async def test_too_many_exact_symbols_ask_to_narrow(tree, session):
     )
     await session.commit()
 
-    out = await search_codebase("backend_of", mode="symbol")
+    for i in range(3):
+        (tree / "pkg" / f"m{i}.py").write_text("def backend_of(name):\n    return name\n")
 
-    assert out["lines"] == []
+    out = await search_codebase("backend_of", mode="symbol", limit=2)
+
+    # Between them results and lines name each of the 4 definitions once.
+    in_results = {(r["path"], r["start_line"]) for r in out["results"] if r.get("type") == "symbol"}
+    in_lines = {(r["path"], r["line"]) for r in out["lines"]}
+    assert {r["kind"] for r in out["lines"]} == {"definition"}
+    assert not in_results & in_lines
+    assert in_results | in_lines == {
+        ("pkg/catalog.py", 4), ("pkg/m0.py", 1), ("pkg/m1.py", 1), ("pkg/m2.py", 1)
+    }
     assert out["complete"] is False
-    assert out["reasons"] == ["4 symbols match; narrow the query"]
+    assert out["reasons"][0].startswith("4 symbols share this name: definitions only")
 
 
 def test_budget_dropping_lines_is_never_complete():
@@ -415,6 +481,23 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
     assert out["complete"] is False
     assert any("lines_omitted_by_file" in r for r in out["reasons"])
     assert out["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_reference_set_is_served_whole(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n" + "mock(backend_of)\n" * 6, encoding="utf-8"
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    refs = [r for r in _rows(out) if r[0] == "tests/test_widget.py" and r[2] == "reference"]
+    assert len(refs) == 6
+    assert out["complete"] is True
+    assert "lines_omitted_by_file" not in out
 
 
 @pytest.mark.asyncio
@@ -703,3 +786,76 @@ def test_token_nowhere_in_the_repo_is_complete_and_empty(scan_repo):
 @pytest.mark.parametrize("needle", ["a\nb", "a\0b", "-e", "café"])
 def test_needles_git_cannot_take_as_one_argument_use_the_python_scan(scan_repo, needle):
     assert _line_hits._files_holding(scan_repo, needle) is None
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("@pytest.mark.anyio", ("@pytest.mark.anyio", False)),
+        ("def send(", ("def send(", False)),
+        ('copy_with(path="/echo_headers")', ('copy_with(path="/echo_headers")', False)),
+        ('@GetMapping("/owners/{ownerId}")', ('@GetMapping("/owners/{ownerId}")', False)),
+        ("copy_with", ("copy_with", True)),
+        ('"x y"', ("x y", False)),
+        ("Add (optional) support", None),
+        ("how does foo(x) work", None),
+        ("what is x=1?", None),
+        ("two words", None),
+    ],
+)
+def test_literal_reads_code_punctuation_as_a_substring(query, expected):
+    assert _line_hits._literal(query) == expected
+
+
+@pytest.mark.asyncio
+async def test_punctuated_literals_return_their_lines(tree):
+    (tree / "app" / "svc.py").write_text(
+        "@pytest.mark.anyio\nasync def test_x():\n    pass\n\nclass C:\n    def send(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "app/svc.py"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "svc"], check=True)
+
+    deco = await search_codebase("@pytest.mark.anyio")
+    assert [(r["path"], r["line"]) for r in deco["lines"]] == [("app/svc.py", 1)]
+
+    head = await search_codebase("def send(")
+    assert [(r["path"], r["line"]) for r in head["lines"]] == [("app/svc.py", 6)]
+
+    # An identifier inside the literal (``backend_of``) does not turn it into a symbol query.
+    call = await search_codebase("backend_of('m')")
+    assert [(r["path"], r["line"]) for r in call["lines"]] == [("app/widget.py", 6)]
+
+
+def _scan(tmp_path, counts: dict[str, int]):
+    for rel, n in counts.items():
+        (tmp_path / rel).write_text("".join(f"limit_{i} = max_hops\n" for i in range(n)), "utf-8")
+    return _line_hits.scan_literal(tmp_path, list(counts), "max_hops", True)
+
+
+def test_a_small_set_comes_back_whole_in_file_order(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 2})
+
+    assert reasons == []
+    assert [(r["path"], r["line"]) for r in rows] == [
+        *(("a.py", n) for n in range(1, 11)),
+        ("b.py", 1),
+        ("b.py", 2),
+    ]
+
+
+def test_a_large_set_keeps_the_per_file_cut(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 15})
+
+    cap = _line_hits.MAX_LINES_PER_FILE
+    assert len(rows) == 2 * cap
+    assert reasons == [f"over {cap} lines in 2 files"]
+
+
+def test_the_small_set_bound_is_inclusive(tmp_path):
+    size = _line_hits.SMALL_SET_LINES
+    rows, reasons = _scan(tmp_path, {"a.py": size})
+    assert (len(rows), reasons) == (size, [])
+    rows, reasons = _scan(tmp_path, {"a.py": size + 1})
+    assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons

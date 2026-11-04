@@ -1,0 +1,702 @@
+"""Checks 11-13: distill, Claude Code MCP registration and launch, agents."""
+
+from __future__ import annotations
+
+import functools as _functools
+from pathlib import Path as _DoctorPath
+
+from .._types import DoctorCheck, _check
+from .context import CheckContext
+
+
+def integration_checks(ctx: CheckContext) -> list[DoctorCheck]:
+    """Checks 11-13, in order. Sets the two flags that drive ``--repair``."""
+    checks = list(_distill_checks(ctx.repo_path))
+    # 12. Static registration check: wedged-path detection.
+    registration_check, ctx.registration_wedged = _claude_registration_check(ctx.repo_path)
+    checks.append(registration_check)
+    desktop_row = _claude_desktop_entry_row()
+    if desktop_row is not None:
+        checks.append(desktop_row)
+    # 12b. Does that registration actually start? Separate row: a wired-up
+    # server that dies on every invocation has a different fix than none.
+    if not ctx.quick:
+        checks.append(_mcp_responds_check())
+    # 13. Per-agent health, reported by each agent's own descriptor.
+    agent_checks, ctx.agents_need_refresh = _agent_target_checks(ctx.repo_path)
+    checks.extend(agent_checks)
+    firing_row = _hooks_firing_row(ctx.repo_path)
+    if firing_row is not None:
+        checks.append(firing_row)
+    return checks
+
+
+def _agent_target_checks(
+    repo_path: _DoctorPath | None = None,
+) -> tuple[list[DoctorCheck], bool]:
+    """One row per agent, reported by that agent's own descriptor.
+
+    Nothing here knows what any particular agent's health means: each
+    ``AgentTarget`` answers for itself, so a fourth agent gets a doctor row by
+    being registered rather than by someone adding a branch to this function.
+
+    Only ``broken`` fails the run, and the line is drawn there on purpose.
+    ``not-installed`` is not a failure — an agent you do not use is not a
+    problem with your setup — and neither is ``stale``, which is advisory in
+    the same way the "Distill rewrite hook" row above it already is. A stale
+    matcher is common, opt-in surfaces go stale routinely, and making it fail
+    would turn ``repowise doctor`` non-zero in CI for a condition nobody asked
+    the tool to guarantee. ``broken`` means a config file is damaged, which is
+    a real fault in the setup being checked.
+
+    Advisory does not mean quiet. The stale row is the reason this function
+    exists: a hook whose matcher names a tool the host has since renamed is
+    installed, parses, and will never fire, which is indistinguishable from
+    working unless something says so out loud. It is also the agreed mitigation
+    for gating the self-heal migrations on ``REPOWISE_SKIP_EDITOR_SETUP`` —
+    someone who exports that permanently never gets the migration, so the
+    staleness has to be visible somewhere. It is printed, and it drives
+    ``--repair``; it just does not change the exit code.
+
+    Returns ``(checks, needs_refresh)``; ``needs_refresh`` drives ``--repair``.
+    """
+    from repowise.cli.agent_targets.registry import all_targets
+
+    checks: list[DoctorCheck] = []
+    needs_refresh = False
+    try:
+        targets = all_targets()
+    except Exception as exc:  # pragma: no cover - a broken registry is a crash elsewhere
+        row = _check(
+            "Agent integrations",
+            True,
+            f"Could not check: {exc}",
+            check_id="agent-integrations",
+            warn=True,
+        )
+        return [row], False
+
+    for target in targets:
+        name, check_id = f"Agent: {target.id}", f"agent-{target.id}"
+        try:
+            report = target.doctor(repo_path=repo_path)
+        except Exception as exc:
+            detail = f"Could not check: {exc}"
+            checks.append(_check(name, True, detail, check_id=check_id, warn=True))
+            continue
+        if report.status.value in ("ok", "not-installed"):
+            detail = report.issues[0] if report.issues else "wired up"
+            checks.append(_check(name, True, detail, check_id=check_id))
+            continue
+        # Only conditions the repair pass can actually resolve drive it. A
+        # plugin the CLI cannot rewrite, or a fix that is a different command,
+        # would otherwise buy a global config write that changes nothing and
+        # then report advice for a condition the user does not have.
+        needs_refresh = needs_refresh or report.repairable
+        detail = "; ".join(report.issues)
+        if report.fix_command:
+            detail += f" (run: {report.fix_command})"
+        # Stale is a warn and broken a fail; only broken changes the exit code.
+        checks.append(
+            _check(
+                name,
+                report.status.value != "broken",
+                detail,
+                check_id=check_id,
+                warn=True,
+                fix=report.fix_command or None,
+            )
+        )
+    return checks, needs_refresh
+
+
+def _registered_mcp_entry() -> dict | None:
+    """The Claude Code ``mcpServers.repowise`` entry, or None if there isn't one.
+
+    Delegates to ``claude_config``, which owns reading this entry, so the two
+    doctor checks and the registration writer cannot drift apart on what counts
+    as registered. Both checks must judge the same entry: a smoke check that
+    launched a *different* command than the one registered would give a clean
+    bill of health to the broken thing.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_code_user_config_path,
+        _stored_repowise_entry,
+    )
+
+    return _stored_repowise_entry(_claude_code_user_config_path())
+
+
+def _unregistered_detail() -> tuple[str, bool, bool]:
+    """``(detail, warn, repair)``: why there is no entry in ~/.claude.json.
+
+    An unreadable file and an entry left only in settings.json (which Claude
+    Code does not read) are worth a warning; the latter is repaired by
+    re-registering. Absent, or served by the plugin, is a choice. Only reached
+    when there is no entry, so it costs nothing normally.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_code_settings_path,
+        _claude_code_user_config_path,
+        _is_our_entry,
+        _stored_repowise_entry,
+        claude_code_plugin_installed,
+        load_existing_config,
+    )
+
+    config_path = _claude_code_user_config_path()
+    if config_path.exists():
+        try:
+            load_existing_config(config_path)
+        except Exception:
+            return f"could not parse {config_path}", True, False
+    if claude_code_plugin_installed():
+        return "served by the repowise Claude Code plugin", False, False
+    settings_path = _claude_code_settings_path()
+    legacy = _stored_repowise_entry(settings_path)
+    if legacy is not None and _is_our_entry(legacy):
+        detail = f"only in {settings_path}, which Claude Code does not read (rerun with --repair)"
+        return detail, True, True
+    return "not registered (repowise init registers it)", False, False
+
+
+@_functools.cache
+def _mcp_responds_check() -> DoctorCheck:
+    """Launch the registered MCP server and complete one round trip.
+
+    Reported separately from the registration row: registration answers "is it
+    wired up", this answers "does it run". An install whose server dies on
+    every invocation passes the first and fails this one, which is the whole
+    point. Absence of a registration is informational, matching
+    the registration check.
+
+    Cached for the process because there is one global ``mcpServers.repowise``
+    entry and this takes no repo argument, while workspace mode runs the repo
+    checks once per entry. Without the cache a ten-repo workspace would launch
+    the same server ten times and pay the startup cost for each.
+    """
+    from ..mcp_smoke import CHECK_ID, CHECK_NAME, mcp_smoke_check
+
+    try:
+        entry = _registered_mcp_entry()
+        if entry is None:
+            return _check(
+                CHECK_NAME, True, "not registered - nothing to launch", check_id=CHECK_ID
+            )
+        command = entry.get("command")
+        args = entry.get("args")
+        if not isinstance(command, str) or not isinstance(args, list):
+            return _check(
+                CHECK_NAME,
+                True,
+                "registration is hand-shaped - not launching it",
+                check_id=CHECK_ID,
+            )
+        return mcp_smoke_check(command, [str(a) for a in args], entry.get("env"))
+    except Exception as exc:  # a doctor check must never be the crash
+        return _check(CHECK_NAME, True, f"Could not check: {exc}", check_id=CHECK_ID, warn=True)
+
+
+def _claude_registration_check(
+    repo_path: _DoctorPath | None = None,
+) -> tuple[DoctorCheck, bool]:
+    """Detect a wedged Claude Code MCP registration (stale paths).
+
+    The user-scope ``~/.claude.json`` entry can end up pointing at a
+    directory that no longer exists (a moved repo, or a leaked temp path) or
+    at a pinned command binary from a deleted venv; either way the MCP
+    server silently fails to start in every Claude Code session. Returns
+    ``(check, wedged)``; ``wedged`` drives the ``--repair`` re-registration.
+    Absence of a registration is informational, never a failure.
+
+    With *repo_path*, an entry serving a different repo gets an advisory note
+    unless another Claude Code scope registers this repo. Advisory because the
+    entry is not broken, and never repaired: repointing the one global entry
+    would break the repo it serves.
+
+    This is a *static* check. Whether the server actually starts is
+    ``_mcp_responds_check``.
+    """
+    name, check_id = "Claude Code MCP entry", "claude-code-mcp-entry"
+    try:
+        entry = _registered_mcp_entry()
+        if entry is None:
+            # An unparseable config or a stranded entry is worth a look; no
+            # entry at all is a choice (another agent, or none).
+            detail, warn, repair = _unregistered_detail()
+            fix = "repowise doctor --repair" if repair else None
+            row = _check(name, True, detail, check_id=check_id, warn=warn, fix=fix)
+            return row, repair
+
+        problems: list[str] = []
+        command = entry.get("command")
+        # Bare command names resolve via PATH at session start; only a pinned
+        # absolute path can go stale.
+        if (
+            isinstance(command, str)
+            and ("/" in command or "\\" in command)
+            and not _DoctorPath(command).exists()
+        ):
+            problems.append(f"command not found: {command}")
+        target = _registration_target(entry)
+        if target is not None and not _DoctorPath(target).is_dir():
+            problems.append(f"registered path missing: {target}")
+        if problems:
+            detail = "; ".join(problems) + " (rerun with --repair)"
+            row = _check(name, False, detail, check_id=check_id, fix="repowise doctor --repair")
+            return row, True
+        if target is not None and repo_path is not None and not _registers_repo(target, repo_path):
+            add = "repowise agents add --target=claude-code --scope=project"
+            detail = (
+                f"serves {target}; this repo is not registered (run `{add}` for a project entry)"
+            )
+            return _check(name, True, detail, check_id=check_id, warn=True, fix=add), False
+        return _check(name, True, _registered_detail(entry, target), check_id=check_id), False
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True), False
+
+
+def _registered_detail(entry: dict, target: str | None) -> str:
+    """The healthy row's detail: the repo served, or that it follows the launch dir."""
+    from repowise.cli.editor_integrations.claude_config import _is_launch_dir_entry
+
+    if target is not None:
+        return target
+    return "serves the repo Claude Code is started in" if _is_launch_dir_entry(entry) else "registered"
+
+
+def _registers_repo(target: str, repo_path: _DoctorPath) -> bool:
+    """Whether Claude Code serves *repo_path* from the global entry or another scope.
+
+    The global *target* counts when it is what init registers for this repo
+    (the workspace root inside a workspace). Otherwise a repowise entry naming
+    this repo in ``.mcp.json`` (project scope) or ``~/.claude.json`` (user or
+    local scope) counts; one copied from another repo does not.
+    """
+    from repowise.cli.agent_targets.targets.claude_code import project_mcp_config_path
+    from repowise.cli.editor_integrations.claude_config import (
+        _resolve_mcp_target,
+        _stored_repowise_entry,
+    )
+    from repowise.cli.helpers import _same_path
+
+    served = (repo_path, _resolve_mcp_target(repo_path))
+
+    def serves(path: str) -> bool:
+        # Claude Code starts a project server in the repo, so a relative path
+        # is relative to it.
+        return any(_same_path(repo_path / path, s) for s in served)
+
+    def names_repo(entry: object) -> bool:
+        path = _registration_target(entry) if isinstance(entry, dict) else None
+        return path is not None and serves(path)
+
+    if serves(target):
+        return True
+    other_scopes = [
+        _stored_repowise_entry(project_mcp_config_path(repo_path)),
+        *_claude_json_entries(repo_path),
+    ]
+    return any(names_repo(e) for e in other_scopes)
+
+
+def _claude_json_entries(repo_path: _DoctorPath) -> list[object]:
+    """Repowise entries in ``~/.claude.json``: user scope, then this repo's local scope.
+
+    Read here only, best effort: an unreadable file yields nothing, so the
+    worst case is the advisory note above.
+    """
+    import json
+
+    from repowise.cli.editor_integrations.claude_config import _claude_code_user_config_path
+    from repowise.cli.helpers import _same_path
+
+    try:
+        data = json.loads(_claude_code_user_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    scopes = [data]
+    projects = data.get("projects")
+    if isinstance(projects, dict):
+        scopes += [
+            v
+            for k, v in projects.items()
+            if isinstance(v, dict) and _same_path(_DoctorPath(k), repo_path)
+        ]
+    entries: list[object] = []
+    for scope in scopes:
+        servers = scope.get("mcpServers")
+        if isinstance(servers, dict) and "repowise" in servers:
+            entries.append(servers["repowise"])
+    return entries
+
+
+def _registration_target(entry: dict) -> str | None:
+    """The repo/workspace path a registration serves, or None if it names none.
+
+    Delegates to ``claude_config``, the writer's own reading of the entry.
+    """
+    from repowise.cli.editor_integrations.claude_config import _entry_repo_target
+
+    return _entry_repo_target(entry)
+
+
+def _claude_desktop_entry_row() -> DoctorCheck | None:
+    """Which repo Claude Desktop's one entry serves; warn when that path is gone.
+
+    Desktop has no project scope and init never moves its entry, so a moved
+    or deleted repo leaves it serving nothing until someone re-points it.
+    None when Desktop holds no repowise entry.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_desktop_config_path,
+        _stored_repowise_entry,
+    )
+    from repowise.cli.editor_integrations.global_mcp import REGISTER_LATER_COMMAND
+
+    name, check_id = "Claude Desktop MCP entry", "claude-desktop-mcp-entry"
+    try:
+        entry = _stored_repowise_entry(_claude_desktop_config_path())
+        if entry is None:
+            return None
+        target = _registration_target(entry)
+        if target is None or _DoctorPath(target).is_dir():
+            return _check(name, True, f"serves {target or 'no fixed repo'}", check_id=check_id)
+        detail = (
+            f"serves {target}, which no longer exists "
+            f"(run `{REGISTER_LATER_COMMAND}` in the repo Desktop should serve; "
+            "it rewrites the Claude Code entry too)"
+        )
+        return _check(name, True, detail, check_id=check_id, warn=True, fix=REGISTER_LATER_COMMAND)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+
+
+def _distill_config_row(repo_path: _DoctorPath) -> tuple[DoctorCheck, object]:
+    """``(row, distill_cfg)``; the block is kept even when validating it fails."""
+    distill_cfg = None
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        distill_cfg = load_repo_config(repo_path).get("distill")
+        from repowise.core.distill.config import validate_distill_config
+
+        problems = validate_distill_config(distill_cfg)
+        if problems:
+            row = _check("Distill config", False, "; ".join(problems), check_id="distill-config")
+            return row, distill_cfg
+        detail = "valid" if distill_cfg else "defaults (no block)"
+        return _check("Distill config", True, detail, check_id="distill-config"), distill_cfg
+    except Exception as exc:
+        row = _check(
+            "Distill config", True, f"Could not check: {exc}", check_id="distill-config", warn=True
+        )
+        return row, distill_cfg
+
+
+def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCheck:
+    """TTL and cap are pruned on write, so a store far past its cap means
+    pruning is not keeping up."""
+    try:
+        from repowise.core.distill.config import omission_store_settings
+
+        _ttl_days, max_mb = omission_store_settings(distill_cfg)
+        db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+        if not db_path.is_file():
+            return _check("Omission store", True, "not created yet", check_id="omission-store")
+        size_mb = _store_bytes_in_use(db_path) / (1024 * 1024)
+        ok = size_mb <= max_mb * 1.5  # slack for the ledger tables pruning leaves alone
+        detail = f"{size_mb:.1f} MB in use (cap {max_mb:g} MB)"
+        if not ok:
+            detail += "; over cap, pruning happens on the next distill write"
+        return _check("Omission store", ok, detail, check_id="omission-store")
+    except Exception as exc:
+        return _check(
+            "Omission store", True, f"Could not check: {exc}", check_id="omission-store", warn=True
+        )
+
+
+def _store_bytes_in_use(db_path: _DoctorPath) -> int:
+    """Bytes the store's live pages hold, WAL included.
+
+    Pruning deletes rows, and SQLite keeps the freed pages in the file for
+    reuse rather than shrinking it, so the file size stays at its high-water
+    mark. Measuring the file would report a pruned store as over cap forever.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        conn.close()
+    return (pages - free) * page_size
+
+
+def _rewrite_hook_surfaces() -> list[tuple[str, object]]:
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+    from repowise.cli.agent_adapters.codex import CodexAdapter
+
+    surfaces = [("claude-code", ClaudeCodeAdapter())]
+    codex = CodexAdapter()
+    if codex.detect():
+        surfaces.append(("codex", codex))
+    from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+    cursor = CursorAdapter()
+    if cursor.detect():
+        surfaces.append(("cursor", cursor))
+    return surfaces
+
+
+def _installed_rewrite_hooks(surfaces: list[tuple[str, object]]) -> tuple[list[str], bool]:
+    """``(names, any_unmatched)`` for the surfaces with the hook installed."""
+    # Registered and live are different questions: an entry whose matcher
+    # predates a tool rename is registered and fires on some or none of the
+    # agent's shell tools. Say which, rather than calling all three "installed".
+    installed_names = []
+    any_unmatched = False
+    for name, adapter in surfaces:
+        status = adapter.rewrite_hook_status()  # type: ignore[attr-defined]
+        if not status.installed:
+            continue
+        if not status.unmatched:
+            installed_names.append(name)
+        else:
+            any_unmatched = True
+            misses = ", ".join(status.unmatched)
+            installed_names.append(f"{name} (matcher misses {misses})")
+    return installed_names, any_unmatched
+
+
+def _distill_off_path_note() -> str:
+    """Why an installed rewrite hook rewrites nothing, or "" when it can.
+
+    The hook runs from a pinned path, but it skips every rewrite when the bare
+    ``repowise`` it would emit is not on PATH.
+    """
+    import shutil
+
+    if shutil.which("repowise") is not None:
+        return ""
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    note = "; repowise is not on PATH, so no command is rewritten"
+    pinned = resolve_repowise_command()
+    if pinned != "repowise":
+        note += f". Add {_DoctorPath(pinned).parent.as_posix()} to PATH"
+    return note
+
+
+def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
+    """Advisory: the rewrite hook is strictly opt-in. A matcher that misses a
+    shell tool is a warn: installed but not firing there."""
+    name, check_id = "Distill rewrite hook", "distill-rewrite-hook"
+    try:
+        installed_names, any_unmatched = _installed_rewrite_hooks(_rewrite_hook_surfaces())
+        if not installed_names:
+            detail = "not installed (opt-in: repowise hook rewrite install)"
+            return _check(name, True, detail, check_id=check_id)
+        detail, warn = _installed_rewrite_detail(installed_names, distill_cfg)
+        fix = "repowise hook rewrite install" if any_unmatched else None
+        return _check(name, True, detail, check_id=check_id, warn=warn or any_unmatched, fix=fix)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+
+
+def _installed_rewrite_detail(installed_names: list[str], distill_cfg: object) -> tuple[str, bool]:
+    """``(detail, off_path)`` for a rewrite hook row with the hook installed."""
+    commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else {}
+    opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
+    if opted_out:
+        return f"installed: {', '.join(installed_names)} (this repo opted out)", False
+    off_path = _distill_off_path_note()
+    return f"installed: {', '.join(installed_names)}{off_path}", bool(off_path)
+
+
+def _hook_scripts_row(repo_path: _DoctorPath | None = None) -> DoctorCheck:
+    """Warn when a repowise hook runs a script that is not there.
+
+    The hook's guard exits 0 when its script is missing, so nothing else
+    would ever say the hook did nothing.
+    """
+    name, check_id = "Agent hook scripts", "agent-hook-scripts"
+    try:
+        from repowise.cli.editor_setup import (
+            describe_unresolved_hooks,
+            unresolved_hook_scripts,
+            unresolved_hooks_fix,
+        )
+
+        missing = unresolved_hook_scripts(repo_path)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+    if not missing:
+        return _check(name, True, "every repowise hook finds its script", check_id=check_id)
+    command, advice = unresolved_hooks_fix(missing)
+    detail = f"not found, so those hooks do nothing: {describe_unresolved_hooks(missing)}"
+    detail += f". {advice}" if advice else ""
+    return _check(name, True, detail, check_id=check_id, warn=True, fix=command)
+
+
+def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """Distill feature health: config validity, store sizing, rewrite hook.
+
+    The rewrite hook is opt-in, so its absence is informational, never a
+    failure. Any unexpected error degrades to an advisory OK row — distill
+    problems must not break doctor.
+    """
+    config_row, distill_cfg = _distill_config_row(repo_path)
+    return [
+        config_row,
+        _omission_store_row(repo_path, distill_cfg),
+        _rewrite_hook_row(distill_cfg),
+        _hook_scripts_row(repo_path),
+    ]
+
+
+#: Claude Code sessions in a row, all started after the hooks were installed,
+#: with no hook ledger row before the firing row warns. One missing session
+#: can be a session the hooks were disabled for; several in a row cannot.
+_SILENT_SESSIONS_TO_WARN = 3
+
+#: Transcripts read per doctor run, newest first. Bounds the cost on a repo
+#: with thousands of sessions; the warning only needs the recent ones.
+_RECENT_SESSIONS = 20
+
+
+def _hooks_firing_row(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """Warn when Claude Code ran sessions here that the installed hooks never saw.
+
+    A hook whose command cannot start is a silent no-op (the shell guard exits
+    0), so "installed" alone says nothing about whether it runs. Every hook
+    run lands in the repo's hook ledger keyed by session id, and Claude Code
+    keeps one transcript per session, so a session with a transcript and no
+    ledger row is one the hooks did not run in. Only sessions that started
+    after the hooks were last written count: a fresh install, or a machine
+    with no Claude Code use here, has none and stays quiet. None when no
+    repowise hook is installed for Claude Code.
+    """
+    name, check_id = "Agent hooks firing", "agent-hooks-firing"
+    try:
+        installed_at = _claude_hooks_installed_at()
+        if installed_at is None:
+            return None
+        from repowise.cli.hook_ledger import ledger_session_ids
+
+        seen = ledger_session_ids(repo_path)
+        if seen is None:
+            return _check(name, True, "could not read the hook ledger", check_id=check_id)
+        sessions = _recent_claude_sessions(repo_path)
+        detail, warn = _hooks_firing_detail(sessions, seen, installed_at)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+    fix = "repowise agents refresh" if warn else None
+    return _check(name, True, detail, check_id=check_id, warn=warn, fix=fix)
+
+
+def _hooks_firing_detail(
+    sessions: list[tuple[str, float, float]], seen: set[str], installed_at: float
+) -> tuple[str, bool]:
+    """``(detail, warn)`` from ``(session_id, started, last_active)``, newest first."""
+    import datetime
+
+    def day(ts: float) -> str:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    last_seen = max((last for sid, _, last in sessions if sid in seen), default=None)
+    floor = max(installed_at, last_seen or 0.0)
+    silent = [sid for sid, started, _ in sessions if started > floor and sid not in seen]
+    if len(silent) >= _SILENT_SESSIONS_TO_WARN:
+        if last_seen is not None:
+            since = f"since {day(last_seen)}"
+        else:
+            # Older runs may sit outside the transcripts read here; never claim "never".
+            since = f"in the last {len(sessions)} sessions" if seen else "in any session"
+        detail = (
+            f"installed, but have not run {since}: {len(silent)} Claude Code sessions here "
+            "left no hook record, so a hook command is not starting "
+            "(run: repowise agents refresh)"
+        )
+        return detail, True
+    if last_seen is not None:
+        return f"last ran {day(last_seen)}", False
+    return "installed; no Claude Code session here has run them yet", False
+
+
+def _claude_hooks_installed_at() -> float | None:
+    """When the Claude Code hook config was last written, or None if no hook is.
+
+    The newest mtime of the files carrying a repowise hook (user settings, the
+    plugin's hooks.json). An mtime bumped by an unrelated edit only moves the
+    floor later, which can hide a warning but never invent one.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        CLAUDE_SETTINGS_LABEL,
+        _claude_code_settings_path,
+        _plugin_hook_entries,
+        claude_code_hook_commands,
+    )
+
+    rows = claude_code_hook_commands()
+    if not rows:
+        return None
+    files = [_claude_code_settings_path()] if any(w == CLAUDE_SETTINGS_LABEL for w, _ in rows) else []
+    if any(w != CLAUDE_SETTINGS_LABEL for w, _ in rows):
+        files += [path for path, _ in _plugin_hook_entries("SessionStart")]
+    mtimes = [f.stat().st_mtime for f in files if f.is_file()]
+    return max(mtimes) if mtimes else None
+
+
+def _recent_claude_sessions(repo_path: _DoctorPath) -> list[tuple[str, float, float]]:
+    """``(session_id, started, last_active)`` for this repo's newest Claude Code sessions.
+
+    The transcript's stem is the session id the hooks receive. Start time is
+    the first timestamp in the file, since an mtime only says when it was
+    last written; a transcript without one is skipped, so a session that may
+    predate the install never counts against the hooks. ``agent-*`` files are
+    subagent transcripts, which no SessionStart hook sees.
+    """
+    import os
+
+    from repowise.core.sessions import transcript_dir_for
+
+    directory = transcript_dir_for(repo_path.resolve())
+    try:
+        entries = [
+            e
+            for e in os.scandir(directory)
+            if e.name.endswith(".jsonl") and not e.name.startswith("agent-") and e.is_file()
+        ]
+    except OSError:
+        return []
+    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+    sessions = []
+    for entry in entries[:_RECENT_SESSIONS]:
+        started = _transcript_started(entry.path)
+        if started is not None:
+            sessions.append((entry.name[: -len(".jsonl")], started, entry.stat().st_mtime))
+    return sessions
+
+
+def _transcript_started(path: str) -> float | None:
+    """The first ``timestamp`` in a transcript's head, as epoch seconds."""
+    import datetime
+    import re
+
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(16384)
+    except OSError:
+        return None
+    match = re.search(r'"timestamp":\s*"([^"]+)"', head)
+    if match is None:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(match.group(1).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None

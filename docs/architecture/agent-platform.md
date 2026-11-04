@@ -13,8 +13,8 @@ An agent can touch repowise in two independent ways:
 - Indexing backend: the agent's own CLI runs as the LLM that writes the
   wiki, using the user's existing login, with no API key.
 
-An agent can have either, both or neither. GitHub Copilot CLI, for example, is
-an integration target with a registered identity and no indexing backend.
+An agent can have either, both or neither. GitHub Copilot CLI is both an
+integration target and an indexing backend through its authenticated local CLI.
 
 **Contents**
 
@@ -146,7 +146,8 @@ takes a reasoning flag. The defaults offer one option, the configured model,
 with reasoning `auto`.
 
 `self._repo_path` holds the repo the CLI should read. Pass it with the CLI's
-directory flag (opencode uses `--dir`, codex `--cd`) if the CLI has one.
+directory flag (`codex` uses `--cd`) or, when the CLI has none, as the
+subprocess working directory (`opencode`); `claude_cli` ignores it.
 
 ### Step 2: the `ProviderSpec`
 

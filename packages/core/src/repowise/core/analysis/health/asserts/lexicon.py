@@ -151,11 +151,40 @@ _PY = AssertDialect(
 )
 
 
+# AVA's assertions, which are methods on the test handle ``t`` rather than
+# ``assert``/``expect`` calls. Matched by receiver name like the Go row above;
+# ``t`` is the AVA convention. ``plan`` / ``teardown`` / ``timeout`` / ``log`` /
+# ``try`` / ``context`` are deliberately absent: they set a test up or report on
+# it, they don't check anything.
+_AVA_ASSERTIONS = frozenset(
+    {
+        "is",
+        "not",
+        "deepequal",
+        "notdeepequal",
+        "like",
+        "true",
+        "false",
+        "truthy",
+        "falsy",
+        "throws",
+        "throwsasync",
+        "notthrows",
+        "notthrowsasync",
+        "regex",
+        "notregex",
+        "snapshot",
+        "pass",
+        "fail",
+    }
+)
+
 _JS_TS = AssertDialect(
     # should.js / chai's BDD chain, as the receiver root of the matcher call:
     # ``result.should.equal(x)``. The property form (``x.should.be.true``) is
     # not a call and stays uncounted, an undercount in the safe direction.
     assert_names=frozenset({"should"}),
+    receiver_methods={"t": _AVA_ASSERTIONS},
 )
 
 

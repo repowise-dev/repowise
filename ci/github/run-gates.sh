@@ -14,19 +14,22 @@ checks=" $names "
 wants() { [[ "$checks" == *" $1 "* ]]; }
 
 if [[ -z "${names// /}" ]]; then
-  echo "::error::No check selected; set checks to coverage, doc-drift, security or risk."
+  echo "::error::No check selected; set checks to coverage, doc-drift, security, health or risk."
   exit 2
 fi
 for name in $names; do
   case "$name" in
-    coverage | doc-drift | security | risk) ;;
-    *) echo "::error::Unknown check '$name'; use coverage, doc-drift, security or risk." ; exit 2 ;;
+    coverage | doc-drift | security | health | risk) ;;
+    *) echo "::error::Unknown check '$name'; use coverage, doc-drift, security, health or risk." ; exit 2 ;;
   esac
 done
 
-# Coverage, security and risk diff the change, so they need its history and
-# the target branch; risk also ranks it against recent commits.
-if wants coverage || wants security || wants risk; then
+# Coverage, security, health and risk diff the change, so they need its history
+# and the target branch; risk also ranks it against recent commits. Baseline growth
+# reads the doc-drift baseline at the change's base.
+growth=()
+[[ "${FAIL_ON_BASELINE_GROWTH:-}" == "true" ]] && growth=(--fail-on-baseline-growth)
+if wants coverage || wants security || wants health || wants risk || { wants doc-drift && [[ -n "$DOC_DRIFT_BASELINE" && ${#growth[@]} -gt 0 ]]; }; then
   here=${0//\\//}
   source "${here%/*}/fetch-base.sh"
 fi
@@ -70,12 +73,14 @@ if wants coverage; then
 fi
 
 drift=(doc-drift --check)
-[[ -n "$DOC_DRIFT_BASELINE" ]] && drift+=(--baseline "$DOC_DRIFT_BASELINE")
+[[ -n "$DOC_DRIFT_BASELINE" ]] && drift+=(--baseline "$DOC_DRIFT_BASELINE" ${growth[@]+"${growth[@]}"})
 security=(security check ${base[@]+"${base[@]}"} --fail-on "$SECURITY_FAIL_ON")
-[[ -n "$SECURITY_BASELINE" ]] && security+=(--baseline "$SECURITY_BASELINE")
+[[ -n "$SECURITY_BASELINE" ]] && security+=(--baseline "$SECURITY_BASELINE" ${growth[@]+"${growth[@]}"})
+health=(health check ${base[@]+"${base[@]}"} --fail-on "$HEALTH_FAIL_ON" --fail-at "$HEALTH_FAIL_AT")
 
 wants doc-drift && run doc-drift repowise "${drift[@]}" --format github
 wants security && run security repowise "${security[@]}" --format github
+wants health && run health repowise "${health[@]}" --format github
 
 if wants risk; then
   # Without a base, --format github scores the pull request against its target
@@ -87,10 +92,11 @@ fi
 
 # SARIF is a second run in its own format. A gate that could not evaluate
 # writes an empty file, which code scanning would reject, so it is dropped.
-if [[ "$SARIF" == "true" ]] && { wants doc-drift || wants security; }; then
+if [[ "$SARIF" == "true" ]] && { wants doc-drift || wants security || wants health; }; then
   mkdir -p "$SARIF_DIR"
   wants doc-drift && repowise "${drift[@]}" --format sarif >"$SARIF_DIR/doc-drift.sarif"
   wants security && repowise "${security[@]}" --format sarif >"$SARIF_DIR/security.sarif"
+  wants health && repowise "${health[@]}" --format sarif >"$SARIF_DIR/health.sarif"
   find "$SARIF_DIR" -name '*.sarif' -empty -delete
   if [[ -n "$(ls -A "$SARIF_DIR")" ]]; then
     echo "sarif-dir=$SARIF_DIR" >>"$GITHUB_OUTPUT"

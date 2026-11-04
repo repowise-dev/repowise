@@ -7,6 +7,7 @@ from typing import Any
 
 from repowise.cli.agent_targets.targets import codex as codex_target
 from repowise.cli.editor_setup import EditorSetupOptions
+from repowise.cli.ui.glyphs import glyph
 
 
 class CodexSetup:
@@ -53,9 +54,9 @@ class CodexSetup:
         logged_in = is_codex_logged_in() if installed else False
 
         config_path = save_codex_mcp_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] Codex MCP registered ({config_path})")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] Codex MCP registered ({config_path})")
         hooks_path = save_codex_hooks_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] Codex hooks registered ({hooks_path})")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] Codex hooks registered ({hooks_path})")
         written = [Path(config_path), Path(hooks_path)]
         if not agents_disabled:
             agents_path = maybe_generate_agents_md(
@@ -91,11 +92,15 @@ class CodexSetup:
     ) -> None:
         if self.project_file_id in options.disabled_project_files:
             return
+        from repowise.core.generation.editor_files import AgentsMdGenerator
+
+        # A refresh never creates AGENTS.md, but a section it wrote before is
+        # kept current: otherwise its "Last indexed" stamp freezes at that run.
         maybe_generate_agents_md(
             console_obj,
             repo_path,
             agents_md=options.project_file_overrides.get(self.project_file_id),
-            default=False,
+            default=AgentsMdGenerator().has_managed_section(repo_path),
         )
 
 
@@ -115,8 +120,8 @@ def maybe_generate_agents_md(
 
     from repowise.cli.editor_files import should_generate_editor_file
     from repowise.cli.helpers import run_async
-    from repowise.cli.ui import OWL_SPINNER
     from repowise.cli.ui.brand import OK, WARN
+    from repowise.cli.ui.mascot import owl_status
 
     if not should_generate_editor_file(
         repo_path,
@@ -126,9 +131,9 @@ def maybe_generate_agents_md(
     ):
         return None
     try:
-        with console_obj.status("  Generating AGENTS.md…", spinner=OWL_SPINNER):
+        with owl_status(console_obj, f"  Generating AGENTS.md{glyph('ellipsis')}"):
             run_async(_write_agents_md_async(repo_path))
-        console_obj.print(f"  [{OK}]✓[/] AGENTS.md updated")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] AGENTS.md updated")
     except Exception as exc:
         console_obj.print(f"  [{WARN}]AGENTS.md skipped: {exc}[/]")
         return None

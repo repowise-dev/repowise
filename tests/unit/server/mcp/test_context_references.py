@@ -541,7 +541,7 @@ async def test_python_alias_value_use_leaves_the_file(session, repo_id, tmp_path
 
 @pytest.mark.asyncio
 async def test_local_alias_references_share_the_per_file_cap(session, repo_id, tmp_path):
-    spec = "import { pick as choose } from './a'\n" + "choose.mockReturnValue(1)\n" * 10
+    spec = "import { pick as choose } from './a'\n" + "choose.mockReturnValue(1)\n" * 30
     node = await _seed_js(
         session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/a.test.ts": spec}
     )
@@ -549,7 +549,7 @@ async def test_local_alias_references_share_the_per_file_cap(session, repo_id, t
     out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
 
     assert out["sites_omitted_by_file"] == {
-        "web/a.test.ts": 10 - _edit_sites.MAX_REFERENCES_PER_FILE
+        "web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE
     }
     assert not any(r.startswith("renamed") for r in out["reasons"])
 
@@ -581,6 +581,28 @@ async def test_small_list_is_unchanged_by_the_per_file_cap(session, repo_id, tmp
     capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
 
     assert json.dumps(capped) == json.dumps(bare)
+
+
+@pytest.mark.asyncio
+async def test_a_small_set_keeps_every_reference_in_one_file(
+    session, repo_id, tmp_path, monkeypatch
+):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write("spies = [\n" + "    backend_of,\n" * 6 + "]\n")
+
+    bare = await reference_edit_set(session, repo_id, tmp_path, node)
+    size = len(bare["sites"])
+    assert size <= _edit_sites.SMALL_SET_LINES
+    whole = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+    assert json.dumps(whole) == json.dumps(bare)
+    assert whole["complete"] is True
+
+    # One row over the bound and the per-file cap applies again.
+    monkeypatch.setattr(_edit_sites, "SMALL_SET_LINES", size - 1)
+    capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+    assert capped["sites_omitted_by_file"]
+    assert capped["complete"] is False
 
 
 @pytest.mark.asyncio
@@ -975,3 +997,96 @@ async def test_oversize_package_file_is_incomplete(session, repo_id, tmp_path):
 
     assert out["complete"] is False
     assert "unreadable: big.go" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_same_name_re_export_is_not_a_rename(session, repo_id, tmp_path):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("pkg/__init__.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "pkg" / "__init__.py").write_text(
+        "from .catalog import backend_of as backend_of\n", encoding="utf-8"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("pkg/__init__.py", 1, "import") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+async def _seed_method(session, repo_id, tmp_path, outside: str):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "pkg" / "store.py").write_text(
+        "class Store:\n    def fetch_rows(self):\n        return []\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "use.py").write_text(
+        "from pkg.store import Store\n\nrows = Store().fetch_rows()\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "other.py").write_text(outside, encoding="utf-8")
+    sym = "pkg/store.py::Store::fetch_rows"
+    node = GraphNode(
+        id="ref_method",
+        repository_id=repo_id,
+        node_id=sym,
+        node_type="symbol",
+        name="fetch_rows",
+        file_path="pkg/store.py",
+        kind="method",
+        language="python",
+        start_line=2,
+        end_line=3,
+        created_at=_NOW,
+    )
+    session.add_all(
+        [
+            node,
+            _edge(1, repo_id, "app/use.py", "pkg/store.py", "imports", imported_names_json='["Store"]'),
+            _edge(2, repo_id, "app/use.py::__module__", sym, "calls", call_lines_json="[3]"),
+        ]
+    )
+    await session.flush()
+    return node
+
+
+@pytest.mark.asyncio
+async def test_member_with_no_untyped_access_elsewhere_is_complete(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("app/use.py", 3, "call") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, repo_id, tmp_path):
+    node = await _seed_method(
+        session, repo_id, tmp_path, "def load(store):\n    return store.fetch_rows()\n"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: app/other.py" in (
+        out["reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_member_named_by_an_inherited_bare_use_elsewhere_is_incomplete(
+    session, repo_id, tmp_path
+):
+    # No receiver is written, yet the file may still reach the member.
+    node = await _seed_method(
+        session, repo_id, tmp_path, "class Sub(Base):\n    run = fetch_rows\n"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: app/other.py" in out["reasons"]

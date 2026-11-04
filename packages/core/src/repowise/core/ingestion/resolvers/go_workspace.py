@@ -59,6 +59,10 @@ class GoPackageIndex:
     import_path_to_dir: dict[str, str] = field(default_factory=dict)
     """Maps a fully-qualified import path → its package directory."""
 
+    modules: tuple[tuple[str, str], ...] = ()
+    """``((module_dir, module_path), ...)`` the index was built from; empty
+    when no ``go.mod`` was readable."""
+
     def files_for_import(self, import_path: str) -> tuple[str, ...]:
         """Return the *importable* ``.go`` files of the package the import names.
 
@@ -140,14 +144,15 @@ def _read_text(ctx: ResolverContext, rel_path: str) -> str:
     return source_text(rel_path, ctx.repo_path / rel_path, source_map) or ""
 
 
-def _import_path_for_dir(
+def _enclosing_module(
     pkg_dir: str, go_modules: tuple[tuple[str, str], ...]
-) -> str | None:
-    """Compute a package's import path from the enclosing module.
+) -> tuple[str, str, str] | None:
+    """The module a package directory belongs to, as ``(module_dir, module_path, suffix)``.
 
     *go_modules* is ``((module_dir, module_path), ...)`` sorted longest
     module-path first; we re-rank by the longest matching *module_dir* so
-    nested modules in a monorepo win over the root module.
+    nested modules in a monorepo win over the root module. *suffix* is the
+    package's path below the module root ("" for the root package).
     """
     best: tuple[str, str] | None = None
     best_len = -1
@@ -161,6 +166,17 @@ def _import_path_for_dir(
         return None
     module_dir, mod_path = best
     suffix = pkg_dir[len(module_dir):].lstrip("/") if module_dir else pkg_dir
+    return module_dir, mod_path, suffix
+
+
+def _import_path_for_dir(
+    pkg_dir: str, go_modules: tuple[tuple[str, str], ...]
+) -> str | None:
+    """Compute a package's import path from the enclosing module."""
+    found = _enclosing_module(pkg_dir, go_modules)
+    if found is None:
+        return None
+    _module_dir, mod_path, suffix = found
     return f"{mod_path}/{suffix}" if suffix else mod_path
 
 
@@ -175,6 +191,9 @@ def build_go_package_index(ctx: ResolverContext) -> GoPackageIndex:
     # back to a fresh read, then to the legacy single-module field so
     # manually-built test contexts still map import paths.
     go_modules = ctx.go_modules or read_go_modules(ctx.repo_path)
+    # Only modules read from a real go.mod; ``exported_go_files`` keys off
+    # ``index.modules`` and must export nothing without one.
+    real_modules = tuple(go_modules)
     if not go_modules and ctx.go_module_path:
         go_modules = (("", ctx.go_module_path),)
 
@@ -187,7 +206,7 @@ def build_go_package_index(ctx: ResolverContext) -> GoPackageIndex:
             parent = ""
         files_by_dir.setdefault(parent, []).append(path)
 
-    index = GoPackageIndex()
+    index = GoPackageIndex(modules=real_modules)
     for pkg_dir, files in files_by_dir.items():
         files.sort()
         pkg_name = ""
@@ -228,7 +247,44 @@ def build_go_package_index(ctx: ResolverContext) -> GoPackageIndex:
     return index
 
 
+def exported_go_files(index: GoPackageIndex) -> list[str]:
+    """Every non-test ``.go`` file a consumer outside the repo can import from.
+
+    A package is importable from outside its module when it sits in a module
+    the index knows, no segment of its path below the module root is
+    ``internal``, and it is not ``package main``. Nothing is exported when no
+    ``go.mod`` was readable. Whether a *symbol* in these files is exported is
+    Go's capitalisation rule, already on ``Symbol.visibility``.
+    """
+    out: list[str] = []
+    for pkg in index.packages.values():
+        if pkg.is_main:
+            continue
+        found = _enclosing_module(pkg.dir, index.modules)
+        if found is None:
+            continue
+        if "internal" in found[2].split("/"):
+            continue
+        out.extend(f for f in pkg.files if not f.endswith("_test.go"))
+    return sorted(out)
+
+
+def go_package_files(index: GoPackageIndex) -> dict[str, tuple[str, ...]]:
+    """``{file: the non-test files of its package}``, for symbols declared across a package's files."""
+    out: dict[str, tuple[str, ...]] = {}
+    for pkg in index.packages.values():
+        files = tuple(f for f in pkg.files if not f.endswith("_test.go"))
+        for f in files:
+            out[f] = files
+    return out
+
+
 _INDEX_KEY = "_go_package_index"
+
+
+def cached_go_index(ctx: ResolverContext) -> GoPackageIndex | None:
+    """The index :func:`get_or_build_go_index` cached on *ctx*, or None if none was built."""
+    return getattr(ctx, _INDEX_KEY, None)
 
 
 def get_or_build_go_index(ctx: ResolverContext) -> GoPackageIndex:

@@ -16,7 +16,13 @@ import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import as_commit_id, console, warn
+from repowise.cli.helpers import (
+    UPDATE_LOCK_FILENAME,
+    UPDATE_QUEUED_FILENAME,
+    as_commit_id,
+    console,
+    warn,
+)
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -79,6 +85,23 @@ def sweep_stale_seed_backups(paths: list[Path]) -> None:
                         pass
 
 
+def _seed_commit_refusal(repo: Path, commit: str, *, require_ancestor: bool) -> str | None:
+    """Why *commit* cannot start a seeded index in *repo*, or None when it can."""
+    if as_commit_id(commit) is None:
+        return "is not a commit id"
+    if require_ancestor:
+        args = ["merge-base", "--is-ancestor", "--end-of-options", commit, "HEAD"]
+        refusal = "is not an ancestor of worktree HEAD"
+    else:
+        args = ["cat-file", "-e", f"{commit}^{{commit}}"]
+        refusal = "is not in this repository"
+    try:
+        subprocess.check_call(["git", *args], cwd=repo, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return refusal
+    return None
+
+
 def _get_initial_commit(p: Path) -> str:
     return _git_output(["rev-list", "--max-parents=0", "HEAD"], p)
 
@@ -119,14 +142,11 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
         # A page id is ``<type>:<target_path>``, so the id moves with the target:
         # generation writes the new id, and a page left under the old one is
         # never regenerated and never found by ``generate --page``.
-        has_fts = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name = 'page_fts'"
-        ).fetchone()
+        has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'page_fts'").fetchone()
         for page_type in ("repo_overview", "architecture_diagram"):
             old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
             conn.execute(
-                "UPDATE wiki_pages SET id = ?, target_path = ? "
-                "WHERE repository_id = ? AND id = ?",
+                "UPDATE wiki_pages SET id = ?, target_path = ? WHERE repository_id = ? AND id = ?",
                 (new_id, dest_repo.name, repo_id, old_id),
             )
             conn.execute(
@@ -152,6 +172,7 @@ def seed_index_from_base(
     seed_base: Path,
     include_submodules: bool | None = None,
     dry_run: bool = False,
+    require_ancestor: bool = True,
 ) -> bool:
     """Copy ``.repowise/`` from a base checkout into each target repo.
 
@@ -159,11 +180,17 @@ def seed_index_from_base(
     seed's last_sync_commit is an ancestor of the target HEAD), stages the
     copy into a temp dir, then swaps it in with a rename so a crash mid-copy
     never leaves a half-written index. All-or-nothing across ``repo_paths``:
-    one failed validation rolls back every staged copy and returns False so
-    the caller falls back to a full init.
+    one failed validation rolls back every staged copy and returns False.
+    Messages give the reason only; the caller says what happens next, since
+    init falls back to a full init and update has nothing to fall back to.
 
     ``include_submodules`` is the caller's CLI flag; pass None to skip the
     conflict warning (update has no such flag).
+
+    ``require_ancestor=False`` accepts any last_sync_commit the target repo
+    has. ``update`` passes it: its catch-up diffs two trees, so a base that
+    moved past the worktree's fork point is still a valid start, and update
+    has no full init to fall back to.
     """
     sweep_stale_seed_backups([root, *repo_paths])
 
@@ -175,10 +202,7 @@ def seed_index_from_base(
         src_repo = seed_base / r_rel
 
         if not base_is_seedable(src_repo):
-            console.print(
-                f"[yellow]Seed source {src_repo} is missing .repowise state/db. "
-                f"Falling back to full init.[/yellow]"
-            )
+            console.print(f"[yellow]Seed source {src_repo} is missing .repowise state/db.[/yellow]")
             success = False
             break
 
@@ -187,7 +211,7 @@ def seed_index_from_base(
         ):
             console.print(
                 f"[yellow]Seed source {src_repo} does not share the same initial "
-                f"commit as worktree. Falling back to full init.[/yellow]"
+                f"commit as this checkout.[/yellow]"
             )
             success = False
             break
@@ -195,26 +219,15 @@ def seed_index_from_base(
         state_data = json.loads((src_repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
         last_sync_commit = state_data.get("last_sync_commit")
         if not last_sync_commit:
-            console.print(
-                f"[yellow]Seed source {src_repo} has no last_sync_commit. "
-                f"Falling back to full init.[/yellow]"
-            )
+            console.print(f"[yellow]Seed source {src_repo} has no last_sync_commit.[/yellow]")
             success = False
             break
 
-        try:
-            if as_commit_id(last_sync_commit) is None:
-                raise subprocess.CalledProcessError(1, "git merge-base")
-            subprocess.check_call(
-                ["git", "merge-base", "--is-ancestor", "--end-of-options", last_sync_commit, "HEAD"],
-                cwd=r_path,
-                stderr=subprocess.DEVNULL,
-            )
-        except subprocess.CalledProcessError:
+        refusal = _seed_commit_refusal(r_path, last_sync_commit, require_ancestor=require_ancestor)
+        if refusal is not None:
             console.print(
                 f"[yellow]Seed source {src_repo} last_sync_commit "
-                f"{last_sync_commit[:8]} is not an ancestor of worktree HEAD. "
-                f"Falling back to full init.[/yellow]"
+                f"{last_sync_commit[:8]} {refusal}.[/yellow]"
             )
             success = False
             break
@@ -233,7 +246,14 @@ def seed_index_from_base(
             temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
             temp_dirs.append((r_path, temp_dir))
 
-            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
+            # The base's update markers belong to the base: a copied lock
+            # would defer this checkout's update to a run that never covers it.
+            shutil.copytree(
+                src_repo / ".repowise",
+                temp_dir,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(UPDATE_LOCK_FILENAME, UPDATE_QUEUED_FILENAME),
+            )
 
             # Since config.yaml is copied atomically alongside state.json, the
             # config_fingerprint remains valid.
@@ -252,9 +272,7 @@ def seed_index_from_base(
 
             _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
         except Exception as e:
-            console.print(
-                f"[yellow]Error staging seed for {r_path}: {e}. Falling back to full init.[/yellow]"
-            )
+            console.print(f"[yellow]Error staging seed for {r_path}: {e}.[/yellow]")
             success = False
             break
 

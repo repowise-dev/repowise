@@ -286,7 +286,7 @@ def why_command(
 
     QUERY is a question ("why is auth using JWT?"), a file path (its governing
     decisions, origin story and alignment score), or omitted for the decision
-    health dashboard — or for the --targets, when any are named. Falls back to
+    health dashboard — or for repeatable --target paths, when named. Falls back to
     git archaeology when a path has no decisions, so it is never empty.
     """
     fmt = _ta.resolve_format_for(fmt, full)
@@ -356,6 +356,7 @@ def _render(projected: dict) -> None:
                 f"pass --full for the rest.[/dim]"
             )
 
+    seen_commits: set[tuple[str, str]] = set()
     origin = projected.get("origin_story") or {}
     if origin.get("available"):
         console.print(
@@ -365,6 +366,9 @@ def _render(projected: dict) -> None:
             f"({_owner_share(origin.get('author_commit_pct'))})"
         )
         for c in origin.get("key_commits") or []:
+            sha = str(c.get("sha", "")).lower()
+            if sha:
+                seen_commits.add((sha, str(c.get("message", ""))))
             console.print(
                 f"  [dim]{c.get('sha', '')} {str(c.get('date', ''))[:10]}[/dim] "
                 f"{c.get('message', '')}"
@@ -372,7 +376,7 @@ def _render(projected: dict) -> None:
 
     if projected.get("git_archaeology"):
         console.print("")
-        _render_archaeology(console, projected["git_archaeology"], indent="")
+        _render_archaeology(console, projected["git_archaeology"], indent="", seen=seen_commits)
 
     rationale = projected.get("code_rationale") or []
     if rationale:
@@ -487,8 +491,24 @@ _RENDERABLE_BLOCKS = (
 _owner_share = _ta.owner_share
 
 
-def _render_archaeology(console, arch: dict, *, indent: str) -> None:
+def _already_rendered(seen: set[tuple[str, str]], sha: str, message: str) -> bool:
+    """Match full IDs where available; short indexed IDs need the subject too."""
+    return any(
+        old == sha
+        or (
+            old_message == message
+            and old != sha
+            and (old.startswith(sha) or sha.startswith(old))
+        )
+        for old, old_message in seen
+    )
+
+
+def _render_archaeology(
+    console, arch: dict, *, indent: str, seen: set[tuple[str, str]] | None = None
+) -> None:
     """The archaeology block, at the top level or nested under one ``--target``."""
+    seen = seen if seen is not None else set()
     console.print(f"{indent}[bold]Git archaeology[/bold] {arch.get('summary', '')}")
     for label, key in (
         ("this file", "file_commits"),
@@ -497,6 +517,12 @@ def _render_archaeology(console, arch: dict, *, indent: str) -> None:
     ):
         rows = arch.get(key) or []
         for c in rows:
+            sha = str(c.get("sha", "")).lower()
+            message = str(c.get("message", ""))
+            if key != "cross_references" and sha and _already_rendered(seen, sha, message):
+                continue
+            if key != "cross_references" and sha:
+                seen.add((sha, message))
             where = f" [dim]({c['source_file']})[/dim]" if c.get("source_file") else ""
             console.print(
                 f"{indent}  [dim]{label}: {str(c.get('sha', ''))[:8]} "
@@ -505,7 +531,7 @@ def _render_archaeology(console, arch: dict, *, indent: str) -> None:
         total = arch.get(f"{key}_total")
         if total:
             console.print(
-                f"{indent}  [dim]{len(rows)} of {total} {label} shown; "
+                f"{indent}  [dim]{len(rows)} of {total} {label} inspected; "
                 f"pass --full for the rest.[/dim]"
             )
 

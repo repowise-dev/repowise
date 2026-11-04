@@ -26,7 +26,9 @@ async def test_get_risk_single_target(setup_mcp):
     assert t["primary_owner"] == "Alice"
     assert "owner_pct" not in t  # detailed owner metrics require include=["owners"]
     assert "risk_summary" in t
-    assert "hotspot score" in t["risk_summary"]
+    # churn_percentile=0.92 and is_hotspot → named as a rank, not a bare percentage
+    assert "churn hotspot, top 8% (" in t["risk_summary"]
+    assert "hotspot score" not in t["risk_summary"]
 
     # include=["owners"] opt-in adds owner_pct
     owners_result = await get_risk(["src/auth/service.py"], include=["owners"])
@@ -386,17 +388,19 @@ async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(pr_ch
 async def test_get_risk_pr_directive_runs_tests_in_import_reach(pr_checkout):
     """No map and no call-graph test -> the tests in reverse-import reach, inferred.
 
-    ``tests/test_service.py`` reaches ``models.py`` through ``service.py``. With
-    no coverage the gap list is withheld, not sent empty.
+    ``tests/test_service.py`` reaches ``models.py`` only through ``service.py``,
+    so it runs but is counted apart from the headline. With no coverage the gap
+    list is withheld, not sent empty.
     """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run"] == []
+    assert directive["tests_import_closure_total"] == 1
+    assert "1 more test(s) must still run because they import the change" in directive["summary"]
     assert directive["tests_to_run_basis"] == "inferred"
-    assert directive["tests_to_run_kind"] == "test_file"
     assert "missing_tests" not in directive
     assert directive["coverage"]["status"] == "unavailable"
     assert "test gaps are withheld" in directive["summary"]
@@ -776,6 +780,7 @@ def test_health_filename_heuristic_supports_suffix_test_conventions(source, test
 async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
     """Health and risk agree that suffixed test names are not exact pairs."""
     from repowise.core.analysis.health.engine import _has_paired_test_file
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
     from repowise.core.persistence.models import GraphNode
     from repowise.server.mcp_server.tool_risk.assessment import _check_test_gap
 
@@ -787,6 +792,16 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
             node_type="file",
             language="python",
             is_test=True,
+        )
+    )
+    # Indexed: a file the index has not seen is new, never a gap.
+    session.add(
+        GraphNode(
+            id="gn-source",
+            repository_id=repo_id,
+            node_id="src/my_module.py",
+            node_type="file",
+            language="python",
         )
     )
     await session.flush()
@@ -805,6 +820,8 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
         )
     )
     await session.flush()
+    # The test-file set is kept per index state; a node added outside an index run is not one.
+    clear_test_map_cache()
     assert await _check_test_gap(session, repo_id, "src/my_module.py") is False
 
 
@@ -858,7 +875,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
         }
     ]
 

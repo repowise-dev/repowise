@@ -5,6 +5,7 @@ import type {
   HealthScope,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
@@ -17,6 +18,8 @@ import type {
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
+import type { AreaDetail, AreaTree } from "@repowise-dev/types/areas";
+import type { AreaLinks } from "./area-rail/area-card";
 import type { AiPromptFlavor } from "./ai-prompts/shared";
 import type { CodeHealthOverlay } from "./map/types";
 import type { RelatedWorkHref } from "./related-work";
@@ -160,6 +163,18 @@ export interface CodeHealthAdapter {
   navigate(href: string): void;
 
   /**
+   * The areas API. With all three, the map loads its hierarchy and files as
+   * the reader zooms and the rail reads each area's card; without them the
+   * map derives its hierarchy from the flat `mapFeed` and the rail lists files.
+   */
+  getAreaTree?(root: string, depth: number): Promise<AreaTree>;
+  getAreaDetail?(path: string): Promise<AreaDetail>;
+  /** One area's complete file list, the map feed narrowed with `?area=`. */
+  getAreaFiles?(area: string): Promise<HealthMapFeed>;
+  /** Where an area card's secondary links go. */
+  areaLinks?(path: string): AreaLinks;
+
+  /**
    * Render the app's file-detail drawer for the inspected path. Kept as a slot
    * so each app supplies its own data fetch + toast wiring; pass `null` for
    * `filePath` to render nothing.
@@ -173,5 +188,7 @@ export interface CodeHealthAdapter {
     filePath: string | null;
     onClose: () => void;
     lens?: CodeHealthOverlay;
+    /** Render the detail in place, in the map's rail, rather than in a sheet. */
+    inline?: boolean;
   }): ReactNode;
 }

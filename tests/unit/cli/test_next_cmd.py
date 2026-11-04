@@ -10,6 +10,7 @@ import asyncio
 import datetime
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -230,7 +231,7 @@ async def _build_index(repo_path: Path) -> None:
             )  # fmt: skip
             session.add_all(
                 DeadCodeFinding(repository_id=repo.id, kind="unused_export",
-                                file_path="src/dead.py", symbol_name=f"f{i}", lines=10,
+                                file_path="src/dead.py", symbol_name=f"f{i}", lines=10, confidence=0.9,
                                 safe_to_delete=True)
                 for i in range(3)
             )  # fmt: skip
@@ -264,7 +265,7 @@ def test_reads_a_repo_local_index_after_the_folder_is_moved(
     asyncio.run(_build_index(original))
     if outdated_schema:
         # Reconciliation must finish before the relocated repository is read.
-        with sqlite3.connect(original / ".repowise" / "wiki.db") as conn:
+        with closing(sqlite3.connect(original / ".repowise" / "wiki.db")) as conn:
             conn.execute("ALTER TABLE health_file_metrics DROP COLUMN analyzed_commit")
     moved = tmp_path / "moved"
     original.rename(moved)

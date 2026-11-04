@@ -47,6 +47,14 @@ export interface ZoomNode {
   is_dead: boolean;
   is_test: boolean;
   on_flow: boolean;
+  /** Up to three code languages / imported frameworks of the subtree, most
+   *  files first (e.g. `["TypeScript", "React", "Next"]`). Empty on file
+   *  leaves, which carry `language`. Optional: an older server omits it. */
+  technologies?: string[];
+  /** Ids of the `ZoomMap.containers` this subtree's files belong to, most files
+   *  first. One id = the node lies wholly inside that container; several =
+   *  it spans them (curated layers cut across deployables). Optional. */
+  container_ids?: string[];
 }
 
 /** An aggregated edge between two sibling subtrees under a shared parent. */
@@ -57,6 +65,59 @@ export interface ZoomRelation {
   label: string;
   edge_count: number;
   coupling: string; // loose | moderate | tight
+}
+
+/** Kind of an external system: its boundary type when typed, else its
+ *  dependency category. Open-ended so a new detector value still parses. */
+export type ZoomExternalKind = "db" | "network" | "service" | (string & {});
+
+/**
+ * A third-party system the code reaches (a database, a remote API, a SaaS),
+ * drawn beside the tree rather than inside it. `ZoomMap.external_relations`
+ * link tree nodes to it at every zoom level.
+ */
+export interface ZoomExternal {
+  /** `ext:<package name>`; the `target_id` of its external relations. */
+  id: string;
+  name: string;
+  display_name: string;
+  kind: ZoomExternalKind;
+  /** service | framework | library | tool */
+  category: string;
+  /** db | network, or null when the package is untyped. */
+  io_kind: string | null;
+  /** pypi | npm | cargo | ... */
+  ecosystem: string;
+  /** Distinct production files importing it, repository-wide (not narrowed
+   *  by `focus` / `max_depth`; count the served `external_relations` for that). */
+  file_count: number;
+  /** Import edges reaching it, repository-wide. */
+  edge_count: number;
+}
+
+/** What a container is, from what it imports and how it is run. */
+export type ZoomContainerKind =
+  | "extension"
+  | "web_app"
+  | "api"
+  | "cli"
+  | "worker"
+  | "library"
+  | (string & {});
+
+/** A deployable unit (C4 container): a package-manifest root. */
+export interface ZoomContainer {
+  /** `pkg:<root path>` (`pkg:.` for the repository root). */
+  id: string;
+  /** Manifest package name, else the root path. */
+  name: string;
+  /** Repo-relative root; "" for the repository root. */
+  path: string;
+  kind: ZoomContainerKind;
+  /** Up to three code languages / imported frameworks, most files first. */
+  technologies: string[];
+  /** Its files on the whole tree, not narrowed by `focus` / `max_depth`. */
+  file_count: number;
 }
 
 /** The complete zoom map for one repository at a given depth/focus. */
@@ -71,4 +132,12 @@ export interface ZoomMap {
   truncated: boolean;
   nodes: ZoomNode[];
   relations: ZoomRelation[];
+  /** External systems the code reaches. Optional: an older server omits it. */
+  externals?: ZoomExternal[];
+  /** Node -> external links, shaped like `relations` except `target_id` is a
+   *  `ZoomExternal.id`: `source_id` is a child of `parent_id` whose subtree
+   *  imports it, so zoomed into `parent_id` you draw child -> external. */
+  external_relations?: ZoomRelation[];
+  /** Deployables the served nodes belong to. Optional. */
+  containers?: ZoomContainer[];
 }

@@ -64,12 +64,38 @@ _CONDITIONAL_KINDS = frozenset({"switch_expression", "switch_statement"})
 _SCOPE_BOUNDARIES = frozenset({"lambda_expression", "class_body"})
 
 
+class JavaDeclaredTypes(DeclaredTypes):
+    """Java declarations, including explicit types implied by a ``var`` initializer."""
+
+    def of(self, name: Node) -> str | None:
+        declared = super().of(name)
+        if declared is not None:
+            return declared
+        holder = name.parent
+        while holder is not None and holder.type in self.wrapper_kinds:
+            holder = holder.parent
+        if holder is None or holder.type not in self.holder_kinds:
+            return None
+        typ = holder.child_by_field_name("type")
+        if typ is None or node_text(typ) != "var":
+            return None
+        declarator = name.parent
+        value = declarator.child_by_field_name("value") if declarator is not None else None
+        if value is None:
+            return None
+        if value.type in {"object_creation_expression", "cast_expression"}:
+            created = value.child_by_field_name("type")
+            text = node_text(created) if created is not None else ""
+            return text if text and "<>" not in text else None
+        return None
+
+
 class JavaDefUseDialect(BaseDefUseDialect):
     language = "java"
     member_access_kinds = frozenset({"field_access"})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
-    declared_types = DeclaredTypes(
-        frozenset({"formal_parameter", "local_variable_declaration", "enhanced_for_statement"}),
+    declared_types = JavaDeclaredTypes(
+        frozenset({"formal_parameter", "local_variable_declaration", "enhanced_for_statement", "resource"}),
         frozenset({"variable_declarator"}),
     )
     keyword_kinds = frozenset()  # Java has no keyword arguments.
@@ -221,8 +247,10 @@ class JavaDefUseDialect(BaseDefUseDialect):
                     continue
                 start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                self._declare(defs, start, declarator)
-                self._process(declarator.child_by_field_name("value"), defs, uses)
+                value = declarator.child_by_field_name("value")
+                # ``List<T> xs;``: a local must be assigned before it is read.
+                self._declare(defs, start, declarator, valueless=value is None)
+                self._process(value, defs, uses)
             return
         if t == _METHOD_INVOCATION:  # the ``name`` is a method, not a variable
             self._process(node.child_by_field_name("object"), defs, uses)

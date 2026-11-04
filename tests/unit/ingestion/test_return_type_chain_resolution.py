@@ -216,7 +216,9 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
     assert (
-        frozenset({"cpp", "csharp", "dart", "go", "java", "python"})
+        frozenset(
+            {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "typescript"}
+        )
         == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
     )
 
@@ -742,6 +744,7 @@ _DART_REPO = (
     "  factory Repo.copy() {\n    return Repo.other();\n  }\n"
     "  static Repo parse(String text) => Repo();\n"
     "  Item item(int i) => Item();\n"
+    "  Repo self() => this;\n"
     "  Item? maybe() => null;\n"
     "  Future<Item> later() async => Item();\n"
     "  void close() {}\n"
@@ -832,6 +835,8 @@ def test_dart_chain_binds_the_method_of_the_inner_return_type(
     [
         "r.later().save();",  # a Future is not the class it wraps
         "r.item(1).close();",  # the returned class lacks the method
+        "r.self().later().save();",  # a Future mid-chain binds nothing
+        "r.self().item(1).close();",  # class lacks method on third link
         "unknown().save();",  # nothing types the inner call
         "r..item(1)..close();",  # a cascade is not a chain
         "r?.item(1).save();",  # a null-aware first link is not captured
@@ -841,10 +846,34 @@ def test_dart_chain_without_a_typed_method_binds_no_bare_name(tmp_path: Path, bo
     assert {e for e in _dart_edges(tmp_path, body) if e[1] in _DART_OUTER} == set()
 
 
+def test_dart_third_link_of_a_chain_binds_by_return_type(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "r.self().self().close();")
+
+    assert (1, "repo.dart::Repo::close", "return_type_import") in edges
+
+
+def test_dart_third_link_on_constructor_binds_by_return_type(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "Repo().self().self().close();")
+
+    assert (1, "repo.dart::Repo::close", "return_type_import") in edges
+
+
+def test_dart_third_link_type_changes_mid_chain(tmp_path: Path) -> None:
+    edges = _dart_edges(tmp_path, "r.self().item(1).save();")
+
+    assert (1, "repo.dart::Item::save", "return_type_import") in edges
+
+
+def test_dart_three_links_parser_yields_three_sites(tmp_path: Path) -> None:
+    parsed = _parse(tmp_path, "app.dart", "dart", "void run(Repo r) { r.self().self().close(); }")
+    assert len(parsed["app.dart"].calls) == 3
+
+
 def test_dart_third_link_of_a_chain_is_dropped_not_misbound(tmp_path: Path) -> None:
     edges = _dart_edges(tmp_path, "r.item(1).save().close();")
 
     assert {e[1] for e in edges if e[1] in _DART_OUTER} == {"repo.dart::Item::save"}
+
 
 
 def test_dart_constructor_initializers_are_not_calls(tmp_path: Path) -> None:
@@ -894,6 +923,7 @@ _KOTLIN_LOCALS = (
     "class Repo {\n    fun load() {}\n}\n"
     "class Other {\n    fun load() {}\n}\n"
     "fun makeRepo(): Repo = Repo()\n"
+    "fun build(name: String, block: () -> Unit): Repo = Repo()\n"
     "fun mk(a: Int): Repo = Repo()\nfun mk(a: String): Other = Other()\n"
     "fun <T> gen(): T = TODO()\n"
     "object Factory {\n    fun other(): Other = Other()\n}\n"
@@ -903,6 +933,7 @@ _SWIFT_LOCALS = (
     "class Repo {\n    func load() {}\n}\n"
     "class Other {\n    func load() {}\n}\n"
     "func makeRepo() throws -> Repo { return Repo() }\n"
+    "func findRepo() -> Repo? { return nil }\n"
     "func mk(a: Int) -> Repo { return Repo() }\nfunc mk(a: String) -> Other { return Other() }\n"
     "func fetch() async -> Repo { return Repo() }\n"
     "enum Factory {\n    static func other() async -> Other { return Other() }\n}\n"
@@ -932,10 +963,17 @@ def _last_line_callees(tmp_path: Path, language: str, body: str) -> set[str]:
     [
         ("kotlin", "val r = makeRepo()\nr.load()", "a.kt::Repo::load"),
         ("kotlin", "val r = Factory.other()\nr.load()", "a.kt::Other::load"),
+        ("kotlin", 'val r = build("a") { }\nr.load()', "a.kt::Repo::load"),
+        ("kotlin", 'val r = build("a") {\n    println("x")\n}\nr.load()', "a.kt::Repo::load"),
         ("swift", "let r = try makeRepo()\nr.load()", "a.swift::Repo::load"),
         ("swift", "let r = await Factory.other()\nr.load()", "a.swift::Other::load"),
         ("swift", "let r = try? makeRepo()\nr?.load()", "a.swift::Repo::load"),
         ("swift", "async let r = fetch()\nawait r.load()", "a.swift::Repo::load"),
+        ("swift", "if let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "if var r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "guard let r = findRepo() else { return }\nr.load()", "a.swift::Repo::load"),
+        ("swift", "while let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
+        ("swift", "if let o = makeRepo(), let r = findRepo() {\nr.load()", "a.swift::Repo::load"),
     ],
 )
 def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
@@ -952,7 +990,11 @@ def test_kotlin_and_swift_local_takes_the_type_its_call_returns(
         ("swift", "var r = try makeRepo()\n    .other()"),
         ("kotlin", "val r = makeRepo()\n    ?: Other()"),
         ("kotlin", "val r = makeRepo()\n    as Other"),
+        ("kotlin", 'val r = build("a") { }.let { Other() }'),
+        ("kotlin", 'val r = build("a") { } ?: Other()'),
         ("swift", "let r = try makeRepo()\n    as! Other"),
+        ("swift", "let r = makeRepo() { Other() }"),
+        ("swift", "if case let .some(r) = findRepo() {"),
         ("kotlin", "val r = mk(1)"),  # overloads of one arity that return different types
         ("swift", "let r = mk(a: 1)"),
         ("kotlin", "val r = gen()"),  # a type parameter is no class
@@ -982,3 +1024,312 @@ def test_kotlin_return_type_an_external_import_names_is_not_the_repo_class(
 
     assert ("Use.kt::Socket::source" in callees) == (not imported)
 
+
+
+_KOTLIN_CHAINS = (
+    "class Request {\n    fun send(): Int = 0\n}\n"
+    "class Other {\n    fun send(): Int = 0\n}\n"
+    "class Client {\n"
+    "    fun request(): Request = Request()\n"
+    "    fun mk(a: Int): Request = Request()\n"
+    "    fun mk(a: String): Other = Other()\n"
+    "    fun <T> gen(): T = TODO()\n"
+    "}\n"
+    "class Response {\n"
+    "    class Builder {\n"
+    "        fun setHeaders(h: String): Builder = this\n"
+    "        fun makeUnsafe(): Builder = this\n"
+    "        fun build(): Response = Response()\n"
+    "    }\n"
+    "}\n"
+    "fun Request.extra(): Int = 0\n"
+    "class Use {\n    fun go(client: Client) {\n{body}\n    }\n}\n"
+)
+
+
+def _kotlin_chain_callees(tmp_path: Path, body: str) -> set[str]:
+    """Callees of every call in *body*, held in ``Use.go``."""
+    text = _KOTLIN_CHAINS.replace("{body}", body)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    resolver = CallResolver(parsed, {"a.kt": set()})
+    return {
+        rc.callee_id
+        for rc in resolver.resolve_file("a.kt", parsed["a.kt"].calls)
+        if rc.caller_id.endswith("::go")
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("client.request().send()", {"a.kt::Client::request", "a.kt::Request::send"}),
+        ("client.request()?.send()", {"a.kt::Client::request", "a.kt::Request::send"}),
+        (
+            "Response.Builder()\n        .setHeaders(\"a\")\n        .makeUnsafe()\n        .build()",
+            {
+                "a.kt::Response::Builder",
+                "a.kt::Builder::setHeaders",
+                "a.kt::Builder::makeUnsafe",
+                "a.kt::Builder::build",
+            },
+        ),
+        ("Response.Builder().build()", {"a.kt::Response::Builder", "a.kt::Builder::build"}),
+    ],
+)
+def test_kotlin_call_chained_on_a_call_takes_the_type_the_inner_call_returns(
+    tmp_path: Path, body: str, expected: set[str]
+) -> None:
+    assert _kotlin_chain_callees(tmp_path, body) == expected
+
+
+def test_kotlin_chained_call_reaches_an_extension_on_the_returned_type(tmp_path: Path) -> None:
+    callees = _kotlin_chain_callees(tmp_path, "client.request().extra()")
+
+    assert any(callee.endswith("::extra") for callee in callees)
+
+
+_KOTLIN_PROPERTY_AND_EXTENSION = (
+    "interface Source\n"
+    "class Peek(private val up: Int) : Source {\n"
+    "    private val buffer = 1\n"
+    "    val onClose: () -> Unit = {}\n"
+    "}\n"
+    "{extension}"
+    "class Use {\n"
+    "    fun chain() { Peek(1).buffer() }\n"
+    "    fun local() { val p = Peek(1); p.buffer() }\n"
+    "    fun param(p: Peek) { p.buffer() }\n"
+    "    fun lambda(p: Peek) { p.onClose() }\n"
+    "}\n"
+    "class Holder(val p: Peek) {\n"
+    "    fun field() { p.buffer() }\n"
+    "}\n"
+)
+
+
+@pytest.mark.parametrize("extension", ["fun Source.buffer(): Int = 0\n", ""])
+def test_kotlin_member_call_never_binds_a_property_of_the_name(
+    tmp_path: Path, extension: str
+) -> None:
+    """``x.buffer()`` is the ``Source.buffer()`` extension, never the ``val buffer`` of ``x``'s class."""
+    text = _KOTLIN_PROPERTY_AND_EXTENSION.replace("{extension}", extension)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    resolver = CallResolver(
+        parsed, {"a.kt": set()}, heritage_parents={"a.kt::Peek": {"a.kt::Source"}}
+    )
+    edges = {
+        (rc.caller_id.rpartition("::")[2], rc.callee_id)
+        for rc in resolver.resolve_file("a.kt", parsed["a.kt"].calls)
+        if not rc.callee_id.endswith("::Peek")
+    }
+
+    bound = {(caller, "a.kt::buffer") for caller in ("chain", "local", "param", "field")}
+    # A property holding a function is still the callee of its call.
+    assert edges == (bound if extension else set()) | {("lambda", "a.kt::Peek::onClose")}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "client.mk(1).send()",  # overloads of one arity that return different types
+        "client.gen().send()",  # a type parameter is no class
+        "client.request().let { it }.send()",  # a scope function is external
+        "client.request().apply { }.send()",
+        "remote.fetch().send()",  # the head is not declared in the repo
+        "remote.fetch()?.send()",
+    ],
+)
+def test_kotlin_chained_call_without_a_typed_inner_call_binds_nothing(
+    tmp_path: Path, body: str
+) -> None:
+    callees = _kotlin_chain_callees(tmp_path, body)
+
+    assert not {callee for callee in callees if callee.endswith("::send")}
+
+
+@pytest.mark.parametrize(
+    ("body", "inner"),
+    [
+        ("client.request().send()", ("request", "client", 0)),
+        ("client.request()?.send()", ("request", "client", 0)),
+        ("client.mk(1).send()", ("mk", "client", 1)),
+        ("Response.Builder().build()", ("Builder", "Response", 0)),
+        ("this.request().send()", ("request", "this", 0)),
+        ("make().send()", ("make", None, 0)),
+    ],
+)
+def test_kotlin_outer_call_of_a_chain_is_a_site_carrying_its_inner_call(
+    tmp_path: Path, body: str, inner: tuple[str, str | None, int]
+) -> None:
+    text = _KOTLIN_CHAINS.replace("{body}", body)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    outer = next(c for c in parsed["a.kt"].calls if c.receiver_call and c.target_name != "extra")
+
+    assert (
+        outer.receiver_name,
+        outer.receiver_call.target_name,
+        outer.receiver_call.receiver_name,
+        outer.receiver_call.argument_count,
+    ) == (None, *inner)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "a.b.request().send()",  # a dotted path is not a receiver the resolver can type
+        "client.request()!!.send()",
+        "client.request().let { it }.send()",
+        "client.request() { }.send()",
+    ],
+)
+def test_kotlin_chain_whose_inner_call_cannot_be_described_is_not_a_site(
+    tmp_path: Path, body: str
+) -> None:
+    text = _KOTLIN_CHAINS.replace("{body}", body)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+
+    assert not [c for c in parsed["a.kt"].calls if c.target_name == "send"]
+
+
+_DART_FIELD_REPO = (
+    "class Item {\n  void save() {}\n}\n"
+    "class Repo {\n"
+    "  Repo();\n"
+    "  Repo.fromJson(Object json);\n"
+    "  factory Repo.load(String path) => Repo();\n"
+    "  static Repo parse(String text) => Repo();\n"
+    "  final Item item = Item();\n"
+    "  Item get current => Item();\n"
+    "  void close() {}\n"
+    "}\n"
+    # Same-named free functions: a mis-read of the receiver would land here.
+    "void parse() {}\nvoid save() {}\nvoid close() {}\n"
+)
+_DART_PREFIXED = "import 'repo.dart' as p;"
+
+
+def _dart_field_edges(
+    tmp_path: Path, body: str, imports: str = "import 'repo.dart';"
+) -> set[tuple[int, str, str]]:
+    """``(line, callee, origin)`` for the calls of ``App.run`` holding *body*."""
+    app = (
+        f"{imports}\n"
+        "class App {\n  final Repo repo;\n  App(this.repo);\n"
+        f"  void run(Repo r, List<Repo> repos) {{\n{body}\n  }}\n}}\n"
+    )
+    parsed = _parse(tmp_path, "repo.dart", "dart", _DART_FIELD_REPO)
+    parsed |= _parse(tmp_path, "app.dart", "dart", app)
+    for imp in parsed["app.dart"].imports:
+        imp.resolved_file = "repo.dart"
+    resolver = CallResolver(parsed, {"app.dart": {"repo.dart"}, "repo.dart": set()})
+    return {
+        (rc.line - 5, rc.callee_id, rc.origin)
+        for rc in resolver.resolve_file("app.dart", parsed["app.dart"].calls)
+        if rc.caller_id == "app.dart::App::run"
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "r.item.save();",  # a field of a parameter
+        "repo.item.save();",  # a field of the caller's class
+        "this.repo.item.save();",  # a field of a field
+        "r.current.save();",  # a getter, typed by its declared return type
+        "repo.current.save();",
+    ],
+)
+def test_dart_field_path_binds_the_method_of_the_last_fields_class(
+    tmp_path: Path, body: str
+) -> None:
+    edges = _dart_field_edges(tmp_path, body)
+
+    assert (1, "repo.dart::Item::save", "receiver_chain_import") in edges
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "r.item.close();",  # the field's class lacks the method
+        "r.unknown.save();",  # no such field
+        "r.item.item.save();",  # a second hop that is untyped
+        "r.item?.save();",  # a null-aware hop is not captured
+        "r?.item.save();",
+        "repos[0].item.save();",  # an index is no field
+        "r.close.save();",  # a method is not a field
+        "r.parse.save();",
+    ],
+)
+def test_dart_field_path_without_a_typed_hop_binds_nothing(tmp_path: Path, body: str) -> None:
+    """No hop untyped, and no free function of the method's name is a stand-in."""
+    assert _dart_field_edges(tmp_path, body) == set()
+
+
+@pytest.mark.parametrize("method", ["fromJson", "load"])
+def test_dart_prefixed_named_constructor_binds_its_class(tmp_path: Path, method: str) -> None:
+    edges = _dart_field_edges(tmp_path, f"p.Repo.{method}(1);", _DART_PREFIXED)
+
+    assert edges == {(1, "repo.dart::Repo", "module_alias")}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "p.Repo.nope();",  # no such constructor
+        "q.Repo.fromJson(1);",  # ``q`` is neither a prefix nor a typed name
+        "p.Repo.parse('y');",  # a static member never binds to the free ``parse``
+        "p.Nope.fromJson(1);",  # the prefixed library has no such class
+        "p.item.save();",  # a prefix is not a variable the field walk starts from
+        "q.Repo.close();",
+    ],
+)
+def test_dart_prefixed_call_that_names_no_constructor_binds_nothing(
+    tmp_path: Path, body: str
+) -> None:
+    assert _dart_field_edges(tmp_path, body, _DART_PREFIXED) == set()
+
+
+def test_dart_unprefixed_named_constructor_and_prefixed_plain_one_still_bind(
+    tmp_path: Path,
+) -> None:
+    edges = _dart_field_edges(tmp_path, "Repo.fromJson(1);\np.Repo();", _DART_PREFIXED)
+
+    assert (2, "repo.dart::Repo", "module_alias") in edges
+
+
+def _ts_js_edges(tmp_path: Path, path: str, language: str, source: str) -> set[tuple[str, str]]:
+    parsed = _parse(tmp_path, path, language, source)
+    resolver = CallResolver(parsed, {path: set()})
+    return {
+        (rc.caller_id.rpartition("::")[2], rc.callee_id.rpartition("::")[2])
+        for rc in resolver.resolve_file(path, parsed[path].calls)
+    }
+
+
+@pytest.mark.parametrize(("path", "language"), [("q.ts", "typescript"), ("q.js", "javascript")])
+def test_ts_js_chained_call_on_an_untyped_result_binds_no_repo_method(
+    tmp_path: Path, path: str, language: str
+) -> None:
+    """``db.selectFrom(t).execute()`` on a library builder is not the repo's one ``execute``."""
+    source = (
+        "class Runner {\n  execute(job) { return job; }\n}\n"
+        "function load(db) {\n  return db.selectFrom('t').where('a', '=', 1).execute();\n}\n"
+        "function direct(r) {\n  return run(r);\n}\n"
+        "function run(x) { return x; }\n"
+    )
+    calls = _parse(tmp_path, path, language, source)[path].calls
+    assert next(c for c in calls if c.target_name == "execute").receiver_call is not None
+
+    edges = _ts_js_edges(tmp_path, path, language, source)
+
+    assert ("load", "execute") not in edges
+    assert ("direct", "run") in edges
+
+
+def test_ts_chained_call_on_a_typed_result_still_binds(tmp_path: Path) -> None:
+    source = (
+        "class Runner {\n  execute(job: string) { return job; }\n}\n"
+        "function make(): Runner { return new Runner(); }\n"
+        "function load() {\n  return make().execute('x');\n}\n"
+    )
+    assert ("load", "execute") in _ts_js_edges(tmp_path, "q.ts", "typescript", source)

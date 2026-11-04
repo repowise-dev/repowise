@@ -15,6 +15,7 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import find_extractions
+from repowise.core.analysis.health.dataflow.stages import find_stages
 from repowise.core.analysis.health.refactoring.extract_method import (
     STAGE_REFUSED_DETAIL,
     ExtractMethodDetector,
@@ -275,9 +276,16 @@ def test_a_global_refusal_is_counted_under_its_reason():
     assert _refused(src)["resolve"] == ["outer_write"]
 
 
-def test_a_switch_arm_refusal_is_counted_and_a_dead_arm_name_is_not_refused():
-    hazard = _ts_loop("switch (mode) { case 1: last = item; break; }")
-    assert _refused(hazard, "typescript", "ts")["run"] == ["switch_arm_write"]
+def test_a_switch_arm_write_is_taken_and_returned_and_a_dead_arm_name_is_not_refused():
+    # The arm may not run, so ``last`` after it is the arm's value or the one
+    # from before (a may-def, #3451): the stage that holds the arm and the
+    # read takes ``last`` and hands it back, and nothing is refused.
+    carried = _ts_loop("switch (mode) { case 1: last = item; break; }")
+    assert _refused(carried, "typescript", "ts")["run"] == []
+    served = _plans(carried, "typescript", "ts")["run"].plan["stages"]
+    read = next(i for i, ln in enumerate(carried.splitlines(), 1) if "note(last)" in ln)
+    holding = next(s for s in served if s["span"]["start"] <= read <= s["span"]["end"])
+    assert "last" in holding["params"] and holding["returns"] == ["last"]
     # An arm writing a name nothing reads past the edge decides nothing.
     quiet = _ts_loop("switch (mode) { case 1: tally = item; break; }").replace(
         "mode, last,", "mode, last, tally,"
@@ -286,6 +294,43 @@ def test_a_switch_arm_refusal_is_counted_and_a_dead_arm_name_is_not_refused():
     stages = _plans(quiet, "typescript", "ts")["run"].plan["stages"]
     arm = next(i for i, ln in enumerate(quiet.splitlines(), 1) if "switch (mode)" in ln)
     assert any(s["span"]["start"] <= arm <= s["span"]["end"] for s in stages)
+
+
+_ARMS_ONLY = """
+function pick(client, options, raw) {
+  const model = options.model;
+  let input, format;
+  switch (model) {
+    case 'small':
+      input = raw.a || options.a;
+      format = raw.fa || options.fa;
+      break;
+    case 'large':
+      input = raw.b || options.b;
+      format = raw.fb || options.fb;
+      break;
+    case 'old':
+      input = raw.c || options.c;
+      break;
+  }
+
+  const made = client.create({
+    model: model,
+    input: input,
+    format: format,
+    ...(raw.d && { d: Number(raw.d) }),
+  });
+  return made.data[0];
+}
+"""
+
+
+def test_a_stage_reading_what_only_the_arms_wrote_is_not_served():
+    # ``input`` is declared without a value and written only in the arms, so the
+    # read at the call may still see the declaration. No stage that reads it
+    # without being given it may be served.
+    fn = _functions(_ARMS_ONLY, "typescript", "ts")[0]
+    assert find_stages(fn, get_language_map("typescript")).stages == ()
 
 
 # -- closures and outer scopes ----------------------------------------------------

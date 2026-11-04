@@ -77,7 +77,7 @@ describe("OpportunityDrawer steps unavailable", () => {
     expect(screen.getByText(/The 7 steps for this refactoring plan could not be loaded/)).toBeTruthy();
     expect(screen.queryByText(/Showing 0 of/)).toBeNull();
     // The prompt is built from the steps, so it is not offered without them.
-    expect(screen.queryByRole("button", { name: /Copy prompt/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Agent prompt/ })).toBeNull();
   });
 
   it("says nothing about missing steps when they loaded", () => {
@@ -85,7 +85,7 @@ describe("OpportunityDrawer steps unavailable", () => {
 
     expect(screen.queryByText(/could not be loaded/)).toBeNull();
     expect(screen.getByText("Showing 0 of 12 steps.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Copy prompt/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Agent prompt/ })).toBeTruthy();
   });
 });
 
@@ -384,7 +384,7 @@ describe("RefactoringDrawer with no model configured", () => {
         modelSetting={{
           value: { enabled: true, provider: null, model: null },
           onToggle: async () => {},
-          setupHref: "/repos/r1/settings#provider",
+          setupHref: "/repos/r1/settings/models",
         }}
       />,
     );
@@ -415,5 +415,26 @@ describe("RefactoringDrawer risks", () => {
   it("renders no risk section when the plan carries none", () => {
     render(<RefactoringDrawer plan={{ ...PLAN, risks: [] }} open onOpenChange={() => {}} />);
     expect(screen.queryByText("Before you start")).toBeNull();
+  });
+});
+
+describe("OpportunityDrawer preview", () => {
+  const NOTE = "preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15";
+
+  it("marks a preview opportunity and its preview plan", () => {
+    renderDrawer(
+      detail({
+        preview: NOTE,
+        steps: [STEP],
+        steps_emitted: 1,
+        plans: [{ ...PLAN, preview: NOTE }],
+      }),
+    );
+    expect(screen.getAllByRole("button", { name: `Preview: ${NOTE}` })).toHaveLength(2);
+  });
+
+  it("carries no mark for a validated cell", () => {
+    renderDrawer(detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] }));
+    expect(document.querySelector("[data-preview]")).toBeNull();
   });
 });

@@ -12,11 +12,13 @@ subprocess, and enforces a read-only permission profile via ``OPENCODE_CONFIG_CO
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import uuid
+from collections.abc import Iterator
 from functools import lru_cache, partial
 from typing import Any
 
@@ -222,7 +224,7 @@ class OpenCodeProvider(AgentCliProvider):
         model:     Optional model identifier in ``provider/model`` format
                    (e.g. ``deepseek/deepseek-v4-pro``). If omitted or
                    ``opencode/default``, opencode uses its configured default.
-        repo_path: Working directory passed to opencode via ``--dir``.
+        repo_path: Working directory the CLI runs in (the subprocess cwd).
         rate_limiter: Accepted for interface consistency; the provider also
             bounds its own subprocess fan-out.
     """
@@ -239,14 +241,19 @@ class OpenCodeProvider(AgentCliProvider):
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _opencode_model_options(self._executable)
 
+    @contextlib.contextmanager
+    def working_dir(self) -> Iterator[str]:
+        # The repo is the subprocess cwd. OpenCode CLI v2 removed ``--dir``
+        # (it fails the run with "Unrecognized flag"), and both v1 and v2
+        # resolve the project from the working directory.
+        yield str(self._repo_path)
+
     def build_command(self, system_prompt: str, reasoning: ReasoningMode) -> list[str]:
         cmd = [
             self._executable,
             "run",
             "--format",
             "json",
-            "--dir",
-            str(self._repo_path),
             "--title",
             f"repowise_auto_{uuid.uuid4().hex}",
         ]

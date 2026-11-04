@@ -335,15 +335,14 @@ class TestFlaskRefusals:
         (tmp_path / "users.py").write_text(USERS_PY, encoding="utf-8")
         assert _providers(tmp_path) == {}
 
-    def test_a_bare_slash_route_is_not_a_contract(self, tmp_path: Path) -> None:
-        # A path that normalises to bare `/` carries nothing to match on, and
-        # the shared builder drops it for every framework.
+    def test_a_root_route_is_a_contract(self, tmp_path: Path) -> None:
+        # A service whose whole API is `POST /` serves it at the root.
         (tmp_path / "app.py").write_text(
             "from flask import Flask\n\napp = Flask(__name__)\n\n"
-            '@app.route("/")\ndef home(): ...\n',
+            '@app.route("/", methods=["POST"])\ndef talk(): ...\n',
             encoding="utf-8",
         )
-        assert _providers(tmp_path) == {}
+        assert set(_providers(tmp_path)) == {"http::POST::/"}
 
     def test_a_commented_out_route_is_not_an_endpoint(self, tmp_path: Path) -> None:
         (tmp_path / "app.py").write_text(

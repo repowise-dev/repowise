@@ -41,6 +41,7 @@ ModelOptionSource = Literal["api", "local", "fallback"]
 _FIXED_TEMPERATURE_PREFIXES = (
     # OpenAI reasoning era
     "gpt-5",
+    "gpt-6",
     "o1",
     "o3",
     "o4",
@@ -221,6 +222,13 @@ class GeneratedResponse:
         return self.input_tokens + self.output_tokens
 
 
+#: Window a local model is run with when nothing names one. On qwen3.5:4b a
+#: 16k window held 3.5 GB against 4.1 GB at 32k and 5.0 GB at 64k, and a page
+#: prompt cut to fit it still read as a whole page; on a CPU, prompt
+#: evaluation time grows with every token kept.
+LOCAL_CONTEXT_WINDOW = 16_384
+
+
 class BaseProvider(ABC):
     """Abstract base class that all LLM providers must implement.
 
@@ -331,6 +339,15 @@ class BaseProvider(ABC):
         """
 
         return ("auto",)
+
+    def context_window(self) -> int | None:
+        """Tokens (prompt plus answer) this model runs with; None means no practical limit.
+
+        Hosted models take far more than any page prompt, so the default is
+        None and page material keeps its full budgets. A local model reports
+        its window, and page material shrinks to fit it.
+        """
+        return None
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         """Return model options available for interactive provider setup."""
@@ -638,7 +655,9 @@ class ChatStreamEvent:
     - ``text_delta``: incremental text token(s) in ``text``
     - ``tool_start``: a completed tool call block in ``tool_call``
     - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
-    - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
+    - ``usage``: the call's token counts in ``input_tokens`` / ``output_tokens``.
+      At most one per ``stream_chat`` call, after ``stop``, and only when the
+      SDK reported usage; no ``usage`` event means the counts are unknown.
     - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
     - ``assistant_content``: the turn's provider-native blocks in ``content_blocks``,
       after ``stop``. The caller stores them on the assistant message as

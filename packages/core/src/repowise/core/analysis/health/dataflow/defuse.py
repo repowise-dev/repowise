@@ -51,6 +51,8 @@ class Definition:
     imports: bool = False
     #: The write may not happen (``Occurrence.may``).
     may: bool = False
+    #: The declaration gives the name no value (``Occurrence.valueless``).
+    valueless: bool = False
 
 
 @dataclass
@@ -117,6 +119,7 @@ def compute_def_use(
             declares=occ.declares,
             imports=occ.imports,
             may=occ.may,
+            valueless=occ.valueless,
         )
         counter += 1
         bdu.defs.append(definition)
@@ -129,6 +132,9 @@ def compute_def_use(
     blocks.setdefault(cfg.entry_id, BlockDefUse(cfg.entry_id))
     for occ in params:
         _add_def(occ, cfg.entry_id)
+    blocks.setdefault(cfg.exit_id, BlockDefUse(cfg.exit_id)).uses.extend(
+        dialect.exit_reads(fn_node)
+    )
 
     for block in cfg.blocks:  # ordered by id => deterministic def indices
         bdu = blocks.setdefault(block.id, BlockDefUse(block.id))

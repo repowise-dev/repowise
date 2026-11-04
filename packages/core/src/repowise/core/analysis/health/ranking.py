@@ -23,6 +23,7 @@ __all__ = [
     "deduction_by_path",
     "scope_reason",
     "sort_metrics_worst_first",
+    "split_in_scope",
     "worst_first_key",
     "worst_in_scope",
     "worst_kpis",
@@ -106,6 +107,24 @@ def scope_reason(row: Any) -> str | None:
     ).reason
 
 
+def split_in_scope(rows: Iterable[Any]) -> tuple[list[Any], list[Any]]:
+    """``(production, tests)``: the rows in Fix first's scope and the test rows.
+
+    The one split behind ``worst_performer`` and ``production_average``, so
+    both leave out the same tooling, vendored, generated and docs example
+    files. A row in neither list is out of scope for another reason.
+    """
+    in_scope: list[Any] = []
+    tests: list[Any] = []
+    for row in rows:
+        reason = scope_reason(row)
+        if reason is None:
+            in_scope.append(row)
+        elif reason == "test":
+            tests.append(row)
+    return in_scope, tests
+
+
 def worst_in_scope(
     rows: Iterable[Any], deductions: Mapping[str, float]
 ) -> tuple[Any | None, Any | None]:
@@ -116,14 +135,7 @@ def worst_in_scope(
     named. The worst test is the head of ``test_worst_files``. Either is
     ``None`` when its list is empty.
     """
-    in_scope: list[Any] = []
-    tests: list[Any] = []
-    for row in scored_rows(rows):
-        reason = scope_reason(row)
-        if reason is None:
-            in_scope.append(row)
-        elif reason == "test":
-            tests.append(row)
+    in_scope, tests = split_in_scope(scored_rows(rows))
 
     def key(row: Any) -> tuple[float, float, str]:
         return worst_first_key(row, deductions)

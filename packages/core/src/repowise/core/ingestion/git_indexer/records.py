@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from repowise.core.analysis.changed_lines import shallow_roots
 
 from ._constants import _CODE_EXTENSIONS
 
@@ -248,9 +250,9 @@ _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")
 
 
 def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | None, str | None]:
-    """Extract old/new paths from a git numstat rename line and add to *known_paths*.
+    """Extract old/new paths from a git numstat rename line, extending *known_paths*.
 
-    Git ``--numstat`` with ``--follow`` emits rename lines like::
+    Git ``--numstat`` emits rename lines like::
 
         10\t5\t{old => new}/shared_suffix
         10\t5\told_dir/{old_name => new_name}.py
@@ -260,25 +262,31 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
     The third form has an EMPTY side: a directory inserted into (or removed
     from) the middle of a path. Expanding the empty side leaves a doubled
     slash at the splice point, which is collapsed so the result matches the
-    tracked path. This helper parses all forms, adds both expanded paths to
-    *known_paths*, and returns ``(old_path, new_path)`` so the caller can
-    attribute churn to the correct file. Returns ``(None, None)`` if the
-    pattern is not found.
+    tracked path. Returns ``(old_path, new_path)``, or ``(None, None)`` if the
+    row is not a rename.
+
+    Both names join *known_paths* only when one of them is already there: a
+    ``--full-diff`` log lists every file in the commit, and another file's
+    rename must not hand that file's churn to the one being walked.
     """
+    old_path, new_path = _rename_sides(stat_path)
+    if old_path and new_path and (old_path in known_paths or new_path in known_paths):
+        known_paths.add(old_path)
+        known_paths.add(new_path)
+    return old_path, new_path
+
+
+def _rename_sides(stat_path: str) -> tuple[str | None, str | None]:
     m = _RENAME_RE.search(stat_path)
     if m:
         prefix = stat_path[: m.start()]
         suffix = stat_path[m.end() :]
         old_path = (prefix + m.group(1) + suffix).replace("//", "/")
         new_path = (prefix + m.group(2) + suffix).replace("//", "/")
-        known_paths.add(old_path)
-        known_paths.add(new_path)
         return old_path, new_path
     # Paths sharing no leading or trailing component get no braces: ``a.py => src/b.py``.
     old_path, sep, new_path = stat_path.partition(" => ")
     if sep and old_path and new_path:
-        known_paths.add(old_path)
-        known_paths.add(new_path)
         return old_path, new_path
     return None, None
 
@@ -590,8 +598,10 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
         totals.total_merge_commit_count = int(repo.git.rev_list("--count", "--merges", rev).strip())
 
     try:
+        # A shallow clone lists its cut commits as roots; they found nothing.
+        cut = shallow_roots(str(repo.working_dir))
         roots = repo.git.rev_list("--max-parents=0", rev).split()
-        root_commits = [repo.commit(sha) for sha in roots if sha]
+        root_commits = [repo.commit(sha) for sha in roots if sha and sha not in cut]
         if root_commits:
             oldest = min(root_commits, key=lambda c: c.committed_datetime)
             # Normalise to UTC before storing. GitPython hands back the author's
@@ -632,7 +642,12 @@ def _should_skip_index(file_path: str) -> bool:
     return Path(file_path).suffix.lower() not in _CODE_EXTENSIONS
 
 
-def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
+def _history_tier_files(
+    repo_path: Path,
+    paths: Iterable[str],
+    extra_exclude_patterns: Sequence[str] | None = None,
+    extra_ignore_filename: str = ".repowiseIgnore",
+) -> set[str]:
     """The non-code files among *paths* that still get their commit history recorded.
 
     The history tier (counts, first and last commit, authors) covers every
@@ -654,7 +669,13 @@ def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
             return False
         if _BLOCKED_FILENAME_SPEC.match_file(name):
             return False
-        if in_blocked_dir(file_path, repo_path, output_dirs):
+        if in_blocked_dir(
+            file_path,
+            repo_path,
+            output_dirs,
+            extra_exclude_patterns=extra_exclude_patterns,
+            extra_ignore_filename=extra_ignore_filename,
+        ):
             return False
         return not _is_binary(repo_path / file_path)
 

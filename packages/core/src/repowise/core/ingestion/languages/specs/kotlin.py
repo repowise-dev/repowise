@@ -41,6 +41,12 @@ SPEC = LanguageSpec(
             "also",
             "apply",
             "with",
+            "repeat",
+            "synchronized",
+            "buildList",
+            "buildString",
+            "buildMap",
+            "takeIf",
         }
     ),
     builtin_parents=frozenset(
