@@ -222,3 +222,33 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
     out = " ".join(" ".join(printed).split())
     assert "2 page(s) need embedding with openai" in out
     assert "repowise reindex" in out
+
+
+def _missing_lancedb_repo(tmp_path: Path, embedder: str) -> Path:
+    """A repo whose lancedb directory was deleted, pinned to *embedder*."""
+    import shutil
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+    (repo_path / ".repowise" / "config.yaml").write_text(f"embedder: {embedder}\n")
+    return repo_path
+
+
+def test_a_deleted_store_under_a_real_embedder_is_not_in_sync(tmp_path: Path) -> None:
+    """A missing lancedb with a real embedder is every indexable page missing."""
+    repo_path = _missing_lancedb_repo(tmp_path, "openai")
+
+    ok, detail = _rows(repo_path)["SQL ↔ Vector Store"]
+    assert ok is False
+    assert detail == "2 missing, 0 orphaned"
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    vector_row = next(c for c in checks if c.name == "SQL ↔ Vector Store")
+    assert vector_row.fix == "repowise reindex"
+
+
+def test_a_deleted_store_under_mock_stays_in_sync(tmp_path: Path) -> None:
+    """Fast mode never embeds, so a missing lancedb under mock is not drift."""
+    repo_path = _missing_lancedb_repo(tmp_path, "mock")
+
+    assert _rows(repo_path)["SQL ↔ Vector Store"] == (True, "in sync")
