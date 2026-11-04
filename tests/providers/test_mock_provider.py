@@ -244,3 +244,32 @@ class TestGeneratedResponse:
     def test_total_tokens_with_zero_values(self) -> None:
         r = GeneratedResponse(content="x", input_tokens=0, output_tokens=0)
         assert r.total_tokens == 0
+
+
+class TestCostTracking:
+    """Issue #4279: mock generations must be recorded on the cost tracker."""
+
+    async def test_generate_records_tokens_at_zero_cost(self) -> None:
+        from repowise.core.generation.cost_tracker import CostTracker
+
+        provider = MockProvider()
+        provider._cost_tracker = CostTracker()  # type: ignore[attr-defined]
+        await provider.generate(system_prompt="sys", user_prompt="user")
+        await provider.generate(system_prompt="sys", user_prompt="user")
+        # Default response: 150 input + 75 output tokens per call.
+        assert provider._cost_tracker.session_tokens == 450
+        assert provider._cost_tracker.session_cost == 0
+
+    async def test_generate_records_preset_responses_too(self) -> None:
+        from repowise.core.generation.cost_tracker import CostTracker
+
+        provider = MockProvider(responses=[GeneratedResponse("First", 100, 50)])
+        provider._cost_tracker = CostTracker()  # type: ignore[attr-defined]
+        await provider.generate(system_prompt="sys", user_prompt="user")
+        assert provider._cost_tracker.session_tokens == 150
+        assert provider._cost_tracker.session_cost == 0
+
+    async def test_generate_without_tracker_still_works(self) -> None:
+        provider = MockProvider()
+        result = await provider.generate(system_prompt="sys", user_prompt="user")
+        assert isinstance(result, GeneratedResponse)
