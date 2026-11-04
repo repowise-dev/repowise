@@ -156,6 +156,7 @@ def _plan_graph_patch(
     merged: dict[int, Any],
     to_parse: list[tuple[int, tuple, str]],
     changed_paths: set[str] | None,
+    traversed_paths: set[str],
 ) -> tuple[Any, dict[str, tuple] | None]:
     """Return the safe patch plan and restored-import cache, if eligible."""
     from .surface import PatchPlan, plan_patch
@@ -169,6 +170,11 @@ def _plan_graph_patch(
         fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
     }
     detected_changes = set(changed) if changed_paths is None else changed_paths
+    # A deleted file has no parse; plan_patch decides whether its removal is safe.
+    if parse_cache is not None:
+        detected_changes = detected_changes - (
+            parse_cache.known_paths() - {pf.file_info.path for pf in parsed_files}
+        )
     if detected_changes != set(changed):
         return (
             PatchPlan(
@@ -180,8 +186,10 @@ def _plan_graph_patch(
 
     patch_plan = plan_patch(
         parse_cache=parse_cache,
-        current_paths=[pf.file_info.path for pf in parsed_files],
+        parsed_files=parsed_files,
         changed=changed,
+        traversed_paths=traversed_paths,
+        seed_nodes=seed_edges.get("nodes", ()),
     )
     if not patch_plan.eligible:
         return patch_plan, None
@@ -249,7 +257,9 @@ def _build_graph_with_plan(
 
         with timed(timings, "rebuild.graph.patch"):
             restore_resolutions(resolutions, parsed_files, patch_plan.scope)
-            seeded = graph_builder.seed_graph_snapshot(seed_edges)
+            seeded = graph_builder.seed_graph_snapshot(
+                seed_edges, drop_paths=patch_plan.removed
+            )
             log(
                 f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
                 f"reusing {seeded:,} edges"
@@ -390,6 +400,7 @@ def _build_update_graph(
             merged=merged,
             to_parse=to_parse,
             changed_paths=changed_paths,
+            traversed_paths=graph_builder.traversed_file_paths,
         )
         graph_builder.patch_plan = patch_plan
         _wire_graph_builder(
@@ -449,10 +460,10 @@ pass reads the sources.
     the incremental graph feature is enabled, including when a cache miss forces
     the safe full-build fallback. ``cache_resolutions`` opts into writing the
     supporting per-file import cache. ``changed_paths`` is the
-    complete source/config diff from the update detector; it must exactly match
-    the parsed cache misses before a patch is considered. This also catches
-    changed manifests or excluded/unparsed files, which the parse cache alone
-    cannot see. If the changed files' cross-file surface is untouched
+    complete source/config diff from the update detector; deleted files aside,
+    it must exactly match the parsed cache misses before a patch is considered.
+    This also catches changed manifests or excluded/unparsed files, which the
+    parse cache alone cannot see. If the changed files' cross-file surface is untouched
     (:func:`~.surface.plan_patch`), only those files are re-resolved; otherwise
     the full build runs. The decision is left on ``graph_builder.patch_plan``.
 
