@@ -206,7 +206,6 @@ def test_a_partly_lost_source_keeps_what_survived():
 # --- the budget ------------------------------------------------------------
 
 
-
 async def test_both_commit_miners_ask_for_the_measured_budget(tmp_path):
     """All three decision miners must use the shared token budget."""
     assert _BATCH_MAX_TOKENS >= 8000
