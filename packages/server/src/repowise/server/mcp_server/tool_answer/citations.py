@@ -73,7 +73,8 @@ def _resolve(named: str, hit_paths: list[str], known: list[str], repo_root: Path
     if "#" in named:
         base, _ = named.split("#", 1)
         if base in known or any(k.startswith(f"{base}#") for k in known):
-            return named
+            return base
+        return None
     if "/" not in named:
         same = [p for p in hit_paths if p.rsplit("/", 1)[-1] == named]
         return same[0] if len(same) == 1 else None
@@ -84,7 +85,7 @@ def _resolve(named: str, hit_paths: list[str], known: list[str], repo_root: Path
         try:
             base_file = named.split("#", 1)[0]
             if (repo_root / base_file).is_file():
-                return named
+                return base_file
         except OSError:
             return None
     return None

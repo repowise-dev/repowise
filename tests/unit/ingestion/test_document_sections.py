@@ -101,6 +101,42 @@ def test_split_document_large_section_split_into_parts():
     assert "Part 2" in overview_sections[1].title
 
 
+def test_split_document_slug_collision_with_split_parts():
+    # Oversized Overview splits into parts, followed by a heading named 'Overview Part 2'
+    paras = [f"Paragraph {i}: " + ("x" * 300) for i in range(15)]
+    doc = (
+        "# Architecture\n\n## Overview\n\n"
+        + "\n\n".join(paras)
+        + "\n\n## Overview Part 2\n\nThis is a separate section with enough content to not be merged as tiny section."
+    )
+    sections = split_document_into_sections("docs/arch.md", doc, is_extracted=False)
+    slugs = [s.slug for s in sections]
+    # Every slug must be unique - no collisions between split parts and headings
+    assert len(slugs) == len(set(slugs))
+    assert "overview" in slugs
+    assert "overview-part-2" in slugs
+    assert "overview-part-2-2" in slugs
+
+
+def test_split_document_slug_deduplication_increments():
+    # Headings Setup, Setup, and Setup 2 must not produce duplicate slugs
+    doc = "# Setup\n\nFirst setup.\n\n# Setup\n\nSecond setup.\n\n# Setup 2\n\nThird setup."
+    sections = split_document_into_sections("docs/setup.md", doc, is_extracted=False)
+    slugs = [s.slug for s in sections]
+    assert len(slugs) == len(set(slugs))
+    assert slugs == ["setup", "setup-2", "setup-2-2"]
+
+
+def test_split_document_oversized_single_paragraph_splits_on_sentences():
+    # 5,000 char section in one single paragraph without blank lines
+    sentences = [f"This is sentence {i} explaining component details." for i in range(120)]
+    doc = "# Guide\n\n" + " ".join(sentences)
+    sections = split_document_into_sections("docs/guide.md", doc, is_extracted=False)
+    assert len(sections) > 1
+    for s in sections:
+        assert len(s.content) <= 3000
+
+
 def test_split_document_no_headings():
     doc = "This document has no headings at all, just plain body text describing the system."
     sections = split_document_into_sections("docs/plain.md", doc, is_extracted=False)

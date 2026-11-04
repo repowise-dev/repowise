@@ -121,8 +121,47 @@ def _merge_tiny_sections(raw_sections: list[dict[str, Any]]) -> list[dict[str, A
     return merged
 
 
+def _split_long_paragraph(para: str, max_chars: int) -> list[str]:
+    """Split an oversized paragraph along sentence boundaries or fixed spans."""
+    sentences = re.split(r"(?<=[.!?])\s+", para)
+    if len(sentences) <= 1:
+        sentences = [line for line in para.split("\n") if line]
+    if len(sentences) <= 1:
+        return [para[i : i + max_chars] for i in range(0, len(para), max_chars)]
+
+    chunks: list[str] = []
+    curr: list[str] = []
+    curr_len = 0
+    for s in sentences:
+        s_len = len(s) + 1
+        if curr and curr_len + s_len > max_chars:
+            chunks.append(" ".join(curr))
+            curr = [s]
+            curr_len = s_len
+        else:
+            curr.append(s)
+            curr_len += s_len
+    if curr:
+        chunks.append(" ".join(curr))
+
+    result: list[str] = []
+    for c in chunks:
+        if len(c) <= max_chars:
+            result.append(c)
+        else:
+            result.extend(c[i : i + max_chars] for i in range(0, len(c), max_chars))
+    return result
+
+
 def _split_into_chunks(content: str, max_chars: int) -> list[str]:
-    paras = content.split("\n\n")
+    raw_paras = content.split("\n\n")
+    paras: list[str] = []
+    for p in raw_paras:
+        if len(p) > max_chars:
+            paras.extend(_split_long_paragraph(p, max_chars))
+        else:
+            paras.append(p)
+
     chunks: list[str] = []
     curr: list[str] = []
     curr_len = 0
@@ -147,21 +186,27 @@ def _build_document_sections(
     is_extracted: bool,
 ) -> list[DocumentSection]:
     out: list[DocumentSection] = []
-    seen_slugs: dict[str, int] = {}
+    issued_slugs: set[str] = set()
 
-    def get_slug(base: str) -> str:
-        s = slugify(base)
-        if s in seen_slugs:
-            seen_slugs[s] += 1
-            return f"{s}-{seen_slugs[s]}"
-        seen_slugs[s] = 1
-        return s
+    def allocate_slug(candidate: str) -> str:
+        s = slugify(candidate)
+        if not s:
+            s = "section"
+        if s not in issued_slugs:
+            issued_slugs.add(s)
+            return s
+        counter = 2
+        while f"{s}-{counter}" in issued_slugs:
+            counter += 1
+        allocated = f"{s}-{counter}"
+        issued_slugs.add(allocated)
+        return allocated
 
     for sec in merged:
         content = "\n".join(sec["lines"]).strip()
         if not content:
             continue
-        base_slug = get_slug(sec["title"])
+        base_slug = allocate_slug(sec["title"])
 
         if len(content) <= _MAX_SECTION_CHARS:
             out.append(
@@ -180,7 +225,11 @@ def _build_document_sections(
         else:
             chunks = _split_into_chunks(content, _MAX_SECTION_CHARS)
             for part_idx, chunk in enumerate(chunks, 1):
-                part_slug = base_slug if part_idx == 1 else f"{base_slug}-part-{part_idx}"
+                part_slug = (
+                    base_slug
+                    if part_idx == 1
+                    else allocate_slug(f"{base_slug}-part-{part_idx}")
+                )
                 part_title = (
                     sec["title"] if part_idx == 1 else f"{sec['title']} (Part {part_idx})"
                 )

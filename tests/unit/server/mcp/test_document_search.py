@@ -264,3 +264,23 @@ def test_answer_files_fallback_cites_section():
         repo_root=None,
     )
     assert "docs/payments-spec.pdf#refunds" in res.citations
+
+
+def test_answer_files_drops_invented_section_fragment():
+    hits = [
+        {
+            "target_path": "docs/payments-spec.pdf",
+            "section_id": "docs/payments-spec.pdf#refunds",
+            "page_type": "document_section",
+        }
+    ]
+    answer_text = "See `docs/payments-spec.pdf#invented` for details."
+    res = answer_files(
+        answer_text=answer_text,
+        hits=hits,
+        pool=hits,
+        fallback_targets=[],
+        repo_root=None,
+    )
+    assert "docs/payments-spec.pdf#invented" not in res.citations
+    assert "docs/payments-spec.pdf" in res.citations
