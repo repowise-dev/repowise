@@ -193,18 +193,26 @@ async def _count_pages(repo_path: _DoctorPath) -> int:
     from repowise.core.persistence import get_repository_by_path, get_session
 
     engine, sf = await open_store(repo_path)
-    count = 0
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo:
-            count = await _page_count(session, repo.id)
-    await engine.dispose()
-    return count
+    try:
+        count = 0
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo:
+                count = await _page_count(session, repo.id)
+        return count
+    finally:
+        # A failed query must not leave the engine's worker thread alive:
+        # an undisposed engine blocks interpreter shutdown, so doctor
+        # printed every row and then never exited on a corrupt store.
+        await engine.dispose()
 
 
 def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
     """Sets ``ctx.db_ok`` and ``ctx.page_count`` for the later groups."""
-    probed = (ctx.repowise_dir / "wiki.db").exists() or db_configured()
+    from repowise.cli.helpers import short_db_error, store_recovery_command
+
+    db_path = ctx.repowise_dir / "wiki.db"
+    probed = db_path.exists() or db_configured()
     if not probed:
         return [
             _check("Database", False, "wiki.db not found", check_id="database", fix="repowise init")
@@ -213,7 +221,25 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
         ctx.page_count = run_async(_count_pages(ctx.repo_path))
         ctx.db_ok = True
     except Exception as e:
-        return [_check("Database", False, str(e), check_id="database")]
+        if db_path.exists():
+            return [
+                _check(
+                    "Database",
+                    False,
+                    f"cannot open index at {db_path}: {short_db_error(e)}",
+                    check_id="database",
+                    fix=store_recovery_command(db_path),
+                )
+            ]
+        return [
+            _check(
+                "Database",
+                False,
+                f"cannot open index: {short_db_error(e)}",
+                check_id="database",
+                fix="repowise init",
+            )
+        ]
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 

@@ -80,11 +80,36 @@ async def run_generation_with_persistence(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
-    await init_db(engine)
+    try:
+        await init_db(engine)
+    except Exception as exc:
+        # init_db is the first touch of the file: on a corrupt store it
+        # raises, and the engine created above would otherwise never be
+        # disposed, hanging the CLI at shutdown after the traceback.
+        with contextlib.suppress(Exception):
+            await engine.dispose()
+        import sqlite3
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from repowise.cli._helpers.db import sqlite_file_for_url, unreadable_store_message
+        from repowise.cli.errors import reasoned_error
+
+        if isinstance(exc, (SQLAlchemyError, sqlite3.Error)):
+            raise reasoned_error(
+                unreadable_store_message(sqlite_file_for_url(url), exc),
+                reason="unreadable_store",
+            ) from exc
+        raise
     sf = create_session_factory(engine)
 
-    async with get_session(sf) as session:
-        repo_id = (await upsert_repository(session, name=repo_name, local_path=str(repo_path))).id
+    try:
+        async with get_session(sf) as session:
+            repo_id = (await upsert_repository(session, name=repo_name, local_path=str(repo_path))).id
+    except Exception:
+        with contextlib.suppress(Exception):
+            await engine.dispose()
+        raise
 
     resume = bool(generation_kwargs.get("resume"))
     prior_pages: dict[str, Any] = {}

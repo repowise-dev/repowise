@@ -186,17 +186,23 @@ async def _reconcile(
     from repowise.core.persistence import get_repository_by_path, get_session
 
     engine, sf = await open_store(repo_path)
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if not repo:
-            await engine.dispose()
-            return StoreDrift(), 0, None
-        sql = await _sql_side(session, repo_path, repo.id)
+    try:
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if not repo:
+                return StoreDrift(), 0, None
+            sql = await _sql_side(session, repo_path, repo.id)
 
-    lance_dir = repowise_dir / "lancedb"
-    vs_ids, vs_error = await _vector_ids(lance_dir)
-    fts_ids = await _fts_ids(engine)
-    await engine.dispose()
+        lance_dir = repowise_dir / "lancedb"
+        vs_ids, vs_error = await _vector_ids(lance_dir)
+        fts_ids = await _fts_ids(engine)
+        return _reconcile_result(sql, lance_dir, vs_ids, vs_error, fts_ids)
+    finally:
+        await engine.dispose()
+
+
+def _reconcile_result(sql, lance_dir, vs_ids, vs_error, fts_ids):
+    """Assemble a :func:`_reconcile` result from its three sides."""
     return (
         StoreDrift(
             # An index on disk that holds none of the indexable pages is every
@@ -322,16 +328,17 @@ async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath)
         with contextlib.suppress(Exception):
             vector_store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
 
-    async with get_session(sf) as session:
-        coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
-        result = await coord.health_check()
-        await _decision_aware_drift(session, repo_path, result, vector_store)
-
-    if vector_store is not None:
-        with contextlib.suppress(Exception):
-            await vector_store.close()
-    await engine.dispose()
-    return result
+    try:
+        async with get_session(sf) as session:
+            coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
+            result = await coord.health_check()
+            await _decision_aware_drift(session, repo_path, result, vector_store)
+        return result
+    finally:
+        if vector_store is not None:
+            with contextlib.suppress(Exception):
+                await vector_store.close()
+        await engine.dispose()
 
 
 def _drift_color(drift: float | None) -> str:

@@ -7,6 +7,7 @@ repeat before doing per-repo database work.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -39,12 +40,21 @@ async def open_repo_db(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url, busy_timeout_ms=busy_timeout_ms)
-    if init:
-        await init_db(engine)
-    sf = create_session_factory(engine)
-    async with get_session(sf) as session:
-        repo = await upsert_repository(
-            session, name=repo_name or repo_path.name, local_path=str(repo_path)
-        )
-        repo_id = repo.id
+    try:
+        if init:
+            await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(
+                session, name=repo_name or repo_path.name, local_path=str(repo_path)
+            )
+            repo_id = repo.id
+    except Exception:
+        # The caller never receives the engine on this path, so it cannot
+        # dispose it: without this, a failed open leaves the engine's worker
+        # thread alive and the CLI hangs at interpreter shutdown instead of
+        # exiting with the error.
+        with contextlib.suppress(Exception):
+            await engine.dispose()
+        raise
     return engine, sf, repo_id

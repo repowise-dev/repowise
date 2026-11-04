@@ -58,7 +58,31 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
     """
     from repowise.core.pipeline.resume import ResumeController
 
-    engine, sf, repo_id = await open_repo_db(repo_path)
+    try:
+        engine, sf, repo_id = await open_repo_db(repo_path)
+    except Exception as exc:
+        # A store that cannot be opened must read as a recovery instruction,
+        # not a traceback: the database layer's error is the whole story here
+        # only when it is a database error, so anything else still propagates.
+        import sqlite3
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from repowise.cli.errors import reasoned_error
+        from repowise.cli.helpers import (
+            get_db_url_for_repo,
+            sqlite_file_for_url,
+            unreadable_store_message,
+        )
+
+        if isinstance(exc, (SQLAlchemyError, sqlite3.Error)):
+            raise reasoned_error(
+                unreadable_store_message(
+                    sqlite_file_for_url(get_db_url_for_repo(repo_path)), exc
+                ),
+                reason="unreadable_store",
+            ) from exc
+        raise
     return ResumeController(sf, repo_id, resume=resume), engine
 
 

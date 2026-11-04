@@ -96,6 +96,18 @@ from repowise.cli._helpers.db import (
 from repowise.cli._helpers.db import (
     repo_index_session as repo_index_session,
 )
+from repowise.cli._helpers.db import (
+    short_db_error as short_db_error,
+)
+from repowise.cli._helpers.db import (
+    sqlite_file_for_url as sqlite_file_for_url,
+)
+from repowise.cli._helpers.db import (
+    store_recovery_command as store_recovery_command,
+)
+from repowise.cli._helpers.db import (
+    unreadable_store_message as unreadable_store_message,
+)
 from repowise.cli._helpers.git import (
     _COMMIT_ID_RE as _COMMIT_ID_RE,
 )

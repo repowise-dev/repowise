@@ -185,3 +185,48 @@ def db_configured() -> bool:
     from repowise.core.persistence import get_configured_db_url
 
     return get_configured_db_url() is not None
+
+
+def sqlite_file_for_url(db_url: str) -> Path | None:
+    """The SQLite file a URL names, or ``None`` for server-backed URLs."""
+    if not db_url.startswith("sqlite"):
+        return None
+    _, sep, tail = db_url.partition(":///")
+    if not sep or not tail or tail.startswith(":memory:"):
+        return None
+    return Path(tail)
+
+
+def short_db_error(exc: BaseException) -> str:
+    """A database error without SQLAlchemy's documentation suffix.
+
+    The driver message is the useful part; the ``(Background on this error
+    at: https://sqlalche.me/...)`` trailer is noise in a doctor row.
+    """
+    message = str(getattr(exc, "orig", None) or exc)
+    return message.split(" (Background on this error")[0].strip()
+
+
+def store_recovery_command(db_path: Path | None) -> str:
+    """The command that recovers an unopenable store.
+
+    A corrupt SQLite file cannot be repaired in place: remove it and its
+    WAL/sidecar files, then rebuild with ``init``.
+    """
+    if db_path is None:
+        return "repowise init"
+    return f"rm {db_path} {db_path}-wal {db_path}-shm && repowise init"
+
+
+def unreadable_store_message(db_path: Path | None, exc: BaseException) -> str:
+    """What a command says when the index cannot be opened, naming the fix."""
+    if db_path is None:
+        return (
+            f"Cannot open the index: {short_db_error(exc)}. "
+            "Run `repowise init` to rebuild it."
+        )
+    return (
+        f"Cannot open the index at {db_path}: {short_db_error(exc)}. "
+        f"Remove {db_path}, {db_path}-wal and {db_path}-shm, "
+        "then run `repowise init`."
+    )
