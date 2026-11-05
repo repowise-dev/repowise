@@ -102,6 +102,13 @@ def is_rooted_url(url: str) -> bool:
     return _ROOTED_URL_RE.match(url) is not None
 
 
+def join_base(base: str, url: str) -> str:
+    """*url* on a client instance's *base*; an absolute URL ignores the base."""
+    if not base or url.startswith(("http://", "https://", "//")):
+        return url
+    return base.rstrip("/") + "/" + url.lstrip("/") if url else base
+
+
 def consumer_contracts(
     ctx: ScanContext,
     matches: Iterable[ClientCallMatch],
@@ -185,6 +192,7 @@ __all__ = [
     "ClientCallMatch",
     "consumer_contracts",
     "is_rooted_url",
+    "join_base",
     "matches_in",
     "method_from_argument",
 ]
