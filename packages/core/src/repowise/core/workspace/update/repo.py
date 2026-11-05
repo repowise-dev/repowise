@@ -467,18 +467,14 @@ async def _partial_analysis(
     ``health=False`` skips the health pass and returns ``None`` for it.
     """
     from ...pipeline.incremental import (
-        DocDriftUpdate,
         load_stored_coverage_map,
         load_stored_function_mod_p80,
         load_stored_git_meta,
         load_stored_performance_callers,
-        run_doc_drift_partial,
+        run_doc_drift_update,
         run_partial_analysis,
     )
-    from ...pipeline.incremental.doc_drift import load_doc_drift_documents
     from ...pipeline.phase_timing import timed
-
-    drift_update = DocDriftUpdate.from_file_diffs(base_ref, file_diffs)
 
     # Stored per-file git fields: ``git_meta_map`` covers only the changed files,
     # and an empty dict reads as "no commits in 90 days" to the dead-code analyzer.
@@ -495,9 +491,6 @@ async def _partial_analysis(
         )
         # Without a coverage_map the changed files would lose their stored coverage.
         stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
-        drift_documents = await load_doc_drift_documents(
-            repo_path, drift_update, source_map, graph_builder.traversed_file_paths, log=_log.info
-        )
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -514,14 +507,14 @@ async def _partial_analysis(
         health=health,
         timings=timings,
     )
-    doc_drift_report = run_doc_drift_partial(
+    doc_drift_report = await run_doc_drift_update(
         graph_builder,
         source_map,
         repo_path=repo_path,
         log=_log.info,
         timings=timings,
-        update=drift_update,
-        document_paths=drift_documents,
+        base_ref=base_ref,
+        file_diffs=file_diffs,
     )
     return partial_health_report, dead_code_report, doc_drift_report
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -10,9 +11,39 @@ from repowise.core.analysis.doc_drift.extractor import extract, is_checkable_doc
 from repowise.core.analysis.doc_drift.models import DriftKind
 from repowise.core.analysis.doc_drift.renderer import GITHUB, RendererMap
 from repowise.core.analysis.doc_drift.resolver import join_relative
+from repowise.core.pipeline.phase_timing import PhaseTimings, timed
 
 from ._common import LogFn, _noop_log
 from .analysis import DocDriftUpdate
+
+
+async def run_doc_drift_update(
+    graph_builder: Any,
+    source_map: dict[str, bytes] | None,
+    *,
+    repo_path: Any | None = None,
+    base_ref: str | None = None,
+    file_diffs: Iterable[Any] = (),
+    log: LogFn | None = None,
+    timings: PhaseTimings | None = None,
+) -> Any | None:
+    """Load the update's document dependencies and run the shared scoped pass."""
+    from . import run_doc_drift_partial
+
+    tracked = getattr(graph_builder, "traversed_file_paths", None)
+    if not source_map or not tracked:
+        return None
+    update = DocDriftUpdate.from_file_diffs(base_ref, file_diffs)
+    documents = None
+    if repo_path is not None:
+        with timed(timings, "analysis.stored_reads"):
+            documents = await load_doc_drift_documents(
+                repo_path, update, source_map, tracked, log=log,
+            )
+    return run_doc_drift_partial(
+        graph_builder, source_map, repo_path=repo_path, log=log, timings=timings,
+        update=update, document_paths=documents,
+    )
 
 
 async def load_doc_drift_documents(
