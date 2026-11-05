@@ -107,11 +107,15 @@ def _is_related_module(path: str, related: str) -> bool:
     return path == f"{related}.py" or path.endswith((f"/{related}.py", f"/{related}/__init__.py"))
 
 
+def _is_airflow(module: str) -> bool:
+    return module == "airflow" or module.startswith("airflow.")
+
+
 def _imports_airflow(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "airflow":
+        if isinstance(node, ast.ImportFrom) and _is_airflow(node.module or ""):
             return True
-        if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "airflow" for a in node.names):
+        if isinstance(node, ast.Import) and any(_is_airflow(a.name) for a in node.names):
             return True
     return False
 
