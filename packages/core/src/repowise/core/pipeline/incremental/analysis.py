@@ -319,11 +319,21 @@ class DocDriftUpdate:
     """Every path the update adds, edits, deletes or renames (both sides)."""
     symbol_names: frozenset[str] | None = None
     """The index's symbol names; ``None`` reads them from the graph."""
+    added_paths: frozenset[str] = frozenset()
+    removed_paths: frozenset[str] = frozenset()
 
     @classmethod
     def from_file_diffs(cls, base_ref: str | None, file_diffs: Iterable[Any]) -> DocDriftUpdate:
+        file_diffs = tuple(file_diffs)
         paths = tuple(p for fd in file_diffs for p in (fd.path, fd.old_path) if p)
-        return cls(base_ref=base_ref, changed_paths=paths)
+        return cls(
+            base_ref=base_ref,
+            changed_paths=paths,
+            added_paths=frozenset(fd.path for fd in file_diffs if fd.status in {"added", "renamed"}),
+            removed_paths=frozenset(
+                fd.old_path or fd.path for fd in file_diffs if fd.status in {"deleted", "renamed"}
+            ),
+        )
 
 
 def run_doc_drift_partial(
@@ -334,6 +344,7 @@ def run_doc_drift_partial(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     update: DocDriftUpdate | None = None,
+    document_paths: frozenset[str] | None = None,
 ) -> Any | None:
     """Re-check the repository's own markdown on the incremental path.
 
@@ -342,7 +353,7 @@ def run_doc_drift_partial(
     its own phase. Returns ``None`` when the pass could not run, which the
     caller must treat as "write nothing".
 
-    The cheap kinds are re-derived for every document. Symbol references are
+    The cheap kinds are re-derived for the affected documents. Symbol references are
     re-resolved only where *update* could have changed them (see
     :class:`~repowise.core.analysis.doc_drift.symbols.SymbolRecheck`); the rest
     carry forward in the store.
@@ -368,10 +379,13 @@ def run_doc_drift_partial(
                 tracked_paths=tracked_paths,
                 repo_root=root,
                 symbols=_drift_symbol_options(graph_builder, root, update or DocDriftUpdate()),
-            ).analyze()
+            ).analyze(document_paths=document_paths)
             report.authoritative_paths = report.documents
             if report.total_findings:
-                log(f"Doc drift findings: [yellow]{report.total_findings}[/yellow]")
+                log(
+                    f"Doc drift findings rechecked: [yellow]{report.total_findings}[/yellow]"
+                    f" across {report.documents_scanned} documents (unchanged findings retained)"
+                )
             return report
         except Exception as exc:
             log(f"[yellow]Doc drift analysis skipped: {exc}[/yellow]")

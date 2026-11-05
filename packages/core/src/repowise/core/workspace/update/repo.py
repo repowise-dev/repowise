@@ -152,11 +152,10 @@ class RepoUpdateResult:
 class UpdateProducts:
     """The in-memory products of one incremental update, for callers that reuse them.
 
-    The graph, parse and structure cover the whole repo, and so does
-    ``health_report``: the re-scored report when health was re-scored, else
-    the one read back from the store after the changed files were written
-    (``rehydrate_health_report``). Any report may be ``None`` when its step
-    failed.
+    The graph, parse and structure cover the whole repo. So do the drift and
+    health reports, read back after persistence (or freshly re-scored for
+    health). Drift's scan counters are unavailable because they are not
+    persisted. Any report may be ``None`` when its step failed.
     """
 
     parsed_files: list[Any]
@@ -316,11 +315,14 @@ async def _incremental_repo_update(
                 repo_path, graph_builder, parsed_files, merged_excludes, timings
             )
     if products_sink is not None:
+        from ...pipeline.resume.rehydrate import rehydrate_doc_drift_report, rehydrate_health_report
+
         health_report = (
             rescored_report
             if rescored_report is not None
-            else await _stored_health_report(repo_path)
+            else await _stored_analysis_report(repo_path, rehydrate_health_report)
         )
+        stored_drift = await _stored_analysis_report(repo_path, rehydrate_doc_drift_report)
         products_sink.append(
             UpdateProducts(
                 parsed_files=parsed_files,
@@ -329,7 +331,7 @@ async def _incremental_repo_update(
                 repo_structure=_structure,
                 file_count=file_count,
                 dead_code_report=dead_code_report,
-                doc_drift_report=doc_drift_report,
+                doc_drift_report=stored_drift,
                 health_report=health_report,
                 knowledge_graph_result=kg,
             )
@@ -381,15 +383,15 @@ async def _rescore_repo_health(
     return None
 
 
-async def _stored_health_report(repo_path: Path) -> Any:
-    """The whole-repo health report read back from the store, or ``None``.
+async def _stored_analysis_report(repo_path: Path, read: Any) -> Any:
+    """Read a whole-repo report after persistence, or ``None`` on failure.
 
-    Best-effort: a failed read leaves the products without a health report.
+    Each report uses its own session so one failed query cannot abort the
+    other's transaction on PostgreSQL.
     """
     from ...persistence import create_engine, create_session_factory, get_session
     from ...persistence.crud import get_repository_by_path
     from ...persistence.database import resolve_db_url
-    from ...pipeline.resume.rehydrate import rehydrate_health_report
 
     try:
         engine = create_engine(resolve_db_url(repo_path))
@@ -398,11 +400,11 @@ async def _stored_health_report(repo_path: Path) -> Any:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return None
-                return await rehydrate_health_report(session, repo.id)
+                return await read(session, repo.id)
         finally:
             await engine.dispose()
     except Exception:
-        _log.warning("Stored health report unavailable for %s", repo_path, exc_info=True)
+        _log.warning("%s unavailable for %s", read.__name__, repo_path, exc_info=True)
     return None
 
 
@@ -473,7 +475,10 @@ async def _partial_analysis(
         run_doc_drift_partial,
         run_partial_analysis,
     )
+    from ...pipeline.incremental.doc_drift import load_doc_drift_documents
     from ...pipeline.phase_timing import timed
+
+    drift_update = DocDriftUpdate.from_file_diffs(base_ref, file_diffs)
 
     # Stored per-file git fields: ``git_meta_map`` covers only the changed files,
     # and an empty dict reads as "no commits in 90 days" to the dead-code analyzer.
@@ -490,6 +495,9 @@ async def _partial_analysis(
         )
         # Without a coverage_map the changed files would lose their stored coverage.
         stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
+        drift_documents = await load_doc_drift_documents(
+            repo_path, drift_update, source_map, graph_builder.traversed_file_paths, log=_log.info
+        )
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -512,7 +520,8 @@ async def _partial_analysis(
         repo_path=repo_path,
         log=_log.info,
         timings=timings,
-        update=DocDriftUpdate.from_file_diffs(base_ref, file_diffs),
+        update=drift_update,
+        document_paths=drift_documents,
     )
     return partial_health_report, dead_code_report, doc_drift_report
 

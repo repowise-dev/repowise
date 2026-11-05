@@ -101,6 +101,10 @@ class SymbolRecheck:
     def wants(self, doc: str, name: str) -> bool:
         return self.whole(doc) or name in (self.names or ())
 
+    def affects_document(self, doc: str, text: str) -> bool:
+        """Whether *doc* may contain a symbol reference this update rechecks."""
+        return self.whole(doc) or bool((self.names or frozenset()).intersection(_WORD_RE.findall(text)))
+
 
 @dataclass(frozen=True)
 class SymbolOptions:
