@@ -606,6 +606,34 @@ async def sweep_superseded_generated_pages(
     return swept
 
 
+def _live_members(raw: Any) -> set[str]:
+    """The files a stored module row recorded, or none when it is not safe to judge.
+
+    A row whose metadata cannot be read, a stub left by a failed generation, and
+    a row with no recorded membership all read as empty, which the caller skips.
+    """
+    try:
+        metadata = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(metadata, dict) or STUB_FALLBACK_ERROR in metadata:
+        return set()
+    members = metadata.get("file_paths") or metadata.get("files") or []
+    return {m for m in members if isinstance(m, str)}
+
+
+def _best_successor(
+    members: set[str], module_page_of: Mapping[str, str], produced: set[str]
+) -> str | None:
+    """The produced page covering most of *members*, ties broken by page id."""
+    covering: dict[str, int] = {}
+    for member in members:
+        owner = module_page_of.get(member)
+        if owner in produced:
+            covering[owner] = covering.get(owner, 0) + 1
+    return min(covering, key=lambda pid: (-covering[pid], pid)) if covering else None
+
+
 async def sweep_unyielded_module_pages(
     session: Any,
     repo_id: str,
@@ -653,27 +681,13 @@ async def sweep_unyielded_module_pages(
     retired: list[str] = []
     successors: dict[str, str] = {}
     for page_id, raw in rows:
-        try:
-            metadata = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(metadata, dict) or STUB_FALLBACK_ERROR in metadata:
-            continue
-        members = {
-            m
-            for m in (metadata.get("file_paths") or metadata.get("files") or [])
-            if isinstance(m, str)
-        }
+        members = _live_members(raw)
         if not members:
             continue
         retired.append(page_id)
-        covering: dict[str, int] = {}
-        for member in members:
-            owner = module_page_of.get(member)
-            if owner in produced:
-                covering[owner] = covering.get(owner, 0) + 1
-        if covering:
-            successors[page_id] = min(covering, key=lambda pid: (-covering[pid], pid))
+        successor = _best_successor(members, module_page_of, produced)
+        if successor is not None:
+            successors[page_id] = successor
     await delete_pages(session, repo_id, retired, "superseded", successors)
     if retired:
         logger.info("unyielded_module_pages_swept", repo_id=repo_id, count=len(retired))

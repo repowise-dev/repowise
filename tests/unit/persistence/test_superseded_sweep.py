@@ -21,8 +21,12 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from repowise.core.generation.models import STUB_FALLBACK_ERROR
 from repowise.core.persistence.models import Page, Repository
-from repowise.core.pipeline.persist import sweep_superseded_generated_pages
+from repowise.core.pipeline.persist import (
+    sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
+)
 
 
 @pytest.fixture
@@ -195,9 +199,6 @@ async def test_a_different_repository_is_untouched(session, repo_id, other_repo_
 # ---------------------------------------------------------------------------
 # Module pages the whole-repository plan no longer yields
 # ---------------------------------------------------------------------------
-
-from repowise.core.generation.models import STUB_FALLBACK_ERROR  # noqa: E402
-from repowise.core.pipeline.persist import sweep_unyielded_module_pages  # noqa: E402
 
 _PLAN = {"src/a.py": "module_page:src/new", "src/b.py": "module_page:src/new", "x/c.py": "module_page:x"}
 
