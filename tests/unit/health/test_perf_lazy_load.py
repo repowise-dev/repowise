@@ -17,6 +17,8 @@ import pytest
 from repowise.core.analysis.health.complexity import FileComplexity
 from repowise.core.analysis.health.perf.lazy_load import collect_lazy_loads
 from repowise.core.analysis.health.perf.orm_models import build_model_index
+from repowise.core.analysis.health.perf.scan_cache import PerfScanCache
+from repowise.core.ingestion.models import compute_content_hash
 
 _KIND = "lazy_load_in_loop"
 
@@ -40,12 +42,15 @@ class _FileInfo:
 @dataclass
 class _ParsedFile:
     file_info: _FileInfo
+    content_hash: str = ""
 
 
 def _write(tmp_path: Path, name: str, src: str) -> _ParsedFile:
     p = tmp_path / name
     p.write_text(textwrap.dedent(src), encoding="utf-8")
-    return _ParsedFile(_FileInfo(path=name, abs_path=str(p), language="python"))
+    return _ParsedFile(
+        _FileInfo(path=name, abs_path=str(p), language="python"), compute_content_hash(p.read_bytes())
+    )
 
 
 def _hits(tmp_path: Path, models_src: str, loop_src: str) -> list:
@@ -58,6 +63,92 @@ def _hits(tmp_path: Path, models_src: str, loop_src: str) -> list:
 
 
 # -- SQLAlchemy positives ---------------------------------------------------
+
+
+def test_cached_model_scans_keep_the_cross_file_merge_live(tmp_path: Path):
+    owner = _write(tmp_path, "owner.py", '''
+        class Owner:
+            id = Column(Integer, primary_key=True)
+    ''')
+    child = _write(tmp_path, "child.py", '''
+        from django.db import models
+        class Child:
+            owner = models.ForeignKey("Owner", related_name="children")
+    ''')
+    # Include a model in the lazy-load index without giving it any relation.
+    parent = _write(tmp_path, "parent.py", '''
+        class Owner:
+            @declared_attr
+            def __tablename__(cls):
+                return "owners"
+    ''')
+    plain = _write(tmp_path, "plain.py", "def f(): return 1\n")
+    files = [owner, child, parent, plain]
+    reads = []
+
+    def read(path):
+        reads.append(Path(path).name)
+        return Path(path).read_bytes()
+
+    def run(current):
+        cache = PerfScanCache(tmp_path, "orm_models")
+        cache.load()
+        result = build_model_index(current, read, cache=cache)
+        cache.save()
+        return result
+
+    first = run(files)
+    assert "children" in first.relations["Owner"]
+    assert first.columns["Owner"] == frozenset({"id"})
+    reads.clear()
+    assert run(files) == first
+    assert reads == []  # Includes the file rejected by the byte prefilter.
+
+    # Removing the referencing file must remove its reverse relation even
+    # though every remaining file is served from cache.
+    remaining = [owner, parent, plain]
+    removed = run(remaining)
+    assert "children" not in removed.relations["Owner"]
+    assert reads == []
+    assert removed == build_model_index(remaining, read)
+
+    parent = _write(tmp_path, "parent.py", '''
+        class Owner:
+            account = relationship("Account")
+    ''')
+    reads.clear()
+    edited = run([owner, parent, plain])
+    assert reads == ["parent.py"]
+    assert "account" in edited.relations["Owner"]
+    assert edited == build_model_index([owner, parent, plain], read)
+
+
+def test_cached_models_remerge_inheritance_and_managers(tmp_path: Path):
+    base = _write(tmp_path, "base.py", '''
+        class Base:
+            owner = relationship("Owner")
+        class Manager:
+            def get_queryset(self):
+                return super().get_queryset().select_related("owner")
+    ''')
+    derived = _write(tmp_path, "derived.py", '''
+        class Derived(Base):
+            objects = Manager()
+        # relationship( -- include the subclass in the model scan
+    ''')
+    cache = PerfScanCache(tmp_path, "orm_models")
+    def reader(path):
+        return Path(path).read_bytes()
+
+    first = build_model_index([base, derived], reader, cache=cache)
+    assert "owner" in first.relations["Derived"]
+    assert "Derived" in first.custom_managers
+    cache.save()
+    cache.load()
+    second = build_model_index([derived], lambda _p: pytest.fail("cached file was read"), cache=cache)
+    assert second.relations["Derived"] == {}
+    assert "Derived" not in second.custom_managers
+    assert second == build_model_index([derived], reader)
 
 
 def test_sa_query_filter_all(tmp_path: Path):
