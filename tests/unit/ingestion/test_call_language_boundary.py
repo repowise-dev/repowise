@@ -164,3 +164,34 @@ def test_csharp_calls_into_vbnet_keep_resolving(tmp_path: Path) -> None:
     assert [(edge[0], edge[1]) for edge in _edges(parsed, tmp_path)] == [
         ("App.cs::App::Run", "Widget.vb::Widget::Go"),
     ]
+
+
+@pytest.mark.parametrize(
+    "module,call,expected",
+    [
+        ("@salesforce/apex/Widget.go", "loadWidget()", True),
+        ("@salesforce/apexContinuation/Widget.go", "loadWidget()", True),
+        ("@salesforce/apex/Widget.go", "Widget.go()", False),
+        ("./Widget", "Widget.go()", False),
+        ("./Widget", "loadWidget()", False),
+    ],
+)
+@pytest.mark.parametrize("language,extension", [("javascript", "js"), ("typescript", "ts")])
+def test_only_explicit_salesforce_imports_bridge_to_apex(
+    tmp_path: Path, module: str, call: str, expected: bool, language: str, extension: str,
+) -> None:
+    caller = f"app.{extension}"
+    parsed = _parse_all(
+        tmp_path,
+        {
+            caller: (
+                language, f"import loadWidget from '{module}';\nfunction run() {{ {call}; }}",
+            ),
+            "Widget.cls": (
+                "apex", "public class Widget {\n public static void go() {}\n}",
+            ),
+        },
+    )
+    _link_imports(parsed, {caller: {module: "Widget.cls"}})
+    targets = [edge[1] for edge in _edges(parsed, tmp_path, {caller: {"Widget.cls"}})]
+    assert targets == (["Widget.cls::Widget::go"] if expected else [])

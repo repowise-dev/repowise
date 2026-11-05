@@ -107,6 +107,7 @@ from .models import (
 from .resolved_call import ResolvedCall
 from .resolvers.cpp import _SOURCE_TU_EXTS
 from .resolvers.jvm_workspace import classify_jvm_import
+from .resolvers.lwc import apex_specifier
 from .return_types import (
     declared_return_type,
     normalize_return_type,
@@ -1096,8 +1097,26 @@ class CallResolver(
         if caller and callee and (
             _CALL_LANGUAGE_FAMILY.get(caller, caller) != _CALL_LANGUAGE_FAMILY.get(callee, callee)
         ):
-            return None
+            return resolved if self._explicit_apex_bridge(resolved, caller, callee) else None
         return resolved
+
+    def _explicit_apex_bridge(self, resolved: ResolvedCall, caller: str, callee: str) -> bool:
+        """An LWC import names the Apex method exposed through Salesforce's RPC bridge."""
+        if caller not in ("javascript", "typescript") or callee != "apex":
+            return False
+        if resolved.origin != "import_scoped":
+            return False
+        symbol = self._symbols_by_id.get(resolved.callee_id)
+        if symbol is None:
+            return False
+        parsed = self._parsed_files[resolved.caller_id.split("::", 1)[0]]
+        target_path = self._symbol_paths_by_id.get(resolved.callee_id)
+        return any(
+            imp.resolved_file == target_path
+            and (spec := apex_specifier(imp.module_path)) is not None
+            and spec[2].casefold() == symbol.name.casefold()
+            for imp in parsed.imports
+        )
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Check every tier before its result can emit an edge or type another call."""
