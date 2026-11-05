@@ -190,3 +190,76 @@ async def test_a_different_repository_is_untouched(session, repo_id, other_repo_
     )
     assert swept == []
     assert "module_page:src/old" in await _ids(session, other_repo_id)
+
+
+# ---------------------------------------------------------------------------
+# Module pages the whole-repository plan no longer yields
+# ---------------------------------------------------------------------------
+
+from repowise.core.generation.models import STUB_FALLBACK_ERROR  # noqa: E402
+from repowise.core.pipeline.persist import sweep_unyielded_module_pages  # noqa: E402
+
+_PLAN = {"src/a.py": "module_page:src/new", "src/b.py": "module_page:src/new", "x/c.py": "module_page:x"}
+
+
+@pytest.mark.asyncio
+async def test_a_planned_module_page_the_plan_no_longer_yields_is_retired(session, repo_id):
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/a.py", "src/b.py", "src/z.py"])
+    swept = await sweep_unyielded_module_pages(
+        session,
+        repo_id,
+        {"module_page:src/old", "module_page:src/new"},
+        _PLAN,
+        {"module_page:src/new"},
+    )
+    assert swept == ["module_page:src/old"]
+    assert "module_page:src/old" not in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_page_the_run_did_not_plan_is_left_alone(session, repo_id):
+    """A scoped run judges only the pages it was asked for."""
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/a.py"])
+    swept = await sweep_unyielded_module_pages(
+        session, repo_id, {"module_page:src/new"}, _PLAN, {"module_page:src/new"}
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_page_the_plan_still_yields_is_kept(session, repo_id):
+    await _add(session, repo_id, "module_page:src/new", "module_page", ["src/a.py"])
+    swept = await sweep_unyielded_module_pages(
+        session, repo_id, {"module_page:src/new"}, _PLAN, set()
+    )
+    assert swept == []
+    assert "module_page:src/new" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_plan_retires_nothing(session, repo_id):
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/a.py"])
+    swept = await sweep_unyielded_module_pages(
+        session, repo_id, {"module_page:src/old"}, {}, set()
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_no_membership_or_a_stub_is_left_alone(session, repo_id):
+    await _add(session, repo_id, "module_page:src/bare", "module_page", [])
+    await _add(session, repo_id, "module_page:src/stub", "module_page", ["src/a.py"])
+    stub = await session.get(Page, "module_page:src/stub")
+    stub.metadata_json = json.dumps({"file_paths": ["src/a.py"], STUB_FALLBACK_ERROR: "boom"})
+    await session.flush()
+    swept = await sweep_unyielded_module_pages(
+        session,
+        repo_id,
+        {"module_page:src/bare", "module_page:src/stub"},
+        _PLAN,
+        {"module_page:src/new"},
+    )
+    assert swept == []
+    assert {"module_page:src/bare", "module_page:src/stub"} <= await _ids(session, repo_id)

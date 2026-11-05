@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Mapping
 from typing import Any
 
 import structlog
@@ -603,3 +604,77 @@ async def sweep_superseded_generated_pages(
     if swept:
         logger.info("superseded_generated_pages_swept", repo_id=repo_id, count=len(swept))
     return swept
+
+
+async def sweep_unyielded_module_pages(
+    session: Any,
+    repo_id: str,
+    planned_ids: Collection[str],
+    module_page_of: Mapping[str, str],
+    produced_ids: Collection[str],
+) -> list[str]:
+    """Retire planned module pages the repository's own module plan no longer yields.
+
+    *module_page_of* is the whole-repository plan, file to the module page that
+    now covers it. A module page this run was asked for (*planned_ids*) whose id
+    is not among that plan's pages is not stale, it is gone: the code groups its
+    files differently now, so no run can write it again. Left alone it stays
+    ``stale`` and every ``generate --stale`` plans it and reports it cannot
+    refresh it.
+
+    It is retired in favour of the page *produced_ids* names that covers the most
+    of its files, ties broken by page id; with no such page it is retired without
+    one. Only pages the run planned are judged, so a scoped run touches nothing
+    else. A stub left by a failed generation, a row with no recorded membership,
+    and a run whose plan yields no module page at all are left alone.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    yielded = set(module_page_of.values())
+    gone = {
+        page_id
+        for page_id in planned_ids
+        if page_id.startswith("module_page:") and page_id not in yielded
+    }
+    if not yielded or not gone:
+        return []
+    produced = {page_id for page_id in produced_ids if page_id in yielded}
+    rows = (
+        await session.execute(
+            select(Page.id, Page.metadata_json).where(
+                Page.repository_id == repo_id,
+                Page.page_type == "module_page",
+                Page.id.in_(gone),
+            )
+        )
+    ).all()
+    retired: list[str] = []
+    successors: dict[str, str] = {}
+    for page_id, raw in rows:
+        try:
+            metadata = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metadata, dict) or STUB_FALLBACK_ERROR in metadata:
+            continue
+        members = {
+            m
+            for m in (metadata.get("file_paths") or metadata.get("files") or [])
+            if isinstance(m, str)
+        }
+        if not members:
+            continue
+        retired.append(page_id)
+        covering: dict[str, int] = {}
+        for member in members:
+            owner = module_page_of.get(member)
+            if owner in produced:
+                covering[owner] = covering.get(owner, 0) + 1
+        if covering:
+            successors[page_id] = min(covering, key=lambda pid: (-covering[pid], pid))
+    await delete_pages(session, repo_id, retired, "superseded", successors)
+    if retired:
+        logger.info("unyielded_module_pages_swept", repo_id=repo_id, count=len(retired))
+    return retired
