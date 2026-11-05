@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.analysis.dead_code.swift_reachability import (
@@ -255,3 +256,73 @@ def test_dead_code_the_text_cannot_vouch_for_stays_unreachable() -> None:
 def test_comment_and_string_stripping() -> None:
     text = 'a /* x /* y */ z */ b "s\\"t" c """\nm\n""" d #"r"q"# e // f\ng'
     assert strip_comments_and_strings(text).split() == ["a", "b", "c", "d", "e", "g"]
+
+
+def test_oversized_swift_importer_qualifies_a_declared_types_file(tmp_path: Path) -> None:
+    sources = {
+        "App/MainView.swift": "func run() { Worker.compute() }\n" + "\n" * (2 * 1024 * 1024),
+        "Support/Utilities.swift": "struct Worker { static func compute() {} }\n",
+        "Support/Worker.swift": "struct Unused {}\n",
+    }
+    for rel, text in sources.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    parser = ASTParser()
+    traverser = FileTraverser(tmp_path)
+    builder = GraphBuilder(repo_path=tmp_path)
+    source_map = {}
+    for fi in traverser.traverse():
+        source_map[fi.path] = sources[fi.path].encode()
+        builder.add_file(parser.parse_file(fi, source_map[fi.path]))
+    builder.set_source_map(source_map)
+    graph = builder.build()
+    skipped = traverser.stats.unindexed_source_files()
+    assert skipped == [("App/MainView.swift", "over_max_size")]
+    report = DeadCodeAnalyzer(
+        graph,
+        parsed_files=builder._parsed_files,
+        source_map=source_map,
+        repo_root=tmp_path,
+        unindexed_source_files=skipped,
+    ).analyze({"min_confidence": 0.0})
+    findings = {
+        f.file_path: f for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE
+    }
+    helper = findings["Support/Utilities.swift"]
+    assert helper.confidence <= 0.4
+    assert not helper.safe_to_delete
+    assert any(
+        "'Worker' appears in a file that was not indexed (App/MainView.swift)" in e
+        for e in helper.evidence
+    )
+    assert not any("not indexed" in e for e in findings["Support/Worker.swift"].evidence)
+
+
+@pytest.mark.parametrize(
+    ("path", "reason", "record_skipped"),
+    [
+        ("App/Main.swift", "over_max_size", True),
+        ("App/Main.swift", "over_max_size", False),
+        ("App/Main.swift", "minified", True),
+        ("__generated__/Main.swift", "over_max_size", True),
+        ("vendor/Main.swift", "over_max_size", True),
+        ("App/Main.ts", "over_max_size", True),
+    ],
+)
+def test_unindexed_swift_type_evidence_is_scoped(
+    tmp_path: Path, path: str, reason: str, record_skipped: bool
+) -> None:
+    source = tmp_path / path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("let value = UsefulHelper()\n", encoding="utf-8")
+    graph = _graph({"Helpers.swift": [("UsefulHelper", "class", None)]}, "")
+    report = DeadCodeAnalyzer(
+        graph,
+        source_map={"Helpers.swift": b"struct UsefulHelper {}\n"},
+        repo_root=tmp_path,
+        unindexed_source_files=[(path, reason)] if record_skipped else [],
+    ).analyze({"min_confidence": 0.0})
+    finding = next(f for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE)
+    expected = path == "App/Main.swift" and reason == "over_max_size" and record_skipped
+    assert any("not indexed" in e for e in finding.evidence) is expected

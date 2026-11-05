@@ -105,7 +105,11 @@ from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
     _find_ts_export_aliases,
     _posix_normpath,
 )
-from .swift_reachability import build_swift_named_files
+from .swift_reachability import (
+    build_swift_named_files,
+    unindexed_finding_name,
+    unindexed_swift_tokens,
+)
 from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _CPP_BUILTIN_MACROS,
     _CPP_TYPE_DECLARATION_KINDS,
@@ -190,6 +194,7 @@ class DeadCodeAnalyzer:
         self._repo_root = repo_root
         self._source_map = source_map
         self._unindexed_tokens: frozenset[str] | None = None
+        self._unindexed_swift_tokens: set[str] = set()
         # Kept for the absence check below, which is the one pass that needs
         # the raw text of *every* indexed file rather than of a suffix-filtered
         # subset. Empty when a caller has no source access, which is what makes
@@ -540,7 +545,11 @@ class DeadCodeAnalyzer:
             budget -= len(blob)
             # ``finditer`` rather than ``findall``: the latter materialises
             # every match at once, roughly 500k bytes objects for a 4 MB blob.
-            tokens.update(m.group().decode("ascii", "ignore") for m in _IDENTIFIER_RE.finditer(blob))
+            file_tokens = {m.group().decode("ascii", "ignore") for m in _IDENTIFIER_RE.finditer(blob)}
+            tokens.update(file_tokens)
+            # Swift's same-module type references can explain a whole-file
+            # finding, but generated/vendor sources cannot vouch for liveness.
+            self._unindexed_swift_tokens.update(unindexed_swift_tokens(rel_path, file_tokens))
         self._unindexed_tokens = frozenset(tokens)
         return self._unindexed_tokens
 
@@ -566,11 +575,9 @@ class DeadCodeAnalyzer:
             skipped_names += f" (+{len(self._unindexed_source_files) - 3} more)"
 
         for finding in findings:
-            # Symbol findings only. A whole-file finding would have to match on
-            # the path stem, and stems are exactly the broad words ("index",
-            # "main", "utils", "app") that ``risk_factors`` deliberately keeps
-            # out of its own token map because they cap ordinary modules. An
-            # unread importer imports symbols, so match on symbols.
+            # Match symbols, never broad path stems such as "index" or "app".
+            # Swift file findings can instead match their declared type names:
+            # files in the same module do not import one another.
             #
             # Exported symbols only, for the same reason stated the other way:
             # an importer can only reach what a file exports, so a match on an
@@ -579,7 +586,7 @@ class DeadCodeAnalyzer:
             # every unrelated private `add` in the repo would clamp with it.
             if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
                 continue
-            name = finding.symbol_name
+            name = unindexed_finding_name(finding, self.graph, self._unindexed_swift_tokens)
             if not name or name not in tokens:
                 continue
             finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
