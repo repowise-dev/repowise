@@ -1,4 +1,4 @@
-"""The walk cache and the token cache fingerprint all the code that shapes them.
+"""The health caches fingerprint all the code that shapes their values.
 
 Each cache keys on a hash of an explicit module set (``WALK_INPUTS``,
 ``TOKEN_INPUTS``) instead of ``HEALTH_ANALYZER_VERSION``, so a scoring change
@@ -26,6 +26,9 @@ import repowise.core as core
 from repowise.core.analysis.health.complexity.walker import walk_file
 from repowise.core.analysis.health.duplication.token_cache import TOKEN_INPUTS
 from repowise.core.analysis.health.duplication.token_entry import tokenize_entry
+from repowise.core.analysis.health.perf.orm_models import _file_models
+from repowise.core.analysis.health.perf.scan_cache import SCAN_INPUTS
+from repowise.core.analysis.health.perf.unbounded_reduction import _scan_hits
 from repowise.core.analysis.health.sql_complexity import walk_sql_file
 from repowise.core.analysis.health.walk_cache import WALK_INPUTS
 
@@ -64,6 +67,13 @@ _WALK_EXEMPT = {
 _TOKEN_EXEMPT = {
     **_PARSE_EXEMPT,
     "ingestion.language_configs": "folded in by value: the import kinds the tokenizer drops",
+}
+
+_SCAN_EXEMPT = {
+    **_WALK_EXEMPT,
+    "analysis.health.perf.scan_cache": (
+        "cache transport; the file scanners it invokes are hashed, and its payload is versioned"
+    ),
 }
 
 
@@ -144,8 +154,8 @@ def _outside(patterns: tuple[str, ...]) -> set[str]:
 
 @pytest.mark.parametrize(
     ("patterns", "exempt"),
-    [(WALK_INPUTS, _WALK_EXEMPT), (TOKEN_INPUTS, _TOKEN_EXEMPT)],
-    ids=["walk", "token"],
+    [(WALK_INPUTS, _WALK_EXEMPT), (TOKEN_INPUTS, _TOKEN_EXEMPT), (SCAN_INPUTS, _SCAN_EXEMPT)],
+    ids=["walk", "token", "scan"],
 )
 def test_every_import_from_outside_the_inputs_is_reviewed(
     patterns: tuple[str, ...], exempt: dict[str, str]
@@ -156,15 +166,18 @@ def test_every_import_from_outside_the_inputs_is_reviewed(
     assert sorted(set(exempt) - outside) == [], "stale exemption: nothing in the inputs imports it"
 
 
-@pytest.mark.parametrize("patterns", [WALK_INPUTS, TOKEN_INPUTS], ids=["walk", "token"])
+@pytest.mark.parametrize("patterns", [WALK_INPUTS, TOKEN_INPUTS, SCAN_INPUTS], ids=["walk", "token", "scan"])
 def test_every_input_pattern_matches_a_file(patterns: tuple[str, ...]) -> None:
     assert [p for p in patterns if not list(_CORE.glob(p))] == []
 
 
 @pytest.mark.parametrize(
     ("entry", "patterns"),
-    [(walk_file, WALK_INPUTS), (walk_sql_file, WALK_INPUTS), (tokenize_entry, TOKEN_INPUTS)],
-    ids=["walk_file", "walk_sql_file", "tokenize_entry"],
+    [
+        (walk_file, WALK_INPUTS), (walk_sql_file, WALK_INPUTS), (tokenize_entry, TOKEN_INPUTS),
+        (_file_models, SCAN_INPUTS), (_scan_hits, SCAN_INPUTS),
+    ],
+    ids=["walk_file", "walk_sql_file", "tokenize_entry", "model_scan", "reduction_scan"],
 )
 def test_the_entry_points_are_inputs(entry: object, patterns: tuple[str, ...]) -> None:
     source = Path(str(inspect.getsourcefile(entry))).resolve()
