@@ -123,6 +123,20 @@ from .type_names import (
 
 log = structlog.get_logger(__name__)
 
+# Call interop is broader than moving source between languages: JVM and .NET
+# members can call one another even though their method bodies cannot move.
+# Keep the JS/SFC and C-linkage families used by the parser and declaration tiers.
+_CALL_LANGUAGE_FAMILY = {
+    language: family[0]
+    for family in (
+        ("javascript", "typescript", "svelte", "vue", "astro"),
+        C_LINKAGE_LANGUAGES,
+        ("java", "kotlin", "scala"),
+        ("csharp", "razor", "vbnet", "fsharp"),
+    )
+    for language in family
+}
+
 # Languages with an implicit method receiver, where a bare ``foo()`` binds to
 # the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
 # bare call there is a free function and this tier would resolve it wrongly.
@@ -1070,9 +1084,26 @@ class CallResolver(
             resolved = self._redirect_to_definition(resolved)
         if resolved:
             resolved = self._narrow_overload(resolved, call)
-        return self._redirect_to_definition(resolved) if resolved else None
+        resolved = self._redirect_to_definition(resolved) if resolved else None
+        return self._language_checked(resolved)
+
+    def _language_checked(self, resolved: ResolvedCall | None) -> ResolvedCall | None:
+        """Refuse unrelated languages, including synthetic module callers."""
+        if resolved is None:
+            return None
+        caller = symbol_id_language(self._parsed_files, resolved.caller_id)
+        callee = symbol_id_language(self._parsed_files, resolved.callee_id)
+        if caller and callee and (
+            _CALL_LANGUAGE_FAMILY.get(caller, caller) != _CALL_LANGUAGE_FAMILY.get(callee, callee)
+        ):
+            return None
+        return resolved
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
+        """Check every tier before its result can emit an edge or type another call."""
+        return self._language_checked(self._resolve_by_tier(file_path, call))
+
+    def _resolve_by_tier(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Resolve a single CallSite through the three-tier fallback."""
         caller_id = call.caller_symbol_id
         assert caller_id is not None
@@ -1992,7 +2023,7 @@ class CallResolver(
         call: CallSite,
         caller_id: str,
     ) -> ResolvedCall | None:
-        """Tier 3: the one declaration of the name repo-wide, only within the same language."""
+        """Tier 3: the one declaration of the name repo-wide, subject to the shared language gate."""
         target_name = call.target_name
         # Uniqueness is judged before filtering data members, on purpose: filtering
         # them out first would re-uniquify a name a field and a method share. A
@@ -2070,10 +2101,6 @@ class CallResolver(
             # Refused rather than falling through, so this tier can lose an
             # edge but never gain one.
             return None
-        caller_lang = symbol_id_language(self._parsed_files, caller_id)
-        callee_lang = symbol_id_language(self._parsed_files, candidate)
-        if caller_lang and callee_lang and caller_lang != callee_lang:
-            return None  # reject cross-language Tier 3 match
         return ResolvedCall(caller_id, candidate, 0.50, call.line, "global_unique")
 
     def _resolve_member_call(
