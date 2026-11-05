@@ -53,15 +53,30 @@ class PerfScanCache:
         self._entries.clear()
         self._fresh.clear()
         try:
-            payload = load_sealed_pickle(self._path, domain=self._filename)
+            payload = self._read_payload()
+            if not isinstance(payload, dict):
+                return
             if payload.get("version") == _CACHE_VERSION and payload.get("scanner") == scan_fingerprint():
                 entries = payload.get("files")
                 if isinstance(entries, dict):
                     self._entries = entries
-        except FileNotFoundError:
-            pass
         except Exception as exc:
+            log.warning("perf_scan_cache_load_failed", path=str(self._path), error=str(exc))
+
+    def _read_payload(self) -> Any:
+        try:
+            return load_sealed_pickle(self._path, domain=self._filename)
+        except FileNotFoundError:
+            return None
+        except (EOFError, pickle.UnpicklingError) as exc:
             log.debug("perf_scan_cache_load_failed", error=str(exc))
+        except ValueError as exc:
+            # The seal reader also raises ValueError for an invalid HMAC-key
+            # configuration; only its documented cache rejections are misses.
+            if str(exc) not in {"unsigned or unsupported cache format", "cache HMAC mismatch"}:
+                raise
+            log.debug("perf_scan_cache_load_failed", error=str(exc))
+        return None
 
     def get(self, key: str) -> Any | None:
         """Return a copy so a caller cannot change the next run's input."""
