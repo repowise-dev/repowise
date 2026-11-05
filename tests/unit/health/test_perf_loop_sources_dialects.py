@@ -1,4 +1,4 @@
-"""What a perf loop walks, and the magnitude that proves, in Go, Java, C#, Pascal and Ruby.
+"""What a perf loop walks in Go, Java, Scala, C#, Pascal and Ruby.
 
 Through the real walker. Each shape that grows or is bounded is paired with one
 the syntax does not settle, which must stay ``unknown``: no reader takes
@@ -96,6 +96,110 @@ class A {
 )
 def test_java_loop_sources(line, expected):
     assert _loops("A.java", "java", _JAVA)[line] == expected
+
+
+_SCALA = """import java.sql._
+object Orders {
+  def sync(conn: Connection, ids: Seq[Long], flag: Boolean): Unit = {
+    val stmt = conn.createStatement()
+    val rs = stmt.executeQuery("SELECT id FROM orders")
+    while (rs.next()) { stmt.executeUpdate("UPDATE t SET y = 1") }
+    for (id <- ids) { stmt.executeUpdate("DELETE FROM t WHERE id = " + id) }
+    val names = List("a", "b")
+    for (s <- names) { stmt.executeUpdate("DELETE FROM t WHERE n = " + s) }
+    var picks = List("a")
+    if (flag) { picks = loadAll() }
+    for (s <- picks) { stmt.executeUpdate("DELETE FROM t WHERE n = " + s) }
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (6, ("grows_with_data", "query")),
+        (7, ("unknown", "parameter")),
+        (9, ("bounded", "constant")),
+        (12, ("unknown", "unknown")),
+    ],
+)
+def test_scala_loop_sources(line, expected):
+    assert _loops("Orders.scala", "scala", _SCALA)[line] == expected
+
+
+@pytest.mark.parametrize(
+    ("setup", "header", "expected"),
+    [
+        ('val xs = Seq("a", "b")', "x <- xs", ("bounded", "constant")),
+        ('val xs = Vector("a")', "x <- xs", ("bounded", "constant")),
+        ('val xs = Set("a")', "x <- xs", ("bounded", "constant")),
+        ('val xs = Array[Int](1, 2)', "x <- xs", ("bounded", "constant")),
+        ('val xs = Map("a" -> 1)', "x <- xs", ("bounded", "constant")),
+        ('val xs = List()', "x <- xs", ("unknown", "unknown")),
+        ('val xs = List(ids: _*)', "x <- xs", ("unknown", "unknown")),
+        ('val xs = List(ids*)', "x <- xs", ("unknown", "unknown")),
+        ('val xs = List("a"); xs.addOne("b")', "x <- xs", ("unknown", "unknown")),
+        ('val xs = List("a"); xs += "b"', "x <- xs", ("unknown", "unknown")),
+        ('val xs = List("a"); xs ++= ids', "x <- xs", ("unknown", "unknown")),
+        ('var xs = List("a"); xs = List("b")', "x <- xs", ("unknown", "unknown")),
+        ('if (flag) { val xs = List("a") }', "x <- xs", ("unknown", "unknown")),
+        ('val xs = List("a"); def fill(): Unit = { xs += "b" }', "x <- xs", ("bounded", "constant")),
+        ("", "x <- Role.values", ("bounded", "constant")),
+        ("", "x <- Role.values()", ("bounded", "constant")),
+        ("", "x <- registry.values", ("unknown", "config_table")),
+        ("", "x <- this.items", ("unknown", "unknown")),
+        ("", "i <- 0 until ids.size", ("unknown", "parameter")),
+        ("", "i <- 1 to ids.length", ("unknown", "parameter")),
+        ('val n = 3', "i <- 0 until n", ("bounded", "constant")),
+        ('var n = 3; n += 1', "i <- 0 until n", ("unknown", "unknown")),
+        ("", "x <- ids.take(5)", ("bounded", "parameter")),
+        ("", "x <- ids.take(limit)", ("unknown", "unknown")),
+        ("", "x <- ids.filter(x => x > 0).toList", ("unknown", "parameter")),
+        ("", "x <- Files.walk(repoRoot).toList()", ("grows_with_data", "listing")),
+        ("", "x <- Files.find(repoRoot, 10, predicate).toList()", ("grows_with_data", "listing")),
+        ("", "x <- Files.walk(dir).toList()", ("unknown", "listing")),
+        ("", "x <- Files.list(dir).toList()", ("unknown", "listing")),
+        ("", 'x <- Files.list(repoRoot.resolve("**")).toList()', ("unknown", "listing")),
+        ("", 'x <- Files.newDirectoryStream(repoRoot, "**")', ("unknown", "listing")),
+        ("", 'x <- List("a"); y <- ids', ("unknown", "unknown")),
+    ],
+)
+def test_scala_loop_source_shapes(setup, header, expected):
+    # Multiple parameter lists are ordinary Scala, and all belong to this scope.
+    source = (
+        "import java.sql._\nimport java.nio.file.Files\n"
+        "object Orders { def sync(stmt: Statement)(ids: Seq[Int], flag: Boolean, limit: Int): Unit = {\n"
+        f"  {setup}\n"
+        f'  for ({header}) {{ stmt.executeUpdate("UPDATE t SET y = 1") }}\n'
+        "} }\n"
+    )
+    assert _loops("Orders.scala", "scala", source)[5] == expected
+
+
+@pytest.mark.parametrize("loop", ["while ({condition}) {{ {body} }}", "do {{ {body} }} while ({condition})"])
+@pytest.mark.parametrize(
+    ("query", "condition", "expected"),
+    [
+        ('stmt.executeQuery("SELECT id FROM orders")', "rs.next()", ("grows_with_data", "query")),
+        ('stmt.executeQuery("SELECT id FROM orders")', "rs.hasNext", ("grows_with_data", "query")),
+        ('stmt.executeQuery("SELECT id FROM orders WHERE id = ?")', "rs.next()", ("bounded", "caller_key")),
+        ('stmt.executeQuery("SELECT id FROM orders WHERE user_id = ?")', "rs.next()", ("unknown", "query")),
+        ('stmt.executeQuery("SELECT id FROM orders LIMIT 10")', "rs.next()", ("unknown", "query")),
+        ("ids.iterator", "rs.hasNext", ("unknown", "parameter")),
+        ("loadAll()", "rs.hasNext", ("unknown", "unknown")),
+    ],
+)
+def test_scala_cursor_sources(query, condition, expected, loop):
+    statement = loop.format(condition=condition, body='stmt.executeUpdate("UPDATE t SET y = 1")')
+    source = (
+        "import java.sql._\n"
+        "object Orders { def sync(stmt: Statement, ids: Seq[Int]): Unit = {\n"
+        f"  val rs = {query}\n"
+        f"  {statement}\n"
+        "} }\n"
+    )
+    assert _loops("Orders.scala", "scala", source)[4] == expected
 
 
 _CS = """using Microsoft.EntityFrameworkCore;
