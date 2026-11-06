@@ -42,10 +42,10 @@ OWNED_PATTERNS: tuple[str, ...] = (
 #: of git per clone rather than shared with the team. ``.mcp.json`` and
 #: the other agents' configs stay shared. Markdown holds the writers' exactly
 #: marked blocks: the CLAUDE.md and AGENTS.md generators, and the instruction
-#: blocks of the codex, opencode, hermes, copilot, vscode and cursor targets.
+#: blocks of the codex, opencode, hermes, copilot, vscode, cursor and pi targets.
 #: The JSON and TOML files hold a ``repowise`` server entry, hook or extension
 #: recommendation from the agent targets (claude code, vscode, cursor, kiro,
-#: codex, opencode).
+#: codex, opencode, pi).
 _MANAGED: dict[str, bool] = {
     ".claude/CLAUDE.md": True,
     "AGENTS.md": False,
@@ -57,6 +57,7 @@ _MANAGED: dict[str, bool] = {
     ".vscode/extensions.json": True,
     ".cursor/mcp.json": False,
     ".kiro/settings/mcp.json": False,
+    ".pi/mcp.json": False,
     ".codex/config.toml": False,
     ".codex/hooks.json": False,
     "opencode.json": False,
