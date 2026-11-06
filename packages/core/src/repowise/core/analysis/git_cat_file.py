@@ -83,6 +83,8 @@ def cat_file_batch(
                                 capture_output=True,
                                 timeout=5.0,
                                 text=True,
+                                encoding="utf-8",
+                                errors="replace",
                             )
                             if chk.returncode == 0 and chk.stdout.startswith("160000 commit "):
                                 is_submodule = True

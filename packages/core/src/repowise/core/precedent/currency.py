@@ -107,6 +107,8 @@ def commits_since(
             cwd=str(root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             # stdin=DEVNULL is load-bearing, not tidiness. Under the stdio MCP
             # transport a child that inherits the JSON-RPC stdin pipe can hold

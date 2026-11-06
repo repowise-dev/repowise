@@ -201,6 +201,8 @@ def _run_grep(
             cwd=str(repo_root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=_DATA_SHAPE_GREP_TIMEOUT_S,
         )

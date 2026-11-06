@@ -218,6 +218,8 @@ def _hooks_dir(repo_path: Path) -> Path | None:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         if result.returncode == 0:

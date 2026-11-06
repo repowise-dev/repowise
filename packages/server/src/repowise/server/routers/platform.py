@@ -87,7 +87,8 @@ def _run_publish(local_path: str) -> dict:
         # Exit code 1 still prints the answer (a refusal, signed out, ...), so
         # the code is ignored and stdout decides.
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS, check=False
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_TIMEOUT_SECONDS, check=False,
         )
         result = json.loads(proc.stdout)
         if isinstance(result, dict) and isinstance(result.get("outcome"), str):

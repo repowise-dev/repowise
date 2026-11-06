@@ -180,6 +180,8 @@ def _git_lines(repo_path: Path, *args: str) -> list[str] | None:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             stdin=subprocess.DEVNULL,
         )

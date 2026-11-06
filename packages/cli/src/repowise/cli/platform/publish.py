@@ -88,6 +88,8 @@ def _git(repo_path: Path, *args: str) -> str | None:
             ["git", "-C", str(repo_path), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )
