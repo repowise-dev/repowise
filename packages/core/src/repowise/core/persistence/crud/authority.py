@@ -906,12 +906,14 @@ async def merge_candidate(
             "Supersede it instead, so the retirement is recorded."
         )
 
+    # A target accepted via ``confirm --evidence`` keeps it on the acceptance row.
+    evidence = _record_evidence(target) + _record_evidence(candidate)
     acceptance = await record_acceptance(
         session,
         target,
         action="merged",
         currency="active",
-        evidence=_record_evidence(target) + _record_evidence(candidate),
+        evidence=evidence or await accepted_evidence(session, target.id),
         accepter=accepter,
         artifact=artifact,
         kind=kind,
