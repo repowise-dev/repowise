@@ -1,15 +1,16 @@
 """Hot-path guarantees for the ``repowise-rewrite`` PreToolUse hook.
 
 The hook fires on EVERY Bash tool call an agent makes, so it must answer
-quickly — a 150 ms p95 budget, which comfortably clears interpreter/console-
-script startup even on slower Windows hosts while still catching a regression
-that pulls in the heavy stack. Two layers of protection:
+quickly. Its median overhead is measured against interpreter startup on the
+same runner, so a slow subprocess spawn does not spend the hook's budget.
+Two layers of protection:
 
   1. An import-graph guard: the hook module (and the adapters it uses) must
      never pull click, sqlalchemy, structlog, or any ``repowise.core``
      module — those are where the startup milliseconds hide.
-  2. An end-to-end wall-clock budget over repeated subprocess invocations,
-     measured against the real console script when the venv provides one.
+  2. A calibrated wall-clock budget over repeated subprocess invocations,
+     measured against the real console script when the venv provides one,
+     plus a loose absolute ceiling on every invocation.
 """
 
 from __future__ import annotations
@@ -33,6 +34,14 @@ _HEAVY_PREFIXES = (
     "repowise.cli.main",
     "repowise.cli.helpers",
 )
+
+# Issue #2372 measured about 19 ms of interpreter startup plus 110 ms of hook
+# overhead on WSL. Allow 150 ms above the measured baseline for headroom;
+# the ledgered path gets 200 ms for sqlite3 import, connect and upsert (about
+# 15 ms extra in the original ledger measurements). These are overhead
+# allowances, not total startup budgets or a reason to retry a slow batch.
+_PLAIN_OVERHEAD_MS = 150
+_LEDGERED_OVERHEAD_MS = 200
 
 
 def test_import_pulls_no_heavy_modules() -> None:
@@ -74,7 +83,7 @@ def _payload(command: str, cwd: Path) -> str:
     )
 
 
-def _p95(cmd: list[str], payload: str) -> tuple[float, list[str], list[float]]:
+def _median(cmd: list[str], payload: str) -> tuple[float, list[str], list[float]]:
     """Wall-clock timings over 12 invocations, plus every stdout seen.
 
     Returns ``(median_ms, outputs, all_timings_ms)``. The *median* is the
@@ -97,21 +106,22 @@ def _p95(cmd: list[str], payload: str) -> tuple[float, list[str], list[float]]:
     return median, outputs, timings
 
 
-def _median_best_of_two(cmd: list[str], payload: str) -> tuple[float, list[str], list[float]]:
-    """The ledgered median, re-measured once when the first run goes over.
-
-    A shared runner can lift a whole batch of subprocess spawns at once, which
-    is the runner rather than the hook getting slower. A real regression
-    repeats; a scheduling blip does not, so the better of two runs is the
-    honest number. The budget is unchanged and the failure message still shows
-    the full distribution from the run that is judged.
-    """
-    first = _p95(cmd, payload)
-    if first[0] >= _LEDGERED_BUDGET_MS:
-        second = _p95(cmd, payload)
-        if second[0] < first[0]:
-            return second
-    return first
+def _assert_budget(cmd: list[str], payload: str, allowance_ms: float) -> list[str]:
+    """Calibrate each batch with the same interpreter, input and pipe setup."""
+    baseline, _, baseline_timings = _median([sys.executable, "-c", "pass"], payload)
+    median, outputs, timings = _median(cmd, payload)
+    overhead = median - baseline
+    samples = ", ".join(f"{t:.0f}" for t in timings)
+    baseline_samples = ", ".join(f"{t:.0f}" for t in baseline_timings)
+    assert overhead < allowance_ms, (
+        f"repowise-rewrite overhead {overhead:.1f} ms >= {allowance_ms} ms "
+        f"(median {median:.1f} ms, baseline {baseline:.1f} ms; "
+        f"hook: {samples}; interpreter: {baseline_samples})"
+    )
+    # Still catch an invocation taking a second, even if the median or the
+    # baseline hides it. One scheduling outlier below this ceiling is fine.
+    assert max(timings) < 1000, f"repowise-rewrite max {max(timings):.0f} ms >= 1000 ms"
+    return outputs
 
 
 #: Command shapes the hook must answer within budget. The pipeline and
@@ -126,33 +136,15 @@ _PERF_COMMANDS = (
 )
 
 
-def test_p95_under_150ms(tmp_path: Path) -> None:
+def test_rewrite_overhead_stays_under_budget(tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     cmd = _hook_invocation()
 
     # Warmup: first run pays one-off filesystem cache costs.
     subprocess.run(cmd, input=_payload("pytest -x", tmp_path), capture_output=True, text=True)
 
-    median, outputs, timings = _p95(cmd, _payload("pytest -x", tmp_path))
+    outputs = _assert_budget(cmd, _payload("pytest -x", tmp_path), _PLAIN_OVERHEAD_MS)
     assert all("repowise distill --source hook-bash pytest -x" in out for out in outputs)
-    _fmt = ", ".join(f"{t:.0f}" for t in timings)
-    assert median < 150, f"repowise-rewrite median {median:.1f} ms >= 150 ms (all: {_fmt})"
-    # A genuine regression is not a single slow spawn — allow one loose ceiling
-    # on the worst sample so a real "sometimes takes a second" failure still
-    # trips while a single scheduling hiccup does not.
-    assert max(timings) < 1000, f"repowise-rewrite max {max(timings):.0f} ms >= 1000 ms"
-
-
-#: Budget for an invocation that also writes its ledger row. Higher than the
-#: 150 ms above, and the gap is the instrument: counting the hook costs a
-#: ``sqlite3`` import, a connect and an upsert, measured here at roughly 15 ms
-#: per shell command. That is the price of the surface being measurable at all
-#: — an ``updatedInput`` rewrite leaves no transcript trace, so without the row
-#: the busiest hook in the system reports nothing.
-#:
-#: The number is a guard against the *next* regression, not an endorsement of
-#: this one. If it needs raising again, the write is the thing to fix.
-_LEDGERED_BUDGET_MS = 200
 
 
 def test_a_ledgered_invocation_stays_under_budget(tmp_path: Path) -> None:
@@ -175,16 +167,11 @@ def test_a_ledgered_invocation_stays_under_budget(tmp_path: Path) -> None:
     )
     subprocess.run(cmd, input=payload, capture_output=True, text=True)
 
-    median, outputs, timings = _median_best_of_two(cmd, payload)
+    outputs = _assert_budget(cmd, payload, _LEDGERED_OVERHEAD_MS)
     assert all("repowise distill --source hook-bash pytest -x" in out for out in outputs)
     # Guard the guard: a budget met by not writing the row would pass forever.
     db = tmp_path / ".repowise" / "sessions" / "sessions.db"
     assert db.exists(), "the probe never reached the ledger write it is timing"
-    _fmt = ", ".join(f"{t:.0f}" for t in timings)
-    assert median < _LEDGERED_BUDGET_MS, (
-        f"a ledgered rewrite median {median:.1f} ms >= {_LEDGERED_BUDGET_MS} ms (all: {_fmt})"
-    )
-    assert max(timings) < 1000, f"ledgered rewrite max {max(timings):.0f} ms >= 1000 ms"
 
 
 @pytest.mark.parametrize("command", _PERF_COMMANDS)
@@ -198,7 +185,34 @@ def test_lexer_shapes_stay_under_budget(tmp_path: Path, command: str) -> None:
     cmd = _hook_invocation()
     subprocess.run(cmd, input=_payload(command, tmp_path), capture_output=True, text=True)
 
-    median, _, timings = _p95(cmd, _payload(command, tmp_path))
-    _fmt = ", ".join(f"{t:.0f}" for t in timings)
-    assert median < 150, f"{command!r} median {median:.1f} ms >= 150 ms (all: {_fmt})"
-    assert max(timings) < 1000, f"{command!r} max {max(timings):.0f} ms >= 1000 ms"
+    _assert_budget(cmd, _payload(command, tmp_path), _PLAIN_OVERHEAD_MS)
+
+
+@pytest.mark.parametrize(
+    ("hook_ms", "allowance_ms", "worst_ms", "failure"),
+    [
+        (360, _PLAIN_OVERHEAD_MS, 360, None),
+        (430, _LEDGERED_OVERHEAD_MS, 430, None),
+        (430, _PLAIN_OVERHEAD_MS, 430, "overhead"),
+        (460, _LEDGERED_OVERHEAD_MS, 460, "overhead"),
+        (360, _PLAIN_OVERHEAD_MS, 1000, "max"),
+    ],
+)
+def test_calibration_preserves_regression_guards(
+    monkeypatch: pytest.MonkeyPatch,
+    hook_ms: float,
+    allowance_ms: float,
+    worst_ms: float,
+    failure: str | None,
+) -> None:
+    """A slow spawn is allowed; extra hook work and a one-second outlier are not."""
+    measurements = iter([
+        (250, [""], [250] * 12),
+        (hook_ms, ["rewritten"] * 12, [hook_ms] * 11 + [worst_ms]),
+    ])
+    monkeypatch.setattr(sys.modules[__name__], "_median", lambda *_: next(measurements))
+    if failure:
+        with pytest.raises(AssertionError, match=failure):
+            _assert_budget(["hook"], "payload", allowance_ms)
+    else:
+        assert _assert_budget(["hook"], "payload", allowance_ms) == ["rewritten"] * 12
