@@ -36,6 +36,7 @@ _TARGET_MODULES: dict[str, str] = {
     "hermes": "repowise.cli.agent_targets.targets.hermes:TARGET",
     "copilot": "repowise.cli.agent_targets.targets.copilot:TARGET",
     "kiro": "repowise.cli.agent_targets.targets.kiro:TARGET",
+    "pi": "repowise.cli.agent_targets.targets.pi:TARGET",
 }
 
 #: Resolved when :meth:`resolve_target_flag` is asked for ``auto`` and nothing
@@ -294,11 +295,23 @@ def other_managers_of(
     return owners
 
 
+def _installed_targets(repo_path: Path | None) -> list[AgentTarget]:
+    """Probe installed hosts when auto has no existing registrations to select."""
+    found = []
+    for target in all_targets():
+        try:
+            if target.is_present(repo_path):
+                found.append(target)
+        except (OSError, ValueError):
+            continue
+    return found
+
+
 def resolve_target_flag(value: str, repo_path: Path | None = None) -> list[AgentTarget]:
     """Resolve a ``--target=`` value to targets.
 
-    Accepts ``auto`` (everything detected, falling back to Claude Code when
-    nothing is), ``all``, ``none``, or a comma-separated list of ids. An unknown
+    Accepts ``auto`` (wired targets, else installed targets, else Claude Code),
+    ``all``, ``none``, or a comma-separated list of ids. An unknown
     id raises with the full list of known ones, because the alternative — a
     typo silently resolving to nothing and the command reporting success — is
     the failure mode that wastes the most of a user's time.
@@ -315,6 +328,9 @@ def resolve_target_flag(value: str, repo_path: Path | None = None) -> list[Agent
             for target_id, registrations in detected.items()
             if registrations and (target := get_target(target_id)) is not None
         ]
+        if resolved:
+            return resolved
+        resolved = _installed_targets(repo_path)
         if resolved:
             return resolved
         fallback = get_target(_AUTO_FALLBACK)
