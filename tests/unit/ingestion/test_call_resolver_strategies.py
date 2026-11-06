@@ -845,6 +845,7 @@ _GO_DETECT = (
     "func NewDetector() *Detector { return &Detector{} }\n\n"
     "func NewPair() (*Detector, error) { return &Detector{}, nil }\n\n"
     "func NewOther() *Other { return &Other{} }\n\n"
+    "func New[T any](cfg T) *Detector { return &Detector{} }\n\n"
     "func (d *Detector) Child() *Other { return &Other{} }\n\n"
     "func (d *Detector) Scan() int { return 1 }\n\n"
     "func (o *Other) Scan() int { return 2 }\n\n"
@@ -877,6 +878,11 @@ class TestGoCallTypedLocal:
 
     def test_a_constructor_result_types_its_receiver(self, tmp_path: Path) -> None:
         edges = _go_method_edges(tmp_path, "\td := detect.NewDetector()\n\td.Scan()\n")
+        assert [e[1] for e in edges] == ["detect/detect.go::Detector::Scan"]
+        assert edges[0][3].startswith("receiver_typed_")
+
+    def test_a_generic_constructor_result_types_its_receiver(self, tmp_path: Path) -> None:
+        edges = _go_method_edges(tmp_path, "\td := detect.New[int](1)\n\td.Scan()\n")
         assert [e[1] for e in edges] == ["detect/detect.go::Detector::Scan"]
         assert edges[0][3].startswith("receiver_typed_")
 
