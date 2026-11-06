@@ -80,7 +80,10 @@ Per file:
 1. **Walk** (`_walk`, `walk_file`): each `FunctionComplexity` carries name, line range,
    nloc, ccn, max nesting, cognitive complexity, bumps and params; each
    `ClassComplexity` carries method count and list, total nloc, LCOM4, max method ccn and
-   field count. A nested function gets its own entry; a lambda counts toward its holder.
+   field count. A nested function gets its own entry, as does a JS/TS arrow function
+   with a block body bound to a name (`const f = () => { ... }`, an assignment, an
+   object property); other lambdas count toward their holder. A function's nloc
+   leaves out the lines only its nested entries cover.
 2. **Symbol complexity** (`_populate_symbol_complexity`): `max(ccn)` into
    `Symbol.complexity_estimate` for the `ContextAssembler` ranker.
 3. **Evaluate** (`FileEvaluator.evaluate`): a `FileContext` (nloc, `has_test_file`,
