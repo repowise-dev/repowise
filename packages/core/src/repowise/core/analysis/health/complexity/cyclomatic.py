@@ -31,7 +31,11 @@ def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
             tok = child.text
             if tok in (b"&&", b"||", b"and", b"or"):
                 return True
-    return False
+    return (
+        node.type in ("&&", "||")
+        and node.parent is not None
+        and node.parent.type == "let_chain"
+    )
 
 
 _BODY_FIELD_NAMES = (
@@ -268,7 +272,7 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     Falls back to all direct children except recognised body fields and
     syntactic punctuation.
     """
-    if node.type in lmap.foreach_kinds:
+    if node.type in lmap.foreach_kinds or node.type == "range_clause":
         return []
     cond = node.child_by_field_name("condition")
     if cond is not None:
@@ -304,6 +308,7 @@ def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
         and child.id not in body_nodes
         and child.type not in _BLOCK_KINDS
         and child.type not in lmap.branch_kinds
+        and child.type != "range_clause"
     ]
 
 
@@ -479,7 +484,7 @@ def _walk_function_body(
         # would double-count.
         if is_flat_match_arm:
             # Flat match arms: no CCN increment, no nesting increment.
-            pass
+            conditions.extend(_compound_condition(node, lmap))
         elif node.is_named and (
             node.type in lmap.branch_kinds
             or node.type in lmap.loop_kinds
