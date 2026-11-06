@@ -368,39 +368,50 @@ def _collect_add_warnings(
     return warnings
 
 
+def _build_decision_next_command(stored: _Persisted) -> str:
+    agent_flag = f" --agent {stored.agent}" if stored.agent else ""
+    blockers = set(stored.blockers)
+    needed: list[str] = []
+    if NO_DECISION_BLOCKER in blockers:
+        needed.append("--decision <text>")
+    if NO_RATIONALE_BLOCKER in blockers:
+        needed.append("--reason <rationale>")
+    if NO_SCOPE_BLOCKER in blockers:
+        needed.append("--scope <path>")
+    if NO_EVIDENCE_BLOCKER in blockers or not needed:
+        needed.append("--evidence <commit|file>")
+    return f"confirm {stored.id}{agent_flag} {' '.join(needed)}"
+
+
+def _build_decision_added_payload(
+    stored: _Persisted, warnings: list[str] | None = None
+) -> dict[str, object]:
+    # The full id: a caller passes it back to `confirm` or `show`.
+    payload: dict[str, object] = {
+        "id": stored.id,
+        "title": stored.title,
+        "status": stored.status,
+        "kind": stored.kind,
+        "existed": stored.existed,
+    }
+    if stored.existed:
+        payload["kept"] = stored.kept
+    if warnings:
+        payload["warnings"] = list(warnings)
+    if stored.blockers:
+        payload["blockers"] = stored.blockers
+        payload["next"] = _build_decision_next_command(stored)
+    return payload
+
+
 def _report_added(
     repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str] | None = None
 ) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
-        # The full id: a caller passes it back to `confirm` or `show`.
-        payload = {
-            "id": stored.id,
-            "title": stored.title,
-            "status": stored.status,
-            "kind": stored.kind,
-            "existed": stored.existed,
-        }
-        if stored.existed:
-            payload["kept"] = stored.kept
-        if warnings:
-            payload["warnings"] = list(warnings)
-        if stored.blockers:
-            payload["blockers"] = stored.blockers
-            agent_flag = f" --agent {stored.agent}" if stored.agent else ""
-            needed: list[str] = []
-            if any(b == NO_DECISION_BLOCKER for b in stored.blockers):
-                needed.append("--decision <text>")
-            if any(b == NO_RATIONALE_BLOCKER for b in stored.blockers):
-                needed.append("--reason <rationale>")
-            if any(b == NO_SCOPE_BLOCKER for b in stored.blockers):
-                needed.append("--scope <path>")
-            if any(b == NO_EVIDENCE_BLOCKER for b in stored.blockers):
-                needed.append("--evidence <commit|file>")
-            if not needed:
-                needed.append("--evidence <commit|file>")
-            payload["next"] = f"confirm {stored.id}{agent_flag} {' '.join(needed)}"
-        emit_json({"repo": str(repo_path), "decision": payload})
+        emit_json(
+            {"repo": str(repo_path), "decision": _build_decision_added_payload(stored, warnings)}
+        )
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
     kept = f"; kept stored {', '.join(stored.kept)}" if stored.kept else ""
