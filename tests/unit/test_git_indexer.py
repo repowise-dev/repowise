@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -318,6 +320,48 @@ class TestHotspotAbsoluteFloors:
         assets = next(m for m in metas if m["file_path"] == "assets.bin")
         assert assets["is_hotspot"] is True
 
+    def test_percentiles_parity_with_sql_percent_rank(self) -> None:
+        """N=5 percentiles mirror SQL PERCENT_RANK() exactly: [0.0, 0.25, 0.50, 0.75, 1.00]."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metas = [
+            {
+                "file_path": f"f{i}.py",
+                "temporal_hotspot_score": float(i * 10),
+                "commit_count_90d": 10,
+                "lines": 100,
+            }
+            for i in range(1, 6)
+        ]
+        compute_percentiles(metas)
+        pcts = [m["churn_percentile"] for m in metas]
+        assert pcts == [0.0, 0.25, 0.50, 0.75, 1.00]
+        # f4 and f5 are >= 0.75 and clear floors
+        assert metas[0].get("is_hotspot", False) is False
+        assert metas[1].get("is_hotspot", False) is False
+        assert metas[2].get("is_hotspot", False) is False
+        assert metas[3].get("is_hotspot", False) is True
+        assert metas[4].get("is_hotspot", False) is True
+
+    def test_percentiles_tie_breaking_shared_rank(self) -> None:
+        """Ties share the same rank and hotspot classification instead of being arbitrarily split."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metas = [
+            {"file_path": "quiet.py", "temporal_hotspot_score": 1.0, "commit_count_90d": 2, "lines": 50},
+            {"file_path": "tied_a.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+            {"file_path": "tied_b.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+            {"file_path": "tied_c.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+        ]
+        compute_percentiles(metas)
+        assert metas[0]["churn_percentile"] == 0.0
+        # All three tied items have exactly 1 file scoring strictly lower out of 3 possible: 1 / 3 = 0.333...
+        assert metas[1]["churn_percentile"] == pytest.approx(1 / 3)
+        assert metas[2]["churn_percentile"] == pytest.approx(1 / 3)
+        assert metas[3]["churn_percentile"] == pytest.approx(1 / 3)
+        # Hotspot status is identical for all three
+        assert metas[1].get("is_hotspot", False) == metas[2].get("is_hotspot", False) == metas[3].get("is_hotspot", False)
+
 
 class TestCountActiveContributors:
     """count_active_contributors derives the repo's 90-day team size from
@@ -379,6 +423,67 @@ class TestCountActiveContributors:
         anchor = 900_000_000  # ancient wall-clock-wise; irrelevant
         metas = [self._meta(("Alice", anchor), ("Bob", anchor - 30 * 86400))]
         assert count_active_contributors(metas) == 2
+
+    @pytest.mark.parametrize(
+        ("authors", "expected"),
+        [
+            pytest.param(
+                [("Alice Smith", "alice@example.com"), ("alice", "alice@example.com")],
+                1,
+                id="same-email-aliases",
+            ),
+            pytest.param(
+                [("Alex", "first@example.com"), ("Alex", "second@example.com")],
+                2,
+                id="same-name-distinct-emails",
+            ),
+            pytest.param(
+                [
+                    ("Alice", "123+alice@users.noreply.github.com"),
+                    ("alice", "alice@users.noreply.github.com"),
+                ],
+                1,
+                id="canonical-noreply-email",
+            ),
+            pytest.param([("Alice", None), (" Alice ", None)], 1, id="name-fallback-whitespace"),
+            pytest.param([("Alice", None), ("alice", None)], 1, id="name-fallback-case-insensitive"),
+            pytest.param([("", "alice@example.com")], 1, id="email-without-name"),
+            pytest.param([("", None)], None, id="missing-identity"),
+        ],
+    )
+    def test_counts_canonical_identities(
+        self, authors: list[tuple[str, str | None]], expected: int | None
+    ) -> None:
+        import json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        metas = [{
+            "top_authors_json": json.dumps([
+                {"name": name, "email": email, "last_commit_ts": 1_700_000_000}
+                for name, email in authors
+            ])
+        }]
+        assert count_active_contributors(metas) == expected
+
+    def test_identity_keeps_latest_timestamp_across_files(self) -> None:
+        import json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        anchor = 1_700_000_000
+        cutoff = anchor - 30 * 86400
+        metas = [
+            {"top_authors_json": json.dumps([
+                {"name": "Alice", "email": "alice@example.com", "last_commit_ts": anchor},
+                {"name": "Bob", "email": "bob@example.com", "last_commit_ts": cutoff},
+            ])},
+            {"top_authors_json": json.dumps([
+                {"name": "alice", "email": "alice@example.com", "last_commit_ts": cutoff - 1},
+                {"name": "Carol", "email": "carol@example.com", "last_commit_ts": cutoff - 1},
+            ])},
+        ]
+        assert count_active_contributors(metas, window_days=30) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1381,3 +1486,95 @@ class TestCoChangeCommitWidth:
         partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert partner["frequency"] == 2
         assert partner["focused_frequency"] == 1
+
+
+# ---------------------------------------------------------------------------
+# index_repo setup must not block the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestIndexRepoDoesNotBlockLoop:
+    """Git setup shares a loop with ingestion, so it has to run off-loop."""
+
+    @pytest.mark.asyncio
+    async def test_blocking_setup_does_not_stall_event_loop(self) -> None:
+        # Warm the lazy import index_repo does on the loop; a cold import in an
+        # isolated run would otherwise show up as lag unrelated to git setup.
+        import repowise.core.pipeline.phase_timing  # noqa: F401
+
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = ["", ""]
+
+        def slow_tracked_files(_repo: object) -> list[str]:
+            time.sleep(0.6)  # stands in for ls-files plus the commit walk
+            return []
+
+        lags: list[float] = []
+        stop = asyncio.Event()
+
+        async def probe() -> None:
+            while not stop.is_set():
+                t0 = time.monotonic()
+                await asyncio.sleep(0.01)
+                lags.append(time.monotonic() - t0 - 0.01)
+
+        with (
+            patch.object(indexer, "_get_repo", return_value=repo),
+            patch.object(indexer, "_skip_partial_clone_history", return_value=False),
+            patch.object(indexer, "_get_tracked_files", side_effect=slow_tracked_files),
+        ):
+            task = asyncio.create_task(probe())
+            await asyncio.sleep(0)  # let the probe start ticking
+            summary, metadata = await indexer.index_repo("test-repo-id")
+            stop.set()
+            await task
+
+        assert summary.files_indexed == 0
+        assert metadata == []
+        assert len(lags) > 5, "probe barely ran: the loop was blocked"
+        assert max(lags) < 0.2
+
+    @pytest.mark.asyncio
+    async def test_on_start_runs_on_event_loop_thread(self) -> None:
+        import threading
+
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = ["remote.origin.promisor true", "blob:none"]
+        seen: list[int] = []
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            await indexer.index_repo(
+                "test-repo-id", on_start=lambda _n: seen.append(threading.get_ident())
+            )
+
+        assert seen == [threading.get_ident()]
+
+    @pytest.mark.asyncio
+    async def test_full_index_on_real_repo_end_to_end(self, tmp_path) -> None:
+        """The whole path (setup thread, per-file pass, summary) on a real repo."""
+        import subprocess
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q")
+        (tmp_path / "a.py").write_text("print('a')\n")
+        (tmp_path / "b.py").write_text("print('b')\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "init")
+
+        started: list[int] = []
+        summary, metadata = await GitIndexer(str(tmp_path)).index_repo(
+            "real-repo-id", on_start=started.append
+        )
+
+        assert started and started[0] >= 2
+        assert summary.files_indexed >= 2
+        assert {m["file_path"] for m in metadata} >= {"a.py", "b.py"}

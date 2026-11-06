@@ -157,9 +157,9 @@ describe("FindingsView graph", () => {
     fireEvent.click(document.querySelector('[data-file="b.py"]')!);
 
     const card = document.querySelector('[data-health-work-item="b.py"]')!;
-    await waitFor(() => expect(card.className).toContain("border-[var(--color-accent-primary)]"));
-    expect(document.querySelector('[data-health-work-item="a.py"]')!.className).not.toContain(
-      "border-[var(--color-accent-primary)]",
+    await waitFor(() => expect(card).toHaveAttribute("data-highlighted", "true"));
+    expect(document.querySelector('[data-health-work-item="a.py"]')).not.toHaveAttribute(
+      "data-highlighted",
     );
   });
 

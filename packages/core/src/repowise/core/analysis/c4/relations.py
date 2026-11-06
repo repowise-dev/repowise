@@ -37,6 +37,15 @@ def roll_up_edges(
     externals = file_to_external or {}
     counts: dict[tuple[str, str], int] = defaultdict(int)
     types: dict[tuple[str, str], set[str]] = defaultdict(set)
+    # Per path, not per edge: a file sits on hundreds of edges and the test
+    # classifier is the cost of the whole roll-up.
+    dropped: dict[str, bool] = {}
+
+    def drop(path: str) -> bool:
+        if path not in dropped:
+            dropped[path] = is_config_path(path) or is_test_related_path(path)
+        return dropped[path]
+
     for src, tgt, etype in edges:
         if etype == "co_changes" and not include_co_changes:
             continue
@@ -46,9 +55,7 @@ def roll_up_edges(
         tgt_box = file_to_box[tgt] if tgt in file_to_box else externals.get(tgt)
         if tgt_box is None or src_box == tgt_box:
             continue
-        if is_config_path(src) or is_config_path(tgt):
-            continue
-        if is_test_related_path(src) or is_test_related_path(tgt):
+        if drop(src) or drop(tgt):
             continue
         counts[(src_box, tgt_box)] += 1
         types[(src_box, tgt_box)].add(etype)

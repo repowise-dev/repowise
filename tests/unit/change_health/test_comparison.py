@@ -100,7 +100,7 @@ def test_a_rename_carries_the_finding_across(make_repo):
     assert delta.unchanged_total >= 1
 
 
-def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
+def test_deleting_a_file_compares_its_base_side_and_surfaces_nothing(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": python_complex("tangle", 14), "keep.py": "x = 1\n"})
     repo.remove("app.py")
@@ -109,7 +109,19 @@ def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
     delta = compare(repo)
 
     assert delta.introduced_total == 0
-    assert delta.skipped.get("app.py") == "deleted"
+    assert "app.py" not in delta.skipped
+    assert delta.resolved_total == 0
+    assert delta.status == "available"
+    assert delta.explanation == "No supported new findings surfaced in the analyzed scope."
+
+
+def test_a_deleted_file_with_no_health_dialect_is_still_recorded_as_skipped(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"page.html": "<p>hi</p>\n", "app.py": python_complex("tangle", 14)})
+    repo.remove("page.html")
+    repo.commit("delete", {"app.py": python_complex("tangle", 14) + "\n"})
+
+    assert compare(repo).skipped.get("page.html") == "deleted"
 
 
 # -- multiplicity -----------------------------------------------------------

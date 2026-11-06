@@ -28,6 +28,7 @@ from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.graph.builder import GraphBuilder
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.parser_helpers import _kotlin_number_type
 from repowise.core.ingestion.return_types import signature_parameter_range, signature_parameters
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
@@ -77,10 +78,17 @@ def _ids(parsed: ParsedFile) -> list[str]:
     return [s.id for s in parsed.symbols]
 
 
-def _edges(root: Path, files: dict[str, tuple[str, str]]) -> set[tuple[str, str]]:
+def _edges(
+    root: Path,
+    files: dict[str, tuple[str, str]],
+    partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
+) -> set[tuple[str, str]]:
     parsed = {rel: _parse(rel, lang, text, root) for rel, (lang, text) in files.items()}
     resolver = CallResolver(
-        parsed, {rel: set(parsed) - {rel} for rel in parsed}, repo_path=str(root)
+        parsed,
+        {rel: set(parsed) - {rel} for rel in parsed},
+        repo_path=str(root),
+        partial_fragments=partial_fragments,
     )
     return {
         (rc.caller_id, rc.callee_id)
@@ -434,6 +442,39 @@ class TestCSharpGenericSiblings:
         ids = set(_ids(_parse("P.cs", "csharp", text)))
         assert {"P.cs::P::P#1(string)", "P.cs::P::P#1(TimeSpan?)", "P.cs::P::P#1(int[])", "P.cs::P::P#0"} <= ids
 
+    def test_csharp_overloads_one_erasure_joins_split_by_generic_arity(self) -> None:
+        """``Func<T, bool>`` and ``Func<T, Ctx, bool>`` are two CLR types; only the colliding pair is respelled."""
+        text = (
+            "namespace App;\npublic static class R {\n"
+            "  public static void When(this IRule<T> r, Func<T, bool> p) { }\n"
+            "  public static void When(this IRule<T> r, Func<T, Ctx, bool> p) { }\n"
+            "  public static void When(this IRule<T> r, Action<T>[]? p) { }\n"
+            "  public static void When(this IRule<T> r, Action<T, Ctx>[]? p) { }\n"
+            "  public static void When(this IRule<T> r, string p) { }\n"
+            "}\n"
+        )
+        assert _ids(_parse("R.cs", "csharp", text))[-5:] == [
+            "R.cs::R::When#2(IRule`1,Func`2)",
+            "R.cs::R::When#2(IRule`1,Func`3)",
+            "R.cs::R::When#2(IRule`1,Action`1[]?)",
+            "R.cs::R::When#2(IRule`1,Action`2[]?)",
+            "R.cs::R::When#2(IRule,string)",
+        ]
+
+    def test_csharp_calls_inside_each_split_overload_keep_their_caller(self, tmp_path: Path) -> None:
+        text = (
+            "namespace App;\npublic class R {\n"
+            "  public void A() { }\n"
+            "  public void B() { }\n"
+            "  public void When(Func<int, bool> p) { A(); }\n"
+            "  public void When(Func<int, string, bool> p) { B(); }\n"
+            "}\n"
+        )
+        assert _edges(tmp_path, {"R.cs": ("csharp", text)}) >= {
+            ("R.cs::R::When#1(Func`2)", "R.cs::R::A"),
+            ("R.cs::R::When#1(Func`3)", "R.cs::R::B"),
+        }
+
 
 SHAPES_H = """namespace geo {
 class Shape {
@@ -770,6 +811,48 @@ class TestKotlinOverloads:
         assert ("app/U.kt::screen", "app/U.kt::item") not in edges
         assert ("app/U.kt::Remote::sync", "app/U.kt::Remote::topics") in edges
 
+    _BUF = (
+        "package app\n\nclass ByteString\n\nclass Buf {\n"
+        "  fun write(b: ByteString): Buf = this\n  fun write(b: ByteArray): Buf = this\n"
+        "  fun put(a: Long, b: Int) { }\n  fun put(a: Int, b: Long) { }\n"
+        "  fun mark(s: String?) { }\n  fun mark(f: Boolean) { }\n"
+        "  fun each(b: ByteString, f: () -> Unit) { }\n  fun each(b: ByteArray, f: () -> Unit) { }\n"
+        "  fun fill(b: ByteString, vararg n: Int) { }\n  fun fill(b: ByteArray, vararg n: Int) { }\n"
+        "  fun see(s: String) { }\n  fun see(a: Any) { }\n"
+        "  fun scan(bytes: ByteString) { }\n  fun scan(bytes: ByteArray) { }\n}\n\n"
+        "fun use(b: Buf, bytes: ByteArray, text: ByteString, n: Int, maybe: String?, nums: IntArray, any: Any) {\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("call", "member"),
+        [
+            ("b.write(bytes)", "write#1(ByteArray)"),
+            ("b.write(text)", "write#1(ByteString)"),
+            ("b.put(1L, n)", "put#2(Long,Int)"),
+            ("b.put(n, 1L)", "put#2(Int,Long)"),
+            ('b.mark("x")', "mark#1(String?)"),
+            ("b.mark(true)", "mark#1(Boolean)"),
+            ("b.mark(maybe)", "mark#1(String?)"),
+            # Nothing decides, so the set's first member answers as before.
+            ("b.write(b = bytes)", "write#1(ByteString)"),
+            ("b.put(1, 2)", "put#2(Long,Int)"),
+            ("b.put(n, n)", "put#2(Long,Int)"),
+            # A named argument, a trailing lambda or a spread leaves positions unread.
+            ("b.scan(bytes = text)", "scan#1(ByteString)"),
+            ("b.each(bytes) { }", "each#2(ByteString,Function0)"),
+            ("b.fill(bytes, *nums)", "fill#2(ByteString,Int[])"),
+            # A smart cast may have narrowed an Any argument, so its declared type decides nothing.
+            ("b.see(any)", "see#1(String)"),
+        ],
+    )
+    def test_a_typed_argument_picks_the_overload_of_exactly_its_type(
+        self, tmp_path: Path, call: str, member: str
+    ) -> None:
+        """Kotlin converts no argument, so the member whose parameter is the argument's type is it."""
+        text = f"{self._BUF}  {call}\n}}\n"
+        edges = _edges(tmp_path, {"app/B.kt": ("kotlin", text)})
+        assert edges == {("app/B.kt::use", f"app/B.kt::Buf::{member}")}
+
     def test_a_trailing_comma_closes_no_parameter(self) -> None:
         """Compose style, ``modifier: Modifier = Modifier,`` before ``)``."""
         signature = (
@@ -807,9 +890,264 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
                 checked += 1
                 if symbol.id == base and "`" not in symbol.id:
                     continue
-                assert symbol.language in ("java", "csharp", "cpp", "kotlin"), symbol.id
+                assert symbol.language in ("java", "apex", "csharp", "cpp", "kotlin"), symbol.id
                 assert bases.count(base) > 1 or "`" in symbol.id, symbol.id
     assert checked > 500
+
+
+_CS_TIMEOUT = (
+    "namespace App;\npublic interface IKey { }\npublic class Ttl : IKey { public Ttl() { } }\n"
+    "public static class P {\n"
+    "  public static void T(int seconds, Action<int, int> on) { }\n"
+    "  public static void T(Func<int> provider, Action<int, int> on) { }\n"
+    "  public static void T(Func<int, int> provider, Action<int, int> on) { }\n"
+    "  public static void T(Func<int, int> provider, Action<int, int, string> on) { }\n"
+    "  public static void K(TimeSpan ttl, Func<int, string> key) { }\n"
+    "  public static void K(IKey ttl, Func<int, string> key) { }\n"
+    "  public static void K(IKey ttl, IKey key) { }\n"
+    "}\n"
+)
+
+
+class TestCSharpArgumentShapes:
+    """Same-count C# overloads chosen by what a lambda, a construction or a typed name can reach."""
+
+    def _callee(self, tmp_path: Path, body: str, members: str = "") -> set[str]:
+        caller = "namespace App;\npublic class C {\n" + members + "  public void Run() { " + body + " }\n}\n"
+        edges = _edges(tmp_path, {"P.cs": ("csharp", _CS_TIMEOUT), "C.cs": ("csharp", caller)})
+        return {callee.removeprefix("P.cs::P::") for caller_id, callee in edges if caller_id == "C.cs::C::Run"}
+
+    def test_a_lambda_takes_the_delegate_of_its_parameter_count(self, tmp_path: Path) -> None:
+        assert self._callee(tmp_path, "P.T(_ => 1, (a, b) => { });") == {"T#2(Func`2,Action`2)"}
+        assert self._callee(tmp_path, "P.T(() => 1, (a, b) => { });") == {"T#2(Func`1,Action`2)"}
+
+    def test_a_forwarded_delegate_and_a_method_group_take_their_own_arity(self, tmp_path: Path) -> None:
+        members = (
+            "  void On(int a, int b, string c) { }\n"
+            "  public void Fwd(Action<int, int, string> on) { P.T(_ => 1, on); }\n"
+        )
+        assert self._callee(tmp_path, "P.T(_ => 1, On);", members) == {"T#2(Func`2,Action`3)"}
+        edges = _edges(tmp_path, {"P.cs": ("csharp", _CS_TIMEOUT), "C.cs": (
+            "csharp", "namespace App;\npublic class C {\n" + members + "}\n")})
+        assert ("C.cs::C::Fwd", "P.cs::P::T#2(Func`2,Action`3)") in edges
+
+    def test_a_repository_class_or_interface_reaches_no_builtin_or_delegate(self, tmp_path: Path) -> None:
+        members = "  IKey key;\n"
+        callees = self._callee(tmp_path, "P.K(new Ttl(), key);", members)
+        assert {c for c in callees if c.startswith("K#")} == {"K#2(IKey,IKey)"}
+
+    def test_a_user_conversion_keeps_the_builtin_member(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic class Span { public static implicit operator int(Span s) => 0; }\n"
+            "public static class Q {\n"
+            "  public static void M(int a) { }\n"
+            "  public static void M(Func<int> a) { }\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { Q.M(new Span()); }\n}\n"
+        edges = _edges(tmp_path, {"Q.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        # The conversion leaves both admissible, so the tie keeps the first member.
+        assert ("C.cs::C::Run", "Q.cs::Q::M#1(int)") in edges
+
+    def test_an_extension_called_on_a_value_skips_its_this_parameter(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic class Foo { public Foo(int n) { } }\npublic interface IFoo { }\n"
+            "public static class Ext {\n"
+            "  public static void E(this IFoo f, string a, Foo b) { }\n"
+            "  public static void E(this IFoo f, Foo a, string b) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Run(IFoo f, string s) { f.E(s, new Foo(1)); }\n"
+            "  public void Static(IFoo f, string s) { Ext.E(f, new Foo(1), s); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"Ext.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "Ext.cs::Ext::E#3(IFoo,string,Foo)") in edges
+        assert ("C.cs::C::Static", "Ext.cs::Ext::E#3(IFoo,Foo,string)") in edges
+
+    def test_an_extension_on_the_receivers_own_type_wins_an_otherwise_equal_tie(
+        self, tmp_path: Path
+    ) -> None:
+        holder = (
+            "namespace App;\npublic interface IOpts { }\npublic interface IConds : IOpts { }\n"
+            "public static class W {\n"
+            "  public static void When(this IOpts r, Func<int, bool> p) { }\n"
+            "  public static void When(this IConds r, Func<int, bool> p) { }\n"
+            "  public static void When(this IOpts r, Func<int, string, bool> p) { }\n"
+            "  public static void When(this IConds r, Func<int, string, bool> p) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Run(IConds rule) { rule.When((x, ctx) => true); }\n}\n"
+        )
+        edges = _edges(tmp_path, {"W.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "W.cs::W::When#2(IConds,Func`3)") in edges
+
+    def test_a_repository_type_named_like_a_framework_delegate_is_a_class(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic abstract class Expression { }\n"
+            "public class Binary : Expression { public Binary(int n) { } }\npublic class Statement { }\n"
+            "public static class V {\n"
+            "  public static void Visit(Expression e) { }\n"
+            "  public static void Visit(Statement s) { }\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { V.Visit(new Binary(1)); }\n}\n"
+        edges = _edges(tmp_path, {"V.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "V.cs::V::Visit#1(Expression)") in edges
+
+    def test_a_method_group_reaches_any_delegate_of_its_parameter_count(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class F {\n"
+            "  public static void Where(int n) { }\n"
+            "  public static void Where(Predicate<int> p) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  bool IsOk(int x) => true;\n  public void Run() { F.Where(IsOk); }\n}\n"
+        )
+        edges = _edges(tmp_path, {"F.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "F.cs::F::Where#1(Predicate)") in edges
+
+    def test_a_base_class_conversion_keeps_the_builtin_member(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class Q {\n"
+            "  public static void M(int a) { }\n"
+            "  public static void M(Func<int> a) { }\n"
+            "}\n"
+        )
+        base = "namespace App;\npublic class Base { public static implicit operator int(Base b) => 0; }\n"
+        derived = "namespace App;\npublic class Derived : Base { public Derived() { } }\n"
+        caller = "namespace App;\npublic class C {\n  public void Run() { Q.M(new Derived()); }\n}\n"
+        edges = _edges(tmp_path, {
+            "Q.cs": ("csharp", holder), "B.cs": ("csharp", base),
+            "D.cs": ("csharp", derived), "C.cs": ("csharp", caller),
+        })
+        assert ("C.cs::C::Run", "Q.cs::Q::M#1(int)") in edges
+
+    def test_a_builtin_argument_picks_the_constructor_that_takes_it(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic sealed class Spec {\n"
+            "  public Spec(int basketId) { }\n"
+            "  public Spec(string buyerId) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void ByName(string user) { var s = new Spec(user); }\n"
+            "  public void ById(int id) { var s = new Spec(id); }\n"
+            '  public void ByText() { var s = new Spec("x"); }\n'
+            "  public void ByNumber() { var s = new Spec(3); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"Spec.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert {(a.removeprefix("C.cs::C::"), c.removeprefix("Spec.cs::Spec::")) for a, c in edges} == {
+            ("ByName", "Spec#1(string)"),
+            ("ById", "Spec#1(int)"),
+            ("ByText", "Spec#1(string)"),
+            ("ByNumber", "Spec#1(int)"),
+        }
+
+    def test_builtin_arguments_follow_implicit_numeric_conversions(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static void M(bool b) { }\n"
+            "  public static void M(long n) { }\n"
+            "  public static void N(byte b) { }\n"
+            "  public static void N(string s) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Widen(int n) { H.M(n); }\n"
+            "  public void Flag() { H.M(true); }\n"
+            "  public void Constant() { H.N(7); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        callees = {(a.removeprefix("C.cs::C::"), c.removeprefix("H.cs::H::")) for a, c in edges}
+        assert callees == {
+            ("Widen", "M#1(long)"),
+            ("Flag", "M#1(bool)"),
+            # A constant reaches ``byte`` when its value fits; never ``string``.
+            ("Constant", "N#1(byte)"),
+        }
+
+    def test_a_partial_type_chooses_among_the_constructors_of_every_file(self, tmp_path: Path) -> None:
+        files = {
+            "Context.cs": ("csharp", (
+                "namespace App;\npublic partial class Context {\n"
+                "  public Context(string operationKey) { }\n"
+                "  public Context() { }\n"
+                "}\n"
+            )),
+            "Context.Dictionary.cs": ("csharp", (
+                "using System.Collections.Generic;\nnamespace App;\npublic partial class Context {\n"
+                "  internal Context(IDictionary<string, object> contextData) { }\n"
+                "}\n"
+            )),
+            "C.cs": ("csharp", (
+                "using System.Collections.Generic;\nnamespace App;\npublic class C {\n"
+                "  public void Data(IDictionary<string, object> data) { var c = new Context(data); }\n"
+                "  public void Key(string key) { var c = new Context(key); }\n"
+                "  public void None() { var c = new Context(); }\n"
+                "}\n"
+            )),
+        }
+        fragments = ("Context.Dictionary.cs", "Context.cs")
+        partial = {(f, "Context"): fragments for f in fragments}
+        edges = _edges(tmp_path, files, partial)
+        assert {(a.removeprefix("C.cs::C::"), c) for a, c in edges if a.startswith("C.cs")} == {
+            ("Data", "Context.Dictionary.cs::Context::Context"),
+            ("Key", "Context.cs::Context::Context#1"),
+            ("None", "Context.cs::Context::Context#0"),
+        }
+
+    def test_unread_or_open_arguments_refuse_nothing(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static void M(ulong n) { }\n"
+            "  public static void M(object o) { }\n"
+            "  public static void P(int? n) { }\n"
+            "  public static void P(string s) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            # A long constant may reach ulong, and object takes anything: a tie keeps the first.
+            "  public void Long() { H.M(5L); }\n"
+            "  public void Nullable(int n) { H.P(n); }\n"
+            # The lambda's own ``id`` shadows the string parameter.
+            "  public void Shadow(string id) { System.Action<int> a = (int id) => H.P(id); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        callees = {(a.removeprefix("C.cs::C::"), c.removeprefix("H.cs::H::")) for a, c in edges}
+        assert callees == {
+            ("Long", "M#1(ulong)"),
+            ("Nullable", "P#1(int?)"),
+            ("Shadow", "P#1(int?)"),
+        }
+
+    def test_csharp_literal_argument_types(self) -> None:
+        parsed = _parse(
+            "C.cs", "csharp",
+            'class C { void R() { F("s", @"v", \'c\', true, 1, 2L, 3u, 4ul, 4.0, 5f, 6m, null, -1); } }',
+        )
+        assert parsed.calls[0].argument_types == (
+            "string", "string", "char", "bool", "int constant", None, "uint", "ulong",
+            "double", "float", "decimal", None, None,
+        )
+
+    def test_a_named_argument_reads_no_position(self) -> None:
+        parsed = _parse("C.cs", "csharp", "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); } }")
+        shapes = {c.target_name: c.argument_types for c in parsed.calls}
+        assert shapes["F"] is None
+        assert shapes["G"] == ("=>1", "new Ttl")
 
 
 class TestNarrowingShapes:
@@ -1136,6 +1474,176 @@ class TestJavaLiteralArguments:
         (call,) = _parse("A.java", "java", text).calls
         assert call.argument_types == ("int", "int", "int", "long", "boolean", "float", None, None)
 
+    def test_class_literals_concatenations_and_lambda_shapes_are_read(self) -> None:
+        text = (
+            "class A {\n  void go(int x) {\n"
+            '    f(A.class, "id " + x, x + 1, () -> { run(); }, () -> { return 1; },\n'
+            "      () -> new A(), (a, b) -> a, () -> run(), () -> { throw new E(); });\n"
+            "  }\n}\n"
+        )
+        call = next(c for c in _parse("A.java", "java", text).calls if c.target_name == "f")
+        assert call.argument_types == (
+            "Class", "String", None, "->0:void", "->0:value", "->0:either", "->2:value", None, None
+        )
+
+    def test_a_nested_return_or_a_guarded_throw_leaves_a_block_void(self) -> None:
+        """A nested lambda's ``return`` is its own; a throw under an ``if`` can complete normally."""
+        text = (
+            "class A {\n  void go(boolean ready) {\n"
+            "    f(() -> { Runnable r = () -> { return 1; }; },\n"
+            "      () -> { if (ready) throw new E(); });\n"
+            "  }\n}\n"
+        )
+        call = next(c for c in _parse("A.java", "java", text).calls if c.target_name == "f")
+        assert call.argument_types == ("->0:void", "->0:void")
+
+    _ACCESS = (
+        "package app;\nimport java.util.function.Supplier;\npublic class Access {\n"
+        "  public static void as(String t, Runnable r) { r.run(); }\n"
+        "  public static <T> T as(String t, Supplier<T> s) { return s.get(); }\n"
+        "  void use(String t) {\n    as(t, BODY);\n  }\n}\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("body", "member"),
+        [
+            ("() -> { use(t); }", "as#2(String,Runnable)"),
+            ("() -> { return 1; }", "as#2(String,Supplier)"),
+            ("() -> new Access()", "as#2(String,Supplier)"),
+            ("() -> { if (t == null) throw new IllegalStateException(); }", "as#2(String,Runnable)"),
+            ("() -> { Supplier<Integer> s = () -> { return 1; }; }", "as#2(String,Runnable)"),
+        ],
+    )
+    def test_a_lambda_takes_the_functional_interface_of_its_shape(
+        self, tmp_path: Path, body: str, member: str
+    ) -> None:
+        text = self._ACCESS.replace("BODY", body)
+        edges = _edges(tmp_path, {"app/Access.java": ("java", text)})
+        assert ("app/Access.java::Access::use", f"app/Access.java::Access::{member}") in edges
+
+    @pytest.mark.parametrize(
+        ("first", "member"),
+        [
+            # A lambda converts to no class: not a JDK one, not a repository one.
+            ("Throwable", "f#2(Handler,int)"),
+            ("Task", "f#2(Handler,int)"),
+            # A library type may be a functional interface, so it ties and the
+            # set keeps its first member.
+            ("Listener", "f#2(Listener,int)"),
+        ],
+    )
+    def test_a_lambda_takes_only_a_parameter_that_may_be_an_interface(
+        self, tmp_path: Path, first: str, member: str
+    ) -> None:
+        text = (
+            "package app;\ninterface Handler { void handle(); }\nclass Task { }\n"
+            "public class S {\n"
+            f"  void f({first} x, int i) {{ }}\n"
+            "  void f(Handler h, int i) { }\n"
+            "  void use() {\n    f(() -> { }, 1);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/S.java": ("java", text)})
+        assert edges == {("app/S.java::S::use", f"app/S.java::S::{member}")}
+
+    def test_a_class_literal_takes_the_class_parameter(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class NotFound extends RuntimeException {\n"
+            "  public NotFound(String message, Throwable cause) { }\n"
+            "  public NotFound(Class<?> type, Object id) { }\n"
+            "  static NotFound of(Long id) {\n    return new NotFound(NotFound.class, id);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/NotFound.java": ("java", text)})
+        assert (
+            "app/NotFound.java::NotFound::of", "app/NotFound.java::NotFound::NotFound#2(Class?,Object)"
+        ) in edges
+
+    @pytest.mark.parametrize(
+        ("argument", "member"),
+        [
+            ("final Long id", "get#1(long)"),
+            ("final String id", "get#1(CharSequence)"),
+            ("final java.util.List<Long> id", "get#1(Collection)"),
+        ],
+    )
+    def test_a_box_or_string_reaches_no_type_it_does_not_extend(
+        self, tmp_path: Path, argument: str, member: str
+    ) -> None:
+        """``get(id)`` with a ``Long id`` unboxes to ``get(long)``: a Long is no Collection."""
+        repo = (
+            "package app;\nimport java.util.Collection;\npublic interface Repo {\n"
+            "  void get(Collection<Long> ids);\n  void get(long id);\n"
+            "  void get(CharSequence s);\n}\n"
+        )
+        user = (
+            "package app;\npublic class U {\n  private Repo repo;\n"
+            f"  void use({argument}) {{\n    repo.get(id);\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/Repo.java": ("java", repo), "app/U.java": ("java", user)})
+        assert ("app/U.java::U::use", f"app/Repo.java::Repo::{member}") in edges
+
+    @pytest.mark.parametrize(
+        ("arguments", "member"),
+        [
+            ('"Target", id + ":" + key', "NotFound#2(String,Object)"),
+            ("5, 7", "NotFound#2(Object,Integer)"),
+        ],
+    )
+    def test_a_string_or_literal_skips_a_repository_or_throwable_parameter(
+        self, tmp_path: Path, arguments: str, member: str
+    ) -> None:
+        """A String is no Throwable and an int boxes to no repository class."""
+        text = (
+            "package app;\nclass Entity { }\npublic class NotFound extends RuntimeException {\n"
+            "  public NotFound(String message, Throwable cause) { }\n"
+            "  public NotFound(String type, Object id) { }\n"
+            "  public NotFound(Entity e, Integer n) { }\n"
+            "  public NotFound(Object o, Integer n) { }\n"
+            "  static NotFound of(Long id, String key) {\n"
+            f"    return new NotFound({arguments});\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/NotFound.java": ("java", text)})
+        assert ("app/NotFound.java::NotFound::of", f"app/NotFound.java::NotFound::{member}") in edges
+
+    def test_a_type_variable_parameter_still_takes_a_box(self, tmp_path: Path) -> None:
+        """``T`` may be ``Long``, so ``put(T)`` stays a candidate beside ``put(Collection)``."""
+        text = (
+            "package app;\nimport java.util.Collection;\npublic class Box<T> {\n"
+            "  void put(Collection<T> all) { }\n  void put(T one) { }\n"
+            "  static void use(Box<Long> box, Long id) {\n    box.put(id);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/Box.java": ("java", text)})
+        assert ("app/Box.java::Box::use", "app/Box.java::Box::put#1(T)") in edges
+
+    @pytest.mark.parametrize(
+        ("first", "second", "member"),
+        [
+            # An array is no Collection, and a String[] no Entity[].
+            ("java.util.Collection<String> c", "Object o", "f#1(Object)"),
+            ("Entity[] es", "Object[] os", "f#1(Object[])"),
+        ],
+    )
+    def test_an_array_reaches_only_its_supertypes_and_covariant_arrays(
+        self, tmp_path: Path, first: str, second: str, member: str
+    ) -> None:
+        text = (
+            "package app;\nclass Entity { }\npublic class S {\n"
+            f"  void f({first}) {{ }}\n  void f({second}) {{ }}\n"
+            "  void use(String[] parts) {\n    f(parts);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/S.java": ("java", text)})
+        assert ("app/S.java::S::use", f"app/S.java::S::{member}") in edges
+
+    def test_a_body_that_suits_both_still_takes_a_void_interface(self, tmp_path: Path) -> None:
+        """``run(() -> n++, 1)``: the lambda suits Runnable, so the literal decides."""
+        text = (
+            "package app;\npublic class R {\n  int n;\n"
+            "  void run(Runnable r, String s) { }\n"
+            "  void run(Runnable r, int i) { }\n"
+            "  void use() {\n    run(() -> n++, 1);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/R.java": ("java", text)})
+        assert edges == {("app/R.java::R::use", "app/R.java::R::run#2(Runnable,int)")}
+
     def test_a_tie_that_differs_on_a_non_literal_argument_is_not_broken(
         self, tmp_path: Path
     ) -> None:
@@ -1373,3 +1881,16 @@ class TestJavaNamedArguments:
         )
         edges = _edges(tmp_path, {"app/Node.java": ("java", text)})
         assert edges == {("app/Node.java::Node::use", "app/Node.java::Node::add#2")}
+
+
+@pytest.mark.parametrize(
+    ("literal", "kotlin_type"),
+    [
+        ("1", "Int"), ("0xff", "Int"), ("1_000L", "Long"), ("0b1010L", "Long"), ("1.0", "Double"),
+        ("1e10", "Double"), ("1.0f", "Float"), ("3000000000", None), ("0xffffffff", None), ("1u", None),
+    ],
+)
+def test_a_kotlin_number_literal_types_only_what_no_expected_type_changes(
+    literal: str, kotlin_type: str | None
+) -> None:
+    assert _kotlin_number_type(literal.lower().replace("_", "")) == kotlin_type

@@ -15,6 +15,7 @@ drift.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -238,6 +239,64 @@ def _resolve_configured_project_file_optouts(
     )
 
 
+def _installable_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split agent rows into those init can write and those it cannot."""
+    installable = {integration.integration_id for integration in _resolve_integrations(None)}
+    return (
+        [row for row in rows if row["id"] in installable],
+        [row for row in rows if row["id"] not in installable],
+    )
+
+
+def _ticked(rows: list[dict], options: EditorSetupOptions) -> set[str]:
+    """Detection's default selection, with each flag override applied."""
+    from repowise.cli.agent_targets.registry import default_selection
+
+    ticked = default_selection(rows)
+    for row in rows:
+        flagged = options.integration_overrides.get(row["id"])
+        if flagged is not None:
+            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+    return ticked
+
+
+def planned_agents(repo_path: Path, options: EditorSetupOptions) -> tuple[str, ...]:
+    """Display names of the agents init connects with *options*, without asking."""
+    from repowise.cli.agent_targets.registry import describe_agents
+
+    rows, _ = _installable_rows(describe_agents(repo_path))
+    ticked = _ticked(rows, options)
+    return tuple(row["display_name"] for row in rows if row["id"] in ticked)
+
+
+def planned_project_files(repo_path: Path, options: EditorSetupOptions) -> tuple[str, ...]:
+    """Root-relative files :func:`write_editor_project_files` may write with *options*.
+
+    A superset, as ``describe_paths`` is. The Claude Code setup also runs the
+    CLAUDE.md generator, which no target describes.
+    """
+    from repowise.cli.agent_targets.registry import get_target
+    from repowise.cli.agent_targets.targets.claude_code import ID as CLAUDE_CODE
+    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.uninstall.generated_files import generated_blocks
+
+    resolved = _resolve_configured_project_file_optouts(repo_path, options)
+    paths: list[str] = []
+    for integration in _resolve_integrations(None):
+        if integration.project_file_id in resolved.disabled_project_files:
+            continue
+        target = get_target(integration.integration_id)
+        described = target.describe_paths(Scope.PROJECT, repo_path=repo_path) if target else []
+        for raw in described:
+            try:
+                paths.append(Path(raw).relative_to(repo_path).as_posix())
+            except ValueError:
+                continue
+        if integration.integration_id == CLAUDE_CODE:
+            paths.extend(b.relative_path for b in generated_blocks() if b.id == "claude-md")
+    return tuple(dict.fromkeys(paths))
+
+
 def select_agents_interactively(
     console_obj: Any,
     repo_path: Path,
@@ -264,7 +323,7 @@ def select_agents_interactively(
     as ``--codex``) is shown pre-ticked to match the flag, so accepting the
     checklist re-applies what the flag already said.
     """
-    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+    from repowise.cli.agent_targets.registry import describe_agents
     from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
 
     # Offer only what this command can act on. The checklist is built from the
@@ -276,10 +335,7 @@ def select_agents_interactively(
     #
     # ``repowise agents add --target=<id>`` is the command for those, and the
     # line below names it rather than leaving them invisible.
-    rows = describe_agents(repo_path)
-    installable = {integration.integration_id for integration in _resolve_integrations(None)}
-    deferred = [row for row in rows if row["id"] not in installable]
-    rows = [row for row in rows if row["id"] in installable]
+    rows, deferred = _installable_rows(describe_agents(repo_path))
     for row in deferred:
         if row["present"] or row["registrations"]:
             console_obj.print(
@@ -287,11 +343,7 @@ def select_agents_interactively(
                 f"[bold]repowise agents add --target={row['id']}[/bold][/dim]"
             )
 
-    ticked = default_selection(rows)
-    for row in rows:
-        flagged = options.integration_overrides.get(row["id"])
-        if flagged is not None:
-            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+    ticked = _ticked(rows, options)
 
     chosen = interactive_agent_select(
         console_obj,
@@ -361,8 +413,12 @@ def write_editor_project_files(
 
     if is_editor_setup_disabled(no_editor_setup):
         _persist_project_file_optouts(repo_path, resolved_options)
+        # Only the flag is remembered: the env var describes the machine, not the repo.
+        if no_editor_setup:
+            _remember_editor_setup(repo_path, enabled=False)
         return []
 
+    _remember_editor_setup(repo_path, enabled=True)
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
 
     written: list[Path] = []
@@ -374,6 +430,26 @@ def write_editor_project_files(
             integration.write_project_files(console_obj, repo_path, resolved_options) or []
         )
     return written
+
+
+#: ``config.yaml`` key ``init --no-editor-setup`` sets to false. ``update`` reads it
+#: and leaves the editor files alone; a later ``init`` with editor setup turns it on.
+_EDITOR_SETUP_KEY = "editor_setup"
+
+
+def _editor_setup_declined(repo_path: Path) -> bool:
+    from repowise.cli.helpers import load_config
+
+    return load_config(repo_path).get(_EDITOR_SETUP_KEY) is False
+
+
+def _remember_editor_setup(repo_path: Path, *, enabled: bool) -> None:
+    """Record the repo's editor-setup choice, writing config only when it changes."""
+    from repowise.cli.helpers import save_config_partial
+
+    if _editor_setup_declined(repo_path) != enabled:
+        return
+    save_config_partial(repo_path, **{_EDITOR_SETUP_KEY: enabled})
 
 
 def _persist_project_file_optouts(repo_path: Path, options: EditorSetupOptions) -> None:
@@ -420,9 +496,73 @@ def refresh_editor_project_files(
     options: EditorSetupOptions | None = None,
     integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
-    """Refresh editor-managed project files without rewriting common MCP config."""
+    """Refresh editor-managed project files without rewriting common MCP config.
 
+    Also re-pins an installed git post-commit hook that no live install owns
+    (``hooks.heal``). A repo initialised with ``--no-editor-setup`` gets
+    nothing written.
+    """
+    if _editor_setup_declined(repo_path):
+        return
     resolved_options = options or EditorSetupOptions()
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)
+    from repowise.cli.hooks import heal
+
+    with contextlib.suppress(Exception):
+        heal(repo_path)
+
+
+def unresolved_hook_scripts(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(script, where)`` for each repowise hook whose entry point would not be found.
+
+    Covers Claude Code's user settings, its plugin, and with *repo_path* the
+    repo's own Claude Code and Codex hook files. Those hooks exit quietly when
+    their script is missing, so this is the only place that says so.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_hook_commands
+    from repowise.cli.editor_integrations.codex_config import codex_project_hook_commands
+    from repowise.cli.mcp_config import hook_script_resolves
+
+    rows = claude_code_hook_commands(repo_path)
+    if repo_path is not None:
+        codex = f"{Path(repo_path).name}/.codex/hooks.json"
+        rows += [(codex, c) for c in codex_project_hook_commands(repo_path)]
+    missing: list[tuple[str, str]] = []
+    for where, command in rows:
+        script = "repowise-rewrite" if "repowise-rewrite" in command else "repowise-augment"
+        if not hook_script_resolves(command, script) and (script, where) not in missing:
+            missing.append((script, where))
+    return missing
+
+
+def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> tuple[str | None, str | None]:
+    """``(command, advice)`` that repair *missing*, as :func:`unresolved_hook_scripts` returns it.
+
+    The command is one runnable line (doctor's ``fix``, the Setup page's copy
+    button): ``repowise agents refresh`` repins the user-settings hooks. The
+    plugin and repo-local hooks keep the bare name (a plugin ships without the
+    CLI, and repo files may be committed), so for those the advice is to put
+    the scripts on PATH, which no one command does on every platform.
+    """
+    from repowise.cli.editor_integrations.claude_config import CLAUDE_SETTINGS_LABEL
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    pinned = resolve_repowise_command("repowise-augment")
+    if pinned == "repowise-augment":
+        # This install has no scripts to point anything at.
+        return None, "Reinstall repowise so repowise-augment is on PATH."
+    in_settings = any(where == CLAUDE_SETTINGS_LABEL for _, where in missing)
+    elsewhere = any(where != CLAUDE_SETTINGS_LABEL for _, where in missing)
+    command = "repowise agents refresh" if in_settings else None
+    advice = f"Add {Path(pinned).parent.as_posix()} to PATH." if elsewhere else None
+    return command, advice
+
+
+def describe_unresolved_hooks(missing: list[tuple[str, str]]) -> str:
+    """``repowise-augment (where, where), repowise-rewrite (where)``."""
+    by_script: dict[str, list[str]] = {}
+    for script, where in missing:
+        by_script.setdefault(script, []).append(where)
+    return ", ".join(f"{s} ({', '.join(w)})" for s, w in by_script.items())

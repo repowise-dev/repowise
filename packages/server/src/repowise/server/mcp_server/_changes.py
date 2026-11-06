@@ -301,22 +301,30 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
 SUSPECTS_CAP = 5
 
 
-async def suspects_block(session: Any, repository: Any, targets: list[str]) -> dict[str, Any]:
+async def suspects_block(
+    session: Any, repository: Any, targets: list[str], symptom: str | None = None
+) -> dict[str, Any]:
     """Changes merged in the last 14 days ranked against the targets as a symptom.
 
-    File and symbol targets name the symptom's files; every target's text
-    feeds the text signal. A ``change:`` or ``component:`` target is not part
-    of the symptom.
+    File and symbol targets name the symptom's files. A typed *symptom* (issue
+    text, an error, a stack trace) is the text query as given; without one,
+    the targets' :func:`path_terms` are. A ``change:`` or ``component:``
+    target is not part of the symptom.
     """
     from repowise.core.suspects import Symptom
-    from repowise.core.suspects.index import find_suspects
+    from repowise.core.suspects.index import find_suspects, repo_terms
+    from repowise.core.suspects.signals import path_terms
 
     symptom_targets = [t for t in targets if not is_change_target(t) and not t.startswith("component:")]
     files = tuple(dict.fromkeys(t.split("::", 1)[0] for t in symptom_targets))
+    if not (symptom and symptom.strip()):
+        quiet = repo_terms(repository.local_path)
+        symptom = " ".join(path_terms(t, quiet) for t in symptom_targets)
+    # ``prepare`` reads a stack trace out of the text when no trace is given.
     return await find_suspects(
         session,
         repository.id,
         repository.local_path,
-        Symptom(text=" ".join(symptom_targets), files=files),
+        Symptom(text=symptom, files=files),
         limit=SUSPECTS_CAP,
     )

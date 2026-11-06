@@ -113,7 +113,7 @@ repowise/
 │   │   ├── src/repowise/core/
 │   │   │   ├── ingestion/
 │   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser.py           # ASTParser: one class, all languages; _extract_calls(), _extract_import_bindings()
+│   │   │   │   ├── parser/             # ASTParser: one class, all languages; one module per pass (symbols, imports, calls, references)
 │   │   │   │   ├── parsers/            # per-language parser helpers
 │   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
 │   │   │   │   ├── call_resolver.py    # CallResolver: origin-stamped call resolution
@@ -137,7 +137,7 @@ repowise/
 │   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
 │   │   │   ├── pipeline/
 │   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist.py          # persist_pipeline_result(): shared by CLI + server
+│   │   │   │   ├── persist/            # persist_pipeline_result(): shared by CLI + server
 │   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
@@ -303,7 +303,7 @@ The graph is used for:
 - **Change propagation**: when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
 - **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
-  the most central files; these get "spotlight" wiki pages and richer generation prompts
+  the most central files, which get richer generation prompts
 - **SCC detection**: circular dependency clusters require a special generation
   strategy (see [Section 5.3](#53-dependency-graph-construction))
 - **Co-change edges**: temporal coupling from git history. Files that frequently
@@ -392,7 +392,8 @@ priority order:
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
-   `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
+   `.repowise/config.yaml exclude_patterns` (also written by the Web UI and REST API
+   PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
 5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
    `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,
@@ -425,8 +426,8 @@ FileTraverser(
 |--------|------------------------------|
 | `repowise init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
 | `repowise update` | Read from `.repowise/config.yaml exclude_patterns` |
-| Web UI Excluded Paths section | Saved to `repo.settings["exclude_patterns"]` via REST API |
-| Server sync job | Read from `repo.settings.get("exclude_patterns", [])` |
+| Web UI Excluded Paths section | Saved to `.repowise/config.yaml exclude_patterns` via REST API PATCH |
+| Server sync job | Read from `.repowise/config.yaml exclude_patterns`; an older `repo.settings` copy applies only while the file lacks the key |
 
 The traverser also detects monorepo structure by looking for multiple
 `pyproject.toml`, `package.json`, `go.mod`, or `Cargo.toml` files at depth 1–2.
@@ -555,7 +556,8 @@ scores.
 After graph construction, the builder computes:
 
 - **PageRank**: nodes with high PageRank are central and well-connected.
-  Used to decide generation priority and which symbols get spotlight pages.
+  Used to decide generation priority. Spotlight pages rank each symbol by its
+  own production callers instead (`selection/scoring.py::score_symbol`).
 - **Strongly Connected Components (SCCs)**: groups of files with circular imports.
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
@@ -638,9 +640,9 @@ content to draw from.
 Level 0: External API contracts (OpenAPI, proto, GraphQL)
          → self-contained, no dependencies on other pages
 
-Level 1: Symbol spotlight pages (top 10% by PageRank)
+Level 1: Symbol spotlight pages (most-called public symbols, at most 8 per file)
          → short, fast, parallelizable
-         → high-PageRank symbols get richer documentation
+         → signature, docstring and resolved callers; no source copy
 
 Level 2: File pages
          → uses: source + symbol docs + import summaries (from RAG)
@@ -696,13 +698,14 @@ sweep does not mistake "deliberately kept" for "no longer produced".
 `repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.
 
-### 5.7 Shared Persistence (`pipeline/persist.py`)
+### 5.7 Shared Persistence (`pipeline/persist/`)
 
 The persistence logic for storing a `PipelineResult` into the database (graph nodes,
 edges, symbols, pages, git metadata, dead code findings, decision records) was
-extracted from the CLI's `init_cmd.py` into `core/pipeline/persist.py`. Both the
+extracted from the CLI's `init_cmd.py` into the `core/pipeline/persist/` package. Both the
 CLI and the server's background job executor call `persist_pipeline_result()`, zero
-duplication.
+duplication. The package splits the writers by area (graph, prune, tombstones,
+sweeps, security, git, health, analysis, generation) and re-exports them all.
 
 FTS indexing is intentionally excluded from this function. Callers must run it
 separately after the session closes to avoid SQLite write-lock conflicts.
@@ -956,7 +959,7 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 **Finding types:**
 - `unreachable_file`: file with `in_degree == 0`, not an entry point, test, or config
 - `unused_export`: public symbol with no incoming edges (but file IS imported)
-- `unused_internal`: private symbol with no `calls` edges from same file
+- `unused_internal`: private symbol with no `calls` edges from same file; a COBOL paragraph is judged from the program's source text instead
 - `zombie_package`: monorepo package with no incoming `inter_package` edges
 
 **Confidence scoring (conservative: when in doubt, do NOT flag):**
@@ -1059,7 +1062,7 @@ are flagged as stale.
 repowise decision add        # interactive capture
 repowise decision list       # tabular list with filters
 repowise decision show <id>  # full detail
-repowise decision confirm    # proposed → active
+repowise decision confirm <id>  # candidate → accepted
 repowise decision dismiss    # dismiss proposed (sticky tombstone)
 repowise decision deprecate  # active → deprecated
 repowise decision health     # health summary
@@ -1119,7 +1122,7 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 ### Auto-generated Config
 
 `repowise init` registers the MCP server directly where it can: Claude Code
-(`~/.claude/settings.json`), Claude Desktop (if installed), VS Code
+(`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
 which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
@@ -1143,7 +1146,7 @@ Key routers:
 - `/api/webhooks/gitlab`: GitLab webhook handler
 - `/api/webhooks/gitea`: Gitea and Forgejo webhook handler with HMAC verification
 - `/api/repos/{id}/git-metadata`: per-file git metadata
-- `/api/repos/{id}/hotspots`: high-churn + high-complexity files
+- `/api/repos/{id}/hotspots`: hotspots ranked by temporal hotspot score; `q`, `filter`, `sort`/`order`, offset paging, `hold`/`include` (map scope) and `facets` counts over the searched set
 - `/api/repos/{id}/ownership`: ownership breakdown (file/module/package granularity)
 - `/api/repos/{id}/co-changes`: co-change partners for a file
 - `/api/repos/{id}/git-summary`: aggregate git health signals for dashboard
@@ -1278,7 +1281,7 @@ JobSystem
        │
        ├── Level 0: special handlers (OpenAPI, proto, GraphQL, Dockerfile...)
        │
-       ├── Level 1: symbol spotlight pages (top 10% PageRank)
+       ├── Level 1: symbol spotlight pages (most-called symbols)
        │              ┌────────────────────────────────────┐
        │              │ ContextAssembler                   │
        │              │  source + graph metadata           │
@@ -1433,9 +1436,9 @@ a different problem:
 
 3. **`extra_exclude_patterns` (runtime)**: patterns injected without touching any
    file on disk: from `--exclude/-x` CLI flags (dev workflow), from
-   `config.yaml exclude_patterns` (persisted per repo), or from
-   `repo.settings["exclude_patterns"]` (Web UI / REST API). This lets teams configure
-   exclusions through the UI without git access to the target repo.
+   `config.yaml exclude_patterns` (persisted per repo, and written by the Web UI /
+   REST API too). This lets teams configure exclusions through the UI, and the CLI
+   and the UI always show the same list.
 
 All three layers use `pathspec` with `gitwildmatch` semantics, the same library used
 for `.gitignore` parsing, so the full gitignore syntax works everywhere.
@@ -1578,7 +1581,7 @@ Key files:
 | `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher`, queries DB for architecture summary, modules, hotspots, decisions |
 | `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
 | `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator`, 30-line subclass that binds filename + template |
-| `core/generation/templates/claude_md.j2` | Jinja2 template for the Repowise-managed section |
+| `core/generation/templates/_editor_block.j2` | Jinja2 template for the Repowise-managed section |
 | `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |
 | `server/routers/claude_md.py` | `GET/POST /api/repos/{id}/claude-md` REST endpoints |
 
@@ -1593,7 +1596,7 @@ each with the file it registers in and what you lose by skipping it.
 
 Two things worth knowing before you start:
 
-- **You never edit `parser.py` or `registry.py`.** Language identity goes in
+- **You never edit `parser/` or `registry.py`.** Language identity goes in
   `ingestion/languages/specs/<lang>.py` and is slotted into `ALL_SPECS`; parser
   configuration goes in `ingestion/language_configs.py`. The one unavoidable
   core edit is adding your tag to the `LanguageTag` Literal in

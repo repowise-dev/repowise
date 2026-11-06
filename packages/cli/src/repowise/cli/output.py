@@ -22,8 +22,10 @@ consumers (agents, pipes, CI):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+from collections.abc import Iterator
 from typing import IO, Any
 
 import click
@@ -72,6 +74,28 @@ def resolve_console_width(stream: IO[str]) -> int | None:
         # handle) is not a terminal for our purposes.
         pass
     return NON_TTY_WIDTH
+
+
+#: Width of a pipeline command's progress lines when no person is watching.
+#: Its lines are prose, not tables, so the table headroom above only pads
+#: rules and panels; ~100 columns reads in any log viewer.
+LINE_OUTPUT_WIDTH = 100
+
+
+@contextlib.contextmanager
+def line_output_width(console: Any, stream: IO[str]) -> Iterator[None]:
+    """Hold *console* at :data:`LINE_OUTPUT_WIDTH` while *stream* is not a terminal.
+
+    Rich keeps the width a console was built with in ``_width``; restoring that
+    rather than the measured width keeps a terminal console measuring itself.
+    """
+    previous = console._width
+    if resolve_console_width(stream) is not None:
+        console.width = LINE_OUTPUT_WIDTH
+    try:
+        yield
+    finally:
+        console._width = previous
 
 
 def _silence_when_machine_readable(ctx: Any, param: Any, value: str) -> str:
@@ -213,11 +237,13 @@ def emit_json(payload: Any) -> None:
 
 
 __all__ = [
+    "LINE_OUTPUT_WIDTH",
     "NON_TTY_WIDTH",
     "emit_json",
     "format_option",
     "full_option",
     "json_option",
+    "line_output_width",
     "notice_console",
     "resolve_console_width",
     "resolve_format",

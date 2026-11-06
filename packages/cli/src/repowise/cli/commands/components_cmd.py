@@ -91,7 +91,7 @@ def components_check(repo: str | None, fmt: str) -> None:
 
 async def _list(root: Path) -> dict[str, Any]:
     from repowise.core.components import read_catalog, resolve_components
-    from repowise.core.components.resolve import derive_from_directories
+    from repowise.core.components.resolve import derive_from_directories, repo_wide_when_flat
     from repowise.core.components.store import load_repo_components, workspace_services
 
     async with repo_index_session(root) as opened:
@@ -103,7 +103,8 @@ async def _list(root: Path) -> dict[str, Any]:
             return {"indexed": True, "catalog": found.catalog, "resolved": found.resolved}
     files = _tracked(root)
     catalog = read_catalog(root)
-    resolved = resolve_components(catalog.components, derive_from_directories(files), files)
+    derived = repo_wide_when_flat(derive_from_directories(files), files, root.resolve().name)
+    resolved = resolve_components(catalog.components, derived, files)
     return {"indexed": False, "catalog": catalog, "resolved": resolved}
 
 
@@ -159,7 +160,10 @@ def components_list(repo: str | None, fmt: str) -> None:
     if resolved.unassigned:
         console.print(f"[dim]{len(resolved.unassigned)} file(s) belong to no component.[/dim]")
     if not data["indexed"]:
-        console.print("[dim]No index found: derived components are top-level directories.[/dim]")
+        console.print(
+            "[dim]No index found: derived components are top-level directories, "
+            "or the whole repo when it is flat.[/dim]"
+        )
     if data["catalog"].errors:
         console.print("[yellow]The catalog has errors; run `repowise components check`.[/yellow]")
 

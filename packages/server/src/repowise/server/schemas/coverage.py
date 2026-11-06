@@ -71,13 +71,17 @@ class CoverageHistoryPoint(_Strict):
 
 
 class CoverageResponse(BaseModel):
-    """``GET /health/coverage``. ``basis`` is absent when the graph was not consulted."""
+    """``GET /health/coverage``. ``basis`` is absent when the graph was not consulted.
+
+    ``unavailable`` means the graph walk failed, which is not the same as ``none``
+    (no test files to walk from).
+    """
 
     summary: CoverageSummary
     files: list[dict[str, Any]]
     modules: list[dict[str, Any]]
     modules_total: int
-    basis: Literal["measured", "inferred", "none"] | None = None
+    basis: Literal["measured", "inferred", "none", "unavailable"] | None = None
     inferred: dict[str, Any] | None = None
     #: Retained reports, oldest first, partial ones left out. Measured basis only.
     history: list[CoverageHistoryPoint] | None = None

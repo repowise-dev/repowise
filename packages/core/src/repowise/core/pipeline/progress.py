@@ -35,6 +35,37 @@ def emit_stage(progress: Any, stage: str) -> None:
         fn(stage)
 
 
+def emit_item(progress: Any, phase: str, label: str) -> None:
+    """Name the item ``phase`` just finished (a file path, a page), for a display.
+
+    Optional like :func:`emit_stage`: headless callbacks never grew
+    ``on_item_label``. Never raises.
+    """
+    if progress is None:
+        return
+    fn = getattr(progress, "on_item_label", None)
+    if fn is None:
+        return
+    try:
+        fn(phase, label)
+    except Exception:  # a display callback must never break the pipeline
+        logger.debug("progress_item_emit_failed", phase=phase, exc_info=True)
+
+
+def emit_phase_failed(progress: Any, phase: str) -> None:
+    """Close ``phase`` on screen without marking it done; its warning says why.
+
+    Optional like :func:`emit_stage`. Never raises.
+    """
+    fn = getattr(progress, "on_phase_failed", None)
+    if fn is None:
+        return
+    try:
+        fn(phase)
+    except Exception:  # a display callback must never break the pipeline
+        logger.debug("progress_phase_failed_emit_failed", phase=phase, exc_info=True)
+
+
 def emit_warning(progress: Any, text: str) -> None:
     """Report a degradation on the one channel a default run actually shows.
 

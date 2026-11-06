@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from repowise.core.attribution import file_share
 from repowise.core.co_change import parse_partners
+from repowise.server.schemas._datetime import UTCDateTime
+from repowise.server.schemas.history import HealthDeltaSummaryResponse
+from repowise.server.schemas.pagination import Paginated
 from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
@@ -18,8 +20,8 @@ class GitMetadataResponse(BaseModel):
     commit_count_total: int
     commit_count_90d: int
     commit_count_30d: int
-    first_commit_at: datetime | None
-    last_commit_at: datetime | None
+    first_commit_at: UTCDateTime | None
+    last_commit_at: UTCDateTime | None
     primary_owner_name: str | None
     primary_owner_email: str | None
     primary_owner_commit_pct: float | None
@@ -53,7 +55,7 @@ class GitMetadataResponse(BaseModel):
     # the same at two weeks and two years. Empty/None on a pre-rollup index.
     fix_symbol_counts: dict = {}
     bug_magnet: bool = False
-    last_fix_at: datetime | None = None
+    last_fix_at: UTCDateTime | None = None
     temporal_hotspot_score: float | None = None
     commit_count_capped: bool = False
     # Rename lineage: the file's path before its most recent move, if any.
@@ -163,7 +165,7 @@ class HotspotResponse(BaseModel):
     merge_commit_count_90d: int = 0
     commit_count_capped: bool = False
     age_days: int = 0
-    last_commit_at: datetime | None = None
+    last_commit_at: UTCDateTime | None = None
     # Change-complexity + defect-history signals.
     change_entropy: float = 0.0
     change_entropy_pct: float = 0.0
@@ -172,8 +174,28 @@ class HotspotResponse(BaseModel):
     # age describes "fixed 4x last month" and "fixed 4x two years ago"
     # identically. Consumers drop the flag when the timestamp is missing.
     bug_magnet: bool = False
-    last_fix_at: datetime | None = None
+    last_fix_at: UTCDateTime | None = None
     original_path: str | None = None
+    #: Changing faster over the last 30 days than over the last 90, on a file
+    #: older than that window (see ``services.hotspots.is_accelerating``).
+    accelerating: bool = False
+    #: Place by hotspot score within the listed scope; set by the hotspot list only.
+    rank: int | None = None
+
+
+class HotspotFacets(BaseModel):
+    """Counts over every hotspot the search matches, whatever the filter."""
+
+    total: int
+    bus_factor_1: int
+    accelerating: int
+    bug_magnet: int
+    #: Hotspots with any recorded fix, so a client knows fix data exists past its page.
+    with_fixes: int = 0
+
+
+class HotspotPage(Paginated[HotspotResponse]):
+    facets: HotspotFacets
 
 
 class OwnershipEntry(BaseModel):
@@ -206,7 +228,7 @@ class CommitResponse(BaseModel):
     short_sha: str
     author_name: str
     author_email: str
-    committed_at: datetime | None
+    committed_at: UTCDateTime | None
     subject: str
     lines_added: int
     lines_deleted: int
@@ -245,6 +267,11 @@ class CommitResponse(BaseModel):
     agent_autonomy_tier: int | None = None
     agent_confidence: str | None = None
     attribution: str | None = None
+    #: What the commit did to health, the row's lead. ``None`` when it was
+    #: never scanned, which is not the same claim as "changed nothing".
+    health_delta: HealthDeltaSummaryResponse | None = None
+    #: Hotspot files (as flagged now) the commit touched.
+    touches_hotspot: int = 0
 
 
 class RiskDriverResponse(BaseModel):
@@ -254,6 +281,13 @@ class RiskDriverResponse(BaseModel):
     value: float | None
     contribution: float
     label: str
+
+
+class MovedFromResponse(BaseModel):
+    """Where a finding's code was before the commit moved it."""
+
+    path: str
+    symbol: str | None = None
 
 
 class CommitHealthFindingResponse(BaseModel):
@@ -274,6 +308,8 @@ class CommitHealthFindingResponse(BaseModel):
     #: merely touched.
     attribution_basis: str
     reason: str
+    #: Set when the commit moved this finding's code here from another file.
+    moved_from: MovedFromResponse | None = None
 
 
 class CommitHealthResponse(BaseModel):
@@ -287,9 +323,16 @@ class CommitHealthResponse(BaseModel):
     #: ``available`` when every changed file was compared, ``partial`` when
     #: some were skipped (unsupported language, binary, unreadable).
     status: str
+    #: An older analyzer wrote it: the direction holds, the counts do not
+    #: compare with current rows.
+    stale: bool = False
     introduced_count: int
     worsened_count: int
     resolved_count: int
+    #: Findings whose metric dropped, at the same place or after a move.
+    improved_count: int = 0
+    #: Findings carried to another file with their code; a worsened or improved one is in that count too.
+    moved_count: int = 0
     files_analyzed: int
     files_skipped: int
     #: Worst first, capped. ``introduced_count + worsened_count`` is the true

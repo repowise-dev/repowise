@@ -37,9 +37,9 @@ class _SpyEmbedder:
     def dimensions(self) -> int:
         return self._inner.dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         self.batches.append(list(texts))
-        return await self._inner.embed(texts)
+        return await self._inner.embed(texts, kind=kind)
 
 
 @pytest.fixture

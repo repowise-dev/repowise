@@ -158,12 +158,18 @@ class _ScopedSnapshot:
 
     taken_at: Any
     average_health: float
-    per_file_scores_json: str
+    #: The stored row, so the per-file map is read only by a caller that asks
+    #: for it: a route that deferred the maps loads just the rows it reads.
+    source: Any = field(default=None, repr=False)
     hotspot_health: float | None = None
     worst_performer_path: str | None = None
     worst_performer_score: float | None = None
     structure_average: float | None = None
     history_average: float | None = None
+
+    @property
+    def per_file_scores_json(self) -> str:
+        return self.source.per_file_scores_json
 
 
 def project_scope(history: list[Any], scope: str) -> list[Any]:
@@ -187,7 +193,7 @@ def project_scope(history: list[Any], scope: str) -> list[Any]:
             _ScopedSnapshot(
                 taken_at=snap.taken_at,
                 average_health=float(value),
-                per_file_scores_json=snap.per_file_scores_json,
+                source=snap,
             )
         )
     return out
@@ -418,14 +424,19 @@ def _point(snap: Any, attr: str) -> float | None:
 
 
 def recent_kpis(
-    history: list[Any], limit: int = 10, *, doc_drift: bool = False
+    history: list[Any],
+    limit: int = 10,
+    *,
+    doc_drift: bool = False,
+    analyzer_version: bool = False,
 ) -> list[dict[str, Any]]:
     """Serialize the most-recent *limit* snapshots for CLI / API consumers.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
-    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count``;
-    off by default so agent-facing trend rows stay as they were.
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count`` and
+    *analyzer_version* the row's ``analyzer_version``; both off by default so
+    agent-facing trend rows stay as they were.
     """
     if not history:
         return []
@@ -454,6 +465,8 @@ def recent_kpis(
         )
         if doc_drift:
             rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
+        if analyzer_version:
+            rows[-1]["analyzer_version"] = getattr(snap, "analyzer_version", None)
     return rows
 
 

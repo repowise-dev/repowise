@@ -41,33 +41,30 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
 
 
-def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
-    """Honest performance headline: risk count + density + coverage + scope.
+def _render_performance_section(report: Any, coverage: Any, causes: Any | None) -> None:
+    """Honest performance headline: the open causes + coverage + scope.
 
-    Leads with the open-risk count and how much of the analyzed code a perf
+    Leads with the causes worth fixing now (``crud.performance_headline``, as
+    every surface counts them) and how much of the analyzed code a perf
     detector actually ran on, so a mostly-unsupported-language repo reads a low
     coverage % rather than a meaningless bounded 10/10. Silent when no code file
     carries a supported language (nothing to say).
     """
-    from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-
-    coverage = coverage_for_metrics(report.metrics, lang_by_path)
     if not coverage.analyzed_files:
         return
-    perf_findings = sum(
-        1 for f in report.findings if getattr(f, "dimension", "defect") == "performance"
-    )
     perf_avg = report.kpis.get("performance_average")
 
-    parts = [f"[bold]{perf_findings}[/bold] risk{'s' if perf_findings != 1 else ''}"]
-    if coverage.covered_nloc > 0:
-        density = round(10000.0 * perf_findings / coverage.covered_nloc, 2)
-        parts.append(f"{density}/10K covered LOC")
+    parts = []
+    if causes is not None:
+        parts.append(
+            f"[bold]{causes.now:,}[/bold] cause{'s' if causes.now != 1 else ''} worth "
+            f"fixing now · {causes.production:,} open in production code · {causes.all:,} overall"
+        )
+        if causes.per_10k_loc is not None:
+            parts.append(f"{causes.per_10k_loc}/10K covered LOC")
     if isinstance(perf_avg, (int, float)):
         parts.append(f"avg score {perf_avg:.1f}/10")
     console.print(
-        # "risk" sits on the count, where more is worse, not on a heading over
-        # a score where more is better.
         "\n[bold]Performance[/bold] "
         "[dim](static, high-precision/low-recall)[/dim]: " + " · ".join(parts)
     )
@@ -95,7 +92,7 @@ def _render_split_line(kpis: dict) -> None:
         return
     console.print(
         f"[dim]Of that deduction, [/dim]{structure:.2f}[dim] is code shape and [/dim]"
-        f"{history:.2f}[dim] is history — history answers to time, not to editing.[/dim]"
+        f"{history:.2f}[dim] is history. History answers to time, not to editing.[/dim]"
     )
 
 
@@ -135,7 +132,7 @@ def _render_badge(average_health: object, share: float | None = None) -> None:
     )
 
     if not isinstance(average_health, (int, float)):
-        console.print("[yellow]No health score yet — run `repowise init` first.[/yellow]")
+        console.print("[yellow]No health score yet. Run `repowise init` first.[/yellow]")
         return
     band = headline_band(float(average_health), share)
     # Neutral, not green, when too little of the repo was analysed for a band.

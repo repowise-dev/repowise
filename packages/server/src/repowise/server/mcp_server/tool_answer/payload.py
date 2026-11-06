@@ -11,7 +11,9 @@ shaped on the wire.
 
 from __future__ import annotations
 
+import re
 import time
+from pathlib import Path
 
 from repowise.server.mcp_server._answer_context import (
     is_mechanism_question as _is_mechanism_question,
@@ -24,6 +26,7 @@ from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server.tool_answer.confidence import (
+    _ASSIGN_RE,
     _Grade,
     _is_enclosing_continuation,
     body_leaves_out,
@@ -33,6 +36,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _GATED_RETURN_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _LEAN_HIGH_DROP_KEYS,
+    _MATCHED_SYMBOL_SOURCE_LINES,
     _UNION_MECHANISM_DEFER_ENV,
     _flag_on,
     _lean_high,
@@ -60,6 +64,7 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_hits as _serialize_hits,
 )
 from repowise.server.mcp_server.tool_answer.symbols import (
+    _read_repo_text,
     build_homonym_union_bodies,
     union_defers_to_synthesis,
 )
@@ -359,8 +364,124 @@ async def build_abstain_payload(
     return gated
 
 
+# Words that may precede a declared name: ``export const X =``, ``pub static X: T =``.
+_DECLARE_PREFIX = (
+    r"^\s*(?:(?:export|default|const|let|var|static|pub|final|public|private|protected"
+    r"|readonly|declare)\s+)*"
+)
+_COMMENTS = ("#", "//", "/*", "*")
+_STRING_RE = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`""")
+_TRAILING_COMMENT_RE = re.compile(r"\s(?://|#).*$")
+# A line ending in one of these continues the statement on the next line.
+_CONTINUES = ("=", "\\", "+", "-", "*", "/", ",", "(", "[", "{", "&&", "||", "?", ".")
+# A line opening with one of these continues the statement above it.
+_LEADS = ("?", ":", "+", "-", "*", "/", "&&", "||", "|", ".", "=", "<", ">", "%")
+
+
+def _next_line_continues(lines: list[str], i: int) -> bool:
+    """Whether the next non-blank line after *i* opens with an operator."""
+    for line in lines[i + 1 :]:
+        if line.strip():
+            return line.lstrip().startswith(_LEADS) and not line.lstrip().startswith(_COMMENTS)
+    return False
+
+
+def _assignment(text: str, name: str, line: int) -> tuple[int, str] | None:
+    """The statement at 1-based *line* of *text*, when it declares *name* with ``=``.
+
+    The name must open the statement, after declaration words and before at
+    most a type (``X: int =``, Go's ``X Kind =``), so a keyword argument or a
+    destructured default does not count. None when the line is not that.
+    """
+    lines = text.splitlines()
+    if not 0 < line <= len(lines) or lines[line - 1].lstrip().startswith(_COMMENTS):
+        return None
+    target = re.compile(
+        _DECLARE_PREFIX + re.escape(name) + r"(?:\s*:[^=]*|\s+[\w.*\[\]]+)?\s*$"
+    )
+    m = _ASSIGN_RE.search(lines[line - 1])
+    if not m or not target.search(lines[line - 1][: m.start()]):
+        return None
+    return _statement(lines, line - 1)
+
+
+def _code_of(line: str) -> str:
+    """*line* without its string literals and trailing comment."""
+    return _TRAILING_COMMENT_RE.sub("", _STRING_RE.sub('""', line)).rstrip()
+
+
+def _statement(lines: list[str], start: int) -> tuple[int, str] | None:
+    """The lines from *start* through the one that ends the statement.
+
+    It ends where its brackets close and the line does not continue. None
+    past :data:`_MATCHED_SYMBOL_SOURCE_LINES` lines, or in an open triple
+    quote, so a value that is not shown whole never grades high.
+    """
+    depth = 0
+    for i in range(start, min(start + _MATCHED_SYMBOL_SOURCE_LINES, len(lines))):
+        code = _code_of(lines[i])
+        depth += sum(map(code.count, "([{")) - sum(map(code.count, ")]}"))
+        if depth <= 0 and not code.endswith(_CONTINUES) and not _next_line_continues(lines, i):
+            source = "\n".join(lines[start : i + 1])
+            if source.count('"""') % 2 or source.count("'''") % 2:
+                return None
+            return start + 1, source
+    return None
+
+
+def _every_definition(
+    extraction: dict, split_at: dict[str, int], repo_root: Path | None
+) -> tuple[str, list[str]] | None:
+    """The answer and citations giving each file's assignment of a name several files define.
+
+    *split_at* holds each defining file's indexed line. None when one of them
+    is not read there as a whole assignment.
+    """
+    name = extraction["name"]
+    heads = [extraction["answer"]]
+    bodies = [extraction["value_source"]] if extraction.get("value_source") else []
+    others = sorted(p for p in split_at if p != extraction["file"])
+    for path in others:
+        text = _read_repo_text(repo_root, path)
+        found = _assignment(text, name, split_at[path]) if text else None
+        if found is None:
+            return None
+        line, source = found
+        first, _, rest = source.partition("\n")
+        heads.append(f"{first.strip()}  ({path}:{line})")
+        if rest:
+            bodies.append(source)
+    listing = "\n".join(f"- {head}" for head in heads)
+    answer = "\n\n".join([f"{name} is defined in {len(heads)} files:\n{listing}", *bodies])
+    return answer, [extraction["file"], *others]
+
+
+def _value_answer(
+    extraction: dict, split_at: dict[str, int], repo_root: Path | None
+) -> tuple[str, list[str], dict[str, list[str]]]:
+    """The answer, its citations, and the name's definitions it could not list."""
+    if any(p != extraction["file"] for p in split_at):
+        listed = _every_definition(extraction, split_at, repo_root)
+        if listed is not None:
+            return *listed, {}
+        untold = {extraction["name"]: sorted(split_at)}
+    else:
+        untold = {}
+    answer = extraction["answer"]
+    if extraction.get("value_source"):
+        answer += "\n\n" + extraction["value_source"]
+    return answer, [extraction["file"]], untold
+
+
 def build_value_payload(
-    *, extraction: dict, hits: list[dict], fallback_targets: list[str], repository, t0: float
+    *,
+    extraction: dict,
+    hits: list[dict],
+    fallback_targets: list[str],
+    repository,
+    t0: float,
+    split_at: dict[str, int] | None = None,
+    repo_root: Path | None = None,
 ) -> dict:
     """The value-extraction fast path reply.
 
@@ -370,16 +491,25 @@ def build_value_payload(
     question only spells out may not be the one meant. The coverage gate does
     not apply: an exact name is the match, and the words around it ("default",
     "value") are the question's frame, so it would only demote right answers.
+
+    *split_at* maps each production file defining the name to its indexed
+    line. When there are several, the answer lists each one's assignment; if
+    one cannot be read whole, the answer states one value of several and is
+    held at medium.
     """
     top_score_fp = hits[0].get("score", 0.0) if hits else 0.0
-    answer_text = extraction["answer"]
-    if extraction.get("value_source"):
-        answer_text += "\n\n" + extraction["value_source"]
-    exact = bool(extraction.get("exact_name"))
+    answer_text, citations, untold = _value_answer(extraction, split_at or {}, repo_root)
+    exact = bool(extraction.get("exact_name")) and not untold
     confidence = "high" if exact else "medium"
+    if untold:
+        verdict = _split_names_note(untold) + " "
+    elif exact:
+        verdict = "Cite directly; no verification Read needed. "
+    else:
+        verdict = "The question does not name it exactly; confirm it is the one meant. "
     return {
         "answer": answer_text,
-        "citations": [extraction["file"]],
+        "citations": citations,
         "confidence": confidence,
         "retrieval_quality": (
             "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
@@ -390,11 +520,7 @@ def build_value_payload(
         "note": (
             "Extracted verbatim from the live source line — no LLM "
             "synthesis involved. "
-            + (
-                "Cite directly; no verification Read needed. "
-                if exact
-                else "The question does not name it exactly; confirm it is the one meant. "
-            )
+            + verdict
             + "candidate_files holds the files retrieval ranked, "
             "for the wider question the value sits inside."
         ),
@@ -402,7 +528,7 @@ def build_value_payload(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint=_answer_hint(confidence),
             repository=repository,
-            targets=[extraction["file"], *fallback_targets],
+            targets=[*citations, *fallback_targets],
         ),
     }
 
@@ -473,13 +599,14 @@ async def build_synthesized_payload(
             _cr = _drop_already_surfaced(_cr, symbol_bodies, quotes)
             if _cr:
                 payload["code_rationale"] = _cr
-        if grade.high_reason == "symbol_body":
-            # High rests on the served body, not the ranking, so the caveat
+        rests_on_source = grade.high_reason in ("symbol_body", "value_line")
+        if rests_on_source:
+            # High rests on the served source, not the ranking, so the caveat
             # scopes doubt to the page choice rather than pointing at best_guesses.
             _caveat = (
                 "Retrieval was ambiguous (no single dominant page), so the "
                 "candidates listed are a ranking, not a finding — the confidence "
-                "above rests on the symbol body served in this payload, not on "
+                "above rests on the source served in this payload, not on "
                 "which page ranked first."
             )
         else:
@@ -490,7 +617,7 @@ async def build_synthesized_payload(
                 + (" or the code_rationale comments." if payload.get("code_rationale") else ".")
             )
         payload["note"] = (payload["note"] + " " + _caveat) if payload.get("note") else _caveat
-        if payload.get("best_guesses") and grade.high_reason != "symbol_body":
+        if payload.get("best_guesses") and not rests_on_source:
             payload.setdefault(
                 "next_action_hint",
                 f"Verify against {payload['best_guesses'][0]['file']} — it scored "
@@ -573,6 +700,14 @@ def _high_confidence_note(grade: _Grade, tail: str) -> str:
             "rather than on the ranking, which was ambiguous (top score "
             f"{grade.top_score:.2f}, runner-up {grade.second_score:.2f}). " + tail
         )
+    if grade.high_reason == "value_line":
+        return (
+            "High confidence: the answer states the value assigned on the "
+            "definition line of the constant you asked about, read live at its "
+            "verified line (see quotes), so it rests on source rather than on the "
+            f"ranking (top score {grade.top_score:.2f}, runner-up "
+            f"{grade.second_score:.2f}). " + tail
+        )
     if grade.high_reason == "grounding":
         return (
             "High confidence: every mechanism the answer names appears in the "
@@ -604,6 +739,101 @@ def _high_confidence_note(grade: _Grade, tail: str) -> str:
     return (
         "High confidence: top retrieval result clearly dominates "
         f"(dominance ratio {grade.ratio:.2f}x, top score {grade.top_score:.2f}). " + tail
+    )
+
+
+def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[str]) -> bool:
+    """Write the note for a name nothing defines, a name defined in several files
+    the answer does not tell apart, or a value nothing retrieved holds."""
+    if grade.absent_names:
+        payload["note"] = (
+            f"Nothing in the code searched defines or writes {', '.join(grade.absent_names)}, "
+            "so the answer describes other code. Check the name before acting on it."
+        )
+        return True
+    if not grade.ungrounded_values:
+        note = _held_at_medium_note(grade)
+        if note:
+            payload["note"] = note
+        return note is not None
+    payload["note"] = (
+        f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
+        "but none of these appear in any retrieved excerpt — the "
+        "value(s) may be synthesised. Read "
+        f"{fallback_targets[0] if fallback_targets else 'the cited file'} "
+        "to confirm before citing a number."
+    )
+    if fallback_targets:
+        payload["next_action_hint"] = (
+            f"Read {fallback_targets[0]} and verify the asserted value(s) "
+            f"{grade.ungrounded_values} against the live source."
+        )
+    return True
+
+
+def _held_at_medium_note(grade: _Grade) -> str | None:
+    """The note for an answer the cut-off, split-name or clause gate, or weak agreement, held at medium.
+
+    Each only holds high at medium; on any other grade they say nothing.
+    """
+    if grade.confidence != "medium":
+        return None
+    if grade.cut_off:
+        return (
+            "Held at medium: the answer text was cut off before it finished, so "
+            "part of it is missing. Ask again, or read the cited files for the rest."
+        )
+    if grade.split_names:
+        return _split_names_note(grade.split_names)
+    if grade.clauses_unanswered:
+        asked = "; ".join(f'"{c}"' for c in grade.clauses_unanswered)
+        return f"Held at medium: the answer cites no file retrieved for {asked}. Ask that part on its own."
+    if grade.weak_agreement:
+        return (
+            "Held at medium: both retrievers rank the top page first, but its score "
+            f"({grade.top_score:.2f}) is too weak for agreement alone to vouch for the "
+            "answer. Confirm the behaviour it describes against that file."
+        )
+    if grade.unhydrated_names:
+        names = ", ".join(grade.unhydrated_names)
+        return (
+            f"Held at medium: the question names {names}, but no top source carries "
+            "that symbol, so the answer may rest on nearby code. Look the name up "
+            "with search_codebase before citing the answer."
+        )
+    return None
+
+
+def _closing_note(grade: _Grade, symbol_bodies: list[dict]) -> str | None:
+    """The note when no gate wrote one: the high-confidence note, or why a
+    dominant answer under the score floor stayed at medium."""
+    if grade.confidence == "medium" and grade.under_floor:
+        return (
+            f"Held at medium: the top page leads, but its score ({grade.top_score:.2f}) "
+            "is too weak to vouch for the answer unverified. Confirm it against that file."
+        )
+    if grade.confidence != "high":
+        return None
+    # "No hedging" is not cited as evidence: the prompt forbids hedging, so
+    # reading its absence back as a signal would be circular.
+    tail = (
+        "Cite this answer; do not re-read the source unless a specific "
+        "detail is missing."
+        if not any(b.get("truncated") for b in symbol_bodies)
+        # Never say "skip re-reading" when the payload admits it withheld
+        # part of a cited body.
+        else "Some cited bodies were truncated; see "
+        "symbol_bodies[].withheld_symbols for what was not served."
+    )
+    return _high_confidence_note(grade, tail)
+
+
+def _split_names_note(split_names: dict[str, list[str]]) -> str:
+    """Name each definition of a question name the answer did not tell apart."""
+    parts = [f"{name} is defined in {', '.join(paths)}" for name, paths in sorted(split_names.items())]
+    return (
+        "Held at medium: " + "; ".join(parts) + ". The answer does not say which "
+        "definition it describes; check it is the one you need."
     )
 
 
@@ -652,19 +882,14 @@ async def _graded_payload(
     if grade.high_reason == "symbol_body":
         # Also what stops `_apply_lean_high` stripping the body the note cites.
         payload["grounding"] = "symbol_body"
-    if grade.ungrounded_values:
+    if _noted_unfounded_claim(payload, grade, fallback_targets):
+        pass
+    elif grade.admitted_gap:
         payload["note"] = (
-            f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
-            "but none of these appear in any retrieved excerpt — the "
-            "value(s) may be synthesised. Read "
-            f"{fallback_targets[0] if fallback_targets else 'the cited file'} "
-            "to confirm before citing a number."
+            "Held at medium: the answer says part of the question is outside the "
+            f'retrieved evidence ("{grade.admitted_gap[:200]}"). Confirm that part '
+            f"against {fallback_targets[0] if fallback_targets else 'the source'}."
         )
-        if fallback_targets:
-            payload["next_action_hint"] = (
-                f"Read {fallback_targets[0]} and verify the asserted value(s) "
-                f"{grade.ungrounded_values} against the live source."
-            )
     elif grade.frame_unsupported:
         # The real mechanism likely lives in uncaptured code; mine source
         # comments so the downgrade ships a lead, not just a warning.
@@ -720,25 +945,20 @@ async def _graded_payload(
         payload["next_action_hint"] = (
             f"call get_symbol id='{cut['continuation']}' for the rest of {cut['name']}"
         )
+    elif grade.lead_off_top:
+        payload["note"] = (
+            f"The answer names {grade.lead_off_top} first and not the top retrieval hit "
+            "the confidence was measured on. Held at medium; confirm against that file."
+        )
+        payload["next_action_hint"] = f"Read {grade.lead_off_top} to confirm the answer."
     elif grade.uncovered:
         payload["note"] = (
             f"Coverage gate: the top source does not mention {', '.join(grade.uncovered[:4])}, "
             "so it may answer a different question. Held at medium; confirm against "
             "the next evidence row or candidate_files."
         )
-    elif confidence == "high":
-        # "No hedging" is not cited as evidence: the prompt forbids hedging, so
-        # reading its absence back as a signal would be circular.
-        _tail = (
-            "Cite this answer; do not re-read the source unless a specific "
-            "detail is missing."
-            if not any(b.get("truncated") for b in symbol_bodies)
-            # Never say "skip re-reading" when the payload admits it withheld
-            # part of a cited body.
-            else "Some cited bodies were truncated; see "
-                 "symbol_bodies[].withheld_symbols for what was not served."
-        )
-        payload["note"] = _high_confidence_note(grade, _tail)
+    elif note := _closing_note(grade, symbol_bodies):
+        payload["note"] = note
 
     # A concept-anchored hit's comment is the literal rationale for a "why is
     # X = <number>" question; surface it unless a gate already did.

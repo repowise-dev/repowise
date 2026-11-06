@@ -86,6 +86,34 @@ jobs:
           path: dist/
 
   # ---------------------------------------------------------------------------
+  # Export the server's OpenAPI document, labelled stable or internal per route
+  # ---------------------------------------------------------------------------
+  build-openapi:
+    name: Export OpenAPI document
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Export openapi.json
+        run: uv run python scripts/export_openapi.py --out openapi.json
+
+      - name: Upload OpenAPI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: openapi.json
+
+  # ---------------------------------------------------------------------------
   # Create GitHub release with web UI tarball
   # ---------------------------------------------------------------------------
   release:
@@ -113,6 +141,27 @@ jobs:
             artifacts/repowise-web.tar.gz
             dist/*
           generate_release_notes: true
+
+  # ---------------------------------------------------------------------------
+  # Attach openapi.json after the release exists, so a failed export never
+  # holds back the web tarball that `repowise serve` downloads
+  # ---------------------------------------------------------------------------
+  attach-openapi:
+    name: Attach OpenAPI document
+    needs: [release, build-openapi]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download OpenAPI document
+        uses: actions/download-artifact@v4
+        with:
+          name: openapi
+          path: ./openapi/
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: openapi/openapi.json
 
   # ---------------------------------------------------------------------------
   # Publish to PyPI

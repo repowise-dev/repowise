@@ -45,6 +45,7 @@ _HANDLER_FOR_VERB = {"GET": "loader", "*": "action"}
 class RemixDialect:
     name = "remix"
     extensions = JS_TS
+    requires = ("@remix-run/", "react-router")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         # The path gate is the convention test: `remix_route_path` returns None

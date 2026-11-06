@@ -20,7 +20,7 @@ at each site:
   replaces. :func:`decode_source` normalises, so a map hit and a disk fallback
   produce the same string for the same file.
 
-The fallback is not optional. ``pipeline/incremental.py`` fills the map only
+The fallback is not optional. ``pipeline/incremental/graph.py`` fills the map only
 when its caller asks for sources, so it can be partial or absent entirely.
 """
 

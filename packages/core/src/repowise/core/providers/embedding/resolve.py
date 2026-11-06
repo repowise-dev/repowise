@@ -131,6 +131,45 @@ def resolve_embedder_name(
     return (name.lower(), source) if name and source else (DEFAULT_EMBEDDER, "default")
 
 
+def resolve_reindex_embedder(repo_path: Path | str | None) -> tuple[str, str]:
+    """``(name, source)`` that ``reindex --embedder auto`` writes with.
+
+    The repo's pin wins, except a ``mock`` pin: a keyless run persists that on
+    its way out, so it is no choice, and keeping it means reindex never adds
+    semantic search. A real embedder detectable now replaces it.
+    """
+    name, source = resolve_embedder_name(repo_path=repo_path)
+    if name != DEFAULT_EMBEDDER or source != "config.yaml":
+        return name, source
+    fresh = resolve_embedder_name(repo_path=repo_path, use_pin=False)
+    return fresh if fresh[0] != DEFAULT_EMBEDDER else (name, source)
+
+
+_SOURCE_REASONS: dict[str, str] = {
+    "flag": "--embedder",
+    "env:REPOWISE_EMBEDDER": "REPOWISE_EMBEDDER is set",
+    "config.yaml": "pinned in .repowise/config.yaml",
+    "global": "set in ~/.repowise/config.yaml",
+    "default": "no embedder key found",
+}
+
+
+def embedder_reason(
+    name: str,
+    source: str,
+    *,
+    repo_path: Path | str | None = None,
+    getenv: EnvLookup | None = None,
+) -> str:
+    """Why *name* was picked, in a few words: the flag, pin, or env key behind it."""
+    if source != "autodetect":
+        return _SOURCE_REASONS.get(source, source)
+    lookup = getenv or repo_getenv(repo_path)
+    env_vars = dict(_DETECT_SIGNALS).get(name, ())
+    var = next((v for v in env_vars if lookup(v)), None)
+    return f"{var} is set" if var else "detected"
+
+
 class KeyLookup(NamedTuple):
     """The resolved key, and the places consulted, for a degraded-run message."""
 
@@ -261,9 +300,11 @@ __all__ = [
     "KeyLookup",
     "detect_embedder",
     "embedder_kwargs",
+    "embedder_reason",
     "embedding_model_for",
     "global_config_embedder",
     "read_global_embedder_config",
     "resolve_embedder_key",
     "resolve_embedder_name",
+    "resolve_reindex_embedder",
 ]

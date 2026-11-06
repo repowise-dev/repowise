@@ -159,6 +159,10 @@ class HealthTrendResponse(BaseModel):
     file_deltas: list[HealthFileDelta] = []
     #: The count behind the slice, so the UI can say "N of M".
     file_deltas_total: int = 0
+    #: How many of ``file_deltas_total`` fell and rose; half the slice is held
+    #: for each direction while it has rows to fill it.
+    file_deltas_worse: int = 0
+    file_deltas_improved: int = 0
     snapshot_count: int = 0
     #: Which half of the repository these figures describe.
     scope: str = "all"

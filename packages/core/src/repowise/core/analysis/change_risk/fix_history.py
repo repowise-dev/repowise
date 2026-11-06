@@ -66,6 +66,11 @@ def clear_fix_pressure_cache() -> None:
     _PRESSURE_CACHE.clear()
 
 
+def _pressure_key(repo_path: str, sha: str, depth: int) -> tuple[str, str, int]:
+    """The memo key: a ``Path`` and its ``str`` name one checkout, so they share an entry."""
+    return (str(repo_path), sha, depth)
+
+
 def _history_sha(repo_path: str, upto_ref: str) -> str:
     """*upto_ref*'s commit sha, or ``""`` when there is no history before it.
 
@@ -83,29 +88,18 @@ def _history_sha(repo_path: str, upto_ref: str) -> str:
     return sha
 
 
-def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
-    """Commit timestamps of every bug-fix touching each file, up to *upto_ref*."""
-    is_shallow = (
-        _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip() == "true"
-    )
+def _git_log(args: list[str], repo_path: str, stdin: str | None = None) -> str:
+    """``git log`` stdout; :class:`FixHistoryUnavailableError` when it fails or times out."""
     try:
         proc = subprocess.run(
-            [
-                "git",
-                "log",
-                f"-n{depth}",
-                "--no-merges",
-                "--format=%x1e%P%x1f%ct%x1f%s",
-                "--name-only",
-                "--end-of-options",
-                upto_ref,
-            ],
+            ["git", "log", *args],
             cwd=repo_path,
+            input=stdin,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdin=subprocess.DEVNULL,
+            stdin=None if stdin is not None else subprocess.DEVNULL,
             timeout=GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
@@ -114,25 +108,64 @@ def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
         raise FixHistoryUnavailableError(f"git log timed out after {GIT_TIMEOUT_SECONDS}s") from exc
     if proc.returncode != 0:
         raise FixHistoryUnavailableError((proc.stderr or "").strip() or "git log failed")
-    out = proc.stdout
+    return proc.stdout
 
-    history: dict[str, list[float]] = {}
+
+def _fix_commits(repo_path: str, upto_ref: str, depth: int) -> list[tuple[str, float]]:
+    """``(sha, commit time)`` of each counted bug-fix up to *upto_ref*, newest first."""
+    is_shallow = (
+        _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip() == "true"
+    )
+    out = _git_log(
+        [
+            f"-n{depth}",
+            "--no-merges",
+            "--format=%x1e%H%x1f%P%x1f%ct%x1f%s",
+            "--end-of-options",
+            upto_ref,
+        ],
+        repo_path,
+    )
+    fixes: list[tuple[str, float]] = []
     for block in out.split("\x1e"):
-        block = block.strip("\n")
-        if not block:
+        # A carriage return in a subject reads as a line break; the subject
+        # ends there, as it does for :class:`FixHistory`.
+        head = block.strip("\n").split("\n", 1)[0].split("\x1f", 3)
+        if len(head) != 4:
             continue
-        lines = block.split("\n")
-        head = lines[0].split("\x1f", 2)
-        if len(head) != 3:
-            continue
-        parents, timestamp_raw, subject = head
+        sha, parents, timestamp_raw, subject = head
         if is_shallow and not parents:
             continue
         try:
             timestamp = float(timestamp_raw)
         except ValueError:
             continue
-        if not is_fix_commit(subject):
+        if is_fix_commit(subject):
+            fixes.append((sha, timestamp))
+    return fixes
+
+
+def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
+    """Commit timestamps of every bug-fix touching each file, up to *upto_ref*.
+
+    Git names the files of the fix commits only: naming a commit's files costs
+    a tree diff, and most commits are not fixes.
+    """
+    fixes = _fix_commits(repo_path, upto_ref, depth)
+    if not fixes:
+        return {}
+    when = dict(fixes)
+    # --stdin: a large fix set would overrun the Windows command line.
+    out = _git_log(
+        ["--no-walk=unsorted", "--stdin", "--format=%x1e%H", "--name-only"],
+        repo_path,
+        stdin="".join(f"{sha}\n" for sha, _ in fixes),
+    )
+    history: dict[str, list[float]] = {}
+    for block in out.split("\x1e"):
+        lines = block.strip("\n").split("\n")
+        timestamp = when.get(lines[0].strip())
+        if timestamp is None:
             continue
         for path in lines[1:]:
             path = path.strip()
@@ -159,7 +192,7 @@ def fix_pressure(
     sha = _history_sha(repo_path, upto_ref)
     if not sha:
         return {}
-    key = (repo_path, sha, depth)
+    key = _pressure_key(repo_path, sha, depth)
     if key in _PRESSURE_CACHE:
         return _PRESSURE_CACHE[key]
 
@@ -297,7 +330,7 @@ def prime_fix_pressure(
     """
     primed = 0
     for sha in shas:
-        key = (repo_path, sha, depth)
+        key = _pressure_key(repo_path, sha, depth)
         pressure = _PRESSURE_CACHE.get(key)
         if pressure is None:
             pressure = history.pressure(sha, depth)
@@ -397,15 +430,15 @@ MIN_DENSITY_POPULATION = 8
 
 
 #: Manifest parsers whose files hold build logic as well as dependencies.
-_BUILD_ECOSYSTEMS = frozenset({"cmake", "bazel"})
+_BUILD_ECOSYSTEMS = frozenset({"cmake", "bazel", "gradle"})
 
 
 def is_dependency_file(path: str) -> bool:
     """A dependency manifest or lockfile: a fix that bumps a dependency edits it.
 
     Such a file did not break. Runner configs (``tox.ini``, ``tsconfig.json``)
-    and build files the cmake and bazel parsers read (``CMakeLists.txt``,
-    ``BUILD``) are not dependency files and keep their fix record.
+    and build files the cmake, bazel and gradle parsers read (``CMakeLists.txt``,
+    ``BUILD``, ``build.gradle``) are not dependency files and keep their fix record.
     """
     ecosystem = manifest_ecosystem(path)
     if ecosystem is not None:

@@ -17,6 +17,8 @@ from sqlalchemy import and_, case, func, not_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....analysis.finding_registry import (
+    COVERAGE_BASIS_KEY,
+    ESTIMATE_HELD_TYPES,
     HELD_ORIGINS,
     GateLayer,
     excluded_types,
@@ -41,7 +43,12 @@ _HELD_MODELS: dict[str, tuple[Any, ...]] = {
 
 
 def _file_holds(
-    layer: GateLayer, path_col: Any, kind_col: Any, *, hold_history: bool = True
+    layer: GateLayer,
+    path_col: Any,
+    kind_col: Any,
+    *,
+    hold_history: bool = True,
+    requested: Iterable[str] = (),
 ) -> list[tuple[str, Any]]:
     """``(FILE_HOLDS key, row matches it)`` for health findings and plans, read
     from the file's stored metric row; ahead of the language cells, as
@@ -72,7 +79,24 @@ def _file_holds(
             # ``file_hold``'s ``is_test is not True``: an unknown flag is not a test.
             not_test = HealthFileMetric.is_test.is_not(True)
             cells.append(("history", and_(history, on_file(not_test))))
+        held = sorted(ESTIMATE_HELD_TYPES - set(requested))
+        if held:
+            cells.append(("estimated", _estimated(kind_col, model.details_json, held)))
     return cells
+
+
+def _estimated(kind_col: Any, details_col: Any, kinds: list[str]) -> Any:
+    """Rows of *kinds* whose stored details say ``coverage_basis: estimated``
+    (``finding_registry.is_estimated``), as written with or without a space."""
+    return and_(
+        kind_col.in_(kinds),
+        or_(
+            *(
+                details_col.like(f'%"{COVERAGE_BASIS_KEY}":{gap}"estimated"%')
+                for gap in ("", " ")
+            )
+        ),
+    )
 
 
 def _cells(
@@ -82,10 +106,13 @@ def _cells(
     *,
     file_holds: bool = True,
     hold_history: bool = True,
+    requested: Iterable[str] = (),
 ) -> list[tuple[str, Any]]:
-    """``(key, row matches it)`` for each file hold, then each gate on *layer*."""
+    """``(key, row matches it)`` for each file and row hold, then each gate on *layer*."""
     cells = (
-        _file_holds(layer, path_col, kind_col, hold_history=hold_history) if file_holds else []
+        _file_holds(layer, path_col, kind_col, hold_history=hold_history, requested=requested)
+        if file_holds
+        else []
     )
     for gate in gates_on(layer):
         match = or_(*(path_col.ilike(f"%{ext}") for ext in gated_extensions(gate.language)))
@@ -103,15 +130,22 @@ def ungated(
     include_unverified: bool = False,
     file_holds: bool = True,
     hold_history: bool = True,
+    requested: Iterable[str] = (),
 ) -> Any:
-    """Rows of *layer* no language gate or file hold keeps back (everything when
-    opted in). ``file_holds=False`` applies the language gates alone;
-    ``hold_history=False`` keeps history markers on production files."""
+    """Rows of *layer* no language gate, file hold or row hold keeps back
+    (everything when opted in). ``file_holds=False`` applies the language gates
+    alone; ``hold_history=False`` keeps history markers on production files; a
+    type in *requested* is not row-held."""
     cells = (
         []
         if include_unverified
         else _cells(
-            layer, path_col, kind_col, file_holds=file_holds, hold_history=hold_history
+            layer,
+            path_col,
+            kind_col,
+            file_holds=file_holds,
+            hold_history=hold_history,
+            requested=requested,
         )
     )
     return not_(or_(*(match for _, match in cells))) if cells else true()
@@ -144,6 +178,7 @@ def shown(
             include_unverified=include_unverified,
             file_holds=file_holds,
             hold_history=hold_history,
+            requested=requested,
         ),
     )
 

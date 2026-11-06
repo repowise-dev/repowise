@@ -26,6 +26,7 @@ _PAGED_COLLECTIONS = frozenset(
         "test_findings",
         "modules",
         "churn_complexity",
+        "untested_complexity",
         "coverage.files",
         "doc_drift.findings",
         "refactoring_plans",

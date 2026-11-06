@@ -3,7 +3,7 @@
 Each rule either tests conditions over the change's evidence (components and
 their tags, provenance, reaching tests, contract breaks, decisions crossed,
 bus factor) or wraps an existing gate (``security``, ``coverage``,
-``doc_drift``), which runs as its own command with the options the rule gives.
+``doc_drift``, ``health``), which runs as its own command with the options the rule gives.
 Those commands are untouched: without a policy file they behave as they always
 have, and ``repowise check`` reports that there is nothing to evaluate.
 
@@ -39,6 +39,7 @@ _GATES: dict[str, tuple[tuple[str, ...], str, bool]] = {
     "security": (("security", "check"), "security_cmd:security_command", True),
     "coverage": (("coverage", "check"), "coverage_check_cmd:coverage_check", True),
     "doc_drift": (("doc-drift", "--check"), "doc_drift_cmd:doc_drift_command", False),
+    "health": (("health", "check"), "health_cmd:health_command", True),
 }
 #: A gate still running after this is reported as not evaluated.
 GATE_TIMEOUT_SECONDS = 1800
@@ -251,8 +252,8 @@ def _emit_nothing(fmt: str, sarif_file: Path | None, junit_file: Path | None) ->
     from repowise.core.policy import Policy
 
     notice = (
-        "No .repowise/policies.yaml: nothing to evaluate. The security, coverage "
-        "and doc-drift gates run on their own as before."
+        "No .repowise/policies.yaml: nothing to evaluate. The security, coverage, "
+        "doc-drift and health gates run on their own as before."
     )
     _emit(fmt, Policy(()), [], None, "", sarif_file, junit_file, notice=notice)
 

@@ -14,9 +14,14 @@ MCP budget helpers.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import re
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from repowise.core.precedent.currency import (
+    GIT_UNASKED,
+    recorded_on,
+)
 from repowise.core.precedent.currency import (
     episode_currency as currency,
 )
@@ -33,6 +38,7 @@ from repowise.core.precedent.store import (
     default_store_path,
 )
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._why_relevance import question_terms, word_set
 
 #: Declared because three of these are re-exports. ``currency`` /
 #: ``still_true`` / ``_free_currency`` moved to ``core.precedent.currency``
@@ -55,10 +61,13 @@ _log = logging.getLogger(__name__)
 #: reader who wants more has a whole tool for asking.
 _MAX_EVIDENCE_EPISODES = 3
 
-#: Ceiling on one quoted body. Git episode bodies measure ~818 chars on this
-#: repository and structural ones ~300, so this cuts the tail rather than the
-#: common case, and what it cuts stays recoverable through the omission store.
+#: How much of a body the relevance floor reads. Served bodies are banked whole.
 _MAX_EVIDENCE_BODY_CHARS = 400
+
+#: A body this short costs less than its recovery marker, so it is served inline.
+_INLINE_BODY_CHARS = 120
+
+_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 #: Ceiling on the listed scope. Measured worst case on this repository's
 #: shareable tiers is 23 paths / 1,522 chars, so this trims nothing in practice
@@ -181,21 +190,18 @@ def episode_evidence(
 
     entries: list[dict] = []
     pending: list[tuple[dict, str, str]] = []
+    focus = _scope_focus(paths, query)
     for rank, row in enumerate(rows):
-        body = row.get("body") or ""
-        entry: dict = {
-            "tier": row.get("tier"),
-            "kind": row.get("kind"),
-            "subject": row.get("subject"),
-            "recorded": body,
-            "evidence": row.get("evidence"),
-            "scope": _scope_field(row),
-        }
-        if len(body) > max_body_chars:
+        entry, body = _episode_head(row)
+        if body:
+            # Scored on this head; served as a marker unless shorter than one.
             entry["recorded"] = body[:max_body_chars].rstrip()
-            pending.append((entry, f"episode:{row.get('kind')}", body))
+            if len(body) > _INLINE_BODY_CHARS:
+                pending.append((entry, f"episode:{row.get('kind')}", body))
+        entry["scope"] = _scope_field(row, focus)
         verdict = currency(row, root=root).sentence if rank == 0 else _free_currency(row)
-        if verdict:
+        # A failed git call says nothing about the episode.
+        if verdict and not verdict.endswith(GIT_UNASKED):
             entry["still_true"] = verdict
         entries.append(entry)
     if full_population is not None:
@@ -229,23 +235,59 @@ def bank_overflow(
         if body not in markers:
             markers[body] = collector.add_inline(label, body)
         marker = markers[body]
-        entry["recorded"] = f"{entry['recorded']} {marker}" if marker else f"{entry['recorded']} …"
+        # The body is served on request only: the subject line says what it is.
+        entry["recorded"] = marker or f"{entry['recorded']} ..."
     return collector
 
 
-def _scope_field(row: dict) -> list[str] | str:
-    """The episode's scope, bounded.
+def _episode_head(row: dict) -> tuple[dict, str]:
+    """An episode's served head and the body left to bank.
+
+    A git episode's ``subject`` is its commit sha and its body the whole
+    message, so the head becomes the message's subject line, the commit and
+    the date, and the body loses that line.
+    """
+    entry: dict = {"tier": row.get("tier"), "kind": row.get("kind")}
+    subject = row.get("subject") or ""
+    body = row.get("body") or ""
+    if _SHA_RE.fullmatch(subject):
+        line, _, body = body.partition("\n")
+        entry["subject"] = line.strip()
+        # Full here for evidence resolution; served at 12 characters.
+        entry["commit"] = subject
+        if row.get("birth_at"):
+            entry["date"] = recorded_on(row["birth_at"])
+    else:
+        entry["subject"] = subject
+        entry["evidence"] = row.get("evidence")
+    return entry, body.strip()
+
+
+def _scope_focus(paths: Sequence[str] | None, query: str | None) -> Callable[[str], bool]:
+    """Whether a scope file bears on what was asked: a named path, else a question word."""
+    if paths:
+        prefixes = [p.rstrip("/") for p in paths]
+        return lambda n: any(n == p or n.startswith(p + "/") for p in prefixes)
+    terms = set(question_terms(query or "", prose=True))
+    return lambda n: bool(terms & word_set(n))
+
+
+def _scope_field(row: dict, focus: Callable[[str], bool]) -> dict | str:
+    """The episode's scope: how many files, and those that bear on the question.
 
     An empty node set is a claim about the checkout as a whole rather than an
-    unknown one. A long one is truthful but is free text in a response that has
-    a budget, so it is capped and says how many it stood for.
+    unknown one.
     """
     nodes = [n for n in (row.get("nodes") or []) if isinstance(n, str)]
     if not nodes:
         return "the checkout as a whole"
-    if len(nodes) <= _MAX_SCOPE_NODES:
-        return nodes
-    return [*nodes[:_MAX_SCOPE_NODES], f"… and {len(nodes) - _MAX_SCOPE_NODES} more"]
+    scope: dict = {"files": len(nodes)}
+    matching = [n for n in nodes if focus(n)][:_MAX_SCOPE_NODES]
+    if matching:
+        scope["matching"] = matching
+    return scope
+
+
 def episode_counts(root: Path, paths: Sequence[str]) -> dict[str, int]:
     """How many episodes each of *paths* carries. Never raises.
 

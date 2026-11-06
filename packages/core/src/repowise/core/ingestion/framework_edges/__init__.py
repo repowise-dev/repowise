@@ -23,9 +23,12 @@ from . import (
     alembic_runner,
     android_manifest,
     angular,
+    apex_rest,
     apple_metadata,
     aspnet,
+    aura,
     aws_lambda,
+    camel,
     django,
     dotnet_discovery,
     dotnet_roots,
@@ -39,6 +42,8 @@ from . import (
     hono,
     jakarta,
     laravel,
+    lwc,
+    mainframe,
     micronaut,
     next_app,
     pytest_edges,
@@ -46,11 +51,13 @@ from . import (
     rails,
     remix,
     rust,
+    salesforce_metadata,
     spring,
     test_path_strings,
     test_runner_setup,
     trpc,
     typo3,
+    visualforce,
     vscode_extension,
 )
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new, read_text
@@ -79,6 +86,8 @@ _HANDLERS: list[FrameworkHandler] = [
     *laravel.HANDLERS,
     *spring.HANDLERS,
     *jakarta.HANDLERS,
+    *camel.HANDLERS,
+    *apex_rest.HANDLERS,
     *quarkus.HANDLERS,
     *micronaut.HANDLERS,
     *android_manifest.HANDLERS,
@@ -86,6 +95,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *flutter.HANDLERS,
     *express.HANDLERS,
     *angular.HANDLERS,
+    *lwc.HANDLERS,
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,
@@ -99,6 +109,15 @@ _HANDLERS: list[FrameworkHandler] = [
     *rust.HANDLERS,
     *typo3.HANDLERS,
     *aws_lambda.HANDLERS,
+    # Salesforce Aura bundles: markup names its Apex controller, controller
+    # functions and child components; nothing is an import.
+    *aura.HANDLERS,
+    # Salesforce Visualforce: markup names its Apex controller and bound members.
+    *visualforce.HANDLERS,
+    # JCL steps to programs and PROCs, COBOL programs to BMS mapsets.
+    *mainframe.HANDLERS,
+    # Last, so an LWC or Aura handler's own edge to the same file wins.
+    *salesforce_metadata.HANDLERS,
 ]
 
 

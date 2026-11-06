@@ -30,6 +30,11 @@ from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 STALE_STATUSES = frozenset({"stale", "expired"})
 
 
+def is_stale_status(status: str | None) -> bool:
+    """Whether a page's ``freshness_status`` counts as stale."""
+    return status in STALE_STATUSES
+
+
 @dataclass(frozen=True)
 class PageRecord:
     """A minimal view of one persisted wiki page.
@@ -44,10 +49,14 @@ class PageRecord:
     target_path: str
     is_template: bool
     freshness_status: str = "fresh"
+    # A user hand-requested this page (UI "Generate doc"): it must be
+    # regenerated every run regardless of the selection heuristic (issue
+    # #812), so the doc keeps following the code.
+    pinned: bool = False
 
     @property
     def is_stale(self) -> bool:
-        return self.freshness_status in STALE_STATUSES
+        return is_stale_status(self.freshness_status)
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,9 @@ def resolve_page_selection(
         )
     if intent.stale:
         selected.update(r.page_id for r in records if r.is_stale)
+    # Pinned pages are regenerated unconditionally: the user asked for this
+    # doc once and it should keep following the code (issue #812).
+    selected.update(r.page_id for r in records if r.pinned)
     if intent.path_globs:
         selected.update(
             r.page_id for r in records if _matches_glob(r.target_path, intent.path_globs)

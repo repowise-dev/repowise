@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import weakref
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
@@ -23,9 +25,15 @@ from repowise.core.persistence.database import (
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
-from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
+from repowise.core.providers.embedding.base import (
+    KeylessEmbedder,
+    is_semantic_embedder,
+    warm_query_embedder,
+)
 from repowise.core.providers.embedding.caching import CachingEmbedder
-from repowise.server.mcp_server import _state
+from repowise.server import __version__
+from repowise.server.mcp_server import _code_drift, _state
+from repowise.server.mcp_server._checkout import close_own_index_contexts
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
     SERVER_FAULT,
@@ -34,6 +42,7 @@ from repowise.server.mcp_server._transport import (
     guard_stdout,
     log_outcome,
 )
+from repowise.server.mcp_server._why_pointer import decisions_line
 
 _log = __import__("logging").getLogger("repowise.mcp")
 
@@ -47,24 +56,43 @@ class StoreUnavailableError(RuntimeError):
     one to respawn, so an unwritable .repowise became a crash loop. Click-free
     because the server does not depend on the CLI; the mcp command turns it
     into a clean non-zero exit.
+
+    ``reason`` is a fixed slug for anonymous telemetry, never message text:
+    ``store_open_failed``, ``db_url_unreachable`` or
+    ``workspace_default_failed``.
     """
+
+    def __init__(self, message: str, *, reason: str = "store_open_failed") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+#: Store served for a directory with no ``.repowise/``: empty, so tools report
+#: "not indexed", and never written to disk.
+_NO_INDEX_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
 def _store_unavailable(
-    where: str | None, repo_path: str | None, exc: BaseException
+    where: str | None,
+    repo_path: str | None,
+    exc: BaseException,
+    *,
+    reason: str = "store_open_failed",
 ) -> StoreUnavailableError:
     """``where`` is the repo-local directory, or None when an env URL is in use;
     a configured database gets its own remedy, not the directory one."""
     if where is None:
         return StoreUnavailableError(
             f"repowise MCP: cannot open the configured database: {exc}. "
-            "Check REPOWISE_DB_URL and that the database server is reachable."
+            "Check REPOWISE_DB_URL and that the database server is reachable.",
+            reason="db_url_unreachable",
         )
     repo = repo_path or "the repository"
     return StoreUnavailableError(
         f"repowise MCP: cannot open the index store at {where}: {exc}. "
         f"Run 'repowise init' in {repo} to create it, or fix the permissions "
-        "on that directory."
+        "on that directory.",
+        reason=reason,
     )
 
 
@@ -198,6 +226,64 @@ def _query_embedder():
 _RELEASE_RECHECK_S = 6 * 3600
 
 
+def _share_lifespan(server: Any) -> None:
+    """Keep process-scoped MCP resources alive while any session is active.
+
+    Streamable HTTP enters the low-level server lifespan once per session,
+    while the state it publishes is process-wide. Share one underlying
+    lifespan per event loop so one session cannot tear down another's state.
+    """
+    original = server.lifespan
+    managers: weakref.WeakKeyDictionary[Any, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+    @asynccontextmanager
+    async def shared(app: Any):
+        loop = asyncio.get_running_loop()
+        manager = managers.get(loop)
+        if manager is None:
+            manager = {"lock": asyncio.Lock(), "active": 0, "context": None, "state": None}
+            managers[loop] = manager
+
+        async with manager["lock"]:
+            if manager["active"] == 0:
+                context = original(app)
+                try:
+                    state = await context.__aenter__()
+                except BaseException:
+                    manager["context"] = None
+                    manager["state"] = None
+                    raise
+                manager["context"] = context
+                manager["state"] = state
+            manager["active"] += 1
+            state = manager["state"]
+
+        error: BaseException | None = None
+        try:
+            yield state
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            async with manager["lock"]:
+                manager["active"] -= 1
+                if manager["active"] == 0:
+                    context = manager["context"]
+                    manager["context"] = None
+                    manager["state"] = None
+                    if context is not None:
+                        teardown_error = (
+                            None if isinstance(error, asyncio.CancelledError) else error
+                        )
+                        await context.__aexit__(
+                            type(teardown_error) if teardown_error is not None else None,
+                            teardown_error,
+                            teardown_error.__traceback__ if teardown_error is not None else None,
+                        )
+
+    server.lifespan = shared
+
+
 async def _poll_release_check() -> None:
     """Keep ``_state._release_check`` current for the life of the server.
 
@@ -218,6 +304,13 @@ async def _poll_release_check() -> None:
         except Exception:
             _log.debug("repowise MCP: release check failed", exc_info=True)
         await asyncio.sleep(_RELEASE_RECHECK_S)
+
+
+async def _watch_server_currency() -> None:
+    """Both lifespan watches on this server's own code: a newer release, and
+    the install changing under the running process."""
+    # return_exceptions: one watch failing must not leave the other uncancelled.
+    await asyncio.gather(_poll_release_check(), _code_drift.watch(), return_exceptions=True)
 
 
 async def _cancel_task(task: asyncio.Task) -> None:
@@ -332,16 +425,21 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         from pathlib import Path
 
         lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
+        has_index = lance_dir is not None and lance_dir.exists()
+        # Overlaps the import and open below; awaited before ready is set.
+        warmup = _asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
             await _asyncio.to_thread(__import__, "lancedb")
 
             from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            if lance_dir is not None and lance_dir.exists():
+            if has_index:
                 vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                 # Step 2: pre-connect so first search() is instant.
                 await vs._ensure_connected()
+                # Step 3: a warm embedder, so the first vector leg fits the grace.
+                await warmup
                 vector_store = vs
                 _state._vector_store_errors.pop("", None)
         except Exception as exc:
@@ -349,6 +447,8 @@ async def _load_vector_stores(repo_path: str | None) -> None:
             # is as broken as an unreadable one. No index is a keyless repo.
             if lance_dir is not None and lance_dir.exists():
                 _mark_vector_store_unreadable(exc)
+        finally:
+            warmup.cancel()  # a no-op once awaited; stops it on a failed open
 
         # decision_store is repointed to the shared page store — decisions are
         # now embedded under the "decision:" namespace within the same table.
@@ -420,6 +520,13 @@ def _detect_workspace(repo_path: str | None):
         return None, None, None
 
 
+def _warm_savings_pricing(repo_path: str | None) -> None:
+    """Price the first calls' savings: starts a daemon thread, never awaited."""
+    from repowise.core.savings.pricing import warm_pricing_snapshot
+
+    warm_pricing_snapshot(repo_path)
+
+
 @asynccontextmanager
 async def _lifespan(server: FastMCP):
     """Initialize DB engine, session factory, and FTS synchronously on startup.
@@ -434,7 +541,7 @@ async def _lifespan(server: FastMCP):
     # call can otherwise land mid-import and wedge the loop.
     _state._lancedb_ready = asyncio.Event()
     _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
-    _release_task = asyncio.create_task(_poll_release_check(), name="release-check")
+    _release_task = asyncio.create_task(_watch_server_currency(), name="server-currency")
 
     # --- Workspace detection ------------------------------------------------
     if _state._force_single_repo:
@@ -465,7 +572,9 @@ async def _lifespan(server: FastMCP):
             default_ctx = await registry.get_default()
         except (OSError, OperationalError) as exc:
             await _abort_startup(_release_task, _warm_task)
-            raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
+            raise _store_unavailable(
+                str(ws_root), str(ws_root), exc, reason="workspace_default_failed"
+            ) from exc
         except BaseException:
             await _abort_startup(_release_task, _warm_task)
             raise
@@ -482,26 +591,10 @@ async def _lifespan(server: FastMCP):
 
         # Load cross-repo enricher (Phase 3 + 4)
         try:
-            from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
-            from repowise.core.workspace.config import WORKSPACE_DATA_DIR
-            from repowise.core.workspace.conformance import CONFORMANCE_FILENAME
-            from repowise.core.workspace.contracts import CONTRACTS_FILENAME
-            from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
-            cross_repo_path = ws_root / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
-            contracts_path = ws_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
-            system_graph_path = ws_root / WORKSPACE_DATA_DIR / SYSTEM_GRAPH_FILENAME
-            breaking_changes_path = ws_root / WORKSPACE_DATA_DIR / BREAKING_CHANGES_FILENAME
-            conformance_path = ws_root / WORKSPACE_DATA_DIR / CONFORMANCE_FILENAME
-            enricher = CrossRepoEnricher(
-                cross_repo_path,
-                contracts_path=contracts_path,
-                system_graph_path=system_graph_path,
-                breaking_changes_path=breaking_changes_path,
-                conformance_path=conformance_path,
-            )
-            if enricher.has_data or enricher.has_system_graph:
+            enricher = CrossRepoEnricher.for_workspace(ws_root)
+            if enricher.has_data or enricher.has_contract_data or enricher.has_system_graph:
                 _state._cross_repo_enricher = enricher
                 _log.info(
                     "Cross-repo enricher loaded: %d co-change edges, %d package deps, %d contract links",
@@ -529,6 +622,7 @@ async def _lifespan(server: FastMCP):
 
         await close_test_impact_indexes()
         await registry.close()
+        await close_own_index_contexts()
         _state._registry = None
         _state._workspace_root = None
         return
@@ -538,30 +632,32 @@ async def _lifespan(server: FastMCP):
 
     # When repo path is set and no env override, prefer repo-local DB.
     store_location: str | None = None
+    db_url: str | None = None
+    _state._serving_no_index = False
     try:
         if _state._repo_path and configured_db_url is None:
             db_path = get_repo_db_path(_state._repo_path)
             repowise_dir = db_path.parent
             store_location = str(repowise_dir)
-            if not repowise_dir.is_dir():
-                # Creating the store directory here made whatever directory an
-                # MCP host spawned the server from look initialised: it left a
-                # stray .repowise/ behind, silenced the CLI's "run 'repowise
-                # init'" warning for every later start, and seeded an empty
-                # wiki.db. Fail the way an unopenable store does instead (#3163).
-                await _abort_startup(_release_task, _warm_task)
-                raise _store_unavailable(
-                    store_location,
-                    _state._repo_path,
-                    FileNotFoundError(f"no {repowise_dir.name} directory"),
+            if not repowise_dir.exists():
+                # An unindexed directory, often just wherever a globally
+                # installed plugin was launched. Exiting here made the host
+                # respawn the server in a loop and the agent never saw why.
+                # Serve an empty in-memory store instead, so every tool returns
+                # the "no index, run repowise init" notice, without leaving a
+                # stray .repowise/ on disk (#3163).
+                _log.warning(
+                    "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
                 )
-            if not db_path.exists():
+                db_url = _NO_INDEX_DB_URL
+                _state._serving_no_index = True
+            elif not db_path.exists():
                 _log.warning(
                     "No wiki.db in %s — run 'repowise init' to generate the wiki",
                     repowise_dir,
                 )
 
-        db_url = resolve_db_url(_state._repo_path)
+        db_url = db_url or resolve_db_url(_state._repo_path)
 
         _log.info("repowise MCP: initialising database…")
         engine = create_engine(db_url, short_lived=False)
@@ -603,6 +699,7 @@ async def _lifespan(server: FastMCP):
     # the server starts accepting connections without blocking on disk I/O.
     _state._vector_store_ready = asyncio.Event()
     _bg_task = asyncio.create_task(_load_vector_stores(_state._repo_path))
+    _warm_savings_pricing(_state._repo_path)
     _log.info("repowise MCP: ready (vector stores loading in background)")
 
     yield
@@ -613,6 +710,7 @@ async def _lifespan(server: FastMCP):
     _state._lancedb_ready = None
     _state._served_repo_id = None
 
+    await close_own_index_contexts()
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.
     await _state._vector_store.close()
@@ -621,6 +719,7 @@ async def _lifespan(server: FastMCP):
 # ---------------------------------------------------------------------------
 # Create the MCP server
 # ---------------------------------------------------------------------------
+
 
 class _RepowiseMCP(FastMCP):
     """FastMCP plus the HTTP bearer gate and per-call principal scope.
@@ -653,9 +752,10 @@ class _RepowiseMCP(FastMCP):
         if principal is None:
             return tools
         from repowise.server.auth import get_authorizer
+        from repowise.server.mcp_server._http_auth import tool_allowed
 
         authorizer = get_authorizer()
-        return [t for t in tools if authorizer.can_use_tool(principal, t.name)]
+        return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
         principal = self._request_principal()
@@ -676,36 +776,56 @@ class _RepowiseMCP(FastMCP):
             current_principal.reset(reset)
 
 
+# Hosts that defer tool schemas show the model only tool names and this
+# string, so it says when to call; tests pin the key lines and a length cap.
+_INSTRUCTIONS = (
+    "repowise indexes this repository's code graph, git history and "
+    "decisions. One call here often replaces several text searches and "
+    "file reads.\n"
+    "- Use search_codebase(query) to find an identifier or literal: `lines` "
+    "(path, line, kind, text) are read from live files; `complete: true` "
+    "means every match.\n"
+    '- Use get_context(targets=[symbol], include=["references"]) before a '
+    "rename: a `complete` list is the whole edit set. On a directory, "
+    'include=["files"] lists its files and tests.\n'
+    "- Use get_answer(question) for one how/where/why question per call.\n"
+    "- Use get_risk before editing a widely imported file, get_change_risk "
+    "before committing a multi-file change, get_why before changing an "
+    "established pattern. Skip them for one-line fixes.\n"
+    "- Targets with uncommitted edits are flagged: index facts for them "
+    "predate the edit.\n"
+    "No index: tell the user to run 'repowise init --yes --no-prose' (no "
+    "API key or model calls). Suggest it, do not run it yourself."
+)
+
+#: Opt-in workspace tools, named only once the selected surface has them.
+_WORKSPACE_TOOL_LINES = {
+    "get_architecture": "get_architecture for the workspace's coupling and architecture score",
+    "get_blast_radius": "get_blast_radius for the services a change reaches in other repos",
+}
+
+
+def _instructions(enabled: Iterable[str] = (), repo_line: str | None = None) -> str:
+    """The server instructions, naming a workspace tool only when it is served.
+
+    *repo_line* says what get_why holds for the served repository.
+    """
+    text = f"{_INSTRUCTIONS}\n{repo_line}" if repo_line else _INSTRUCTIONS
+    lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
+    if not lines:
+        return text
+    return f"{text}\nIn this workspace, use {' and '.join(lines)}."
+
+
 mcp = _RepowiseMCP(
     "repowise",
-    # Hosts that defer tool schemas show the model only tool names and this
-    # string, so it says when to call; tests pin the key lines and a length cap.
-    instructions=(
-        "repowise indexes this repository's code graph, git history and "
-        "decisions. One call here often replaces several text searches and "
-        "file reads.\n"
-        "- Use search_codebase(query) to find an identifier or literal: it "
-        "returns `lines` (path, line, kind, text; definitions first) read from "
-        "live files, and `complete: true` means that is every match. Path-like "
-        "and concept queries rank files.\n"
-        '- Use get_context(targets=[symbol], include=["references"]) before a '
-        "rename or an update-all-callers change: it lists the definition, "
-        "imports and calls, and a `complete` list is the whole edit set.\n"
-        "- Use get_answer(question) for a how/where/why question: one cited "
-        "answer.\n"
-        "- Use get_risk before a non-trivial edit to a widely imported file, "
-        "get_change_risk before committing a multi-file change, and get_why "
-        "before changing an established pattern. Skip them for one-line fixes.\n"
-        "- Targets with uncommitted edits are flagged; the index is stale for "
-        "them until `repowise update --working-tree` runs.\n"
-        "In workspace mode, get_architecture and get_blast_radius are also "
-        "available. If the tools "
-        "report that the repo has no index, tell the user to run "
-        "'repowise init --yes' in the repo root; it needs no API key. Suggest it, "
-        "do not run it yourself."
-    ),
+    instructions=_instructions(),
     lifespan=_lifespan,
 )
+_share_lifespan(mcp._mcp_server)
+# FastMCP takes no version argument, and without one the handshake's
+# serverInfo.version reports the installed ``mcp`` SDK's version.
+mcp._mcp_server.version = __version__
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +852,8 @@ def create_mcp_server(
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
 
-    apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
     return mcp
 
 
@@ -942,7 +1063,8 @@ def run_mcp(
         from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
         ensure_full_surface()
-        apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from repowise.core.components.resolve import repo_wide_when_flat
 from repowise.core.inventory.components import component_inventory
 from repowise.core.inventory.cyclonedx import cyclonedx_bom, purl
 from repowise.core.inventory.usage import package_usage, package_usages, parse_query
@@ -48,7 +49,10 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
     assert legacy["owners"] == []  # an individual CODEOWNERS entry is never named
     assert legacy["owner_counts"] == {"individual": 1}  # but it is counted
     assert "owner_counts" not in util
-    assert legacy["component"] == "src"  # the derived top-level directory
+    # Only src/ and tests/ divide the repo, so what the catalog leaves goes to
+    # the derived component for the whole repo.
+    whole = repo_wide_when_flat([], ["x.py"], tmp_path.name)[0].name
+    assert legacy["component"] == whole
 
     assert sites["tests/test_util.py"]["reachability"]["state"] == "test"
     assert doc["summary"]["reachability"] == {
@@ -57,7 +61,7 @@ async def test_sites_carry_line_component_owners_and_reachability(session, tmp_p
         "test": 1,
         "unknown": 1,
     }
-    assert [c["name"] for c in doc["components"]] == ["app", "jobs", "src", "tests"]
+    assert sorted(c["name"] for c in doc["components"]) == sorted(["app", "jobs", whole])
 
 
 async def test_import_name_alone_is_inferred_and_ecosystem_scoped(session, tmp_path):  # noqa: F811
@@ -79,6 +83,18 @@ def test_parse_query():
     assert parse_query("npm:@scope/pkg") == ("@scope/pkg", "npm")
     assert parse_query("requests") == ("requests", None)
     assert parse_query("com.google:guava") == ("com.google:guava", None)
+
+
+def test_a_maven_coordinate_answers_to_its_artifact_id():
+    from repowise.core.inventory.usage import Declaration, UsageIndex
+
+    web = Declaration(1, "maven", "org.springframework.boot:spring-boot-starter-web", None, "build.gradle", False)
+    index = UsageIndex(declarations=[web])
+    assert index.match("spring-boot-starter-web")[0] == [web]
+    assert index.match("Spring-Boot-Starter-Web", "maven")[0] == [web]
+    assert index.match("org.springframework.boot:spring-boot-starter-web")[0] == [web]
+    assert index.match("spring-boot")[0] == []
+    assert index.match("spring-boot-starter-web", "npm")[0] == []
 
 
 async def test_component_inventory(session, tmp_path):  # noqa: F811

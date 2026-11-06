@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from repowise.core.analysis.next_call import ActionCommand
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class ActionWhy(BaseModel):
@@ -113,7 +113,7 @@ class ActionStateRequest(BaseModel):
 class ActionStateResponse(BaseModel):
     action_id: str
     state: Literal["dismissed", "snoozed", "done"] | None
-    until: datetime | None = None
+    until: UTCDateTime | None = None
 
 
 class WorkspaceRepoActions(BaseModel):

@@ -13,6 +13,7 @@ import type {
   RefactoringOpportunity,
 } from "@repowise-dev/types/refactoring";
 
+import { BIOMARKER_LABELS, canonicalBiomarker } from "../health/generated/biomarker-labels";
 import { STRUCTURAL_TYPES } from "./types";
 import { TYPE_ORDER, typeMeta } from "./meta";
 
@@ -54,9 +55,11 @@ export function stepSummary(opportunity: RefactoringOpportunity): string {
   return `${steps}, ${opportunity.mechanical_steps} mechanical`;
 }
 
-/** `nested_complexity` -> `nested complexity`. */
+/** `nested_complexity` -> `deep nesting`: the glossary label mid-sentence, else the token spaced. */
 export function humanizeBiomarker(token: string): string {
-  return token.replace(/_/g, " ").trim();
+  const label = (BIOMARKER_LABELS as Record<string, string>)[canonicalBiomarker(token)];
+  if (!label) return token.replace(/_/g, " ").trim();
+  return /^[A-Z][a-z]/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label;
 }
 
 /** One sentence naming what the opportunity is, for a row's second line. */

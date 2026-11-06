@@ -42,8 +42,9 @@ ProvenanceKind = Literal[
 ]
 
 _HUMAN_SOURCES = frozenset({"adr", "cli", "session"})
+# ``agent`` is rationale its author stated, but the author is not a person.
 _RATIONALE_SOURCES = frozenset(
-    {"code_comment", "comment", "inline_marker", "rationale_comment"}
+    {"agent", "code_comment", "comment", "inline_marker", "rationale_comment"}
 )
 _HISTORICAL_SOURCES = frozenset(
     {"changelog", "commit", "git_archaeology", "pr", "readme_mining"}

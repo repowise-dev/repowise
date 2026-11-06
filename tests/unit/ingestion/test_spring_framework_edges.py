@@ -140,6 +140,81 @@ class TestSpringKotlin:
         assert graph.number_of_nodes() == 2
 
 
+class TestServletInitializer:
+    """A class the servlet container bootstraps is a root; no source names it."""
+
+    def _graph(self, tmp_path: Path, files: dict[str, str]) -> nx.DiGraph:
+        for rel, text in files.items():
+            (tmp_path / rel).write_text(text)
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=["spring"])
+        return graph
+
+    def test_spring_boot_servlet_initializer_is_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "ServletInitializer.java": (
+                    "import org.springframework.boot.builder.SpringApplicationBuilder;\n"
+                    "import org.springframework.boot.web.servlet.support"
+                    ".SpringBootServletInitializer;\n"
+                    "public class ServletInitializer extends SpringBootServletInitializer {\n"
+                    "  @Override\n"
+                    "  protected SpringApplicationBuilder configure("
+                    "SpringApplicationBuilder application) {\n"
+                    "    return application.sources(AdminApplication.class);\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            },
+        )
+        node = graph.nodes["ServletInitializer.java"]
+        assert node.get("is_entry_point") is True
+        assert node.get("framework_role") == "spring_servlet_initializer"
+
+    def test_mvc_dispatcher_initializer_is_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "WebInit.java": (
+                    "import org.springframework.web.servlet.support"
+                    ".AbstractAnnotationConfigDispatcherServletInitializer;\n"
+                    "public class WebInit\n"
+                    "    extends AbstractAnnotationConfigDispatcherServletInitializer {}\n"
+                ),
+            },
+        )
+        assert graph.nodes["WebInit.java"].get("is_entry_point") is True
+
+    def test_kotlin_servlet_initializer_is_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "ServletInitializer.kt": (
+                    "import org.springframework.boot.web.servlet.support"
+                    ".SpringBootServletInitializer\n"
+                    "class ServletInitializer : SpringBootServletInitializer()\n"
+                ),
+            },
+        )
+        assert graph.nodes["ServletInitializer.kt"].get("is_entry_point") is True
+
+    def test_another_base_is_not_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "Widget.java": (
+                    "import org.springframework.stereotype.Component;\n"
+                    "public class Widget extends BaseWidget {}\n"
+                ),
+            },
+        )
+        assert not graph.nodes["Widget.java"].get("is_entry_point")
+
+
 class TestSpringGate:
     def test_non_spring_unaffected(self, tmp_path: Path) -> None:
         (tmp_path / "Plain.java").write_text("public class Plain {}\n")

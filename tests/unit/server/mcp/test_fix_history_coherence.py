@@ -115,7 +115,7 @@ async def test_risk_summary_leads_with_fix_history_when_present(setup_mcp, sessi
 
     # The defect evidence comes before the churn number, and agrees with the
     # risk_type printed further along the same line.
-    assert "4 bug fixes in 6mo, last 7d before the indexed commit (bug magnet)" in summary
+    assert "4 bug fixes in 6 months, last 7d before the indexed commit (bug magnet)" in summary
     assert summary.index("bug fixes") < summary.index("direct dependents")
     assert "bug-prone" in summary
     # Not a churn hotspot (is_hotspot=False), so the summary makes no churn claim.
@@ -192,6 +192,8 @@ async def test_get_context_triage_reports_fix_history(setup_mcp, session, repo_i
     t = result["targets"]["src/auth/service.py"]
 
     assert t["fix_history"]["fix_count"] == 5
+    # The count names its window, so it is never read as the 90-day churn figure.
+    assert t["fix_history"]["window"] == "6 months"
     assert t["fix_history"]["last_fix_days_ago"] == 3
     assert t["fix_history"]["bug_magnet"] is True
 
@@ -248,7 +250,7 @@ async def test_fix_history_anchors_to_historical_commit_two_years_ago(
     # get_risk: risk_summary, defect_profile
     risk_res = await get_risk(["src/old/fixed.py"])
     target_risk = risk_res["targets"]["src/old/fixed.py"]
-    assert "1 bug fix in 6mo, last 30d before the indexed commit" in target_risk["risk_summary"]
+    assert "1 bug fix in 6 months, last 30d before the indexed commit" in target_risk["risk_summary"]
     assert target_risk["defect_profile"]["last_fix_days_ago"] == 30
     assert target_risk["defect_profile"]["fix_count"] == 1
 

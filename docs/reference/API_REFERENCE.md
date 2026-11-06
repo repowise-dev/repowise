@@ -11,6 +11,12 @@ how authentication behaves, the shape of an error, how the two SSE streams are
 sequenced, and the conventions several routes share. Start at `/docs` for a
 specific endpoint; come back here for the things a schema cannot state.
 
+Each GitHub release also carries the same document as an `openapi.json` asset
+(`https://github.com/repowise-dev/repowise/releases/latest/download/openapi.json`).
+Every operation in it has `x-repowise-stability`: `stable` routes are the
+integration surface, and breaking changes to them are named in the changelog;
+`internal` routes serve the bundled dashboard and can change in any release.
+
 Nothing in this document duplicates a route table on purpose. Where a fact
 below is derived from code, the file is named so the claim can be re-checked.
 The default API address is `http://127.0.0.1:7337` (`docs/reference/CLI_REFERENCE.md`).
@@ -97,6 +103,11 @@ disable the model calls themselves.
   indexed data synchronously, with no LLM call (`routers/claude_md.py`).
 - `POST /api/repos/{repo_id}/blast-radius` is a deterministic graph analysis
   (`packages/core/src/repowise/core/analysis/pr_blast.py`).
+  `POST /api/repos/{repo_id}/blast-radius/change` runs the same analysis on one
+  change picked from `GET /api/repos/{repo_id}/blast-radius/changes`
+  (uncommitted work, branches ahead of the default branch, recent indexed
+  commits; `core/analysis/change_candidates.py`). A server without a checkout
+  offers the commits only.
 - Every status update, deletion, settings write, and read-only report.
 
 ### 1.4 One data-leaving call
@@ -178,7 +189,7 @@ file, every surface behaves exactly as described below.
 (`deps.py`, `client_is_local`). The known consequence is that a same-host
 reverse proxy makes every peer loopback, so that deployment shape still needs
 the key. `repowise serve --host 0.0.0.0` without a key prints a warning at
-startup (`packages/cli/src/repowise/cli/commands/serve_cmd.py`) and the
+startup (`packages/cli/src/repowise/cli/commands/serve_cmd/command.py`) and the
 requests themselves are refused as above. All three rows were exercised against
 a running app with a fabricated remote peer.
 
@@ -274,6 +285,21 @@ detail endpoint returns the object, and two conventions sit on top:
 | `{ok: true}` (and `{ok: true, deleted_pages: N}` for repo deletion) | mutations with nothing else to report, e.g. conversation delete, repository delete | Acknowledgement only |
 | `{event_id, status: "accepted"}` with `200` | all three webhooks | The stored event's id, not a job id |
 | `X-Repowise-Redirected-From: <requested id>` response header | `GET /api/pages/{page_id}` and `/api/pages/lookup` | A retired page id resolved to its successor; the header names the id that was asked for (`routers/pages.py`) |
+| `{detail: {status: "retired", reason, superseded_by, archive_id, archive_url, page_id}}` with `410` | The same page readers, with an explicit `repo_id`, when an archived identity has no static redirect | The live page is gone; `archive_url` reads that exact retirement, not a guessed live successor |
+
+Retired records have native, repository-bound readers:
+
+- `GET /api/repos/{repo_id}/pages/retired?limit=100&offset=0` lists distinct
+  retirement events with `archive_id`, `page_id`, `repository_id`, UTC
+  `retired_at`, `reason`, `superseded_by` and `title`, without full bodies.
+- `GET /api/repos/{repo_id}/pages/retired/{page_id}` returns the same metadata,
+  the complete original `page` record, and all original `versions`, newest
+  first. Optional `archive_id` selects an exact event when an ID was reused.
+
+These routes inherit the repository router's authentication and workspace
+database routing. Ordinary live pages, version queries, search and MCP retrieval
+exclude archives. Records older than 90 days are purged in the existing
+retired-page sweep; reading cannot restore a retired row as live.
 
 Enum vocabularies are shared deliberately and are the same four values wherever
 one appears: `open`, `acknowledged`, `resolved`, `false_positive` for health
@@ -408,7 +434,7 @@ empty. The route still declares only `application/json`.
 Two query parameters repeat across the `code-health` tag, and both change the
 numbers rather than the rows:
 
-- `scope=all` (default) or `production`. `production` drops test files, which
+- `scope=all` (default) or `production`. `production` drops test, tooling, vendored and generated files, which
   lowers every figure without a defect having been found.
 - `counts=everything` (default) or `code_shape`. `code_shape` removes the
   git-derived half of the score, so the figure describes code shape rather than
@@ -431,6 +457,14 @@ workspace entries that are not indexed yet. They are stable and prefixed so
 client routing cannot collide with real ids; passing one to
 `GET /api/search` returns an empty list rather than falling back to the primary
 repo (`routers/search.py`).
+
+`POST /api/repos` on a path that is already registered updates that row, and a
+`url` or `default_branch` the body leaves out keeps its stored value, as with
+`PATCH`. A new row takes an omitted value from the path's registry row, else
+from git: the remote url (credentials removed) and default branch. The schema
+defaults (`""`, `"main"`) fill only what git cannot name. Each index replaces
+both with what git reports (`routers/repos.py`, `crud/repository.py`), so a
+value set by `PATCH` or `POST` holds until the next index whose git names one.
 
 ### 5.4 Pagination
 
@@ -520,7 +554,7 @@ one per router area; this table maps an area to the tag to open there.
 | Merged changes (Change Records) reconstructed from git | `changes` | `routers/changes.py` |
 | Typed events from consecutive index runs (CloudEvents, pull) | `events` | `routers/events.py` |
 | Structural coupling report | `coupling` | `routers/coupling.py` |
-| Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
+| Blast radius for a change, and the changes to pick from | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |
 | Mined session episodes | `episodes` | `routers/episodes.py` |
 | Action prompts and recorded state | `actions` | `routers/actions.py` |

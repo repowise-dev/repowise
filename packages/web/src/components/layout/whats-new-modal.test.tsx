@@ -41,12 +41,25 @@ const ENTRIES: ChangelogEntry[] = [
   },
 ];
 
+const changelogCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock("@/lib/hooks/use-meta-version", () => ({
-  useChangelog: () => ({ entries: ENTRIES, error: null, isLoading: false }),
+  useChangelog: (...args: unknown[]) => {
+    changelogCalls.push(args);
+    return { entries: ENTRIES, error: null, isLoading: false };
+  },
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/repos/r1/overview" }));
 
 describe("WhatsNewModal", () => {
+  it("asks for newer releases only when told to", () => {
+    changelogCalls.length = 0;
+    const { unmount } = render(<WhatsNewModal open onOpenChange={() => {}} />);
+    expect(changelogCalls.at(-1)?.[2]).toBe(false);
+    unmount();
+    render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" includeNewer />);
+    expect(changelogCalls.at(-1)?.[2]).toBe(true);
+  });
+
   it("leads with the release, its numbers and highlights", () => {
     render(<WhatsNewModal open onOpenChange={() => {}} version="0.57.0" fresh />);
     const dialog = screen.getByRole("dialog");

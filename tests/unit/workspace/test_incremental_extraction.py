@@ -227,8 +227,7 @@ async def test_changed_contract_config_forces_re_extraction(
 ) -> None:
     """Rows extracted under a different question must not be reused.
 
-    Turning a detector off, or adding a ``service_bases`` mapping, changes what
-    extraction looks for and how consumers resolve — but it moves no commit, so
+    Turning a detector off changes what extraction looks for — but it moves no commit, so
     the HEAD check alone would happily carry the old answers forward and the
     config change would appear to do nothing until someone committed.
     """
@@ -619,3 +618,88 @@ async def test_changed_contract_project_pattern_re_extracts_every_repo(
 
     assert sorted(extracted) == ["alpha", "beta"]
     assert _topic_ids(second, "beta") == ["topic::sample.contracts:ping"]
+
+
+# ---------------------------------------------------------------------------
+# Matching settings, repowise's own files, and which indexes are opened
+# ---------------------------------------------------------------------------
+
+
+async def test_matching_settings_relink_without_re_extracting(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """service_bases and manual_links decide links, not what a repo holds."""
+    from repowise.core.workspace.config import ManualContractLink
+
+    first = await _first_run(workspace, tmp_path)
+    extracted.clear()
+
+    relinked = WorkspaceConfig(
+        repos=list(workspace.repos),
+        contracts=ContractConfig(
+            service_bases={"API_BASE": "beta"},
+            manual_links=[ManualContractLink("alpha", "beta", "http", "http::GET::/manual")],
+        ),
+    )
+    second = await run_contract_extraction(relinked, tmp_path, [], None, first)
+
+    assert extracted == []
+    assert second.contracts == first.contracts
+    assert any(lk.contract_id == "http::GET::/manual" for lk in second.contract_links)
+
+
+async def test_repowise_editor_file_keeps_the_repo_reusable(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None, extracted: list[str]
+) -> None:
+    """init writes .claude/CLAUDE.md untracked; that is not a change to the repo."""
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+    from repowise.core.generation.editor_files.claude_md import ClaudeMdGenerator
+
+    first = await _first_run(workspace, tmp_path)
+    tag = ClaudeMdGenerator.marker_tag
+    claude_md = tmp_path / "beta" / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir()
+    claude_md.write_text(
+        ClaudeMdGenerator.user_placeholder
+        + Gen.MARKER_START_FMT.format(tag=tag)
+        + "Last indexed: today"
+        + Gen.MARKER_END_FMT.format(tag=tag),
+        encoding="utf-8",
+    )
+    extracted.clear()
+
+    await run_contract_extraction(workspace, tmp_path, [], None, first)
+
+    assert extracted == []
+
+
+class _RecordingIndex:
+    """A workspace index that holds nothing and records what it was asked to open."""
+
+    def __init__(self) -> None:
+        self.ensured: list[set[str]] = []
+
+    def get(self, alias: str) -> None:
+        return None
+
+    async def ensure(self, aliases) -> None:
+        self.ensured.append(set(aliases))
+
+
+async def test_indexes_open_only_for_extracted_repos(
+    workspace: WorkspaceConfig, tmp_path: Path, no_save: None
+) -> None:
+    """Loading every repo's symbols was most of the time a run with nothing to extract took."""
+    index = _RecordingIndex()
+    first = await run_contract_extraction(workspace, tmp_path, [], None, None, index)
+    assert index.ensured == [{"alpha", "beta"}]
+
+    index = _RecordingIndex()
+    await run_contract_extraction(workspace, tmp_path, [], None, first, index)
+    assert index.ensured == []
+
+    (tmp_path / "beta" / "svc" / "api.py").write_text("x = 1\n", encoding="utf-8")
+    index = _RecordingIndex()
+    await run_contract_extraction(workspace, tmp_path, [], None, first, index)
+    # beta, plus the repos publishing a package beta may import (both ship "svc").
+    assert index.ensured == [{"alpha", "beta"}]

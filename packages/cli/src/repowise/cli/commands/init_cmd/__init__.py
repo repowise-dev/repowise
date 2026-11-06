@@ -8,6 +8,8 @@ Split out of a single 2k-line module into cohesive parts:
 * :mod:`.persistence` — database + state.json + config.yaml writers
 * :mod:`.reporting` — analysis + completion console panels
 * :mod:`._interactive` — interactive prompts
+* :mod:`._options`, :mod:`._seed`, :mod:`._provider`, :mod:`._ingest`,
+  :mod:`._finish` — the single-repo run's options and stages
 
 This package re-exports the public command plus the leading-underscore names
 that sibling commands (``search``/``reindex``) and the test-suite import from

@@ -47,28 +47,9 @@ _NEW_REQUEST_RE = re.compile(r"\bhttp\.NewRequest(WithContext)?\s*\(")
 _NEW_REQUEST_ARGS = {False: (0, 1), True: (1, 2)}
 
 
-def _commented_out(content: str, offset: int) -> bool:
-    """True when a ``//`` comment opens on *offset*'s line before it.
-
-    Go doc comments show usage as indented example code, so without this a
-    ``//  req, _ := http.NewRequest("GET", "https://host/x", nil)`` in a
-    docstring becomes a contract. A ``//`` that follows a colon is a URL's
-    scheme separator, not a comment.
-    """
-    prefix = content[content.rfind("\n", 0, offset) + 1 : offset]
-    idx = prefix.find("//")
-    while idx != -1:
-        if idx == 0 or prefix[idx - 1] != ":":
-            return True
-        idx = prefix.find("//", idx + 2)
-    return False
-
-
 def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
     """Every ``net/http`` call site whose verb and URL argument are readable."""
     for m in _PACKAGE_VERB_RE.finditer(content):
-        if _commented_out(content, m.start()):
-            continue
         paren = m.end() - 1
         args = call_arguments(content, paren)
         if not args:
@@ -83,8 +64,6 @@ def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
         )
 
     for m in _NEW_REQUEST_RE.finditer(content):
-        if _commented_out(content, m.start()):
-            continue
         paren = m.end() - 1
         args = call_arguments(content, paren)
         method_at, url_at = _NEW_REQUEST_ARGS[m.group(1) is not None]
@@ -104,6 +83,7 @@ def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
 class GoClientsDialect:
     name = "go-clients"
     extensions = GO
+    requires = ("http.",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         rows = list(net_http_calls(ctx.content))

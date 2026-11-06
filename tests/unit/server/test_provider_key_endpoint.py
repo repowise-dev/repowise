@@ -235,3 +235,20 @@ async def test_patch_active_rejects_a_non_http_base_url(client: AsyncClient) -> 
     )
     assert resp.status_code == 400
     assert "http" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_detect_query_reports_signed_in_agent_clis(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.agents.identity import AgentIdentity
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", lambda self: self.slug == "codex")
+
+    plain = (await client.get("/api/providers")).json()
+    detected = (await client.get("/api/providers?detect=true")).json()
+
+    def by_id(body):
+        return {p["id"]: p["detected"] for p in body["providers"]}
+
+    assert by_id(plain)["codex_cli"] is None
+    assert by_id(detected)["codex_cli"] == "signed_in"
+    assert by_id(detected)["claude_cli"] is None

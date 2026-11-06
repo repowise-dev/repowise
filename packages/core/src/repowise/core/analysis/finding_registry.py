@@ -30,8 +30,10 @@ is served unlabelled.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -130,6 +132,7 @@ class LanguageGate:
 
 _AUDIT_DATE = "2026-10-02"
 _REAUDIT_DATE = "2026-10-15"
+_APEX_AUDIT_DATE = "2026-10-23"
 _PREVIEW = "preview"
 _NO_PLAN = "No judged plan was acceptable as written."
 _NOT_A_COST = "Most judged opportunities were not real costs."
@@ -170,6 +173,7 @@ _GATE_ROWS: tuple[_GateRow, ...] = (
     ("dead_code", "c", 0.66, "35 judged findings from 2 C repos (lowest 0%)", "P/Invoke exports are unseen.", _PREVIEW, _REAUDIT_DATE),
     ("dead_code", "cpp", 0.68, "25 judged findings from 1 C++ repo", "Build-listed translation units and macro uses are unseen.", _PREVIEW, _REAUDIT_DATE),
     ("dead_code", "kotlin", 0.18, "34 judged findings from 2 Kotlin repos (lowest 0%)", "DI-bound classes are not roots.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "apex", 0.86, "51 judged findings from 6 Apex repos (lowest 0%)", "Deprecated stubs and example code read as dead.", _PREVIEW, _APEX_AUDIT_DATE),
     ("dead_code", "swift", 0.44, "71 judged findings from 2 Swift repos (lowest 10%)", "Cross-module function and extension-member uses are unseen.", _PREVIEW, _REAUDIT_DATE),
 )
 
@@ -208,8 +212,50 @@ FILE_HOLDS: dict[str, str] = {
     "test": "Plans held back on test files: tests change with the code they cover.",
 }
 
+#: Health rows held back by their own evidence rather than their type or file:
+#: an ``untested_complexity`` finding on estimated coverage rests on call-graph
+#: reach, whose recall is partial, so only measured ones are served by default.
+#: Same opt-in as a gate, or ask for the type by name.
+ROW_HOLDS: dict[str, str] = {
+    "estimated": "Held back: coverage estimated from call-graph reach, not measured.",
+}
+#: The types :data:`ROW_HOLDS` ``estimated`` applies to, and the detail it reads.
+ESTIMATE_HELD_TYPES: frozenset[str] = frozenset({"untested_complexity"})
+COVERAGE_BASIS_KEY = "coverage_basis"
+#: Every file and row hold with its reason, as a surface reports them.
+HOLD_REASONS: dict[str, str] = {**FILE_HOLDS, **ROW_HOLDS}
+
+
+def is_estimated(kind: Any, details: Any) -> bool:
+    """Whether a health row of *kind* rests on estimated coverage (see :data:`ROW_HOLDS`)."""
+    if kind not in ESTIMATE_HELD_TYPES:
+        return False
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except ValueError:
+            return False
+    return isinstance(details, Mapping) and details.get(COVERAGE_BASIS_KEY) == "estimated"
+
 #: The stored ``code_origin`` values a health finding is never served on.
 HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
+
+#: The stored ``code_origin`` values the area map leaves out until the reader
+#: brings them back: tests, docs examples and build files, plus everything no
+#: health finding is served on. Prose docs have no health row, so never appear.
+MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", *HELD_ORIGINS)
+
+
+def stored_origin(code_origin: Any, is_test: Any) -> str:
+    """A row's origin, reading a row stamped before ``code_origin`` off ``is_test``."""
+    if isinstance(code_origin, str) and code_origin:
+        return code_origin
+    return "test" if is_test is True else "production"
+
+
+def map_held(include: Iterable[str]) -> frozenset[str]:
+    """The origins the map holds out when the reader has brought back *include*."""
+    return frozenset(MAP_HELD_ORIGINS) - frozenset(include)
 
 
 def history_kinds() -> frozenset[str]:
@@ -250,9 +296,15 @@ def previews_on(layer: GateLayer) -> tuple[LanguageGate, ...]:
     return tuple(g for g in LANGUAGE_GATES if g.layer == layer and g.state == "preview")
 
 
+@lru_cache(maxsize=1 << 16)
+def _suffix(path: str) -> str:
+    # Cached: a gate pass asks once per finding, so a file's path repeats.
+    return PurePosixPath(path).suffix.lower()
+
+
 def language_of(path: str) -> str | None:
     """The language tag a stored path's extension maps to, or ``None``."""
-    return EXTENSION_TO_LANGUAGE.get(PurePosixPath(path or "").suffix.lower())
+    return EXTENSION_TO_LANGUAGE.get(_suffix(path or ""))
 
 
 def _match(
@@ -381,8 +433,8 @@ def gated_summary(layer: GateLayer, counts: Mapping[str, int]) -> dict[str, dict
         count = counts.get(gate.language, 0)
         if count:
             out[gate.language] = {"count": count, "reason": held_back_note([gate.language])}
-    # File holds ride beside the languages under their own keys, with their reason.
-    for key, reason in FILE_HOLDS.items():
+    # File and row holds ride beside the languages under their own keys, with their reason.
+    for key, reason in HOLD_REASONS.items():
         if counts.get(key):
             out[key] = {"count": counts[key], "reason": reason}
     return out
@@ -398,7 +450,12 @@ def row_hold(
     hold_history: bool = True,
 ) -> str | None:
     """The :data:`FILE_HOLDS` key on *row*, read off its file's metric row in
-    *files* (``code_origin``, ``is_test``); a path missing from it is not held."""
+    *files* (``code_origin``, ``is_test``), or the :data:`ROW_HOLDS` key read off
+    the row itself; a path missing from *files* is not file-held."""
+    if layer == "health" and get(row, kind) in ESTIMATE_HELD_TYPES:
+        details = _row_details(row, get)
+        if is_estimated(get(row, kind), details):
+            return "estimated"
     metric = (files or {}).get(get(row, "file_path") or "")
     if metric is None:
         return None
@@ -409,6 +466,18 @@ def row_hold(
         getattr(metric, "is_test", None),
         hold_history=hold_history,
     )
+
+
+def _row_details(row: Any, get: Callable[[Any, str], Any]) -> Any:
+    """A row's details: a mapping, or the stored JSON text of an ORM row."""
+    for key in ("details", "details_json"):
+        try:
+            value = get(row, key)
+        except (AttributeError, KeyError):
+            continue
+        if value is not None:
+            return value
+    return None
 
 
 def split_held(
@@ -512,6 +581,7 @@ __all__ = [
     "FILE_HOLDS",
     "HELD_ORIGINS",
     "LANGUAGE_GATES",
+    "MAP_HELD_ORIGINS",
     "REGISTRY",
     "UNVERIFIED_LABEL",
     "FindingStatus",
@@ -530,6 +600,7 @@ __all__ = [
     "is_shown",
     "label_previews",
     "language_of",
+    "map_held",
     "preview_for",
     "preview_label",
     "preview_lines",
@@ -540,6 +611,7 @@ __all__ = [
     "split_gated",
     "split_held",
     "status_of",
+    "stored_origin",
     "verification_label",
     "withheld_summary",
 ]

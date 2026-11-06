@@ -105,7 +105,7 @@ def _is_path(query: str) -> bool:
     return ext in _code_exts()
 
 
-_TOKEN_EDGE_CHARS = "`'\"()[]{},;"
+_TOKEN_EDGE_CHARS = "`'\"()[]{},;?!"
 _LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 

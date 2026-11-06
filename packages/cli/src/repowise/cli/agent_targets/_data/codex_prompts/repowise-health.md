@@ -35,7 +35,7 @@ Handle `$ARGUMENTS`:
   having been found; the default stays `all`)
 - "code shape" / "ignore churn" → `repowise health --counts code_shape` (leaves
   out the git-derived half: churn, co-change, ownership, prior fixes)
-- a coverage file (e.g. `cov.lcov`, `coverage.xml`, `.coverage`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health --recompute`
+- a coverage file (e.g. `cov.lcov`, `coverage.xml`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health --recompute`; a `.coverage` builds the per-test map only
 
 Other flags: `--format json` for machine-readable output, `-v, --verbose` for
 pipeline debug logs, `--repo <alias>` / `--no-workspace` in workspace mode.

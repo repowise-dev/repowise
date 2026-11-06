@@ -24,13 +24,13 @@ describe("RefactoringModelToggle", () => {
       <RefactoringModelToggle
         value={{ enabled: false, provider: null, model: null }}
         onToggle={vi.fn()}
-        setupHref="/repos/r1/settings#provider"
+        setupHref="/repos/r1/settings/models"
       />,
     );
     expect(screen.getByText("No model configured.", { exact: false })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Set one up" })).toHaveAttribute(
       "href",
-      "/repos/r1/settings#provider",
+      "/repos/r1/settings/models",
     );
   });
 

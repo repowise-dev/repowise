@@ -112,15 +112,11 @@ though someone had written it.
   smaller graphs. Recall leads in three of the seven cells. Most misses are
   dynamic dispatch, which no tool in the comparison resolves without emitting
   several wrong edges for each right one.
-- **Against compiler indexes for more languages.** Java reads 0.725 to 0.781
-  precision against javac across three repositories (0.781 on jsoup). C on git,
-  a repository held out from all tuning, reads 0.979 precision at 0.83 recall.
-  C#, C++, Rust and Python (against jedi, a static analyser) are in the same
-  table.
-- **Hand-graded across nine languages.** 280 call edges per tool, 560 in all,
-  each read with its imports and enclosing scope open: 240 of 280 correct for
-  repowise (85.7%) against 164 of 280 for CodeGraph 1.5.0 (58.6%), with
-  disjoint intervals. Errors concentrate in Rust, C++ and Java.
+- **Against compiler indexes for more languages.** Java reads 0.898 to
+  1.000 precision against javac across seven repositories. C on git,
+  a repository held out from all tuning, reads 0.979 precision at
+  0.837 recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
+  static analyser) are in the same table.
 
 Unused methods are not reported for any language because method-level precision
 does not hold up under this measurement, and reporting them would mean
@@ -357,7 +353,12 @@ if n > 30_000:  # _LARGE_REPO_THRESHOLD
 
 Instead of computing exact betweenness using all N×N pairs, it samples 500 random source nodes and approximates. Research shows this gives good results; the ranking of "which files are most bridge-like" stays accurate even with sampling, just the exact scores shift slightly.
 
-For repos under 30,000 nodes, exact computation is used.
+For graphs with at most 30,000 nodes, exact computation is used. Symbol
+betweenness runs the exact kernel only on nodes with call or heritage edges.
+Isolated symbols receive `0.0`, and normalization still uses the full symbol
+node count, so removing isolated nodes from the computation preserves scores.
+The sampling threshold, sampling population and disk-cache signature continue
+to use the full graph.
 
 ### How Repowise uses betweenness
 
@@ -459,7 +460,7 @@ Think of it as automated "package detection." Even if your code doesn't use clea
 
 `detect_file_communities()` in `core/analysis/communities.py` tries three partitioners in order:
 
-1. **Leiden** (`graspologic.partition.leiden`, `random_seed=42`). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
+1. **Leiden** (`graspologic_native.leiden`, seed 42, called directly for the same partition as `graspologic.partition.leiden` without importing the full graspologic package). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
 2. **Louvain** (`networkx.community.louvain_communities`, `seed=42`, `threshold=1e-4`, `max_level=10`). This is what a default install runs.
 3. **Directory grouping**: if Louvain raises, files are grouped by their first path segment.
 

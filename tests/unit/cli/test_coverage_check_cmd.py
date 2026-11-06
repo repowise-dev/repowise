@@ -96,7 +96,8 @@ def test_threshold_defaults_to_repo_config(repo) -> None:
 
 def test_github_format_writes_annotations_and_step_summary(repo, tmp_path_factory) -> None:
     report = _lcov(repo, {2: 1, 3: 0})
-    summary = tmp_path_factory.mktemp("gh") / "summary.md"
+    out = tmp_path_factory.mktemp("gh")
+    summary = out / "summary.md"
 
     result = _run(
         repo,
@@ -105,12 +106,16 @@ def test_github_format_writes_annotations_and_step_summary(repo, tmp_path_factor
         report,
         "--format",
         "github",
-        env={"GITHUB_STEP_SUMMARY": str(summary)},
+        env={"GITHUB_STEP_SUMMARY": str(summary), "REPOWISE_GATE_SUMMARY_DIR": str(out)},
     )
 
     assert result.exit_code == 0, result.output
     assert "::warning file=src/app.py,line=3,endLine=3" in result.stdout
     assert summary.read_text(encoding="utf-8").startswith("**Patch coverage 50.0%**")
+    # The row the combined CI summary reads: one file with an uncovered changed line.
+    row = json.loads((out / "coverage.json").read_text(encoding="utf-8"))
+    assert (row["gate"], row["verdict"]) == ("coverage", "pass")
+    assert [f["file_path"] for f in row["findings"]] == ["src/app.py"]
 
 
 def test_default_base_comes_from_ci_variables(repo) -> None:

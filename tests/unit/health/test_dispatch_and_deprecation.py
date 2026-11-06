@@ -18,6 +18,7 @@ from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.complexity.dispatch import judged_ccn, judged_nesting
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 
@@ -452,14 +453,12 @@ def _evaluate(path: str):
         ),
         symbols=[],
     )
-    return HealthAnalyzer(graph=None)._evaluate_file(
-        pf,
-        fcx,
+    return FileEvaluator(
+        HealthAnalyzer(graph=None),
         paired_tests=set(),
         package_roots=set(),
-        disabled=[],
         dup_report=DuplicationReport(),
-    )
+    ).evaluate(pf, fcx)
 
 
 def test_complexity_findings_carry_dispatch_share_and_deprecated() -> None:
@@ -553,7 +552,7 @@ def test_a_switch_with_a_tangled_arm_keeps_complex_method() -> None:
 
 
 def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
-    # switch, case, if, if: four levels, two of them the dispatch's own.
+    # switch, if, if, if: four levels, one of them the dispatch's own.
     fns = _functions(
         "csharp",
         """class A {
@@ -562,7 +561,7 @@ def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
       case 1: return 1;
       case 2: return 2;
       default:
-        if (ins > 3) { if (fmt == 4) { return 4; } }
+        if (ins > 3) { if (fmt == 4) { if (fmt > 5) { return 4; } } }
         return fmt;
     }
   }

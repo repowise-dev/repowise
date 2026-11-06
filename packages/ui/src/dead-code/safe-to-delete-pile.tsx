@@ -5,6 +5,7 @@ import { ArrowRight } from "lucide-react";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { OverviewSection } from "../overview/section";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
 import { formatNumber } from "../lib/format";
 
 export interface SafeToDeletePileFinding {
@@ -109,13 +110,10 @@ export function SafeToDeletePile({
                     onSelect && "hover:bg-[var(--color-bg-elevated)]",
                   )}
                 >
-                  <span
-                    className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)]"
-                    title={g.file_path}
-                  >
-                    {g.file_path}
+                  <span className="flex min-w-0 items-baseline text-[var(--color-text-primary)]">
+                    <FilePath path={g.file_path} fold />
                     {g.finding_count > 1 && (
-                      <span className="ml-1.5 text-[var(--color-text-tertiary)]">
+                      <span className="ml-1.5 shrink-0 font-mono text-xs text-[var(--color-text-tertiary)]">
                         ({formatNumber(g.finding_count)} findings)
                       </span>
                     )}

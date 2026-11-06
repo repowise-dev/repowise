@@ -41,6 +41,26 @@ async def test_git_failure_reports_the_revspec_and_git_stderr(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+async def test_unknown_ref_drops_git_command_line_advice(monkeypatch, newline):
+    fatal = (
+        "fatal: ambiguous argument 'not-a-ref': "
+        "unknown revision or path not in the working tree."
+    )
+    stderr = newline.join([
+        fatal,
+        "Use '--' to separate paths from revisions, like this:",
+        "'git <command> [<revision>...] -- [<file>...]'",
+        "",
+    ])
+    exc = subprocess.CalledProcessError(128, ["git"], stderr=stderr)
+
+    result = await _score_raising(monkeypatch, exc, "not-a-ref")
+
+    assert result == {"error": f"Could not read change 'not-a-ref': {fatal}"}
+
+
+@pytest.mark.asyncio
 async def test_git_failure_without_stderr_falls_back_to_the_exception_text(monkeypatch):
     exc = subprocess.CalledProcessError(1, ["git", "diff"], stderr="")
     result = await _score_raising(monkeypatch, exc)
@@ -97,9 +117,9 @@ def test_a_server_older_than_the_checkout_says_restart(monkeypatch):
     monkeypatch.setattr(tool, "_delta_service", _stale)
     delta = tool._compare_health("/repo", "HEAD", (), ())
     assert delta.status == "unavailable"
-    assert delta.explanation.startswith("The MCP server is running older repowise code")
+    assert delta.explanation.startswith("This MCP server runs older repowise code")
     assert "name_added_after_server_start" in delta.explanation
-    assert "Restart the MCP server" in delta.explanation
+    assert "restarting the server" in delta.explanation
 
 
 def test_a_missing_third_party_module_keeps_the_raw_failure(monkeypatch):
@@ -783,13 +803,14 @@ def test_the_directive_names_the_scope_and_the_tests_to_extend():
         "1 changed executable line in the working tree is uncovered; "
         "add tests for them (patch_coverage.files)"
     )
-    # Files changed since the coverage was measured lead: they have no figure yet.
+    # Stale files are a status (freshness, file_counts), never an action; the
+    # measured lines still get theirs.
     stale = {**_patch_block(0, 1, hints, freshness="stale"), "file_counts": {"stale_file": 2}}
     assert patch_coverage_action(stale) == (
-        "Stored coverage predates this change: re-run the tests with coverage, then "
-        "`repowise coverage add` (the hook does it automatically) and call again "
-        "(2 changed files not measured until then)"
+        "1 changed executable line since origin/main is uncovered; "
+        "extend tests/test_a.py, tests/test_c.py"
     )
+    assert patch_coverage_action({**stale, "covered_line_count": 1}) is None
     # A file untouched since the measurement keeps real figures, stale or not.
     assert patch_coverage_action(_patch_block(0, 1, freshness="stale")).endswith(
         "is uncovered; add tests for them (patch_coverage.files)"
@@ -878,3 +899,101 @@ def test_the_patch_coverage_action_joins_the_directive(monkeypatch):
     assert payload["directive"]["next_actions"][-1] == (
         "1 changed executable line since origin/main is uncovered; extend tests/test_a.py"
     )
+
+
+def test_a_degraded_selection_asks_for_every_test_with_its_summary(monkeypatch):
+    def _broken(_path):
+        raise RuntimeError("no comparison")
+
+    monkeypatch.setattr(tool, "_delta_service", _broken)
+    delta = tool._compare_health("/repo", None, (), ())
+    summary = "the index predates files changed outside this change, so 15 of 20 test files"
+    payload = {
+        "impacted_tests": {
+            "status": "degraded",
+            "run_all": False,
+            "tests_to_run": ["tests/test_0.py"],
+            "basis": "inferred",
+            "summary": summary,
+        }
+    }
+
+    tool._attach_health(payload, delta, None, expand=False)
+    assert f"Run every test: {summary}" in payload["directive"]["next_actions"]
+
+
+def _full_patch(freshness: str, *, gate: str = "not_set", measured: int = 0) -> dict:
+    return {
+        "patch_coverage_pct": 50.0 if measured else None,
+        "covered_line_count": measured,
+        "coverable_line_count": 2 * measured,
+        "threshold": None,
+        "min_coverable_lines": None,
+        "gate": gate,
+        "file_counts": {"measured": measured, "stale_file": 2, "out_of_scope": 0},
+        "files": [{"file_path": "src/a.py", "status": "measured"}] if measured else [],
+        "scope": {"label": "HEAD", "freshness": freshness, "config_errors": []},
+        "path_gates": [],
+        "risky": None,
+        "project": None,
+        "branches": None,
+    }
+
+
+def test_ungated_or_stale_patch_coverage_reads_as_status_and_freshness():
+    compact = tool._compact_patch_coverage
+    assert compact(_full_patch("stale")) == {
+        "status": "not_measured",
+        "freshness": "stale",
+        "file_counts": {"stale_file": 2},
+    }
+    measured = compact(_full_patch("current", measured=1))
+    assert measured["status"] == "measured"
+    assert measured["files"] == [{"file_path": "src/a.py", "status": "measured"}]
+    assert "gate" not in measured
+    # A gate set on stale coverage keeps its verdict beside the compact fields.
+    assert compact(_full_patch("stale", gate="no_data"))["gate"] == "no_data"
+    # A current gate is a verdict, so the whole block stays.
+    gated = _full_patch("current", gate="fail", measured=1)
+    assert compact(gated) is gated
+
+
+@pytest.mark.asyncio
+async def test_index_dependents_come_from_the_stored_graph(setup_mcp, factory):
+    """Distinct importing files per file, read once for both sides of the delta."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_change_risk.health import _index_dependents
+
+    counts = await _index_dependents(SimpleNamespace(session_factory=factory))
+    assert counts["src/auth/service.py"] == 2
+    assert counts["src/db/models.py"] == 1
+    assert await _index_dependents(SimpleNamespace(session_factory=None)) is None
+
+
+@pytest.mark.asyncio
+async def test_index_dependents_are_read_once_per_index_state(setup_mcp, factory, monkeypatch):
+    """Counting reads every graph edge, so an unchanged index reuses the count."""
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.change_health import index_context
+    from repowise.server.mcp_server import _index_state
+    from repowise.server.mcp_server.tool_change_risk import health
+
+    monkeypatch.setattr(health, "_DEPENDENTS", type(health._DEPENDENTS)())
+    reads: list[str] = []
+    real = index_context.index_dependents
+
+    async def counted(session, repository_id):
+        reads.append(repository_id)
+        return await real(session, repository_id)
+
+    monkeypatch.setattr(index_context, "index_dependents", counted)
+    ctx = SimpleNamespace(session_factory=factory, path="/checkout")
+    first = await health._index_dependents(ctx)
+    assert await health._index_dependents(ctx) == first
+    assert len(reads) == 1
+    # A new index state (an update ran) reads again.
+    monkeypatch.setattr(_index_state, "index_state_key", lambda repository: "after-update")
+    assert await health._index_dependents(ctx) == first
+    assert len(reads) == 2

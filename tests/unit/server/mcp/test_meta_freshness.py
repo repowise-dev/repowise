@@ -381,3 +381,27 @@ def test_read_live_head_submodule_gitdir(tmp_path: Path) -> None:
     sha = "9" * 40
     checkout = submodule_checkout(tmp_path, sha)
     assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_every_stale_warning_is_a_fact_naming_both_commits(tmp_path, monkeypatch):
+    """A stale_warning states what the facts describe; it never tells the agent to run a command."""
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
+    _prime(tmp_path, frozenset({"src/a.py"}))
+    served = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])["stale_warning"]
+    repo_level = _meta.freshness_from_repo(_repo(tmp_path), targets=None)["stale_warning"]
+
+    assert served == (
+        f"Facts below describe {_INDEXED[:12]}; a file this response serves differs at HEAD "
+        f"{_LIVE[:12]}."
+    )
+    assert repo_level == f"Facts below describe {_INDEXED[:12]}; HEAD has moved."
+
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.index_synced_at",
+        lambda _r: _meta.datetime(2020, 1, 1, tzinfo=_meta.UTC),
+    )
+    old = _meta.freshness_from_repo(_repo(tmp_path), targets=None)["stale_warning"]
+    assert old.startswith("Facts below describe an index ") and old.endswith("HEAD is unreadable.")
+    for line in (served, repo_level, old):
+        assert "repowise update" not in line and "run" not in line.lower().split()

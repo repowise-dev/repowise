@@ -25,15 +25,31 @@ _HEADER = """// Generated from repowise.core.analysis.health.biomarker_labels. D
 """
 
 
-def render(labels: dict[str, str]) -> str:
-    rows = "".join(f"  {name}: {json.dumps(label, ensure_ascii=False)},\n" for name, label in labels.items())
-    return f"{_HEADER}\nexport const BIOMARKER_LABELS = {{\n{rows}}} as const;\n"
+def _rows(mapping: dict[str, str]) -> str:
+    return "".join(f"  {key}: {json.dumps(value, ensure_ascii=False)},\n" for key, value in mapping.items())
+
+
+def render(labels: dict[str, str], legacy: dict[str, str] | None = None) -> str:
+    legacy = _legacy() if legacy is None else legacy
+    return (
+        f"{_HEADER}\nexport const BIOMARKER_LABELS = {{\n{_rows(labels)}}} as const;\n"
+        "\n/** Renamed ids (old -> current), so rows stored under an old id get the current label. */\n"
+        f"export const LEGACY_BIOMARKER_NAMES: Readonly<Record<string, string>> = {{\n{_rows(legacy)}}};\n"
+        "\nexport function canonicalBiomarker(name: string): string {\n"
+        "  return LEGACY_BIOMARKER_NAMES[name] ?? name;\n}\n"
+    )
 
 
 def _labels() -> dict[str, str]:
     from repowise.core.analysis.health.biomarker_labels import BIOMARKER_LABELS
 
     return BIOMARKER_LABELS
+
+
+def _legacy() -> dict[str, str]:
+    from repowise.core.analysis.health.biomarker_names import LEGACY_BIOMARKER_NAMES
+
+    return LEGACY_BIOMARKER_NAMES
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -81,7 +81,8 @@ conf   = (0.4 + earned + min(0.12, 0.04 * (corroborating_sources - 1)))
 clamped to [0, 0.99]
 ```
 
-The rank ladder (`SOURCE_RANK`): `cli` 9, `session` 8, `adr` 7, `pr` 7,
+The rank ladder (`SOURCE_RANK`): `cli` 9, `session` 8, `agent` 8 (a coding
+agent's own proposal), `adr` 7, `pr` 7,
 `commit` / `git_archaeology` / `conventions` 6, `inline_marker` 4, `comment` 3.
 Retired sources keep their rungs (`changelog` 5, `readme_mining` 3,
 `code_comment` 2) so old rows still rank. `session` sits above `adr` because a

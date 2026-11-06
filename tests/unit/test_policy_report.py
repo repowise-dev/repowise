@@ -128,3 +128,14 @@ def test_a_policy_outside_the_repository_locates_on_a_repo_file():
     )
     (res,) = log["runs"][0]["results"]
     assert res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "src/a.py"
+
+
+def test_a_finding_without_its_own_fingerprint_keeps_one_when_its_line_moves():
+    policy = parse_policy("rules: [{name: sec, gate: security}]")
+
+    def prints(line: int) -> set[str]:
+        run = GateRun(1, "x", (("a.py", line, None),))
+        log = render_sarif(policy, evaluate(policy, None, {"sec": run}), tool_version="1", revspec="")
+        return {r["partialFingerprints"]["repowisePolicy/v1"] for r in log["runs"][0]["results"]}
+
+    assert prints(3) == prints(30)

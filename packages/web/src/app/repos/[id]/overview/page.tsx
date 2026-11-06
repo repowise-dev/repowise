@@ -1,17 +1,22 @@
 import type { Metadata } from "next";
+import { ReviewNudgeHost } from "@/components/review/review-nudge-host";
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
-import { getCommitsPage } from "@/lib/api/git";
+import { overviewAskSuggestions } from "@/lib/overview-ask";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
 import { NextActionsPanel } from "@/components/overview/next-actions-panel";
 import { PublishOverviewSection } from "@/components/hosted/publish";
+import { WelcomeMoment } from "@/components/welcome/welcome-moment";
+import { welcomeFigures } from "@/lib/welcome-moment";
+import { overviewBodyCopy, overviewRelativeTime } from "./overview-copy";
 import {
   OverviewBody,
   OverviewSection,
@@ -20,11 +25,7 @@ import {
   type RepoIdentityMeta,
 } from "@repowise-dev/ui/overview";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
-import {
-  formatDateTime,
-  formatLOC,
-  formatRelativeTime,
-} from "@repowise-dev/ui/lib/format";
+import { formatDateTime, formatLOC } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -40,15 +41,13 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
-/** Rows shown in the activity section. Fetched server-side so the list is in
- *  the initial HTML instead of waterfalling in after paint. */
-const COMMIT_LIMIT = 6;
-
 /** The header's chips: language, branch, head commit, size and last sync. */
 function identityMeta(
   summary: OverviewSummaryResponse,
   totalNloc: number | null,
   lastActivityAt: string | null | undefined,
+  t: (key: string, values?: Record<string, string>) => string,
+  relativeTime: (iso: string) => string,
 ): RepoIdentityMeta[] {
   const meta: RepoIdentityMeta[] = [];
   const primaryLanguage = summary.languages[0]?.language;
@@ -56,11 +55,11 @@ function identityMeta(
   meta.push({ label: summary.repo.default_branch, mono: true });
   if (summary.repo.head_commit) meta.push({ label: summary.repo.head_commit.slice(0, 7), mono: true });
   if (totalNloc != null) {
-    meta.push({ label: `${formatLOC(totalNloc)} lines`, mono: true });
+    meta.push({ label: t("identity.lines", { lines: formatLOC(totalNloc) }), mono: true });
   }
   if (lastActivityAt) {
     meta.push({
-      label: `synced ${formatRelativeTime(lastActivityAt)}`,
+      label: t("identity.synced", { when: relativeTime(lastActivityAt) }),
       title: formatDateTime(lastActivityAt),
     });
   }
@@ -82,9 +81,8 @@ export default async function OverviewPage({ params }: Props) {
 
   // Every fetch the page needs, in one wave, on the server. Nothing below
   // renders client-side: this is a static read, so a hydration boundary would
-  // only buy a slower first paint and worse indexability. The commits call
-  // replaces a client-side SWR fetch that used to waterfall in after paint.
-  const [summary, providers, commitsPage, actions] = await Promise.all([
+  // only buy a slower first paint and worse indexability.
+  const [summary, providers, actions] = await Promise.all([
     // Only a 404 means the repo is gone; any other failure reaches the route
     // error boundary instead of reading as "not found".
     getOverviewSummary(id).catch((err: unknown) => {
@@ -92,11 +90,11 @@ export default async function OverviewPage({ params }: Props) {
       throw err;
     }),
     safeFetch(() => getProviders()),
-    safeFetch(() => getCommitsPage(id, { sort: "date", limit: COMMIT_LIMIT })),
     safeFetch(() => getActions(id)),
   ]);
   if (!summary) notFound();
 
+  const tOverview = await getTranslations("overview");
   const { repo, stats, health, sync } = summary;
   const isFresh = stats.file_count === 0;
   const base = `/repos/${id}`;
@@ -104,7 +102,13 @@ export default async function OverviewPage({ params }: Props) {
   const lastActivityAt = sync.last_sync_at ?? sync.last_resync_at ?? health.last_indexed_at;
 
   // ── Identity ───────────────────────────────────────────────────────────
-  const meta = identityMeta(summary, totalNloc, lastActivityAt);
+  const meta = identityMeta(
+    summary,
+    totalNloc,
+    lastActivityAt,
+    tOverview,
+    await overviewRelativeTime(),
+  );
 
   // Priced by the server; no rates means the dialog shows no estimate.
   const active = providers?.active;
@@ -148,24 +152,31 @@ export default async function OverviewPage({ params }: Props) {
 
   // Coupling and the language graph take the shared defaults; `chat` is absent
   // because this app answers that need with the ask box below instead of a
-  // route, and `settings`/`costs` exist here and are what the index-size and
-  // savings reads link to.
-  const routes: OverviewRoutes = {
-    base,
-    settings: `${base}/settings`,
-    costs: `${base}/costs`,
-  };
+  // route.
+  const routes: OverviewRoutes = { base, costs: `${base}/costs` };
 
   return (
     <OverviewBody
       summary={summary}
       routes={routes}
-      commits={commitsPage?.items ?? []}
-      totalNloc={totalNloc}
       LinkComponent={Link}
+      copy={await overviewBodyCopy()}
       slots={{
-        header,
-        ask: <AskAnythingRow repoId={id} />,
+        header: (
+          <>
+            {header}
+            <ReviewNudgeHost repoId={id} />
+            {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
+            <WelcomeMoment
+              repoId={id}
+              repoName={repo.name}
+              fileCount={stats.file_count}
+              figures={welcomeFigures(summary)}
+              hotspotPath={summary.top_hotspots[0]?.file_path ?? null}
+            />
+          </>
+        ),
+        ask: <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />,
         beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the
         // attention areas in their old place rather than showing an empty list.

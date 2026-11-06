@@ -302,14 +302,19 @@ _HEALTH_BANDS = ("at_risk", "needs_work", "fair", "good", "excellent")
 )
 def health_bands_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     data = artifact.data
-    distribution = data.get("distribution") or (data.get("code_health") or {}).get("distribution")
+    distribution = data.get("distribution")
     bands = distribution.get("bands") if isinstance(distribution, Mapping) else None
-    if not isinstance(bands, Mapping):
+    if isinstance(bands, Mapping):
+        files = {b: v.get("files") for b, v in bands.items() if isinstance(v, Mapping)}
+    else:
+        # The overview carries the per-band file counts alone.
+        files = (data.get("code_health") or {}).get("files_by_band")
+    if not isinstance(files, Mapping):
         raise ViewError("this result has no health distribution; call get_health with no targets")
     rows = [
-        {"band": band.replace("_", " "), "files": bands[band]["files"]}
+        {"band": band.replace("_", " "), "files": files[band]}
         for band in _HEALTH_BANDS
-        if isinstance(bands.get(band), Mapping) and isinstance(bands[band].get("files"), int)
+        if isinstance(files.get(band), int)
     ]
     total = sum(row["files"] for row in rows)
     return _chart(
@@ -479,9 +484,12 @@ def risk_hotspots_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> di
     ]
     total = artifact.data.get("global_hotspots_total")
     total = max(total, len(usable)) if isinstance(total, int) else len(usable)
+    # The rows share one window; name it so the counts never read as 90-day churn.
+    window = next((h["window"] for h in shown if h.get("window")), None)
+    over = f" in the last {window}" if window else ""
     return _chart(
         title="Bug fixes on top hotspots",
-        summary=f"Bug-fix commits on {len(rows)} hotspot files.",
+        summary=f"Bug-fix commits{over} on {len(rows)} hotspot files.",
         basis=_basis("measured", "git history"),
         x=("file", "File"),
         series=[("fix_count", "Bug-fix commits")],

@@ -103,34 +103,19 @@ def costs_command(
         no_workspace_flag=no_workspace,
         repo_alias=repo_alias,
     )
-    target.notice(notices, command="costs")
 
     # Parsed before the early returns below so ``since`` has one type in every
     # json payload: an ISO string normalised by the parser, never the raw
     # argument on one path and the normalised form on another.
     since_dt = _parse_date(since)
 
-    # Resolve which repo paths to query
-    repo_paths: list[Path] = []
-    if target.is_workspace:
+    # Resolve which repo paths to query: every member with --all, else one.
+    if target.is_workspace and show_all:
         assert target.ws_root is not None and target.ws_config is not None
-        if show_all:
-            repo_paths = [
-                (target.ws_root / e.path).resolve() for e in target.ws_config.repos
-            ]
-        elif target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_paths = [picked]
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_paths = [primary]
+        target.notice(notices, command="costs")
+        repo_paths = [(target.ws_root / e.path).resolve() for e in target.ws_config.repos]
     else:
-        assert target.repo_path is not None
-        repo_paths = [target.repo_path]
+        repo_paths = [target.narrow(notices, command="costs")]
 
     # Filter to repos that have a .repowise/ — otherwise the cost query
     # would just return an empty result and confuse the user.

@@ -14,7 +14,7 @@ from time import perf_counter
 from typing import Any
 
 from repowise.core.analysis.finding_registry import (
-    FILE_HOLDS,
+    HOLD_REASONS,
     GateLayer,
     served_previews,
     withheld_summary,
@@ -43,6 +43,7 @@ from repowise.server.mcp_server._workspace_routing import (
     single_repo,
 )
 from repowise.server.mcp_server.tool_health.analysis_meta import (
+    _attach_analyzer_version,
     _attach_health_analysis_meta,
     _attach_repository_analysis_meta,
 )
@@ -50,6 +51,7 @@ from repowise.server.mcp_server.tool_health.blocks import add_optional_blocks
 from repowise.server.mcp_server.tool_health.dashboard import build_dashboard
 from repowise.server.mcp_server.tool_health.details import (
     _detail_response,
+    _hint_wrong_selector,
     _note_inapplicable_controls,
     _selector_conflict,
 )
@@ -162,34 +164,24 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
-    No ``targets``: a dashboard led by ``fix_first``, what to fix first;
-    targets rank files and findings.
-    Never recomputes health: commit, then run ``repowise update``.
-    Every block and accepted value: docs/agent/MCP_TOOLS.md.
+    No ``targets``: a dashboard led by ``fix_first``. Never recomputes:
+    commit, then run ``repowise update``. Every block and accepted value:
+    docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``; misses land in ``unresolved``.
+        targets: file paths or ``module:<name>``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``|
-            ``semantics``|``recipe``, or a dimension incl. ``advisory``;
-            ``performance`` and ``refactoring`` add queues.
-        only: keys to keep; identity, totals, recovery survive.
-            ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
-            ``performance``/``defect``/``maintainability``/``advisory``
-            do not: they filter rows into ``unknown_only_keys``.
+            ``semantics``|``recipe``|``what_if``, or a dimension.
+        only: keys to keep. ``biomarkers``/``accuracy``/``refactoring``
+            alias their block; ``performance``/``defect``/``maintainability``
+            do not.
+        limit: rows per ranked list (default 20, 0 for none); cursor: offset.
+        fix_id/finding_id/plan_id/opportunity_id: expand one item by ``id``.
+        refactoring_*/performance_*: queue filters.
+        scope: ``production`` drops non-production code.
+        counts: ``code_shape`` drops the git-derived half of the score.
         repo: usually omitted.
-        limit: max rows per ranked list (default 20), ``0`` for none.
-        cursor: offset into a ranked list.
-        fix_id/finding_id/plan_id: stable ``id``: item or ``act_``, finding, plan.
-        opportunity_id: ``perf...``/``refop...``: the unit, its steps or
-            plan, evidence paged by ``only=["*_evidence"]``.
-        refactoring_view: ``diversified`` (default)|``canonical``|
-            ``file_spread``; _type/_confidence/_effort/_scope filter.
-        performance_view/_context/_boundary/_confidence/_actionability/_sort:
-            queue filters.
-        scope / counts: default ``all``/``everything``. ``production`` drops
-            test files; ``code_shape`` drops git-derived score and findings.
-
     """
     started = perf_counter()
     conflict = _selector_conflict(
@@ -247,6 +239,13 @@ async def get_health(
             recipe="recipe" in req.include_set,
         )
         if detail is not None:
+            _hint_wrong_selector(
+                detail,
+                fix_id=fix_id,
+                finding_id=finding_id,
+                plan_id=plan_id,
+                opportunity_id=opportunity_id,
+            )
             _attach_semantics(detail, req)
             return _note_inapplicable_controls(detail, scope, counts)
         data = await load_health_data(
@@ -272,6 +271,7 @@ async def get_health(
             await _attach_repository_analysis_meta(session, repository, result["_meta"])
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
+            await _attach_analyzer_version(session, repository, result["_meta"])
         _attach_gated(result["_meta"], data)
         _attach_preview(result)
         _attach_withheld(result, data)
@@ -296,12 +296,12 @@ def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
     # once under ``reasons`` and only when the call lists no finding, so a
     # default response grows by a few tokens at most.
     gated: dict[str, Any] = {
-        layer: {k: v["count"] if k in FILE_HOLDS else v for k, v in cells.items()}
+        layer: {k: v["count"] if k in HOLD_REASONS else v for k, v in cells.items()}
         for layer, cells in data.gated.items()
     }
-    held = sorted({k for cells in data.gated.values() for k in cells if k in FILE_HOLDS})
+    held = sorted({k for cells in data.gated.values() for k in cells if k in HOLD_REASONS})
     if held and not data.findings.emitted:
-        gated["reasons"] = {k: FILE_HOLDS[k] for k in held}
+        gated["reasons"] = {k: HOLD_REASONS[k] for k in held}
     meta["gated"] = {**gated, "opt_in": {"include": ["unverified"]}}
 
 
@@ -412,6 +412,7 @@ def _finish(
             "top_findings": findings.findings_total,
             "test_findings": findings.test_findings_total,
             "churn_complexity": len(data.churn_points),
+            "untested_complexity": len(data.crap_rows),
             "refactoring_plans": (
                 data.refactoring_plans.total if data.refactoring_plans is not None else 0
             ),

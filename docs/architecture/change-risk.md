@@ -127,8 +127,10 @@ the full `risk_scales` dictionary) never varies, so MCP returns it only for
 ## Baseline sample
 
 `repowise risk` samples recent commits live; the web UI reads the indexed
-commit history. One walk is reused for every change scored against the same
-anchor and filters in a process, so a long-running MCP server pays for it once.
+commit history. The sample runs back from the change's parent (a range's
+merge-base, uncommitted work's `HEAD`), the same ref its fix history is read at.
+One walk is reused for every change scored against the same anchor and filters
+in a process, so a long-running MCP server pays for it once per anchor.
 
 ## Independent changes grouping
 

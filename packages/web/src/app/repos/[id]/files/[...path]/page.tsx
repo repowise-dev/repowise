@@ -69,6 +69,9 @@ async function renderCoverageCode(
 ): Promise<string | undefined> {
   if (!content) return undefined;
   if (!detail.coverage || detail.coverage.covered_lines.length === 0) return undefined;
+  // Line numbers measured on another version of the file would tint the
+  // wrong lines; the tab says why the source is untinted instead.
+  if (detail.coverage.freshness === "stale") return undefined;
   if (content.length > MAX_HIGHLIGHTED_BYTES) return undefined;
 
   // Resolve the grammar before highlighting rather than catching a throw and
@@ -161,7 +164,9 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
   }
   const covered = detail.coverage;
   const highlightPossible =
-    !!covered && (covered.covered_line_count ?? covered.covered_lines.length) > 0;
+    !!covered &&
+    covered.freshness !== "stale" &&
+    (covered.covered_line_count ?? covered.covered_lines.length) > 0;
   // Gated on not already being here. Land on `?tab=coverage` for a file over
   // the highlight size cap and `coverageCodeHtml` is undefined for good — so
   // without this, every click on the tab you are already on re-ran the whole

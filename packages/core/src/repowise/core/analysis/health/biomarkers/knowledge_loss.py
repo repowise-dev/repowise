@@ -1,4 +1,4 @@
-"""Knowledge Loss — the primary owner is gone or barely present.
+"""Fading ownership — the primary owner is gone or barely present.
 
 Bus-factor risk: the person who wrote most of this file no longer
 contributes. When the primary owner of a hotspot is also the only deep
@@ -16,7 +16,7 @@ Fires when:
 
 The activity gate is what makes this signal point the right way: an
 abandoned-but-stable file is *low* risk (the survivor effect — code
-nobody touches doesn't break), so knowledge loss only matters while the
+nobody touches doesn't break), so fading ownership only matters while the
 code is live and the lost author's intent is still being edited around.
 
 Severity grades on whether the file is also a hotspot.

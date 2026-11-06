@@ -1,4 +1,4 @@
-"""Nested Complexity — deeply indented control flow.
+"""Deep nesting — deeply indented control flow.
 
 Flags functions whose maximum nesting depth exceeds 4. Deep nesting is
 strongly correlated with defect density in published studies.

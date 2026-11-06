@@ -92,8 +92,8 @@ RISK = {
         "src/b.py": {"dependents_count": 6, "hotspot_score": 0.6087, "primary_owner": "Someone"},
     },
     "global_hotspots": [
-        {"file_path": "analyzer.py", "hotspot_score": 0.9998, "fix_count": 56, "primary_owner": "S"},
-        {"file_path": "parser.py", "hotspot_score": 0.9992, "fix_count": 48, "primary_owner": "S"},
+        {"file_path": "analyzer.py", "hotspot_score": 0.9998, "fix_count": 56, "primary_owner": "S", "window": "6 months"},
+        {"file_path": "parser.py", "hotspot_score": 0.9992, "fix_count": 48, "primary_owner": "S", "window": "6 months"},
     ],
     "global_hotspots_total": 1037,
     "_meta": _META,
@@ -142,8 +142,9 @@ def test_health_bands_plots_each_band_file_count():
     assert part["as_of"] == "4c1e31fe3a9b"
 
 
-def test_health_bands_reads_the_overview_distribution_too():
-    overview = {"code_health": {"distribution": HEALTH["distribution"]}}
+def test_health_bands_reads_the_overview_band_counts_too():
+    bands = HEALTH["distribution"]["bands"]
+    overview = {"code_health": {"files_by_band": {b: v["files"] for b, v in bands.items()}}}
     part = _build(overview, "overview", "get_overview", "health.bands")
     assert sum(_series(part, "files")) == 5034
     assert part["as_of"] is None
@@ -197,6 +198,8 @@ def test_risk_hotspots_plot_fix_counts_not_scores():
     assert _series(part, "fix_count") == [56]
     assert part["data"]["total_rows"] == 1037
     assert part["data"]["truncated"] is True
+    # The counts' window is named, so they never read as 90-day churn.
+    assert "in the last 6 months" in str(part)
 
 
 def test_generic_table_over_a_list_keeps_values_and_the_total():

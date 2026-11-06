@@ -18,6 +18,7 @@ import asyncio
 from pathlib import Path
 
 from repowise.cli.commands.doctor_cmd import repo_checks
+from repowise.cli.commands.doctor_cmd._checks import stores
 
 PAGE_IN_BOTH = "file_page:kept.py"
 PAGE_MISSING = "file_page:dropped.py"
@@ -120,16 +121,16 @@ def test_a_failed_reconciliation_no_longer_passes_as_a_bare_note(tmp_path: Path)
     # break has to be inside this check and nowhere else — the earlier
     # database row shares most of the same calls, and failing that one first
     # means the reconciliation never runs at all.
-    original = repo_checks._decision_vector_ids
+    original = stores._decision_vector_ids
 
     async def _boom(*_a: object, **_kw: object):
         raise RuntimeError("store unreadable")
 
-    repo_checks._decision_vector_ids = _boom
+    stores._decision_vector_ids = _boom
     try:
         broken = _rows(repo_path)
     finally:
-        repo_checks._decision_vector_ids = original
+        stores._decision_vector_ids = original
 
     assert "Store consistency" in broken
     _ok, detail = broken["Store consistency"]

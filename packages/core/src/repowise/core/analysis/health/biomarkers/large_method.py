@@ -1,19 +1,21 @@
-"""Large Method — function bodies that exceed a healthy line budget.
+"""Long function — function bodies that exceed a healthy line budget.
 
-Fires on NLOC once a function carries *some* branching, so it measures
-length-with-substance rather than pure size. A long but perfectly flat
-body (a big config/data literal, a wall of sequential assignments — CCN 1)
-is a layout artefact, not a maintainability smell, and is excluded by the
-``_CCN_FLOOR`` gate. The complementary case — a short-but-tangled 60-line
-function with CCN 12 — is handled by ``complex_method``. Both can fire on
-the same function; the scorer caps the size_and_complexity category so
-they don't double-count.
+Counts lines of code, JSX markup lines excluded, once the judged CCN shows some
+branching: a long flat body (a data literal, a dispatch of one-line arms) is
+layout. ``complex_method`` covers short but tangled functions.
 """
 
 from __future__ import annotations
 
+from ..complexity.dispatch import judged_ccn
+from ..complexity.models import FunctionComplexity
 from ..models import Severity
 from .base import BiomarkerResult, FileContext, shape_details
+
+
+def _reason(fn: FunctionComplexity, code_lines: int, span: int) -> str:
+    besides = f" besides {fn.markup_nloc} of JSX markup" if fn.markup_nloc else ""
+    return f"{fn.name} is {code_lines} lines of code{besides} ({span} with blanks and comments)"
 
 
 class LargeMethodDetector:
@@ -21,16 +23,9 @@ class LargeMethodDetector:
     category = "size_and_complexity"
 
     _NLOC_THRESHOLD = 60
-    # Minimal branching required so a long-but-flat body doesn't read as a
-    # complexity smell. Set to 3 (not 2) so a flat ``match``/``case`` dispatch
-    # table — every arm a single-expression return, functionally a data literal
-    # — is excluded too: the walker gives it CCN 2 (base 1 + the lone ``match``
-    # keyword point, no per-arm counting), the exact "layout artefact" shape
-    # this floor exists to filter. Tradeoff: a long body whose *only* branch is
-    # a single ``if``/``for`` also lands at CCN 2 and is now skipped. That is an
-    # acceptable loss — a 60-line function with one branch is weak evidence of a
-    # maintainability problem, and distinguishing it from a flat match would need
-    # a per-function flat-match flag threaded from the walker (a larger change).
+    # 3, not 2: a flat ``match`` of single-expression arms scores CCN 2 (one point
+    # for the keyword), the layout artefact this floor filters. A long body with
+    # one ``if`` lands at 2 as well and is skipped, which is weak evidence anyway.
     _CCN_FLOOR = 3
 
     @classmethod
@@ -51,9 +46,17 @@ class LargeMethodDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            severity = self.severity_for(fn.ccn, fn.nloc)
+            code_lines = fn.nloc - fn.markup_nloc
+            judged = judged_ccn(fn)
+            severity = self.severity_for(judged, code_lines)
             if severity is None:
                 continue
+            span = fn.end_line - fn.start_line + 1
+            details = {"nloc": fn.nloc, "ccn": fn.ccn, "span": span, **shape_details(fn)}
+            if judged != fn.ccn:
+                details["judged_ccn"] = judged
+            if fn.markup_nloc:
+                details["markup_nloc"] = fn.markup_nloc
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -61,12 +64,8 @@ class LargeMethodDetector:
                     function_name=fn.name,
                     line_start=fn.start_line,
                     line_end=fn.end_line,
-                    details={
-                        "nloc": fn.nloc,
-                        "ccn": fn.ccn,
-                        **shape_details(fn),
-                    },
-                    reason=f"{fn.name} is {fn.nloc} lines long",
+                    details=details,
+                    reason=_reason(fn, code_lines, span),
                 )
             )
         return out

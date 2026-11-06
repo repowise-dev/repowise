@@ -24,6 +24,8 @@ import posixpath
 import re
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.pyparse import parse_python
+
 from ...test_paths import is_test_path
 from ..resolvers import ResolverContext
 from ..source_text import source_bytes
@@ -187,7 +189,7 @@ def _bind_function_args(scope: _Scope, args: ast.arguments) -> None:
 def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> list[str]:
     """Indexed code files *test_path* names via Path(__file__) ancestor anchors or variables."""
     try:
-        tree = ast.parse(text)
+        tree = parse_python(text)
     except Exception:
         return []
 

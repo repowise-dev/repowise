@@ -16,7 +16,9 @@ from repowise.core.analysis.decisions.lifecycle import (
     HISTORY_CURRENCIES,
     is_governing,
 )
+from repowise.core.analysis.decisions.review_queue import ReviewSignals, review_queue_order
 from repowise.core.persistence import crud, decision_graph
+from repowise.core.persistence.crud.decision_health import decision_hotspot_files
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._local_git import local_repo_path
@@ -106,6 +108,42 @@ def _page_of_lane(decisions: list, currencies: dict, lane: str, page: slice) -> 
     return in_lane[page]
 
 
+def _scan_window(
+    lane: str | None, review: bool, limit: int, offset: int
+) -> tuple[int | None, int]:
+    """The ``(limit, offset)`` to read before the lane is filtered and paged.
+
+    The review order reads hotspot and contract signals SQL does not hold, so
+    it ranks the whole lane and pages after: ranking one page would put the
+    most urgent record of page two below the least urgent of page one. A
+    currency-derived lane over-fetches the accepted set for the same reason.
+    """
+    if review:
+        return None, 0
+    if lane is not None and lane != "candidates":
+        return max(_LANE_SCAN_CAP, offset + limit), 0
+    return limit, offset
+
+
+async def _review_page(session, repo_id: str, decisions: list, currencies: dict, lane, page: slice):
+    """*page* of *lane* in review order, with the hotspot files of every row read."""
+    if lane is not None:
+        decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
+    hot = await decision_hotspot_files(session, repo_id, decisions)
+    return review_queue_order(decisions, lambda d: _review_signals(d, hot))[page], hot
+
+
+def _review_signals(record, hot: dict[str, list[str]]) -> ReviewSignals:
+    """What the review order reads about *record*."""
+    return ReviewSignals(
+        acceptable=not crud.record_blockers(record),
+        hot_files=len(hot.get(record.id, ())),
+        staleness=record.staleness_score or 0.0,
+        confidence=record.confidence or 0.0,
+        created_at=record.created_at,
+    )
+
+
 async def _attach_evidence(session: AsyncSession, items: list[DecisionRecordResponse]) -> None:
     """Give each row its evidence count and its top-ranked quote as a preview."""
     if not items:
@@ -163,8 +201,12 @@ async def list_decisions(
     offset: int = Query(0, ge=0),
     sort: str = Query(
         "priority",
-        pattern="^(priority|recent)$",
-        description="priority: confirmed rules first, then likeliest proposals. recent: newest first.",
+        pattern="^(priority|recent|review)$",
+        description=(
+            "priority: confirmed rules first, then likeliest proposals. recent: newest "
+            "first. review: what most needs a person first (acceptable, hotspot files, "
+            "scope changed), ranked over the whole lane before paging."
+        ),
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[DecisionRecordResponse]:
@@ -183,7 +225,8 @@ async def list_decisions(
     # Acceptance is a SQL predicate, but every lane except ``candidates`` also
     # filters on a derived currency, so those over-fetch the accepted set (small,
     # since each acceptance is a human action) and are paged after derivation.
-    derived = lane is not None and lane != "candidates"
+    review = sort == "review"
+    scan_limit, scan_offset = _scan_window(lane, review, limit, offset)
     decisions = await crud.list_decisions(
         session,
         repo_id,
@@ -196,17 +239,23 @@ async def list_decisions(
         # History has to reach a decision that was accepted and then dismissed,
         # which carries a tombstone status the default listing hides.
         include_dismissed=lane == "history",
-        limit=max(_LANE_SCAN_CAP, offset + limit) if derived else limit,
-        offset=0 if derived else offset,
-        sort=sort,
+        limit=scan_limit,
+        offset=scan_offset,
+        sort="priority" if review else sort,
     )
     currencies = await crud.decision_currencies(session, repo_id, decisions)
-    if lane is not None:
-        decisions = _page_of_lane(decisions, currencies, lane, slice(offset, offset + limit))
+    page = slice(offset, offset + limit)
+    if review:
+        decisions, hot = await _review_page(session, repo_id, decisions, currencies, lane, page)
+    else:
+        if lane is not None:
+            decisions = _page_of_lane(decisions, currencies, lane, page)
+        hot = await decision_hotspot_files(session, repo_id, decisions)
     signatures = await crud.decision_signatures(session, repo_id, decisions)
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
     for item in items:
         item.currency = currencies.get(item.id)
+        item.hotspot_files = hot.get(item.id, [])
         _attach_signature(item, signatures.get(item.id))
     await _attach_evidence(session, items)
     return items
@@ -586,8 +635,8 @@ async def create_decision(
     be checked against the code or reach an agent editing a governed file, and
     a record stating no reason, which has not said why it binds. Discarding the
     fields the author did fill in would be worse than keeping the entry
-    unaccepted. The response's ``status`` says which of the two happened, and a
-    form can predict it from the same one field.
+    unaccepted. The response's ``currency`` says which of the two happened, and
+    a candidate's ``blockers`` name what is missing, such as decision text.
     """
     # ``upsert_decision`` dedups on the title and overwrites the scope, so a
     # scope-less re-post of an accepted decision would silently withdraw what
@@ -636,7 +685,10 @@ async def create_decision(
         # A refused acceptance (e.g. no rationale) keeps the record as a candidate.
         with contextlib.suppress(crud.AcceptanceRefusedError):
             await crud.accept_decision(session, rec, accepter="web", kind="person")
-    return await _one_with_signature(session, repo_id, rec)
+    item = await _one_with_signature(session, repo_id, rec)
+    if item.currency is None:
+        item.blockers = crud.record_blockers(rec)
+    return item
 
 
 async def _transition_status(
@@ -645,8 +697,13 @@ async def _transition_status(
     decision_id: str,
     status: str,
     superseded_by: str | None,
+    reason: str = "",
 ):
-    """Move a decision to *status* as a person on the web, or 400/404."""
+    """Move a decision to *status* as a person on the web, or 400/404.
+
+    A refused confirm answers 400 with ``{"message", "blockers"}`` so the page
+    can name each thing the record is missing.
+    """
     # The successor is a caller-supplied id too, and storing a retired one
     # would record a pointer that no longer resolves.
     if superseded_by is not None:
@@ -665,7 +722,16 @@ async def _transition_status(
             superseded_by=superseded_by,
             accepter="web",
             kind="person",
+            reason=reason,
         )
+    except crud.AcceptanceRefusedError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "This decision cannot be confirmed as it stands.",
+                "blockers": exc.blockers,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if rec is None:
@@ -696,7 +762,12 @@ async def patch_decision(
 
     if body.status is not None:
         rec = await _transition_status(
-            session, repo_id, decision_id, body.status, body.superseded_by
+            session,
+            repo_id,
+            decision_id,
+            body.status,
+            body.superseded_by,
+            body.reason or "",
         )
     elif body.superseded_by is not None:
         raise HTTPException(
@@ -715,4 +786,28 @@ async def patch_decision(
             raise HTTPException(status_code=404, detail="Decision not found")
 
     assert rec is not None
+    return await _one_with_signature(session, repo_id, rec)
+
+
+@router.post(
+    "/api/repos/{repo_id}/decisions/{decision_id}/reaffirm",
+    response_model=DecisionRecordResponse,
+)
+async def reaffirm_decision(
+    repo_id: str,
+    decision_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionRecordResponse:
+    """Re-accept a governing decision after review, as a person on the web.
+
+    What clears ``needs_review`` once someone has re-read the decision. Not a
+    status transition: the status stays ``active`` and the acceptance log gains
+    a ``reaffirmed`` row. 400 for a candidate or a withdrawn decision, which
+    need a fresh acceptance instead.
+    """
+    rec = await _decision_in_repo(session, repo_id, decision_id)
+    try:
+        await crud.reaffirm_decision(session, rec, accepter="web", kind="person")
+    except crud.AcceptanceRefusedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await _one_with_signature(session, repo_id, rec)

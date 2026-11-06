@@ -7,11 +7,13 @@ snapshot, the scalars get_health's trend reads.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.rows import field
 from repowise.server.chat_datasets import (
     AVERAGES,
     SUMS,
@@ -44,7 +46,6 @@ from repowise.server.chat_datasets import (
 )
 async def load_changes(ctx: LoadContext) -> list[dict[str, Any]]:
     from repowise.core.persistence.models import Change
-    from repowise.server.mcp_server._changes import _week
 
     q = select(
         Change.merged_at,
@@ -54,8 +55,21 @@ async def load_changes(ctx: LoadContext) -> list[dict[str, Any]]:
         Change.lines_added,
         Change.lines_deleted,
     ).where(Change.repository_id == ctx.repository.id)
+    return changes_rows(await ctx.session.execute(q))
+
+
+def changes_rows(changes: Iterable[Any]) -> list[dict[str, Any]]:
+    """The ``changes`` dataset's rows over merged-change records, oldest day first.
+
+    Each record holds ``merged_at``, ``category``, ``shape``,
+    ``files_changed``, ``lines_added`` and ``lines_deleted``; one never
+    merged is left out.
+    """
+    from repowise.server.mcp_server._changes import _week
+
     rows = []
-    for merged_at, category, shape, files, added, deleted in await ctx.session.execute(q):
+    for c in changes:
+        merged_at = field(c, "merged_at")
         if merged_at is None:
             continue
         moment = merged_at if merged_at.tzinfo else merged_at.replace(tzinfo=UTC)
@@ -64,11 +78,11 @@ async def load_changes(ctx: LoadContext) -> list[dict[str, Any]]:
                 "date": moment.date().isoformat(),
                 "week": _week(moment),
                 "month": moment.strftime("%Y-%m"),
-                "category": category,
-                "shape": shape,
-                "files_changed": files,
-                "lines_added": added,
-                "lines_deleted": deleted,
+                "category": field(c, "category"),
+                "shape": field(c, "shape"),
+                "files_changed": field(c, "files_changed"),
+                "lines_added": field(c, "lines_added"),
+                "lines_deleted": field(c, "lines_deleted"),
             }
         )
     rows.sort(key=lambda r: r["date"])
@@ -94,11 +108,22 @@ async def load_health_trend(ctx: LoadContext) -> list[dict[str, Any]]:
 
     # Scalars only: whole snapshot rows carry every file's score.
     headline = await get_health_snapshot_headline(ctx.session, ctx.repository.id, recent=50)
-    return [
-        {
-            "taken_at": s.taken_at.isoformat(timespec="seconds"),
-            "average_health": round(s.average_health, 2),
-            "hotspot_health": round(s.hotspot_health, 2) if s.hotspot_health is not None else None,
-        }
-        for s in headline.recent
-    ]
+    return health_trend_rows(headline.recent)
+
+
+def health_trend_rows(snapshots: Iterable[Any]) -> list[dict[str, Any]]:
+    """The ``health_trend`` dataset's rows over snapshot scalars, in the order given.
+
+    Each record holds ``taken_at``, ``average_health`` and ``hotspot_health``.
+    """
+    rows = []
+    for s in snapshots:
+        hotspot = field(s, "hotspot_health")
+        rows.append(
+            {
+                "taken_at": field(s, "taken_at").isoformat(timespec="seconds"),
+                "average_health": round(field(s, "average_health"), 2),
+                "hotspot_health": round(hotspot, 2) if hotspot is not None else None,
+            }
+        )
+    return rows

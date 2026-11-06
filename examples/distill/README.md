@@ -14,7 +14,7 @@ required.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 `distill` still works without a wiki: it wraps the command, picks a filter by

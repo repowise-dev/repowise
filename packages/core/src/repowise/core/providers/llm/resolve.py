@@ -450,15 +450,28 @@ def _base_url_steps(ctx: _Context, chosen: str) -> list[Step]:
     return steps
 
 
-def _autodetect(ctx: _Context) -> str | None:
+def _credentialed(ctx: _Context) -> Iterable[str]:
     keys = ctx.global_config.get("keys")
     stored = keys if isinstance(keys, Mapping) else {}
     for name in PROVIDER_AUTODETECT_ORDER:
         if not ctx.counts(name):
             continue
         if provider_credentials_present(name, ctx.getenv) or _clean(stored.get(name)):
-            return name
-    return None
+            yield name
+
+
+def _autodetect(ctx: _Context) -> str | None:
+    return next(iter(_credentialed(ctx)), None)
+
+
+def credentialed_providers(repo_path: Path | str | None = None) -> tuple[str, ...]:
+    """Every provider auto-detection could pick for *repo_path*, in its order.
+
+    The same keys and order :func:`resolve_llm` reads (process env, the repo's
+    ``.env``, stored keys), so a picker that defaults to the first of these
+    agrees with what ``--yes`` would run.
+    """
+    return tuple(_credentialed(_context(repo_path, _Layer("flag", None, None), None, None)))
 
 
 def resolve_api_key(
@@ -648,6 +661,7 @@ __all__ = [
     "base_url_trusted",
     "cached_read",
     "clear_cache",
+    "credentialed_providers",
     "first_found",
     "forget_cached",
     "found",

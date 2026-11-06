@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from repowise.core.co_change import CoChangePartner
-from repowise.core.registry.plugins import SeamRegistry, load_plugins
+from repowise.core.registry.plugins import SeamRegistry
 from repowise.core.stack_trace import Frame, map_to_repo_paths, parse_trace
 
 RRF_K = 60
@@ -167,14 +167,13 @@ def rank_suspects(
     *prepared* is :func:`prepare`'s result for this symptom and these repo
     files, when the caller already has it. A signal that raises did not fire.
     """
-    load_plugins()
-    names = [n for n in suspect_signals.names if signals is None or n in signals]
+    selected = [(n, s) for n, s in suspect_signals.all() if signals is None or n in signals]
     prepared = prepared or prepare(symptom, ctx)
     fused: dict[str, float] = {c.change_id: 0.0 for c in candidates}
     fired: dict[str, dict[str, SignalRank]] = {c.change_id: {} for c in candidates}
-    for name in names:
+    for name, signal in selected:
         try:
-            found = suspect_signals.get(name).rank(prepared, candidates, ctx)
+            found = signal.rank(prepared, candidates, ctx)
             hits = {cid: hit for cid, hit in found.items() if cid in fused}
         except Exception:
             _log.debug("suspect signal %s failed; it did not fire", name, exc_info=True)

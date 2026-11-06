@@ -11,6 +11,7 @@ from repowise.core.components.resolve import (
     derive_from_directories,
     derive_from_modules,
     derive_from_services,
+    repo_wide_when_flat,
     resolve_components,
 )
 from repowise.core.components.rollup import rollup_component
@@ -32,6 +33,55 @@ def test_directories_are_the_fallback_and_root_files_stay_unassigned():
     assert all(c.source == "directory" for c in resolved.components)
     assert resolved.files["tools"] == ["tools/gen.py"]
     assert resolved.unassigned == ["README.md"]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [FILES, ["README.md", "packages/a/x.py", "packages/b/y.py", "apps/w/z.py"]],
+)
+def test_a_repo_with_places_keeps_its_derived_components(files):
+    derived = derive_from_directories(files)
+    assert repo_wide_when_flat(derived, files, "shop") is derived
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # Flat: every file at the root (a small Go or Node service).
+        [".github/ci.yml", "main.go", "handlers.go", "go.mod"],
+        # Layout and test directories only.
+        ["README.md", "src/main/java/App.java", "src/main/java/Api.java", "test/AppTest.java"],
+        # Most files at the root, beside a directory that names a place.
+        ["a.go", "b.go", "c.go", "cmd/svc/main.go"],
+        # Code at the root, beside a larger folder of docs that names a place.
+        ["a.go", "b.go", "c.go", "d.go", "e.go", *(f"docs/p{i}.md" for i in range(6))],
+    ],
+)
+def test_a_flat_or_layout_only_repo_is_one_repo_wide_component(files):
+    derived = repo_wide_when_flat(derive_from_directories(files), files, "Cart Service")
+    resolved = resolve_components([], derived, files)
+
+    (comp,) = resolved.components
+    assert (comp.name, comp.source) == ("Cart-Service", "repo")
+    assert resolved.files[comp.name] == sorted(p for p in files if not p.startswith("."))
+    assert resolved.unassigned == sorted(p for p in files if p.startswith("."))
+
+
+def test_a_module_page_matching_no_file_does_not_divide_the_repo():
+    # The structural wiki's "root" module names root-level files, not a directory.
+    files = ["service.go", "transport.go", "cmd/svc/main.go", "test/unit.py"]
+    derived = repo_wide_when_flat(derive_from_modules([("root", "Root")]), files, "catalogue")
+    assert [c.name for c in resolve_components([], derived, files).components] == ["catalogue"]
+
+
+def test_a_declared_twin_of_the_repo_wide_component_claims_the_repo():
+    files = ["main.go", "test/main_test.go"]
+    derived = repo_wide_when_flat(derive_from_directories(files), files, "cart")
+    declared = [Component(name="cart", owner="group:default/shop")]
+    resolved = resolve_components(declared, derived, files)
+
+    assert [(c.name, c.owner) for c in resolved.components] == [("cart", "group:default/shop")]
+    assert resolved.files["cart"] == files
 
 
 def test_module_pages_assign_each_file_to_the_deepest_module():

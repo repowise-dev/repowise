@@ -36,6 +36,6 @@ def test_only_the_local_init_command_opts_in() -> None:
         if "derive_environment_facts=True" in py.read_text(encoding="utf-8", errors="ignore")
     }
     assert opted_in == {
-        "repowise/cli/commands/init_cmd/command.py",
+        "repowise/cli/commands/init_cmd/_ingest.py",
         "repowise/cli/commands/init_cmd/workspace.py",
     }, opted_in

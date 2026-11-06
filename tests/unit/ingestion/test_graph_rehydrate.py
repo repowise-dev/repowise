@@ -230,6 +230,26 @@ def test_parse_only_symbol_attrs_come_back_from_the_reparse():
     assert node["decorators"] == ["@override"]
 
 
+def test_a_redefined_name_gets_the_decorators_of_the_definition_its_node_kept():
+    def sym(start: int, decorators: list[str]) -> Symbol:
+        return Symbol(id="a.py::f", name="f", qualified_name="a.f", kind="function",
+                      signature="f()", start_line=start, end_line=start + 2, docstring=None,
+                      decorators=decorators)
+
+    parsed = _parsed("a.py")
+    # A plain definition, then the decorated one that rebinds the name.
+    parsed.symbols += [sym(1, []), sym(10, ["@mcp.tool()"])]
+    original = GraphBuilder()
+    original.add_file(parsed)
+    original.build()
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    hydrated.restore_parse_only_attrs([parsed])
+    node = hydrated.graph().nodes["a.py::f"]
+    assert node["start_line"] == original.graph().nodes["a.py::f"]["start_line"] == 10
+    assert node["decorators"] == ["@mcp.tool()"]
+
+
 def test_type_only_edges_survive_rehydration_and_suppress_cycles():
     builder = GraphBuilder()
     builder.add_file(_parsed("a.py", [_imp("b")]))

@@ -218,7 +218,8 @@ def fit_to_budget(
     *order* is the tool's cheapest-loss-first ranking of the blocks it can live
     without. ``"parent.child"`` sheds a nested block; ``"key[]"`` drops rows
     from the tail of a ranked list instead of the list itself, keeping the
-    first. Shedding stops the moment the response fits, so an under-budget
+    first; ``"key[].field"`` and ``"key[].field[]"`` do the same inside each
+    row of a list (:func:`_shed_in_rows`). Shedding stops the moment the response fits, so an under-budget
     response — the common case — is untouched.
 
     *entitled* names stems the caller asked for; their ``[]`` passes stop at
@@ -234,6 +235,9 @@ def fit_to_budget(
     for key in order:
         if not limits.exceeded(response):
             break
+        if "[]." in key:
+            _shed_in_rows(response, key, collector, limits, shed_stem(key) in requested)
+            continue
         container, _, leaf = key.rpartition(".")
         target: Any = response
         for part in container.split(".") if container else ():
@@ -250,6 +254,49 @@ def fit_to_budget(
                 _record_reduction(response, target, key, leaf, value, emitted=0)
             response["truncated"] = True
     return response
+
+
+def _shed_in_rows(
+    response: dict[str, Any],
+    key: str,
+    collector: OmissionCollector,
+    limits: _ShedLimits,
+    requested: bool,
+) -> None:
+    """Shed one field inside every row of a list, the heaviest row first.
+
+    ``"parent.rows[].field"`` drops *field* from rows; ``"parent.rows[].field[]"``
+    trims each row's *field* list from its tail instead. The rest of each row
+    stays, so a block made of rows keeps every row's headline.
+    """
+    path, _, leaf = key.partition("[].")
+    rows: Any = response
+    for part in path.split("."):
+        rows = rows.get(part) if isinstance(rows, dict) else None
+    if not isinstance(rows, list):
+        return
+    name = shed_stem(leaf)
+    heaviest = sorted(
+        (i for i, row in enumerate(rows) if isinstance(row, dict) and row.get(name)),
+        key=lambda i: len(json.dumps(rows[i][name], default=str)),
+        reverse=True,
+    )
+    for i in heaviest:
+        if not limits.exceeded(response):
+            return
+        row, label = rows[i], f"{path}[{i}].{name}"
+        if leaf.endswith("[]") or isinstance(row[name], list):
+            # Past the floor a list still goes row by row, so it loses only what the fit needs.
+            keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
+            _shed_tail(response, row, name, label, collector, limits, keep)
+            if not row[name]:
+                row.pop(name)
+            continue
+        value = row.pop(name)
+        collector.add(label, value)
+        if limits.record_counts:
+            _record_reduction(response, row, label, name, value, emitted=0)
+        response["truncated"] = True
 
 
 def _shed_tail(

@@ -18,6 +18,11 @@ from repowise.core.analysis.health.fix_first import FixItem
 CoverageStatus = Literal["measured", "stale", "unknown"]
 
 
+#: ``via`` of a file only tests that replace it with a double reach: zero tests
+#: run it, which is not the claim that none reaches it.
+MOCKED_ONLY_VIA = "mocked-only"
+
+
 @dataclass(frozen=True, slots=True)
 class LeadFinding:
     """A file's strongest code-shape finding: the thing an edit can fix."""
@@ -27,6 +32,9 @@ class LeadFinding:
     function: str | None
     line: int | None
     reason: str
+    #: Its function is worth breaking up first by the shared rule
+    #: (``health.models.lead_and_worth``): only then is "simplify it" the step.
+    worth: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +58,8 @@ class FileFacts:
     #: Test files the code graph says reach this file; ``None`` when not looked
     #: up (only fragile files with no measured coverage are) or the map failed.
     tests_reaching: int | None = None
-    #: Which walk found them (``call-graph`` or ``import-graph``).
+    #: Which walk found them (``call-graph`` or ``import-graph``), or
+    #: :data:`MOCKED_ONLY_VIA` when every test reaching it replaces it.
     tests_reaching_via: str | None = None
 
 
@@ -68,6 +77,13 @@ class RecentFinding:
     change_kind: str
     line: int | None
     reason: str = ""
+    #: ``performance`` or ``coverage`` for a defect-class
+    #: finding; ``shape`` for a code-shape marker (a long or nested method).
+    kind: str = "shape"
+
+    @property
+    def defect(self) -> bool:
+        return self.kind != "shape"
 
 
 @dataclass(frozen=True, slots=True)

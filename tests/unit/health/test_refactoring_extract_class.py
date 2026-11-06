@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from repowise.core.analysis.health.complexity import ClassComplexity, FunctionComplexity
 from repowise.core.analysis.health.complexity.walker import walk_file
+from repowise.core.analysis.health.gain import removal_gain
 from repowise.core.analysis.health.refactoring import (
     RefactoringContext,
     detect_refactorings,
@@ -132,7 +133,9 @@ def test_detector_emits_split_for_god_class():
     s = sugs[0]
     assert s.refactoring_type == "extract_class"
     assert s.target_symbol == "TwoJobs"
-    assert s.impact_delta == 2.4
+    # The split answers the whole low_cohesion finding: the file rescored without it.
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 1.0)]) > 0
+    assert s.evidence["recovered_share"] == 1.0
     assert s.source_biomarker == "low_cohesion"
     assert s.blast_radius == {"dependents_count": 5}
     assert s.evidence["lcom4"] == 2

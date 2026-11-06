@@ -216,22 +216,31 @@ async def tests_for_functions(
 async def tests_in_files(
     session: AsyncSession, repository_id: str, paths: Iterable[str]
 ) -> dict[str, tuple[MappedTest, ...]]:
-    """:func:`tests_for_functions` for every function in *paths*, in one statement."""
+    """:func:`tests_for_functions` for every function in *paths*, in bounded statements."""
     files = sorted(set(paths))
     if not files:
         return {}
-    result = await session.execute(
-        select(FunctionFact.symbol_id, FunctionFact.tests_json)
-        .join(
-            GraphNode,
-            and_(
-                GraphNode.repository_id == FunctionFact.repository_id,
-                GraphNode.node_id == FunctionFact.symbol_id,
-            ),
+    out: dict[str, tuple[MappedTest, ...]] = {}
+    # A re-score over the whole repository asks for every file at once, and the
+    # number of bound parameters per statement is capped, so the set goes out in
+    # pieces. Each row belongs to exactly one file, so the result is the same.
+    for start in range(0, len(files), _CHUNK):
+        result = await session.execute(
+            select(FunctionFact.symbol_id, FunctionFact.tests_json)
+            .join(
+                GraphNode,
+                and_(
+                    GraphNode.repository_id == FunctionFact.repository_id,
+                    GraphNode.node_id == FunctionFact.symbol_id,
+                ),
+            )
+            .where(
+                FunctionFact.repository_id == repository_id,
+                GraphNode.file_path.in_(files[start : start + _CHUNK]),
+            )
         )
-        .where(FunctionFact.repository_id == repository_id, GraphNode.file_path.in_(files))
-    )
-    return dict(_decoded(result.all(), None))
+        out.update(_decoded(result.all(), None))
+    return out
 
 
 def _decoded(

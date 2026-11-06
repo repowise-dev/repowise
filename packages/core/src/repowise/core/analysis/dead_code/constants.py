@@ -47,6 +47,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.sh",
     "*.bash",
     "*.zsh",
+    # An Apex trigger is run by the platform on DML, and an anonymous-Apex
+    # script by a person or a CI job; nothing names either.
+    "*.trigger",
+    "*.apex",
     "*__init__.py",
     "*__main__.py",
     "*conftest.py",
@@ -855,6 +859,8 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",  # JAX-WS
+    "WebServiceProvider",
     "ApplicationScoped",
     "RequestScoped",
     "SessionScoped",
@@ -897,6 +903,17 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Module",
     "Provides",
     "Binds",
+    # Metro / Anvil: the generated graph constructs a contributed binding and
+    # loads a contributed binding container, so nothing names either.
+    "ContributesBinding",
+    "ContributesTo",
+    "ContributesIntoSet",
+    "ContributesIntoMap",
+    "ContributesMultibinding",
+    "BindingContainer",
+    # Glide: its annotation processor generates ``GeneratedAppGlideModule``,
+    # which instantiates the annotated class. Nothing in source names it.
+    "GlideModule",
     # Compose previews, rendered by the IDE (prefix match covers
     # ``PreviewLightDark``, ``PreviewScreenSizes`` and the other presets).
     "Preview",
@@ -1089,9 +1106,13 @@ _PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
 _BARE_NAME_USE_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "scala"})
 
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
-# matched against the raw decorator text rather than its base name.
-_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
-    ("SuppressWarnings", "unused"),
+# matched against the raw decorator text rather than its base name. The third
+# field asks for a whole quoted argument, case-insensitive: Kotlin writes both
+# ``unused`` and ``UNUSED``, and ``UNUSED_PARAMETER`` / ``UNUSED_VARIABLE``
+# silence a warning inside the body, not one about the declaration.
+_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str, bool], ...] = (
+    ("SuppressWarnings", "unused", False),
+    ("Suppress", "unused", True),
 )
 
 # Inner class names a framework reads off the class that declares them, so no

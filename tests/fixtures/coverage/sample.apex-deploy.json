@@ -1,0 +1,44 @@
+{
+  "status": 0,
+  "result": {
+    "details": {
+      "runTestResult": {
+        "numTestsRun": "3",
+        "codeCoverage": [
+          {
+            "id": "01p000000000001AAA",
+            "name": "AccountService",
+            "type": "Class",
+            "numLocations": "28",
+            "numLocationsNotCovered": "6",
+            "locationsNotCovered": [
+              {"line": "18", "column": "0", "numExecutions": "0", "time": "0"}
+            ]
+          },
+          {
+            "id": "01q000000000001AAA",
+            "name": "AccountTrigger",
+            "type": "Trigger",
+            "numLocations": "10",
+            "numLocationsNotCovered": 4
+          },
+          {
+            "id": "01p000000000002AAA",
+            "name": "FullyCovered",
+            "type": "Class",
+            "numLocations": 12,
+            "numLocationsNotCovered": 0
+          },
+          {
+            "id": "01p000000000003AAA",
+            "name": "IAccountService",
+            "type": "Class",
+            "numLocations": "0",
+            "numLocationsNotCovered": "0"
+          }
+        ]
+      }
+    }
+  },
+  "warnings": []
+}

@@ -307,6 +307,137 @@ def _repo_relative_touches(
     return out
 
 
+def _call_text(name: str, use_input: dict[str, Any]) -> str:
+    """The command a tool call ran, or its name and JSON input."""
+    command = use_input.get("command")
+    if isinstance(command, str):
+        return command
+    return f"{name} {json.dumps(use_input, ensure_ascii=False)}"
+
+
+class _SessionMiner:
+    """Streaming gate state for one session; bounded regardless of transcript size."""
+
+    def __init__(self, repo_root: Any, edit_tools: Container[str]) -> None:
+        self.repo_root = repo_root
+        self.edit_tools = edit_tools
+        self.candidates: list[SessionCandidate] = []
+        #: (path, intent) for the recent file-touching calls, so a candidate opened
+        #: here knows which of the files in play were being changed at the time.
+        self.trailing_files: deque[tuple[str, str]] = deque(maxlen=_TRAILING_FILES)
+        #: Candidates still collecting forward files, with their remaining budget.
+        self.open_candidates: list[list[Any]] = []  # [candidate, remaining_tool_events]
+        #: tool_use id -> (tool name, input) awaiting its result.
+        self.pending: dict[str, tuple[str, dict[str, Any]]] = {}
+        #: (anchor, consecutive failure count, last failure text, last input repr)
+        self.streak: list[Any] = ["", 0, "", ""]
+        #: An anchor that just hit the failure threshold, awaiting the pivot.
+        self.open_dead_end: list[Any] | None = None  # [anchor, error, attempt, budget]
+
+    def _add(self, kind: str, quotes: list[str], event: Event) -> None:
+        candidate = SessionCandidate(
+            kind=kind,
+            quotes=quotes,
+            files=list(dict.fromkeys(p for p, _ in self.trailing_files)),
+            edited={p for p, i in self.trailing_files if i == "edit"},
+            session_id=event.session_id,
+            ts=event.ts,
+        )
+        self.candidates.append(candidate)
+        self.open_candidates.append([candidate, _FORWARD_FILE_EVENTS])
+
+    def feed(self, event: Event) -> None:
+        if event.kind == "assistant" and event.tool_uses:
+            self._on_tool_uses(event)
+        if event.tool_results:
+            self._on_tool_results(event)
+            return
+        if is_prose_user_text(event):
+            quotes = _correction_quotes(event)
+            if quotes:
+                self._add("user_correction", quotes, event)
+            # Falls through: a brief with a correction can also state choices.
+        if _is_choice_prose(event):
+            sentences = _choice_sentences(event.text)
+            if sentences:
+                self._add("explicit_choice", [_clip(s) for s in sentences], event)
+
+    def _on_tool_uses(self, event: Event) -> None:
+        touches = _repo_relative_touches(
+            event_file_touches(event, edit_tools=self.edit_tools), self.repo_root
+        )
+        files = [path for path, _ in touches]
+        self.trailing_files.extend(touches)
+        changed = {path for path, intent in touches if intent == "edit"}
+        for entry in self.open_candidates:
+            entry[0].files.extend(f for f in files if f not in entry[0].files)
+            entry[0].edited |= changed
+            entry[1] -= 1
+        self.open_candidates = [e for e in self.open_candidates if e[1] > 0]
+        for use in event.tool_uses:
+            self.pending[use.id] = (use.name, use.input)
+        # Results normally arrive within a couple of events; anything
+        # older is an orphan (cancelled call) and must not accumulate.
+        while len(self.pending) > 200:
+            self.pending.pop(next(iter(self.pending)))
+
+    def _on_tool_results(self, event: Event) -> None:
+        for result in event.tool_results:
+            record = self.pending.pop(result.tool_use_id, None)
+            if record is None:
+                continue
+            name, use_input = record
+            anchor = _result_anchor(name, use_input)
+            failure = _tool_failure(result.payload, result.is_error)
+            if failure is not None:
+                self._on_failure(anchor, failure, name, use_input)
+            else:
+                self._on_success(anchor, name, use_input, event)
+            if self.open_dead_end is not None:
+                self.open_dead_end[3] -= 1
+                if self.open_dead_end[3] <= 0:
+                    self.open_dead_end = None
+
+    def _on_failure(
+        self, anchor: str, failure: str, name: str, use_input: dict[str, Any]
+    ) -> None:
+        streak = self.streak
+        if streak[0] == anchor:
+            streak[1] += 1
+        else:
+            streak[:] = [anchor, 1, "", ""]
+        streak[2] = failure
+        streak[3] = _call_text(name, use_input)
+        if streak[1] >= DEAD_END_FAILURES:
+            self.open_dead_end = [anchor, streak[2], streak[3], _DEAD_END_LOOKAHEAD]
+
+    def _on_success(
+        self, anchor: str, name: str, use_input: dict[str, Any], event: Event
+    ) -> None:
+        dead_end = self.open_dead_end
+        if dead_end is not None and anchor != dead_end[0]:
+            attempt = _clip(str(dead_end[2]), 300)
+            error = _clip(str(dead_end[1]).splitlines()[0] if dead_end[1] else "", 300)
+            pivot = _clip(_call_text(name, use_input), 300)
+            self._add("dead_end", [q for q in (attempt, error, pivot) if q], event)
+            self.open_dead_end = None
+        if self.streak[0] == anchor or (
+            self.open_dead_end is not None and anchor == self.open_dead_end[0]
+        ):
+            # It worked eventually: a retry loop, not a dead end.
+            self.streak[:] = ["", 0, "", ""]
+            self.open_dead_end = None
+
+
+def _is_choice_prose(event: Event) -> bool:
+    """User prose or main-thread assistant prose, the inputs of the choice gate."""
+    if not event.text or event.is_meta or event.is_compact_summary:
+        return False
+    if event.kind == "user":
+        return is_prose_user_text(event)
+    return event.kind == "assistant" and not event.sidechain
+
+
 def mine_events(
     events: Iterable[Event],
     repo_root: Any,
@@ -328,147 +459,18 @@ def mine_events(
     code that moved.
     """
     repo_prefix = str(repo_root).lower().rstrip("\\/")
-    candidates: list[SessionCandidate] = []
-    #: (path, intent) for the recent file-touching calls, so a candidate opened
-    #: here knows which of the files in play were being changed at the time.
-    trailing_files: deque[tuple[str, str]] = deque(maxlen=_TRAILING_FILES)
-    #: Candidates still collecting forward files, with their remaining budget.
-    open_candidates: list[list[Any]] = []  # [candidate, remaining_tool_events]
-    #: tool_use id -> (tool name, input) awaiting its result.
-    pending: dict[str, tuple[str, dict[str, Any]]] = {}
-    #: (anchor, consecutive failure count, last failure text, last input repr)
-    streak: list[Any] = ["", 0, "", ""]
-    #: An anchor that just hit the failure threshold, awaiting the pivot.
-    open_dead_end: list[Any] | None = None  # [anchor, error, attempt, budget]
-
-    def _add(candidate: SessionCandidate) -> None:
-        candidates.append(candidate)
-        open_candidates.append([candidate, _FORWARD_FILE_EVENTS])
-
+    miner = _SessionMiner(repo_root, edit_tools)
     for event in events:
         cwd = (event.cwd or "").lower().rstrip("\\/")
         if cwd and not cwd.startswith(repo_prefix):
             continue
+        miner.feed(event)
 
-        if event.kind == "assistant" and event.tool_uses:
-            touches = _repo_relative_touches(
-                event_file_touches(event, edit_tools=edit_tools), repo_root
-            )
-            files = [path for path, _ in touches]
-            trailing_files.extend(touches)
-            changed = {path for path, intent in touches if intent == "edit"}
-            for entry in open_candidates:
-                entry[0].files.extend(f for f in files if f not in entry[0].files)
-                entry[0].edited |= changed
-                entry[1] -= 1
-            open_candidates = [e for e in open_candidates if e[1] > 0]
-            for use in event.tool_uses:
-                pending[use.id] = (use.name, use.input)
-            # Results normally arrive within a couple of events; anything
-            # older is an orphan (cancelled call) and must not accumulate.
-            while len(pending) > 200:
-                pending.pop(next(iter(pending)))
-
-        if event.tool_results:
-            for result in event.tool_results:
-                record = pending.pop(result.tool_use_id, None)
-                if record is None:
-                    continue
-                name, use_input = record
-                anchor = _result_anchor(name, use_input)
-                failure = _tool_failure(result.payload, result.is_error)
-                if failure is not None:
-                    if streak[0] == anchor:
-                        streak[1] += 1
-                    else:
-                        streak[:] = [anchor, 1, "", ""]
-                    streak[2] = failure
-                    command = use_input.get("command")
-                    streak[3] = (
-                        command
-                        if isinstance(command, str)
-                        else f"{name} {json.dumps(use_input, ensure_ascii=False)}"
-                    )
-                    if streak[1] >= DEAD_END_FAILURES:
-                        open_dead_end = [anchor, streak[2], streak[3], _DEAD_END_LOOKAHEAD]
-                else:
-                    if open_dead_end is not None and anchor != open_dead_end[0]:
-                        attempt = _clip(str(open_dead_end[2]), 300)
-                        error = _clip(
-                            str(open_dead_end[1]).splitlines()[0] if open_dead_end[1] else "", 300
-                        )
-                        pivot_command = use_input.get("command")
-                        pivot = _clip(
-                            pivot_command
-                            if isinstance(pivot_command, str)
-                            else f"{name} {json.dumps(use_input, ensure_ascii=False)}",
-                            300,
-                        )
-                        _add(
-                            SessionCandidate(
-                                kind="dead_end",
-                                quotes=[q for q in (attempt, error, pivot) if q],
-                                files=list(dict.fromkeys(p for p, _ in trailing_files)),
-                                edited={p for p, i in trailing_files if i == "edit"},
-                                session_id=event.session_id,
-                                ts=event.ts,
-                            )
-                        )
-                        open_dead_end = None
-                    if streak[0] == anchor or (
-                        open_dead_end is not None and anchor == open_dead_end[0]
-                    ):
-                        # It worked eventually: a retry loop, not a dead end.
-                        streak[:] = ["", 0, "", ""]
-                        open_dead_end = None
-                if open_dead_end is not None:
-                    open_dead_end[3] -= 1
-                    if open_dead_end[3] <= 0:
-                        open_dead_end = None
-            continue
-
-        if is_prose_user_text(event):
-            quotes = _correction_quotes(event)
-            if quotes:
-                _add(
-                    SessionCandidate(
-                        kind="user_correction",
-                        quotes=quotes,
-                        files=list(dict.fromkeys(p for p, _ in trailing_files)),
-                        edited={p for p, i in trailing_files if i == "edit"},
-                        session_id=event.session_id,
-                        ts=event.ts,
-                    )
-                )
-                # Falls through to the choice gate: a brief that contains a
-                # correction can also state explicit choices.
-
-        # Explicit choices: user prose or main-thread assistant prose.
-        if event.text and not event.is_meta and not event.is_compact_summary:
-            if event.kind == "user" and not is_prose_user_text(event):
-                continue
-            if event.kind == "assistant" and event.sidechain:
-                continue
-            if event.kind not in ("user", "assistant"):
-                continue
-            sentences = _choice_sentences(event.text)
-            if sentences:
-                _add(
-                    SessionCandidate(
-                        kind="explicit_choice",
-                        quotes=[_clip(s) for s in sentences],
-                        files=list(dict.fromkeys(p for p, _ in trailing_files)),
-                        edited={p for p, i in trailing_files if i == "edit"},
-                        session_id=event.session_id,
-                        ts=event.ts,
-                    )
-                )
-
-    for candidate in candidates:
+    for candidate in miner.candidates:
         candidate.files.sort(key=lambda f: f not in candidate.edited)
 
     # A choice with no code in play is a conversation, not a decision record.
-    return [c for c in candidates if c.kind != "explicit_choice" or c.files]
+    return [c for c in miner.candidates if c.kind != "explicit_choice" or c.files]
 
 
 # ---------------------------------------------------------------------------

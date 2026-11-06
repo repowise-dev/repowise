@@ -126,7 +126,7 @@ export function FindingOpportunityLink({
             }
           : (e) => e.stopPropagation()
       }
-      className="inline-flex items-center gap-1.5 rounded text-[11.5px] font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]"
+      className="inline-flex items-center gap-1.5 rounded text-[11.5px] font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-focus-ring)]"
     >
       <Wrench className="h-3 w-3" aria-hidden="true" />
       Refactoring plan: {stepSummary(opportunity)}

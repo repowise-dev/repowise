@@ -71,7 +71,7 @@ def test_risk_names_a_biomarker_and_the_function_it_sits_in():
             }
         }
     }
-    assert "Explain the nested complexity finding in _db_messages_to_llm_format" in _texts(
+    assert "Explain the deep nesting finding in _db_messages_to_llm_format" in _texts(
         page_suggestions("get_risk", "src/a.py", result)
     )
 

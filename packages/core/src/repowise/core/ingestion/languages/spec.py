@@ -27,6 +27,8 @@ class LanguageSpec:
     # -- File matching ---------------------------------------------------
     extensions: frozenset[str] = field(default_factory=frozenset)  # (".py", ".pyi")
     special_filenames: frozenset[str] = field(default_factory=frozenset)  # ("Dockerfile",)
+    # Lowercase multi-dot name endings (``.flow-meta.xml``), matched before the one-suffix lookup.
+    name_suffixes: frozenset[str] = field(default_factory=frozenset)
 
     # -- Classification --------------------------------------------------
     is_code: bool = True  # False for yaml, json, markdown, etc.

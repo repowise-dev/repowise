@@ -38,7 +38,7 @@ class Result:
     """What happened to one path."""
 
     group: Group
-    path: Path
+    path: Path | str
     action: FileAction
     label: str
     reason: str | None = None

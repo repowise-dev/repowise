@@ -13,10 +13,20 @@ from repowise.core.ingestion import traverser as traverser_mod
 from repowise.core.ingestion.traverser import (
     FileTraverser,
     _compile_gitignore,
+    _content_language,
     _detect_language,
     _is_generated,
     _scan_package_dir,
     in_blocked_dir,
+)
+
+# A DCLGEN member for COBOL, with fixed-format sequence numbers in columns 1-6.
+_COBOL_DCLGEN = (
+    "      * DCLGEN TABLE(CARDDEMO.TRANSACTION_TYPE)\n"
+    "000100     EXEC SQL DECLARE CARDDEMO.TRANSACTION_TYPE TABLE\n"
+    "000200     ( TR_TYPE CHAR(2) NOT NULL ) END-EXEC.\n"
+    "000300 01  DCLTRTYP.\n"
+    "000400     10 TR-TYPE              PIC X(2).\n"
 )
 
 
@@ -128,6 +138,36 @@ class TestLanguageDetection:
     def test_a_dot_m_needs_no_sniff(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "Widget.m") == "objectivec"
 
+    def test_a_cobol_dclgen_member_is_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.dcl"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_pli_dclgen_member_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLEMP.dcl"
+        f.write_text(
+            " EXEC SQL DECLARE DSN8C10.EMP TABLE\n"
+            "   ( EMPNO CHAR(6) NOT NULL ) ;\n"
+            " DCL 1 DCLEMP,\n"
+            "     5 EMPNO CHAR(6);\n"
+        )
+        assert _detect_language(f) == "unknown"
+
+    def test_an_uppercase_dcl_extension_is_sniffed_too(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.DCL"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_table_declaration_without_a_record_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "TABLE.dcl"
+        f.write_text("     EXEC SQL DECLARE CARDDEMO.T TABLE ( A CHAR(1) ) END-EXEC.\n")
+        assert _detect_language(f) == "unknown"
+
+    def test_a_vms_dcl_procedure_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "build.dcl"
+        f.write_text("$ SET VERIFY\n$ CC/DEBUG MAIN.C\n$ LINK MAIN\n$ EXIT\n")
+        assert _detect_language(f) == "unknown"
+
     def test_special_dockerfile(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "Dockerfile") == "dockerfile"
 
@@ -141,6 +181,80 @@ class TestLanguageDetection:
         f = tmp_path / "script"
         f.write_text("#!/usr/bin/env python3\nprint('hi')")
         assert _detect_language(f) == "python"
+
+
+class TestIncLanguageDetection:
+    @pytest.mark.parametrize("suffix", [".inc", ".INC"])
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '#include "impl.h"\n',
+            "# define REGISTER(T) register_type<T>()\n",
+            "#if defined(USE_FAST_PATH)\n#endif\n",
+            "namespace library\n",
+            "template <typename T> T identity(T);\n",
+            "constexpr int answer() { return 42; }\n",
+            "int answer() { return 42; }\n",
+            "int counts[] = { 1, 2 };\n",
+            'std::string name() { return "example"; }\n',
+            'const char *tag = "<?php";\n',
+            "/* <?php */\n// <?php\nstruct Value { int count; };\n",
+            "/* License banner */\n// implementation\nint answer() { return 42; }\n",
+        ],
+    )
+    def test_cpp_fragments_stay_cpp(self, tmp_path: Path, suffix: str, content: str) -> None:
+        f = tmp_path / f"impl{suffix}"
+        f.write_text(content)
+        assert _detect_language(f) == "cpp"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "/* BankDemo-style PL/I include member */\n"
+            "    05 DD_AREAS,\n      10 DD_ENV CHAR(4);\n",
+            "DCL 1 RECORD,\n    5 NAME CHAR(20);\n",
+            "%INCLUDE CBANKVAC;\n",
+            "/* #include <header.h>\nnamespace example { template <class T> } */\n"
+            "// #define EXAMPLE\n05 DD_AREAS,\n",
+            "DCL TEXT CHAR(80) INIT('namespace example { template <class T> }');\n",
+            'DCL TEXT CHAR(80) INIT("/* not a comment */ namespace example {}");\n',
+            "/* An unfinished comment containing { and #define\n",
+            "{ field layout }\nvar Count: Integer;\n",
+            "{$I types.inc}\n",
+            "{ namespace example { template <class T> } }\nvar Count: Integer;\n",
+            "(* #include <example.h>\nnamespace example { } *)\nvar Count: Integer;\n",
+            "{ An unfinished comment with namespace example\n",
+            "<?php\nfunction countItems() { return 1; }\n",
+            "<?php\nnamespace App\\Models;\n",
+            "<?= renderItems(); ?>\n",
+            "<? function countItems() { return 1; } ?>\n",
+            # Braces without a C++ declaration can also be a Pascal comment.
+            "{ 1, 2 },\n",
+            "",
+        ],
+    )
+    def test_members_without_cpp_evidence_are_unknown(self, tmp_path: Path, content: str) -> None:
+        f = tmp_path / "member.inc"
+        f.write_text(content)
+        assert _detect_language(f) == "unknown"
+
+    def test_source_bytes_take_precedence_over_the_working_tree(self, tmp_path: Path) -> None:
+        f = tmp_path / "member.inc"
+        f.write_text("namespace library {}\n")
+        assert _content_language(f, "cpp", b"05 DD_AREAS,\n10 DD_ENV CHAR(4);\n") is None
+        f.write_text("05 DD_AREAS,\n10 DD_ENV CHAR(4);\n")
+        assert _content_language(f, "cpp", b"namespace library {}\n") == "cpp"
+
+    def test_unreadable_member_is_not_assumed_to_be_cpp(self, tmp_path: Path) -> None:
+        assert _content_language(tmp_path / "missing.inc", "cpp") is None
+
+    def test_other_cpp_fragment_extensions_do_not_need_a_content_signal(
+        self, tmp_path: Path
+    ) -> None:
+        for suffix in (".inl", ".ipp", ".tpp"):
+            f = tmp_path / f"table{suffix}"
+            f.write_text("REGISTER_TYPE(Widget)\n")
+            assert _detect_language(f) == "cpp"
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +292,23 @@ class TestFileTraverser:
         traverser = FileTraverser(simple_repo)
         paths = [f.path for f in traverser.traverse()]
         assert not any("__pycache__" in p for p in paths)
+
+    def test_only_a_cobol_dclgen_member_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "DCLTRTYP.dcl").write_text(_COBOL_DCLGEN)
+        (tmp_path / "build.dcl").write_text("$ SET VERIFY\n$ EXIT\n")
+        traverser = FileTraverser(tmp_path)
+        found = {f.path: f.language for f in traverser.traverse()}
+        assert found == {"DCLTRTYP.dcl": "cobol"}
+        assert traverser.stats.skipped_unknown_language == 1
+
+    def test_only_cpp_inc_members_are_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "CDATED.inc").write_text(
+            "/* PL/I include */\n05 DD_AREAS,\n10 DD_ENV CHAR(4);\n"
+        )
+        (tmp_path / "impl.inc").write_text("inline int answer() { return 42; }\n")
+        traverser = FileTraverser(tmp_path)
+        assert {f.path: f.language for f in traverser.traverse()} == {"impl.inc": "cpp"}
+        assert traverser.stats.skipped_unknown_language == 1
 
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
         (tmp_path / "ProjectSettings").mkdir()
@@ -567,6 +698,74 @@ class TestFileTraverser:
         assert files["demo/test_selection.py"] is False
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
+
+    def test_test_helper_directories_are_test_material(self, tmp_path: Path) -> None:
+        """#3244: helper dirs only tests import are not production code, unless
+        the directory is a package root of its own (preact's ``test-utils/``)."""
+        files_on_disk = {
+            "ui/src/test-helpers/load-styles.ts": "export function loadStyles(): void {}\n",
+            "ui/src/ui/app.test.ts": (
+                'import { loadStyles } from "../test-helpers/load-styles";\nloadStyles();\n'
+            ),
+            "src/test-utils/async.ts": "export const tick = () => Promise.resolve();\n",
+            "test-utils/package.json": '{"name": "test-utils"}\n',
+            "test-utils/src/index.js": "export function act() {}\n",
+        }
+        for rel, text in files_on_disk.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text)
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["ui/src/test-helpers/load-styles.ts"] is True
+        assert files["src/test-utils/async.ts"] is True
+        assert files["ui/src/ui/app.test.ts"] is True
+        assert files["test-utils/src/index.js"] is False
+
+    def test_a_test_named_php_class_outside_phpunit_testsuites_is_production(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+            "tools/HelperTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+        # A nested config governs its own directory.
+        (tmp_path / "tools" / "phpunit.xml").write_text(
+            '<phpunit><testsuites><testsuite name="Tools">'
+            '<directory>tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["src/Testing/Attributes/UnitTest.php"] is False
+        assert files["tests/RouterTest.php"] is True
+        assert files["tools/HelperTest.php"] is False
+
+    def test_malformed_primary_phpunit_config_does_not_fall_back_to_dist(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml").write_text("not valid xml <")
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        # Fails closed: unreadable primary does not fall back, so test-named class stays True
+        assert files["src/Testing/Attributes/UnitTest.php"] is True
+        assert files["tests/RouterTest.php"] is True
 
     def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
         (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)

@@ -691,6 +691,26 @@ class TestScanFile:
             ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
             ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
             ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+            # Cut to a few characters where it is computed, or kept as a key: an id.
+            ("a.py", "short = hashlib.md5(name.encode()).hexdigest()[:8]\n", False),
+            ("a.py", "short = hashlib.sha1(name.encode()).hexdigest()[0:12]\n", False),
+            ("a.js", 'const id = crypto.createHash("md5").update(s).digest("hex").slice(0, 8);\n', False),
+            ("a.py", "etag = hashlib.md5(body).hexdigest()\n", False),
+            ("a.py", "cache_key = hashlib.sha1(url.encode()).hexdigest()\n", False),
+            ("a.ts", 'const cacheKey = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'slug = title + "-" + md5(title.encode()).hexdigest()\n', False),
+            # A credential stays a finding, truncated or named as a key.
+            ("a.py", "pw = hashlib.md5(password.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "cache_key = hashlib.md5(token).hexdigest()\n", True),
+            ("a.py", "digest = hashlib.md5(data).hexdigest()[8:]\n", True),
+            ("a.py", "full = hashlib.md5(data).digest()\n", True),
+            ("a.py", "pw = hashlib.md5(p.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "whole = hashlib.md5(data).hexdigest()[:32]\n", True),
+            ("a.py", "mac = hmac.new(k, m, hashlib.md5).hexdigest()[:8]\n", True),
+            ("a.py", "if cache_key in seen: h = hashlib.md5(data).hexdigest()\n", True),
+            ("a.ts", 'const cacheKey: string = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'row = {"etag": hashlib.md5(body).hexdigest()}\n', False),
+            ("a.py", "author_slug = hashlib.md5(name.encode()).hexdigest()\n", False),
         ],
     )
     def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
@@ -959,9 +979,9 @@ class TestScanSource:
     @pytest.mark.parametrize(
         ("source", "raw"),
         [
-            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),  # pragma: allowlist secret
+            ("NEXT_PUBLIC_API_KEY=my_dummy_key\n", "my_dummy_key"),
             ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
-            ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
+            ("VITE_API_TOKEN=abc123\n", "abc123"),
         ],
     )
     def test_public_env_secret_value_is_redacted(self, source: str, raw: str) -> None:
@@ -974,6 +994,32 @@ class TestScanSource:
         source = "const k = process.env.NEXT_PUBLIC_N8N_API_KEY;\n"
         (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
         assert hit["snippet"] == source.strip()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "VITE_API_TOKEN=\n",
+            'NEXT_PUBLIC_API_SECRET=""\n',
+            "VITE_AUTH_TOKEN=''\n",
+            "VITE_API_TOKEN= # set in .env.local\n",
+        ],
+    )
+    def test_empty_public_env_secret_is_dropped(self, source: str) -> None:
+        assert [f for f in scan_source(".env", source) if f["kind"] == "public_env_secret"] == []
+
+    def test_public_env_secret_with_value_still_fires(self) -> None:
+        hits = [f for f in scan_source(".env", "VITE_API_TOKEN=abc123\n") if f["kind"] == "public_env_secret"]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "VITE_API_TOKEN=abc1****"
+
+    def test_public_env_secret_code_read_still_fires(self) -> None:
+        hits = [
+            f
+            for f in scan_source("app.ts", "const t = import.meta.env.VITE_API_TOKEN;\n")
+            if f["kind"] == "public_env_secret"
+        ]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "const t = import.meta.env.VITE_API_TOKEN;"
 
     def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
         from repowise.core.analysis.history_scan import HistorySecurityScanner
@@ -1197,6 +1243,22 @@ class TestVendorShapeEdges:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
 
+    def test_public_env_secret_deduped_with_credential_kinds(self) -> None:
+        stripe = "sk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+        ghp = "ghp_" + "Kq7mZ2xV9pL4rT8wN3bY6cH1jF5dS0gA2eUo"
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}\n", "web/.env") == ["stripe_key"]
+        assert self._kinds(f"NEXT_PUBLIC_GITHUB_TOKEN={ghp}\n", "web/.env") == ["github_token"]
+        assert self._kinds('const NEXT_PUBLIC_API_SECRET = "Xk9mQ2vLp7zAbc123";\n', "web/env.ts") == [
+            "hardcoded_secret"
+        ]
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}  # pragma: allowlist secret\n", "web/.env") == []
+        assert self._kinds("VITE_API_TOKEN=abc123\n", "web/.env") == ["public_env_secret"]
+        assert self._kinds("const k = process.env.NEXT_PUBLIC_API_KEY;\n", "web/app.ts") == [
+            "public_env_secret"
+        ]
+        multi = f'NEXT_PUBLIC_TOKEN="live"; STRIPE_KEY="{stripe}"\n'
+        assert sorted(self._kinds(multi, "web/.env")) == ["public_env_secret", "stripe_key"]
+
     def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
         source = (
             'PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n'
@@ -1417,6 +1479,11 @@ class TestSecretPrecision:
             ("src/app.py", 'API_KEY = "prefix-${VAR}-suffix"\n'),
             ("src/app.py", 'TOKEN = "prefix-{{var}}-suffix"\n'),
             ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
+            ("classes/RD2_NamingService.cls", "String token = '{!npe03__Donor_Name__c}';\n"),
+            ("pages/Pay.page", '<c:pay accessToken="{!$Credential.OAuthToken}"/>\n'),
+            ("aura/Pay/Pay.cmp", '<c:pay token="{#v.sessionToken}"/>\n'),
+            ("classes/Api.cls", "String token = 'Bearer {!$Credential.OAuthToken}';\n"),
+            ("classes/RegExps.cls", "static final String EXP_NUMBER_TOKEN = '(_D[0-9]+D_)';\n"),
         ],
     )
     def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
@@ -1455,6 +1522,7 @@ class TestSecretPrecision:
         ("source", "kind"),
         [
             ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
+            ('TOKEN = "Zx9[a]+Qw8Rt5Yu3"\n', "hardcoded_secret"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
@@ -1476,6 +1544,15 @@ class TestSecretPrecision:
     )
     def test_credential_shaped_values_still_fire(self, source: str) -> None:
         assert self._kinds(source) == {"hardcoded_secret"}
+
+    def test_windows_manifest_public_key_token_is_not_a_secret(self) -> None:
+        source = (
+            '<dependency><dependentAssembly>'
+            '<assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" '
+            'version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
+            '</dependentAssembly></dependency>\n'
+        )
+        assert self._kinds(source) == set()
 
     def test_doctest_example_is_not_a_password(self) -> None:
         source = (
@@ -1553,6 +1630,12 @@ class TestNoAlarmOnCodeThatDoesNotShip:
     def test_declaration_file_holds_no_sink(self) -> None:
         assert self._found("types/react.d.ts", "type T = { __html: SafeHtml };\n") == []
 
+    def test_a_library_release_in_a_static_resource_holds_no_sink(self) -> None:
+        source = 'eval("console.log("+args.join(",")+")")\n'
+        resources = "force-app/main/default/staticresources/Libs"
+        assert self._found(f"{resources}/arbor-v0.92/src/etc.js", source) == []
+        assert self._found(f"{resources}/app/main.js", source) == [("eval_call", "high")]
+
     def test_inner_html_from_a_value_is_still_medium(self) -> None:
         source = "<div dangerouslySetInnerHTML={{__html: foo}} />\n"
         assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
@@ -1600,6 +1683,27 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         assert self._found(path, source) == []
 
     @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("README.md", "key {key} pragma: allowlist secret\n"),
+            ("README.md", "key {key} <!-- nosec -->\n"),
+            ("README.md", "key {key} # pragma: allowlist secret\n"),
+            ("docs/guide.rst", "key {key} nosec\n"),
+            ("README.md", "pragma: allowlist nextline secret\nkey {key}\n"),
+        ],
+    )
+    def test_prose_allow_markers_need_no_comment_opener(self, path: str, source: str) -> None:
+        assert self._found(path, source.format(key=self.KEY)) == []
+
+    def test_a_word_containing_a_marker_does_not_silence_prose(self) -> None:
+        source = f"key {self.KEY} nosecurity\n"
+        assert self._found("README.md", source) == [("aws_access_key", "high")]
+
+    def test_a_bare_marker_outside_a_comment_still_fires_in_code(self) -> None:
+        source = f'key = "{self.KEY}"  nosec\n'
+        assert self._found("src/settings.py", source) == [("aws_access_key", "high")]
+
+    @pytest.mark.parametrize(
         "source",
         [
             'key = "{key}"  # noqa: E501\n',
@@ -1644,3 +1748,61 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         from repowise.core.analysis.security_scan import mask_comments_and_strings
 
         assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
+
+    def test_csharp_interpolated_string_quotes_inside_hole_are_masked(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("&ids=", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(       , ids)  ;\nvar x = 1;\n"
+        assert (
+            mask_comments_and_strings(
+                src, strings=False, hash_comments=False, **mask_dialect("a.cs")
+            )
+            == src
+        )
+
+    def test_csharp_interpolated_string_comment_inside_hole_does_not_mask_line(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("//x", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(     , ids)  ;\nvar x = 1;\n"
+
+    def test_csharp_interpolated_string_verbatim_and_escaped_braces(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $@"c:\\dir\\{sub}\""name""";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $@         sub          ;\nvar x = 1;\n"
+
+        src_braces = 'var u = $"escaped {{literal}} and {hole}";\n'
+        masked_braces = mask_comments_and_strings(
+            src_braces, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked_braces == "var u = $                          hole  ;\n"
+
+@pytest.mark.parametrize("prefix", ["$@", "@$"])
+@pytest.mark.parametrize("strings", [False, True])
+def test_verbatim_interpolation_trailing_backslash_preserves_following_code(prefix, strings):
+    from repowise.core.analysis.security.masking import mask_dialect
+    from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+    literal = r'"c:\dir\"'
+    source = f"var p = {prefix}{literal}; DangerousCall(); // real comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("a.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var p = {prefix}{expected_literal}; DangerousCall(); "
+        + " " * len("// real comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)

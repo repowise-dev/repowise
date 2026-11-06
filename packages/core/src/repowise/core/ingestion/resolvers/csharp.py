@@ -30,24 +30,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.fsutils import repo_relative
+
 from .context import ResolverContext
 from .dotnet import get_or_build_index
-
-
-def _to_repo_relative(abs_path: Path, repo_root_resolved: Path) -> str | None:
-    """Return *abs_path* relative to a pre-resolved repo root in posix form.
-
-    ``abs_path`` is expected to already be resolved — every value we pass
-    in here comes out of ``DotNetProjectIndex.file_to_project`` /
-    ``namespace_map``, both of which are keyed by resolved absolute paths.
-    Re-resolving on every call (as the original implementation did) costs
-    a stat-per-path-component on Windows and dominates ``graph.imports``
-    wall-clock on large C# monorepos.
-    """
-    try:
-        return abs_path.relative_to(repo_root_resolved).as_posix()
-    except ValueError:
-        return None
 
 
 def _legacy_stem_resolve(
@@ -137,7 +123,9 @@ def resolve_csharp_import(
     repo_root_resolved = _repo_root_resolved(index, ctx.repo_path)
 
     if ordered:
-        rel = _to_repo_relative(ordered[0], repo_root_resolved)
+        # Index paths are already resolved, so the lexical form is enough;
+        # resolving again costs a stat per path component on Windows.
+        rel = repo_relative(ordered[0], repo_root_resolved)
         if rel and rel in ctx.path_set:
             return rel
 

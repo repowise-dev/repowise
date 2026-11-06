@@ -1,7 +1,7 @@
 """Scopes: what a changed file runs when every test is more than it can reach.
 
 :func:`~.test_selection.select_tests` runs everything for a file whose tests
-are unknown. For three kinds the reach is known, and :func:`trigger_scopes`
+are unknown. For four kinds the reach is known, and :func:`trigger_scopes`
 names it as a :class:`Scope`:
 
 - A manifest, lockfile or runner config runs its ecosystem's tests. A JS
@@ -20,6 +20,10 @@ names it as a :class:`Scope`:
   names keeps its full run (a test may glob it).
   Other non-code files, dotfiles and root-level data configure tools, not
   code, and keep their full run too.
+- A data file under ``fixtures/`` or ``testdata/`` runs the test code reading
+  it: the code naming the file, or for a file in a fixture tree the code
+  naming the tree (:mod:`~.fixture_readers`). It keeps its full run when no
+  reader is found or code outside the test trees names it.
 
 A scope also runs the tests reaching each file that names the changed one, so
 a test reading ``package.json`` as data is kept. An ecosystem scope already
@@ -64,6 +68,9 @@ from .test_selection import (
 # full run is the answer; bounding the walk by a time budget instead of a count
 # is the upgrade.
 MAX_NAMERS = 200
+
+#: The basis of a fixture data file that runs the test code reading it.
+FIXTURE_READERS = "fixture-readers"
 
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")
 # (ecosystem, test suffixes, scoped to the file's directory, gitwildmatch
@@ -160,9 +167,24 @@ class Scope:
 
 def needs_namers(path: str, config: TestSelectionConfig) -> bool:
     """Whether :func:`trigger_scopes` needs to know who names *path*."""
+    if is_fixture_data(path, config):
+        return True
     if is_test_related_path(path) or _configured(path, config):
         return False
     return _ecosystem(path) is not None or (full_run_reason(path) is None and _is_asset(path))
+
+
+def is_fixture_data(path: str, config: TestSelectionConfig) -> bool:
+    """Whether *path* is a data file in a fixtures directory, which the tests reading it can name.
+
+    Fixture code stays a full run: a test may import it by module name, which
+    no file name search sees.
+    """
+    return (
+        full_run_reason(path) == SHARED_TEST_DATA_REASON
+        and not is_code_file(path)
+        and not _configured(path, config)
+    )
 
 
 def is_manifest(path: str) -> bool:
@@ -172,7 +194,7 @@ def is_manifest(path: str) -> bool:
 
 def keeps_full_run(path: str, config: TestSelectionConfig) -> bool:
     """Whether *path* runs everything whatever names it, so no namer search can help."""
-    if full_run_reason(path, config.full_run_on) is None:
+    if full_run_reason(path, config.full_run_on) is None or is_fixture_data(path, config):
         return False
     if is_test_related_path(path) or _configured(path, config):
         return True
@@ -250,10 +272,12 @@ class _Tree:
 def _trigger_scope(
     path: str, tree: _Tree, namers: tuple[str, ...], config: TestSelectionConfig
 ) -> Scope | None:
-    if is_test_related_path(path) or full_run_reason(path) == SHARED_TEST_DATA_REASON:
-        return None  # read by tests anywhere: the test-tree rule decides
     if _configured(path, config):
         return None  # the config asked for a full run
+    if is_fixture_data(path, config):
+        return _readers_scope(namers)
+    if is_test_related_path(path) or full_run_reason(path) == SHARED_TEST_DATA_REASON:
+        return None  # read by tests anywhere: the test-tree rule decides
     if eco := _ecosystem(path):
         return _ecosystem_scope(path, eco, tree, namers)
     why = full_run_reason(path)
@@ -262,6 +286,17 @@ def _trigger_scope(
     if why is not None or not _is_asset(path):
         return None
     return _named_scope(path, tree, namers)
+
+
+def _readers_scope(readers: tuple[str, ...]) -> Scope | None:
+    """The test code reading a fixture data file, or ``None`` to keep its full run.
+
+    *readers* come from :func:`~.fixture_readers.with_data_file_readers`, which
+    leaves out a file no test code reads or code outside the test trees names.
+    """
+    if not readers or _too_many(readers):
+        return None
+    return Scope(f"it is read by {_some(readers)}", FIXTURE_READERS, namers=readers)
 
 
 def _configured(path: str, config: TestSelectionConfig) -> bool:

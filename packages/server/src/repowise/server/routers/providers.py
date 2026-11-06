@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
@@ -56,14 +58,19 @@ async def _repo_path_for(request: Request, repo_id: str | None) -> str | None:
 
 
 @router.get("", response_model=ProviderStatusResponse)
-async def get_providers(request: Request, repo_id: str | None = None):
+async def get_providers(request: Request, repo_id: str | None = None, detect: bool = False):
     """List all providers with their status and active selection.
 
     Pass ``?repo_id=`` so the active selection reflects that repo's own
     ``.repowise/config.yaml`` (and any per-repo UI override) instead of the
-    server-global default.
+    server-global default. ``?detect=true`` also asks each agent CLI whether
+    it is signed in (a short subprocess each), so it runs off the event loop.
     """
     repo_path = await _repo_path_for(request, repo_id)
+    if detect:
+        return await asyncio.to_thread(
+            list_provider_status, repo_id=repo_id, repo_path=repo_path, detect=True
+        )
     return list_provider_status(repo_id=repo_id, repo_path=repo_path)
 
 

@@ -74,6 +74,12 @@ class ProviderSpec:
     note: str = ""
     #: Where to get a key (or the runtime) when the provider is not set up.
     signup_url: str = ""
+    #: ``auto`` leaves a thinking model at its own default effort, so ``low``
+    #: only trims thinking. Where this is False, ``low`` can switch thinking on
+    #: for a model that does not think by default.
+    low_effort_trims: bool = False
+    #: A model's reasoning modes are known only after listing the models.
+    lists_reasoning_modes: bool = False
 
     @property
     def module_path(self) -> str:
@@ -110,6 +116,8 @@ _LLM = "repowise.core.providers.llm"
 _SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="gemini",
+        low_effort_trims=True,
+        lists_reasoning_modes=True,
         picker_rank=0,
         impl=f"{_LLM}.gemini:GeminiProvider",
         label="Google Gemini",
@@ -139,6 +147,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openai",
+        low_effort_trims=True,
         picker_rank=1,
         impl=f"{_LLM}.openai:OpenAIProvider",
         label="OpenAI",
@@ -154,7 +163,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openrouter",
-        picker_rank=10,
+        picker_rank=11,
         impl=f"{_LLM}.openrouter:OpenRouterProvider",
         label="OpenRouter",
         default_model="google/gemini-3.5-flash-lite",
@@ -186,6 +195,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="kimi",
+        low_effort_trims=True,
         picker_rank=4,
         impl=f"{_LLM}.kimi:KimiProvider",
         label="Kimi",
@@ -200,6 +210,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="edenai",
+        low_effort_trims=True,
         picker_rank=5,
         impl=f"{_LLM}.edenai:EdenAIProvider",
         label="Eden AI",
@@ -221,7 +232,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="ollama",
-        picker_rank=9,
+        picker_rank=10,
         impl=f"{_LLM}.ollama:OllamaProvider",
         label="Ollama (Local)",
         default_model="qwen3.5:4b",
@@ -237,7 +248,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="litellm",
-        picker_rank=11,
+        picker_rank=12,
         impl=f"{_LLM}.litellm:LiteLLMProvider",
         label="LiteLLM",
         default_model="groq/openai/gpt-oss-120b",
@@ -252,7 +263,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="claude_cli",
-        picker_rank=7,
+        picker_rank=6,
         impl=f"{_LLM}.claude_cli:ClaudeCliProvider",
         label="Claude Code (Local CLI)",
         default_model="claude_cli/claude-haiku-5-5",
@@ -271,7 +282,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="codex_cli",
-        picker_rank=6,
+        picker_rank=7,
         impl=f"{_LLM}.codex_cli:CodexCliProvider",
         label="Codex (Local CLI)",
         default_model="codex_cli/default",
@@ -297,6 +308,20 @@ _SPECS: tuple[ProviderSpec, ...] = (
         zero_cost=True,
         agent="opencode",
         note="uses your opencode CLI setup",
+    ),
+    ProviderSpec(
+        name="copilot_cli",
+        picker_rank=9,
+        impl=f"{_LLM}.copilot_cli:CopilotCliProvider",
+        label="GitHub Copilot (Local CLI)",
+        default_model="copilot_cli/default",
+        models=("copilot_cli/default",),
+        keyless=True,
+        needs_repo_cwd=True,
+        local=True,
+        zero_cost=True,
+        agent="copilot",
+        note="uses your Copilot CLI login",
     ),
     ProviderSpec(
         name="mock",

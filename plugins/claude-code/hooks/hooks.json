@@ -14,6 +14,19 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v repowise-rewrite >/dev/null 2>&1; then exec repowise-rewrite; fi",
+            "timeout": 5,
+            "statusMessage": "Distilling command output..."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*",
@@ -23,6 +36,17 @@
             "command": "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment; fi",
             "timeout": 10,
             "statusMessage": "Checking codebase context..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); case \"$input\" in *\"git commit\"*) if command -v repowise-augment >/dev/null 2>&1; then printf \"%s\" \"$input\" | repowise-augment; fi;; esac",
+            "timeout": 10,
+            "statusMessage": "Checking for a decision to record..."
           }
         ]
       }

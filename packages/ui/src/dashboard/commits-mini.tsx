@@ -1,7 +1,7 @@
 import { GitCommit as GitCommitIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { EmptyState } from "../shared/empty-state";
-import { formatRelativeTime } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface CommitsMiniEntry {
   sha: string;
@@ -94,7 +94,7 @@ export function CommitsMini({ commits, repoId, linkPrefix, previewCount = 8 }: C
                 {c.author_name}
               </span>
               <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums shrink-0">
-                {c.committed_at ? formatRelativeTime(c.committed_at) : ""}
+                {c.committed_at ? <RelativeTime date={c.committed_at} /> : ""}
               </span>
             </a>
           ))}

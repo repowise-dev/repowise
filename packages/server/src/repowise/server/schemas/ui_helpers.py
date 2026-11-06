@@ -55,10 +55,18 @@ class ProviderEntry(BaseModel):
     accepts_base_url: bool = False
     #: Can point at a local OpenAI-compatible server (LM Studio) with no key.
     local_server: bool = False
+    #: A model that runs on this machine (not an agent CLI).
+    local_model: bool = False
     #: Env vars a user sets to make the provider usable.
     env_vars: list[str] = []
     #: One line on how to install or set it up.
     setup_hint: str = ""
+    #: What on this machine makes it usable: ``signed_in`` (a signed-in agent
+    #: CLI, reported only for ``?detect=true``), ``env`` (a key in the process
+    #: env or the repo's ``.repowise/.env``) or ``saved`` (a key stored here).
+    #: ``installed``: an agent CLI is on PATH but its sign-in cannot be told
+    #: (no login query, or ``REPOWISE_OFFLINE``/``DO_NOT_TRACK`` is set).
+    detected: Literal["signed_in", "installed", "env", "saved"] | None = None
 
 
 class EmbedderEntry(BaseModel):

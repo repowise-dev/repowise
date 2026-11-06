@@ -23,6 +23,7 @@ from repowise.core.ingestion.resolvers.dotnet.namespace_map import (
     declared_namespaces,
     scan_type_declarations,
 )
+from repowise.core.workspace.origins import ContractOrigin, origin_confidence
 
 from ..config import DEFAULT_CONTRACT_PROJECT_PATTERN
 from .base import line_at, select_files
@@ -39,9 +40,10 @@ _TEST_DIR_RE = re.compile(
     r"^.+\.(?:tests?|unittests?|integrationtests?|specs?|testing|testhelpers?)$", re.IGNORECASE
 )
 
-_TIER_DECLARED = 0.8
-_TIER_UNIQUE_NAME = 0.6
-_TIER_DATAFLOW = 0.7
+# A type named through a using or its namespace is the library call's own
+# argument; one found by its short name alone is a naming convention.
+_TIER_DECLARED = ContractOrigin.CLIENT_CALL
+_TIER_UNIQUE_NAME = ContractOrigin.NAME_CONVENTION
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +166,7 @@ def _file_context(masked: str, vb: bool) -> _FileContext:
 @dataclass(frozen=True)
 class _Resolved:
     fqn: str
-    confidence: float
+    origin: ContractOrigin
     resolution: str
 
 
@@ -1191,7 +1193,10 @@ class MassTransitExtractor:
                 }
                 if f.receiver is not None:
                     meta["receiver"] = f.receiver
-                confidence = min(res.confidence, _TIER_DATAFLOW) if f.dataflow else res.confidence
+                # A type traced across statements is no stronger than the trace.
+                origin = res.origin
+                if f.dataflow:
+                    origin = min(res.origin, ContractOrigin.DATAFLOW, key=origin_confidence)
                 contracts.append(
                     Contract(
                         repo=repo_alias,
@@ -1200,7 +1205,8 @@ class MassTransitExtractor:
                         role=f.role,
                         file_path=rel_path,
                         symbol_name=f.symbol,
-                        confidence=confidence,
+                        confidence=origin_confidence(origin),
+                        origin=origin,
                         service=None,
                         line=f.line if f.line is not None else line_at(content, f.offset),
                         meta=meta,

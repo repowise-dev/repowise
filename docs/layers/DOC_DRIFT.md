@@ -162,7 +162,8 @@ repowise doc-drift --check --baseline .doc-drift-baseline.json
 
 Baseline entries are keyed on the document, the reference class and the target,
 not the line number, so editing a document above a known finding does not turn
-it back into a new one.
+it back into a new one. Add `--fail-on-baseline-growth` in CI to fail a change
+that adds entries to the committed baseline instead of fixing the drift.
 
 On a pull request you can instead gate only the drift the change is answerable
 for, with no baseline to maintain:

@@ -322,8 +322,8 @@ def _emit(
         for t in targets:
             click.echo(
                 f"- **{t['file_path']}** ({t['effort_bucket']}, "
-                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}) "
-                f"— {t['primary_biomarker']}: {t['primary_reason']}"
+                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}), "
+                f"{t['primary_biomarker']}: {t['primary_reason']}"
             )
         _render_opportunities_md(opportunities, plan_by_id)
         _render_unattached_md(unattached)

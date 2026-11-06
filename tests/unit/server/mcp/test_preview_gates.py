@@ -51,7 +51,7 @@ def test_shipped_table_states():
     expected = {
         ("health", "cpp"): "preview",
         **{(layer, lang): "preview" for layer in ("refactoring", "performance") for lang in audited},
-        **{("dead_code", lang): "preview" for lang in (*audited, "kotlin", "swift")},
+        **{("dead_code", lang): "preview" for lang in (*audited, "kotlin", "swift", "apex")},
     }
     assert states == expected
     assert all(finding_registry.gates_on(layer) == () for layer in ("health", "refactoring",

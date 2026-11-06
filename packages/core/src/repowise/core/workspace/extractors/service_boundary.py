@@ -61,6 +61,7 @@ _SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
         "kotlin",
         "scala",
         "elixir",
+        "apex",
     ]
 )
 
@@ -142,6 +143,14 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
                 )
             except (PermissionError, OSError):
                 has_source = False
+
+        if not has_source and "src" in dirnames:
+            # src-layout packages (src/<pkg>/...) keep sources below the first level
+            has_source = any(
+                Path(f).suffix.lower() in _SOURCE_EXTENSIONS
+                for _, _, fs in walk_repo(Path(dirpath, "src"))
+                for f in fs
+            )
 
         if not has_source:
             continue
