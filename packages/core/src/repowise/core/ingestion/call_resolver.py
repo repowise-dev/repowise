@@ -1050,7 +1050,7 @@ class CallResolver(
 
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
-                resolved = self._settle_callee(resolved, call)
+                resolved = self._settle_callee(file_path, resolved, call)
             if resolved:
                 # The edge type is a property of the call syntax, not of the
                 # tier that answered, so it is stamped once here.
@@ -1067,7 +1067,9 @@ class CallResolver(
 
         return results
 
-    def _settle_callee(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
+    def _settle_callee(
+        self, file_path: str, resolved: ResolvedCall, call: CallSite,
+    ) -> ResolvedCall | None:
         """Carry *resolved* through prototypes, aliases and overload sets to its body.
 
         A C-family prototype pairs member by member, so its overload set is
@@ -1086,9 +1088,11 @@ class CallResolver(
         if resolved:
             resolved = self._narrow_overload(resolved, call)
         resolved = self._redirect_to_definition(resolved) if resolved else None
-        return self._language_checked(resolved)
+        return self._language_checked(file_path, resolved)
 
-    def _language_checked(self, resolved: ResolvedCall | None) -> ResolvedCall | None:
+    def _language_checked(
+        self, file_path: str, resolved: ResolvedCall | None,
+    ) -> ResolvedCall | None:
         """Refuse unrelated languages, including synthetic module callers."""
         if resolved is None:
             return None
@@ -1097,10 +1101,12 @@ class CallResolver(
         if caller and callee and (
             _CALL_LANGUAGE_FAMILY.get(caller, caller) != _CALL_LANGUAGE_FAMILY.get(callee, callee)
         ):
-            return resolved if self._explicit_apex_bridge(resolved, caller, callee) else None
+            return resolved if self._explicit_apex_bridge(file_path, resolved, caller, callee) else None
         return resolved
 
-    def _explicit_apex_bridge(self, resolved: ResolvedCall, caller: str, callee: str) -> bool:
+    def _explicit_apex_bridge(
+        self, file_path: str, resolved: ResolvedCall, caller: str, callee: str,
+    ) -> bool:
         """An LWC import names the Apex method exposed through Salesforce's RPC bridge."""
         if caller not in ("javascript", "typescript") or callee != "apex":
             return False
@@ -1109,7 +1115,7 @@ class CallResolver(
         symbol = self._symbols_by_id.get(resolved.callee_id)
         if symbol is None:
             return False
-        parsed = self._parsed_files[resolved.caller_id.split("::", 1)[0]]
+        parsed = self._parsed_files[file_path]
         target_path = self._symbol_paths_by_id.get(resolved.callee_id)
         return any(
             imp.resolved_file == target_path
@@ -1120,7 +1126,7 @@ class CallResolver(
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Check every tier before its result can emit an edge or type another call."""
-        return self._language_checked(self._resolve_by_tier(file_path, call))
+        return self._language_checked(file_path, self._resolve_by_tier(file_path, call))
 
     def _resolve_by_tier(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Resolve a single CallSite through the three-tier fallback."""

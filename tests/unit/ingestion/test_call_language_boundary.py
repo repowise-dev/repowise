@@ -177,15 +177,16 @@ def test_csharp_calls_into_vbnet_keep_resolving(tmp_path: Path) -> None:
     ],
 )
 @pytest.mark.parametrize("language,extension", [("javascript", "js"), ("typescript", "ts")])
+@pytest.mark.parametrize("body", ["function run() { %s; }", "%s;"])
 def test_only_explicit_salesforce_imports_bridge_to_apex(
-    tmp_path: Path, module: str, call: str, expected: bool, language: str, extension: str,
+    tmp_path: Path, module: str, call: str, expected: bool, language: str, extension: str, body: str,
 ) -> None:
     caller = f"app.{extension}"
     parsed = _parse_all(
         tmp_path,
         {
             caller: (
-                language, f"import loadWidget from '{module}';\nfunction run() {{ {call}; }}",
+                language, f"import loadWidget from '{module}';\n{body % call}",
             ),
             "Widget.cls": (
                 "apex", "public class Widget {\n public static void go() {}\n}",
