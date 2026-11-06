@@ -2289,7 +2289,7 @@ repowise uninstall --all --dry-run --format json
 
 ### `repowise augment`
 
-Context enrichment run by `init`'s Claude Code and Codex hooks, not by hand.
+Context enrichment run by `init`'s Claude Code, Codex and Pi hooks, not by hand.
 
 ```bash
 repowise augment --client codex          # payload on stdin
@@ -2297,7 +2297,7 @@ repowise augment --client codex          # payload on stdin
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--client` | `codex` or `cursor`, passed by those hooks. | Claude Code |
+| `--client` | `codex`, `cursor` or `pi`, passed by those hooks. | Claude Code |
 | `--coverage-only` | Only the shell-tool coverage re-ingest (repo-local hook). | off |
 | `--verbose`, `-v` | Debug logs. | off |
 
@@ -2305,6 +2305,9 @@ repowise augment --client codex          # payload on stdin
   (ranked, hard token cap, silent below the floor), one "governed by" line per decision per session on editing a
   governed file.
 - **Codex:** `SessionStart` and `PostToolUse` guidance.
+- **Pi:** the same surfaces as Claude Code, through the extension (`plugins/pi/repowise.ts`): session-start
+  context, post-read/edit/grep enrichment, decision capture after `git commit`, and the wrong-path rescue on
+  failures. The Lens UI is not ported — see the plugin's README.
 - Shown decisions land in `.repowise/sessions/sessions.db`; the next `update` judges followed or contradicted and adjusts staleness.
 
 ### `repowise-augment` / `repowise-rewrite`

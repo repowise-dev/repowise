@@ -156,9 +156,9 @@ def _adapter(client: str | None):
 @click.command("augment")
 @click.option(
     "--client",
-    type=click.Choice(["codex", "cursor"]),
+    type=click.Choice(["codex", "cursor", "pi"]),
     default=None,
-    help="Hook client marker. Codex and Cursor hooks pass this explicitly.",
+    help="Hook client marker. Codex, Cursor and Pi hooks pass this explicitly.",
 )
 @click.option(
     "--coverage-only",
@@ -225,6 +225,22 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
         capture_edit(_adapter(client).name, payload)
     if event == "afterFileEdit":
         return
+
+    if client == "pi":
+        # Pi payloads arrive in Pi's dialect — lowercase tool names,
+        # ``path`` inputs, content-block results. Translate once, here,
+        # so the dispatch below runs on the shapes it already knows; the
+        # capture-edit call above deliberately saw the original, so an
+        # edit is attributed to the host that actually made it. The
+        # tool-name spelling is the one thing not translated: the Pi
+        # adapter's sets carry it, and the ledger records it.
+        from .pi import normalize_pi_payload
+
+        payload = normalize_pi_payload(payload)
+        event = payload.get("hook_event_name", "")
+        tool_name = payload.get("tool_name", "")
+        tool_input = payload.get("tool_input", {})
+        cwd = payload.get("cwd", "")
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
         session_id = payload.get("session_id", "")

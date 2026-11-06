@@ -14,6 +14,8 @@ Split out of a single ~1300-line module into cohesive submodules:
 * :mod:`.served_reads` — read-after-served bookkeeping (measurement only).
 * :mod:`.bash_staleness` — post-git-commit stale-wiki detection.
 * :mod:`.codex` — Codex lifecycle hooks.
+* :mod:`.pi` — Pi lifecycle hooks: the Pi-shaped payload translated
+  into the shapes the handlers below already speak.
 * :mod:`.command` — the Click command, stdin dispatch, and emission dedup.
 
 The public command plus the leading-underscore names that ``augment_hook``
@@ -25,7 +27,7 @@ lean at module scope (no sqlalchemy/asyncio/subprocess) because
 
 from __future__ import annotations
 
-from . import bash_staleness, codex, command, read_state, search
+from . import bash_staleness, codex, command, pi, read_state, search
 from ._shared import _extract_output_text
 from .bash_staleness import _handle_bash_post
 from .command import (
@@ -71,6 +73,7 @@ __all__ = [
     "bash_staleness",
     "codex",
     "command",
+    "pi",
     "read_state",
     "search",
 ]
