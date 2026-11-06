@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from collections.abc import Sequence
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+
+_log = logging.getLogger("repowise.mcp.symbol")
 
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
@@ -67,7 +70,11 @@ def _resolve_omission_ref(
                             if raw is not None:
                                 lines_total = len(raw.splitlines())
                         except (OSError, sqlite3.Error):
-                            pass
+                            _log.warning(
+                                "get_symbol could not read omission ref %s for its line count",
+                                ref,
+                                exc_info=True,
+                            )
             finally:
                 store.close()
         except (OSError, sqlite3.Error):
