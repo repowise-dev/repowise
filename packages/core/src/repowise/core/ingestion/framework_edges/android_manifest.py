@@ -37,6 +37,9 @@ if TYPE_CHECKING:
 
 # XML allows either quote and spaces around ``=``.
 _ANDROID_NAME_RE = re.compile(r"""android:name\s*=\s*['"]([\w.$]+)['"]""")
+_APPLICATION_CLASS_ATTR_RE = re.compile(
+    r"""(?:android:backupAgent|android:manageSpaceActivity|android:appComponentFactory)\s*=\s*['"]([\w.$]+)['"]"""
+)
 _ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver",
                            "<provider", "<application")
 
@@ -60,7 +63,9 @@ def _add_android_edges(graph: nx.DiGraph, path_set: set[str], ctx: ResolverConte
         return 0
 
     count = 0
-    for name in _registered_class_names(ctx.repo_path.resolve(), ctx):
+    root = ctx.repo_path.resolve()
+    names = set(_registered_class_names(root, ctx)) | set(_resource_and_proguard_class_names(root, ctx))
+    for name in names:
         for target in jvm_index.files_for_fqn(name):
             if target not in path_set:
                 continue
@@ -125,6 +130,10 @@ def _component_class_names(text: str) -> Iterator[str]:
             for m in _ANDROID_NAME_RE.finditer(head):
                 if m.group(1).strip("."):
                     yield m.group(1)
+            if tag == "<application":
+                for m in _APPLICATION_CLASS_ATTR_RE.finditer(head):
+                    if m.group(1).strip("."):
+                        yield m.group(1)
 
 
 class _AndroidManifestHandler:
@@ -142,3 +151,82 @@ class _AndroidManifestHandler:
 
 
 HANDLERS: list[FrameworkHandler] = [_AndroidManifestHandler()]
+
+_XML_CLASS_ATTR_RE = re.compile(
+    r"""(?:android:name|class|app:actionViewClass|app:layout_behavior|android:backupAgent|android:manageSpaceActivity|android:appComponentFactory)\s*=\s*['"]([\w.$]+)['"]"""
+)
+_XML_DOTTED_TAG_RE = re.compile(r"""<([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)""")
+_PROGUARD_KEEP_RE = re.compile(
+    r"-(?:keep|keepnames|keepclassmembers|keepclasseswithmembers)\b[^{;]*\b(?:class|interface|enum)\s+([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)"
+)
+
+def _res_module_package(res_dir: Path) -> str:
+    """The package or namespace for resources under *res_dir* (the ``res`` folder)."""
+    parent = res_dir.parent
+    module = parent.parent if parent.name == "src" or (parent.parent and parent.parent.name == "src") else parent
+    for mpath in (
+        parent / "AndroidManifest.xml",
+        module / "src" / "main" / "AndroidManifest.xml",
+        module / "AndroidManifest.xml",
+    ):
+        try:
+            mtext = mpath.read_text(encoding="utf-8", errors="ignore")
+            if pkg := _manifest_package(mpath, mtext):
+                return pkg
+        except OSError:
+            pass
+    for build_name in ("build.gradle.kts", "build.gradle"):
+        try:
+            build_text = (module / build_name).read_text(encoding="utf-8", errors="ignore")
+            if m := _GRADLE_NAMESPACE_RE.search(build_text):
+                return m.group(1)
+        except OSError:
+            pass
+    return ""
+
+
+def _resource_and_proguard_class_names(root: Path, ctx: ResolverContext) -> Iterator[str]:
+    """Class names from res/layout*, res/xml*, res/menu*, res/navigation*, and proguard rules."""
+    from repowise.core.fs_walk import glob_via
+
+    pkg_cache: dict[Path, str] = {}
+
+    # 1. XML resources
+    for res_xml in glob_via(ctx.walk_snapshot, root, "*.xml", prune_nested_git=ctx.prune_nested_git):
+        parent = res_xml.parent
+        # Require parent directory to be layout*, xml*, menu*, or navigation* under a "res" parent
+        if parent.parent.name != "res" or not parent.name.startswith(
+            ("layout", "xml", "menu", "navigation")
+        ):
+            continue
+        try:
+            content = res_xml.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        res_dir = parent.parent
+        if res_dir not in pkg_cache:
+            pkg_cache[res_dir] = _res_module_package(res_dir)
+        pkg = pkg_cache[res_dir]
+
+        for m in _XML_DOTTED_TAG_RE.finditer(content):
+            tag = m.group(1)
+            yield tag
+        for m in _XML_CLASS_ATTR_RE.finditer(content):
+            val = m.group(1).strip()
+            if val.startswith("."):
+                if pkg:
+                    yield _qualify(val, pkg)
+            elif "." in val:
+                yield val
+
+    # 2. ProGuard / R8 rules
+    for pro in glob_via(ctx.walk_snapshot, root, "*.pro", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = pro.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in _PROGUARD_KEEP_RE.finditer(content):
+            cls = m.group(1).strip()
+            if "*" not in cls and "?" not in cls:
+                yield cls

@@ -137,10 +137,15 @@ the extracted span appeared beside it (computed for Extract Method only). The
 other outcomes are `file_deleted`, `superseded` (the same plan found again under
 a new id), `target_changed` (renamed or rewritten another way) and `unknown`.
 
-Plans and opportunities on Java, C#, C and C++ files are composed and stored as
-usual but held back pending verification: the plan lists, the queue, its facets
-and the rollup's lead leave them out unless the caller passes
-`include_unverified`, and responses count them in `gated`.
+Plans and opportunities on Java, C#, C and C++ files are served as a preview:
+they are listed and counted like any other, and each one carries the
+measurement behind it, as `preview` on a REST row, in `_meta.preview` on
+`get_health`, and as a dim line under the CLI list. A language gated instead is
+left out unless the caller passes `include_unverified`, and counted in `gated`.
+
+Plans and opportunities on test files are held back the same way on every plan
+surface, `scope=all` included, as Fix first already leaves them out. They are
+counted in `gated` under `test`.
 
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` instead of
@@ -253,6 +258,11 @@ Most plans answer a health finding, so per-path marker rules in
   code declares them; `<type>` marks a type for you to fill in. It flags an
   awaiting span with `needs_async: true` and a receiver-bound helper under
   `new_symbol`.
+- A TypeScript span is not offered when the helper would lose a narrowing the span
+  relies on (`if (!tc.result) continue;` before `tc.result.id`), or would assign an
+  outer name without taking or returning it; the finding records `narrowing_lost` or
+  `outer_declaration` in `details.extract_method_stage_refused`. A narrowed parameter gets a note to type it
+  as narrowed.
 - A step Repowise cannot express mechanically is a judgment call with a reason
   code: `async_helper_unexpressible`, `receiver_unbound` or
   `receiver_copy_written`.

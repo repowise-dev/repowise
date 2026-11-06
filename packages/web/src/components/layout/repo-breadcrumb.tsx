@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { MessageSquare } from "lucide-react";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
@@ -9,6 +9,8 @@ import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
 import { DocsModeBadge, type DocsMode } from "@repowise-dev/ui/docs/docs-mode-badge";
 import { getRepoBreadcrumbSegmentLabel, SEGMENT_MESSAGE_KEYS } from "./repo-breadcrumb-label";
 import { showsRouteBreadcrumb } from "./repo-breadcrumb-route";
+import { commitsViewHref } from "@/lib/changes";
+import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
 export function RepoBreadcrumb({
   repoName,
@@ -47,7 +49,8 @@ export function RepoBreadcrumb({
       // A configured segment is translated; anything else (a dynamic id, a
       // path we do not know) keeps the decoded value it always had.
       label: messageKey ? tb(messageKey) : getRepoBreadcrumbSegmentLabel(seg),
-      href: currentPath,
+      // `/changes` has no page of its own: the change list is a Commits view.
+      href: currentPath === `/repos/${repoId}/changes` ? commitsViewHref(repoId, "changes") : currentPath,
     });
   }
 
@@ -63,11 +66,11 @@ export function RepoBreadcrumb({
     <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
       {showCrumbs ? <Breadcrumb segments={segments} LinkComponent={Link} /> : <span />}
       <div className="flex shrink-0 items-center gap-3">
-        {showBadge && <DocsModeBadge mode={docsMode} />}
+        {showBadge && <DocsModeAction repoId={repoId} docsMode={docsMode} />}
         {!onChatPage && (
           <Link
             href={`/repos/${repoId}/chat`}
-            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <MessageSquare className="h-3.5 w-3.5" aria-hidden />
             {ts("ask")}
@@ -75,5 +78,25 @@ export function RepoBreadcrumb({
         )}
       </div>
     </div>
+  );
+}
+
+/** The docs-mode chip as the way in to a model: it opens the model sheet,
+ *  and a finished run refreshes the layout so the chip retires. */
+function DocsModeAction({ repoId, docsMode }: { repoId: string; docsMode: DocsMode }) {
+  const t = useTranslations("modelUpgrade");
+  const router = useRouter();
+  const upgrade = useModelUpgrade(repoId, { onGenerated: () => router.refresh() });
+  return (
+    <>
+      <DocsModeBadge
+        mode={docsMode}
+        onAction={upgrade.openSheet}
+        label={t("badgeLabel")}
+        actionLabel={t("badgeAction")}
+        title={t("badgeTitle")}
+      />
+      {upgrade.sheet}
+    </>
   );
 }

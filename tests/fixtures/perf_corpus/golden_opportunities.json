@@ -58,6 +58,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "entry_reachable",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -168,6 +169,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -258,6 +260,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "loop",
         "leverage": "isolated",
         "loop_magnitude": "grows_with_data"
       },
@@ -372,6 +375,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "entry_reachable",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -480,6 +484,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -584,6 +589,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "entry_reachable",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -693,6 +699,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "entry_reachable",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -802,6 +809,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "local",
         "loop_magnitude": "unknown"
       },
@@ -895,6 +903,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -984,6 +993,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1067,6 +1077,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1152,6 +1163,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1239,6 +1251,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1331,6 +1344,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1420,6 +1434,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1504,6 +1519,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1591,6 +1607,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "not_entry_reachable",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1684,6 +1701,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "not_entry_reachable",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1777,6 +1795,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "not_entry_reachable",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1867,6 +1886,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -1947,6 +1967,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2027,6 +2048,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2156,6 +2178,7 @@
         "change_risk": "moderate",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "shared",
         "loop_magnitude": "unknown"
       },
@@ -2239,6 +2262,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "bounded"
       },
@@ -2320,6 +2344,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2413,6 +2438,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2506,6 +2532,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2599,6 +2626,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2685,6 +2713,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2771,6 +2800,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2862,6 +2892,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -2940,6 +2971,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -3018,6 +3050,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },
@@ -3103,6 +3136,7 @@
         "change_risk": "contained",
         "execution_role": "unknown",
         "exposure": "unknown",
+        "growth_source": "none",
         "leverage": "isolated",
         "loop_magnitude": "unknown"
       },

@@ -110,7 +110,7 @@ def _fake_evidence(monkeypatch):
 
     calls: list[str] = []
 
-    async def _evidence(session, repo_id, root, row, *, refresh=False):
+    async def _evidence(session, repo_id, root, row, *, refresh=False, key=None, catalog=None):
         calls.append(row.change_id)
         return ChangeEvidence(
             change_id=row.change_id,
@@ -122,7 +122,11 @@ def _fake_evidence(monkeypatch):
             ],
         )
 
+    async def _build(session, repo_id, root, row, **_k):
+        return await _evidence(session, repo_id, root, row)
+
     monkeypatch.setattr(collect, "change_evidence", _evidence)
+    monkeypatch.setattr(collect, "build_stored_evidence", _build)
     return calls
 
 
@@ -171,3 +175,90 @@ def test_export_windows_and_formats(tmp_path, monkeypatch):
     assert lines[0] == "change_id,merged_at,title,kind,label,status,basis,value,source"
     assert lines[1].startswith("pr-5,2026-03-01") and ",owners,Declared owners,attention,declared," in lines[1]
     assert len(lines) == 3
+
+
+async def _keep_checklist(repo_path: Path, status: str) -> None:
+    from repowise.core.changes.collect import save_evidence
+    from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    engine = create_engine(f"sqlite+aiosqlite:///{(repo_path / '.repowise' / 'wiki.db').as_posix()}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            evidence = ChangeEvidence(
+                change_id="pr-5",
+                revspec=HEAD,
+                generated_at="2026-10-14T00:00:00+00:00",
+                items=[EvidenceItem("owners", "Declared owners", status, "declared", None, [], "test")],
+            )
+            await save_evidence(session, repo.id, "pr-5", evidence)
+    finally:
+        await engine.dispose()
+
+
+def test_list_needs_attention_reads_kept_checklists_only(tmp_path):
+    root = _repo(tmp_path)
+    runner = CliRunner()
+    args = ["list", "--path", str(root), "--format", "json", "--needs-attention"]
+
+    # No checklist kept yet: nothing is listed, and nothing is built.
+    assert json.loads(runner.invoke(changes_group, args).output)["total"] == 0
+    run_async(_keep_checklist(root, "ok"))
+    assert json.loads(runner.invoke(changes_group, args).output)["total"] == 0
+    run_async(_keep_checklist(root, "attention"))
+    flagged = json.loads(runner.invoke(changes_group, args).output)
+    assert flagged["total"] == 1 and flagged["changes"][0]["id"] == "pr-5"
+    features = json.loads(runner.invoke(changes_group, [*args, "--category", "feature"]).output)
+    assert features["total"] == 0
+
+
+def test_outcomes_read_in_their_words_and_never_as_a_cause():
+    from repowise.cli.commands.changes_cmd import outcome_lines
+
+    item = {
+        "kind": "outcomes",
+        "status": "attention",
+        "details": [
+            {"kind": "revert", "sha": "b" * 40, "change_id": "pr-9", "evidence": 'Revert "x"', "in_force": False},
+            {"kind": "fix_reference", "sha": "c" * 40, "change_id": None, "evidence": "regression from #5"},
+            {"kind": "file_fix_rate", "files": 4, "files_fixed": 1, "days": 30, "window_complete": False},
+        ],
+    }
+    assert outcome_lines(item) == [
+        f'reverted by pr-9 ({"b" * 12}) (no longer in force): Revert "x"',
+        f'referenced as the cause by a later fix, {"c" * 12} (their words): "regression from #5"',
+        "files later received fixes: 1 of 4 within 30 days (window still open)",
+    ]
+    rate_only = {**item, "details": item["details"][2:]}
+    assert outcome_lines(rate_only)[0].startswith("no later commit in this history reverts")
+    assert not any("caused" in line for line in outcome_lines(item) + outcome_lines(rate_only))
+
+
+def test_csv_cells_that_open_as_formulas_are_quoted():
+    import csv
+    import io
+
+    from repowise.cli.commands.changes_cmd import _csv_rows
+
+    record = {
+        "id": "pr-1",
+        "merged_at": None,
+        "title": '=HYPERLINK("http://x")',
+        "evidence": {
+            "items": [
+                {
+                    "kind": "outcomes",
+                    "label": "@label",
+                    "status": "ok",
+                    "basis": "declared",
+                    "value": -1,
+                    "source": "+git",
+                }
+            ]
+        },
+    }
+    (row,) = csv.reader(io.StringIO(_csv_rows(record)))
+    assert row[2] == "'=HYPERLINK(\"http://x\")" and row[4] == "'@label"
+    assert row[7] == "'-1" and row[8] == "'+git" and row[0] == "pr-1"

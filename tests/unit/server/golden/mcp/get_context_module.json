@@ -1,0 +1,28 @@
+{
+  "targets": {
+    "src/auth": {
+      "type": "module",
+      "docs": {
+        "title": "Auth Module",
+        "summary": "",
+        "files": [
+          {
+            "path": "src/auth/service.py",
+            "description": "",
+            "confidence_score": 0.85
+          },
+          {
+            "path": "src/auth/middleware.py",
+            "description": "",
+            "confidence_score": 0.5
+          }
+        ]
+      },
+      "hotspot_files": 1
+    }
+  },
+  "_meta": {
+    "index_age_days": 7,
+    "replaced_tokens": 1200
+  }
+}

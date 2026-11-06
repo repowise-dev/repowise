@@ -34,7 +34,7 @@ import {
 
 import { Skeleton } from "../ui/skeleton";
 import { ApiError } from "../shared/api-error";
-import { EmptyState } from "../shared/empty-state";
+import { CleanState, type CleanStateCopy } from "../shared/clean-state";
 import { CiHint } from "../shared/ci-hint";
 import { OverviewSection } from "../overview/section";
 import { toFriendlyMessage } from "../lib/errors";
@@ -92,8 +92,11 @@ export function DocDriftView({
   renderError,
   renderLoading,
   initialDocument,
+  clean: cleanCopy,
 }: {
   adapter: DocDriftAdapter;
+  /** The clean state's copy, for a host that translates it. */
+  clean?: CleanStateCopy | undefined;
   /** Open narrowed to one document, e.g. from a `?document=` deep link. */
   initialDocument?: string | undefined;
   /** Host-specific failure card — an auth toast, a permissions notice. */
@@ -209,10 +212,12 @@ export function DocDriftView({
 
       {summary.findings_total === 0 && !filtered ? (
         <div className="flex flex-col items-center gap-2">
-          <EmptyState
-            tone="positive"
-            title="No documentation drift found"
-            description="Every reference this detector could resolve still resolves. It re-checks on each update, so this is worth a second look after a rename or a move."
+          <CleanState
+            title={cleanCopy?.title ?? "No documentation drift found"}
+            description={
+              cleanCopy?.description ??
+              "Every reference this detector could resolve still resolves. It re-checks on each update, so this is worth a second look after a rename or a move."
+            }
           />
           <CiHint command="repowise doc-drift --check" checks="that every reference in the docs still resolves" />
         </div>

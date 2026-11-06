@@ -638,7 +638,7 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
     semantic_docs = [
         SimpleNamespace(
             page_id=f"file_page:docs/sealed_{i}.md",
-            title=f"Sealed documentation {i}",
+            title=f"Sealed response contract documentation {i}",
             page_type="file_page",
             snippet=f"DOC_SENTINEL_{i}_" + "d" * 400,
             score=0.9 - i / 100,

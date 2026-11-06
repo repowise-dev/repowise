@@ -9,6 +9,7 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
+import { useTranslations } from "next-intl";
 import { FixFirstList } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
@@ -19,6 +20,10 @@ import { getFixFirst, getFixFirstItemPrompt, updateFindingStatus } from "@/lib/a
 const LIMIT = 10;
 
 export function fixPlanHref(repoId: string, item: FixItem): string | null {
+  const planId = item.source.plan_ids[0];
+  if (item.kind === "finding" && planId) {
+    return `/repos/${repoId}/refactoring?plan=${encodeURIComponent(planId)}`;
+  }
   const id = item.source.opportunity_id;
   if (!id) return null;
   const opp = encodeURIComponent(id);
@@ -28,6 +33,7 @@ export function fixPlanHref(repoId: string, item: FixItem): string | null {
 }
 
 export function FixFirstSection({ repoId }: { repoId: string }) {
+  const t = useTranslations("views.codeHealth");
   const [scope, setScope] = useState<FixScope>("production");
   const key = `code-health-fix-first:${repoId}:${scope}`;
   const { data, error, isLoading, mutate } = useSWR<FixFirstQueue>(
@@ -73,6 +79,7 @@ export function FixFirstSection({ repoId }: { repoId: string }) {
       onTriage={onTriage}
       loadPrompt={loadPrompt}
       LinkComponent={Link}
+      title={t("fixFirstTitle")}
     />
   );
 }

@@ -162,6 +162,50 @@ class TestHasWorkingTreeChanges:
     def test_false_on_a_non_git_directory(self, tmp_path: Path) -> None:
         assert has_working_tree_changes(tmp_path) is False
 
+    def test_repowise_editor_file_is_not_the_users_change(self, repo: Path) -> None:
+        # init writes .claude/CLAUDE.md untracked; counting it marked every
+        # repo with editor setup dirty on every run.
+        _write_claude_md(repo, "")
+
+        assert has_working_tree_changes(repo) is False
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+    def test_refreshed_block_in_a_tracked_editor_file_does_not_count(self, repo: Path) -> None:
+        _write_claude_md(repo, "Team notes.\n\n", block="Last indexed: monday")
+        r = gitpython.Repo(repo)
+        r.index.add([".claude/CLAUDE.md"])
+        r.index.commit("add claude md")
+        r.close()
+        _write_claude_md(repo, "Team notes.\n\n", block="Last indexed: tuesday")
+
+        assert has_working_tree_changes(repo) is False
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+    def test_users_edit_of_an_editor_file_still_counts(self, repo: Path) -> None:
+        _write_claude_md(repo, "Always run the linter.\n\n")
+
+        assert has_working_tree_changes(repo) is True
+        assert [d.path for d in ChangeDetector(repo).get_working_tree_changes()] == [
+            ".claude/CLAUDE.md"
+        ]
+
+
+def _write_claude_md(repo: Path, user_text: str, block: str = "Last indexed: today") -> None:
+    """``.claude/CLAUDE.md`` as the generator writes it, with *user_text* above the block."""
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+    from repowise.core.generation.editor_files.claude_md import ClaudeMdGenerator
+
+    tag = ClaudeMdGenerator.marker_tag
+    text = (
+        (user_text or ClaudeMdGenerator.user_placeholder)
+        + Gen.MARKER_START_FMT.format(tag=tag)
+        + f"\n{block}\n"
+        + Gen.MARKER_END_FMT.format(tag=tag)
+        + "\n"
+    )
+    (repo / ".claude").mkdir(exist_ok=True)
+    (repo / ".claude" / "CLAUDE.md").write_text(text, encoding="utf-8")
+
 
 def _diff(path: str, status: str) -> FileDiff:
     return FileDiff(

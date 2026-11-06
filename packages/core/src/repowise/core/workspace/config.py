@@ -6,12 +6,18 @@ Pure data module with no CLI or DB dependencies. Handles the
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from dataclasses import dataclass, field
+import os
+import re
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from repowise.core.workspace.grouping import declared_group
 
 _log = logging.getLogger("repowise.workspace.config")
 
@@ -20,8 +26,15 @@ _log = logging.getLogger("repowise.workspace.config")
 # ---------------------------------------------------------------------------
 
 WORKSPACE_CONFIG_FILENAME = ".repowise-workspace.yaml"
+
+# Upper bound for the workspace walk in find_workspace_root, set by the test
+# suite so unit tests never discover the developer's real workspace above
+# their tmp_path (GIT_CEILING_DIRECTORIES-style).
+WORKSPACE_CEILING_ENV_VAR = "REPOWISE_WORKSPACE_CEILING"
 WORKSPACE_DATA_DIR = ".repowise-workspace"
 CURRENT_VERSION = 1
+# A ``Contracts`` directory name, with or without a dotted prefix (``Sample.Contracts``).
+DEFAULT_CONTRACT_PROJECT_PATTERN = r"(?:.+\.)?contracts"
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +54,8 @@ class RepoEntry:
     # Free-form labels (e.g. "frontend", "tier:edge", "legacy") that group repos
     # for architecture conformance rules. A rule like ``frontend !-> db`` matches
     # by tag via ``tag:<name>``; every service node in this repo inherits these.
+    # On a large estate a ``group:<name>`` tag also names the system the repo's
+    # services are grouped under (see ``grouping.py``); other tags never do.
     tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,26 +114,58 @@ class ManualContractLink:
         )
 
 
+def _valid_pattern(value: Any) -> str:
+    """*value* as a contract project pattern, or the default when it is not a regex."""
+    if value is None:
+        return DEFAULT_CONTRACT_PROJECT_PATTERN
+    try:
+        re.compile(str(value))
+    except re.error:
+        _log.warning("Invalid contracts.contract_project_pattern %r; using the default", value)
+        return DEFAULT_CONTRACT_PROJECT_PATTERN
+    return str(value)
+
+
+#: The cross-repo pass a contract setting feeds, declared on each
+#: :class:`ContractConfig` field. Changing an extraction setting re-extracts
+#: every repo; changing a matching setting re-links the stored contracts and
+#: reads no repo. A new setting declares one or a test fails.
+STAGE_EXTRACTION = "extraction"
+STAGE_MATCHING = "matching"
+_EXTRACTION = {"stage": STAGE_EXTRACTION}
+_MATCHING = {"stage": STAGE_MATCHING}
+
+
 @dataclass
 class ContractConfig:
     """Configuration for contract detection (Phase 4)."""
 
-    detect_http: bool = True
-    detect_grpc: bool = True
-    detect_socket: bool = True
-    detect_topics: bool = True
-    detect_data: bool = True
+    detect_http: bool = field(default=True, metadata=_EXTRACTION)
+    detect_grpc: bool = field(default=True, metadata=_EXTRACTION)
+    detect_socket: bool = field(default=True, metadata=_EXTRACTION)
+    detect_topics: bool = field(default=True, metadata=_EXTRACTION)
+    detect_data: bool = field(default=True, metadata=_EXTRACTION)
     #: A library's public API as a contract (``contract_type="code"``).
-    detect_code_api: bool = True
-    manual_links: list[ManualContractLink] = field(default_factory=list)
+    detect_code_api: bool = field(default=True, metadata=_EXTRACTION)
+    manual_links: list[ManualContractLink] = field(default_factory=list, metadata=_MATCHING)
     # Map a consumer base token or absolute host to the repo alias it targets,
     # so a ``fetch(`${API_BASE}/users`)`` whose base resolves to ``backend`` links
     # to that service as an exact match. Keys are env-var identifiers
     # (``API_BASE``, ``VITE_API_URL``) or hosts (``api.example.com``).
-    service_bases: dict[str, str] = field(default_factory=dict)
+    service_bases: dict[str, str] = field(default_factory=dict, metadata=_MATCHING)
     # Extra glob patterns (added to the built-in test/spec defaults) whose files
     # are skipped during contract extraction.
-    exclude_globs: list[str] = field(default_factory=list)
+    exclude_globs: list[str] = field(default_factory=list, metadata=_EXTRACTION)
+    # A directory name matching this regex (in full, ignoring case) marks a .NET
+    # project whose types are MassTransit message contracts.
+    contract_project_pattern: str = field(
+        default=DEFAULT_CONTRACT_PROJECT_PATTERN, metadata=_EXTRACTION
+    )
+
+    def stage_dict(self, stage: str) -> dict[str, Any]:
+        """The :meth:`to_dict` entries whose field declares *stage*."""
+        stages = {f.name: f.metadata.get("stage") for f in fields(self)}
+        return {k: v for k, v in self.to_dict().items() if stages[k] == stage}
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -135,6 +182,8 @@ class ContractConfig:
             d["service_bases"] = dict(self.service_bases)
         if self.exclude_globs:
             d["exclude_globs"] = list(self.exclude_globs)
+        if self.contract_project_pattern != DEFAULT_CONTRACT_PROJECT_PATTERN:
+            d["contract_project_pattern"] = self.contract_project_pattern
         return d
 
     @classmethod
@@ -150,6 +199,7 @@ class ContractConfig:
             manual_links=manual,
             service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
             exclude_globs=[str(g) for g in data.get("exclude_globs", [])],
+            contract_project_pattern=_valid_pattern(data.get("contract_project_pattern")),
         )
 
 
@@ -234,22 +284,10 @@ class WorkspaceConfig:
             "default_repo": self.default_repo,
             "repos": [r.to_dict() for r in self.repos],
         }
-        # Only include contracts section if non-default
+        # Only include contracts section if non-default. Compared whole, so a
+        # setting added later is never dropped from the file on save.
         contracts_d = self.contracts.to_dict()
-        if (
-            self.contracts.manual_links
-            or self.contracts.service_bases
-            or self.contracts.exclude_globs
-            or not all(
-                [
-                    self.contracts.detect_http,
-                    self.contracts.detect_grpc,
-                    self.contracts.detect_socket,
-                    self.contracts.detect_topics,
-                    self.contracts.detect_data,
-                ]
-            )
-        ):
+        if contracts_d != ContractConfig().to_dict():
             d["contracts"] = contracts_d
         # Only include conformance section when rules are declared.
         if self.conformance.rules:
@@ -276,6 +314,20 @@ class WorkspaceConfig:
             contracts=contracts,
             conformance=conformance,
         )
+
+    def analysis_fingerprint(self) -> str:
+        """Hash of the settings the cross-repo analysis reads.
+
+        Compared with the one the last analysis run stamped, so editing the
+        ``contracts:`` or ``conformance:`` block, or a repo's declared service
+        group (its ``group:<name>`` tag), re-runs it with no repo changed. Other
+        tags stay out, so editing a conformance tag never forces a re-analysis.
+        """
+        payload: list[Any] = [self.contracts.to_dict(), self.conformance.to_dict()]
+        groups = {r.alias: name for r in self.repos if (name := declared_group(r.tags))}
+        if groups:  # only when declared, so every other workspace keeps its stamp
+            payload.append(groups)
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
     def save(self, workspace_root: Path) -> Path:
         """Write config to ``workspace_root / .repowise-workspace.yaml``.
@@ -316,7 +368,7 @@ class WorkspaceConfig:
         dropped = previous - {e.alias for e in self.repos}
         if dropped:
             _log.warning(
-                "Writing %s with %d repo(s), down from %d — dropping: %s",
+                "Writing %s with %d repo(s), down from %d, dropping: %s",
                 config_path,
                 len(self.repos),
                 len(previous),
@@ -369,6 +421,12 @@ class WorkspaceConfig:
         """Return all repo aliases in order."""
         return [r.alias for r in self.repos]
 
+    def alias_for_path(self, workspace_root: Path, repo_path: Path | str) -> str | None:
+        """The alias of the member checked out at *repo_path*, or ``None``."""
+        target = Path(repo_path).resolve()
+        root = Path(workspace_root)
+        return next((e.alias for e in self.repos if (root / e.path).resolve() == target), None)
+
     # ------------------------------------------------------------------
     # Mutation helpers
     # ------------------------------------------------------------------
@@ -399,12 +457,18 @@ def find_workspace_root(start: Path | None = None) -> Path | None:
     """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
 
     Returns the directory containing the file, or ``None`` if not found.
-    Stops at the filesystem root.
+    Stops at the filesystem root, or at the directory named by the
+    ``REPOWISE_WORKSPACE_CEILING`` environment variable: the ceiling
+    directory itself is still checked, but the walk does not ascend past it.
     """
+    ceiling = os.environ.get(WORKSPACE_CEILING_ENV_VAR)
+    ceiling_dir = Path(ceiling).resolve() if ceiling else None
     current = (start or Path.cwd()).resolve()
     while True:
         if (current / WORKSPACE_CONFIG_FILENAME).is_file():
             return current
+        if ceiling_dir is not None and current == ceiling_dir:
+            return None  # ceiling: the directory itself was checked
         parent = current.parent
         if parent == current:
             return None  # reached filesystem root

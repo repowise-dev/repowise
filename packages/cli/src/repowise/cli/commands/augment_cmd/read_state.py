@@ -41,7 +41,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ._shared import HookResult, _extract_output_text, _find_repo_root, _relativize
+from repowise.core.fsutils import repo_relative
+
+from ._shared import HookResult, _extract_output_text, _find_repo_root
 
 #: Replacement gates. Named for the retired nudge they were first tuned for,
 #: and left that way on purpose: :mod:`search_digest` documents its own ratio
@@ -224,7 +226,7 @@ def _handle_edit_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
-    rel = _relativize(file_path, repo_path)
+    rel = repo_relative(file_path, repo_path, resolve=True)
     if rel is None:
         return None
     state = _load_session_state(repo_path, session_id)
@@ -235,7 +237,10 @@ def _handle_edit_post(
     skeleton_warning = _edit_from_skeleton_notice(rel, state)
     if skeleton_warning:
         notices.append(skeleton_warning)
-    if with_decisions:
+    from .fast_lookup import index_locked
+
+    # A locked index would fail both lookups, each after its own busy waits.
+    if with_decisions and not index_locked(repo_path):
         from .decision_inject import _edit_decision_notice, _edit_fix_history_notice
 
         for emit in (
@@ -307,7 +312,7 @@ def _handle_read_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return HookResult()
-    rel = _relativize(file_path, repo_path)
+    rel = repo_relative(file_path, repo_path, resolve=True)
     if rel is None:
         return HookResult()
     if adapter is None:

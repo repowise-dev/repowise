@@ -434,12 +434,15 @@ def test_a_plan_no_test_reaches_has_no_command_and_asks_for_a_characterization_t
         assert plan.basis == "unknown"
         assert plan.commands == [], path
         assert plan.prerequisite == (
-            "No test reaches this; add a characterization test for `target` before the edit."
+            "No test reaches `target`; add a characterization test before the edit."
         )
         assert plan.as_dict()["prerequisite"] == plan.prerequisite
     # A target that is not a symbol name is named by its file.
     split = build_validation_plan(_plan("core.py -> 3 files", rtype="split_file"), {}, {})
-    assert "characterization test for `core.py` before" in split.prerequisite
+    assert "reaches `core.py`;" in split.prerequisite
+    # A graph id names its function, not the file.
+    method = build_validation_plan(_plan("src/core.py::Store::_open"), {}, {})
+    assert "reaches `_open`;" in method.prerequisite
 
 
 def test_a_reached_plan_carries_no_prerequisite() -> None:

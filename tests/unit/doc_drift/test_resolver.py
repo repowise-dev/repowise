@@ -6,7 +6,7 @@ import pytest
 
 from repowise.core.analysis.doc_drift.extractor import extract
 from repowise.core.analysis.doc_drift.models import DocReference, DriftKind, DriftVerdict
-from repowise.core.analysis.doc_drift.resolver import RepoIndex, resolve
+from repowise.core.analysis.doc_drift.resolver import RepoIndex, join_relative, resolve
 
 TREE = frozenset(
     {
@@ -161,6 +161,51 @@ def test_relative_link_resolves_against_its_own_document():
     res = resolve(_index(), ref)
     assert res.verdict is DriftVerdict.RESOLVED
     assert res.detail == "relative-to-doc"
+
+
+# ---------------------------------------------------------------------------
+# join_relative: normalize segments, never strip characters (#4014)
+# ---------------------------------------------------------------------------
+
+
+def test_join_relative_keeps_the_leading_dot_of_a_dotfile_directory():
+    assert (
+        join_relative("docs/index.md", "../.github/workflows/ci.yml") == ".github/workflows/ci.yml"
+    )
+
+
+def test_join_relative_keeps_parent_segments_that_escape_the_root():
+    assert join_relative("docs/index.md", "../../other-repo/README.md") == "../other-repo/README.md"
+
+
+def test_a_link_into_dotgithub_resolves_instead_of_reporting_drift():
+    idx = _index(tree=TREE | {".github/workflows/ci.yml"})
+    ref = DocReference(
+        DriftKind.LINK,
+        "../.github/workflows/ci.yml",
+        "../.github/workflows/ci.yml",
+        "docs/index.md",
+        1,
+        "ctx",
+    )
+    res = resolve(idx, ref)
+    assert res.verdict is DriftVerdict.RESOLVED
+    assert res.detail == "relative-to-doc"
+    assert res.resolved_target == ".github/workflows/ci.yml"
+
+
+def test_a_link_that_escapes_the_repository_root_is_uncheckable():
+    ref = DocReference(
+        DriftKind.LINK,
+        "../../other-repo/README.md",
+        "../../other-repo/README.md",
+        "docs/index.md",
+        1,
+        "ctx",
+    )
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "unanchored"
 
 
 # ---------------------------------------------------------------------------

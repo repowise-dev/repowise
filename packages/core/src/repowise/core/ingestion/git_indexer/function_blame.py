@@ -69,6 +69,15 @@ class BlameIndex:
     # The indexer's history anchor (unix seconds), so line ages are measured
     # from the indexed commit like every other git window.
     as_of_ts: int | None = None
+    # Shas git marks ``boundary`` in the porcelain output: the oldest commit
+    # it can see on each line's history. On a full clone this is the true
+    # root commit; on a shallow clone it is the fetch boundary, and every
+    # line older than it is misattributed to whoever happened to touch it
+    # last before the cutoff (#3055). Ownership excludes these shas only
+    # when ``is_shallow`` is set, since a full clone's true root author is a
+    # real signal, not an artifact.
+    boundary_shas: frozenset[str] = field(default_factory=frozenset)
+    is_shallow: bool = False
 
 
 def blame_as_of(idx: BlameIndex) -> int:
@@ -81,14 +90,18 @@ def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float
 
     Returns ``(name, email, share)`` where ``share`` is the fraction of
     blamed lines authored by the top author. ``None``s when the index is
-    empty (no signal).
+    empty, or when every blamed line is a shallow-clone boundary line (no
+    attributable signal) — the caller falls back to the commit-based owner.
     """
     if not idx.lines:
         return None, None, None
     from collections import Counter
 
+    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
     counts: Counter[str] = Counter()
     for sha, _ts in idx.lines.values():
+        if sha in excluded:
+            continue
         name = idx.authors.get(sha, ("unknown", ""))[0]
         counts[name] += 1
     if not counts:
@@ -117,10 +130,11 @@ def owner_in_range(
         return None, None, None
     from collections import Counter
 
+    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
     counts: Counter[str] = Counter()
     for ln in range(start_line, end_line + 1):
         entry = idx.lines.get(ln)
-        if entry is None:
+        if entry is None or entry[0] in excluded:
             continue
         name = idx.authors.get(entry[0], ("unknown", ""))[0]
         counts[name] += 1
@@ -138,7 +152,7 @@ def owner_in_range(
 
 def _parse_porcelain(
     raw: str,
-) -> tuple[dict[int, tuple[str, int]], dict[str, tuple[str, str]]]:
+) -> tuple[dict[int, tuple[str, int]], dict[str, tuple[str, str]], frozenset[str]]:
     """Parse ``git blame --line-porcelain`` output into the line index.
 
     Porcelain format per line block::
@@ -146,11 +160,17 @@ def _parse_porcelain(
         <sha> <orig-line> <final-line> [<num-lines>]
         author Name
         author-time 1700000000
+        boundary
         ... other headers ...
         \t<source line>
+
+    ``boundary`` marks the oldest commit git can see for that line — the true
+    root on a full clone, the fetch cutoff on a shallow one. It is a plain
+    keyword line with no value, emitted once per sha like the other headers.
     """
     out: dict[int, tuple[str, int]] = {}
     authors: dict[str, tuple[str, str]] = {}
+    boundary_shas: set[str] = set()
     current_sha: str | None = None
     current_final: int | None = None
     current_author_time: int = 0
@@ -197,6 +217,10 @@ def _parse_porcelain(
         if line.startswith("author-mail "):
             current_author_email = line[len("author-mail ") :].strip()
             continue
+        if line == "boundary":
+            if current_sha is not None:
+                boundary_shas.add(current_sha)
+            continue
         # Header lines are space-separated; only the very first header of a
         # block starts with a 40-char hex sha. Other headers start with
         # alphabetic keywords (author, committer, summary, previous, filename).
@@ -210,7 +234,7 @@ def _parse_porcelain(
                 except ValueError:
                     current_final = None
             current_author_time = sha_author_time.get(current_sha, 0)
-    return out, authors
+    return out, authors, frozenset(boundary_shas)
 
 
 def build_blame_index(
@@ -244,8 +268,21 @@ def build_blame_index(
     raw = _run_blame(repo, file_path, ignore_revs_args)
     if not raw:
         return BlameIndex()
-    lines, authors = _parse_porcelain(raw)
-    return BlameIndex(lines=lines, authors=authors)
+    lines, authors, boundary_shas = _parse_porcelain(raw)
+    shallow = False
+    if boundary_shas and repo_path is not None:
+        from repowise.core.git_refs import is_shallow
+
+        shallow = is_shallow(str(repo_path))
+        if shallow:
+            logger.info(
+                "blame_shallow_clone_boundary_excluded",
+                path=file_path,
+                boundary_commits=len(boundary_shas),
+            )
+    return BlameIndex(
+        lines=lines, authors=authors, boundary_shas=boundary_shas, is_shallow=shallow
+    )
 
 
 def _run_blame(repo: Any, file_path: str, ignore_revs_args: list[str]) -> str | None:

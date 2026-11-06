@@ -23,7 +23,10 @@ function share(part: number, whole: number): number {
  * commit in the window carries agent attribution.
  */
 export function AgentTrendStrip({ trend, className }: AgentTrendStripProps) {
-  if (!trend.enabled || trend.agent_commits === 0) return null;
+  // A server that omits `enabled` has no off switch: a trend that carries the
+  // coverage-aware share is on, and an older shape without it stays hidden.
+  const enabled = trend.enabled ?? "agent_pct_of_covered" in trend;
+  if (!enabled || trend.agent_commits === 0) return null;
   // Cap the strip at the last 12 months so it stays a glanceable sparkline.
   const buckets = trend.buckets.slice(-12);
   const topAgents = trend.agent_names.slice(0, 3);
@@ -71,7 +74,7 @@ export function AgentTrendStrip({ trend, className }: AgentTrendStripProps) {
               style={{ height: `${share(b.human_attested_commits, b.total_commits)}%` }}
             />
             <div
-              className="w-full bg-[var(--color-accent-primary)]/70"
+              className="w-full bg-[var(--color-progress-fill)]"
               style={{ height: `${share(b.agent_commits, b.total_commits)}%` }}
             />
           </div>

@@ -27,28 +27,54 @@ unless the repository turns it on.
   ungoverned hotspots (high-churn files with no recorded decision). Good first call.
 - **show** — `repowise decision show <id>` — full record: rationale, evidence
   spans, status, and the supersession lineage.
-- **add** — `repowise decision add` — guided interactive capture (~90s). Use when
-  the user makes a decision during the session and wants it recorded. With both
-  `--title` and `--decision` it records without prompting and prints the id
-  (`--format json` to parse it back), which is the form to use with no terminal.
-  The rest are optional: `--context`, `--rationale`, `--alternative`,
-  `--consequence`, `--affects`, `--tag`, `--evidence-commit`, the last five
-  repeatable. A flag-driven record lands `proposed` for a person to `confirm`.
+- **add** — an agent records a choice it reasoned out with
+  `repowise decision add --agent <slug> --title T --decision D --rationale R --affects <path> --evidence-commit <sha>`
+  (e.g. `claude_code`, plus `--session <id>` if known), so the record is the
+  agent's, not a person's. `--evidence-commit` ties it to the commit the choice
+  was made in; an agent's record is accepted only with evidence, from this or
+  `--evidence` on confirm. With
+  both `--title` and `--decision` it records without prompting and prints the
+  id (`--format json` to parse it back). Also optional: `--context`,
+  `--alternative`, `--consequence`, `--tag`. `--alternative`, `--consequence`,
+  `--affects`, `--tag` and `--evidence-commit` repeat. A flag-driven record lands as a candidate for
+  review; it never governs until accepted.
   **Always state a reason** — pass `--rationale` (or `--context`); a record whose
   body only restates its own title cannot be accepted. `--kind agreement` records
   a working agreement: a rule about how the work is conducted, which names no
-  file and is not checked against the code. `--evidence-commit <sha>` ties the
-  record to the commit the choice was made in.
-- **confirm** — `repowise decision confirm` — review decisions auto-proposed from
-  git history and accept or reject them.
-- **deprecate / dismiss** — `repowise decision deprecate <id>` (optionally
-  `--superseded-by <id>`) or `repowise decision dismiss <id>`.
+  file and is not checked against the code. Bare `repowise decision add` is a
+  guided interactive capture (~90s) for a person at a terminal.
+- **candidates** — `repowise decision candidates --format json` — records
+  awaiting review, each with its id and the `blockers` that stop it being accepted.
+- **confirm** — `repowise decision confirm <id>... --agent <slug> --evidence <commit|file>`
+  accepts candidates so they govern, signed as the agent (plus `--session <id>`
+  if known); the acceptance is recorded as the agent's, not a person's.
+  `--decision`, `--reason`, `--scope <path>` and `--evidence <commit|file|link>`
+  fill the blockers. The unsigned form is a person's. A repository that
+  ran `repowise decision config agent-acceptance --off` refuses it; then leave
+  acceptance to a person. `confirm` refuses a decision that is already
+  accepted; renew that one with `reaffirm`.
+- **reaffirm** — `repowise decision reaffirm <id>...` — after re-reading a
+  `needs_review` decision that still holds, renew it so it counts as current
+  from now. Takes `--reason`, `--evidence`, `--agent <slug>` and `--preview`.
+  A candidate is refused; accept it with `confirm`.
+- **merge** — `repowise decision merge <id> <into-id>` — fold a duplicate
+  candidate into an accepted decision instead of accepting it twice. The target
+  must already be accepted: confirm it first, or merge the other way.
+  `--preview` shows the result without writing.
+- **deprecate / dismiss** — `repowise decision deprecate <id> --reason ...`
+  (optionally `--superseded-by <id>`, `--preview`) or
+  `repowise decision dismiss <id> --reason ...`. An agent passes
+  `--agent <slug>` to every review command, and the signer is recorded for
+  candidates too.
 
 ## Notes
 
 - For *querying* why code looks the way it does mid-task, prefer the `get_why`
   MCP tool (the `architectural-decisions` skill) — it returns lineage and an
   alignment score. This command is for *managing* the decision records themselves.
-- `confirm` is interactive, and so is `add` unless you pass `--title` and
-  `--decision`; tell the user when a step needs their input.
+- `add` prompts unless you pass `--title` and `--decision`; the other
+  subcommands take ids and flags and never prompt, except `dismiss` (pass `--yes`).
+- With `--format json`, confirm, reaffirm, merge, deprecate and dismiss always
+  return `{action, preview, results, succeeded, failed}`, even for one id. Read
+  `results[i].ok`, `.error`, `.message` and `.blockers`.
 - If unsure of an exact subcommand or flag, run `repowise decision --help`.

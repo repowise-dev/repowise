@@ -30,7 +30,6 @@ from __future__ import annotations
 import hashlib
 import re
 import string
-import subprocess
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -39,10 +38,12 @@ from typing import Any
 from repowise.core.ci import baseline as ci_baseline
 from repowise.core.ci import github, gitlab, sarif
 from repowise.core.ci.markdown import ROW_LIMIT, cell, details, more_line, plural
+from repowise.core.ci.summary import FAIL, PASS, WARN, GateSummary, SummaryFinding
 from repowise.core.support_paths import DOC_EXTENSIONS
 
 from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split_revspec
-from .changed_lines import DIFF_ARGS, parse_unified_diff
+from .changed_lines import DIFF_ARGS, parse_unified_diff, split_commit_patches
+from .git_cat_file import cat_file_batch
 from .secret_allowlist import secret_path_allowlist
 from .security_scan import (
     SECRET_KINDS,
@@ -364,31 +365,17 @@ def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
     """
     if not specs:
         return []
-    proc = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        cwd=root,
-        input=("\n".join(specs) + "\n").encode("utf-8"),
-        capture_output=True,
-        timeout=GIT_TIMEOUT_SECONDS,
-        check=True,
-    )
-    out, pos, texts = proc.stdout, 0, []
-    for spec in specs:
-        nl = out.index(b"\n", pos)
-        header = out[pos:nl].split()
-        pos = nl + 1
-        # "<sha> <type> <size>", "<sha> submodule" for a gitlink, else
-        # "<spec> missing" (the spec may hold spaces).
-        if len(header) == 2 and header[1] == b"submodule":
-            texts.append(None)
-            continue
-        if len(header) != 3 or not header[2].isdigit():
-            raise MissingObjectError(f"git has no object for {spec!r}")
-        size = int(header[2])
-        body = out[pos : pos + size]
-        pos += size + 1
-        texts.append(_text(body) if header[1] == b"blob" else None)
-    return texts
+    try:
+        read = cat_file_batch(
+            root, specs, on_missing="raise", timeout=GIT_TIMEOUT_SECONDS, check=True
+        )
+    except ValueError as exc:
+        raise MissingObjectError(str(exc)) from exc
+    if read is None or len(read) != len(specs):
+        raise MissingObjectError(
+            f"git cat-file returned incomplete batch for {len(specs)} specs"
+        )
+    return [_text(blob) if blob is not None else None for _, blob in read]
 
 
 def _custom_spans(
@@ -573,13 +560,10 @@ def _history_secrets(
     cut = _shallow_boundary(root, log_range)
     args = ["log", "--no-merges", "--reverse", "-p", "--unified=0"]
     args += [*DIFF_ARGS, "--format=%x00%H", *log_range, "--"]
-    raw = _git(args, root)
-    chunks = raw.split("\0")[1:]
+    commits = split_commit_patches(_git(args, root))
     rows: list[dict] = []
     skipped: set[tuple[str, str]] = set()
-    for chunk in chunks:
-        sha, _, diff = chunk.partition("\n")
-        sha = sha.strip()
+    for sha, diff in commits:
         if sha in cut:
             raise ShallowHistoryError(
                 f"Commit {sha[:7]} in this change has its parents cut off by a shallow "
@@ -604,7 +588,7 @@ def _history_secrets(
             for row in scoped:
                 row["commit"] = sha
                 rows.append(row)
-    return rows, len(chunks), skipped
+    return rows, len(commits), skipped
 
 
 def _shallow_boundary(root: str, log_range: Sequence[str]) -> frozenset[str]:
@@ -935,6 +919,37 @@ def github_annotations(findings: Sequence[Mapping[str, Any]], gate: GateResult) 
         )
         (errors if level == "error" else warnings).append(line)
     return github.cap_annotations(errors + warnings, noun="security findings")
+
+
+def gate_summary(findings: Sequence[Mapping[str, Any]], gate: GateResult) -> GateSummary:
+    """The gate's row in the combined CI summary, leveled as :func:`github_annotations` is."""
+    failing = {f["fingerprint"] for f in gate.failing}
+    accepted = {f["fingerprint"] for f in gate.baselined}
+    rows = tuple(
+        SummaryFinding(
+            "error" if f["fingerprint"] in failing else "warning",
+            str(f["file_path"]),
+            None if f["commit"] else int(f["line_number"]),
+            _message(f),
+            str(f["fingerprint"]),
+        )
+        for f in _order(findings)
+        if f["fingerprint"] not in accepted
+    )
+    below = sum(r.level == "warning" for r in rows)
+    if not gate.passed:
+        at = len(rows) - below
+        headline = (
+            f"{plural(at, 'new finding')} at {gate.fail_on} or above."
+            if at
+            else "Failed; see the job log for why."
+        )
+        verdict = FAIL
+    elif below:
+        verdict, headline = WARN, f"{plural(below, 'new finding')} below {gate.fail_on}."
+    else:
+        verdict, headline = PASS, "No new finding."
+    return GateSummary("security", verdict, headline, rows)
 
 
 def _rule_id(kind: str) -> str:

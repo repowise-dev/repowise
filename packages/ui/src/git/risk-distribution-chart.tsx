@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import type { Hotspot } from "@repowise-dev/types/git";
 import { riskInk } from "../health/tokens";
+import { formatNumber } from "../lib/format";
 
 interface RiskDistributionChartProps {
   hotspots: Hotspot[];
@@ -64,7 +65,7 @@ export function RiskDistributionChart({ hotspots, maxBars = 30 }: RiskDistributi
       </p>
       {truncated && (
         <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1 text-right tabular-nums">
-          Showing top {data.length} of {hotspots.length.toLocaleString()} by triage index
+          Showing top {data.length} of {formatNumber(hotspots.length)} by triage index
         </p>
       )}
       <ResponsiveContainer width="100%" height={Math.max(200, data.length * 22 + 40)}>

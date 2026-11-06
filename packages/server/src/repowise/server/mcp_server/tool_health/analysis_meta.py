@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from repowise.core.persistence.crud import get_latest_snapshot_analyzer_version
 from repowise.core.persistence.models import HealthFileMetric
 
 
@@ -59,6 +60,15 @@ async def _attach_repository_analysis_meta(
         latest_commit=latest[1] if latest else None,
         distinct_commits=distinct,
     )
+    await _attach_analyzer_version(session, repository, meta)
+
+
+async def _attach_analyzer_version(session: Any, repository: Any, meta: dict[str, Any]) -> None:
+    """Which scoring the stored figures came from, so a moved score can be told
+    apart from a scoring change. Absent when no snapshot recorded it."""
+    version = await get_latest_snapshot_analyzer_version(session, repository.id)
+    if version is not None:
+        meta["health_analysis"]["analyzer_version"] = version
 
 
 def _write_health_analysis_meta(

@@ -1,9 +1,11 @@
 {
   "page": [
+    "areas",
     "facets",
     "has_more",
     "items",
     "next_offset",
+    "scopes",
     "summary",
     "total"
   ],

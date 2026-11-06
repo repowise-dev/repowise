@@ -25,7 +25,7 @@ repowise dead-code --kind unused_export --format json
  unreachable_file  src/legacy/parser.ts           100%    ✗      212  File has no importers (in_degree=0)
  unreachable_file  config/feature_flags.py         40%    ✗       31  File has no importers (in_degree=0)
 
-Cleanup-candidate lines: 14 (high 2, medium 1 confidence)
+Cleanup-candidate lines: 14 · findings by confidence: high 2, medium 1
 ```
 
 From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.
@@ -52,13 +52,15 @@ very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--inclu
 Confidence runs from `0.0` to `1.0` and measures how strong the evidence for
 deadness is. It starts from a base value per kind and can only be lowered:
 
-- **Unreachable files** are scored from git activity. A file untouched for a
-  year or more starts at `1.00`; one still being committed to starts at `0.40`;
-  a file under 30 days old starts at `0.55`, because it is often unfinished.
+- **Unreachable files** are scored from git activity. A file with a commit in
+  the last 90 days starts at `0.40`. Otherwise its last commit sets the start:
+  `1.00` at 365 days or more, `0.90` at 180, `0.80` at 90. A file under 30 days
+  old starts at `0.55`, because it is often unfinished; any other file starts
+  at `0.70`, and one with no recorded git history at `0.50`.
 - **Unused exports** start at `1.00` when the file has importers and none of
   them takes this symbol. When that check is impossible (no importer names
   individual symbols, or the language reaches symbols through a preprocessor)
-  the start is `0.60`. Deprecated symbols start at `0.30`.
+  the start is `0.60`. Deprecated exports start at `0.30`.
 - **Unused internals** start at `0.65`. **Zombie packages** start at `0.50`.
 
 Several caps then pull a finding down to `0.40`, the review tier: a runtime
@@ -75,18 +77,31 @@ finding's evidence saying why.
 | Medium | `0.4` to `0.7` | Likely unused, but something indirect may reach it. Review first. |
 | Low | `< 0.4` | Plausibly used at runtime (dynamic loading, reflection, published API). Investigate first. |
 
-The CLI, the dashboard and `get_dead_code` use the same tier floors, so a
-finding lands in the same tier on every surface. The default `min_confidence`
-is `0.4` everywhere, which hides the low tier unless you ask for it.
+The dead-code lists and summaries of the CLI, the dashboard and
+`get_dead_code` use the same tier floors and the same
+[cross-repo cut](#workspaces), so a finding lands in the same tier on each.
+The default `min_confidence` is `0.4` everywhere, which hides the low tier
+unless you ask for it.
 
 ### `safe_to_delete`
 
-A finding is deletion-ready (the CLI's "Ready?" column) only when its
-confidence is `0.7` or higher and its path carries no runtime-load risk factor
-(config, environment, bootstrap, database, script or served-asset paths).
-Unreachable files, zombie packages and unused internals are never marked
-deletion-ready, whatever their confidence. In practice `safe_to_delete` means
-"an unused export with strong evidence".
+A finding is deletion-ready (the CLI's "Ready?" column) only when no blocker
+below applies. Each blocker that fires adds an evidence line naming it, and
+none changes confidence or tier. In practice `safe_to_delete` means "an unused
+export with strong evidence".
+
+- **Kind:** unreachable files, zombie packages and unused internals, whatever
+  their confidence.
+- **Confidence** below `0.7`.
+- **Runtime-load path:** config, environment, bootstrap, database, script,
+  served-asset or Salesforce Aura bundle paths.
+- **Docs or example code:** a docs build can include a file by path or line
+  range.
+- **Export only:** the symbol's own file uses it, so only the `export` is
+  unneeded.
+- **Weak resolution for the language in this repository:** the language is
+  unknown to the graph, its import support is not full, none of its call edges
+  has a recorded resolution, or more than half of them are name matches.
 
 ### Exempt by construction
 
@@ -124,9 +139,10 @@ the floor. An index whose dead-code pass failed also reads as empty; pass
   [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
   the graph too, so a file only it imported can then surface as unreachable.
 - **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
-  is treated as deliberately unused and is not reported. A symbol marked
-  deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or `_COMPAT`
-  name suffix) drops to `0.30`, below the default floor.
+  is treated as deliberately unused and is not reported. An unused export
+  marked deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or
+  `_COMPAT` name suffix) starts at `0.30`, below the default floor. An unused
+  internal keeps `0.65`, since a private symbol has no outside consumer.
 - **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
   `.repowise/config.yaml`.
 
@@ -155,8 +171,16 @@ The cases where a finding is most likely wrong:
   symbol re-exported through one for external callers can surface as an
   unused export.
 - **Published libraries.** Code consumed outside the repository has no
-  importer inside it. Packaged .NET projects are detected and held at `0.30`;
-  other ecosystems are not.
+  importer inside it. A public symbol of a library the build declares as
+  published is held at `0.30`, below the default floor, with an evidence line
+  naming the package. Published means: a packed .NET project or one with a
+  `PublicAPI.Shipped.txt`; a Go module whose root package is importable or
+  that builds no program (not its `main` or `internal/` packages); a Rust crate
+  with a library target and no `publish = false`; a Maven or Gradle module
+  that deploys (not a war, Spring Boot or `application` module); a
+  `pyproject.toml` with a `[project]` name and a `[build-system]` (not its
+  `_private` modules); a `package.json` that is not `private` and names an
+  entry. Apps in any of these ecosystems keep their findings.
 - **Test-only usage counts as usage.** A symbol only its tests import is not
   reported. There is no "used only in tests" classification.
 
@@ -166,21 +190,32 @@ deleting anything.
 ## Workspaces
 
 In a workspace, a file dead inside its own repo may be the surface another repo
-depends on. `get_dead_code` checks each finding against the cross-repo data
-before returning it:
+depends on. The CLI, the dashboard and `get_dead_code` check each finding
+against the cross-repo data before the confidence floor and the tiers:
 
-- If the file changes together with files in other repos (git co-change),
-  confidence is halved and the finding gains a `cross_repo_note` naming those
-  repos.
-- Otherwise, if the finding is an unused export and another repo depends on
-  this one as a package, confidence is cut to 30% of its value with a note to
-  verify consumers.
+- If another repo's contract link (an HTTP route, a generated client) points
+  at the file, confidence is cut to 30% of its value and the `cross_repo_note`
+  names the consumer.
+- Otherwise, if the file changes together with files in other repos (git
+  co-change), or the finding is an unused export and another repo's package
+  imports reach its file, the finding keeps its confidence and gains a note.
+  A package import reaches the module or subpath it names and the files that
+  module's re-exports forward the imported names to. An export no import
+  reaches keeps its safety: the dependent cannot import it by package name.
+  Where the workspace has no recorded reach (an overlay from before it was
+  recorded, or an import it could not place), every file inside the package
+  directory counts. These links say a consumer may exist, not that one does.
 
-The adjustment runs after tiering, so it lowers the displayed confidence
-without moving a finding between tiers. `repo="all"` merges every workspace
-repo and tags each finding with its alias. The CLI has no cross-repo pass:
-`--repo <alias>` analyzes one repo in isolation (the primary repo by default).
-See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
+A finding with a note is never safe to delete, and a lowered one sits in the
+tier its new confidence names, so one cut below `0.4` is hidden by the default
+floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
+workspace repo and tags each finding with its alias. The CLI analyzes one repo
+per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
+the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
+`get_overview`), related work, the code graph, the chat dataset, `repowise export
+--full` and the assessment report read the same cut. Fix first and plan annotations
+are built per repo before the workspace pass, so they read stored values. See
+[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Accuracy and limits
 

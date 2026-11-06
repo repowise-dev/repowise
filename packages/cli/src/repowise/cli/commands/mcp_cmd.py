@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path, warn
 from repowise.cli.ui import load_dotenv
 
@@ -48,6 +49,14 @@ def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, o
     }
 
 
+#: Transports the MCP spec has moved past, mapped to what replaces them. SSE
+#: stays selectable for now because editor and client configs already name it
+#: on disk, and removing it outright turns a working config into a startup
+#: failure with no migration window. The notice names the replacement rather
+#: than the transport being withdrawn.
+_DEPRECATED_TRANSPORTS = {"sse": "streamable-http"}
+
+
 def _print_network_startup(
     transport: str,
     repo_path: Path,
@@ -55,6 +64,12 @@ def _print_network_startup(
     port: int,
     workspace: dict[str, object] | None,
 ) -> None:
+    replacement = _DEPRECATED_TRANSPORTS.get(transport)
+    if replacement is not None:
+        console.print(
+            f"[yellow]--transport {transport} is deprecated and will be removed "
+            f"in a future release; use --transport {replacement}.[/yellow]"
+        )
     label = "streamable HTTP" if transport == "streamable-http" else "SSE"
     endpoint = "mcp" if transport == "streamable-http" else "sse"
     console.print(
@@ -90,7 +105,8 @@ def _print_network_startup(
     default="stdio",
     help=(
         "Transport protocol: stdio (Claude Code/Codex/Cursor), "
-        "streamable-http (HTTP clients), or sse (legacy web clients)."
+        "streamable-http (HTTP clients), or sse (deprecated, use "
+        "streamable-http)."
     ),
 )
 @click.option(
@@ -151,8 +167,8 @@ def mcp_command(
     protocol: ten by default in single-repo mode, plus one more by default
     in workspace mode. Seven more are opt-in via ``--tools`` or the
     ``mcp.tools`` config block. Supports stdio
-    (for Claude Code, Codex, Cursor), streamable HTTP, and legacy SSE
-    transports.
+    (for Claude Code, Codex, Cursor), streamable HTTP, and the deprecated
+    SSE transport.
 
     Loads ``<repo>/.repowise/.env`` into the environment before starting so
     that MCP tools (e.g. ``get_answer``) can resolve the configured LLM
@@ -209,8 +225,14 @@ def mcp_command(
         )
     except StoreUnavailableError as exc:
         # One line on stderr and exit 1, not a traceback the host respawns on.
-        raise click.ClickException(str(exc)) from exc
+        # The reason slug becomes the event's failure_reason.
+        raise reasoned_error(str(exc), reason=exc.reason) from exc
     finally:
         from repowise.cli.platform import telemetry
+        from repowise.server.mcp_server import _state
 
-        telemetry.add_command_outcome(transport=transport, transport_outcome=outcome)
+        telemetry.add_command_outcome(
+            transport=transport,
+            transport_outcome=outcome,
+            served_no_index=bool(_state._serving_no_index),
+        )

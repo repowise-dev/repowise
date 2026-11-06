@@ -11,7 +11,7 @@ import { ArrowUpRight, ChevronRight } from "lucide-react";
 import { cn } from "../lib/cn";
 import { HighlightedCodeBlock } from "../shared/code-block";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
-import { SHOW_VIEW_TOOL } from "@repowise-dev/types/views";
+import { CHART_TOOL, SHOW_VIEW_TOOL } from "@repowise-dev/types/views";
 
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
@@ -25,6 +25,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_dead_code: "Checking dead code",
   get_answer: "Asking the index",
   [SHOW_VIEW_TOOL]: "Building a view",
+  [CHART_TOOL]: "Drawing a chart",
 };
 
 /** A step the server took for the page, before the model's first turn. */
@@ -72,7 +73,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
       <div className="flex min-h-8 items-center gap-2">
         <button
           type="button"
-          className="flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           onClick={() => !isRunning && setExpanded((e) => !e)}
           disabled={isRunning}
           aria-expanded={expanded}
@@ -105,7 +106,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
           <button
             type="button"
             onClick={onViewArtifact}
-            className="inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-1 text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-1 text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             View <ArrowUpRight aria-hidden className="h-3 w-3" />
           </button>

@@ -23,7 +23,6 @@ this one; never quote it for this marker.
 
 from __future__ import annotations
 
-from ..coverage import is_test_file
 from ..mocks.lexicon import mock_dialect
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -43,7 +42,7 @@ class MockSaturatedTestDetector:
     _HIGH_RATIO = 8.0  # setup:assertion at which the test is nearly all scaffolding
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if not is_test_file(ctx.file_path):
+        if not ctx.is_test_material:
             return []
         prefixes = _name_prefixes(ctx.language)
         out: list[BiomarkerResult] = []

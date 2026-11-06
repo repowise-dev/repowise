@@ -12,7 +12,7 @@ import re
 from collections.abc import Container, Sequence
 from functools import cache
 
-from repowise.server.mcp_server._stack_trace import parse_trace
+from repowise.core.stack_trace import parse_trace
 
 
 @cache
@@ -105,7 +105,7 @@ def _is_path(query: str) -> bool:
     return ext in _code_exts()
 
 
-_TOKEN_EDGE_CHARS = "`'\"()[]{},;"
+_TOKEN_EDGE_CHARS = "`'\"()[]{},;?!"
 _LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 

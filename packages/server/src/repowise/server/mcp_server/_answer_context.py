@@ -409,8 +409,15 @@ def _format_hits_block(
                     block.append(f"          docstring: {trimmed}")
                 src = s.get("source_excerpt")
                 if src:
-                    block.append("          source:")
+                    block.append(f"          source{_line_span(s.get('start_line'), src)}:")
                     for line in src.splitlines():
                         block.append(f"              {line}")
         parts.append("\n".join(block))
     return "\n\n".join(parts)
+
+
+def _line_span(start: int | None, src: str) -> str:
+    """`` (lines a-b)`` for a body slice read from *start*, so the answer can cite lines."""
+    if not start or start < 1:
+        return ""
+    return f" (lines {start}-{start + src.count(chr(10))})"

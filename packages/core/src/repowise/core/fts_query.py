@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable
+from itertools import pairwise
 
 #: Shortest term that still gets a prefix wildcard. See :func:`match_term`.
 PREFIX_MIN_CHARS = 4
@@ -129,8 +130,27 @@ STOP_WORDS = frozenset(
 
 def meaningful_terms(query: str) -> list[str]:
     """Alphanumeric tokens of *query*, minus stop words and single characters."""
+    return [t for t in _TOKEN_RE.findall(query.lower()) if _is_meaningful(t)]
+
+
+def _is_meaningful(token: str) -> bool:
+    """Neither a stop word nor a single character."""
+    return token not in STOP_WORDS and len(token) > 1
+
+
+def adjacent_pairs(query: str) -> list[tuple[str, str]]:
+    """Neighbouring meaningful tokens of *query*, with no stop word between them."""
     tokens = _TOKEN_RE.findall(query.lower())
-    return [t for t in tokens if t not in STOP_WORDS and len(t) > 1]
+    return [
+        (a, b)
+        for a, b in pairwise(tokens)
+        if _is_meaningful(a) and _is_meaningful(b)
+    ]
+
+
+def match_phrase(first: str, second: str) -> str:
+    """Two adjacent words as one FTS5 phrase, the second prefix-matched like a term."""
+    return f'"{first} {second}"' + ("*" if len(second) >= PREFIX_MIN_CHARS else "")
 
 
 def match_term(term: str) -> str:
@@ -166,6 +186,11 @@ def build_fts5_query(query: str, document_frequency: Callable[[str], int] | None
 
     At least :data:`MIN_KEPT_TERMS` terms always survive — the rarest ones — so
     a question written entirely from common words still matches something.
+
+    A common word also stands inside a phrase with a selective word beside it:
+    "call resolution" names a mechanism that "call" alone and "resolution"
+    alone do not, and without the phrase the question's rarest word (a
+    language name, say) decides the ranking on its own.
     """
     meaningful = meaningful_terms(query)
 
@@ -175,16 +200,22 @@ def build_fts5_query(query: str, document_frequency: Callable[[str], int] | None
         safe = query.replace('"', '""')
         return f'"{safe}"'
 
-    kept = meaningful
+    kept, common = meaningful, set()
     if document_frequency is not None:
         total = document_frequency("")  # corpus size, by convention
         if total > 0:
             ceiling = DF_CEILING * total
-            selective = [t for t in meaningful if document_frequency(t) <= ceiling]
+            common = {t for t in meaningful if document_frequency(t) > ceiling}
+            selective = [t for t in meaningful if t not in common]
             if len(selective) < MIN_KEPT_TERMS:
                 # Every term is common. Keep the rarest few rather than none:
                 # a thin match beats an empty one.
                 selective = sorted(meaningful, key=document_frequency)[:MIN_KEPT_TERMS]
             kept = selective
 
-    return " OR ".join(match_term(t) for t in kept)
+    clauses = [match_term(t) for t in kept]
+    # Exactly one common word: two common words make a phrase as common as they are.
+    clauses += [
+        match_phrase(a, b) for a, b in adjacent_pairs(query) if (a in common) != (b in common)
+    ]
+    return " OR ".join(dict.fromkeys(clauses))

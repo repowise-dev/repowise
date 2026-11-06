@@ -3,17 +3,11 @@
 import { PieChart as PieChartIcon } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { EmptyState } from "../shared/empty-state";
+import { commitCategoryColor } from "../shared/series";
 
 interface CommitCategoryDonutProps {
   categories: Record<string, number>;
 }
-
-const CATEGORY_COLORS: Record<string, string> = {
-  feature: "var(--color-info)",
-  fix: "var(--color-error)",
-  refactor: "var(--color-accent-secondary)",
-  dependency: "var(--color-accent-fill)",
-};
 
 const CATEGORY_ORDER = ["feature", "fix", "refactor", "dependency"];
 
@@ -55,7 +49,7 @@ export function CommitCategoryDonut({ categories }: CommitCategoryDonutProps) {
             {data.map((entry) => (
               <Cell
                 key={entry.key}
-                fill={CATEGORY_COLORS[entry.key] || "var(--color-accent-secondary)"}
+                fill={commitCategoryColor(entry.key)}
                 strokeWidth={0}
               />
             ))}

@@ -30,6 +30,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.agent_adapters.base import SHELL_POSIX, dialect_for_hook_source
 from repowise.cli.helpers import find_repowise_repo_root
 
@@ -244,9 +245,11 @@ def _render_command(tokens: tuple[str, ...]) -> str:
                 )
 
     exe = tokens[0]
-    # Windows paths cannot contain `"`, so plain quoting is unambiguous.
+    # Windows paths cannot contain `"`, so plain quoting is unambiguous. A `/`
+    # is quoted too: unquoted, cmd reads `./.venv/Scripts/python.exe` (the
+    # spelling a Git Bash command arrives in) as the program `.` and a switch.
     if '"' not in exe and (
-        any(ch.isspace() for ch in exe) or any(ch in _CMD_METACHARS for ch in exe)
+        any(ch.isspace() for ch in exe) or any(ch in _CMD_METACHARS or ch == "/" for ch in exe)
     ):
         head = f'"{exe}"'
     else:
@@ -261,6 +264,9 @@ def _caret_escape(rendered: str) -> str:
 
 def _distill_or_raw(output: str, command_str: str, exit_code: int, source: str = "cli") -> str:
     """Distill *output*, honoring the repo's ``distill:`` config block."""
+    # The engine logs a filter that falls back to raw at debug level. Left
+    # unconfigured, structlog prints that line into the output the agent reads.
+    configure_cli_logging(verbose=False)
     try:
         repo_root = find_repowise_repo_root()
         enabled, disabled, (ttl_days, max_mb) = _load_distill_config(repo_root)

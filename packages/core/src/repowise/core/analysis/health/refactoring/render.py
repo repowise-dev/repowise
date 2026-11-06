@@ -57,12 +57,13 @@ _FAMILY: dict[str, str] = {
     "vue": "js",
     "go": "go",
     "java": "java",
+    "apex": "apex",
     "rust": "rust",
     "cpp": "cpp",
     "c": "cpp",
 }
 #: Languages whose signatures need every type written.
-_TYPED = frozenset({"go", "java", "rust", "cpp"})
+_TYPED = frozenset({"go", "java", "apex", "rust", "cpp"})
 #: Rust types that copy rather than move when passed by value.
 #: Outputs one call of a staged plan's helper can bind, per language with a
 #: staged renderer: a Python tuple, one TS / JS value.
@@ -119,6 +120,7 @@ class HelperShape:
     out_written_before: bool = False
     out_rebound: bool = False
     typed_host: bool = False
+    throws_clause: str | None = None
 
 
 class Rendered(NamedTuple):
@@ -334,11 +336,17 @@ def _java_sig(s: HelperShape) -> str:
     out = _single_out(s)
     ret = _type(out, "java") if out else "void"
     static = "" if _method(s) else "static "
-    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}) {{"
+    throws = f" {s.throws_clause}" if s.throws_clause else ""
+    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}){throws} {{"
 
 
 def _java_call(s: HelperShape) -> str:
     return _declared_call(s, f"{_name(s)}({_args(s)})", "var")
+
+
+def _apex_call(s: HelperShape) -> str:
+    """Java's call; Apex has no ``var``, so an unknown type is a placeholder."""
+    return _declared_call(s, f"{_name(s)}({_args(s)})", TYPE_PLACEHOLDER)
 
 
 def _declared_call(s: HelperShape, expr: str, inferred: str) -> str:
@@ -434,6 +442,8 @@ _RENDERERS = {
     "js": (lambda s: _ts_sig(s, False), _ts_call),
     "go": (_go_sig, _go_call),
     "java": (_java_sig, _java_call),
+    # Apex writes a helper as Java does (``private [static] T name(T a) {``).
+    "apex": (_java_sig, _apex_call),
     "rust": (_rust_sig, _rust_call),
     "cpp": (_cpp_sig, _cpp_call),
 }

@@ -31,6 +31,8 @@ from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.pyparse import parse_python
+
 from ...ingestion.extractors.visibility import _TS_BLOCK_COMMENT, _TS_CJS_EXPORTS_RE
 from ...ingestion.languages.registry import REGISTRY
 from .models import DeadCodeFindingData, DeadCodeKind
@@ -87,7 +89,7 @@ def _parse_python(path: str, blob: bytes) -> ast.Module | None:
     if REGISTRY.from_extension(PurePosixPath(path).suffix) != "python" or path.endswith(".pyi"):
         return None
     try:
-        return ast.parse(blob)
+        return parse_python(blob)
     except (SyntaxError, ValueError, RecursionError):
         return None
 

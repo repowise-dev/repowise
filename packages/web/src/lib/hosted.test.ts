@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { hostedLink, pickNudge } from "./hosted";
+import { homeLink, hostedLink, pickNudge } from "./hosted";
 
 const signedOut = { signed_in: false, hints_enabled: true };
 
 describe("hostedLink", () => {
   it("carries the surface and the moment, nothing else", () => {
     expect(hostedLink("mcp", "mcp")).toBe("https://repowise.dev/hosted?src=local_web_mcp#mcp");
+  });
+
+  it("opens the top of the hosted page without a moment", () => {
+    expect(hostedLink("setup_card")).toBe("https://repowise.dev/hosted?src=local_web_setup_card");
+  });
+});
+
+describe("homeLink", () => {
+  it("opens the homepage with only the surface", () => {
+    expect(homeLink("setup_card")).toBe("https://repowise.dev/?src=local_web_setup_card");
   });
 });
 

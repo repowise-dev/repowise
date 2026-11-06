@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         RevisionId,
         ScopeCounts,
     )
+    from .moves import MoveMap, SymbolBody, build_move_map, symbol_bodies
     from .perf_delta import PerfOpportunityView, opportunities_for
     from .service import ChangeHealthDeltaService, DeltaRequest
 
@@ -64,6 +65,10 @@ _LAZY_EXPORTS: dict[str, str] = {
     "FindingKey": "models",
     "RevisionId": "models",
     "ScopeCounts": "models",
+    "MoveMap": "moves",
+    "SymbolBody": "moves",
+    "build_move_map": "moves",
+    "symbol_bodies": "moves",
     "PerfOpportunityView": "perf_delta",
     "opportunities_for": "perf_delta",
     "ChangeHealthDeltaService": "service",
@@ -88,6 +93,7 @@ __all__ = [
     "MappingRevisionSource",
     "MatchResult",
     "MatchedFinding",
+    "MoveMap",
     "PerfOpportunityView",
     "RevisionAnalysis",
     "RevisionHealthAnalyzer",
@@ -95,10 +101,13 @@ __all__ = [
     "RevisionPair",
     "RevisionSource",
     "ScopeCounts",
+    "SymbolBody",
+    "build_move_map",
     "change_finding_id",
     "filter_changes",
     "finding_key",
     "opportunities_for",
+    "symbol_bodies",
 ]
 
 

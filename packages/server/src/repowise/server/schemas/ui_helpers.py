@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -18,9 +20,14 @@ class OkResponse(BaseModel):
 
 class SetActiveProviderRequest(BaseModel):
     provider: str
+    #: Any model id the provider accepts, not only a catalog model.
     model: str | None = None
-    # When set, the selection is scoped to this repo (so picking a model for
-    # one repo never shadows another in a workspace). Omit for the global default.
+    #: An ``http(s)://`` endpoint (an OpenAI-compatible server such as LM
+    #: Studio). Omit to keep the current one; ``""`` or ``null`` clears it.
+    base_url: str | None = None
+    # When set, the selection is written to this repo's .repowise/config.yaml
+    # (so picking a model for one repo never shadows another in a workspace).
+    # Omit for the global default.
     repo_id: str | None = None
 
 
@@ -44,10 +51,22 @@ class ProviderEntry(BaseModel):
     configured: bool = False
     #: Takes an API key; ``False`` hides the key field.
     requires_key: bool = True
+    #: Takes a custom endpoint (an OpenAI-compatible local server, a proxy).
+    accepts_base_url: bool = False
+    #: Can point at a local OpenAI-compatible server (LM Studio) with no key.
+    local_server: bool = False
+    #: A model that runs on this machine (not an agent CLI).
+    local_model: bool = False
     #: Env vars a user sets to make the provider usable.
     env_vars: list[str] = []
     #: One line on how to install or set it up.
     setup_hint: str = ""
+    #: What on this machine makes it usable: ``signed_in`` (a signed-in agent
+    #: CLI, reported only for ``?detect=true``), ``env`` (a key in the process
+    #: env or the repo's ``.repowise/.env``) or ``saved`` (a key stored here).
+    #: ``installed``: an agent CLI is on PATH but its sign-in cannot be told
+    #: (no login query, or ``REPOWISE_OFFLINE``/``DO_NOT_TRACK`` is set).
+    detected: Literal["signed_in", "installed", "env", "saved"] | None = None
 
 
 class EmbedderEntry(BaseModel):
@@ -60,11 +79,25 @@ class EmbedderEntry(BaseModel):
     semantic: bool = True
 
 
+class SelectionProvenance(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+
+
 class ActiveProviderSelection(BaseModel):
     """The provider/model this scope resolves to; ``None`` when unset."""
 
     provider: str | None = None
     model: str | None = None
+    #: The endpoint requests go to; ``None`` means the provider's own default.
+    base_url: str | None = None
+    #: Where each value came from, per field: ``request``, ``config.yaml``,
+    #: ``global``, ``env:<VAR>``, ``default`` or ``autodetect``; ``None`` if unset.
+    provenance: SelectionProvenance = SelectionProvenance()
+    #: The repo's config.yaml base URL is refused until the user confirms it
+    #: here, so a cloned repo cannot send stored keys to its own host.
+    base_url_unconfirmed: bool = False
     #: USD per 1K tokens for ``model``; ``None`` when no model resolves.
     input_cost_per_1k: float | None = None
     output_cost_per_1k: float | None = None
@@ -78,6 +111,24 @@ class ProviderStatusResponse(BaseModel):
     #: Registerable providers the catalog leaves out (picker_rank ``None``).
     flag_only_providers: list[str] = []
     embedders: list[EmbedderEntry] = []
+
+
+class ProviderModelEntry(BaseModel):
+    id: str
+    label: str | None = None
+
+
+class ProviderModelsResponse(BaseModel):
+    """Models a provider offers, newest-looking first after the default.
+
+    ``source`` is ``live`` when the provider listed them and ``catalog`` when
+    the built-in list stands in, with ``error`` saying why.
+    """
+
+    models: list[ProviderModelEntry]
+    source: Literal["live", "catalog"]
+    default_model: str
+    error: str | None = None
 
 
 class ProviderValidationResponse(BaseModel):

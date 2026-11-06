@@ -15,6 +15,7 @@ import pytest
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 
@@ -79,14 +80,12 @@ def test_size_findings_carry_it_and_keep_their_id() -> None:
         ),
         symbols=[],
     )
-    _, findings, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf,
-        fcx,
+    _, findings, _ = FileEvaluator(
+        HealthAnalyzer(graph=None),
         paired_tests=set(),
         package_roots=set(),
-        disabled=[],
         dup_report=DuplicationReport(),
-    )
+    ).evaluate(pf, fcx)
     nested = next(f for f in findings if f.biomarker_type == "nested_complexity")
     assert nested.details["deepest_block"] == {"start": 10, "end": 13}
     without = HealthFindingData(

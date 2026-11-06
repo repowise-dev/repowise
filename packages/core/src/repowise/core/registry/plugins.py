@@ -14,6 +14,11 @@ A consumer defines and resolves a seam in three lines::
 
 ``get`` picks an explicit name, then ``REPOWISE_SEAM_<SEAM>``, then the last
 implementation registered with ``default=True``, then the first registered.
+``all()`` returns every implementation, for seams where each one contributes.
+
+Each registry (seams, CLI commands, MCP tools, pipeline hooks, LLM providers,
+embedders) calls ``note_registration`` so ``repowise plugins`` can show what
+every plugin added. Providers import it lazily to keep their import cheap.
 
 Discovery (about 100 ms) runs at ``SeamRegistry.get``, FastAPI app creation,
 MCP surface attach and each pipeline run; built-in CLI dispatch never runs
@@ -30,6 +35,7 @@ import importlib
 import logging
 import os
 import re
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
@@ -37,6 +43,9 @@ from typing import Generic, TypeVar
 ENTRY_POINT_GROUP = "repowise.plugins"
 ENV_VAR = "REPOWISE_PLUGINS"
 SEAM_ENV_PREFIX = "REPOWISE_SEAM_"
+
+#: Bumped on a breaking change to any registry or seam contract.
+PLUGIN_API_VERSION = 1
 
 _log = logging.getLogger("repowise.plugins")
 _SEAM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
@@ -57,7 +66,9 @@ class PluginRecord:
     target: str  # "module" or "module:attr"
     status: str = "loaded"  # or "failed" / "skipped"
     error: str | None = None
-    #: ``"seam:implementation"`` pairs registered while this plugin loaded.
+    #: ``"kind:name"`` pairs registered while this plugin loaded, where kind is
+    #: a seam name or one of ``cli-command``, ``mcp-tool``, ``pipeline-hook``,
+    #: ``llm-provider``, ``embedder``.
     seams: list[str] = field(default_factory=list)
 
 
@@ -142,6 +153,32 @@ def reset() -> None:
         _records = None
 
 
+def note_registration(kind: str, name: str) -> None:
+    """Record ``kind:name`` against the plugin loading now; a no-op otherwise.
+
+    A built-in module first imported inside a plugin's ``register()`` registers
+    its own implementations then, so those are skipped: walking out from the
+    registry call, a repowise module body reached before any plugin frame means
+    the registration is built in. The registered object cannot tell, since a
+    plugin's report section or dataset is an instance of a repowise class.
+    """
+    if _current is not None and not _made_by_builtin_import():
+        _current.seams.append(f"{kind}:{name}")
+
+
+def _made_by_builtin_import() -> bool:
+    frame = sys._getframe(2)  # the registry method; its callers follow
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if module == "repowise" or module.startswith("repowise."):
+            if frame.f_code.co_name == "<module>":
+                return True
+        elif not module.startswith("importlib"):
+            return False  # plugin code asked for it
+        frame = frame.f_back
+    return False
+
+
 def seams() -> dict[str, SeamRegistry]:
     """Every seam defined in this process, by name."""
     return dict(_SEAMS)
@@ -178,8 +215,7 @@ class SeamRegistry(Generic[T]):
         self._impls[name] = impl
         if default:
             self._chosen = name
-        if _current is not None:
-            _current.seams.append(f"{self.seam}:{name}")
+        note_registration(self.seam, name)
 
     @property
     def names(self) -> list[str]:
@@ -190,6 +226,11 @@ class SeamRegistry(Generic[T]):
         """The name ``get()`` resolves when the caller passes none."""
         selected = os.environ.get(self.env_var, "").strip()
         return selected or self._chosen or next(iter(self._impls), None)
+
+    def all(self) -> list[tuple[str, T]]:
+        """Every ``(name, implementation)`` in registration order, loading plugins first."""
+        load_plugins()
+        return list(self._impls.items())
 
     def get(self, name: str | None = None) -> T:
         """Return the selected implementation, loading plugins first."""
@@ -210,11 +251,13 @@ class SeamRegistry(Generic[T]):
 __all__ = [
     "ENTRY_POINT_GROUP",
     "ENV_VAR",
+    "PLUGIN_API_VERSION",
     "SEAM_ENV_PREFIX",
     "PluginRecord",
     "SeamRegistry",
     "is_plugin_control_var",
     "load_plugins",
+    "note_registration",
     "reset",
     "seams",
 ]

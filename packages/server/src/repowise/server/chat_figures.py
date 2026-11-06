@@ -22,6 +22,17 @@ Reading evidence is bounded: past ``MAX_NODES_PER_ARTIFACT`` or
 ``MAX_CHARS_TOTAL`` overall, the rest is not read, and a figure that matched
 nothing read counts as not checked rather than flagged.
 
+A figure no result holds may still be worked out from figures that are
+there, and is then ``derived`` rather than flagged, but only where the answer
+shows the working: a percentage whose clause writes its two terms next to
+each other ("254 of 505 (50.3%)", "7/8"), a count whose clause writes the sum
+out ("320 + 115 = 435"), or a share column of a markdown table whose rows,
+at least two of them, are their count over one total the answer names
+("Total: 505"). Every term must itself be held by a result, matches use the
+precision shown and never the hedge allowance, and no other pairing of the
+answer's numbers counts: two matched numbers that merely divide to the figure
+do not make it derived.
+
 A figure with no match is flagged, never removed. A matched one carries the
 ``artifact_id`` of the tool result it came from, which is its citation.
 Offsets are UTF-16 code units so a browser can slice the text with them.
@@ -31,7 +42,7 @@ from __future__ import annotations
 
 import bisect
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -161,6 +172,8 @@ class Figure:
     end: int
     verified: bool
     artifact_id: str | None = None
+    #: Worked out from matched figures of the answer rather than read in a result.
+    derived: bool = False
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -171,6 +184,8 @@ class Figure:
         }
         if self.artifact_id:
             out["artifact_id"] = self.artifact_id
+        if self.derived:
+            out["derived"] = True
         return out
 
 
@@ -189,6 +204,8 @@ class FigureCheck:
             "figures_checked": len(self.figures),
             "figures_unverified": sum(not f.verified for f in self.figures),
         }
+        if derived := sum(f.derived for f in self.figures):
+            out["figures_derived"] = derived
         if self.not_checked:
             out["figures_not_checked"] = self.not_checked
         return out
@@ -408,6 +425,171 @@ def _find(pool: _Pool, reading: _Reading, tolerance: float) -> str | None | bool
     return False
 
 
+_NUM_TEXT = r"[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?"
+# A clause ends at a sentence stop, a semicolon, a colon or a line break.
+_CLAUSE_BREAK = re.compile(r"(?<=[.!?])\s+|[;\n]|:\s")
+# A ratio's two terms, next to each other: "254 of 505", "3 out of 4", "7/8".
+_PAIR = re.compile(rf"(?<![\w.])({_NUM_TEXT})\s*(?:out of|of|/)\s*({_NUM_TEXT})", re.IGNORECASE)
+# A sum written out: "320 + 115 = 435", "2 + 3, 5 in all".
+_SUM = re.compile(
+    rf"((?:(?:{_NUM_TEXT})\s*\+\s*)+(?:{_NUM_TEXT}))\s*"
+    rf"(?:(?:=|,?\s*(?:for a total of|a total of|in total|in all|total of|total|across)\s*)\s*({_NUM_TEXT})"
+    rf"|,?\s*({_NUM_TEXT})\s+(?:in all|in total|total)\b)",
+    re.IGNORECASE,
+)
+# A figure the answer names as a total: "Total: 505", "505 in all".
+_TOTAL = re.compile(
+    rf"\b(?:total|in all|across)\b\W{{0,3}}({_NUM_TEXT})|({_NUM_TEXT})\s+(?:in all|in total|total)\b",
+    re.IGNORECASE,
+)
+_PERCENT_CELL = re.compile(rf"^({_NUM_TEXT})\s?%$")
+_COUNT_CELL = re.compile(rf"^({_NUM_TEXT})$")
+
+
+def _value(text: str) -> tuple[float, int]:
+    raw = text.replace(",", "")
+    return float(raw), len(raw.partition(".")[2])
+
+
+class _Held:
+    """Whether a number the answer writes is one the tool results hold, at its shown precision."""
+
+    def __init__(self, pools: list[_Pool], more: Any) -> None:
+        self._pools = pools
+        self._more = more  # builds the earlier turns' pool on first need
+
+    def __call__(self, text: str) -> bool:
+        value, decimals = _value(text)
+        reading = _Reading(value, False, decimals, None, 0)
+        tolerance = 0.5 * 10.0**-decimals
+        if any(_find(pool, reading, tolerance) is not False for pool in self._pools):
+            return True
+        extra = self._more()
+        return extra is not None and _find(extra, reading, tolerance) is not False
+
+
+def _close(value: float, shown: float, decimals: int) -> bool:
+    return abs(value - shown) <= 0.5 * 10.0**-decimals + 1e-9
+
+
+def _clauses(answer: str) -> list[tuple[int, int]]:
+    spans, start = [], 0
+    for m in _CLAUSE_BREAK.finditer(answer):
+        spans.append((start, m.start()))
+        start = m.end()
+    spans.append((start, len(answer)))
+    return spans
+
+
+def _derived_spans(answer: str, held: _Held) -> set[int]:
+    """Start offsets of figures worked out from held figures the answer states.
+
+    A percentage is derived when its clause writes its two terms next to each
+    other ("N of M", "N out of M", "N/M"); a count when its clause writes the
+    sum out ("a + b = c", "a + b, c in all"); and a share column of a table
+    when at least two of its rows are their count over one total the answer
+    names. Every term must be held; no other pairing of numbers counts.
+    """
+    out: set[int] = set()
+    for lo, hi in _clauses(answer):
+        clause = answer[lo:hi]
+        out.update(lo + at for at in _ratio_spans(clause, held))
+        out.update(lo + at for at in _sum_spans(clause, held))
+    return out | _table_shares(answer, held)
+
+
+def _ratio_spans(clause: str, held: _Held) -> Iterator[int]:
+    """Percentages in *clause* that one of its written-out ratios gives."""
+    pairs = [
+        (_value(m.group(1))[0], _value(m.group(2))[0])
+        for m in _PAIR.finditer(clause)
+        if held(m.group(1)) and held(m.group(2))
+    ]
+    if not pairs:
+        return
+    for m in _NUMBER.finditer(clause):
+        if not clause.startswith(("%", " %"), m.end()):
+            continue
+        shown, decimals = _value(m.group())
+        if any(0 < a <= b and _close(100.0 * a / b, shown, decimals) for a, b in pairs):
+            yield m.start()
+
+
+def _sum_spans(clause: str, held: _Held) -> Iterator[int]:
+    """Totals in *clause* whose written-out parts are held and add up to them."""
+    for m in _SUM.finditer(clause):
+        parts = re.findall(_NUM_TEXT, m.group(1))
+        group = 2 if m.group(2) else 3
+        total, _ = _value(m.group(group))
+        if all(held(p) for p in parts) and sum(_value(p)[0] for p in parts) == total:
+            yield m.start(group)
+
+
+def _named_totals(answer: str, held: _Held) -> set[float]:
+    """Held figures the answer names as a total."""
+    return {
+        _value(t)[0]
+        for m in _TOTAL.finditer(answer)
+        if (t := m.group(1) or m.group(2)) and held(t)
+    }
+
+
+_Row = list[tuple[int, str]]
+
+
+def _markdown_tables(answer: str) -> Iterator[list[_Row]]:
+    """Each markdown table's rows as ``(offset, text)`` cells, separator rows left out."""
+    table: list[_Row] = []
+    offset = 0
+    for line in answer.split("\n"):
+        start, offset = offset, offset + len(line) + 1
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if table:
+                yield table
+            table = []
+            continue
+        if not set(stripped) <= set("|-: "):
+            table.append(_cells(line, start))
+    if table:
+        yield table
+
+
+def _cells(line: str, start: int) -> _Row:
+    cells, pos = [], start + line.index("|") + 1
+    for cell in line.strip().strip("|").split("|"):
+        cells.append((pos + len(cell) - len(cell.lstrip()), cell.strip()))
+        pos += len(cell) + 1
+    return cells
+
+
+def _column_hits(table: list[_Row], total: float, held: _Held) -> dict[int, list[int]]:
+    """Per column, the share cells that are their row's count over *total*."""
+    hits: dict[int, list[int]] = {}
+    for row in table:
+        counts = [_value(m.group(1))[0] for _, c in row if (m := _COUNT_CELL.match(c)) and held(c)]
+        for col, (at, cell) in enumerate(row):
+            if (pm := _PERCENT_CELL.match(cell)) is None:
+                continue
+            shown, decimals = _value(pm.group(1))
+            if any(0 < c <= total and _close(100.0 * c / total, shown, decimals) for c in counts):
+                hits.setdefault(col, []).append(at)
+    return hits
+
+
+def _table_shares(answer: str, held: _Held) -> set[int]:
+    """Share cells of markdown tables that are their row's count over a named total."""
+    totals = _named_totals(answer, held)
+    out: set[int] = set()
+    for table in _markdown_tables(answer) if totals else ():
+        for total in totals:
+            # One row agreeing with a total is a coincidence a small table makes easily.
+            for starts in _column_hits(table, total, held).values():
+                if len(starts) >= 2:
+                    out.update(starts)
+    return out
+
+
 def _utf16_offsets(text: str) -> list[int] | None:
     """Code-point index -> UTF-16 offset, or None when every character is in the BMP."""
     if all(ord(ch) < 0x10000 for ch in text):
@@ -418,6 +600,50 @@ def _utf16_offsets(text: str) -> list[int] | None:
         total += 2 if ord(ch) >= 0x10000 else 1
     offsets.append(total)
     return offsets
+
+
+def _candidates(answer: str, question: str) -> list[tuple[int, _Reading]]:
+    """The answer's figures: numbers that are not labels, code or the question's own."""
+    asked = {abs(_read(question, m).value) for m in _NUMBER.finditer(question)}
+    masks = _masked(answer)
+    out: list[tuple[int, _Reading]] = []
+    skipped_end = -1
+    for match in _NUMBER.finditer(answer):
+        start = match.start()
+        reading = _read(answer, match)
+        if _inside(masks, start, match.end()) or _not_a_figure(answer, start, reading, skipped_end):
+            skipped_end = match.end()
+            continue
+        if abs(reading.value) not in asked:
+            out.append((start, reading))
+    return out
+
+
+class _Lookup:
+    """This turn's evidence, then earlier turns' read only on first need."""
+
+    def __init__(self, sources: Iterable[Any], earlier: Iterable[Any], expand: bool) -> None:
+        self._budget = _Budget()
+        self._expand = expand
+        self._earlier_sources = list(earlier)
+        self.pools = [_pool(sources, self._budget, expand)]
+
+    def earlier(self) -> _Pool | None:
+        if not self._earlier_sources:
+            return None
+        if len(self.pools) == 1:
+            self.pools.append(_pool(self._earlier_sources, self._budget, self._expand))
+        return self.pools[1]
+
+    def find(self, reading: _Reading, tolerance: float) -> str | None | bool:
+        found = _find(self.pools[0], reading, tolerance)
+        if found is False and (extra := self.earlier()) is not None:
+            found = _find(extra, reading, tolerance)
+        return found
+
+    @property
+    def truncated(self) -> bool:
+        return any(pool.truncated for pool in self.pools)
 
 
 def check_figures(
@@ -436,37 +662,22 @@ def check_figures(
     check = FigureCheck()
     if not answer or not any(ch.isdigit() for ch in answer):
         return check
-    asked = {abs(_read(question, m).value) for m in _NUMBER.finditer(question)}
-    masks = _masked(answer)
-
-    candidates: list[tuple[int, _Reading]] = []
-    skipped_end = -1
-    for match in _NUMBER.finditer(answer):
-        start = match.start()
-        reading = _read(answer, match)
-        if _inside(masks, start, match.end()) or _not_a_figure(
-            answer, start, reading, skipped_end
-        ):
-            skipped_end = match.end()
-            continue
-        if abs(reading.value) not in asked:
-            candidates.append((start, reading))
+    candidates = _candidates(answer, question)
     if not candidates:
         return check
 
-    budget = _Budget()
-    expand = any(reading.unit is None for _, reading in candidates)
-    pools = [_pool(sources, budget, expand)]
-    earlier_sources = list(earlier)
+    lookup = _Lookup(sources, earlier, expand=any(r.unit is None for _, r in candidates))
+    looked = [
+        (start, reading, lookup.find(reading, _tolerance(answer, start, reading)))
+        for start, reading in candidates
+    ]
+    derivable: set[int] = set()
+    if any(found is False for _, _, found in looked):
+        derivable = _derived_spans(answer, _Held(lookup.pools[:1], lookup.earlier))
     utf16 = _utf16_offsets(answer)
-    for start, reading in candidates:
-        tolerance = _tolerance(answer, start, reading)
-        found = _find(pools[0], reading, tolerance)
-        if found is False and earlier_sources:
-            if len(pools) == 1:
-                pools.append(_pool(earlier_sources, budget, expand))
-            found = _find(pools[1], reading, tolerance)
-        if found is False and any(pool.truncated for pool in pools):
+    for start, reading, found in looked:
+        derived = found is False and not reading.signed and start in derivable
+        if found is False and not derived and lookup.truncated:
             check.not_checked += 1
             continue
         end = reading.text_end
@@ -475,8 +686,9 @@ def check_figures(
                 text=answer[start:end],
                 start=utf16[start] if utf16 else start,
                 end=utf16[end] if utf16 else end,
-                verified=found is not False,
+                verified=found is not False or derived,
                 artifact_id=found if isinstance(found, str) else None,
+                derived=derived,
             )
         )
     return check

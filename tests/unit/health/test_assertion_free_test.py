@@ -958,3 +958,32 @@ def test_a_bare_python_reraise_is_not_an_oracle() -> None:
         "        raise\n"
     )
     assert _flagged(src) == ["test_reraises"]
+
+
+# --------------------------------------------------------------------------
+# Which files are test files: the stamped flag, not the name
+# --------------------------------------------------------------------------
+
+
+def _detect_with_flag(source: str, path: str, is_test: bool | None):
+    fc = walk_file(path, "python", source.encode("utf-8"))
+    ctx = FileContext(
+        file_path=path,
+        language="python",
+        nloc=fc.file_nloc,
+        has_test_file=True,
+        module=None,
+        is_test=is_test,
+        all_functions=tuple(fc.functions),
+    )
+    return [f.function_name for f in BIOMARKER.detect(ctx)]
+
+
+def test_production_module_named_like_a_test_is_not_judged() -> None:
+    # ``core/test_reachability.py`` is production code that pytest does not
+    # collect. Ingestion stamps it is_test=False; its ``tests_reaching``-style
+    # functions are not test cases that forgot to assert.
+    _require("python")
+    source = "def tests_reaching(graph):\n    return {}\n"
+    assert _detect_with_flag(source, "pkg/core/test_reachability.py", False) == []
+    assert _detect_with_flag(source, "tests/test_sample.py", True) == ["tests_reaching"]

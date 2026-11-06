@@ -369,3 +369,33 @@ def test_a_call_only_candidate_looks_up_its_name(tmp_path: Path):
     assert ref.target == "load"
     ((res, _),) = resolve_symbols([ref], root=tmp_path, symbol_names={"load"})
     assert res.verdict is DriftVerdict.RESOLVED
+
+
+def test_parse_at_handles_tree_entry_without_desync(tmp_path: Path):
+    """If a candidate path names a directory tree, it must not desync subsequent files."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@test.com"], check=True)
+
+    pkg = repo / "pkg"
+    pkg.mkdir()
+    (pkg / "mod.py").write_text("def foo(): pass\n")
+    (repo / "app.py").write_text("def bar(): pass\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+
+    from repowise.core.ingestion.change_detector import ChangeDetector
+
+    detector = ChangeDetector(repo)
+    # Request pkg (a tree), then app.py (a blob)
+    files = [(sha, "pkg"), (sha, "app.py")]
+    parsed = symbols_mod._parse_at(repo, detector, files)
+    assert parsed is not None
+    assert (sha, "pkg") not in parsed
+    assert (sha, "app.py") in parsed
+    assert [s.name for s in parsed[(sha, "app.py")].symbols] == ["bar"]

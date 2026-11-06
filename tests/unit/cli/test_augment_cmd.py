@@ -100,10 +100,10 @@ def test_claude_session_start_emits_freshness_context(
     )
 
     assert result.exit_code == 0
-    # tmp_path is not a git repo, so the handler emits the freshness-free
-    # reminder, never a false "current" claim.
+    # tmp_path is not a git repo, so the handler emits the line without the
+    # freshness fact, never a false "current" claim.
     context = _hook_context(result.output)
-    assert "MCP tools" in context
+    assert "local codebase index" in context
     assert "current" not in context
 
 

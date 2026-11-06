@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from tree_sitter import Node
 
@@ -39,6 +39,84 @@ def _qualified_pascal_parent(name_node: Node, src: str) -> str | None:
     return text or None
 
 
+Visibility = Literal["public", "private", "protected", "internal"]
+
+_SECTION_VISIBILITY: dict[str, Visibility] = {
+    "kPrivate": "private",
+    "kProtected": "protected",
+    "kPublic": "public",
+    "kPublished": "public",
+}
+
+
+def _pascal_visibility(def_node: Node) -> Visibility:
+    """Who can name the declaration at *def_node*.
+
+    A class member takes its ``declSection`` keyword (``strict private`` is
+    private); one before any section keyword is public. Outside a class, a
+    declaration in the unit's ``implementation`` section is private to the
+    unit: only one in ``interface`` is exported. A routine defined in
+    ``implementation`` takes the visibility of its ``interface`` declaration
+    (:func:`_inherit_pascal_declared_visibility`).
+    """
+    node = def_node.parent
+    while node is not None:
+        if node.type == "declSection":
+            keyword = next((c.type for c in node.children if c.type in _SECTION_VISIBILITY), None)
+            return _SECTION_VISIBILITY.get(keyword or "", "public")
+        if node.type in ("declClass", "declIntf", "declHelper", "interface"):
+            return "public"
+        if node.type == "implementation":
+            return "private"
+        node = node.parent
+    return "public"
+
+
+def _key(symbol: Symbol) -> tuple[str | None, str]:
+    return _pascal_dedupe_key(symbol.parent_name, symbol.signature)
+
+
+def _orphaned_declarations(
+    symbols: list[Symbol], node_types: list[str]
+) -> dict[int, tuple[Symbol, Symbol]]:
+    """``{id(declaration): (declaration, method body)}`` for declarations that lost their class.
+
+    An error-recovered class body leaves later member declarations
+    parentless. One pairs with the method body of its signature only when no
+    free routine has that signature and exactly one method body does: with two
+    candidates the class cannot be told, and the declaration stays.
+    """
+    pairs = list(zip(symbols, node_types, strict=True))
+    impl_keys = {_key(s) for s, nt in pairs if nt == "defProc"}
+    method_bodies: dict[str, list[Symbol]] = {}
+    for s, nt in pairs:
+        if nt == "defProc" and s.parent_name:
+            method_bodies.setdefault(_key(s)[1], []).append(s)
+    orphans: dict[int, tuple[Symbol, Symbol]] = {}
+    for s, nt in pairs:
+        if nt != "declProc" or s.parent_name is not None or _key(s) in impl_keys:
+            continue
+        bodies = method_bodies.get(_key(s)[1], [])
+        if len(bodies) == 1:
+            orphans[id(s)] = (s, bodies[0])
+    return orphans
+
+
+def _inherit_pascal_declared_visibility(symbols: list[Symbol], node_types: list[str]) -> None:
+    """Give each body in ``implementation`` its declaration's visibility, in place.
+
+    A method body whose declaration was not found is public; a free routine
+    keeps the unit-private visibility its section gave it.
+    """
+    pairs = list(zip(symbols, node_types, strict=True))
+    declared = {_key(s): s.visibility for s, nt in pairs if nt == "declProc"}
+    for declaration, body in _orphaned_declarations(symbols, node_types).values():
+        declared[_key(body)] = declaration.visibility
+    for s, nt in pairs:
+        if nt == "defProc":
+            s.visibility = declared.get(_key(s), "public" if s.parent_name else s.visibility)
+
+
 def _dedupe_pascal_interface_symbols(
     symbols: list[Symbol], node_types: list[str]
 ) -> list[Symbol]:
@@ -48,7 +126,8 @@ def _dedupe_pascal_interface_symbols(
     Pascal declares a signature in the ``interface`` section (``declProc``,
     no body) and the body in ``implementation`` (``defProc``). Once both
     resolve to one parent, only the ``defProc`` is kept, since it carries the
-    body ``get_symbol`` should return.
+    body ``get_symbol`` should return. A declaration that lost its class
+    (:func:`_orphaned_declarations`) is dropped for the body it pairs with.
 
     Keyed on the normalized signature (see ``_pascal_dedupe_key``) rather than
     the name, so an interface-only ``overload;`` sibling survives when a
@@ -56,15 +135,12 @@ def _dedupe_pascal_interface_symbols(
     not match between the two halves in Pascal, so a renamed parameter still
     defeats the dedupe and leaves both symbols.
     """
-    impl_keys = {
-        _pascal_dedupe_key(s.parent_name, s.signature)
-        for s, nt in zip(symbols, node_types, strict=True)
-        if nt == "defProc"
-    }
+    impl_keys = {_key(s) for s, nt in zip(symbols, node_types, strict=True) if nt == "defProc"}
+    orphans = _orphaned_declarations(symbols, node_types)
     return [
         s
         for s, nt in zip(symbols, node_types, strict=True)
-        if not (nt == "declProc" and _pascal_dedupe_key(s.parent_name, s.signature) in impl_keys)
+        if not (nt == "declProc" and (_key(s) in impl_keys or id(s) in orphans))
     ]
 
 

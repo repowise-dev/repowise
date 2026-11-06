@@ -20,6 +20,7 @@ from repowise.core.analysis.health.ranking import (
     worst_in_scope,
     worst_metric,
 )
+from repowise.core.analysis.health.scope import rows_in_scope
 from repowise.core.analysis.health.scoring import SCORE_FLOOR, compute_kpis
 
 
@@ -181,6 +182,30 @@ def test_worst_in_scope_skips_files_fix_first_leaves_out() -> None:
     assert kpis["worst_performer_path"] == "src/app.py"
     assert kpis["worst_test_path"] == "tests/test_app.py"
     assert worst_in_scope(rows[:2], {}) == (None, None)
+
+
+def test_production_average_covers_the_files_worst_performer_is_picked_from() -> None:
+    """Tooling, vendored, generated and test files stay in ``average_health``
+    and out of ``production_average``."""
+    rows = [
+        {**_dict("scripts/migrate.py", 10.0), "code_origin": "tooling"},
+        {**_dict("third_party/lib.js", 10.0), "code_origin": "vendored"},
+        {**_dict("src/gen/schema_pb2.py", 10.0), "code_origin": "generated"},
+        {**_dict("tests/test_app.py", 10.0), "is_test": True},
+        _dict("src/app.py", 4.0),
+    ]
+    kpis = compute_kpis(rows, set())
+    assert kpis["average_health"] == 8.8
+    assert (kpis["production_average"], kpis["production_file_count"]) == (4.0, 1)
+    assert [r["file_path"] for r in rows_in_scope("production", rows)] == ["src/app.py"]
+    assert rows_in_scope("all", rows) == rows
+    unscored = [{**_dict("src/b.py", 4.0), "score": None}, {**rows[0], "score": None}]
+    assert rows_in_scope("production", unscored) == unscored[:1]
+    no_production = compute_kpis(rows[:4], set())
+    assert (no_production["production_average"], no_production["production_file_count"]) == (
+        None,
+        0,
+    )
 
 
 def test_the_deduction_map_has_no_default() -> None:

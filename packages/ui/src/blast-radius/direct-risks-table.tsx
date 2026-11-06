@@ -3,6 +3,7 @@
 import type { DirectRiskEntry } from "@repowise-dev/types/blast-radius";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
+import { FilePath } from "../shared/file-path";
 
 interface DirectRisksTableProps {
   rows: DirectRiskEntry[];
@@ -42,12 +43,7 @@ const COLUMNS: ResponsiveColumn<DisplayDirectRisk>[] = [
     header: "File",
     render: (r) => (
       <span className="flex min-w-0 items-center gap-1">
-        <span
-          className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
-          title={r.path}
-        >
-          {r.path}
-        </span>
+        <FilePath path={r.path} fold className="max-w-[280px] text-[var(--color-text-secondary)]" />
         <AskAboutThis
           context={{
             kind: "blast-radius",

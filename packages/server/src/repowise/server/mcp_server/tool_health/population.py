@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from repowise.core.analysis.health.counts import parse_counts
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.rows import scored_rows
-from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.analysis.health.scope import parse_scope, rows_in_scope
 from repowise.core.persistence.crud.analysis.health import health_exclude_spec
 from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.models import HealthFileMetric
@@ -39,6 +39,9 @@ class Population:
     matched_modules: set[str]
     scoped: bool
     effective_targets: list[str]
+    #: Every stored metric row by path, before any narrowing: the file holds
+    #: read a finding's file origin and test flag off it.
+    files: dict[str, Any] = field(default_factory=dict)
 
     @property
     def code_shape(self) -> bool:
@@ -89,7 +92,7 @@ async def load_population(
     reported_scope = parse_scope(req.scope)
     scope_paths: set[str] | None = None
     if reported_scope == "production":
-        all_metrics = [m for m in all_metrics if not m.is_test]
+        all_metrics = rows_in_scope(reported_scope, all_metrics)
         scope_paths = {m.file_path for m in all_metrics}
 
     # Before ``counts``, so a file nobody measured is reported as that rather
@@ -129,4 +132,5 @@ async def load_population(
         matched_modules=matched_modules,
         scoped=scoped,
         effective_targets=file_targets if scoped else [],
+        files={m.file_path: m for m in indexed_rows},
     )

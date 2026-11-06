@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -43,6 +44,7 @@ from repowise.core.providers.llm.base import (
     ProviderModelOption,
     normalize_stop_reason,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -50,7 +52,7 @@ log = structlog.get_logger(__name__)
 
 # Matches the anthropic provider's default, whose docstring calls haiku "ample
 # for doc pages". Overridable with --model / REPOWISE_MODEL.
-_DEFAULT_MODEL = "claude-haiku-5-5"
+_DEFAULT_MODEL = PROVIDER_SPECS["claude_cli"].default_model.removeprefix("claude_cli/")
 _EXEC_TIMEOUT_SECONDS = EXEC_TIMEOUT_SECONDS
 
 # This is a one-shot text generation: the prompt already carries the context.
@@ -60,6 +62,25 @@ _EXEC_TIMEOUT_SECONDS = EXEC_TIMEOUT_SECONDS
 _TOOLLESS_SYSTEM_INSTRUCTION = (
     "You have no tools available for this task. Do not attempt to call tools. "
     "Answer the user directly in a single response."
+)
+
+# Run from inside a Claude Code session (an agent calling ``repowise init``),
+# the child inherits the parent's session id and its IPC socket and token, so
+# the child's SessionEnd hooks try to reach the parent session and fail. Only
+# the markers of that one session go: auth and backend settings
+# (CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_OAUTH_TOKEN, ...) still pass through.
+_PARENT_SESSION_VARS = frozenset(
+    {
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+    }
 )
 
 _SUPPORTED_REASONING_MODES: tuple[ReasoningMode, ...] = (
@@ -189,8 +210,8 @@ class ClaudeCliProvider(AgentCliProvider):
             )
             for slug, recommended, notes in (
                 ("claude-haiku-5-5", True, "fastest; ample for doc pages"),
-                ("claude-sonnet-4-6", False, "better prose, slower"),
-                ("claude-opus-4-6", False, "highest quality; heaviest on subscription limits"),
+                ("claude-sonnet-5-5", False, "better prose, slower"),
+                ("claude-opus-5-5", False, "highest quality; heaviest on subscription limits"),
             )
         )
 
@@ -225,6 +246,9 @@ class ClaudeCliProvider(AgentCliProvider):
             # ``off``, ``none`` and ``minimal`` have no Claude CLI equivalent.
             log.warning("claude_cli.reasoning.unsupported", requested=mode, using="auto")
         return cmd
+
+    def subprocess_env(self) -> dict[str, str]:
+        return {k: v for k, v in os.environ.items() if k not in _PARENT_SESSION_VARS}
 
     @contextlib.contextmanager
     def working_dir(self) -> Iterator[str]:

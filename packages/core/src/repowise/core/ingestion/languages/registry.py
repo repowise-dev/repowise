@@ -95,6 +95,10 @@ class LanguageRegistry:
         """Return ``{ext: tag}`` for all registered extensions."""
         return dict(self._ext_map)
 
+    def all_name_suffixes(self) -> dict[str, str]:
+        """Return ``{lowercase name ending: tag}`` for multi-dot endings."""
+        return {sfx: s.tag for s in self._specs.values() for sfx in s.name_suffixes}
+
     def all_special_filenames(self) -> dict[str, str]:
         """Return ``{filename: tag}`` for all special filenames."""
         return dict(self._filename_map)

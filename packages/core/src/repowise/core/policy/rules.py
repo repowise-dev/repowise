@@ -4,7 +4,7 @@ A rule has the shape of a Kyverno rule (``match``, ``exclude``, then
 conditions under ``when``) and an action from an Allstar-style ladder:
 ``warn``, ``require_owner_review``, ``require_tests`` or ``fail``. A rule
 either tests conditions over a change's evidence, or wraps one of the existing
-CI gates (``gate: security|coverage|doc_drift``), which runs exactly as its
+CI gates (``gate: security|coverage|doc_drift|health``), which runs exactly as its
 own command does.
 
 Evaluation reads a plain evidence mapping, ``{schema_version, change_id,
@@ -12,7 +12,7 @@ revspec, generated_at, items: [{kind, label, status, basis, value, details,
 source}]}``, and only these detail fields:
 
 * ``components_touched``: rows ``{name, criticality, tags, owner, files,
-  bus_factor}``;
+  bus_factor}``, and an ``{outside: true, files}`` row that names no component;
 * ``provenance``: ``value`` is the change's label (``agent``,
   ``human_attested`` or ``unknown``), or a mapping holding it as ``label``;
   rows ``{sha, label, tier}``;
@@ -23,7 +23,9 @@ source}]}``, and only these detail fields:
 
 An item whose status is ``unknown`` or whose basis is ``unresolved`` answers
 nothing, so a condition that needs it is unknown and the rule does not fire:
-a missed policy hit is preferred to a false one. There are no risk-score
+a missed policy hit is preferred to a false one. ``reaching_tests`` is the
+exception: it is read per row unless its basis is ``unresolved``, since a
+partly known item still answers for the files it knows. There are no risk-score
 conditions; change risk is not calibrated.
 """
 
@@ -41,7 +43,7 @@ POLICIES_FILE = ".repowise/policies.yaml"
 MAX_POLICY_BYTES = 256_000
 
 ACTIONS: tuple[str, ...] = ("warn", "require_owner_review", "require_tests", "fail")
-GATES: tuple[str, ...] = ("security", "coverage", "doc_drift")
+GATES: tuple[str, ...] = ("security", "coverage", "doc_drift", "health")
 ATTRIBUTION_STATES: tuple[str, ...] = ("agent", "human_attested", "unknown")
 CONDITIONS: tuple[str, ...] = (
     "attribution",
@@ -388,7 +390,8 @@ def _rows(item: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
 
 def _rule_result(rule: Rule, items: Mapping[str, Mapping[str, Any]]) -> RuleResult:
     comps_item = items.get("components_touched")
-    touched = _rows(comps_item) if _known(comps_item) else []
+    # The row for files outside every component is no component.
+    touched = [r for r in _rows(comps_item) if not r.get("outside")] if _known(comps_item) else []
     used: dict[str, str] = {}
     if rule.match or rule.exclude:
         if not _known(comps_item):
@@ -491,7 +494,9 @@ def _agent_tier(want, items, scope, matched) -> Check:
 
 def _reaching_tests(want, items, scope, matched) -> Check:
     item = items.get("reaching_tests")
-    if not _known(item):
+    # Rows carry each file's answer, so a partly known item (``unknown`` with
+    # a real basis) still decides the files in scope it knows about.
+    if item is None or item.get("basis") == "unresolved":
         return None, "reaching tests are not known", [], "reaching_tests"
     rows = [r for r in _rows(item) if r.get("path") and (scope is None or r["path"] in scope)]
     # ``tests: []`` is a known absence; a missing or null list is not known.

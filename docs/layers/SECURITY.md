@@ -285,6 +285,7 @@ result as a place to look.
 | `--fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low` |
 | `--baseline FILE` | none | Accept findings listed in this file |
 | `--write-baseline FILE` | none | Add this change's findings to the file and exit 0 |
+| `--fail-on-baseline-growth` | off | Exit 1 when `--baseline` lists a finding the file at the change's base does not |
 | `--staged` | off | Check staged changes; takes no revspec |
 | `--path DIR` | cwd | A path inside the repository |
 | `--format` | `table` | `table`, `json`, `markdown`, `github`, `sarif`, `gitlab` |

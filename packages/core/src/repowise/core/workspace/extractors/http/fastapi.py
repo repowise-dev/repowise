@@ -11,6 +11,7 @@ import re
 from typing import TYPE_CHECKING
 
 from ..base import line_at
+from ..calls import code_matches
 from ..langs import PYTHON
 from .dialect import METHODS, build_provider_contract
 from .flask import flask_file
@@ -45,6 +46,9 @@ _DEFAULT_ROUTER_NAMES = frozenset({"app", "router"})
 class FastApiDialect:
     name = "fastapi"
     extensions = PYTHON
+    # A route's receiver is `app`, `router` or a name bound to one of the two
+    # classes; a mount is an `include_router`.
+    requires = ("@app.", "@router.", "APIRouter", "FastAPI", "include_router")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         """Find ``include_router(var, prefix=...)`` mounts declared in the file.
@@ -55,7 +59,7 @@ class FastApiDialect:
         if flask_file(ctx.content):
             return {}
         out: dict[str, str] = {}
-        for m in _INCLUDE_ROUTER_RE.finditer(ctx.content):
+        for m in code_matches(ctx, _INCLUDE_ROUTER_RE):
             args = balanced_args(ctx.content, m.end() - 1)  # m.end()-1 is the '('
             var_m = _FIRST_ARG_RE.match(args)
             pm = _PREFIX_KW_RE.search(args)
@@ -73,7 +77,7 @@ class FastApiDialect:
         known = set(prefixes) | _DEFAULT_ROUTER_NAMES
 
         out: list[Contract] = []
-        for m in _FASTAPI_RE.finditer(ctx.content):
+        for m in code_matches(ctx, _FASTAPI_RE):
             var, method, path_raw = m.group(1), m.group(2), m.group(3)
             if var not in known:
                 continue

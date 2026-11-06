@@ -2,8 +2,8 @@
 
 Split out of the former monolithic ``crud.py`` and later from the single
 ``analysis.py`` module into per-entity submodules. ``crud/__init__.py``
-re-exports every public name via ``from .analysis import *``, so existing
-imports are unaffected.
+re-exports every name in ``__all__`` on first use, so existing imports are
+unaffected.
 """
 
 from __future__ import annotations
@@ -75,6 +75,7 @@ from .health import (
     backfill_is_test,
     backfill_module_attribution,
     clear_unanalysed_scores,
+    gated_health_counts,
     get_deduction_by_path,
     get_file_language_map,
     get_headline_health,
@@ -83,6 +84,7 @@ from .health import (
     get_health_snapshot_file_counts,
     get_health_snapshot_headline,
     get_health_summary,
+    get_latest_snapshot_analyzer_version,
     get_perf_coverage,
     get_scored_file_paths,
     health_finding_priorities,
@@ -108,8 +110,10 @@ from .performance import (
     list_opportunity_evidence,
     list_performance_opportunities,
     opportunity_details,
+    performance_area_counts,
     performance_facet_counts,
     performance_file_rollups,
+    performance_headline,
 )
 from .refactoring import (
     count_refactoring_suggestions,
@@ -157,6 +161,7 @@ __all__ = [
     "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",
     "finding_data_from_row",
+    "gated_health_counts",
     "gated_performance_counts",
     "get_coverage_summary",
     "get_dead_code_findings",
@@ -173,6 +178,7 @@ __all__ = [
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
+    "get_latest_snapshot_analyzer_version",
     "get_perf_coverage",
     "get_performance_opportunity",
     "get_performance_plan_rows",
@@ -199,8 +205,10 @@ __all__ = [
     "load_ingest_at_commit",
     "load_newest_ingest",
     "opportunity_details",
+    "performance_area_counts",
     "performance_facet_counts",
     "performance_file_rollups",
+    "performance_headline",
     "plan_payoff",
     "prune_unscored_health_rows",
     "ranked_refactoring_suggestions",

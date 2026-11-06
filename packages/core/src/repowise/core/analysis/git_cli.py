@@ -9,8 +9,9 @@ baseline and, through it, GitPython.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import TypeVar
 
 import pathspec
 
@@ -63,21 +64,40 @@ def path_filter(
     return counts
 
 
-def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
-    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
-    # pipe handles can wedge the session (same failure mode _meta.py guards
-    # against). check=True so a bad revspec raises instead of yielding empty
-    # stdout, which used to score as a zero-feature "low risk" change.
-    proc = subprocess.run(
+def run_git(
+    args: Sequence[str],
+    cwd: str | Path | None = None,
+    *,
+    text: bool = True,
+    input: str | bytes | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = GIT_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """One ``git`` call with output captured and the exit code left to the caller.
+
+    ``text`` decodes as utf-8 with replacement (git writes utf-8; the locale
+    codec fails on Windows); ``text=False`` returns bytes. stdin is DEVNULL
+    unless *input* is given: on MCP stdio transport a child that inherits the
+    JSON-RPC pipe can wedge the session. Spawn errors and timeouts propagate.
+    """
+    decode = {"text": True, "encoding": "utf-8", "errors": "replace"} if text else {}
+    return subprocess.run(
         ["git", *args],
         cwd=cwd,
+        input=input,
+        stdin=None if input is not None else subprocess.DEVNULL,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
+        env=env,
+        timeout=timeout,
+        check=False,
+        **decode,
     )
+
+
+def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
+    # check=True so a bad revspec raises instead of yielding empty stdout,
+    # which used to score as a zero-feature "low risk" change.
+    proc = run_git(args, cwd)
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(
             proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
@@ -85,7 +105,33 @@ def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
     return proc.stdout
 
 
-def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> list[str]:
+_V = TypeVar("_V")
+
+
+def checkout_relative(repo_path: str, by_path: Mapping[str, _V]) -> dict[str, _V]:
+    """*by_path*, keyed by git's top-level paths, re-keyed relative to *repo_path*.
+
+    The index names files from the checkout it was built in, which can sit
+    below the git top level. A path outside that checkout keeps a ``../`` form
+    no index path has, so a reader that must not miss a change still sees one
+    it cannot place. Raises as :func:`_git` does when *repo_path* is not in a
+    repository.
+    """
+    prefix = _git(["rev-parse", "--show-prefix"], repo_path).strip()
+    if not prefix:
+        return dict(by_path)
+    up = "../" * prefix.count("/")
+    return {
+        p[len(prefix) :] if p.startswith(prefix) else up + p: v for p, v in by_path.items()
+    }
+
+
+def untracked_paths(
+    repo_path: str,
+    exclude_patterns: tuple[str, ...] = (),
+    *,
+    pathspecs: Sequence[str] = (":/",),
+) -> list[str]:
     """Untracked, not-ignored files, root-relative like ``git diff``'s paths.
 
     The one source of untracked files for every working-tree reader (the score,
@@ -93,9 +139,10 @@ def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> l
     repowise writes whole are left out here, before anything reads them: an
     unignored index directory holds thousands of files. *exclude_patterns*
     (gitignore-style) drops a caller's excluded paths at the same point.
+    *pathspecs* narrows the listing (the whole repo by default).
     """
     listing = _git(
-        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", ":/"],
+        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", *pathspecs],
         repo_path,
         check=False,
     )

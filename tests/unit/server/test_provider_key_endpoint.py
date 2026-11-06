@@ -19,8 +19,10 @@ def isolate_server_store(monkeypatch, tmp_path):
     from repowise.server import provider_config as pc
 
     monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server-store"))
-    # Don't let a real ANTHROPIC_API_KEY on the dev box mask the stored one.
+    # Don't let a real ANTHROPIC_API_KEY on the dev box mask the stored one,
+    # nor an OPENAI_BASE_URL another test exported stand in for a cleared one.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     return pc
 
 
@@ -185,3 +187,68 @@ async def test_get_providers_returns_no_key_material(client: AsyncClient) -> Non
     for provider in resp.json()["providers"]:
         assert "key" not in provider
         assert "api_key" not in provider
+
+
+@pytest.mark.asyncio
+async def test_patch_active_with_repo_id_writes_config_yaml(client: AsyncClient) -> None:
+    from pathlib import Path
+
+    from repowise.core.repo_config import load_repo_config
+
+    repo = await create_test_repo(client)
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={
+            "provider": "openai",
+            "model": "qwen/qwen3-coder-30b",
+            "base_url": "http://localhost:1234/v1",
+            "repo_id": repo["id"],
+        },
+    )
+    assert resp.status_code == 200
+    active = resp.json()["active"]
+    assert (active["provider"], active["model"]) == ("openai", "qwen/qwen3-coder-30b")
+    assert active["base_url"] == "http://localhost:1234/v1"
+    assert active["provenance"]["base_url"] == "config.yaml"
+    cfg = load_repo_config(Path(repo["local_path"]))
+    assert cfg["openai"] == {"base_url": "http://localhost:1234/v1"}
+
+    # Leaving base_url out keeps it; the existing request shape still works.
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "model": "other", "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url"] == "http://localhost:1234/v1"
+
+    resp = await client.patch(
+        "/api/providers/active",
+        json={"provider": "openai", "base_url": "", "repo_id": repo["id"]},
+    )
+    assert resp.json()["active"]["base_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_active_rejects_a_non_http_base_url(client: AsyncClient) -> None:
+    resp = await client.patch(
+        "/api/providers/active", json={"provider": "openai", "base_url": "localhost:1234"}
+    )
+    assert resp.status_code == 400
+    assert "http" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_detect_query_reports_signed_in_agent_clis(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.agents.identity import AgentIdentity
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", lambda self: self.slug == "codex")
+
+    plain = (await client.get("/api/providers")).json()
+    detected = (await client.get("/api/providers?detect=true")).json()
+
+    def by_id(body):
+        return {p["id"]: p["detected"] for p in body["providers"]}
+
+    assert by_id(plain)["codex_cli"] is None
+    assert by_id(detected)["codex_cli"] == "signed_in"
+    assert by_id(detected)["claude_cli"] is None

@@ -58,3 +58,13 @@ def test_onboarding_targets_skip_unranked_nodes_and_cap() -> None:
     assert len(everything) == 12
     tail = everything[-2:]
     assert [t["path"] for t in tail] == ["f10.py", "f11.py"]
+
+
+def test_onboarding_targets_skip_nodes_that_are_not_files() -> None:
+    nodes = [
+        {"node_id": "external:os", "pagerank": 0.9},
+        {"node_id": "framework:spring", "pagerank": 0.8},
+        {"node_id": "app.py::App", "pagerank": 0.7},
+        {"node_id": "app.py", "pagerank": 0.1},
+    ]
+    assert [t["path"] for t in onboarding_targets(nodes, {})] == ["app.py"]

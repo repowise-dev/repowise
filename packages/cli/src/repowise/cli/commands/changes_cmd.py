@@ -5,7 +5,9 @@ evidence checklist, as the native versioned JSON record or, with
 ``--format in-toto``, as an in-toto Statement v1; ``export`` writes every
 change merged in a window with its checklist, as JSON Lines or CSV. All read the
 index; ``repowise init`` or ``update`` fills it. A checklist is built on first
-read (seconds per change) and kept on the change until ``--refresh``.
+read (seconds per change) and kept on the change until ``--refresh``; its
+``outcomes`` item (reverts, later fixes naming the change, the files' later
+fix rate) is read again whenever HEAD has moved.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import click
 
@@ -25,6 +27,9 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json, format_option
+
+if TYPE_CHECKING:
+    from repowise.core.persistence.crud import ChangeFilter
 
 
 def _repo_root(path: str | None) -> Path:
@@ -38,8 +43,11 @@ def _no_index() -> None:
     raise SystemExit(1)
 
 
-async def _list(root: Path, **filters: Any) -> tuple[list[dict], int] | None:
+async def _list(
+    root: Path, where: ChangeFilter, *, limit: int, offset: int, needs_attention: bool = False
+) -> tuple[list[dict], int] | None:
     from repowise.core.attribution import attribution_enabled
+    from repowise.core.changes.collect import list_needing_attention
     from repowise.core.changes.record import change_record
     from repowise.core.persistence.crud import list_changes
 
@@ -47,7 +55,8 @@ async def _list(root: Path, **filters: Any) -> tuple[list[dict], int] | None:
         if opened is None:
             return None
         session, repo_id = opened
-        rows, total = await list_changes(session, repo_id, **filters)
+        read = list_needing_attention if needs_attention else list_changes
+        rows, total = await read(session, repo_id, where, limit=limit, offset=offset)
         on = attribution_enabled(root)
         return [change_record(r, attribution=on) for r in rows], total
 
@@ -72,8 +81,24 @@ async def _show(root: Path, ref: str, *, evidence: bool, refresh: bool) -> dict 
         return record
 
 
-#: Changes read from the index per page during an export.
-_EXPORT_PAGE = 50
+def build_progress(position: int, total: int, change_id: str) -> None:
+    """One stderr line per checklist built, so a long period shows it is moving."""
+    click.echo(f"evidence {position}/{total}: {change_id}", err=True)
+
+
+def build_plan(to_build: int, total: int) -> None:
+    """Say up front how many checklists a period builds, and roughly how long."""
+    from repowise.core.changes.period import SECONDS_PER_BUILD
+
+    if not to_build:
+        return
+    minutes = to_build * SECONDS_PER_BUILD / 60
+    about = f"about {minutes:.0f} min" if minutes >= 1 else "under a minute"
+    click.echo(
+        f"building {to_build} of {total} evidence checklist(s), {about}; each is kept, "
+        "so a later run reads it back",
+        err=True,
+    )
 
 
 async def _export(
@@ -85,9 +110,8 @@ async def _export(
 ) -> int | None:
     """Emit each change in the window with its checklist, a page at a time; the count."""
     from repowise.core.attribution import attribution_enabled
-    from repowise.core.changes.collect import change_evidence
+    from repowise.core.changes.period import PeriodRequest, period_evidence
     from repowise.core.changes.record import change_record
-    from repowise.core.persistence.crud import list_changes
 
     async with repo_index_session(root) as opened:
         if opened is None:
@@ -95,24 +119,21 @@ async def _export(
         session, repo_id = opened
         on = attribution_enabled(root)
         done = 0
-        while True:
-            rows, total = await list_changes(
-                session, repo_id, since=since, until=until, limit=_EXPORT_PAGE, offset=done
-            )
-            for row in rows:
-                done += 1
-                if refresh or not row.evidence_json:
-                    click.echo(f"evidence {done}/{total}: {row.change_id}", err=True)
-                record = change_record(row, attribution=on)
-                record["evidence"] = (
-                    await change_evidence(session, repo_id, root, row, refresh=refresh)
-                ).to_dict()
-                # Kept as it goes, so an interrupted export resumes where it stopped.
-                await session.commit()
-                emit(record)
-            session.expunge_all()
-            if len(rows) < _EXPORT_PAGE:
-                return done
+        # An export is the whole window it names; without --since, every indexed change.
+        request = PeriodRequest(
+            since=since,
+            until=until,
+            window_days=None,
+            refresh=refresh,
+            progress=build_progress,
+            plan=build_plan,
+        )
+        async for row, evidence in period_evidence(session, repo_id, root, request):
+            record = change_record(row, attribution=on)
+            record["evidence"] = evidence.to_dict()
+            emit(record)
+            done += 1
+        return done
 
 
 _STATUS_STYLE = {"ok": "green", "attention": "yellow", "unknown": "dim"}
@@ -122,30 +143,49 @@ def _print_checklist(evidence: dict) -> None:
     from rich.markup import escape
     from rich.table import Table
 
+    from repowise.core.changes.evidence import BASIS_TEXT, item_line, line_text
+
     table = Table("Evidence", "Status", "Basis", "Value", title="Evidence checklist")
     for item in evidence["items"]:
         style = _STATUS_STYLE.get(item["status"], "")
         table.add_row(
             escape(item["label"]),
             f"[{style}]{item['status']}[/{style}]",
-            item["basis"],
-            escape(_value_text(item)),
+            BASIS_TEXT.get(item["basis"], item["basis"]),
+            escape(line_text(item_line(item))),
         )
     console.print(table)
     console.print(f"[dim]generated {evidence['generated_at']}; `--refresh` rebuilds it.[/dim]")
+    outcomes = next((i for i in evidence["items"] if i["kind"] == "outcomes"), None)
+    if outcomes is not None and outcomes["status"] != "unknown":
+        console.print("[bold]Outcomes[/bold]")
+        for line in outcome_lines(outcomes):
+            console.print(f"  {escape(line)}")
 
 
-def _value_text(item: dict) -> str:
-    value = item["value"]
-    if value is None:
-        reasons = [d.get("reason") for d in item["details"] if d.get("reason")]
-        return reasons[0] if reasons else ""
-    if isinstance(value, list):
-        more = f" (+{len(value) - 6})" if len(value) > 6 else ""
-        return ", ".join(map(str, value[:6])) + more
-    if isinstance(value, dict):
-        return ", ".join(f"{k} {v}" for k, v in value.items() if v is not None and v != [])
-    return str(value)
+def outcome_lines(item: dict) -> list[str]:
+    """The outcomes item in words: links quote their message, the rate states its basis."""
+    lines = []
+    for row in item["details"]:
+        later = row.get("sha", "")[:12]
+        if row.get("change_id"):
+            later = f"{row['change_id']} ({later})"
+        if row["kind"] == "revert":
+            held = "" if row.get("in_force") else " (no longer in force)"
+            lines.append(f"reverted by {later}{held}: {row['evidence']}")
+        elif row["kind"] == "fix_reference":
+            lines.append(
+                f"referenced as the cause by a later fix, {later} (their words): \"{row['evidence']}\""
+            )
+        elif row["kind"] == "file_fix_rate":
+            open_ = "" if row["window_complete"] else " (window still open)"
+            lines.append(
+                f"files later received fixes: {row['files_fixed']} of {row['files']}"
+                f" within {row['days']} days{open_}"
+            )
+    if not any(r["kind"] in ("revert", "fix_reference") for r in item["details"]):
+        lines.insert(0, "no later commit in this history reverts this change or names it as a cause")
+    return lines
 
 
 _CSV_COLUMNS = (
@@ -167,11 +207,14 @@ def _csv_rows(record: dict) -> str:
     import io
     import json
 
+    from repowise.core.report.render import spreadsheet_cell
+
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     for item in record["evidence"]["items"]:
         writer.writerow(
-            [
+            spreadsheet_cell(cell)
+            for cell in [
                 record["id"],
                 record["merged_at"] or "",
                 record["title"],
@@ -198,6 +241,11 @@ def changes_group() -> None:
     "--shape", type=click.Choice(["merge", "squash", "commit"]), default=None, help="Only this shape."
 )
 @click.option("--grep", "q", default=None, help="Substring of the title, id or a file path.")
+@click.option(
+    "--needs-attention",
+    is_flag=True,
+    help="Only changes whose kept checklist flags attention (never builds one).",
+)
 @click.option("--limit", default=30, show_default=True, type=click.IntRange(1, 1000))
 @click.option("--offset", default=0, type=click.IntRange(0))
 @format_option()
@@ -206,14 +254,18 @@ def changes_list(
     category: str | None,
     shape: str | None,
     q: str | None,
+    needs_attention: bool,
     limit: int,
     offset: int,
     fmt: str,
 ) -> None:
     """List indexed changes, newest merged first."""
+    from repowise.core.persistence.crud import ChangeFilter
+
     root = _repo_root(repo)
+    where = ChangeFilter(category=category, shape=shape, q=q)
     got = run_async(
-        _list(root, category=category, shape=shape, q=q, limit=limit, offset=offset)
+        _list(root, where, limit=limit, offset=offset, needs_attention=needs_attention)
     )
     if got is None:
         _no_index()
@@ -321,10 +373,10 @@ def changes_export(
 ) -> None:
     """Export the changes merged in a window, each with its evidence checklist.
 
-    A change without a kept checklist has one built and kept first, which
-    costs a few seconds per change (about 7 to 9s measured on a mid-size
-    repository); kept checklists are read back at no cost. Records stream as
-    they are ready, and progress goes to stderr.
+    A change without a kept checklist has one built and kept first, a few at
+    a time over one shared fix-history walk (about 3s per change measured on
+    a mid-size repository, from 6s one by one); kept checklists are read back
+    at no cost. Records stream a page at a time, and progress goes to stderr.
     """
     import json
     from datetime import UTC

@@ -145,7 +145,10 @@ def test_show_unknown_id_exits_nonzero_in_both_formats(seeded: Path) -> None:
     assert "Decision not found: 9999" in table.stdout
     as_json = _run("show", "9999", str(seeded), "--format", "json")
     assert as_json.exit_code == 1
-    assert json.loads(as_json.stdout) == {"query": "9999", "decision": None}
+    payload = json.loads(as_json.stdout)
+    assert payload["error"] == "decision_not_found"
+    assert payload["message"] == "Decision not found: 9999"
+    assert payload["query"] == "9999" 
 
 
 # -- list ---------------------------------------------------------------------
@@ -165,7 +168,8 @@ def test_list_filters(seeded: Path) -> None:
         return {d["id"][:8] for d in _json("list", str(seeded), *flags)["decisions"]}
 
     assert ids("--proposed") == {"bbbbbbbb", "dddddddd"}
-    assert ids("--stale-only") == {"aaaaaaaa"}
+    # Nothing is accepted yet, and a candidate's score is not a stale decision.
+    assert ids("--stale-only") == set()
     assert ids("--source", "git_archaeology") == {"bbbbbbbb"}
     assert ids("--status", "deprecated") == {"cccccccc"}
 
@@ -186,6 +190,14 @@ def accepted(seeded: Path) -> Path:
     """Health counts a decision as active only once it has been accepted."""
     assert _run("confirm", "aaaaaaaa", str(seeded)).exit_code == 0
     return seeded
+
+
+def test_stale_only_lists_what_health_counts_as_stale(accepted: Path) -> None:
+    listed = _json("list", str(accepted), "--stale-only")
+    health = _json("health", str(accepted))
+    assert [d["id"] for d in listed["decisions"]] == ["aaaaaaaa11111111"]
+    assert [d["id"] for d in health["stale_decisions"]] == ["aaaaaaaa11111111"]
+    assert listed["total"] == health["summary"]["stale"] == 1
 
 
 def test_health_json_carries_whole_lists(accepted: Path) -> None:
@@ -253,6 +265,215 @@ def test_add_prompts_without_files_says_how_to_finish(repo: Path) -> None:
     assert "--scope <path>" in result.output
 
 
+def test_add_warns_on_nonexistent_affects_path(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost/missing.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ghost/missing.py"]
+
+
+def test_add_warns_on_missing_rationale(repo: Path) -> None:
+    (repo / "existing.py").write_text("x = 1\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--affects",
+        "existing.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["no rationale given"]
+
+
+def test_add_warns_on_both_bad_path_and_missing_rationale(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--affects",
+        "ghost/missing.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == [
+        "affects path not found: ghost/missing.py",
+        "no rationale given",
+    ]
+
+
+def test_add_valid_path_with_rationale_has_no_warnings(repo: Path) -> None:
+    (repo / "src").mkdir()
+    (repo / "src" / "real.py").write_text("x = 1\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "Because it is good",
+        "--affects",
+        "src/real.py",
+        "--affects",
+        "src",
+    )
+    decision = payload["decision"]
+    assert "warnings" not in decision
+
+
+def test_add_human_output_prints_warnings(repo: Path) -> None:
+    result = _run(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--affects",
+        "ghost/missing.py",
+    )
+    assert result.exit_code == 0
+    assert "Decision recorded" in result.output
+    assert "affects path not found: ghost/missing.py" in result.output
+    assert "no rationale given" in result.output
+
+
+def test_add_agreement_does_not_warn_about_missing_files(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "Working agreement rationale",
+        "--kind",
+        "agreement",
+    )
+    decision = payload["decision"]
+    assert "warnings" not in decision
+
+
+def test_add_warns_on_multiple_nonexistent_affects_paths(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost/a.py",
+        "--affects",
+        "ghost/b.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == [
+        "affects path not found: ghost/a.py",
+        "affects path not found: ghost/b.py",
+    ]
+
+
+def test_add_warns_on_duplicate_invalid_affects_paths_without_repetition(repo: Path) -> None:
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "T",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "ghost.py",
+        "--affects",
+        "ghost.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ghost.py"]
+
+
+def test_add_warns_on_path_outside_repository(repo: Path, tmp_path: Path) -> None:
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("outside = True\n", encoding="utf-8")
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Outside",
+        "--decision",
+        "D",
+        "--rationale",
+        "R",
+        "--affects",
+        "../outside.py",
+    )
+    decision = payload["decision"]
+    assert decision["warnings"] == ["affects path not found: ../outside.py"]
+
+
+def test_readd_keeping_stored_rationale_has_no_missing_rationale_warning(repo: Path) -> None:
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    # First add with rationale
+    _json(
+        "add",
+        str(repo),
+        "--title",
+        "Readd",
+        "--decision",
+        "D1",
+        "--rationale",
+        "Stored rationale",
+        "--affects",
+        "src/a.py",
+    )
+    # Re-add without --rationale flag; keeps stored rationale and does not warn
+    payload = _json(
+        "add",
+        str(repo),
+        "--title",
+        "Readd",
+        "--decision",
+        "D2",
+        "--affects",
+        "src/a.py",
+    )
+    decision = payload["decision"]
+    assert decision["existed"] is True
+    assert "rationale" in decision["kept"]
+    assert "warnings" not in decision
+
+
+def test_add_prompt_without_rationale_prints_warning(repo: Path) -> None:
+    # Prompted without files and without rationale; stores as candidate with warning
+    answers = "architectural\nCandidate title\n\nChose\n\n\n\n\n\n"
+    result = _run("add", str(repo), input=answers)
+    assert result.exit_code == 0, result.output
+    assert "Decision recorded" in result.output
+    assert "Stored as a candidate" in result.output
+    assert "no rationale given" in result.output
+
+
 # -- multi-id runs and deprecate ------------------------------------------------
 
 
@@ -262,7 +483,7 @@ def test_batch_table_counts_and_names_each_outcome(seeded: Path) -> None:
     out = result.output
     assert "Accepted 1 of 3" in out
     assert "Decision not found: 9999" in out
-    assert "Supply the missing parts with --reason, --scope or --evidence." in out
+    assert "Supply the missing parts with --decision, --reason, --scope or --evidence." in out
 
 
 def test_batch_json_summarises_the_run(seeded: Path) -> None:
@@ -292,10 +513,17 @@ def test_dismiss_can_be_cancelled_at_the_prompt(seeded: Path) -> None:
 def test_deprecate_refuses_an_unknown_successor(seeded: Path) -> None:
     result = _run("deprecate", "aaaaaaaa", str(seeded), "--superseded-by", "9999", "--format", "json")
     assert result.exit_code == 1
-    assert json.loads(result.stdout)["error"] == "decision_not_found"
+    (only,) = json.loads(result.stdout)["results"]
+    assert only["error"] == "decision_not_found"
+    assert "9999" in only["message"]
     assert _json("show", "aaaaaaaa", str(seeded))["decision"]["status"] == "active"
 
 
 def test_deprecate_json_reports_the_transition(seeded: Path) -> None:
     payload = _json("deprecate", "bbbbbbbb", str(seeded))
-    assert payload == {"id": "bbbbbbbb22222222", "status": "deprecated", "action": "deprecated"}
+    (only,) = payload["results"]
+    assert (only["id"], only["status"], only["action"]) == (
+        "bbbbbbbb22222222",
+        "deprecated",
+        "deprecated",
+    )

@@ -12,6 +12,8 @@ class PageTypePlan:
     page_type: str
     count: int
     level: int
+    # file_page only: ``(glob, documented, eligible)`` per folder-coverage rule.
+    folder_coverage: list[tuple[str, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -46,3 +48,8 @@ class CostEstimate:
     # True when the estimate was calibrated against historical
     # ``wiki_pages`` rows for this repo (tighter than heuristics alone).
     is_calibrated: bool = False
+    # Embedding is part of the bill: ``estimated_cost_usd`` and the range
+    # include it. Empty ``embedder`` means the caller did not price it.
+    embedder: str = ""
+    estimated_embedding_tokens: int = 0
+    embedding_cost_usd: float = 0.0

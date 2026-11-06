@@ -11,7 +11,13 @@ import subprocess
 
 import pytest
 
-from repowise.core.analysis.changed_lines import _parse_unified_diff, changed_lines
+from repowise.core.analysis.changed_lines import (
+    _parse_unified_diff,
+    change_set,
+    changed_lines,
+    diff_since,
+    split_commit_patches,
+)
 
 
 def test_parse_single_hunk_new_side_lines() -> None:
@@ -405,3 +411,52 @@ def test_index_gap_on_a_sibling_branch_counts_only_the_base_side(git_repo) -> No
 
     change = change_set(str(git_repo), "HEAD~1..HEAD")
     assert index_gap(str(git_repo), indexed, change) == ["base_only.py"]
+
+
+def test_changed_lines_name_files_from_a_checkout_below_the_git_top_level(git_repo) -> None:
+    # The index is built in ``svc/``; its file paths start there, git's at the top.
+    (git_repo / "svc").mkdir()
+    (git_repo / "svc" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "svc")
+    (git_repo / "svc" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "edit both")
+
+    changed, _ = changed_lines(str(git_repo / "svc"), "HEAD~1..HEAD")
+    # A file outside the checkout keeps a path no index file has.
+    assert changed == {"a.py": {2}, "../mod.py": {4}}
+    # Read from the top level, nothing moves.
+    assert changed_lines(str(git_repo), "HEAD~1..HEAD")[0] == {"svc/a.py": {2}, "mod.py": {4}}
+
+
+def test_change_set_and_diff_since_name_files_from_a_nested_checkout(git_repo) -> None:
+    svc = git_repo / "svc"
+    svc.mkdir()
+    for name in ("a.py", "gone.py"):
+        (svc / name).write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "svc")
+    (svc / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (svc / "gone.py").unlink()
+    (svc / "new.py").write_text("z = 3\n", encoding="utf-8")
+    (git_repo / "mod.py").write_text("a = 0\n", encoding="utf-8")
+
+    change = change_set(str(svc), working_tree=True)
+    assert set(change.files) == {"a.py", "new.py", "../mod.py"}
+    assert change.deleted == {"gone.py"}
+    assert change.files["new.py"].new_lines == {1}  # read from where git listed it
+    assert all(diff.path == path for path, diff in change.files.items())
+
+    diffs = diff_since(str(svc), "HEAD", None, ["a.py"])
+    assert set(diffs) == {"a.py"} and diffs["a.py"].new_lines == {2}
+
+
+def test_split_commit_patches_starts_a_commit_only_at_a_line_start_commit_id():
+    sha1, sha256 = "a" * 40, "b" * 64
+    raw = f"\0{sha1}\n\n+x = '\0{sha1}'\n+\0;\n\0{sha256}\n\n-y\n\0{sha1}"
+    assert split_commit_patches(raw) == [
+        (sha1, f"\n+x = '\0{sha1}'\n+\0;\n"),
+        (sha256, "\n-y\n"),
+        (sha1, ""),
+    ]

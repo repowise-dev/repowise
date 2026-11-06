@@ -188,6 +188,47 @@ async def test_recent_changes_are_capped_with_their_total(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_suspects_rank_recent_changes_against_the_targets(setup_mcp, session):
+    import time_machine
+
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session)
+    with time_machine.travel(datetime(2026, 3, 16, tzinfo=UTC), tick=False):
+        plain = await get_context(targets=["src/db/models.py"])
+        result = await get_context(targets=["src/db/models.py"], include=["suspects"])
+    assert "suspects" not in plain
+    block = result["suspects"]
+    assert block["window"]["since"].startswith("2026-03-02")
+    assert block["candidates"] == 3  # pr-2, pr-3, pr-4; pr-1 is older than 14 days
+    assert block["candidates_capped"] is False
+    top = block["suspects"][0]
+    assert (top["id"], top["rank"]) == ("pr-2", 1)
+    assert "text" in top["signals"] and "recency" in top["signals"]
+    assert "not a cause" in block["note"]
+    for row in block["suspects"]:
+        assert not {"term py", "term src"} & set(row["signals"].get("text", {}).get("evidence", []))
+
+
+@pytest.mark.asyncio
+async def test_a_typed_symptom_is_the_suspects_text_query(setup_mcp, session):
+    import time_machine
+
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session)
+    with time_machine.travel(datetime(2026, 3, 16, tzinfo=UTC), tick=False):
+        result = await get_context(
+            targets=["src/db/models.py"], include=["suspects"], symptom="token refresh fails"
+        )
+        ignored = await get_context(targets=["src/db/models.py"], symptom="token refresh fails")
+    top = result["suspects"]["suspects"][0]
+    assert top["id"] == "pr-2"
+    assert "term refresh" in top["signals"]["text"]["evidence"]
+    assert any(a["argument"] == "symptom" for a in ignored["ignored_arguments"])
+
+
+@pytest.mark.asyncio
 async def test_file_provenance_carries_coverage_and_withholds_below_the_floor(
     setup_mcp, session, tmp_path
 ):
@@ -262,6 +303,9 @@ async def test_overview_changes_by_category_week_and_agent_share(setup_mcp, sess
     assert block["window"]["until"].startswith("2026-03-15")
     assert block["by_category"] == {"feature": 3, "fix": 1}
     weeks = {w["week"]: w["changes"] for w in block["by_week"]}
+    # History starts inside the window: earlier weeks are unknown, not zero.
+    assert block["window"]["history_from"].startswith("2026-03-01")
+    assert block["by_week"][0]["week"] == "2026-02-23"
     assert weeks["2026-02-23"] == 1 and weeks["2026-03-02"] == 2 and weeks["2026-03-09"] == 1
     assert sum(weeks.values()) == 4
     prov = block["provenance"]

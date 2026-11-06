@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 # Class-level stereotypes that make the runtime instantiate the class
-# (CDI + EJB + Servlet 3+ + JAX-RS provider).
+# (CDI + EJB + Servlet 3+ + JAX-RS provider + JAX-WS endpoint).
 _JAKARTA_STEREOTYPE_ANNOT = (
     "@Path",
     "@Provider",
@@ -44,6 +44,8 @@ _JAKARTA_STEREOTYPE_ANNOT = (
     "@WebListener",
     "@ServerEndpoint",
     "@ClientEndpoint",
+    "@WebService",
+    "@WebServiceProvider",
 )
 
 # Field / constructor / setter injection annotations.

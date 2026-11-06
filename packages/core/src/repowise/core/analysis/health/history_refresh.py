@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .biomarker_names import canonical_biomarker
 from .biomarkers.base import BiomarkerResult, FileContext
 from .biomarkers.registry import registered_biomarkers
 from .complexity.languages import has_health_dialect
@@ -83,7 +84,7 @@ def as_biomarker_result(finding: Any) -> BiomarkerResult:
     details = detail_map(finding)
     raw = details.get("deduction")
     return BiomarkerResult(
-        biomarker_type=field(finding, "biomarker_type", ""),
+        biomarker_type=canonical_biomarker(field(finding, "biomarker_type", "")),
         severity=Severity(field(finding, "severity", Severity.LOW)),
         function_name=field(finding, "function_name"),
         line_start=field(finding, "line_start"),
@@ -199,9 +200,11 @@ def git_meta_rows_to_map(rows: Any) -> dict[str, dict]:
     The detectors read git metadata as a mapping, which is how the indexer
     hands it to the engine, so ORM rows are flattened to the same shape.
     """
+    from repowise.core.persistence.crud.git import git_metadata_dict
+
     out: dict[str, dict] = {}
     for row in rows:
-        meta = {c.name: getattr(row, c.name, None) for c in row.__table__.columns}
+        meta = git_metadata_dict(row)
         path = meta.get("file_path")
         if path:
             out[str(path)] = meta

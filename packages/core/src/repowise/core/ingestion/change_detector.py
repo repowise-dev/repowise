@@ -23,7 +23,7 @@ from typing import Literal
 import structlog
 
 from .models import FileInfo, ParsedFile, Symbol
-from .traverser import is_candidate_source_path
+from .traverser import is_candidate_source_path, is_repowise_output
 
 log = structlog.get_logger(__name__)
 
@@ -67,6 +67,9 @@ class FileDiff:
     trigger_commit_message: str | None = None
     trigger_commit_author: str | None = None
     diff_text: str | None = None  # unified diff, capped at 4K chars
+    # A claimed document still on disk that can no longer be indexed, so its
+    # "deleted" status must outweigh the file's presence when rows are pruned.
+    unindexable: bool = False
 
 
 @dataclass
@@ -111,9 +114,30 @@ class ChangeDetector:
         repo_path: Path to the git repository root.
     """
 
-    def __init__(self, repo_path: Path) -> None:
+    def __init__(
+        self,
+        repo_path: Path,
+        *,
+        exclude_patterns: list[str] | None = None,
+        include_submodules: bool = False,
+        include_nested_repos: bool = False,
+    ) -> None:
         self.repo_path = repo_path
+        self._document_options = {
+            "extra_exclude_patterns": exclude_patterns,
+            "include_submodules": include_submodules,
+            "include_nested_repos": include_nested_repos,
+        }
+        self._document_policy = None
+        self._document_cache = None
+        # Claimed documents whose latest parse was refused (ineligible source
+        # or Markdown over the ceiling), so a diff can tell them from failures.
+        self._unindexable_documents: set[str] = set()
         self._repo: object = None  # lazy git.Repo
+        # Where repo_path sits inside the git working tree ("" when it is the
+        # root). Git reports root-relative paths; the index is keyed relative
+        # to repo_path, so every path is translated through this prefix.
+        self._prefix: str = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,12 +160,15 @@ class ChangeDetector:
         try:
             base_commit = repo.commit(base_ref)
             until_commit = repo.commit(until_ref)
-            diff_items = base_commit.diff(until_commit)
+            if self._prefix:
+                diff_items = base_commit.diff(until_commit, paths=self._prefix)
+            else:
+                diff_items = base_commit.diff(until_commit)
         except Exception as exc:
             log.warning("git diff failed", base=base_ref, until=until_ref, error=str(exc))
             return []
 
-        return [self._file_diff_from_item(item) for item in diff_items]
+        return [self._file_diff_from_item(item) for item in diff_items if self._item_in_scope(item)]
 
     def get_working_tree_changes(self) -> list[FileDiff]:
         """Return FileDiffs for changes that are in the working tree, not in git.
@@ -174,19 +201,33 @@ class ChangeDetector:
             head_commit = repo.head.commit
             # ``None`` as the diff target means "the working tree", so this
             # covers staged and unstaged changes in one pass.
-            for item in head_commit.diff(None):
-                path = (item.b_path or item.a_path or "").replace("\\", "/")
-                if not is_candidate_source_path(path, self.repo_path, output_dirs):
+            items = (
+                head_commit.diff(None, paths=self._prefix)
+                if self._prefix
+                else head_commit.diff(None)
+            )
+            for item in items:
+                if not self._item_in_scope(item):
+                    continue
+                # Git returns root-relative paths for a nested index. Prefer
+                # the in-scope side (a rename may cross the module boundary),
+                # then apply the same source/output filter as root indexing.
+                path = self._within(item.b_path) or self._within(item.a_path) or ""
+                if not path or not _counts_as_change(path, self.repo_path, output_dirs, item):
                     continue
                 results.append(self._file_diff_from_item(item))
-            untracked = list(repo.untracked_files)
+            untracked = self._untracked_files(repo)
         except Exception as exc:
+            from .document_extractors import DocumentExtractionError
+
+            if isinstance(exc, DocumentExtractionError):
+                raise
             log.warning("working tree diff failed", error=str(exc))
             return []
 
         for rel_path in untracked:
             path = rel_path.replace("\\", "/")
-            if not is_candidate_source_path(path, self.repo_path, output_dirs):
+            if not _counts_as_change(path, self.repo_path, output_dirs):
                 continue
             abs_path = self.repo_path / path
             if not abs_path.is_file():
@@ -221,7 +262,11 @@ class ChangeDetector:
                 continue
             abs_path = self.repo_path / path
             if abs_path.is_file():
-                stale.append(self._added_from_disk(path, abs_path, status="modified"))
+                stale.append(
+                    self._unindexable_as_deleted(
+                        self._added_from_disk(path, abs_path, status="modified")
+                    )
+                )
             else:
                 stale.append(
                     FileDiff(
@@ -256,6 +301,32 @@ class ChangeDetector:
             symbol_diff=SymbolDiff(added=list(new_parsed.symbols)) if new_parsed else None,
         )
 
+    def _within(self, path: str | None) -> str | None:
+        """*path* (git-root-relative) relative to repo_path, or None if outside it."""
+        if path is None:
+            return None
+        path = path.replace("\\", "/")
+        if not self._prefix:
+            return path
+        if path.startswith(self._prefix + "/"):
+            return path[len(self._prefix) + 1 :]
+        return None
+
+    def _item_in_scope(self, item: object) -> bool:
+        return self._within(item.a_path) is not None or self._within(item.b_path) is not None
+
+    def _untracked_files(self, repo: object) -> list[str]:
+        """Untracked, non-ignored files inside repo_path, relative to it.
+
+        Scoped to the module when it is nested: ``repo.untracked_files`` walks
+        the whole working tree, which for a module of a large repository is
+        most of the cost of detecting one changed file.
+        """
+        if not self._prefix:
+            return list(repo.untracked_files)
+        listing = repo.git.ls_files("--others", "--exclude-standard", "-z", "--", self._prefix)
+        return [p for p in (self._within(raw) for raw in listing.split("\0") if raw) if p]
+
     def _file_diff_from_item(self, item: object) -> FileDiff:
         """Build a :class:`FileDiff` from one GitPython ``Diff``.
 
@@ -265,25 +336,10 @@ class ChangeDetector:
         makes the same code correct for a diff whose right-hand side *is* the
         working tree.
         """
-        status: Literal["added", "deleted", "modified", "renamed"]
-        old_path: str | None = None
-        new_path: str | None = None
-
-        change_type = item.change_type
-        if change_type == "A":
-            status = "added"
-            new_path = item.b_path
-        elif change_type == "D":
-            status = "deleted"
-            old_path = item.a_path
-        elif change_type == "R":
-            status = "renamed"
-            old_path = item.a_path
-            new_path = item.b_path
-        else:
-            status = "modified"
-            old_path = item.a_path
-            new_path = item.b_path
+        # Paths inside the module, however deep the module sits in the repo.
+        status, old_path, new_path = _classify_change(
+            item.change_type, self._within(item.a_path), self._within(item.b_path)
+        )
 
         path = new_path or old_path or ""
 
@@ -309,15 +365,43 @@ class ChangeDetector:
         elif new_parsed:
             sym_diff = SymbolDiff(added=list(new_parsed.symbols))
 
-        return FileDiff(
-            path=path,
-            status=status,
-            old_path=old_path,
-            old_parsed=old_parsed,
-            new_parsed=new_parsed,
-            symbol_diff=sym_diff,
+        return self._unindexable_as_deleted(
+            FileDiff(
+                path=path,
+                status=status,
+                old_path=old_path,
+                old_parsed=old_parsed,
+                new_parsed=new_parsed,
+                symbol_diff=sym_diff,
+            )
         )
 
+    def _unindexable_as_deleted(self, diff: FileDiff) -> FileDiff:
+        """Report a document whose new version cannot be indexed as a deletion.
+
+        Its source grew past its ceiling or its Markdown is over the limit, so
+        the index must drop what it holds for the old version. A "modified"
+        diff with no new side would keep those rows and its page; "deleted"
+        removes them, tombstones the page and reports the old symbols removed.
+        """
+        if (
+            diff.new_parsed is not None
+            or diff.status not in ("modified", "renamed")
+            or diff.path not in self._unindexable_documents
+        ):
+            return diff
+        old_path = diff.old_path or diff.path
+        return FileDiff(
+            path=old_path,
+            status="deleted",
+            old_path=old_path,
+            old_parsed=diff.old_parsed,
+            new_parsed=None,
+            symbol_diff=SymbolDiff(removed=list(diff.old_parsed.symbols))
+            if diff.old_parsed
+            else None,
+            unindexable=True,
+        )
 
     def detect_symbol_renames(
         self,
@@ -468,7 +552,10 @@ class ChangeDetector:
         all_pages_needing_regen = sorted(
             directly_changed | one_hop,
             key=lambda p: (
-                # Staleness-first: an already-stale page (larger age) outranks a
+                # A changed file's own page first: it is the one page the
+                # change is certain to alter, so the budget cuts importers first.
+                p in directly_changed,
+                # Then staleness: an already-stale page (larger age) outranks a
                 # fresh page no matter how central the fresh one is, so a
                 # constrained budget spends its LLM calls on the pages that
                 # actually lag the code (issues #847 / #851). Fresh pages sort
@@ -502,9 +589,10 @@ class ChangeDetector:
         if self._repo is not None:
             return self._repo
         try:
-            import git as gitpython
+            from repowise.core.git_repo import Repo
 
-            self._repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
+            self._repo = Repo(self.repo_path, search_parent_directories=True)
+            self._prefix = _prefix_in_repo(self._repo, self.repo_path)
             return self._repo
         except Exception as exc:
             log.info(
@@ -520,6 +608,10 @@ class ChangeDetector:
             source = blob.data_stream.read()
             return self.parse_bytes(source, path)
         except Exception as exc:
+            from .document_extractors import DocumentExtractionError
+
+            if isinstance(exc, DocumentExtractionError):
+                raise
             log.warning("Failed to parse blob", path=path, error=str(exc))
             return None
 
@@ -528,6 +620,10 @@ class ChangeDetector:
         try:
             return self.parse_bytes(abs_path.read_bytes(), rel_path)
         except Exception as exc:
+            from .document_extractors import DocumentExtractionError
+
+            if isinstance(exc, DocumentExtractionError):
+                raise
             log.warning("Failed to parse file", path=rel_path, error=str(exc))
             return None
 
@@ -535,10 +631,25 @@ class ChangeDetector:
         """Parse one file's *source* as *path* with the repository's parser, or ``None``."""
         from datetime import datetime
 
+        from .document_extractors import (
+            document_extractor_for_path,
+            source_fingerprint,
+        )
         from .parser import parse_file
         from .traverser import _detect_language
 
-        lang = _detect_language(Path(path))
+        self._unindexable_documents.discard(path)
+        lang = _detect_language(Path(path), source)
+        claim = document_extractor_for_path(Path(path), language=lang)
+        if claim is not None:
+            if not self._document_eligible(path, source):
+                self._unindexable_documents.add(path)
+                return None
+            extractor_name, extractor = claim
+            lang = "markdown"
+        else:
+            extractor_name = None
+            extractor = None
         file_info = FileInfo(
             path=path,
             abs_path=str(self.repo_path / path),
@@ -550,12 +661,68 @@ class ChangeDetector:
             is_config=False,
             is_api_contract=False,
             is_entry_point=False,
+            extractor_name=extractor_name,
+            extractor_version=extractor.version if extractor is not None else None,
         )
         try:
-            return parse_file(file_info, source)
+            if extractor_name is not None:
+                return self._parse_document(file_info, source)
+            parsed = parse_file(file_info, source)
+            parsed.content_hash = source_fingerprint(file_info, source)
+            return parsed
         except Exception as exc:
+            from .document_extractors import DocumentExtractionError
+
+            if isinstance(exc, DocumentExtractionError):
+                raise
             log.warning("parse_file failed in ChangeDetector", path=path, error=str(exc))
             return None
+
+    def _parse_document(self, file_info: FileInfo, source: bytes) -> ParsedFile | None:
+        """Parse a claimed document from the parse cache or its extracted Markdown."""
+        from .document_extractors import source_fingerprint
+        from .parse_cache import ParseCache
+        from .parser import parse_file
+        from .source_reader import read_document_sources
+
+        if self._document_cache is None:
+            self._document_cache = ParseCache(self.repo_path / ".repowise")
+            self._document_cache.load()
+        cached = self._document_cache.get(file_info, source_fingerprint(file_info, source))
+        if cached is not None:
+            return cached
+        markdown = read_document_sources(
+            self.repo_path,
+            [
+                (
+                    file_info.extractor_name,
+                    file_info.extractor_version,
+                    Path(file_info.abs_path),
+                    file_info.path,
+                    source,
+                )
+            ],
+        )[0]
+        if not isinstance(markdown, bytes):
+            self._unindexable_documents.add(file_info.path)
+            return None
+        parsed = parse_file(file_info, markdown)
+        parsed.content_hash = source_fingerprint(file_info, source)
+        return parsed
+
+    def _document_eligible(self, path: str, source: bytes) -> bool:
+        from .traverser import FileTraverser
+
+        if self._document_policy is None:
+            options = self._document_options.copy()
+            if options["extra_exclude_patterns"] is None:
+                from repowise.core.repo_config import load_repo_config
+
+                options["extra_exclude_patterns"] = load_repo_config(self.repo_path).get(
+                    "exclude_patterns"
+                )
+            self._document_policy = FileTraverser(self.repo_path, **options)
+        return self._document_policy.document_source_eligible(path, source)
 
     def _compute_symbol_diff(
         self,
@@ -583,6 +750,38 @@ class ChangeDetector:
         )
 
 
+_ChangeStatus = Literal["added", "deleted", "modified", "renamed"]
+
+
+def _classify_change(
+    change_type: str, a_path: str | None, b_path: str | None
+) -> tuple[_ChangeStatus, str | None, str | None]:
+    """``(status, old_path, new_path)`` for one git change, paths already in scope."""
+    if change_type == "A":
+        return "added", None, b_path
+    if change_type == "D":
+        return "deleted", a_path, None
+    if change_type != "R":
+        return "modified", a_path, b_path
+    if a_path and b_path:
+        return "renamed", a_path, b_path
+    if b_path:
+        # Moved into the module from outside it.
+        return "added", None, b_path
+    # Moved out of the module.
+    return "deleted", a_path, None
+
+
+def _prefix_in_repo(repo: object, repo_path: Path) -> str:
+    """Where *repo_path* sits inside *repo*'s working tree, POSIX, "" at the root."""
+    try:
+        root = Path(repo.working_tree_dir).resolve()
+        parts = Path(repo_path).resolve().relative_to(root).parts
+    except Exception:
+        return ""
+    return "/".join(parts)
+
+
 def has_working_tree_changes(repo_path: Path) -> bool:
     """Whether the working tree holds changes ``HEAD`` does not.
 
@@ -599,25 +798,59 @@ def has_working_tree_changes(repo_path: Path) -> bool:
     False on a non-git directory or a repo with no commits yet.
     """
     try:
-        import git
+        from repowise.core.git_repo import Repo
 
-        repo = git.Repo(repo_path, search_parent_directories=True)
+        repo = Repo(repo_path, search_parent_directories=True)
     except Exception:
         return False
     try:
-        changed = (
-            item.b_path or item.a_path or "" for item in repo.head.commit.diff(None)
+        detector = ChangeDetector(repo_path)
+        detector._repo = repo
+        detector._prefix = _prefix_in_repo(repo, repo_path)
+        items = (
+            repo.head.commit.diff(None, paths=detector._prefix)
+            if detector._prefix
+            else repo.head.commit.diff(None)
         )
         output_dirs: dict[Path, bool] = {}
+        for item in items:
+            if not detector._item_in_scope(item):
+                continue
+            path = detector._within(item.b_path) or detector._within(item.a_path)
+            if path and _counts_as_change(path, repo_path, output_dirs, item):
+                return True
         return any(
-            is_candidate_source_path(p.replace("\\", "/"), repo_path, output_dirs)
-            for p in (*changed, *repo.untracked_files)
+            _counts_as_change(p.replace("\\", "/"), repo_path, output_dirs)
+            for p in detector._untracked_files(repo)
         )
     except Exception as exc:
         log.warning("working tree check failed", path=str(repo_path), error=str(exc))
         return False
     finally:
         repo.close()
+
+
+def _counts_as_change(
+    path: str, repo_path: Path, output_dirs: dict[Path, bool], item: object | None = None
+) -> bool:
+    """Whether a working-tree path is a change the index has to see.
+
+    A path the index would read, unless repowise wrote the change itself: its
+    own ``.claude/CLAUDE.md`` block left untracked or refreshed in a tracked
+    file is not the user's work, and counting it marked every repo with an
+    editor file dirty on every run. *item* is the ``HEAD`` diff entry of a
+    tracked path, whose committed text tells a refreshed block from an edit.
+    """
+    if not is_candidate_source_path(path, repo_path, output_dirs):
+        return False
+    a_blob = getattr(item, "a_blob", None)
+    committed = (lambda: a_blob.data_stream.read().decode("utf-8", "replace")) if a_blob else None
+    try:
+        return not is_repowise_output(repo_path / path, path, committed)
+    except Exception:
+        # An unreadable committed blob (LFS pointer, missing object) must not
+        # hide the repo's other changes; counting this one is the safe side.
+        return True
 
 
 def merge_file_diffs(*sources: list[FileDiff]) -> list[FileDiff]:
@@ -640,8 +873,6 @@ def merge_file_diffs(*sources: list[FileDiff]) -> list[FileDiff]:
     for source in sources:
         for diff in source:
             existing = merged.get(diff.path)
-            if existing is None or (
-                existing.status == "deleted" and diff.status != "deleted"
-            ):
+            if existing is None or (existing.status == "deleted" and diff.status != "deleted"):
                 merged[diff.path] = diff
     return list(merged.values())

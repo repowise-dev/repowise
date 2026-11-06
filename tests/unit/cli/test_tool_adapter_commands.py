@@ -1080,3 +1080,13 @@ def test_why_dashboard_projection_keeps_the_newly_named_lanes():
     assert [row["id"] for row in out["retired_decisions"]] == ["r1", "r2"]
     assert out["retired_decisions"][1]["lane"] == "dismissed"
     assert [row["id"] for row in out["unscoped_decisions"]] == ["u1"]
+
+
+def test_context_fix_signal_names_its_window() -> None:
+    from repowise.cli.commands.context_cmd import _fix_signal
+
+    assert _fix_signal({}) == ""
+    assert (
+        _fix_signal({"fix_count": 3, "window": "6 months", "last_fix_days_ago": 2})
+        == "3 bug fixes in 6 months, last 2d ago"
+    )

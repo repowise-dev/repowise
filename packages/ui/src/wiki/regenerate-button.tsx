@@ -39,6 +39,12 @@ export interface RegenerateButtonProps {
    *  copy (e.g. next to the provenance pill) rather than a toolbar. The
    *  progress dialog is unchanged. */
   inline?: boolean;
+  /** Plain model-coloured text for a page's metadata row: no ground, no
+   *  border. Its default label names the page ("Write this page with AI" /
+   *  "Rewrite with AI"). Takes precedence over `inline`. */
+  quiet?: boolean;
+  /** Overrides the visible label (a host translating it, say). */
+  label?: string;
 }
 
 export function RegenerateButton({
@@ -49,13 +55,29 @@ export function RegenerateButton({
   onDialogClose,
   jobSlot,
   inline = false,
+  quiet = false,
+  label,
 }: RegenerateButtonProps) {
   const isWrite = mode === "write";
   const Icon = isWrite ? Sparkles : RefreshCw;
 
   return (
     <>
-      {inline ? (
+      {quiet ? (
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={isLoading || isInProgress}
+          className="inline-flex shrink-0 items-center gap-1 rounded text-xs font-medium text-[var(--color-model)] transition-colors hover:text-[var(--color-model-hover)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-model)] disabled:opacity-60"
+        >
+          {isLoading ? (
+            <Spinner className="h-3 w-3" />
+          ) : (
+            <Icon aria-hidden className="h-3 w-3" />
+          )}
+          {label ?? (isWrite ? "Write this page with AI" : "Rewrite with AI")}
+        </button>
+      ) : inline ? (
         <button
           type="button"
           onClick={onRegenerate}
@@ -68,7 +90,7 @@ export function RegenerateButton({
           ) : (
             <Icon className="h-2.5 w-2.5" />
           )}
-          {isWrite ? "Write with AI" : "Regenerate"}
+          {label ?? (isWrite ? "Write with AI" : "Regenerate")}
         </button>
       ) : (
         <Button
@@ -94,7 +116,7 @@ export function RegenerateButton({
             />
           )}
           <span className="hidden sm:inline">
-            {isWrite ? "Write with AI" : "Regenerate"}
+            {label ?? (isWrite ? "Write with AI" : "Regenerate")}
           </span>
         </Button>
       )}

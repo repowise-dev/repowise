@@ -18,7 +18,6 @@ it sits on the first append and lists every appended line in ``details["lines"]`
 from __future__ import annotations
 
 from ..complexity import PerfHit
-from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -30,7 +29,7 @@ class StringConcatInLoopDetector:
     category = "performance"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if is_test_file(ctx.file_path):
+        if ctx.is_test_material:
             return []
         groups: dict[tuple[str | None, int, int, str | int], list[PerfHit]] = {}
         for index, hit in enumerate(ctx.perf_hits):

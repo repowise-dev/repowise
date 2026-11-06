@@ -113,3 +113,43 @@ class TestStatusKeylessUpgradeNote:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "llm"})
         assert "Scope" in out
         assert "repowise generate writes the subsystem pages" not in out
+
+
+def test_sync_state_totals_match_the_pages_table(tmp_path: Path, monkeypatch) -> None:
+    """state.json counts tombstones and only init stamps tokens; the table does neither."""
+    import json
+
+    from click.testing import CliRunner
+
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "wiki.db").write_bytes(b"")
+    (repowise_dir / "state.json").write_text(json.dumps({"total_pages": 12}))
+
+    async def _pages(_path):
+        return {"file_page": 7, "module_page": 3}, 4321
+
+    monkeypatch.setattr(status_cmd, "_query_pages", _pages)
+    monkeypatch.setattr(status_cmd, "_query_health_line", lambda _path: None)
+    monkeypatch.setattr(status_cmd, "_load_actions", lambda _path: None)
+
+    result = CliRunner().invoke(
+        status_cmd.status_command, [str(tmp_path), "--no-workspace"], terminal_width=200
+    )
+
+    assert result.exit_code == 0, result.output
+    sync = result.output.split("Pages by Type")[0]
+    assert "│ 10 " in sync and "│ 12 " not in sync
+    assert "4,321" in sync
+
+
+def test_health_line_leads_performance_with_the_causes_worth_fixing_now(monkeypatch) -> None:
+    causes = {"now": 4, "production": 415, "all": 926, "per_10k_loc": 9.03}
+    monkeypatch.setattr(
+        status_cmd,
+        "_query_health",
+        lambda _path: _health(performance_average=9.76, performance_causes=causes),
+    )
+    line = status_cmd._query_health_line(Path("."))
+    assert line is not None
+    assert " · 4 of 415 production perf causes worth fixing now (9.7)" in line

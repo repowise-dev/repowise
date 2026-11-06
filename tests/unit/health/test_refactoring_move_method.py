@@ -399,6 +399,83 @@ def test_method_calling_an_inherited_member_or_in_a_trait_impl_does_not_move():
     assert _detect_java(_java_envy_graph(), classes=[cls]) == []
 
 
+_JAVA_SERVICE = b"""
+@Service
+public class C {
+  private final ServerConfigRepository repository;
+
+  public C(ServerConfigRepository repository) {
+    this.repository = repository;
+  }
+
+  public T envious(T config) {
+    if (config.alpha() == null) {
+      config.beta("default");
+    }
+    config.gamma();
+    return repository.save(config);
+  }
+
+  public T stateless(T config) {
+    config.alpha();
+    config.beta("x");
+    return config.gamma();
+  }
+}
+"""
+
+
+def test_service_method_using_its_injected_field_does_not_move():
+    # A service method reading the repository its constructor injected, by bare
+    # name, stays: moving it onto the entity would carry persistence into it.
+    from repowise.core.analysis.health.complexity.walker import walk_file
+
+    classes = walk_file("C.java", "java", _JAVA_SERVICE).classes
+    assert "envious" in classes[0].field_readers
+    assert "stateless" not in classes[0].field_readers
+    g = _java_envy_graph()
+    g.nodes["C.java::C.envious"]["start_line"] = 10
+    assert _detect_java(g, classes=classes) == []
+    # Control: the same envy from a method that touches no field still fires.
+    g = _java_envy_graph(method="stateless")
+    g.nodes["C.java::C.stateless"]["start_line"] = 18
+    assert len(_detect_java(g, classes=classes)) == 1
+
+
+def test_static_logger_is_not_state_but_a_getter_is():
+    # A ``static final`` logger is class-level, not the instance's state, so
+    # logging does not bind a method; a getter reads a field and does.
+    from repowise.core.analysis.health.complexity.walker import walk_file
+
+    source = b"""
+public class C {
+  private static final Logger LOG = LoggerFactory.getLogger(C.class);
+  private final Repo repo;
+  public C(Repo repo) { this.repo = repo; }
+  public Repo getRepo() { return repo; }
+  public void logs(T t) { LOG.info("x"); t.alpha(); t.beta(); }
+}
+"""
+    readers = walk_file("C.java", "java", source).classes[0].field_readers
+    assert "getRepo" in readers and "logs" not in readers
+
+
+def test_go_emits_no_classes_so_receivers_are_not_read():
+    # Ceiling: Go methods attach to a type through an external receiver, and
+    # the class analysis emits no Go classes, so ``field_readers`` cannot bind
+    # a Go method to its struct's fields. Move Method keeps its other gates
+    # there (see ``languages.py`` on a receiver-aware grouping pass).
+    from repowise.core.analysis.health.complexity.walker import walk_file
+
+    source = b"""package p
+
+type Svc struct{ repo Repo }
+
+func (s *Svc) Uses(t T) { s.repo.Save(t) }
+"""
+    assert walk_file("svc.go", "go", source).classes == []
+
+
 # ---- keyword modifiers and partial classes (C#, Kotlin, VB.NET) ------------
 
 

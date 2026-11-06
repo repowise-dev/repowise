@@ -114,6 +114,10 @@ async def test_a_sample_that_stops_inside_the_window_is_unknown(three_author_rep
         results, [], summary.commit_rows, summary.repo_totals.total_commit_count
     )
     assert {a.commit_count_90d for a in accs.values() if a.key} == {None}
+    # What the sample holds is a floor for the authors in it, and nothing for the rest.
+    floors = {a.key: a.commit_count_90d_at_least for a in accs.values() if a.key}
+    assert floors["ada@example.com"] == 2
+    assert floors.get("carol@example.com") is None
 
 
 @pytest.mark.asyncio

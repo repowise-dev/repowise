@@ -29,9 +29,16 @@ const SUGGESTION_KEYS = [
  * purpose: this is the one row that does something rather than reporting
  * something, and it needs to look different enough to be found.
  */
-export function AskAnythingRow({ repoId }: { repoId: string }) {
+export function AskAnythingRow({
+  repoId,
+  suggestions: given,
+}: {
+  repoId: string;
+  /** Openers built from this repo's data; the generic ones when omitted. */
+  suggestions?: string[];
+}) {
   const t = useTranslations("overview");
-  const suggestions = SUGGESTION_KEYS.map((key) => t(key));
+  const suggestions = given ?? SUGGESTION_KEYS.map((key) => t(key));
   const router = useRouter();
   const [question, setQuestion] = useState("");
 
@@ -90,7 +97,7 @@ export function AskAnythingRow({ repoId }: { repoId: string }) {
             key={s}
             type="button"
             onClick={() => ask(s)}
-            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-[11px] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
+            className="max-w-full rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-left text-[11px] [overflow-wrap:anywhere] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
           >
             {s}
           </button>

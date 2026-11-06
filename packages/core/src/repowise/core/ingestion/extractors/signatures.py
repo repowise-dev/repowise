@@ -54,6 +54,15 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
                 break
             returns += node_text(child, src)
         return f"{name}{params_text} -> {returns}" if returns else f"{name}{params_text}"
+    if node_type == "getter_signature":
+        # Dart: the return type is the nodes ahead of ``get``. A getter takes no
+        # parameters, so it reads ``name -> Type``, with no parameter list.
+        returns = ""
+        for child in def_node.children:
+            if child.type == "get":
+                break
+            returns += node_text(child, src)
+        return f"{name} -> {returns}" if returns else name
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
         base = f"class {name}"
         if params_text:
@@ -68,15 +77,20 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}(){_ret(('type',))}"
     if node_type == "type_alias_declaration":
         return f"type {name}"
-    if node_type == "type_alias":
-        # Kotlin ``typealias``: keep the aliased type, so a call through the
-        # alias can be followed to it. Dart's same-named node has no such keyword.
-        aliased = _kotlin_alias_target(def_node, src)
-        if aliased:
-            return f"typealias {name} = {aliased}"
-        return f"{name}{params_text}"
+    if node_type == "type_alias" and any(c.type == "typealias" for c in def_node.children):
+        # Kotlin: keep the aliased type, which a call through the alias constructs.
+        target = def_node.children[-1]
+        return f"typealias {name} = {node_text(target, src)}"
     if node_type == "enum_declaration":
         return f"enum {name}"
+    if node_type == "trigger_declaration":
+        # Apex: the sObject and the DML events are the trigger's whole contract.
+        sobject = def_node.child_by_field_name("object")
+        events = ", ".join(
+            node_text(e, src) for e in def_node.children_by_field_name("events") if e.is_named
+        )
+        on = f" on {node_text(sobject, src)}" if sobject is not None else ""
+        return f"trigger {name}{on} ({events})"
     if node_type in ("method_definition", "method_signature"):
         # TypeScript/JavaScript class method
         return f"{name}{params_text}{_ret(('return_type',))}"

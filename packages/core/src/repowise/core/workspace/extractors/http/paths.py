@@ -8,8 +8,12 @@ footing regardless of the framework's parameter syntax.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 from ..strings import match_paren
+
+# `{id?}`, `{id:int?}`, `{*rest?}`: a route parameter marked optional.
+_OPTIONAL_PARAM_RE = re.compile(r"\{(\*{0,2}[A-Za-z_]\w*(?::[^{}?]*)?)\?\}")
 
 
 def normalize_http_path(path: str) -> str:
@@ -21,8 +25,12 @@ def normalize_http_path(path: str) -> str:
       3. Lowercase
       4. Strip trailing slash (but keep root ``/``)
       5. Unify param styles: ``:param``, ``{param}``, ``[param]`` → ``{param}``
+
+    An optional route parameter (ASP.NET and Laravel ``{id?}``,
+    ``{id:int?}``) loses its ``?`` first, so the query-string cut does not
+    end the path inside the brace.
     """
-    s = path.strip().split("?")[0].lower()
+    s = _OPTIONAL_PARAM_RE.sub(r"{\1}", path.strip()).split("?")[0].lower()
     if s != "/":
         s = s.rstrip("/")
     # ASP.NET routes commonly omit the leading slash; add one so all
@@ -40,6 +48,13 @@ def normalize_http_path(path: str) -> str:
     s = re.sub(r"\[[^\]]+\]", "{param}", s)
     # Unify JS template literal ${expr} → {param}
     s = re.sub(r"\$\{[^}]+\}", "{param}", s)
+    # A whole-segment ``*`` (Spring ``/owners/*/pets``, Express ``/files/*``)
+    # matches one segment, as a parameter does.
+    s = re.sub(r"(?<=/)\*(?=/|$)", "{param}", s)
+    # A whole-segment ``*name`` (gin and echo ``/swagger/*any``,
+    # ``/static/*filepath``) is a named catch-all; ``/**`` and a ``*`` inside
+    # a longer segment (``/a*b``) are left alone.
+    s = re.sub(r"(?<=/)\*\w+(?=/|$)", "{param}", s)
     return s or "/"
 
 
@@ -61,12 +76,19 @@ def _after_authority(url: str) -> str | None:
     return url[scheme + 3 :] if scheme >= 0 else None
 
 
+# A string literal opening with `?` inside an interpolation: a query suffix.
+# The quote must open a literal, so `a=="x"?b:c` (a closing quote) is not one.
+_QUERY_LITERAL_RE = re.compile(r"""(?:^|[\s?:(,=+|&])[`'"]\?""")
+
+
 def flatten_interpolations(path: str) -> str:
     """*path* with each ``${...}`` holding braces of its own reduced to ``${expr}``.
 
     ``/rate/${format(d, F, { in: utc })}`` is one parameter segment; the
     brace-free patterns of :func:`normalize_http_path` would stop inside it.
     An unbalanced interpolation is left for :func:`is_unusable_consumer_path`.
+    A last hole holding a literal that starts with ``?``
+    (`` ${q ? `?${q}` : ""} ``) is the query string, so the path ends before it.
     """
     out: list[str] = []
     pos = 0
@@ -76,6 +98,8 @@ def flatten_interpolations(path: str) -> str:
             break
         inner = path[start + 2 : end]
         out.append(path[pos:start])
+        if end == len(path) - 1 and _QUERY_LITERAL_RE.search(inner):
+            return "".join(out)
         out.append("${expr}" if "{" in inner else path[start : end + 1])
         pos = end + 1
     out.append(path[pos:])
@@ -187,6 +211,27 @@ def is_unusable_consumer_path(path: str) -> bool:
         return True
     segments = [s for s in path.split("/") if s]
     return not any(s != "{param}" for s in segments)
+
+
+# Hosts that name the local machine, not a specific service. A consumer URL
+# pointing here carries no service identity (the matcher resolves it by path).
+LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+
+
+def names_a_target(host: str | None, base_token: str, bound_bases: Collection[str] = ()) -> bool:
+    """True when a consumer URL carries something that can place it on a service.
+
+    A literal host other than the local machine is that evidence. A base
+    placeholder is only when the dialect read its name from a binding
+    (*bound_bases*, e.g. the env keys a Go ``mustMapEnv`` fills): in
+    ``${endpoint}`` the name is a local variable and says nothing about where
+    the call goes. A path alone is never enough: ``/`` is served by nearly
+    every service, so a root call with neither would link anywhere.
+    """
+    if host is not None and host not in LOCALHOST_HOSTS:
+        return True
+    ident = base_token_identifier(base_token)
+    return bool(ident) and ident in bound_bases
 
 
 def consumer_meta(

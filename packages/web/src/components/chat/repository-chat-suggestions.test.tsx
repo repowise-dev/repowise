@@ -88,12 +88,44 @@ describe("the page tier the provider fetches", () => {
     });
   });
 
-  it("does not ask when the route names no target", async () => {
-    pathname = "/repos/r1/overview";
+  it("does not ask on the full chat page", async () => {
+    pathname = "/repos/r1/chat";
     renderShell();
 
     await waitFor(() => expect(shown()).toBe("none"));
     expect(getChatSuggestions).not.toHaveBeenCalled();
+  });
+
+  it("leads a page with no target's static questions with its measured ones", async () => {
+    pathname = "/repos/r1/hotspots";
+    getChatSuggestions.mockResolvedValue({
+      suggestions: [{ text: "Chart the 40 hotspot files by package", source: "page" }],
+    });
+    renderShell();
+
+    await waitFor(() =>
+      expect(shown()).toBe(
+        "Chart the 40 hotspot files by package|Top 10 files by bug fixes, rest as Other|Explain the highest-risk result in plain language",
+      ),
+    );
+    expect(getChatSuggestions).toHaveBeenCalledWith("r1", { kind: "risk" });
+  });
+
+  it("keeps the page's chip count when two measured chips lead", async () => {
+    pathname = "/repos/r1/hotspots";
+    getChatSuggestions.mockResolvedValue({
+      suggestions: [
+        { text: "Chart the 40 hotspot files by package", source: "page" },
+        { text: "Top 10 files by bug fixes, rest as Other", source: "page" },
+      ],
+    });
+    renderShell();
+
+    await waitFor(() =>
+      expect(shown()).toBe(
+        "Chart the 40 hotspot files by package|Top 10 files by bug fixes, rest as Other|Explain the highest-risk result in plain language",
+      ),
+    );
   });
 
   it("leaves the static tier standing when the page measured nothing", async () => {

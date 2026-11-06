@@ -129,3 +129,15 @@ def test_pnpm_workspace_deps_not_external(tmp_path):
     names = {r.name for r in extract_external_systems(tmp_path)}
     assert names == {"vitest", "zod"}
 
+
+
+def test_discovery_skips_manifests_git_ignores(tmp_path):
+    """A manifest git status cannot see declares nothing: local worktrees, scratch dirs."""
+    (tmp_path / ".gitignore").write_text(".claude/\nscratch.json\n", encoding="utf-8")
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("local-stash/\n", encoding="utf-8")
+    _write(tmp_path, "package.json", {"dependencies": {"react": "^18"}})
+    _write(tmp_path, ".claude/worktrees/x/package.json", {"dependencies": {"lodash": "^4"}})
+    _write(tmp_path, "local-stash/demo/package.json", {"dependencies": {"remotion": "^4"}})
+    names = {r.name for r in extract_external_systems(tmp_path)}
+    assert names == {"react"}

@@ -83,7 +83,7 @@ class Grounding:
                 "role": "tool",
                 "tool_call_id": self.tool_id,
                 "name": self.tool_name,
-                "content": json.dumps(self.result),
+                "content": json.dumps(self.result, default=str),
             },
         ]
 

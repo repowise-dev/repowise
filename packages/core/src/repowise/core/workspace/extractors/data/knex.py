@@ -19,11 +19,13 @@ import re
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext, line_at
 from ..calls import Call, call_chain, call_sites, receiver_at
 from ..langs import JS_TS
 from ..strings import Arg, match_paren
-from .dialect import ALTER_CONFIDENCE, EXPLICIT_CONFIDENCE, dedup_consumers, dedup_emit
+from .dialect import dedup_consumers, dedup_emit
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -79,11 +81,9 @@ def _verb(links: list[str]) -> str:
 class KnexDialect:
     name = "knex"
     extensions = JS_TS
+    requires = ("knex", "Knex")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        content = ctx.content
-        if "knex" not in content and "Knex" not in content:
-            return []
         return self._migrations(ctx) + self._queries(ctx)
 
     def _migrations(self, ctx: ScanContext) -> list[Contract]:
@@ -99,8 +99,7 @@ class KnexDialect:
                     continue
                 table = f"{schemas[0]}.{table}"
             kind = _SCHEMA_OPS[m.group("op")]
-            confidence = EXPLICIT_CONFIDENCE if kind == "create" else ALTER_CONFIDENCE
-            found[kind].append((table, confidence, line_at(ctx.content, m.start())))
+            found[kind].append((table, ContractOrigin.DDL, line_at(ctx.content, m.start())))
         return dedup_emit(ctx, self.name, found["create"], schema="create") + dedup_emit(
             ctx, self.name, found["alter"], schema="alter"
         )

@@ -168,6 +168,23 @@ def test_a_secret_that_predates_the_change_is_not_blamed_on_it(repo):
     assert _scan(repo).findings == []
 
 
+def test_a_nul_byte_inside_a_patch_does_not_split_its_commit(repo):
+    # Past git's 8000-byte binary sniff, so the NUL lines appear in the patch.
+    pad = "# pad\n" * 1500
+    _write(repo, "sep.ts", f'{pad}const SEP = "\0";\nexport {{ SEP }};\n')
+    _write(repo, "use.ts", "export const n = 1;\n")  # a file after it in the same patch
+    _commit(repo, "add a NUL line")
+    _write(repo, "sep.ts", f"{pad}export {{}};\n")
+    _commit(repo, "remove it")
+    _write(repo, "cfg.py", f"AWS = '{KEY}'\n")
+    _commit(repo, "add key")
+    _write(repo, "cfg.py", "AWS = None\n")
+    _commit(repo, "remove key")
+    scan = _scan(repo)
+    assert scan.commits_scanned == 4
+    assert _kinds(scan) == [("aws_access_key", 1, True)]
+
+
 def test_code_smells_in_intermediate_commits_do_not_count(repo):
     _write(repo, "tmp.py", "eval('1')\n")
     _commit(repo, "smell")
@@ -437,6 +454,28 @@ def test_a_shallow_cut_on_the_base_side_refuses(repo, tmp_path):
 def test_a_path_git_does_not_have_raises():
     with pytest.raises(security_gate.MissingObjectError):
         security_gate._read_blobs(".", ["HEAD:no/such/file-anywhere.py"])
+
+
+def test_read_blobs_missing_object_raises():
+    """security_gate._read_blobs fails closed with MissingObjectError on a missing object."""
+    with pytest.raises(security_gate.MissingObjectError, match=r"git has no object for 'HEAD:nope\.py'"):
+        security_gate._read_blobs(".", ["HEAD:nope.py"])
+
+
+def test_read_blobs_ambiguous_object_raises(monkeypatch: pytest.MonkeyPatch):
+    """security_gate._read_blobs fails closed with MissingObjectError on an ambiguous object."""
+    def _mock_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"deadbeef ambiguous\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    with pytest.raises(security_gate.MissingObjectError, match=r"unparseable header"):
+        security_gate._read_blobs(".", ["deadbeef"])
+
 
 
 def test_sarif_suppresses_the_baseline_and_drops_history_lines():

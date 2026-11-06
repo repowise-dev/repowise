@@ -50,8 +50,10 @@ import {
   isWatchOnlyBiomarker,
 } from "./biomarker-glossary";
 import { buildAiPrompt } from "./ai-prompt-builder";
+import { EFFORT_LABEL } from "./labels";
 import { SEVERITY_LABEL, type Severity } from "./tokens";
 import type { CodeHealthAdapter } from "./code-health-adapter";
+import { formatNumber } from "../lib/format";
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -71,13 +73,6 @@ const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 function lowestSeverity(picked: Severity[]): Severity {
   return SEVERITIES.filter((s) => picked.includes(s)).pop() ?? "low";
 }
-
-const EFFORT_LABEL: Record<string, string> = {
-  S: "Small (≤40 NLOC)",
-  M: "Medium (≤150 NLOC)",
-  L: "Large (≤400 NLOC)",
-  XL: "Extra large (>400 NLOC)",
-};
 
 export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   const { cacheKey } = adapter;
@@ -409,14 +404,14 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
           </h3>
           {queue && !queueValidating ? (
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {total.toLocaleString()} {total === 1 ? "file" : "files"}
+              {formatNumber(total)} {total === 1 ? "file" : "files"}
               {findingTotal != null
-                ? ` · ${findingTotal.toLocaleString()} ${
+                ? ` · ${formatNumber(findingTotal)} ${
                     findingTotal === 1 ? "finding" : "findings"
                   }`
                 : ""}
               {history === "exclude" && historyHidden > 0
-                ? ` · ${historyHidden.toLocaleString()} ${
+                ? ` · ${formatNumber(historyHidden)} ${
                     historyHidden === 1 ? "file" : "files"
                   } with only history signals hidden`
                 : ""}
@@ -615,7 +610,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
             <EmptyState
               tone="positive"
               title="No open findings"
-              description={`Health was scored${overview.summary.file_count ? ` across ${overview.summary.file_count.toLocaleString()} files` : ""} and none carries an open finding. New work appears here after the next index update.`}
+              description={`Health was scored${overview.summary.file_count ? ` across ${formatNumber(overview.summary.file_count)} files` : ""} and none carries an open finding. New work appears here after the next index update.`}
             />
           )
         ) : (
@@ -692,8 +687,8 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
 
             <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
               <span>
-                Showing {shownFrom.toLocaleString()}–{shownTo.toLocaleString()} of{" "}
-                {total.toLocaleString()} files
+                Showing {formatNumber(shownFrom)}–{formatNumber(shownTo)} of{" "}
+                {formatNumber(total)} files
               </span>
               <div className="flex gap-1">
                 <Button

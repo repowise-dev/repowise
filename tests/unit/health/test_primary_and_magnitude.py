@@ -121,7 +121,7 @@ def test_primary_finding_lets_a_function_worth_breaking_up_lead() -> None:
         return row
 
     condition = sized("complex_conditional", "run", 0.98, operator_count=7)
-    brain = sized("brain_method", "run", 0.37, ccn=279, nloc=1354, max_nesting=5)
+    brain = sized("large_method", "run", 0.37, ccn=279, nloc=1354, max_nesting=5)
     medium = sized("complex_method", "helper", 0.5, ccn=45, nloc=120, max_nesting=3)
     small = sized("complex_method", "tiny", 0.2, ccn=12, nloc=20)
     assert primary_finding([condition, small, medium, brain]) is brain
@@ -132,5 +132,5 @@ def test_primary_finding_lets_a_function_worth_breaking_up_lead() -> None:
     dispatch = sized("complex_method", "route", 0.3, ccn=45, nloc=120, dispatch_share=0.9)
     assert primary_finding([condition, dispatch]) is condition
     # Nor does a function a constant-false flag switches off.
-    gated = sized("brain_method", "off", 0.3, ccn=279, nloc=1354, gated_off=True)
+    gated = sized("large_method", "off", 0.3, ccn=279, nloc=1354, gated_off=True)
     assert primary_finding([condition, gated]) is condition

@@ -151,3 +151,89 @@ def test_evidence_past_the_read_cap_leaves_unmatched_figures_not_checked(monkeyp
         "figures_unverified": 0,
         "figures_not_checked": 1,
     }
+
+
+_COUNTS = [
+    (
+        "a1",
+        {
+            "total": 505,
+            "by_category": {
+                "fix": 320, "feature": 115, "refactor": 36, "docs": 15, "test": 11, "chore": 7,
+                "other": 1,
+            },
+            "agent": 254,
+            "unknown": 251,
+            "files": 12,
+            "functions": 40,
+            "modules": 3,
+            "files_changed": 10,
+            "owners": 2,
+            "tracked": 4,
+        },
+    )
+]
+
+
+def _derived(answer: str) -> list[tuple[str, bool, bool]]:
+    return [(f.text, f.verified, f.derived) for f in check_figures(answer, _COUNTS).figures]
+
+
+def _flag(answer: str, figure: str) -> tuple[bool, bool]:
+    return next((v, d) for t, v, d in _derived(answer) if t == figure)
+
+
+_WALK_TABLE = """Total: 505 changes
+
+| Category | Changes | Share |
+|---|---|---|
+| Fix | 320 | 63.4% |
+| Feature | 115 | 22.8% |
+| Refactor | 36 | 7.1% |
+| Docs | 15 | 3.0% |
+| Test | 11 | 2.2% |
+| Chore | 7 | 1.4% |
+| Other | 1 | 0.2% |
+"""
+
+
+def test_the_walks_share_column_is_derived():
+    shares = [(t, v) for t, v, _ in _derived(_WALK_TABLE) if t.endswith("%")]
+    assert shares and all(v for _, v in shares), shares
+    assert _flag(_WALK_TABLE, "63.4%") == (True, True)
+    assert _flag(_WALK_TABLE, "0.2%") == (True, True)
+    assert check_figures(_WALK_TABLE, _COUNTS).diagnostics()["figures_derived"] >= 2
+
+
+def test_a_ratio_written_as_its_two_terms_is_derived():
+    assert _flag("Provenance was available for 254 of 505 changes (50.3%).", "50.3%") == (True, True)
+    assert _flag("254 out of 505, or 50%.", "50%") == (True, True)
+
+
+def test_a_sum_written_out_is_derived():
+    assert _flag("Fix and feature: 320 + 115 = 435.", "435") == (True, True)
+    assert _flag("320 + 115, 435 in all.", "435") == (True, True)
+
+
+@pytest.mark.parametrize(
+    ("answer", "figure"),
+    [
+        # Two matched numbers that divide to the figure, not written as a ratio.
+        ("It changed 12 files and 40 functions; 30% of them are hotspots.", "30%"),
+        ("It changed 12 files and 40 functions, 30% of them hotspots.", "30%"),
+        # Coincidental small integers.
+        ("There are 2 owners and 4 tracked files, so 50% is covered.", "50%"),
+        # A total that is not the sum written out.
+        ("10 files in 3 modules, 13 total.", "13"),
+        # The terms sit in another clause.
+        ("Total 505.\nFix: 320, or 63%.", "63%"),
+        ("Total: 505.\nFix had 320. That is 63.4% of the work.", "63.4%"),
+        # A wrong share, and a share whose terms are not held.
+        ("254 of 505 changes (41.0%).", "41.0%"),
+        ("77 of 505 changes (15.2%).", "15.2%"),
+        # One table row agreeing with a total is not a column.
+        ("Total: 4\n\n| a | 2 | 50% |\n| b | 1 | 10% |", "50%"),
+    ],
+)
+def test_a_figure_without_its_working_is_still_flagged(answer, figure):
+    assert _flag(answer, figure) == (False, False)

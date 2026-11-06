@@ -62,7 +62,7 @@ def _body_carries_decision(subject: str, body: str) -> bool:
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
+__all__ = ["DECAY_REFRESH_KEYS", "decay_meta", "index_file", "new_meta"]
 
 # The anchor-dependent window/decay fields: the only git-metadata columns that
 # recover as the repo's newest-commit anchor advances. An incremental update
@@ -250,7 +250,7 @@ def _add_own_churn(
 ) -> set[str]:
     """Add the churn of rows naming this file to *current*; return every changed path.
 
-    A rename row adds both of its names to *known_paths*.
+    A rename row naming one of this file's paths adds its other name to *known_paths*.
     """
     changed_paths: set[str] = set()
     for line in numstat_lines:
@@ -313,6 +313,7 @@ def index_file(
     trace_index: Any | None = None,
     history_only: bool = False,
     forge: ForgeKind = ForgeKind.GENERIC,
+    shallow_roots: frozenset[str] = frozenset(),
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -331,6 +332,12 @@ def index_file(
 
     *forge* is the repo's forge, read first when a commit message names the
     change it merged.
+
+    *shallow_roots* are the commits a shallow clone cut. Git shows each as
+    adding every file it holds, so they still count as commits here but credit
+    no author, are never a key commit and add no churn. A file whose history
+    reaches one is marked ``commit_count_capped``: its first commit is where
+    the clone's history starts, not when the file was made.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
@@ -359,23 +366,24 @@ def index_file(
         return meta
 
     meta["commit_count_total"] = len(commits)
-    meta["commit_count_capped"] = len(commits) >= commit_limit
+    authored = _authored(commits, shallow_roots)
+    meta["commit_count_capped"] = _history_capped(commits, authored, commit_limit)
 
     # Each step writes its fields in turn, so a failure keeps the fields
     # the earlier steps already wrote.
     try:
-        _add_span(meta, commits, now)
-        authors = _Authors.tally(commits, ninety_days_ago_ts)
-        _add_windows(meta, commits, ninety_days_ago_ts, thirty_days_ago_ts)
+        _add_span(meta, commits, authored, now)
+        authors = _Authors.tally(authored, ninety_days_ago_ts)
+        _add_windows(meta, authored, ninety_days_ago_ts, thirty_days_ago_ts)
         _add_ownership(meta, authors)
         meta["is_stable"] = _is_stable(meta)
         if history_only:
             return meta
         _add_agent_rollup(meta, commits)
-        meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
+        meta["temporal_hotspot_score"] = _temporal_hotspot_score(authored, now)
         if include_blame:
             _add_blame_ownership(meta, repo, repo_path, now, authors)
-        _add_commit_messages(meta, commits, forge)
+        _add_commit_messages(meta, authored, forge)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
             meta["original_path"] = orig_path
@@ -385,20 +393,67 @@ def index_file(
     return meta
 
 
+def _authored(commits: list[_CommitRec], shallow_roots: frozenset[str]) -> list[_CommitRec]:
+    """*commits* without a shallow clone's cut commits, which changed no file here."""
+    if not shallow_roots:
+        return commits
+    return [c for c in commits if c.sha not in shallow_roots]
+
+
+def _history_capped(
+    commits: list[_CommitRec], authored: list[_CommitRec], commit_limit: int
+) -> bool:
+    """Whether older history is missing: the commit cap was hit or a shallow clone cut it."""
+    return len(commits) >= commit_limit or len(authored) < len(commits)
+
+
+def decay_meta(
+    file_path: str,
+    commits: list[_CommitRec],
+    as_of_ts: float | None,
+    shallow_roots: frozenset[str] = frozenset(),
+) -> dict:
+    """A code file's window and decay fields, as :func:`index_file` computes them.
+
+    The idle refresh keeps only :data:`DECAY_REFRESH_KEYS`, so it skips the
+    span, ownership, provenance and commit-message work it would discard.
+    """
+    now = _window_anchor(as_of_ts)
+    meta = new_meta(file_path)
+    commits = _authored(commits, shallow_roots)
+    if commits:
+        _add_windows(
+            meta,
+            commits,
+            (now - timedelta(days=90)).timestamp(),
+            (now - timedelta(days=30)).timestamp(),
+        )
+        meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
+    return meta
+
+
 def _window_anchor(as_of_ts: float | None) -> datetime:
     if as_of_ts is not None:
         return datetime.fromtimestamp(as_of_ts, tz=UTC)
     return datetime.now(UTC)
 
 
-def _add_span(meta: dict[str, Any], commits: list[_CommitRec], now: datetime) -> None:
+def _add_span(
+    meta: dict[str, Any], commits: list[_CommitRec], authored: list[_CommitRec], now: datetime
+) -> None:
+    """First commit and age from every commit, last commit from *authored* ones.
+
+    A shallow clone's cut commit is where the visible history starts, but it
+    changed nothing here, so it is never the file's last change.
+    """
     timestamps = [c.ts for c in commits if c.ts > 0]
     if timestamps:
         first_ts = min(timestamps)
-        last_ts = max(timestamps)
         meta["first_commit_at"] = datetime.fromtimestamp(first_ts, tz=UTC)
-        meta["last_commit_at"] = datetime.fromtimestamp(last_ts, tz=UTC)
         meta["age_days"] = (now - datetime.fromtimestamp(first_ts, tz=UTC)).days
+    changed = [c.ts for c in authored if c.ts > 0]
+    if changed:
+        meta["last_commit_at"] = datetime.fromtimestamp(max(changed), tz=UTC)
 
 
 def _add_windows(
@@ -465,6 +520,7 @@ class _Authors:
             "name": name,
             "email": self.emails.get(name, ""),
             "commit_count": count,
+            "recent_commit_count": self.recent_counts.get(name, 0),
         }
         if name in self.last_ts:
             entry["last_commit_ts"] = self.last_ts[name]

@@ -16,9 +16,14 @@ from repowise.cli.ci import (
     CI_FORMATS,
     EXIT_GATE_FAILED,
     SHALLOW_CLONE_HINT,
+    CannotEvaluateError,
     append_step_summary,
+    baseline_growth,
     cannot_evaluate,
     ci_notices,
+    ci_revspec,
+    report_baseline_growth,
+    write_gate_summary,
 )
 from repowise.cli.helpers import console, repo_index_session, resolve_command_target, run_async
 from repowise.cli.output import emit_json, emit_refusal, format_option
@@ -48,8 +53,7 @@ def _repo_path(path: str | None, repo_alias: str | None, no_workspace: bool, fmt
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(ci_notices(fmt), command="doc-drift")
-    return target.single_repo_path().resolve()
+    return target.narrow(ci_notices(fmt), command="doc-drift").resolve()
 
 
 async def _read(root: Path, *, min_confidence: float | None, kinds: tuple[str, ...]) -> Any:
@@ -231,6 +235,8 @@ def _emit(
             for line in render.render_github_annotations(findings, gate=gate):
                 click.echo(line)
             append_step_summary(markdown)
+            if gate is not None:
+                write_gate_summary(render.gate_summary(gate))
     else:
         _render(payload)
         if gate is not None:
@@ -297,6 +303,7 @@ def _run_check(
     baseline_path: Path | None,
     write_baseline_path: Path | None,
     since: str | None = None,
+    fail_on_growth: bool = False,
 ) -> None:
     from repowise.cli.helpers import silence_logs_for_machine_output_until_close
     from repowise.core.analysis.doc_drift.gate import evaluate_gate
@@ -326,6 +333,7 @@ def _run_check(
         return
 
     baseline = _read_check_baseline(baseline_path, fmt)
+    grown = _baseline_growth(root, baseline_path, since, fmt) if fail_on_growth else None
     gate = evaluate_gate(findings, fail_on=fail_on, baseline=baseline)
     payload = _payload(root, findings, min_confidence)
     payload.update(
@@ -336,8 +344,11 @@ def _run_check(
     )
     if scope is not None:
         payload["scope"] = scope
+    if grown is not None:
+        payload["baseline_growth"] = grown
     _emit(fmt, payload, gate=gate, report=report, accepted=baseline or frozenset())
-    if not gate.passed:
+    report_baseline_growth(fmt, baseline_path, grown)
+    if not gate.passed or grown:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
 
@@ -377,6 +388,21 @@ def _read_check_baseline(path: Path | None, fmt: str) -> frozenset[str] | None:
         return read_baseline(path)
     except BaselineError as exc:
         cannot_evaluate(fmt, "baseline_unreadable", str(exc))
+
+
+def _baseline_growth(root: Path, path: Path | None, since: str | None, fmt: str) -> list[dict]:
+    """The entries *path* adds over its base: *since*'s, else the CI target branch's."""
+    from repowise.core.analysis.change_risk.features import split_revspec
+
+    if path is None:  # the command refuses the flag without --baseline
+        return []
+    try:
+        revspec = ci_revspec(str(root), None if since in (None, "auto") else since)
+        if split_revspec(revspec) is None:
+            revspec = f"{revspec}...HEAD"  # a bare ref, as --since reads it
+        return baseline_growth(root, path, revspec)
+    except CannotEvaluateError as exc:
+        cannot_evaluate(fmt, exc.code, str(exc))
 
 
 @click.command("doc-drift")
@@ -435,6 +461,17 @@ def _read_check_baseline(path: Path | None, fmt: str) -> frozenset[str] | None:
     help="With --check, record the current findings to this file and exit 0.",
 )
 @click.option(
+    "--fail-on-baseline-growth",
+    "fail_on_growth",
+    is_flag=True,
+    default=False,
+    help=(
+        "With --baseline, exit 1 when the file lists a finding the same file at the "
+        "change's base does not (the --since base, else the CI target branch). A "
+        "baseline the base lacks is new and passes."
+    ),
+)
+@click.option(
     "--since",
     metavar="REVSPEC",
     default=None,
@@ -464,6 +501,7 @@ def doc_drift_command(
     fail_on_confidence: float,
     baseline_path: Path | None,
     write_baseline_path: Path | None,
+    fail_on_growth: bool,
     since: str | None,
     repo_alias: str | None,
     no_workspace: bool,
@@ -474,6 +512,8 @@ def doc_drift_command(
         raise click.UsageError("--baseline and --write-baseline require --check.")
     if since is not None and not check:
         raise click.UsageError("--since requires --check.")
+    if fail_on_growth and (baseline_path is None or write_baseline_path is not None):
+        raise click.UsageError("--fail-on-baseline-growth needs --baseline, not --write-baseline.")
     if since is not None and write_baseline_path:
         raise click.UsageError("--write-baseline records every finding; drop --since.")
     root = _repo_path(path, repo_alias, no_workspace, fmt)
@@ -489,6 +529,7 @@ def doc_drift_command(
             baseline_path=baseline_path,
             write_baseline_path=write_baseline_path,
             since=since,
+            fail_on_growth=fail_on_growth,
         )
         return
 

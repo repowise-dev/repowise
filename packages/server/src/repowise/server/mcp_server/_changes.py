@@ -1,8 +1,9 @@
 """Change Records on the MCP surface.
 
 ``change:<id>`` cards for get_context, recent changes per file behind
-``include=["changes"]`` (get_context, get_risk) and the get_overview change
-summary. All of it is opt-in.
+``include=["changes"]`` (get_context, get_risk), ranked suspects behind
+get_context's ``include=["suspects"]`` and the get_overview change summary.
+All of it is opt-in.
 
 Provenance follows :mod:`repowise.core.attribution`: three-state, coverage
 beside every share, unknown never counted as human, and nothing about AI while
@@ -247,14 +248,17 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
     The window ends at the newest merged change, so an idle repository still
     shows its last stretch of work; ``window`` names both ends.
     """
-    until = (
+    oldest, until = (
         await session.execute(
-            select(func.max(Change.merged_at)).where(Change.repository_id == repository.id)
+            select(func.min(Change.merged_at), func.max(Change.merged_at)).where(
+                Change.repository_id == repository.id
+            )
         )
-    ).scalar()
+    ).one()
     if until is None:
         return {"total": 0}
     until = until if until.tzinfo else until.replace(tzinfo=UTC)
+    oldest = oldest if oldest.tzinfo else oldest.replace(tzinfo=UTC)
     since = until - timedelta(days=OVERVIEW_WINDOW_DAYS)
     rows = (
         await session.execute(
@@ -266,12 +270,17 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
     weeks: Counter[str] = Counter(
         _week(m if m.tzinfo else m.replace(tzinfo=UTC)) for m, _, _ in rows
     )
-    by_week, cursor = [], datetime.fromisoformat(_week(since)).date()
+    window: dict[str, Any] = {"days": OVERVIEW_WINDOW_DAYS, "since": _iso(since), "until": _iso(until)}
+    # The index keeps a bounded commit window: weeks before its oldest change
+    # are unknown, not zero, so the weekly series starts there.
+    if oldest > since:
+        window["history_from"] = _iso(oldest)
+    by_week, cursor = [], datetime.fromisoformat(_week(max(since, oldest))).date()
     while cursor <= until.date():
         by_week.append({"week": cursor.isoformat(), "changes": weeks.get(cursor.isoformat(), 0)})
         cursor += timedelta(days=7)
     block: dict[str, Any] = {
-        "window": {"days": OVERVIEW_WINDOW_DAYS, "since": _iso(since), "until": _iso(until)},
+        "window": window,
         "total": len(rows),
         "by_category": dict(Counter(c for _, c, _ in rows).most_common()),
         "by_week": by_week,
@@ -284,3 +293,38 @@ async def overview_changes(session: Any, repository: Any) -> dict[str, Any]:
         share = attribution_share(labels[AGENT], labels[HUMAN_ATTESTED], len(rows))
         block["provenance"] = _share_block(share, unit="changes")
     return block
+
+
+# -- get_context(include=["suspects"]) -----------------------------------------
+
+#: Suspects listed; ``candidates`` counts the whole window.
+SUSPECTS_CAP = 5
+
+
+async def suspects_block(
+    session: Any, repository: Any, targets: list[str], symptom: str | None = None
+) -> dict[str, Any]:
+    """Changes merged in the last 14 days ranked against the targets as a symptom.
+
+    File and symbol targets name the symptom's files. A typed *symptom* (issue
+    text, an error, a stack trace) is the text query as given; without one,
+    the targets' :func:`path_terms` are. A ``change:`` or ``component:``
+    target is not part of the symptom.
+    """
+    from repowise.core.suspects import Symptom
+    from repowise.core.suspects.index import find_suspects, repo_terms
+    from repowise.core.suspects.signals import path_terms
+
+    symptom_targets = [t for t in targets if not is_change_target(t) and not t.startswith("component:")]
+    files = tuple(dict.fromkeys(t.split("::", 1)[0] for t in symptom_targets))
+    if not (symptom and symptom.strip()):
+        quiet = repo_terms(repository.local_path)
+        symptom = " ".join(path_terms(t, quiet) for t in symptom_targets)
+    # ``prepare`` reads a stack trace out of the text when no trace is given.
+    return await find_suspects(
+        session,
+        repository.id,
+        repository.local_path,
+        Symptom(text=symptom, files=files),
+        limit=SUSPECTS_CAP,
+    )

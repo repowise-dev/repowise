@@ -11,9 +11,9 @@ Cursor's ``.cursor/rules/*.mdc`` is the second, and a second copy of this prose
 is how the plugin skills forked: the two drift a sentence at a time and nothing
 detects it.
 
-Hosts differ in how the block is *framed* — Codex appends it to a file the user
-owns, Cursor gets a file repowise creates outright with YAML frontmatter on top —
-so the framing stays with each target and only the body is shared.
+Hosts differ in how the block is *framed*: Codex appends it to a file the user
+owns, Cursor gets a file repowise creates outright with YAML frontmatter on top.
+The framing stays with each target and only the body is shared.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ DISTILL_SECTION_HEADING = "### Output Distillation"
 
 DISTILL_SECTION = f"""{DISTILL_SECTION_HEADING}
 
-- Prefer `repowise distill <cmd>` for noisy commands — test runs, builds, `git status`/`log`/`diff`, searches, file listings. It runs the command unchanged (exit code preserved) and prints a compact, errors-first rendering; every error line survives.
-- Output may contain a marker like `[repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]`. The omitted content is fully preserved — run `repowise expand <ref>` to retrieve it, or `repowise expand <ref> -q <regex>` for just the matching lines.
+- Prefer `repowise distill <cmd>` for noisy commands: test runs, builds, `git status`/`log`/`diff`, searches, file listings. It runs the command unchanged (exit code preserved) and prints a compact, errors-first rendering; every error line survives.
+- Output may contain a marker like `[repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]`. The omitted content is fully preserved: run `repowise expand <ref>` to retrieve it, or `repowise expand <ref> -q <regex>` for just the matching lines.
 - Never re-run a command to see omitted output; expand the marker instead.
-- For structure-level questions about a large indexed file ("what's in here", "which function handles X"), `get_context(["path"], include=["skeleton"])` returns the file with bodies elided — every signature plus the bodies of the most central symbols — at a fraction of the cost of a full Read."""
+- For structure-level questions about a large indexed file ("what's in here", "which function handles X"), `get_context(["path"], include=["skeleton"])` returns the file with bodies elided (every signature plus the bodies of the most central symbols) at a fraction of the cost of a full Read."""

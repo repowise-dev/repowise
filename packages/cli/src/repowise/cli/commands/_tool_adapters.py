@@ -85,22 +85,7 @@ def resolve_indexed_repo(
         no_workspace_flag=no_workspace,
         repo_alias=repo_alias,
     )
-    target.notice(_notices(fmt), command=command)
-
-    if target.is_workspace:
-        if target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_path = picked
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_path = primary
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
+    repo_path = target.narrow(_notices(fmt), command=command)
 
     from repowise.cli.helpers import REPOWISE_DIR
 

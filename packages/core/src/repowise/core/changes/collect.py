@@ -9,7 +9,12 @@ and :func:`change_evidence` does both. All end in
 A review costs seconds per change (the health comparison parses both sides),
 so it is computed on first read, never during an index or update, and kept:
 a merged change's checklist is a snapshot stamped with ``generated_at`` and
-the ``index_commit`` it read, rebuilt only on request (``refresh``).
+the ``index_commit`` it read, rebuilt only on request (``refresh``). The
+``outcomes`` item is the exception: it describes history after the change, so
+a kept checklist has that one item rebuilt when HEAD moves
+(:func:`with_current_outcomes`), which costs one history read per HEAD.
+Components and owners are resolved again on read when the component catalog
+changed since the checklist was kept (:func:`with_current_components`).
 """
 
 from __future__ import annotations
@@ -18,23 +23,32 @@ import asyncio
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from repowise.core.changes.evidence import (
     EVIDENCE_SCHEMA_VERSION,
+    KINDS,
+    SUMMARY_SKIPPED_KINDS,
     ChangeEvidence,
     EvidenceInputs,
+    EvidenceItem,
     Unavailable,
     build_change_evidence,
 )
+from repowise.core.components.catalog import catalog_digest
 from repowise.core.ownership.codeowners import (
     CodeownersMatcher,
     parse_codeowners,
     read_codeowners,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.persistence.crud import ChangeFilter
 
 logger = structlog.get_logger(__name__)
 
@@ -160,9 +174,10 @@ async def evidence_for_revspec(
             decisions=gone,
             provenance=gone,
         )
-        index_commit = None
+        index_commit = digest = None
     else:
         shas = await asyncio.to_thread(_change_commits, root, revspec, row)
+        digest = await asyncio.to_thread(catalog_digest, root)
         inputs = await gather_inputs(
             session,
             repo_id,
@@ -172,9 +187,12 @@ async def evidence_for_revspec(
             row=row,
         )
         index_commit = getattr(await get_repository(session, repo_id), "head_commit", None)
-    return build_change_evidence(
+    evidence = build_change_evidence(
         bundle, inputs, change_id=change_id, revspec=revspec, index_commit=index_commit
     )
+    if isinstance(inputs.components, Unavailable):
+        digest = None  # not resolved: the next read resolves again
+    return replace(evidence, catalog_digest=digest)
 
 
 # -- stored changes -------------------------------------------------------------
@@ -204,12 +222,13 @@ async def save_evidence(
     """Keep *evidence* on its change row."""
     from sqlalchemy import update
 
+    from repowise.core.persistence.crud.changes import dump_evidence
     from repowise.core.persistence.models import Change
 
     await session.execute(
         update(Change)
         .where(Change.repository_id == repo_id, Change.change_id == change_id)
-        .values(evidence_json=json.dumps(evidence.to_dict()))
+        .values(evidence_json=dump_evidence(evidence.to_dict()))
     )
 
 
@@ -222,14 +241,35 @@ async def change_evidence(
     refresh: bool = False,
     risk: Any = None,
     health: Any = None,
+    key: OutcomesKey | None = None,
+    catalog: str | None = None,
 ) -> ChangeEvidence:
-    """The stored change's checklist: the kept one, or built and kept now."""
+    """The stored change's checklist: the kept one, or built and kept now.
+
+    A kept one whose outcomes were read at another HEAD has that item read
+    again and merged into what is stored (:func:`keep_outcomes`). *key* is the
+    HEAD and window to read at, when the caller already has them. A kept one
+    resolved under another component catalog has its components resolved
+    again (:func:`with_current_components`); *catalog* is the catalog's
+    digest now, when the caller already has it.
+    """
+    from repowise.core.persistence.crud.changes import dump_evidence
+
     if not refresh and (cached := cached_evidence(row)) is not None:
-        return cached
+        key = key or await outcomes_key(repo_root)
+        if await outcomes_stale(repo_root, cached, key):
+            item = await outcomes_item(session, repo_id, repo_root, row, key)
+            await session.flush()
+            merged = await keep_outcomes(session, repo_id, row.change_id, item)
+            session.expire(row, ["evidence_json"])
+            cached = merged or with_item(cached, item)
+        return await with_current_components(
+            session, repo_id, repo_root, row, cached, catalog=catalog
+        )
     evidence = await build_stored_evidence(
         session, repo_id, repo_root, row, risk=risk, health=health
     )
-    row.evidence_json = json.dumps(evidence.to_dict())
+    row.evidence_json = dump_evidence(evidence.to_dict())
     await session.flush()
     return evidence
 
@@ -250,6 +290,234 @@ async def stored_change_at(
     return row if row is not None and row.head_sha == sha else None
 
 
+#: ``(HEAD sha, window days)``: what a kept ``outcomes`` item was read at.
+OutcomesKey = tuple[str, int]
+
+
+async def outcomes_key(repo_root: Path | str) -> OutcomesKey:
+    """The HEAD and window outcomes are read at now; ``""`` when there is no HEAD."""
+    from repowise.core.changes.outcomes import fix_days
+    from repowise.core.git_refs import resolve
+
+    head = await asyncio.to_thread(resolve, str(repo_root), "HEAD")
+    return head, fix_days(repo_root)
+
+
+def _stamp(item: EvidenceItem | None) -> OutcomesKey | None:
+    if item is None:
+        return None
+    stamp = item.value if isinstance(item.value, dict) else (item.details or [{}])[0]
+    return stamp.get("as_of"), stamp.get("days")
+
+
+async def outcomes_stale(
+    repo_root: Path | str, evidence: ChangeEvidence, key: OutcomesKey | None = None
+) -> bool:
+    """Whether the kept ``outcomes`` item was read at another HEAD or window,
+    or is missing (a checklist kept before the item existed)."""
+    key = key or await outcomes_key(repo_root)
+    return _stamp(evidence.item("outcomes")) != key
+
+
+async def outcomes_item(
+    session: Any, repo_id: str, repo_root: Path | str, row: Any, key: OutcomesKey
+) -> EvidenceItem:
+    """The ``outcomes`` item for the stored change *row*, read at *key*."""
+    from repowise.core.changes.evidence import _outcomes
+
+    found = await _guard(_change_outcomes(session, repo_id, Path(repo_root), row, key))
+    return _outcomes(EvidenceInputs(outcomes=found))
+
+
+def with_item(evidence: ChangeEvidence, *items: EvidenceItem) -> ChangeEvidence:
+    """*evidence* with each of *items* in place of its item of that kind, or added
+    in :data:`~.evidence.KINDS` order."""
+    new = {i.kind: i for i in items}
+    merged = [new.pop(i.kind, i) for i in evidence.items] + list(new.values())
+    rank = {kind: n for n, kind in enumerate(KINDS)}
+    merged.sort(key=lambda i: rank.get(i.kind, len(rank)))
+    return replace(evidence, items=merged)
+
+
+async def with_current_outcomes(
+    session: Any,
+    repo_id: str,
+    repo_root: Path | str,
+    row: Any,
+    evidence: ChangeEvidence,
+    *,
+    key: OutcomesKey | None = None,
+) -> ChangeEvidence:
+    """*evidence* with its ``outcomes`` item read at HEAD; the same object when it already was."""
+    key = key or await outcomes_key(repo_root)
+    if not await outcomes_stale(repo_root, evidence, key):
+        return evidence
+    item = await outcomes_item(session, repo_id, repo_root, row, key)
+    if item == evidence.item("outcomes"):
+        return evidence
+    return with_item(evidence, item)
+
+
+async def keep_outcomes(
+    session: Any, repo_id: str, change_id: str, item: EvidenceItem
+) -> ChangeEvidence | None:
+    """Merge *item* into the checklist stored now, touching no other item.
+
+    The stored checklist is read again here, so a full rebuild kept while
+    *item* was being read is not overwritten; one already holding outcomes
+    read at the same HEAD and window is left as it is. ``None`` when no
+    checklist is stored.
+    """
+    return await _merge_kept(
+        session,
+        repo_id,
+        change_id,
+        lambda stored: (
+            None if _stamp(stored.item("outcomes")) == _stamp(item) else with_item(stored, item)
+        ),
+    )
+
+
+async def _merge_kept(
+    session: Any, repo_id: str, change_id: str, merge: Any
+) -> ChangeEvidence | None:
+    """Read the checklist stored now, keep ``merge(stored)`` unless it is ``None``
+    (nothing to change), and return what is kept. ``None`` when none is stored."""
+    from sqlalchemy import select, update
+
+    from repowise.core.persistence.crud.changes import dump_evidence
+    from repowise.core.persistence.models import Change
+
+    where = (Change.repository_id == repo_id, Change.change_id == change_id)
+    raw = (await session.execute(select(Change.evidence_json).where(*where))).scalar_one_or_none()
+    stored = cached_evidence(SimpleNamespace(evidence_json=raw))
+    if stored is None:
+        return None
+    merged = merge(stored)
+    if merged is None:
+        return stored
+    await session.execute(
+        update(Change).where(*where).values(evidence_json=dump_evidence(merged.to_dict()))
+    )
+    return merged
+
+
+#: Why a kept checklist's components are not read under the catalog now.
+CATALOG_CHANGED = (
+    "not resolved against the current component catalog, and the change's file list "
+    "is not kept in full; --refresh rebuilds it"
+)
+
+
+async def components_stale(
+    repo_root: Path | str, evidence: ChangeEvidence, catalog: str | None = None
+) -> bool:
+    """Whether *evidence* was resolved under another component catalog, or before
+    the catalog was recorded on it."""
+    catalog = catalog or await asyncio.to_thread(catalog_digest, repo_root)
+    return evidence.catalog_digest != catalog
+
+
+def _stored_paths(row: Any) -> list[str] | None:
+    """The change's files as kept on its row; ``None`` when the list was capped."""
+    try:
+        files = json.loads(row.files_json or "[]")
+    except (TypeError, ValueError):
+        return None
+    if len(files) < (row.files_changed or 0):
+        return None
+    return [f["path"] for f in files if isinstance(f, dict) and f.get("path")]
+
+
+async def with_current_components(
+    session: Any,
+    repo_id: str,
+    repo_root: Path | str,
+    row: Any,
+    evidence: ChangeEvidence,
+    *,
+    catalog: str | None = None,
+) -> ChangeEvidence:
+    """*evidence* with its components and owners resolved under the catalog now.
+
+    Path globs are cheap, so a catalog edit is applied on read from the files
+    kept on the change's row, and kept. When that list was capped the catalog
+    is stamped as read: a checklist kept before digests were recorded keeps its
+    components, and one resolved under another catalog has its components item
+    kept as unknown, naming ``--refresh``.
+    """
+    catalog = catalog or await asyncio.to_thread(catalog_digest, repo_root)
+    if evidence.catalog_digest == catalog:
+        return evidence
+    paths = _stored_paths(row)
+    if paths is None:
+        return await _stamp_capped(session, repo_id, row, evidence, catalog)
+    return await _resolve_kept(session, repo_id, repo_root, row, evidence, catalog, paths)
+
+
+async def _stamp_capped(
+    session: Any, repo_id: str, row: Any, evidence: ChangeEvidence, catalog: str
+) -> ChangeEvidence:
+    """A capped checklist under *catalog*: kept, so the next read does no work."""
+    from repowise.core.changes.evidence import _unknown
+
+    item = _unknown("components_touched", "Components touched", CATALOG_CHANGED, "components")
+    # No digest: built before digests were recorded, likely under this catalog.
+    items = () if evidence.catalog_digest is None else (item,)
+    return await _keep_resolved(session, repo_id, row, evidence, catalog, items)
+
+
+async def _keep_resolved(
+    session: Any,
+    repo_id: str,
+    row: Any,
+    evidence: ChangeEvidence,
+    catalog: str,
+    items: Sequence[EvidenceItem],
+) -> ChangeEvidence:
+    """*items* merged into what is stored, stamped with *catalog*, and kept."""
+    current = replace(with_item(evidence, *items), catalog_digest=catalog)
+    await session.flush()
+    kept = await _merge_kept(
+        session,
+        repo_id,
+        row.change_id,
+        lambda stored: (
+            None
+            if stored.catalog_digest == catalog
+            else replace(with_item(stored, *items), catalog_digest=catalog)
+        ),
+    )
+    session.expire(row, ["evidence_json"])
+    return kept or current
+
+
+async def _resolve_kept(
+    session: Any,
+    repo_id: str,
+    repo_root: Path | str,
+    row: Any,
+    evidence: ChangeEvidence,
+    catalog: str,
+    paths: list[str],
+) -> ChangeEvidence:
+    """Components and owners resolved again over *paths*, and kept."""
+    from repowise.core.changes.evidence import _components as components_item
+    from repowise.core.changes.evidence import _owners as owners_item
+
+    root = Path(repo_root)
+    components = await _guard(_components(session, repo_id, root, paths))
+    owners, sources = await _guard_pair(_owners(root, paths, components))
+    code = _code_paths(paths)
+    inputs = EvidenceInputs(
+        code_paths=code, components=components, owners=owners, owner_sources=sources
+    )
+    items = (components_item(inputs), owners_item(inputs, code))
+    if isinstance(components, Unavailable):
+        return with_item(evidence, *items)  # not kept: the next read tries again
+    return await _keep_resolved(session, repo_id, row, evidence, catalog, items)
+
+
 def cached_evidence(row: Any) -> ChangeEvidence | None:
     """The kept checklist, or ``None`` when there is none in this schema."""
     raw = getattr(row, "evidence_json", None)
@@ -260,6 +528,51 @@ def cached_evidence(row: Any) -> ChangeEvidence | None:
     except (TypeError, ValueError, KeyError):
         return None
     return evidence if evidence.schema_version == EVIDENCE_SCHEMA_VERSION else None
+
+
+def evidence_summary(row: Any) -> dict[str, Any] | None:
+    """Status counts of the kept checklist, or ``None`` when none is kept.
+
+    Kinds in ``SUMMARY_SKIPPED_KINDS`` are not counted, so the list's attention
+    mark and the needs-attention filter agree on one set of rows.
+    """
+    evidence = cached_evidence(row)
+    if evidence is None:
+        return None
+    counts = {"generated_at": evidence.generated_at, "ok": 0, "attention": 0, "unknown": 0}
+    for item in evidence.items:
+        if item.kind in SUMMARY_SKIPPED_KINDS:
+            continue
+        # A status this reader does not know is not a pass.
+        counts[item.status if item.status in ("ok", "attention") else "unknown"] += 1
+    return counts
+
+
+async def list_needing_attention(
+    session: Any,
+    repo_id: str,
+    where: ChangeFilter | None = None,
+    *,
+    limit: int | None,
+    offset: int = 0,
+) -> tuple[list[Any], int]:
+    """Changes matching *where* whose kept checklist flags attention, newest
+    merged first, and their total. Reads kept checklists only, never builds one.
+    """
+    from repowise.core.persistence.crud import (
+        ChangeFilter,
+        list_attention_candidates,
+        list_changes,
+    )
+
+    # Checklists are built on first view, so the prefiltered set stays small;
+    # confirm on the parsed evidence, then page here. Ceiling: if checklists
+    # are ever built in bulk, move this filter into SQL.
+    candidates = await list_attention_candidates(session, repo_id, where)
+    ids = [r.change_id for r in candidates if (evidence_summary(r) or {}).get("attention")]
+    page = ids[offset:] if limit is None else ids[offset : offset + limit]
+    rows, _ = await list_changes(session, repo_id, ChangeFilter(change_ids=page), limit=None)
+    return rows, len(ids)
 
 
 # -- inputs -------------------------------------------------------------------
@@ -291,6 +604,13 @@ async def gather_inputs(
         consumers=consumers,
         decisions=await _guard(_decisions(session, repo_id, paths)),
         provenance=await _guard(_provenance(session, repo_id, repo_root, shas, row)),
+        outcomes=(
+            await _guard(
+                _change_outcomes(session, repo_id, repo_root, row, await outcomes_key(repo_root))
+            )
+            if row is not None
+            else Unavailable("not a merged change in the index")
+        ),
     )
 
 
@@ -351,6 +671,10 @@ async def _components(
                 "bus_factor": int(bus["value"]) if bus.get("basis") == "measured" else None,
             }
         )
+    if mine.unassigned:
+        # Resolution ran and these files belong to no component: a known answer.
+        catalog = "declared" if loaded.catalog.components else "derived"
+        rows.append({"outside": True, "source": catalog, "files": mine.unassigned})
     return rows
 
 
@@ -555,7 +879,7 @@ async def _provenance(
         return Unavailable("AI attribution is off for this repository")
     if not shas:
         return Unavailable("uncommitted work carries no commit markers")
-    stored: dict[str, tuple[str | None, str | None, int | None]] = {}
+    stored: dict[str, tuple[str | None, str | None, int | None, str | None]] = {}
     for i in range(0, len(shas), 500):
         found = await session.execute(
             select(
@@ -563,15 +887,19 @@ async def _provenance(
                 GitCommit.attribution,
                 GitCommit.agent_name,
                 GitCommit.agent_autonomy_tier,
+                GitCommit.agent_model_id,
             ).where(GitCommit.repository_id == repo_id, GitCommit.sha.in_(shas[i : i + 500]))
         )
-        for sha, attribution, agent, tier in found.tuples():
-            stored[sha] = (attribution, agent, tier)
+        for sha, attribution, agent, tier, model in found.tuples():
+            stored[sha] = (attribution, agent, tier, model)
     commits = []
     for sha in shas:
-        attribution, agent, tier = stored.get(sha, (None, None, None))
+        attribution, agent, tier, model = stored.get(sha, (None, None, None, None))
         label = commit_label(attribution, agent) if sha in stored else UNKNOWN
-        commits.append({"sha": sha, "label": label, "tier": tier if label == "agent" else None})
+        entry = {"sha": sha, "label": label, "tier": tier if label == "agent" else None}
+        if label == "agent":
+            entry.update({k: v for k, v in (("agent", agent), ("model", model)) if v})
+        commits.append(entry)
     block = None
     if row is not None and row.provenance is not None:
         block = provenance_block(
@@ -583,6 +911,50 @@ async def _provenance(
     if block is None:
         return Unavailable("no attribution was stored for these commits")
     return {**block, "commits": commits}
+
+
+async def _change_outcomes(
+    session: Any, repo_id: str, repo_root: Path, row: Any, key: OutcomesKey
+) -> dict[str, Any]:
+    """Links to the change from later history, and its files' later fix rate.
+
+    What git cannot answer reads unknown with the reason, stamped with *key*.
+    """
+    from repowise.core.changes.outcomes import (
+        OutcomeUnknownError,
+        file_fix_rate,
+        outcome_links,
+        target_of,
+    )
+    from repowise.core.git_refs import is_shallow
+    from repowise.core.persistence.crud import get_change
+
+    head, days = key
+    stamp = {"as_of": head, "days": days}
+    if not head:
+        return {**stamp, "unknown": "the repository has no HEAD commit"}
+    if await asyncio.to_thread(is_shallow, str(repo_root)):
+        return {**stamp, "unknown": "a shallow clone cuts off the history outcomes are read from"}
+    target = target_of(row)
+    try:
+        links = await asyncio.to_thread(outcome_links, repo_root, head, target)
+    except OutcomeUnknownError as exc:
+        return {**stamp, "unknown": str(exc)}
+    rows = []
+    for link in links:
+        later = await get_change(session, repo_id, link.sha)
+        rows.append({**link.to_dict(), "change_id": later.change_id if later else None})
+    try:
+        rate = await asyncio.to_thread(file_fix_rate, repo_root, head, target, days)
+        rate_unknown = None
+    except OutcomeUnknownError as exc:
+        rate, rate_unknown = None, str(exc)
+    return {
+        **stamp,
+        "links": rows,
+        "file_fix_rate": rate,
+        "file_fix_rate_unknown": rate_unknown,
+    }
 
 
 def _change_commits(repo_root: str, revspec: str | None, row: Any) -> list[str]:
@@ -607,8 +979,16 @@ __all__ = [
     "build_stored_evidence",
     "cached_evidence",
     "change_evidence",
+    "components_stale",
     "evidence_for_revspec",
     "gather_inputs",
+    "keep_outcomes",
+    "outcomes_item",
+    "outcomes_key",
+    "outcomes_stale",
     "save_evidence",
     "stored_change_at",
+    "with_current_components",
+    "with_current_outcomes",
+    "with_item",
 ]

@@ -64,6 +64,13 @@ export const matches =
   (v, p, e) => {
     if (typeof v !== "string" || !pattern.test(v)) e.push(`${p}: expected ${what}`);
   };
+export const oneOfNumbers =
+  (values: readonly number[]): Check =>
+  (v, p, e) => {
+    if (typeof v !== "number" || !values.includes(v)) {
+      e.push(`${p}: expected one of ${values.join(", ")}`);
+    }
+  };
 export const constant =
   (expected: string | number): Check =>
   (v, p, e) => {

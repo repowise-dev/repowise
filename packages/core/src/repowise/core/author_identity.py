@@ -164,6 +164,8 @@ class IdentityResolver:
         # Automation identities only; every other key is a person.
         self._kinds = kinds
         self._agents = agents
+        # key -> its member emails, built on the first ``aliases`` call.
+        self._members: dict[str, list[str]] | None = None
 
     def __call__(self, name: str | None, email: str | None) -> str:
         node = _node(name, email)
@@ -191,6 +193,19 @@ class IdentityResolver:
     def people(self) -> set[str]:
         """Every human identity the resolver was built from."""
         return set(self._names) - set(self._kinds)
+
+    def aliases(self, key: str) -> tuple[list[str], list[str]]:
+        """``(names, emails)`` folded into the identity *key*, each sorted.
+
+        The names are every display name it was seen under; the emails every
+        canonical address that resolves to it, its own key included.
+        """
+        if self._members is None:
+            self._members = defaultdict(list)
+            for node, k in self._key_of.items():
+                if not node.startswith("name:"):
+                    self._members[k].append(node)
+        return sorted(self._names.get(key, ())), sorted(self._members.get(key, ()))
 
 
 def build_identity_resolver(

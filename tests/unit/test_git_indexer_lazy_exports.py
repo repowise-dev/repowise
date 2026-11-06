@@ -44,7 +44,7 @@ def test_public_exports_are_discoverable_and_resolve_to_their_defining_modules()
         import importlib
         import repowise.core.ingestion.git_indexer as package
 
-        assert len(package.__all__) == 40
+        assert len(package.__all__) == 41
         assert set(package.__all__) == set(package._EXPORTS)
         assert set(package.__all__) <= set(dir(package))
         for name in package.__all__:

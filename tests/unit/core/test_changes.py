@@ -19,7 +19,7 @@ from repowise.core.changes import (
     in_toto_statement,
     reconstruct_changes,
 )
-from repowise.core.changes.reconstruct import change_identity, change_title
+from repowise.core.changes.reconstruct import change_identity, change_title, without_own_ref
 from repowise.core.changes.source import GitChangeMetadata
 from repowise.core.changes.store import change_provenance, refresh_changes
 from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
@@ -127,6 +127,7 @@ def test_every_merge_style_reads_back_as_one_change(history):
     squash = by_id["pr-12"]
     assert (squash.shape, squash.forge_ref, squash.commit_shas) == ("squash", "#12", [shas["squash"]])
     assert _files(squash) == {"src/a.py"} and squash.category == "feature"
+    assert not squash.title.endswith("(#12)")  # surfaces print the ref beside it
 
     merge = by_id["pr-13"]
     assert merge.shape == "merge" and merge.head_sha == shas["gh_merge"]
@@ -191,6 +192,38 @@ def test_title_skips_boilerplate_and_trailers():
     )
     assert change_title("Merged PR 9: Fix it", "", True) == "Fix it"
     assert change_title("feat: x (#2)", "body", False) == "feat: x (#2)"
+    # A merge committed without editing keeps git's conflict list in its body.
+    subject = "Merge remote-tracking branch 'origin/x' into main"
+    assert change_title(subject, "# Conflicts:\n#\ta.py\n", True) == subject
+    assert change_title(subject, "Conflicts:\n\ta.py\n", True) == subject
+    # A body line that only starts with "#" is still a title.
+    assert change_title(subject, "#123 Fix foo\n", True) == "#123 Fix foo"
+
+
+def test_title_takes_an_issue_keyed_line_and_skips_real_trailers():
+    subject = "Merge pull request #6480 from a/FINERACT-2455"
+    jira = "FINERACT-2455: WC - Support discount fee by transaction external id"
+    assert change_title(subject, jira, True) == jira
+    assert change_title(subject, f"{jira}\n\nSigned-off-by: A <a@x>", True) == jira
+    assert change_title(subject, "ABC-1: Fix it", True) == "ABC-1: Fix it"
+    # A one-paragraph body is the PR title, even in ``type: subject`` form.
+    assert change_title(subject, "fix: handle null", True) == "fix: handle null"
+    assert change_title(subject, "\r\n\r\nfix: handle null\r\n", True) == "fix: handle null"
+    assert change_title(subject, "Title\n\nSee merge request g/p!1", True) == "Title"
+    # Real trailers are still skipped, in the final paragraph or by known key.
+    body = "Signed-off-by: A <a@x>\nCo-authored-by: B <b@x>"
+    assert change_title(subject, body, True) == subject
+    assert change_title(subject, f"{body}\n\nReal title", True) == "Real title"
+    assert change_title(subject, f"{body}\n\nTicket: y", True) == subject
+
+
+def test_title_drops_only_its_own_ref_suffix():
+    assert without_own_ref("feat(x): add y (#3792)", "3792") == "feat(x): add y"
+    assert without_own_ref("Fix the parser (!41)", "41") == "Fix the parser"
+    # Another change's number, or a title that is only the ref, stays.
+    assert without_own_ref("revert: z (#12)", "13") == "revert: z (#12)"
+    assert without_own_ref("(#5)", "5") == "(#5)"
+    assert without_own_ref("feat: (#5) in the middle", "5") == "feat: (#5) in the middle"
 
 
 def test_repeated_identity_gets_a_distinct_id_and_keeps_it(tmp_path):
@@ -366,6 +399,7 @@ async def _db(tmp_path: Path, repo_root: Path):
 @pytest.mark.usefixtures("_private_user_config")
 async def test_refresh_rebuilds_then_extends(tmp_path, history):
     from repowise.core.persistence.crud import (
+        ChangeFilter,
         get_change,
         list_changes,
         upsert_git_commits_bulk,
@@ -390,13 +424,16 @@ async def test_refresh_rebuilds_then_extends(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == ("agent", 1, 1)
             assert (await get_change(session, repo_id, shas["f1"][:10])).change_id == "pr-13"
             assert (await get_change(session, repo_id, "pr-7")).approvals == 1
+            # The forge ref is what `changes list` prints, so `show` takes it too.
+            assert (await get_change(session, repo_id, "#13")).change_id == "pr-13"
+            assert await get_change(session, repo_id, "#999") is None
 
         newer = r.commit("z.py", "chore: z (#40)")
         async with get_session(factory) as session:
             assert await refresh_changes(session, repo_id, r.root, rebuild=False) == 1
             rows, total = await list_changes(session, repo_id, limit=3)
             assert total == 10 and rows[0].head_sha == newer
-            _, fixes = await list_changes(session, repo_id, category="fix")
+            _, fixes = await list_changes(session, repo_id, ChangeFilter(category="fix"))
             assert fixes == 1
     finally:
         await engine.dispose()

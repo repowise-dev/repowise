@@ -76,8 +76,10 @@ def test_a_bullmq_queue_is_not_a_laravel_queue_of_the_same_name(tmp_path: Path) 
 
 
 def test_a_nats_wildcard_subscription(tmp_path: Path) -> None:
-    api = _repo(tmp_path, "api", {"p.go": 'nc.Publish("orders.created", d)\n'})
-    audit = _repo(tmp_path, "audit", {"s.ts": "nc.subscribe('orders.>');\n"})
+    api = _repo(
+        tmp_path, "api", {"p.go": 'import "github.com/nats-io/nats.go"\nnc.Publish("orders.created", d)\n'}
+    )
+    audit = _repo(tmp_path, "audit", {"s.ts": "import { connect } from 'nats';\nnc.subscribe('orders.>');\n"})
     assert _links(api, audit) == {("api", "audit", "topic::orders.created")}
 
 
@@ -110,6 +112,36 @@ def test_a_nestjs_object_pattern_across_repos(tmp_path: Path) -> None:
     )
     math = _repo(tmp_path, "math", {"m.ts": imp + "@MessagePattern({ cmd: 'sum', role: 'math' })\nf() {}\n"})
     assert _links(api, math) == {("api", "math", 'topic::{"cmd":"sum","role":"math"}')}
+
+
+_DAPR_PUBLISH = (
+    "using Dapr.Client;\n"
+    "private readonly DaprClient dapr;\n"
+    'await dapr.PublishEventAsync("pubsub", "orders", evt);\n'
+)
+_DAPR_SUBSCRIPTION = (
+    "apiVersion: dapr.io/v2alpha1\n"
+    "kind: Subscription\n"
+    "metadata: \n"
+    "  name: orders\n"
+    "spec: \n"
+    "  pubsubname: pubsub\n"
+    "  topic: orders\n"
+    "  routes: \n"
+    "    default: /orders\n"
+)
+
+
+def test_a_dapr_publisher_reaches_a_kafka_consumer(tmp_path: Path) -> None:
+    api = _repo(tmp_path, "api", {"Pub.cs": _DAPR_PUBLISH})
+    worker = _repo(tmp_path, "worker", {"c.ts": "await consumer.subscribe({ topic:  'orders'  });\n"})
+    assert _links(api, worker) == {("api", "worker", "topic::orders")}
+
+
+def test_a_dapr_subscription_manifest_reaches_a_dapr_publisher(tmp_path: Path) -> None:
+    api = _repo(tmp_path, "api", {"Pub.cs": _DAPR_PUBLISH})
+    billing = _repo(tmp_path, "billing", {"deploy/sub.yaml": _DAPR_SUBSCRIPTION})
+    assert _links(api, billing) == {("api", "billing", "topic::orders")}
 
 
 def test_fastapi_websocket_to_browser(tmp_path: Path) -> None:

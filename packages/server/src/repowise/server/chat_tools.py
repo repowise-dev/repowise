@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.registry import ToolEntry
-from repowise.server.auth import Principal, current_principal, get_authorizer
+from repowise.server.auth import (
+    Principal,
+    action_for_safety,
+    authorize_tool,
+    checks_repo_access,
+    current_principal,
+    get_authorizer,
+)
 from repowise.server.mcp_server._tool_selection import (
     get_registered_tool,
     selected_tool_entries,
@@ -34,7 +41,9 @@ def get_tool_catalog(
     catalog: list[ChatToolContract] = []
     authorizer = get_authorizer()
     for entry in selected_tool_entries(repo_path):
-        if principal is not None and not authorizer.can_use_tool(principal, entry.name):
+        if principal is not None and not authorize_tool(
+            principal, entry.name, action_for_safety(entry.safety), authorizer
+        ):
             continue
         registered = get_registered_tool(entry.name)
         if registered is None:
@@ -72,15 +81,16 @@ def get_tool_schemas_for_llm(
     return tool_schemas(get_tool_catalog(repo_path, principal))
 
 
-def _make_json_serializable(obj: Any) -> Any:
+def make_json_serializable(obj: Any) -> Any:
+    """*obj* as plain JSON values; a value JSON has no type for becomes its string."""
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
     if isinstance(obj, dict):
-        return {str(key): _make_json_serializable(value) for key, value in obj.items()}
+        return {str(key): make_json_serializable(value) for key, value in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_make_json_serializable(item) for item in obj]
+        return [make_json_serializable(item) for item in obj]
     if hasattr(obj, "__dict__"):
-        return _make_json_serializable(vars(obj))
+        return make_json_serializable(vars(obj))
     return str(obj)
 
 
@@ -126,12 +136,14 @@ async def execute_entry(
     With a ``principal``, the tool must be in its scope, and a repo-restricted
     principal is pinned to ``repo`` (or ``repo_id`` outside a workspace).
     """
-    if principal is not None and not get_authorizer().can_use_tool(principal, entry.name):
+    if principal is not None and not authorize_tool(
+        principal, entry.name, action_for_safety(entry.safety)
+    ):
         return {
             "error": f"Tool is outside this credential's scope: {entry.name}",
             "error_code": "tool_not_in_scope",
         }
-    restricted = principal is not None and principal.repo_scope is not None
+    restricted = principal is not None and checks_repo_access(principal)
     pinned = (repo or repo_id) if restricted else None
     if entry.safety == "mutating" and not confirmed:
         return {
@@ -145,7 +157,7 @@ async def execute_entry(
     try:
         scoped_arguments = dict(arguments)
         _scope_repo_arg(entry, scoped_arguments, repo, pinned)
-        return _make_json_serializable(await entry.fn(**scoped_arguments))
+        return make_json_serializable(await entry.fn(**scoped_arguments))
     except Exception as exc:
         logger.exception("Tool execution failed: %s", entry.name)
         return {"error": f"{type(exc).__name__}: {exc}", "error_code": "tool_failed"}
@@ -234,15 +246,11 @@ def init_tool_state(
     repo_path: str | None = None,
 ) -> None:
     """Bridge FastAPI app state to the MCP server module globals."""
-    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import _state
 
-    mcp_mod._session_factory = session_factory
-    mcp_mod._fts = fts
-    mcp_mod._vector_store = vector_store
-    if decision_store is not None:
-        mcp_mod._decision_store = decision_store
-    if repo_path is not None:
-        mcp_mod._repo_path = repo_path
+    _state.init_tool_state(
+        session_factory, fts, vector_store, decision_store=decision_store, repo_path=repo_path
+    )
     logger.info("Chat tool state initialized")
 
 

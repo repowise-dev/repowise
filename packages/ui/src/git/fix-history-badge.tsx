@@ -15,11 +15,11 @@ export interface FixHistoryBadgeProps {
 }
 
 const DEFAULT_TITLE =
-  "Bug-fix commits that touched this file in the trailing defect window.";
+  "Bug-fix commits that touched this file in the last 6 months.";
 
 /** Symbol-level counts are matched by line range, so their copy hedges. */
 export const SYMBOL_FIX_TITLE =
-  "Bug fixes that landed in this symbol in the trailing defect window (approximate: matched by line range).";
+  "Bug fixes that landed in this symbol in the last 6 months (approximate: matched by line range).";
 
 /**
  * The headline "N fixes, last X ago" pill. Renders nothing when the file has

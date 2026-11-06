@@ -7,6 +7,10 @@
  * shape cannot drift. `provenance` is null while AI attribution is off for
  * the repository; forge metadata fields are null when unknown, never empty.
  *
+ * `ChangeListItem` is a list row: the record without its file and commit
+ * lists, plus `evidence_summary` (kept checklist status counts) when the list
+ * asked for it.
+ *
  * `ChangeEvidence` is the record's evidence checklist (twin of
  * `repowise.core.changes.evidence`): one `EvidenceItem` per kind in
  * `EVIDENCE_KINDS`, each with a `status` and the `basis` it rests on. The
@@ -15,13 +19,14 @@
 export type {
   ChangeAuthor,
   ChangeEvidence,
+  ChangeEvidenceSummary,
   ChangeFile,
   ChangeForgeMetadata,
   ChangeIdentity,
+  ChangeListItem,
   ChangeListResponse,
   ChangeProvenance,
   ChangeRecord,
-  ChangeSummary,
   EvidenceItem,
 } from "./generated/http.js";
 
@@ -40,5 +45,6 @@ export const EVIDENCE_KINDS = [
   "health_delta",
   "provenance",
   "risk_score",
+  "outcomes",
 ] as const;
 export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
