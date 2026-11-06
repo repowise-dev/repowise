@@ -1034,3 +1034,90 @@ def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
         kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
     assert "actions" not in kinds
     assert "fix_first" in kinds
+
+
+def test_decision_add_json_reports_blockers_and_next(indexed_repo: Path) -> None:
+    # Adding via an agent without evidence leaves it blocked
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--affects",
+            "command.go",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["decision"]
+    assert "blockers" in payload
+    assert any("evidence" in b for b in payload["blockers"])
+    assert "next" in payload
+    assert "confirm " in payload["next"]
+    assert "--evidence" in payload["next"]
+    assert "--agent probe" in payload["next"]
+
+    # Adding with evidence-commit has no blockers
+    result_ok = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags with evidence",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--affects",
+            "command.go",
+            "--evidence-commit",
+            "a" * 40,
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_ok.exit_code == 0, result_ok.output
+    payload_ok = json.loads(result_ok.output)["decision"]
+    assert "blockers" not in payload_ok
+    assert "next" not in payload_ok
+
+    # Adding without scope and evidence includes both flags in next command
+    result_multi = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags no scope",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_multi.exit_code == 0, result_multi.output
+    payload_multi = json.loads(result_multi.output)["decision"]
+    assert "blockers" in payload_multi
+    assert any("scope" in b for b in payload_multi["blockers"])
+    assert any("evidence" in b for b in payload_multi["blockers"])
+    assert "--scope <path>" in payload_multi["next"]
+    assert "--evidence <commit|file>" in payload_multi["next"]
