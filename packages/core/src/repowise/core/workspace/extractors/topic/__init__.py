@@ -14,6 +14,7 @@ from ..dialect import ContractDialect, DialectExtractor
 from .aws import SNS, SQS
 from .azure_servicebus import AZURE_SERVICE_BUS
 from .bullmq import BULLMQ
+from .celery import CELERY
 from .csharp_events import CSHARP_EVENTS
 from .dapr import DAPR, DAPR_SUBSCRIPTIONS
 from .dialect import topic_identity
@@ -43,6 +44,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     LARAVEL_QUEUES,
     CSHARP_EVENTS,
     JMS,
+    CELERY,
 )
 
 
