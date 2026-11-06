@@ -3,7 +3,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
+import { TriageView, type CodeHealthAdapter } from "@repowise-dev/ui/health";
 import type { FixFirstQueue, FixItem } from "@repowise-dev/types/fix-first";
+import type { HealthOverviewResponse } from "@repowise-dev/types/health";
 
 const getFixFirst = vi.fn();
 const updateFindingStatus = vi.fn();
@@ -16,7 +18,10 @@ vi.mock("@/lib/api/code-health", () => ({
 
 import { FixFirstSection, fixPlanHref } from "./fix-first-section";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 function item(overrides: Partial<FixItem>): FixItem {
   return {
@@ -155,5 +160,64 @@ describe("FixFirstSection", () => {
       flavor: expect.any(String),
       scope: "production",
     });
+  });
+
+  it("keeps the view and the section's state on screen while a triage re-reads", async () => {
+    getFixFirst.mockImplementation(async () => queue([item({})]));
+    updateFindingStatus.mockResolvedValue({});
+    const overview = {
+      summary: { file_count: 3, average_health: 8, worst_performer_path: null, worst_performer_score: null, open_findings: 2 },
+      files: [],
+      top_findings: [],
+    } as unknown as HealthOverviewResponse;
+    let release: () => void = () => {};
+    const getOverview = vi
+      .fn()
+      .mockResolvedValueOnce(overview)
+      .mockImplementation(() => new Promise((resolve) => (release = () => resolve(overview))));
+    const adapter = { cacheKey: "r1", getOverview, listFindings: vi.fn(), renderFileDrawer: () => null } as unknown as CodeHealthAdapter;
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <TriageView adapter={adapter} leadSlot={<FixFirstSection repoId="r1" />} />
+      </SWRConfig>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getByLabelText("Include tests"));
+    await waitFor(() => expect(getFixFirst).toHaveBeenCalledWith("r1", { limit: 10, scope: "all" }));
+    const files = screen.getByText("Files");
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+    await waitFor(() => expect(getOverview).toHaveBeenCalledTimes(2));
+    // The overview refetch is still open: the lede stays put.
+    expect(files.isConnected).toBe(true);
+    expect((screen.getByLabelText("Include tests") as HTMLInputElement).checked).toBe(true);
+    release();
+    expect(await screen.findByText("Saved as resolved.")).toBeTruthy();
+    expect(files.isConnected).toBe(true);
+    expect((screen.getByLabelText("Include tests") as HTMLInputElement).checked).toBe(true);
+    expect(getFixFirst).toHaveBeenCalledTimes(3);
+    expect(getFixFirst).toHaveBeenLastCalledWith("r1", { limit: 10, scope: "all" });
+  });
+
+  it("re-reads the queue once when some writes land, and still reports the failure", async () => {
+    getFixFirst.mockResolvedValue(queue([item({})]));
+    updateFindingStatus.mockImplementation(async (_repo: string, id: string) => {
+      if (id === "finding_2") throw new Error("boom");
+      return {};
+    });
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+    expect(await screen.findByText(/Could not save all of that/)).toBeTruthy();
+    expect(getFixFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads nothing when every write fails", async () => {
+    getFixFirst.mockResolvedValue(queue([item({})]));
+    updateFindingStatus.mockRejectedValue(new Error("boom"));
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+    expect(await screen.findByText(/Could not save all of that/)).toBeTruthy();
+    expect(getFixFirst).toHaveBeenCalledTimes(1);
   });
 });
