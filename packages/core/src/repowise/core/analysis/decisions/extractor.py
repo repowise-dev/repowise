@@ -650,7 +650,7 @@ class DecisionExtractor:
             prompt = COMMENT_ARCHAEOLOGY_PROMPT.format(comments_block=comments_block)
             # Not caught: _run_batches counts a failed batch.
             response = await provider.generate(
-                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+                _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
             extracted = parse_decisions_reply(response)
             for d in extracted:
