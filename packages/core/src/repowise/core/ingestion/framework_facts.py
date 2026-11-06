@@ -131,6 +131,9 @@ SALESFORCE = FrameworkFacts(name="Salesforce", anchor="framework:salesforce")
 #: The runtime that starts the components an ``AndroidManifest.xml`` registers.
 ANDROID = FrameworkFacts(name="Android", anchor="framework:android")
 
+#: Apple instantiates classes registered by plist and Interface Builder XML.
+APPLE = FrameworkFacts(name="Apple", anchor="framework:apple")
+
 ANGULAR = FrameworkFacts(name="Angular", anchor="framework:angular")
 
 #: The Lightning runtime that places the LWC bundles a ``.js-meta.xml`` exposes.
