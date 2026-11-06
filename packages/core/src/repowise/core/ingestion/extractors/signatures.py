@@ -137,6 +137,17 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
     return f"{name}{params_text}"
 
 
+def _kotlin_alias_target(def_node: Node, src: str) -> str:
+    """The aliased type of a Kotlin ``typealias`` (``Holder<String>``), else ``""``."""
+    if not any(c.type == "typealias" for c in def_node.children):
+        return ""
+    children = def_node.children
+    for i, child in enumerate(children):
+        if child.type == "=" and i + 1 < len(children):
+            return " ".join(node_text(children[i + 1], src).split())
+    return ""
+
+
 def _kotlin_return(def_node: Node, src: str) -> str:
     """`` -> T`` for a Kotlin function: the unfielded type after ``(..):``."""
     after_parameters = False
