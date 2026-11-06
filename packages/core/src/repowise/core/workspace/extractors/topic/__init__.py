@@ -11,7 +11,7 @@ from __future__ import annotations
 from repowise.core.workspace.contracts import TOPIC_NAMES_UNRESOLVED_STAT
 
 from ..dialect import ContractDialect, DialectExtractor
-from .aws import SNS, SQS
+from .aws import EVENTBRIDGE, SNS, SQS
 from .azure_servicebus import AZURE_SERVICE_BUS
 from .bullmq import BULLMQ
 from .csharp_events import CSHARP_EVENTS
@@ -36,6 +36,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     BULLMQ,
     SQS,
     SNS,
+    EVENTBRIDGE,
     AZURE_SERVICE_BUS,
     NESTJS,
     DAPR,
