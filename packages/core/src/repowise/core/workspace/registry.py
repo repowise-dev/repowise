@@ -19,6 +19,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from repowise.core.git_head import CheckoutMatch, match_checkout
+
 _log = logging.getLogger("repowise.workspace.registry")
 
 
@@ -190,8 +192,30 @@ class RepoRegistry:
                 return entry.alias
             if candidate.is_absolute() and candidate.resolve() == absolute:
                 return entry.alias
+        matched = self.match_checkout(repo)
+        if matched is not None:
+            return matched[0]
         available = self.get_all_aliases()
         raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
+
+    def match_checkout(self, repo: str) -> tuple[str, CheckoutMatch] | None:
+        """The alias an absolute path inside one of the repos names, with the match.
+
+        Covers a subdirectory and another git worktree of an indexed repo (see
+        :func:`~repowise.core.git_head.match_checkout`). The checkout that
+        holds the path wins over another worktree, then the deepest repo.
+        """
+        if not Path(repo).is_absolute():
+            return None
+        best: tuple[str, CheckoutMatch] | None = None
+        for entry in self._ws_config.repos:
+            found = match_checkout(repo, (self._workspace_root / entry.path).resolve())
+            if found is None:
+                continue
+            rank = (found.same_checkout, found.depth)
+            if best is None or rank > (best[1].same_checkout, best[1].depth):
+                best = (entry.alias, found)
+        return best
 
     def repo_id(self, repo: str) -> str | None:
         """The repository id behind any identity ``resolve_repo_param`` accepts.

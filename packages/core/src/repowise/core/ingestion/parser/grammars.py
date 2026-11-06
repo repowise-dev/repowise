@@ -355,12 +355,17 @@ _KOTLIN_DECLARATION_HEAD = re.compile(
 # - an annotated accessor of a property with no declared type (``val size``
 #   then ``@JvmName("size") get() = ...``): the annotation blanked;
 # - a statement ``get(x)`` right under a ``val``, read as its getter though a
-#   getter takes no parameter: the last indent byte becomes ``;``.
+#   getter takes no parameter: the last indent byte becomes ``;``;
+# - an assignment to a property named like a modifier (``final``, ``open``,
+#   ``override``, ...) at statement start, read as a class modifier: five
+#   indent bytes become ``this.``.
 _KOTLIN_MISPARSED_SPANS = re.compile(
     rb"(?m)^[ \t]*(?P<ctor>(?:(?:@[\w.]+|public|private|internal|protected|expect|actual)[ \t]+)+)"
     rb"constructor[ \t]*\("
     rb"|(?<![\w.])(?P<accessor>@[\w.]+(?:\([^()\n]*\))?)(?=\s*(?:get|set)[ \t]*\()"
     rb"|(?m:^[ \t]*va[lr][ \t][^\n]*\n[ \t]*)(?P<stmt>[ \t])(?=get[ \t]*\([ \t]*[^)\s])"
+    rb"|(?m:^[ \t]*?)(?P<prop>[ \t]{5})"
+    rb"(?=(?:final|open|abstract|sealed|override|lateinit|internal)\b[ \t]*[+\-*/%]?=(?!=))"
 )
 
 
@@ -378,7 +383,12 @@ def _recover_kotlin_misparsed_spans(
         start, end = m.span(m.lastgroup)
         row = source.count(b"\n", 0, start)
         if any(lo <= row <= hi for lo, hi in errors):
-            rewritten[start:end] = b";" if m.lastgroup == "stmt" else b" " * (end - start)
+            if m.lastgroup == "stmt":
+                rewritten[start:end] = b";"
+            elif m.lastgroup == "prop":
+                rewritten[start:end] = b"this."
+            else:
+                rewritten[start:end] = b" " * (end - start)
     if rewritten == source:
         return root, source
     new_root = Parser(language).parse(bytes(rewritten)).root_node

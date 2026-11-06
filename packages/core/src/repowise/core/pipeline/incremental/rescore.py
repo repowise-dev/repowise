@@ -91,6 +91,7 @@ async def rescore_health_from_store(
     *,
     log: LogFn | None = None,
     timings: Any = None,
+    snapshot: bool = False,
 ) -> Any:
     """Re-score every file's health against the stored git metadata; return the report.
 
@@ -105,6 +106,9 @@ async def rescore_health_from_store(
     graph is rebuilt at most once per update. Stages record ``rescore.*`` rows
     in *timings* (a ``PhaseTimings``), apart from the update's own
     ``analysis.health.*`` pass.
+
+    ``snapshot`` appends a health snapshot of the re-scored store, for a
+    caller whose update skipped the changed-files health write that takes one.
     """
     import pathspec
 
@@ -155,6 +159,11 @@ async def rescore_health_from_store(
             await _save_rescore(
                 session, repo, repo_path, graph_builder, report, coverage, stage_timings
             )
+            # An empty report writes nothing (``save_full_health_report``).
+            if snapshot and (report.metrics or report.findings):
+                from repowise.core.pipeline.persist import snapshot_health_from_store
+
+                await snapshot_health_from_store(session, repo.id)
             repo_id = repo.id
             await apply_index_persistence(
                 session,

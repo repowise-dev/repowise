@@ -7,6 +7,7 @@ import type {
   EvidenceCardKind,
 } from "@repowise-dev/types/cards";
 import { fileEntityPath, symbolEntityPath } from "../shared/entity/routes";
+import { formatNumber } from "../lib/format";
 
 const KIND_LABEL: Record<EvidenceCardKind, string> = {
   answer: "Answer",
@@ -142,7 +143,7 @@ export function EvidenceCardView({ card, buildRefHref }: EvidenceCardViewProps) 
               <dt className="text-[var(--color-text-secondary)]">{fact.label}</dt>
               <dd className="min-w-0 space-x-2">
                 <span className="tabular-nums">
-                  {typeof fact.value === "number" ? fact.value.toLocaleString() : fact.value}
+                  {typeof fact.value === "number" ? formatNumber(fact.value) : fact.value}
                 </span>
                 {fact.ref && <RefView cardRef={fact.ref} buildRefHref={buildRefHref} />}
                 <BasisNote basis={fact.basis} />

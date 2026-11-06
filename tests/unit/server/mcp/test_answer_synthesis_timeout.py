@@ -792,3 +792,41 @@ async def test_the_real_openai_provider_sends_low_effort_and_the_cap(monkeypatch
     assert note is None and answer == "answer"
     assert sent["reasoning_effort"] == "low"
     assert sent["max_completion_tokens"] == _SYNTHESIS_MAX_TOKENS
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_rejected_key_is_called_once_and_says_where_to_set_it(status):
+    """Another reasoning mode cannot fix a key, and the note must not echo it."""
+    from repowise.core.providers.llm.base import ProviderError
+
+    class _Rejected(_LowCapable):
+        provider_name = "openai"
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            raise ProviderError("openai", "Incorrect API key provided: sk-abc**xyz", status)
+
+    provider = _Rejected(duration=0, budget=30.0)
+    text, note, _ = await synthesize(provider, "sys", "user")
+
+    assert text == ""
+    assert len(provider.calls) == 1
+    assert "rejected the API key" in note
+    assert "OPENAI_API_KEY" in note and ".repowise/.env" in note
+    assert "sk-abc" not in note
+
+
+async def test_a_rejected_login_on_a_provider_without_a_key_names_no_variable():
+    from repowise.core.providers.llm.base import ProviderError
+
+    class _CliRejected(_SlowProvider):
+        provider_name = "claude_cli"
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            raise ProviderError("claude_cli", "Invalid API key", 401)
+
+    _, note, _ = await synthesize(_CliRejected(duration=0, budget=30.0), "sys", "user")
+
+    assert "rejected its credentials" in note
+    assert "_API_KEY" not in note and ".repowise/.env" not in note

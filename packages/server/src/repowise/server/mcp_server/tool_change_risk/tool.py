@@ -19,6 +19,8 @@ from repowise.core.registry import mcp_tool_registry as mcp
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._call_tasks import ends_call_tasks, start_call_task
+from repowise.server.mcp_server._checkout import caller_revspec
 from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     attach_ignored_arguments,
@@ -26,6 +28,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import full_meta
 from repowise.server.mcp_server._savings import declare_replaced
 from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 
 from . import cache as _cache
 from .branches import (
@@ -53,6 +56,7 @@ from .payload import (
     _path_patterns,
     _shape_payload,
 )
+from .per_commit import per_commit_reply
 from .prior_fixes import _prior_fixes_block
 
 
@@ -65,16 +69,24 @@ async def _score_change(
     baseline: int,
 ) -> tuple[Any, dict | None]:
     """Score the live change: ``(result, None)``, or ``(None, error reply)``."""
+    return await _score_guarded(
+        revspec,
+        _pkg.score_live_change,
+        repo_path,
+        revspec,
+        extensions=tuple(extensions or ()),
+        exclude_patterns=tuple(exclude_patterns or ()),
+        include_paths=include_paths,
+        baseline=baseline,
+    )
+
+
+async def _score_guarded(
+    revspec: str | None, score: Any, *args: Any, **kwargs: Any
+) -> tuple[Any, dict | None]:
+    """Run a git-reading *score* off the loop: ``(result, None)``, or ``(None, error reply)``."""
     try:
-        result = await asyncio.to_thread(
-            _pkg.score_live_change,
-            repo_path,
-            revspec,
-            extensions=tuple(extensions or ()),
-            exclude_patterns=tuple(exclude_patterns or ()),
-            include_paths=include_paths,
-            baseline=baseline,
-        )
+        result = await asyncio.to_thread(score, *args, **kwargs)
     except ValueError as exc:
         return None, {"error": str(exc)}
     except subprocess.CalledProcessError as exc:
@@ -143,16 +155,12 @@ def _start_delta(
     timings: dict[str, int],
 ) -> asyncio.Task:
     """Begin the health comparison; it ends with the calling request."""
-    task = asyncio.create_task(
+    return start_call_task(
         _timed_delta(
             timings,
             _delta_with_index(ctx, revspec, tuple(extensions or ()), excludes, includes),
         )
     )
-    request = asyncio.current_task()
-    if request is not None:
-        request.add_done_callback(lambda _done: task.cancel())
-    return task
 
 
 async def _early_delta(
@@ -286,6 +294,7 @@ _CARRIED_META = frozenset({"omitted", "recovery_unavailable", "replaced_tokens"}
     presentation="change_risk",
     evidence_basis="measured",
 )
+@ends_call_tasks
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,
@@ -295,43 +304,49 @@ async def get_change_risk(
     baseline: int = 200,
     include: list[str] | None = None,
     finding_id: str | None = None,
+    *,
+    per_commit: bool = False,
 ) -> dict:
     """Review a commit, ``base..head`` range, or uncommitted work.
 
-    Leads with ``directive`` (what to do) and ``health_delta`` (what this
-    change newly made worse). Findings are reported only when the diff explains
-    them, name their ``attribution`` basis, and sort change-written above
-    pre-existing.
-
-    ``directive.status`` is the verdict; ``partial`` health means code files
-    were skipped. ``risk_percentile`` and ``diff_shape`` measure diff size
-    only, not danger.
-
-    ``impacted_tests`` is the ``impacted-tests`` selection; read ``status``.
-    ``patch_coverage`` is the share of changed executable lines stored coverage
-    ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
-    bug-fix record, ``overlap`` the past fixes on these exact lines,
-    ``branch_overlap`` other branches editing them. An empty diff returns
-    ``status: "nothing_to_score"``.
+    Leads with ``directive`` (verdict in ``status``) and ``health_delta``
+    (what this change newly made worse). ``risk_percentile`` and
+    ``diff_shape`` measure diff size, not danger. ``impacted_tests`` names
+    the tests to run.
 
     Args:
-        revspec: Commit or ``base..head`` range. Omit to review uncommitted
-            work, or ``HEAD`` when the tree is clean.
-        repo: Repository alias in workspace mode; omit for the default.
-        extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
-        exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
-        include_paths: Gitignore-style paths to keep, as a list or one
-            comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
-        baseline: Recent commits sampled for percentile ranking; 0 disables it.
-        include: ``"findings"``, ``"diagnostics"`` (raw mechanics),
-            ``"scales"``, ``"evidence"`` or ``"tests"`` (why each runs).
-        finding_id: Expand one ``health_delta`` finding by its id.
+        revspec: commit or ``base..head``. Omit for uncommitted work, or
+            ``HEAD`` when the tree is clean.
+        per_commit: with a range, one compact row per commit (up to 30).
+        include: ``"findings"``, ``"diagnostics"``, ``"scales"``,
+            ``"evidence"``, ``"tests"`` (why each runs).
+        finding_id: expand one ``health_delta`` finding.
+        extensions: file suffixes to count, e.g. ``[".py"]``.
+        exclude_patterns, include_paths: gitignore-style paths to omit, keep
+        (include_paths also takes one comma-separated string).
+        baseline: commits sampled for the percentile; 0 disables it.
+        repo: usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
     ctx = await _pkg._resolve_repo_context(repo)
+    revspec, refused = caller_revspec(revspec)
+    if refused is not None:
+        return refused
     started = time.perf_counter()
     includes = _path_patterns(include_paths)
+    if per_commit:
+        return await per_commit_reply(
+            ctx,
+            revspec,
+            extensions,
+            exclude_patterns,
+            includes,
+            baseline,
+            include,
+            finding_id,
+            started,
+        )
     key = await _cache.cache_key(ctx, revspec, extensions, exclude_patterns, includes, baseline)
     cached, rescan = await _from_cache(ctx, key, include, finding_id, revspec, started)
     if cached is not None:
@@ -379,30 +394,24 @@ async def get_change_risk(
     if finding_id is None:
         scan, branches = rescan or await _branch_scan(ctx, key, changed, revspec)
     independent = None
-    try:
-        if finding_id is None:
-            await _pkg._attach_change_blocks(
-                ctx,
-                payload,
-                result,
-                revspec,
-                extensions,
-                (changed, changed_error),
-                collector,
-                includes,
-                tests_detail="tests" in include_set,
-                timings=timings,
+    # A block that raises leaves the comparison and the scan to ends_call_tasks.
+    if finding_id is None:
+        await _pkg._attach_change_blocks(
+            ctx,
+            payload,
+            result,
+            revspec,
+            extensions,
+            (changed, changed_error),
+            collector,
+            includes,
+            tests_detail="tests" in include_set,
+            timings=timings,
+        )
+        with _timed(timings, "branch_overlap"):
+            independent = await _attach_branch_blocks(
+                ctx, payload, changed, collector, revspec, scan
             )
-            with _timed(timings, "branch_overlap"):
-                independent = await _attach_branch_blocks(
-                    ctx, payload, changed, collector, revspec, scan
-                )
-    except BaseException:
-        # Never leave the comparison or the scan running for a request that is already over.
-        delta_task.cancel()
-        if scan is not None:
-            scan.cancel()
-        raise
     delta = await delta_task
     await _attach_health_references(ctx, delta)
     scored_entry = _cache.remember(key, payload["ref"], delta)
@@ -445,12 +454,15 @@ async def get_change_risk(
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     if scored_entry is not None:
+        # Stored before the pointer: an acceptance moves no git state, so a
+        # cached pointer would outlive it. ``_served`` reads it afresh.
         scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
             copy.deepcopy(payload),
             sorted(changed) or None,
             branches,
             await _scan_answer(scan),
         )
+    await attach_why_pointer(payload, ctx, sorted(changed))
     return payload
 
 
@@ -520,6 +532,7 @@ async def _served(ctx: Any, stored: _cache.Stored, started: float) -> dict:
         ),
         **kept,
     }
+    await attach_why_pointer(out, ctx, targets or [])
     return out
 
 

@@ -28,9 +28,19 @@ import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import { DecisionReviewDrawer } from "./decision-review-drawer";
+import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
+import { DecisionAppliedLine, DecisionOrigin, acceptedLine } from "./decision-origin";
+import { AiPromptButton } from "../health/ai-prompt-button";
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+import type { BulkReviewResult } from "./bulk-review";
+import { useBulkSelection, type BulkState, type Selection } from "./use-bulk-selection";
 import {
   formatDate,
   formatRelativeTimeOrNull,
+  parseDateOrNull,
   stripMarkdown,
 } from "../lib/format";
 
@@ -100,6 +110,12 @@ const LANE_EMPTY: Record<DecisionLane, string> = {
   history: "Nothing has been retired yet.",
 };
 
+/** The candidates lane's agent action. Hosts use the same words wherever they offer it. */
+export const REVIEW_WITH_AGENT_LABEL = "Review with your agent";
+
+/** The agent action for recording decisions nobody wrote down yet. */
+export const ADD_WITH_AGENT_LABEL = "Add decisions with your agent";
+
 export interface DecisionReviewLanesProps {
   lane: DecisionLane;
   onLaneChange: (lane: DecisionLane) => void;
@@ -120,8 +136,11 @@ export interface DecisionReviewLanesProps {
    */
   source?: string;
   onSourceChange?: (source: string) => void;
-  /** Accepts the candidate. Omit where the surface cannot write. */
-  onAccept?: (decision: DecisionRecord) => void;
+  /**
+   * Accepts the candidate. Omit where the surface cannot write. `options`
+   * carries a reason typed in the drawer; send it as `reason` on the write.
+   */
+  onAccept?: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void;
   /** Dismisses the candidate as a tombstone. Omit where the surface cannot write. */
   onDismiss?: (decision: DecisionRecord) => void;
   /**
@@ -153,6 +172,27 @@ export interface DecisionReviewLanesProps {
    * claimed about it.
    */
   order?: "review";
+  /**
+   * Reaffirms an accepted decision whose files moved, after re-reading it.
+   * Offered in the Needs review lane only. Omit where the surface cannot write.
+   */
+  onReaffirm?: (decision: DecisionRecord) => void;
+  /**
+   * Dismisses a selection of candidates. Turns on row selection in the
+   * Candidates lane. `onProgress` takes the count settled so far; the result
+   * says which went through and which were refused, and the lane reports it.
+   * `reviewEach` is the loop most hosts need.
+   */
+  onDismissMany?: (
+    decisions: DecisionRecord[],
+    onProgress: (settled: number) => void,
+  ) => Promise<BulkReviewResult>;
+  /**
+   * The prompt that hands the candidates to the reader's agent to review,
+   * built on click. Shown on the Candidates lane while it has rows; omit it
+   * and the lane offers no agent action.
+   */
+  reviewPrompt?: () => string;
 }
 
 export function DecisionReviewLanes({
@@ -173,6 +213,9 @@ export function DecisionReviewLanes({
   isLoading,
   onRetry,
   order,
+  onReaffirm,
+  onDismissMany,
+  reviewPrompt,
 }: DecisionReviewLanesProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const Link = LinkComponent as LinkLike;
@@ -182,17 +225,25 @@ export function DecisionReviewLanes({
   // as it now is, and a record that left the lane closes the drawer.
   const open = rows.find((d) => d.id === openId) ?? null;
   const reviewable = lane === "candidates";
+  const reaffirmable = lane === "needs_review" && onReaffirm !== undefined;
+  const selectable =
+    lane === "candidates" && onDismissMany !== undefined && !readOnlyReason;
+
+  const bulkRun = useBulkSelection(rows, lane, selectable ? onDismissMany : undefined);
+  const { selected, bulk } = bulkRun;
 
   // Acting from the drawer moves it to the next record, which is what makes
   // the drawer a queue and not a detour. Read before the host refreshes
   // the rows, because the record acted on is about to leave them.
   const actAndAdvance = (
-    act: (decision: DecisionRecord) => void,
+    act: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void,
     d: DecisionRecord,
+    options?: DecisionAcceptOptions,
   ) => {
     const at = rows.findIndex((r) => r.id === d.id);
     const next = rows[at + 1] ?? null;
-    act(d);
+    if (options) act(d, options);
+    else act(d);
     setOpenId(next?.id ?? null);
   };
 
@@ -201,8 +252,10 @@ export function DecisionReviewLanes({
     showHotspots: rows.some((d) => Array.isArray(d.hotspot_files)),
     onAccept,
     onDismiss,
+    onReaffirm,
     readOnlyReason,
     pendingIds,
+    selection: selectable ? bulkRun.selection : undefined,
   });
 
   const tabs: ViewTab[] = DECISION_LANES.map((id) => {
@@ -222,29 +275,36 @@ export function DecisionReviewLanes({
         <div className="min-w-0 max-w-[68ch] flex-1 space-y-1.5 text-xs">
           <p className="text-[var(--color-text-secondary)]">{LANE_DESCRIPTION[lane]}</p>
           {order === "review" && (
-            <p className="text-[var(--color-text-tertiary)]">{REVIEW_ORDER_NOTE}</p>
+            <p className="text-[var(--color-text-tertiary)]">{reviewOrderNote(lane)}</p>
           )}
         </div>
-        {/* Built from the shared source list rather than from the loaded rows:
-            a lane page is one window, so a source absent from it would become
-            unselectable, which is the same defect wearing a dynamic coat. */}
-        {onSourceChange && (
-          <select
-            value={source}
-            onChange={(e) => onSourceChange(e.target.value)}
-            aria-label="Filter by source"
-            className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
-          >
-            <option value="all">All sources</option>
-            {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
-              (s) => (
-                <option key={s} value={s}>
-                  {decisionSourceLabel(s)}
-                </option>
-              ),
-            )}
-          </select>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {/* The lane's one agent action: a queue of candidates is work an
+              agent can check against the code and history, one by one. */}
+          {reviewPrompt && lane === "candidates" && rows.length > 0 && (
+            <AiPromptButton copyText={reviewPrompt} label={REVIEW_WITH_AGENT_LABEL} />
+          )}
+          {/* Built from the shared source list rather than from the loaded rows:
+              a lane page is one window, so a source absent from it would become
+              unselectable, which is the same defect wearing a dynamic coat. */}
+          {onSourceChange && (
+            <select
+              value={source}
+              onChange={(e) => onSourceChange(e.target.value)}
+              aria-label="Filter by source"
+              className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+            >
+              <option value="all">All sources</option>
+              {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
+                (s) => (
+                  <option key={s} value={s}>
+                    {decisionSourceLabel(s)}
+                  </option>
+                ),
+              )}
+            </select>
+          )}
+        </div>
       </div>
 
       {error ? (
@@ -273,6 +333,14 @@ export function DecisionReviewLanes({
         )
       ) : (
         <>
+          {selectable && (selected.size > 0 || bulk !== null) && (
+            <BulkBar
+              selected={selected.size}
+              bulk={bulk}
+              onDismiss={() => void bulkRun.dismissSelected()}
+              onClear={bulkRun.clear}
+            />
+          )}
           {/* A table, now that a row is one record at one height. The rows
               used to be unequal because a candidate carried its whole quote;
               the quote is clamped here and read in full in the drawer, so the
@@ -293,8 +361,11 @@ export function DecisionReviewLanes({
       <DecisionReviewDrawer
         decision={open}
         reviewable={reviewable}
+        onReaffirm={
+          reaffirmable && onReaffirm ? (d) => actAndAdvance(onReaffirm, d) : undefined
+        }
         onClose={() => setOpenId(null)}
-        onAccept={onAccept ? (d) => actAndAdvance(onAccept, d) : undefined}
+        onAccept={onAccept ? (d, options) => actAndAdvance(onAccept, d, options) : undefined}
         onDismiss={onDismiss ? (d) => actAndAdvance(onDismiss, d) : undefined}
         readOnlyReason={readOnlyReason}
         pending={open ? (pendingIds?.has(open.id) ?? false) : false}
@@ -320,8 +391,12 @@ export function DecisionReviewLanes({
  * table, not as a score per row: a number would invite reading the gap
  * between two rows as meaningful, and it is only an order.
  */
-const REVIEW_ORDER_NOTE =
-  "Most in need of a look first: records that can be accepted as they stand, then those naming churn hotspots, then those whose files have changed most since they were recorded.";
+function reviewOrderNote(lane: DecisionLane): string {
+  // Only candidates can be accepted, so only their note names that step.
+  return lane === "candidates"
+    ? "Most in need of a look first: records that can be accepted as they stand, then those naming churn hotspots, then those whose files have changed most since they were recorded."
+    : "Most in need of a look first: records naming churn hotspots, then those whose files have changed most since they were recorded.";
+}
 
 /**
  * Where a quote came from, as row metadata: the 11px tertiary line the rest of
@@ -342,14 +417,52 @@ type LinkLike = React.ElementType<{
 interface ColumnContext {
   lane: DecisionLane;
   showHotspots: boolean;
-  onAccept?: ((decision: DecisionRecord) => void) | undefined;
+  onAccept?: ((decision: DecisionRecord, options?: DecisionAcceptOptions) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
+  onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
   readOnlyReason?: string | undefined;
   pendingIds?: ReadonlySet<string> | undefined;
+  selection?: Selection | undefined;
 }
 
+
+const CHECKBOX_CLS = "h-3.5 w-3.5 cursor-pointer accent-[var(--color-accent-primary)]";
+
 function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
-  const columns: ResponsiveColumn<DecisionRecord>[] = [
+  const columns: ResponsiveColumn<DecisionRecord>[] = [];
+  const sel = ctx.selection;
+  if (sel) {
+    columns.push({
+      key: "select",
+      header: (
+        <input
+          type="checkbox"
+          aria-label="Select every candidate on this page"
+          checked={sel.allSelected}
+          disabled={sel.busy}
+          onChange={sel.toggleAll}
+          className={CHECKBOX_CLS}
+        />
+      ),
+      priority: 1,
+      hideInCard: true,
+      cellClassName: "w-8 align-top",
+      render: (d) => (
+        // Its own target: ticking a row must not also open the drawer.
+        <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            aria-label={`Select ${stripMarkdown(d.title)}`}
+            checked={sel.selected.has(d.id)}
+            disabled={sel.busy}
+            onChange={() => sel.toggle(d.id)}
+            className={CHECKBOX_CLS}
+          />
+        </span>
+      ),
+    });
+  }
+  columns.push(
     {
       key: "decision",
       header: "Decision",
@@ -371,7 +484,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       cellClassName: "max-w-[200px] align-top",
       render: renderScopeCell,
     },
-  ];
+  );
   // Drawn when the host sent the field at all, not when a row has a hotspot:
   // a column that came and went with the page under it would read as a
   // property of the page.
@@ -406,7 +519,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       render: (d) => (
         <span
           className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
-          title={formatDate(d.created_at)}
+          title={parseDateOrNull(d.created_at) ? formatDate(d.created_at) : undefined}
         >
           {formatRelativeTimeOrNull(d.created_at)}
         </span>
@@ -415,7 +528,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
   );
   // One primary verb per row, and only in the lane where it means something.
   // Everything else on the record lives on its detail page.
-  if (ctx.lane === "candidates") {
+  if (ctx.lane === "candidates" || (ctx.lane === "needs_review" && ctx.onReaffirm)) {
     columns.push({
       key: "actions",
       header: <span className="sr-only">Review</span>,
@@ -446,10 +559,12 @@ function renderDecisionCell(d: DecisionRecord) {
         {d.verification && d.verification !== "exact" && (
           <VerificationBadge verification={d.verification} iconOnly />
         )}
+        <DecisionOrigin decision={d} />
       </div>
       <p className="line-clamp-2 text-xs text-[var(--color-text-secondary)]">
         {stripMarkdown(d.decision || d.title)}
       </p>
+      <DecisionAppliedLine decision={d} />
     </div>
   );
 }
@@ -535,19 +650,47 @@ function renderChangedCell(d: DecisionRecord) {
   );
 }
 
+/** The row is clickable, so a verb must not also open the drawer. */
+const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+
+function ReaffirmAction({
+  d,
+  pending,
+  onReaffirm,
+}: {
+  d: DecisionRecord;
+  pending: boolean;
+  onReaffirm: (decision: DecisionRecord) => void;
+}) {
+  return (
+    <div className="flex justify-end" onClick={stop} onKeyDown={stop}>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={pending}
+        title="Still right after re-reading it: mark it current again"
+        onClick={() => onReaffirm(d)}
+      >
+        {pending ? "Reaffirming..." : "Reaffirm"}
+      </Button>
+    </div>
+  );
+}
+
 function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
   const { onAccept, onDismiss, readOnlyReason } = ctx;
   const pending = ctx.pendingIds?.has(d.id) ?? false;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
+  if (ctx.lane === "needs_review") {
+    return ctx.onReaffirm ? <ReaffirmAction d={d} pending={pending} onReaffirm={ctx.onReaffirm} /> : null;
+  }
   if (!onAccept && !onDismiss) return null;
   // The same checks the engine refuses on, asked before the button is drawn,
   // so a candidate that names nothing does not sit beside an Accept that
   // could only fail.
   const blockers = decisionAcceptanceBlockers(d);
-  // The row is clickable, so a verb must not also open the drawer.
-  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   return (
     <div className="flex flex-col items-end gap-1" onClick={stop} onKeyDown={stop}>
       <div className="flex items-center justify-end gap-1.5">
@@ -560,7 +703,7 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
           <Button
             size="sm"
             disabled={pending || blockers.length > 0}
-            title={blockers.length ? blockers.join("; ") : undefined}
+            title={blockers.length ? blockers.map(shortGap).join("; ") : undefined}
             onClick={() => onAccept(d)}
           >
             {pending ? "Accepting…" : "Accept"}
@@ -572,7 +715,8 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
           exactly the one worth tombstoning. The drawer says how to fill it. */}
       {onAccept && blockers.length > 0 && (
         <p className="max-w-[24ch] text-right text-xs text-[var(--color-text-tertiary)]">
-          Cannot accept: {blockers.join("; ")}.
+          {/* The drawer holds the fix, including the reason field. */}
+          {capitalize(blockers.map(shortGap).join("; "))}. Open it to fix.
         </p>
       )}
     </div>
@@ -585,9 +729,11 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
  * Provenance and nothing else: it names the signer and the session without
  * sorting signers into kinds, so it reads the same whoever signed. A candidate
  * has no signer and renders nothing; its source is already in the header.
+ * Nor does a record whose accepter the drawer body already names ("Accepted
+ * by your agent", "Accepted by @x"), so the signer is said once.
  */
 function Provenance({ decision }: { decision: DecisionRecord }) {
-  if (decision.currency == null) return null;
+  if (decision.currency == null || acceptedLine(decision) !== null) return null;
   const who = decision.accepter?.trim();
   const session = decision.accepter_session?.trim();
   return (
@@ -619,5 +765,61 @@ function CurrencyMark({ currency }: { currency: DecisionCurrency }) {
       />
       {DECISION_CURRENCY_LABELS[currency]}
     </span>
+  );
+}
+
+/**
+ * The selection's verb and its outcome. Dismiss only: accepting makes a record
+ * govern what agents are told, and that is read one record at a time.
+ */
+function BulkBar({
+  selected,
+  bulk,
+  onDismiss,
+  onClear,
+}: {
+  selected: number;
+  bulk: BulkState | null;
+  onDismiss: () => void;
+  onClear: () => void;
+}) {
+  const running = bulk !== null && bulk.result === null;
+  const result = bulk?.result ?? null;
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-[var(--color-border-subtle)] bg-[var(--color-bg-inset)] px-3 py-2 text-xs"
+    >
+      {running ? (
+        <span className="tabular-nums text-[var(--color-text-secondary)]">
+          Dismissing {bulk.settled} of {bulk.total}...
+        </span>
+      ) : (
+        <>
+          {result && (
+            <span className="text-[var(--color-text-secondary)]">
+              Dismissed {result.done.length} of {bulk?.total}.
+              {result.failed.length > 0 &&
+                ` ${result.failed.length} refused and still selected: ${result.failed
+                  .map((f) => `${stripMarkdown(f.decision.title)} (${f.message})`)
+                  .join("; ")}.`}
+            </span>
+          )}
+          {selected > 0 && (
+            <>
+              <span className="tabular-nums text-[var(--color-text-secondary)]">
+                {selected} selected
+              </span>
+              <Button variant="secondary" size="sm" onClick={onDismiss}>
+                Dismiss {selected}
+              </Button>
+            </>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClear}>
+            {selected > 0 ? "Clear" : "Done"}
+          </Button>
+        </>
+      )}
+    </div>
   );
 }

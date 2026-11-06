@@ -1,6 +1,6 @@
 """``_page_stats`` counts unwritten pages the way ``generate --unwritten`` selects them.
 
-A deterministic onboarding subkind (the glossary) is rendered by the template
+A deterministic onboarding subkind (Active Landscape) is rendered by the template
 provider and stamped ``metadata.model_free``. The planner never offers it to
 ``--unwritten``, so the end-of-run counter must not report it as unwritten
 either, or the "N page(s) still unwritten" hint can never clear (#3614).
@@ -56,7 +56,7 @@ async def test_model_free_page_is_not_counted_as_unwritten(session_factory, tmp_
     repo_id = await _seed(
         session_factory,
         tmp_path,
-        ("onboarding:onboarding/glossary", "onboarding", "template", {"model_free": True}),
+        ("onboarding:onboarding/active_landscape", "onboarding", "template", {"model_free": True}),
         ("module_page:pkg", "module_page", "mock", None),
     )
 
@@ -70,7 +70,7 @@ async def test_template_concept_page_is_still_counted(session_factory, tmp_path)
     repo_id = await _seed(
         session_factory,
         tmp_path,
-        ("onboarding:onboarding/glossary", "onboarding", "template", {"model_free": True}),
+        ("onboarding:onboarding/active_landscape", "onboarding", "template", {"model_free": True}),
         ("module_page:pkg", "module_page", "template", {"deterministic": True}),
         ("repo_overview:r", "repo_overview", "template", None),
         ("file_page:a.py", "file_page", "template", None),

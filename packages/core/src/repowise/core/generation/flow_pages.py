@@ -13,7 +13,10 @@ pages with the same steps:
    it reaches (symbols, files, directories and packages within a bounded walk),
    and the best are taken with two diversity rules so one hub does not fill the
    group: at most two per package and no root whose reach is mostly another
-   pick's.
+   pick's. Declared entries (commands, tools, routes, public API) come first,
+   the ones the README's first example shows ahead of the rest; one
+   implementation reached through two doors (a command and a tool) gets one
+   page, under the better documented name.
 2. **Which steps.** The walk from a root keeps the callees that lead furthest,
    a few at the top and fewer deeper down, so a step list reads as a story and
    not a dump of every helper. Every step carries its file and line span, which
@@ -33,7 +36,9 @@ it scores roots by reach and keeps a few callees per step.
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Iterable
+import re
+from collections import Counter
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
@@ -45,12 +50,33 @@ from repowise.core.analysis.execution_flows import (
     is_excluded_node,
     reach_set,
 )
-from repowise.core.analysis.execution_graph import call_line_values, is_walkable_execution_edge
+from repowise.core.analysis.execution_graph import is_walkable_execution_edge
 from repowise.core.ids import file_path_of
 from repowise.core.support_paths import is_support_path
 
 from .concept_tree.grouping import package_root_of
+from .flow_entries import (
+    API,
+    CLI,
+    FUNCTION,
+    ROUTE,
+    TOOL,
+    DocSection,
+    Entry,
+    LineReader,
+    declared_entries,
+    doc_mentions,
+    doc_sections,
+    is_ui_path,
+    line_reader,
+    program_name,
+    python_scripts,
+    quickstart_entries,
+)
+from .flow_trace import FlowStep, trace
 from .models import compute_page_id
+
+__all__ = ["FLOW_PAGE_TYPE", "FlowPlan", "FlowStep", "plans_for_index", "select_flow_plans"]
 
 FLOW_PAGE_TYPE = "flow_page"
 
@@ -65,31 +91,20 @@ _MIN_FILES = 3
 # from a different door.
 _MAX_OVERLAP = 0.8
 _MAX_PER_PACKAGE = 2  # when the repo has packages enough to spread over
-# The step list: callees kept per depth (index = depth), one beyond, and caps.
-_STEP_FANOUT = (4, 3, 2)
-_STEP_DEPTH = 5
-_MAX_STEPS = 14
+# A callee at most this many declared entries reach is their own implementation,
+# not shared plumbing: two entries of different kinds running one are one operation.
+_MAX_CORE_SHARERS = 3
+# A UI component's render tree is not an operation a walkthrough tells well.
+_UI_PENALTY = 0.3
+# Tier of a graph root no framework declares; declared entries are tiers 0 and 1.
+_UNDECLARED = 2
+# ``main.go`` or ``cmd/<name>/main.go``: the program a user runs.
+_GO_MAIN = re.compile(r"(?:cmd/([\w-]+)/)?main\.go::main")
 # Construction and protocol methods are not operations a reader asks about.
 _NOT_ROOTS = frozenset(
     {"__init__", "__new__", "__post_init__", "__repr__", "__str__", "__eq__", "__hash__"}
 )
 _MODULE_SCOPE = "::__module__"
-
-
-@dataclass(frozen=True)
-class FlowStep:
-    """One function on the walk, with what a citation needs."""
-
-    symbol_id: str
-    name: str
-    path: str
-    start_line: int | None
-    end_line: int | None
-    depth: int
-    # Index of the step that calls this one; -1 for the root.
-    parent: int
-    # Line in the caller where the call happens, when the graph recorded it.
-    call_line: int | None
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,11 @@ class FlowPlan:
     steps: tuple[FlowStep, ...]
     reach: int
     score: float
+    # What a user runs or calls: entry kind (see :mod:`.flow_entries`) and name.
+    kind: str = FUNCTION
+    public: str = ""
+    # Callees left out as presentation, logging or context setup.
+    skipped: tuple[str, ...] = ()
 
     @property
     def page_id(self) -> str:
@@ -133,14 +153,24 @@ class _CallIndex:
 
 
 def flow_page_limit(code_file_count: int) -> int:
-    """How many flow pages a repository of this size gets (3 to 6)."""
+    """How many flow pages a repository of this size gets at most (4 to 10).
+
+    Only declared entries fill the top half: a large repo with many commands
+    and tools gets more walkthroughs, one with few is not padded out with
+    internal functions (see :func:`_undeclared_limit`).
+    """
     if code_file_count < 200:
-        return 3
-    if code_file_count < 800:
         return 4
+    if code_file_count < 800:
+        return 6
     if code_file_count < 2500:
-        return 5
-    return 6
+        return 8
+    return 10
+
+
+def _undeclared_limit(limit: int) -> int:
+    """Picks after which an undeclared graph root no longer gets a page (3 to 6)."""
+    return limit // 2 + 1
 
 
 def _called_in_production(index: _CallIndex, node: str) -> bool:
@@ -212,7 +242,7 @@ def _score(reach: frozenset[str], roots: set[str]) -> tuple[float, int]:
 def _ranked_roots(
     index: _CallIndex, roots: set[str]
 ) -> list[tuple[float, str, frozenset[str]]]:
-    """Every qualifying root with its score and reach, best first."""
+    """Every qualifying undeclared root with its score and reach, best first."""
     ranked: list[tuple[float, str, frozenset[str]]] = []
     for node, attrs in index.graph.nodes(data=True):
         if not _is_root(index, node, attrs):
@@ -226,36 +256,174 @@ def _ranked_roots(
     return ranked
 
 
+@dataclass(frozen=True)
+class _Candidate:
+    """An operation that could get a page, with what ranks it."""
+
+    tier: int
+    entry: Entry
+    reach: frozenset[str]
+    score: float
+    rank: float
+    mentions: int = 0
+    # Shown in the README's first example: what a newcomer runs first.
+    featured: bool = False
+
+
+def _tier(reach: frozenset[str], files: int) -> int | None:
+    """0 at the full minimum size, 1 at half (a small declared command), else none."""
+    if len(reach) >= _MIN_REACH and files >= _MIN_FILES:
+        return 0
+    if len(reach) >= _MIN_REACH // 2 and files >= 2:
+        return 1
+    return None
+
+
+def _rank(index: _CallIndex, node: str, score: float, mentions: int) -> float:
+    """Documented first, reach second; a UI component counts for less."""
+    ui = _UI_PENALTY if is_ui_path(index.attrs(node).get("file_path") or _file_of(node)) else 1.0
+    return math.log2(2 + mentions) * math.log2(1 + score) * ui
+
+
+def _declared_candidates(
+    index: _CallIndex, roots: set[str], entries: Iterable[Entry], docs: Collection[DocSection]
+) -> list[_Candidate]:
+    entries = [e for e in entries if e.node in index.graph]
+    featured = quickstart_entries(entries, docs)
+    out: list[_Candidate] = []
+    for entry in entries:
+        reach = _reach(index, entry.node)
+        score, files = _score(reach, roots)
+        tier = _tier(reach, files)
+        if tier is not None:
+            mentions = doc_mentions(entry, docs)
+            rank = _rank(index, entry.node, score, mentions)
+            out.append(
+                _Candidate(tier, entry, reach, score, rank, mentions, entry.node in featured)
+            )
+    return out
+
+
+def _root_entry(node: str, attrs: dict, program: str) -> Entry:
+    """An undeclared root; a Go program's ``main`` is the program itself."""
+    if m := _GO_MAIN.fullmatch(node):
+        return Entry(node, CLI, m.group(1) or program or "main")
+    return Entry(node, FUNCTION, _display_name(attrs, node))
+
+
+def _candidates(
+    index: _CallIndex,
+    roots: set[str],
+    entries: Iterable[Entry],
+    docs: Collection[DocSection],
+    program: str,
+) -> list[_Candidate]:
+    """Declared entries (tiers 0 and 1), then undeclared graph roots (tier 2), best first."""
+    out = _declared_candidates(index, roots, entries, docs)
+    declared = {c.entry.node for c in out}
+    for score, node, reach in _ranked_roots(index, roots):
+        if node not in declared:
+            entry = _root_entry(node, index.attrs(node), program)
+            out.append(_Candidate(_UNDECLARED, entry, reach, score, _rank(index, node, score, 0)))
+    out.sort(key=lambda c: (c.tier, not c.featured, -c.rank, c.entry.node))
+    return out
+
+
+@dataclass
+class _Sameness:
+    """Whether two candidates walk the same operation."""
+
+    index: _CallIndex
+    roots: set[str]
+    # ``symbol -> declared entries reaching it``: how shared a callee is.
+    sharers: Counter[str]
+
+    def __call__(self, cand: _Candidate, other: _Candidate) -> bool:
+        """Inside a picked one, wrapping it, mostly its reach, the same public
+        name, or one implementation behind two doors."""
+        return (
+            cand.entry.node in other.reach
+            or other.entry.node in cand.reach
+            or len(cand.reach & other.reach) / max(1, len(cand.reach)) > _MAX_OVERLAP
+            or (cand.entry.kind != FUNCTION and cand.entry.public == other.entry.public)
+            or self._one_core(cand, other)
+        )
+
+    def _one_core(self, a: _Candidate, b: _Candidate) -> bool:
+        """A command and a tool (any two kinds of declared entry) that both run
+        an operation-sized callee hardly any other entry reaches.
+
+        Two doors to one implementation share their core, not their front
+        code, so their reaches overlap too little for the overlap rule.
+        """
+        if _UNDECLARED in (a.tier, b.tier) or a.entry.kind == b.entry.kind:
+            return False
+        ends = {a.entry.node, b.entry.node}
+        for node in a.reach & b.reach:
+            # A callee calling fewer than two others cannot be operation-sized.
+            if (
+                node in ends
+                or self.sharers[node] > _MAX_CORE_SHARERS
+                or self.index.out_deg.get(node, 0) < 2
+            ):
+                continue
+            reach = _reach(self.index, node)
+            if _tier(reach, _score(reach, self.roots)[1]) == 0:
+                return True
+        return False
+
+
+def _sameness(index: _CallIndex, roots: set[str], cands: Iterable[_Candidate]) -> _Sameness:
+    sharers: Counter[str] = Counter()
+    for cand in cands:
+        if cand.tier != _UNDECLARED:
+            sharers.update(cand.reach)
+    return _Sameness(index, roots, sharers)
+
+
+def _swap_for_better_documented(
+    picked: list[_Candidate], cand: _Candidate, twin: _Candidate, same: _Sameness
+) -> None:
+    """Give *twin*'s slot to *cand* when both are declared and *cand* is documented more."""
+    if _UNDECLARED in (cand.tier, twin.tier) or cand.mentions <= twin.mentions:
+        return
+    if any(same(cand, other) for other in picked if other is not twin):
+        return
+    picked[picked.index(twin)] = cand
+
+
 def _pick_diverse(
-    ranked: list[tuple[float, str, frozenset[str]]], roots: set[str], limit: int
-) -> list[tuple[float, str, frozenset[str]]]:
-    """The best roots that are not the same operation twice."""
-    picked: list[tuple[float, str, frozenset[str]]] = []
-    per_package: dict[str, int] = {}
-    # Spread across packages when there are several; a one-package repo takes
-    # its whole budget from the one it has.
-    packages = {package_root_of(_file_of(node), roots) for _, node, _ in ranked}
-    cap = max(_MAX_PER_PACKAGE, math.ceil(limit / max(1, len(packages))))
-    for item in ranked:
-        _, node, reach = item
-        package = package_root_of(_file_of(node), roots)
-        if per_package.get(package, 0) >= cap:
-            continue
-        if any(
-            node in other or len(reach & other) / len(reach) > _MAX_OVERLAP
-            for _s, _n, other in picked
+    cands: list[_Candidate], roots: set[str], limit: int, same: _Sameness
+) -> list[_Candidate]:
+    """The best candidates that are not the same operation twice."""
+    picked: list[_Candidate] = []
+    # Undeclared roots spread across packages when there are several, so one
+    # hub does not fill the group, and only fill the lower half of the budget.
+    # Declared entries are what the project exposes, so they are not capped:
+    # capping them let a minor route in a small package beat the second most
+    # documented command.
+    undeclared = _undeclared_limit(limit)
+    packages = {package_root_of(_file_of(c.entry.node), roots) for c in cands}
+    cap = max(_MAX_PER_PACKAGE, math.ceil(undeclared / max(1, len(packages))))
+    for cand in cands:
+        if cand.tier == _UNDECLARED and (
+            len(picked) >= undeclared or _in_package(picked, cand, roots) >= cap
         ):
             continue
-        picked.append(item)
-        per_package[package] = per_package.get(package, 0) + 1
+        twin = next((other for other in picked if same(cand, other)), None)
+        if twin is not None:
+            _swap_for_better_documented(picked, cand, twin, same)
+            continue
+        picked.append(cand)
         if len(picked) >= limit:
             break
     return picked
 
 
-def _call_line(index: _CallIndex, caller: str, callee: str) -> int | None:
-    lines = call_line_values(index.graph.edges[caller, callee])
-    return min(lines) if lines else None
+def _in_package(picked: list[_Candidate], cand: _Candidate, roots: set[str]) -> int:
+    """Picks in *cand*'s package."""
+    package = package_root_of(_file_of(cand.entry.node), roots)
+    return sum(package_root_of(_file_of(p.entry.node), roots) == package for p in picked)
 
 
 def _step_weight(index: _CallIndex, node: str) -> float:
@@ -269,81 +437,38 @@ def _step_weight(index: _CallIndex, node: str) -> float:
     return breadth / math.log2(2 + index.in_deg.get(node, 0))
 
 
-def _children(index: _CallIndex, node: str, depth: int, taken: set[str]) -> list[str]:
-    """The callees of *node* worth a step, heaviest first."""
-    keep = _STEP_FANOUT[depth] if depth < len(_STEP_FANOUT) else 1
-    fresh = [c for c in index.successors(node) if c not in taken]
-    # Ties by id so the cut is the same on every run.
-    fresh.sort(key=lambda c: (-_step_weight(index, c), c))
-    return fresh[:keep]
+def _step_maker(index: _CallIndex) -> Any:
+    def make(node: str, depth: int, parent: int, call_line: int | None, **extra: Any) -> FlowStep:
+        attrs = index.attrs(node)
+        start = attrs.get("start_line")
+        end = attrs.get("end_line")
+        return FlowStep(
+            symbol_id=node,
+            name=_display_name(attrs, node),
+            path=attrs.get("file_path") or _file_of(node),
+            start_line=start if isinstance(start, int) and start > 0 else None,
+            end_line=end if isinstance(end, int) and end > 0 else None,
+            depth=depth,
+            parent=parent,
+            call_line=call_line,
+            **extra,
+        )
+
+    return make
 
 
-def _step(index: _CallIndex, node: str, depth: int, parent: int, call_line: int | None) -> FlowStep:
-    attrs = index.attrs(node)
-    start = attrs.get("start_line")
-    end = attrs.get("end_line")
-    return FlowStep(
-        symbol_id=node,
-        name=_display_name(attrs, node),
-        path=attrs.get("file_path") or _file_of(node),
-        start_line=start if isinstance(start, int) and start > 0 else None,
-        end_line=end if isinstance(end, int) and end > 0 else None,
-        depth=depth,
-        parent=parent,
-        call_line=call_line,
-    )
+def trace_steps(
+    index: _CallIndex, root: str, read: LineReader | None = None
+) -> tuple[tuple[FlowStep, ...], tuple[str, ...]]:
+    """The root and the callees that carry the operation (see :mod:`.flow_trace`)."""
+    weights: dict[str, float] = {}
 
+    def weight(node: str) -> float:
+        if node not in weights:
+            weights[node] = _step_weight(index, node)
+        return weights[node]
 
-def _allocate(index: _CallIndex, root: str) -> dict[str, list[str]]:
-    """``node -> kept callees``, filled one depth at a time.
-
-    Breadth first so the step budget is shared across the operation's phases:
-    filled depth first, the first phase's helpers used it all up and the part
-    that does the work arrived last or not at all.
-    """
-    kept: dict[str, list[str]] = {root: []}
-    frontier = [root]
-    for depth in range(_STEP_DEPTH):
-        frontier = _fill_depth(index, frontier, depth, kept)
-        if not frontier or len(kept) >= _MAX_STEPS:
-            break
-    return kept
-
-
-def _fill_depth(
-    index: _CallIndex, frontier: list[str], depth: int, kept: dict[str, list[str]]
-) -> list[str]:
-    """Keep the next depth's callees of *frontier* in *kept*; return them."""
-    added: list[str] = []
-    for node in frontier:
-        for child in _children(index, node, depth, set(kept)):
-            if len(kept) >= _MAX_STEPS:
-                return added
-            kept[node].append(child)
-            kept[child] = []
-            added.append(child)
-    return added
-
-
-def trace_steps(index: _CallIndex, root: str) -> tuple[FlowStep, ...]:
-    """The root and the callees that carry the operation, in reading order.
-
-    Chosen breadth first (see :func:`_allocate`), then numbered depth first
-    with each node's callees in the order the code calls them, so step N's
-    caller is always an earlier step and the list reads like the code runs.
-    """
-    kept = _allocate(index, root)
-    steps: list[FlowStep] = []
-
-    def visit(node: str, depth: int, parent: int, call_line: int | None) -> None:
-        steps.append(_step(index, node, depth, parent, call_line))
-        here = len(steps) - 1
-        calls = sorted((_call_line(index, node, c) or 0, c) for c in kept[node])
-        for line, child in calls:
-            visit(child, depth + 1, here, line or None)
-
-    visit(root, 0, -1, None)
-    return tuple(steps)
+    return trace(index, root, weight, _step_maker(index), read)
 
 
 def _display_name(attrs: dict, node: str) -> str:
@@ -364,22 +489,42 @@ def flow_title(entry: FlowStep, *, with_path: bool = False) -> str:
     return f"How {entry.name} works"
 
 
-def _titles(entries: list[FlowStep]) -> list[str]:
-    """One title per entry, naming the file wherever two would read the same."""
-    plain = [flow_title(e) for e in entries]
+def _public_title(entry: Entry) -> str | None:
+    """The title a declared entry reads by: what the user types or calls."""
+    if entry.kind == TOOL:
+        return f"How the {entry.public} tool answers a call"
+    if entry.kind == ROUTE:
+        return f"How a request to {entry.public} is handled"
+    if entry.kind in (CLI, API):
+        return f"How {entry.public} works"
+    return None
+
+
+def _titles(entries: list[Entry], heads: list[FlowStep]) -> list[str]:
+    """One title per plan, naming the file wherever two would read the same."""
+    plain = [_public_title(e) or flow_title(h) for e, h in zip(entries, heads, strict=True)]
     return [
-        flow_title(e, with_path=plain.count(t) > 1) for e, t in zip(entries, plain, strict=True)
+        t if plain.count(t) == 1 else (_public_title(e) or flow_title(h, with_path=True))
+        for e, h, t in zip(entries, heads, plain, strict=True)
     ]
 
 
 def select_flow_plans(
-    graph: Any, *, package_roots: Collection[str] = (), code_file_count: int | None = None
+    graph: Any,
+    *,
+    package_roots: Collection[str] = (),
+    code_file_count: int | None = None,
+    read: LineReader | None = None,
+    program: str = "",
+    scripts: Mapping[str, str] | None = None,
+    docs: Collection[DocSection] = (),
 ) -> list[FlowPlan]:
     """The operations this repository's flow pages walk, best first.
 
-    Pure function of the graph (and the package roots derived from the same
-    file set), so generation, cost estimation and the update cascade compute
-    the same plans.
+    A pure function of the graph, the checkout's text (*read*, *docs*) and the
+    package roots, so generation, cost estimation and the update cascade
+    compute the same plans. Without *read* the declared entries come from the
+    graph's decorators alone and every call counts as on the main path.
     """
     if graph is None or graph.number_of_nodes() == 0:
         return []
@@ -388,19 +533,29 @@ def select_flow_plans(
     index = _CallIndex(graph, out_deg, in_deg, roots)
     if code_file_count is None:
         code_file_count = _code_file_count(graph)
-    picked = _pick_diverse(_ranked_roots(index, roots), roots, flow_page_limit(code_file_count))
-    traced = [trace_steps(index, node) for _, node, _ in picked]
-    titles = _titles([steps[0] for steps in traced])
+    entries = declared_entries(graph, read or _no_lines, program, scripts)
+    cands = _candidates(index, roots, entries, docs, program)
+    same = _sameness(index, roots, cands)
+    picked = _pick_diverse(cands, roots, flow_page_limit(code_file_count), same)
+    traced = [trace_steps(index, c.entry.node, read) for c in picked]
+    titles = _titles([c.entry for c in picked], [steps[0] for steps, _ in traced])
     return [
         FlowPlan(
-            entry_id=node,
+            entry_id=c.entry.node,
             title=title,
             steps=steps,
-            reach=len(reach),
-            score=round(score, 3),
+            reach=len(c.reach),
+            score=round(c.score, 3),
+            kind=c.entry.kind,
+            public=c.entry.public,
+            skipped=skipped,
         )
-        for (score, node, reach), steps, title in zip(picked, traced, titles, strict=True)
+        for c, (steps, skipped), title in zip(picked, traced, titles, strict=True)
     ]
+
+
+def _no_lines(_path: str) -> list[str]:
+    return []
 
 
 def plans_for_index(graph_builder: Any, parsed_files: list[Any]) -> list[FlowPlan]:
@@ -410,7 +565,21 @@ def plans_for_index(graph_builder: Any, parsed_files: list[Any]) -> list[FlowPla
     from .page_generator.helpers import indexed_parsed_files
 
     paths = set(indexed_parsed_files(graph_builder, parsed_files))
-    return select_flow_plans(graph_builder.graph(), package_roots=package_roots_from_paths(paths))
+    # A graph rebuilt from the database has no decorators until the re-parse
+    # stamps them back; without them a declared command is not seen as one.
+    restore = getattr(graph_builder, "restore_parse_only_attrs", None)
+    if restore is not None:
+        restore(parsed_files)
+    repo_root = getattr(graph_builder, "_repo_path", None)
+    graph = graph_builder.graph()
+    return select_flow_plans(
+        graph,
+        package_roots=package_roots_from_paths(paths),
+        read=line_reader(repo_root, getattr(graph_builder, "_source_map", None)),
+        program=program_name(repo_root, graph),
+        scripts=python_scripts(repo_root),
+        docs=doc_sections(repo_root),
+    )
 
 
 def _code_file_count(graph: Any) -> int:

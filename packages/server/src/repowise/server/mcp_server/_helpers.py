@@ -28,7 +28,7 @@ from repowise.core.persistence.sql import (  # noqa: F401
     escape_like,
     is_missing_table,
 )
-from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import _checkout, _state
 from repowise.server.mcp_server._query_shape import _is_path  # noqa: F401
 from repowise.server.mcp_server._why_relevance import floor_ranked, question_terms
 
@@ -235,10 +235,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
     if registry is None:
         # Single-repo mode — validate the repo param against the DB if given
         if repo is not None:
-            from repowise.core.persistence.database import get_session as _get_session
-
-            async with _get_session(_state._session_factory) as session:
-                await _get_repo(session, repo)  # raises LookupError if invalid
+            own = await _single_repo_checkout(repo)
+            if own is not None:
+                return own
 
         return RepoContext(
             alias="default",
@@ -258,7 +257,45 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             "repo='all' must be handled explicitly by each tool. "
             "Fan out with _federation.Federation instead."
         )
+    # Only a path can name another checkout; an alias resolves as before.
+    is_path = repo is not None and Path(repo).is_absolute()
+    matched = registry.match_checkout(repo) if is_path else None
+    if matched is not None and matched[0] == resolved:
+        entry = registry.ws_config.get_repo(resolved)
+        indexed = (registry.workspace_root / entry.path).resolve()
+        if _checkout.note_match(matched[1], indexed):
+            return await _checkout.own_index_context(resolved, matched[1].checkout)
+    elif repo is not None:
+        _checkout.note_match(None, Path())
     return await registry.get(resolved)
+
+
+async def _single_repo_checkout(repo: str) -> Any:
+    """Validate *repo* on a single-repo server; a worktree's own context or None.
+
+    A row the store knows (path, id or name) is the served repo. Otherwise an
+    absolute path inside the served checkout, or inside another worktree of
+    it, resolves too; anything else raises ``LookupError`` as before.
+    """
+    from repowise.core.git_head import match_checkout
+    from repowise.core.persistence.database import get_session as _get_session
+
+    async with _get_session(_state._session_factory) as session:
+        try:
+            await _get_repo(session, repo)
+        except LookupError:
+            served = _state._repo_path
+            matched = (
+                match_checkout(repo, served) if served and Path(repo).is_absolute() else None
+            )
+            if matched is None:
+                raise
+        else:
+            _checkout.note_match(None, Path())
+            return None
+    if _checkout.note_match(matched, Path(served).resolve()):
+        return await _checkout.own_index_context("default", matched.checkout)
+    return None
 
 
 async def wait_for_vector_store(ctx: Any) -> None:
@@ -406,23 +443,32 @@ def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[di
     return linked_decisions
 
 
+def _origin_span(first_date: str, last_date: str, age: int, capped: bool) -> str:
+    """When the file was made and last changed.
+
+    *capped* history (the commit cap, or a shallow clone's cut) starts after
+    the file was made, so its first commit is not called the creation.
+    """
+    if capped:
+        return f"History starts ~{first_date} (older commits not indexed), last modified {last_date}."
+    return f"Created ~{first_date}, last modified {last_date} ({age} days old)."
+
+
 def _origin_summary_parts(
     authors: list,
     earliest_commit: dict | None,
     narrated: list[tuple[str, dict | None]],
     primary: str,
     total: int,
-    first_date: str,
-    last_date: str,
-    age: int,
+    span: str,
 ) -> list[str]:
     """Assemble the narrative sentences for an origin story.
 
     *narrated* is ``(title, first evidence commit or None)`` per governing
-    decision the summary names.
+    decision the summary names; *span* is :func:`_origin_span`'s sentence.
     """
     parts = [
-        f"Created ~{first_date}, last modified {last_date} ({age} days old).",
+        span,
         f"Primary author: {primary} ({total} total commits).",
     ]
 
@@ -492,9 +538,9 @@ def _build_origin_story(
         narrated,
         primary,
         total,
-        first_date,
-        last_date,
-        age,
+        _origin_span(
+            first_date, last_date, age, bool(getattr(git_meta, "commit_count_capped", False))
+        ),
     )
 
     return {

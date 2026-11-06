@@ -2465,3 +2465,16 @@ class TestServedSnippet:
             "lib/layer.rb": "Cache layer with no heading. ## not a heading here",
             "docs/only.md": "# docs/only.md\n\n## Overview\n",
         }
+
+
+def test_a_path_query_naming_one_directory_names_its_files_call():
+    from repowise.server.mcp_server.tool_search.structured import _named_directory
+
+    paths = ["src/utils/url.ts", "src/utils/url.test.ts", "src/jsx/utils.ts", "lib/utils/x.ts"]
+    assert _named_directory("src/utils", paths) == "src/utils"
+    assert _named_directory("src/utils/", paths) == "src/utils"
+    # "utils" names two directories; the call needs one.
+    assert _named_directory("utils", paths) is None
+    assert _named_directory("jsx", paths) == "src/jsx"
+    assert _named_directory("url.ts", paths) is None
+    assert _named_directory("src/*", paths) is None

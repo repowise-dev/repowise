@@ -201,3 +201,156 @@ def test_update_drops_the_graph_seed_before_rewriting_the_graph(
 
     assert result.updated is True and result.error is None
     assert not seed.exists()
+
+
+_BRANCHY = "def tangled(a, b, c, d):\n" + "".join(
+    f"    if a > {i}:\n        if b > {i}:\n            if c > {i}:\n"
+    f"                if d > {i}:\n                    a += {i}\n"
+    for i in range(14)
+) + "    return a\n"
+
+
+def _commit_file(repo, name: str, text: str) -> None:
+    (repo / name).write_text(text)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", f"edit {name}")
+
+
+def _forbid_rescore(monkeypatch) -> None:
+    import repowise.core.pipeline.incremental.rescore as rescore_mod
+
+    async def _boom(*args, **kwargs):  # pragma: no cover - failure path
+        raise AssertionError("no re-score without rescore_health")
+
+    monkeypatch.setattr(rescore_mod, "rescore_health_from_store", _boom)
+
+
+def test_sink_report_covers_the_repo_without_a_rescore(
+    tmp_path,
+    forbid_full_pipeline,  # noqa: F811
+    monkeypatch,
+):
+    from repowise.core.pipeline.incremental.rescore import rescore_health_from_store
+
+    repo = _make_git_repo(tmp_path)
+    _commit_file(repo, "a.py", _BRANCHY)
+    _mark_indexed(repo, get_head_commit(repo))
+    _add_commit(repo, "b.py")
+    # Every file scored once, as an index leaves the store.
+    asyncio.run(update_single_repo_index(repo, rescore_health=True))
+    _commit_file(repo, "c.py", "def gamma():\n    return 3\n")
+    _forbid_rescore(monkeypatch)
+    sink: list[UpdateProducts] = []
+
+    result = asyncio.run(update_single_repo_index(repo, products_sink=sink))
+
+    assert result.health_rescored is False
+    report = sink[0].health_report
+    # a.py did not change, yet the report carries it: it comes from the store.
+    assert {m.file_path for m in report.metrics} == _stored_metric_paths(repo)
+    assert {"a.py", "b.py", "c.py"} <= {m.file_path for m in report.metrics}
+    assert any(f.file_path == "a.py" for f in report.findings)
+    assert report.kpis.get("average_health") is not None
+
+    # The same scores and findings a full re-score of that store produces.
+    monkeypatch.undo()
+    rescored = asyncio.run(
+        rescore_health_from_store(
+            repo, sink[0].graph_builder, sink[0].parsed_files, [], log=lambda *_: None
+        )
+    )
+    assert {m.file_path: m.score for m in report.metrics} == {
+        m.file_path: m.score for m in rescored.metrics
+    }
+
+    def keys(findings):
+        return sorted((f.file_path, f.biomarker_type, f.function_name) for f in findings)
+
+    assert keys(report.findings) == keys(rescored.findings)
+    assert {(f.severity, repr(f.details)) for f in report.findings} == {
+        (f.severity, repr(f.details)) for f in rescored.findings
+    }
+    assert report.kpis["average_health"] == rescored.kpis["average_health"]
+
+    def plans(suggestions):
+        # Performance plans are stored by their own finalizer, not the report.
+        return sorted(
+            (s.file_path, s.refactoring_type, s.target_symbol)
+            for s in suggestions
+            if s.refactoring_type != "performance_fix"
+        )
+
+    assert plans(report.refactoring_suggestions) == plans(rescored.refactoring_suggestions)
+
+
+def test_rescore_skips_the_changed_files_health_pass(
+    tmp_path,
+    forbid_full_pipeline,  # noqa: F811
+    monkeypatch,
+):
+    import repowise.core.pipeline.incremental as incremental_mod
+    import repowise.core.pipeline.incremental.health as health_mod
+
+    health_passes: list[bool] = []
+    real_partial = incremental_mod.run_partial_analysis
+
+    def _recording(*args, **kwargs):
+        health_passes.append(kwargs.get("health", True))
+        return real_partial(*args, **kwargs)
+
+    async def _no_refresh(*args, **kwargs):  # pragma: no cover - failure path
+        raise AssertionError("a re-score replaces the history refresh")
+
+    monkeypatch.setattr(incremental_mod, "run_partial_analysis", _recording)
+    monkeypatch.setattr(health_mod, "refresh_unchanged_history", _no_refresh)
+    repo = _indexed_repo_with_new_commit(tmp_path)
+
+    result = asyncio.run(update_single_repo_index(repo, rescore_health=True))
+
+    assert result.health_rescored is True
+    # The changed-files pass is skipped; the re-score scores every file.
+    assert health_passes == [False]
+    assert {"a.py", "b.py"} <= _stored_metric_paths(repo)
+    assert _snapshot_count(repo) == 1
+
+
+def _snapshot_count(repo) -> int:
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.database import resolve_db_url
+    from repowise.core.persistence.models import HealthSnapshot
+
+    async def _read() -> int:
+        engine = create_engine(resolve_db_url(repo))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return (await session.execute(select(func.count(HealthSnapshot.id)))).scalar_one()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_read())
+
+
+def test_update_reports_phase_timings(tmp_path, forbid_full_pipeline):  # noqa: F811
+    repo = _indexed_repo_with_new_commit(tmp_path)
+
+    result = asyncio.run(update_single_repo_index(repo, rescore_health=True))
+
+    timings = result.phase_timings
+    assert timings is not None
+    for phase in (
+        "run",
+        "diff",
+        "rebuild",
+        "analysis.stored_reads",
+        "analysis.dead_code",
+        "analysis.doc_drift",
+        "knowledge_graph",
+        "persist",
+        "rescore",
+    ):
+        assert phase in timings, phase
+    assert any(name.startswith("rescore.") for name in timings)
+    assert all(seconds >= 0 for seconds in timings.values())
+    assert timings["run"] >= timings["persist"]

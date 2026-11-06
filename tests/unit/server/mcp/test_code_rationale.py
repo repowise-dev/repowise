@@ -510,3 +510,66 @@ def test_mine_drops_blocks_far_below_the_best_match(tmp_path):
     paths = {r["path"] for r in out}
     assert "strong.py" in paths
     assert "weak.py" not in paths
+
+
+_REDIRECT_SOURCE = (
+    "def redirect_headers(request, url):\n"
+    "    headers = dict(request.headers)\n"
+    "    if not same_origin(url, request.url):\n"
+    "        # Strip Authorization headers when responses are redirected\n"
+    "        # away from the origin.\n"
+    "        headers.pop('Authorization', None)\n"
+    "    # Use the client cookie store, never the original cookie header.\n"
+    "    headers.pop('Cookie', None)\n"
+    "    return headers\n"
+)
+_REDIRECT_QUESTION = (
+    "why does the redirect handler strip the Authorization header on cross-origin "
+    "redirects but keep it for http to https upgrades"
+)
+
+
+def test_mine_serves_a_plain_comment_stating_the_reason_for_get_why(tmp_path):
+    """An unmarked comment carrying most of a reason question is served to get_why.
+
+    The strict gate (get_answer's) keeps it out: it has no marker and carries
+    less of the question than the record floor asks of a decision.
+    """
+    _write(tmp_path, "client.py", _REDIRECT_SOURCE)
+    strict = mine_rationale(str(tmp_path), ["client.py"], _REDIRECT_QUESTION)
+    plain = mine_rationale(str(tmp_path), ["client.py"], _REDIRECT_QUESTION, for_why=True)
+    assert all(r["lines"][0] != 4 for r in strict)
+    assert plain[0]["lines"] == [4, 5]
+
+
+def test_mine_serves_one_plain_comment_at_most(tmp_path):
+    """Past the best one, plain admits are a long docstring's vocabulary."""
+    src = (
+        "# Strip Authorization headers on cross origin redirect hops.\n"
+        "A = 1\n"
+        "# Keep the header for http to https upgrades on cross origin hops.\n"
+        "B = 2\n"
+        "# Parse the timeout value.\n"
+        "C = 3\n"
+        "# Format a log line.\n"
+        "D = 4\n"
+    )
+    _write(tmp_path, "h.py", src)
+    out = mine_rationale(str(tmp_path), ["h.py"], _REDIRECT_QUESTION, for_why=True)
+    assert len(out) == 1
+
+
+def test_mine_anchors_a_comment_above_a_class_field_the_query_names(tmp_path):
+    """``private _basePath: string`` declares ``_basePath``, so the comment
+    above it answers a question naming the field, words of its own or not."""
+    src = (
+        "class Base {\n"
+        "  // Cannot use `#` because it requires visibility at JavaScript runtime.\n"
+        "  private _basePath: string = '/'\n"
+        "}\n"
+    )
+    _write(tmp_path, "base.ts", src)
+    question = "why does the base declare _basePath with private instead of # private fields"
+    out = mine_rationale(str(tmp_path), ["base.ts"], question, for_why=True)
+    assert [r["lines"] for r in out] == [[2, 2]]
+    assert mine_rationale(str(tmp_path), ["base.ts"], question) == []

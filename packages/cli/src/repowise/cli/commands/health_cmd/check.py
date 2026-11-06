@@ -31,8 +31,6 @@ from repowise.cli.output import emit_json, format_option
 
 if TYPE_CHECKING:
     from repowise.core.analysis.change_health.models import ChangeHealthDelta
-    from repowise.core.analysis.change_health.sources import GitRevisionSource
-    from repowise.core.analysis.health.config import HealthConfig
     from repowise.core.analysis.health_gate import GateResult
 
 _FORMATS = (*CI_FORMATS, "sarif", "gitlab")
@@ -165,54 +163,15 @@ def _diff_risk_levels(values: tuple[str, ...]) -> dict[str, str]:
 def _evaluate(
     revspec: str | None, fail_on: str, fail_at: str, repo: str | None, levels: dict[str, str]
 ) -> _Verdict:
-    from repowise.core.analysis.change_health.service import (
-        ChangeHealthDeltaService,
-        DeltaRequest,
-    )
-    from repowise.core.analysis.change_health.sources import GitRevisionSource
-    from repowise.core.analysis.diff_risk import diff_risk_for_change
-    from repowise.core.analysis.health_gate import (
-        NotEvaluatedError,
-        diff_risk_findings,
-        evaluate,
-    )
+    from repowise.core.analysis.change_health.check import HealthCheckUnavailable, run_health_check
 
     root = str(repo_root(repo))
     label = ci_revspec(root, revspec)
-    source = GitRevisionSource(root)
     try:
-        pair = source.resolve(label)
-    except ValueError as exc:
-        raise _not_evaluated("unsupported_range", str(exc)) from exc
-    rules = _base_rules(source, pair.base_sha)
-    service = ChangeHealthDeltaService(source, repo_path=root, health_config=rules)
-    # One resolution serves the comparison and the diff-risk rules.
-    delta = service.compare(DeltaRequest(root, label), pair=pair)
-    risks = diff_risk_findings(diff_risk_for_change(source, pair, severities=levels))
-    try:
-        result = evaluate(delta, fail_on=fail_on, fail_at=fail_at, extra=risks)
-    except NotEvaluatedError as exc:
+        check = run_health_check(root, label, fail_on=fail_on, fail_at=fail_at, levels=levels)
+    except HealthCheckUnavailable as exc:
         raise _not_evaluated(exc.code, str(exc)) from exc
-    return _Verdict(result, delta, label)
-
-
-def _base_rules(source: GitRevisionSource, base: str) -> HealthConfig:
-    """``.repowise/health-rules.json`` at the change's *base*; defaults when absent.
-
-    Read at the base so a change cannot loosen its own gate.
-    """
-    from repowise.core.analysis.health.config import HEALTH_RULES_PATH, HealthConfig
-
-    raw = source.read(base, [HEALTH_RULES_PATH]).get(HEALTH_RULES_PATH)
-    if raw is None:
-        return HealthConfig()
-    try:
-        return HealthConfig.from_json(raw.decode("utf-8"))
-    except ValueError as exc:
-        raise CannotEvaluateError(
-            "rules_invalid",
-            f"{HEALTH_RULES_PATH} at the change's base ({base[:12]}) is invalid: {exc}",
-        ) from exc
+    return _Verdict(check.result, check.delta, label)
 
 
 def _not_evaluated(code: str, message: str) -> CannotEvaluateError:

@@ -69,7 +69,7 @@ defect-validated score from deterministic markers).
 
 Claude uses these when relevant — no slash command needed:
 
-- **Codebase exploration** — routes questions to `get_overview` / `get_answer` / `search_codebase` / `get_context` / `get_symbol` instead of raw file reads.
+- **Codebase exploration** — sends exact names to Grep, Glob and Read, and questions about how code works, its callers, impact and history to `get_answer` / `get_context` / `get_risk` / `get_why` / `search_codebase` / `get_symbol`.
 - **Pre-modification check** — calls `get_risk` (and `get_health` for refactors) before editing to assess blast radius.
 - **Change review** — for a PR / branch / working-tree diff, combines `get_change_risk` (whole-change score) with `get_risk`'s per-file `directive` block (will-break / missing co-changes / missing tests).
 - **Code health** — answers quality / complexity / "what to refactor" via `get_health`.

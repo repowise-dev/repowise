@@ -909,6 +909,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     pending_lanes = pending_decision_lanes(state, repo_path)
     # An unfinished init has no stamps yet; the resume line covers it.
     rescore = _rescore_pending(state) if incomplete is None else []
+    from repowise.cli.commands._page_freshness import stale_page_count
+
+    stale_pages = run_async(stale_page_count(repo_path)) if has_db else 0
 
     if fmt == "json":
         counts, total_db_tokens = (
@@ -939,6 +942,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "pages_by_type": counts,
                 "page_total": sum(counts.values()),
                 "page_tokens": total_db_tokens,
+                "stale_pages": stale_pages,
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
@@ -983,6 +987,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
     state_table.add_row("Total pages", str(total_pages))
+    state_table.add_row("Stale pages", str(stale_pages) if stale_pages is not None else "Unknown")
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
     state_table.add_row("Total tokens", f"{total_tokens:,}")

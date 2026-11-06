@@ -10,6 +10,7 @@ import pytest
 from rich.console import Console
 
 from repowise.cli import mcp_config
+from repowise.cli.agent_targets.types import FileAction, FileWrite
 from repowise.cli.commands import init_cmd, update_cmd
 from repowise.cli.commands.update_cmd.command import run_update
 from repowise.cli.editor_integrations import claude as claude_integration
@@ -626,9 +627,9 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
 ) -> None:
     calls: list[tuple[str, object, object | None]] = []
 
-    def fake_save_root_mcp_config(repo_path: Path) -> Path:
+    def fake_sync_project_mcp_config(repo_path: Path) -> FileWrite:
         calls.append(("root-mcp", repo_path, None))
-        return repo_path / ".mcp.json"
+        return FileWrite(path=repo_path / ".mcp.json", action=FileAction.CREATED)
 
     def fake_maybe_generate_claude_md(
         console_obj: object,
@@ -638,7 +639,9 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
     ) -> None:
         calls.append(("claude-md", repo_path, no_claude_md))
 
-    monkeypatch.setattr(mcp_config, "save_root_mcp_config", fake_save_root_mcp_config)
+    monkeypatch.setattr(
+        claude_integration.claude_target, "sync_project_mcp_config", fake_sync_project_mcp_config
+    )
     monkeypatch.setattr(
         claude_integration,
         "maybe_generate_claude_md",

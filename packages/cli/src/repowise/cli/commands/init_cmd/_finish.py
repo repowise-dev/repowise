@@ -271,19 +271,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
-    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+    from repowise.core.pipeline.incremental.feature import stamp_graph_update
 
-    graph_cache_enabled = incremental_graph_enabled()
-    base_state["graph_update"] = {
-        "enabled": graph_cache_enabled,
-        "mode": "full",
-        "reason": (
-            "initial full graph build; incremental cache primed"
-            if graph_cache_enabled
-            else "feature disabled"
-        ),
-        "files": [],
-    }
+    stamp_graph_update(base_state)
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
     # Never inherit the previous run's degradation report.

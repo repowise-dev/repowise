@@ -774,7 +774,7 @@ def search_digest_install(path: str | None, workspace: bool, no_workspace: bool)
 @click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
 @click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
 def search_digest_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Stop replacing search floods in this repo; the digest goes back to riding alongside."""
+    """Stop replacing search floods in this repo; greps come back whole."""
     _set_hook_surface(
         path, workspace, no_workspace,
         surface="search_digest", label="Digest-served searches", enabled=False,

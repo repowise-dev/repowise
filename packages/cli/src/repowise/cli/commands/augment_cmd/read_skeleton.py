@@ -25,12 +25,12 @@ holds the first five, :func:`skeleton_replacement` the rest):
 3. **Not a verification re-read.** A Read that follows an Edit of the same
    file wants fidelity, not structure.
 4. **Once per file per session.** The second Read is the escape hatch.
-5. **Indexed**, with symbol bounds persisted.
+5. **Indexed**, with symbol bounds persisted and still matching the file.
 6. **Worth it** — skeleton well under full, and the saving clears the floor.
 7. **Under the output cap**, whole. A truncated skeleton would lose its
    trailing elision ranges, which is the part that makes this reversible, so
    an overflowing render falls back to signatures only, then to an outline
-   (one line per symbol), and is skipped only when none of them fit.
+   (one line per symbol), then to an outline of as many symbols as fit.
 
 The harness capability probe, the ``hooks.read_skeleton`` opt-in, the
 Read-shaped wire payload, the no-payload-no-ledger-row rule and both ledger
@@ -144,10 +144,13 @@ def skeleton_replacement(
         return None
     if not source.strip():
         return None
+    source_lines = source.splitlines()
+    if not _bounds_current(source_lines, symbols):
+        return None
 
     from repowise.core.distill.skeleton import build_skeleton
 
-    total_lines = len(source.splitlines())
+    total_lines = len(source_lines)
     # "smart" over "signatures" for the docstring summary line it keeps under
     # each signature. Its body-budget machinery is inert here on purpose: no
     # PageRank is persisted on wiki_symbols, so every importance is 0.0 and no
@@ -205,7 +208,125 @@ def _fit_under_cap(
         text = _render(rel, result, total_lines)
         if len(text) <= _MAX_OUTPUT_CHARS:
             return result, text
-    return None
+    return _fit_partial_outline(rel, source, symbols, total_lines)
+
+
+#: Outline order when not every symbol fits: types, then callables, then
+#: constants and fields. No centrality is persisted per symbol, so rank by
+#: shape. Ceiling: a PageRank-ranked pick once the index stores one.
+_KIND_RANK = {"class": 0, "interface": 0, "struct": 0, "trait": 0, "enum": 0, "type": 0}
+_CALLABLE_RANK = {"function": 1, "method": 1}
+
+
+def _fit_partial_outline(
+    rel: str, source: str, symbols: list[SkeletonSymbol], total_lines: int
+) -> tuple[SkeletonResult, str] | None:
+    """The outline of as many top-ranked symbols as fit the cap, or None.
+
+    Top-level before nested, types before callables before the rest, longer
+    spans first. Every symbol left out sits inside an elided range, so the
+    reader can still range-read it; the header says how many are listed.
+    """
+    from repowise.core.distill.skeleton import build_skeleton
+
+    ranked = _rank_for_outline(symbols)
+    width = _FALLBACK_RENDERS[-1][1]
+    # The count build_skeleton can list: no synthetic module rows, nothing
+    # past the end of the file.
+    listable = sum(
+        1
+        for s in symbols
+        if s.name != "__module__" and s.kind != "module" and 1 <= s.start_line <= total_lines
+    )
+    best: tuple[SkeletonResult, str] | None = None
+    lo, hi = 1, len(ranked) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        result = build_skeleton(source, ranked[:mid], mode="outline", outline_width=width)
+        text = _render(rel, result, total_lines, listed_of=listable)
+        if len(text) <= _MAX_OUTPUT_CHARS:
+            best, lo = (result, text), mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _rank_for_outline(symbols: list[SkeletonSymbol]) -> list[SkeletonSymbol]:
+    """*symbols* in the order a partial outline should keep them."""
+    ordered = sorted(symbols, key=lambda s: (s.start_line, -(s.end_line - s.start_line)))
+    nested: set[int] = set()
+    open_end = 0
+    for sym in ordered:
+        if sym.start_line <= open_end:
+            nested.add(id(sym))
+        else:
+            open_end = sym.end_line
+    return sorted(
+        ordered,
+        key=lambda s: (
+            id(s) in nested,
+            _KIND_RANK.get(s.kind, _CALLABLE_RANK.get(s.kind, 2)),
+            -(s.end_line - s.start_line),
+        ),
+    )
+
+
+#: Names a declaration line can carry. Anything else (``<anonymous>``,
+#: ``default``) is indexed under a name the source does not spell out there.
+_CHECKABLE_NAME_RE = re.compile(r"^#?[A-Za-z_$][\w$]*$")
+#: Whole words on a declaration line, ``#private`` members included.
+_WORD_RE = re.compile(r"#?[\w$]+")
+#: Most leading lines (decorators, attributes) skipped before the declaration
+#: line that has to carry the symbol's name.
+_MAX_LEAD_LINES = 40
+#: Lead-in a symbol's indexed start may sit on: a decorator or attribute, or a
+#: line of closing brackets (the tail of a multi-line decorator, where some
+#: grammars start the decorated symbol). Never a blank: a start that lands on
+#: one means the symbol moved.
+_LEAD_RE = re.compile(r"^\s*(?:@|#\[|[)\]]+[,;]?\s*$)")
+#: Comment or blank lines allowed between a decorator and its declaration.
+_BETWEEN_RE = re.compile(r"^\s*(?:#(?:[\s!]|$)|//|/\*|\*|$)")
+
+
+def _bounds_current(lines: list[str], symbols: list[SkeletonSymbol]) -> bool:
+    """False when the indexed bounds no longer match the file on disk.
+
+    A file edited since the index has moved its symbols, and a skeleton cut on
+    the old bounds would number lines wrongly. Checking that each symbol's
+    name is a whole word on its declaration line (its start, past any
+    decorators) needs no index query and no parser. Any miss counts: an edit
+    moves only the symbols below it, so one moved symbol is enough to make the
+    numbers after it wrong.
+    """
+    for sym in symbols:
+        name = re.split(r"[.:]+", sym.name)[-1]
+        if name == "default" or not _CHECKABLE_NAME_RE.match(name):
+            continue
+        if not 1 <= sym.start_line <= len(lines):
+            return False
+        text = _declaration_line(lines, sym.start_line - 1)
+        words = set(_WORD_RE.findall(text))
+        if name not in words and name not in {w.lstrip("#") for w in words}:
+            return False
+    return True
+
+
+def _declaration_line(lines: list[str], start: int) -> str:
+    """The lines from *start* through the first that is not decorator lead-in.
+
+    '' when no declaration turns up in the window (a bracket in a decorator's
+    string can keep the depth open): unknown counts as moved.
+    """
+    window = lines[start : start + _MAX_LEAD_LINES]
+    depth = 0  # open brackets of a multi-line decorator or attribute
+    for i, line in enumerate(window):
+        # Past a decorator, a comment or blank line is still lead-in; the start
+        # itself never is, or a one-line shift would land on one and pass.
+        between = i > 0 and _BETWEEN_RE.match(line)
+        if depth <= 0 and not between and not _LEAD_RE.match(line):
+            return "\n".join(window[: i + 1])
+        depth += line.count("(") + line.count("[") - line.count(")") - line.count("]")
+    return ""
 
 
 #: The elision marker ``_render`` in distill.skeleton emits: indent, then
@@ -213,7 +334,9 @@ def _fit_under_cap(
 _ELISION_RE = re.compile(r"^\s*\.\.\. \d+ lines \((\d+)-(\d+)\)\s*$")
 
 
-def _render(rel: str, result: SkeletonResult, total_lines: int) -> str:
+def _render(
+    rel: str, result: SkeletonResult, total_lines: int, *, listed_of: int | None = None
+) -> str:
     """Header plus numbered skeleton — the header is the reversibility contract."""
     body = _number(result.text, total_lines)
     # The outline cuts long signatures, so it says so: a cut line ends in "...".
@@ -223,6 +346,11 @@ def _render(rel: str, result: SkeletonResult, total_lines: int) -> str:
         if result.mode == "outline"
         else ""
     )
+    if listed_of is not None:
+        outline += (
+            f"Only {result.symbol_count} of its {listed_of} symbols fit: top-level types "
+            "and the longest functions first. The others sit inside the elided ranges.\n"
+        )
     return (
         f"[repowise] Serving the indexed skeleton of {rel} in place of the full file "
         f"(~{result.skeleton_tokens} tokens vs ~{result.full_tokens}; "

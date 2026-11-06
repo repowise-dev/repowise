@@ -25,6 +25,9 @@ def integration_checks(ctx: CheckContext) -> list[DoctorCheck]:
     # 13. Per-agent health, reported by each agent's own descriptor.
     agent_checks, ctx.agents_need_refresh = _agent_target_checks(ctx.repo_path)
     checks.extend(agent_checks)
+    firing_row = _hooks_firing_row(ctx.repo_path)
+    if firing_row is not None:
+        checks.append(firing_row)
     return checks
 
 
@@ -117,32 +120,44 @@ def _registered_mcp_entry() -> dict | None:
     bill of health to the broken thing.
     """
     from repowise.cli.editor_integrations.claude_config import (
-        _claude_code_settings_path,
+        _claude_code_user_config_path,
         _stored_repowise_entry,
     )
 
-    return _stored_repowise_entry(_claude_code_settings_path())
+    return _stored_repowise_entry(_claude_code_user_config_path())
 
 
-def _unregistered_detail() -> tuple[str, bool]:
-    """``(detail, unreadable)``: why there is no entry, absent or present but unreadable.
+def _unregistered_detail() -> tuple[str, bool, bool]:
+    """``(detail, warn, repair)``: why there is no entry in ~/.claude.json.
 
-    Those have different fixes, and collapsing them tells a user with a
-    hand-broken settings.json to run ``init``, which will fail on the same
-    file. Only reached when there is no entry, so it costs nothing normally.
+    An unreadable file and an entry left only in settings.json (which Claude
+    Code does not read) are worth a warning; the latter is repaired by
+    re-registering. Absent, or served by the plugin, is a choice. Only reached
+    when there is no entry, so it costs nothing normally.
     """
     from repowise.cli.editor_integrations.claude_config import (
         _claude_code_settings_path,
+        _claude_code_user_config_path,
+        _is_our_entry,
+        _stored_repowise_entry,
+        claude_code_plugin_installed,
         load_existing_config,
     )
 
-    settings_path = _claude_code_settings_path()
-    if settings_path.exists():
+    config_path = _claude_code_user_config_path()
+    if config_path.exists():
         try:
-            load_existing_config(settings_path)
+            load_existing_config(config_path)
         except Exception:
-            return f"could not parse {settings_path}", True
-    return "not registered (repowise init registers it)", False
+            return f"could not parse {config_path}", True, False
+    if claude_code_plugin_installed():
+        return "served by the repowise Claude Code plugin", False, False
+    settings_path = _claude_code_settings_path()
+    legacy = _stored_repowise_entry(settings_path)
+    if legacy is not None and _is_our_entry(legacy):
+        detail = f"only in {settings_path}, which Claude Code does not read (rerun with --repair)"
+        return detail, True, True
+    return "not registered (repowise init registers it)", False, False
 
 
 @_functools.cache
@@ -187,7 +202,7 @@ def _claude_registration_check(
 ) -> tuple[DoctorCheck, bool]:
     """Detect a wedged Claude Code MCP registration (stale paths).
 
-    The global ``~/.claude/settings.json`` entry can end up pointing at a
+    The user-scope ``~/.claude.json`` entry can end up pointing at a
     directory that no longer exists (a moved repo, or a leaked temp path) or
     at a pinned command binary from a deleted venv; either way the MCP
     server silently fails to start in every Claude Code session. Returns
@@ -206,10 +221,12 @@ def _claude_registration_check(
     try:
         entry = _registered_mcp_entry()
         if entry is None:
-            # An unparseable settings file is worth a look; no entry at all is
-            # a choice (another agent, or none).
-            detail, unreadable = _unregistered_detail()
-            return _check(name, True, detail, check_id=check_id, warn=unreadable), False
+            # An unparseable config or a stranded entry is worth a look; no
+            # entry at all is a choice (another agent, or none).
+            detail, warn, repair = _unregistered_detail()
+            fix = "repowise doctor --repair" if repair else None
+            row = _check(name, True, detail, check_id=check_id, warn=warn, fix=fix)
+            return row, repair
 
         problems: list[str] = []
         command = entry.get("command")
@@ -291,10 +308,11 @@ def _claude_json_entries(repo_path: _DoctorPath) -> list[object]:
     """
     import json
 
+    from repowise.cli.editor_integrations.claude_config import _claude_code_user_config_path
     from repowise.cli.helpers import _same_path
 
     try:
-        data = json.loads((_DoctorPath.home() / ".claude.json").read_text(encoding="utf-8"))
+        data = json.loads(_claude_code_user_config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(data, dict):
@@ -388,20 +406,35 @@ def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCh
         db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
         if not db_path.is_file():
             return _check("Omission store", True, "not created yet", check_id="omission-store")
-        size_bytes = db_path.stat().st_size
-        wal = db_path.with_name(db_path.name + "-wal")
-        if wal.is_file():
-            size_bytes += wal.stat().st_size
-        size_mb = size_bytes / (1024 * 1024)
-        ok = size_mb <= max_mb * 1.5  # WAL slack before checkpointing
-        detail = f"{size_mb:.1f} MB (cap {max_mb:g} MB)"
+        size_mb = _store_bytes_in_use(db_path) / (1024 * 1024)
+        ok = size_mb <= max_mb * 1.5  # slack for the ledger tables pruning leaves alone
+        detail = f"{size_mb:.1f} MB in use (cap {max_mb:g} MB)"
         if not ok:
-            detail += " — over cap; pruning happens on the next distill write"
+            detail += "; over cap, pruning happens on the next distill write"
         return _check("Omission store", ok, detail, check_id="omission-store")
     except Exception as exc:
         return _check(
             "Omission store", True, f"Could not check: {exc}", check_id="omission-store", warn=True
         )
+
+
+def _store_bytes_in_use(db_path: _DoctorPath) -> int:
+    """Bytes the store's live pages hold, WAL included.
+
+    Pruning deletes rows, and SQLite keeps the freed pages in the file for
+    reuse rather than shrinking it, so the file size stays at its high-water
+    mark. Measuring the file would report a pruned store as over cap forever.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        conn.close()
+    return (pages - free) * page_size
 
 
 def _rewrite_hook_surfaces() -> list[tuple[str, object]]:
@@ -440,26 +473,49 @@ def _installed_rewrite_hooks(surfaces: list[tuple[str, object]]) -> tuple[list[s
     return installed_names, any_unmatched
 
 
+def _distill_off_path_note() -> str:
+    """Why an installed rewrite hook rewrites nothing, or "" when it can.
+
+    The hook runs from a pinned path, but it skips every rewrite when the bare
+    ``repowise`` it would emit is not on PATH.
+    """
+    import shutil
+
+    if shutil.which("repowise") is not None:
+        return ""
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    note = "; repowise is not on PATH, so no command is rewritten"
+    pinned = resolve_repowise_command()
+    if pinned != "repowise":
+        note += f". Add {_DoctorPath(pinned).parent.as_posix()} to PATH"
+    return note
+
+
 def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
     """Advisory: the rewrite hook is strictly opt-in. A matcher that misses a
     shell tool is a warn: installed but not firing there."""
     name, check_id = "Distill rewrite hook", "distill-rewrite-hook"
     try:
         installed_names, any_unmatched = _installed_rewrite_hooks(_rewrite_hook_surfaces())
-        if installed_names:
-            commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
-            opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
-            detail = ", ".join(installed_names)
-            detail += " (this repo opted out)" if opted_out else ""
-            detail = f"installed: {detail}"
-            if any_unmatched:
-                fix = "repowise hook rewrite install"
-                return _check(name, True, detail, check_id=check_id, warn=True, fix=fix)
-        else:
+        if not installed_names:
             detail = "not installed (opt-in: repowise hook rewrite install)"
-        return _check(name, True, detail, check_id=check_id)
+            return _check(name, True, detail, check_id=check_id)
+        detail, warn = _installed_rewrite_detail(installed_names, distill_cfg)
+        fix = "repowise hook rewrite install" if any_unmatched else None
+        return _check(name, True, detail, check_id=check_id, warn=warn or any_unmatched, fix=fix)
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+
+
+def _installed_rewrite_detail(installed_names: list[str], distill_cfg: object) -> tuple[str, bool]:
+    """``(detail, off_path)`` for a rewrite hook row with the hook installed."""
+    commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else {}
+    opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
+    if opted_out:
+        return f"installed: {', '.join(installed_names)} (this repo opted out)", False
+    off_path = _distill_off_path_note()
+    return f"installed: {', '.join(installed_names)}{off_path}", bool(off_path)
 
 
 def _hook_scripts_row(repo_path: _DoctorPath | None = None) -> DoctorCheck:
@@ -501,3 +557,146 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         _rewrite_hook_row(distill_cfg),
         _hook_scripts_row(repo_path),
     ]
+
+
+#: Claude Code sessions in a row, all started after the hooks were installed,
+#: with no hook ledger row before the firing row warns. One missing session
+#: can be a session the hooks were disabled for; several in a row cannot.
+_SILENT_SESSIONS_TO_WARN = 3
+
+#: Transcripts read per doctor run, newest first. Bounds the cost on a repo
+#: with thousands of sessions; the warning only needs the recent ones.
+_RECENT_SESSIONS = 20
+
+
+def _hooks_firing_row(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """Warn when Claude Code ran sessions here that the installed hooks never saw.
+
+    A hook whose command cannot start is a silent no-op (the shell guard exits
+    0), so "installed" alone says nothing about whether it runs. Every hook
+    run lands in the repo's hook ledger keyed by session id, and Claude Code
+    keeps one transcript per session, so a session with a transcript and no
+    ledger row is one the hooks did not run in. Only sessions that started
+    after the hooks were last written count: a fresh install, or a machine
+    with no Claude Code use here, has none and stays quiet. None when no
+    repowise hook is installed for Claude Code.
+    """
+    name, check_id = "Agent hooks firing", "agent-hooks-firing"
+    try:
+        installed_at = _claude_hooks_installed_at()
+        if installed_at is None:
+            return None
+        from repowise.cli.hook_ledger import ledger_session_ids
+
+        seen = ledger_session_ids(repo_path)
+        if seen is None:
+            return _check(name, True, "could not read the hook ledger", check_id=check_id)
+        sessions = _recent_claude_sessions(repo_path)
+        detail, warn = _hooks_firing_detail(sessions, seen, installed_at)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+    fix = "repowise agents refresh" if warn else None
+    return _check(name, True, detail, check_id=check_id, warn=warn, fix=fix)
+
+
+def _hooks_firing_detail(
+    sessions: list[tuple[str, float, float]], seen: set[str], installed_at: float
+) -> tuple[str, bool]:
+    """``(detail, warn)`` from ``(session_id, started, last_active)``, newest first."""
+    import datetime
+
+    def day(ts: float) -> str:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    last_seen = max((last for sid, _, last in sessions if sid in seen), default=None)
+    floor = max(installed_at, last_seen or 0.0)
+    silent = [sid for sid, started, _ in sessions if started > floor and sid not in seen]
+    if len(silent) >= _SILENT_SESSIONS_TO_WARN:
+        if last_seen is not None:
+            since = f"since {day(last_seen)}"
+        else:
+            # Older runs may sit outside the transcripts read here; never claim "never".
+            since = f"in the last {len(sessions)} sessions" if seen else "in any session"
+        detail = (
+            f"installed, but have not run {since}: {len(silent)} Claude Code sessions here "
+            "left no hook record, so a hook command is not starting "
+            "(run: repowise agents refresh)"
+        )
+        return detail, True
+    if last_seen is not None:
+        return f"last ran {day(last_seen)}", False
+    return "installed; no Claude Code session here has run them yet", False
+
+
+def _claude_hooks_installed_at() -> float | None:
+    """When the Claude Code hook config was last written, or None if no hook is.
+
+    The newest mtime of the files carrying a repowise hook (user settings, the
+    plugin's hooks.json). An mtime bumped by an unrelated edit only moves the
+    floor later, which can hide a warning but never invent one.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        CLAUDE_SETTINGS_LABEL,
+        _claude_code_settings_path,
+        _plugin_hook_entries,
+        claude_code_hook_commands,
+    )
+
+    rows = claude_code_hook_commands()
+    if not rows:
+        return None
+    files = [_claude_code_settings_path()] if any(w == CLAUDE_SETTINGS_LABEL for w, _ in rows) else []
+    if any(w != CLAUDE_SETTINGS_LABEL for w, _ in rows):
+        files += [path for path, _ in _plugin_hook_entries("SessionStart")]
+    mtimes = [f.stat().st_mtime for f in files if f.is_file()]
+    return max(mtimes) if mtimes else None
+
+
+def _recent_claude_sessions(repo_path: _DoctorPath) -> list[tuple[str, float, float]]:
+    """``(session_id, started, last_active)`` for this repo's newest Claude Code sessions.
+
+    The transcript's stem is the session id the hooks receive. Start time is
+    the first timestamp in the file, since an mtime only says when it was
+    last written; a transcript without one is skipped, so a session that may
+    predate the install never counts against the hooks. ``agent-*`` files are
+    subagent transcripts, which no SessionStart hook sees.
+    """
+    import os
+
+    from repowise.core.sessions import transcript_dir_for
+
+    directory = transcript_dir_for(repo_path.resolve())
+    try:
+        entries = [
+            e
+            for e in os.scandir(directory)
+            if e.name.endswith(".jsonl") and not e.name.startswith("agent-") and e.is_file()
+        ]
+    except OSError:
+        return []
+    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+    sessions = []
+    for entry in entries[:_RECENT_SESSIONS]:
+        started = _transcript_started(entry.path)
+        if started is not None:
+            sessions.append((entry.name[: -len(".jsonl")], started, entry.stat().st_mtime))
+    return sessions
+
+
+def _transcript_started(path: str) -> float | None:
+    """The first ``timestamp`` in a transcript's head, as epoch seconds."""
+    import datetime
+    import re
+
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(16384)
+    except OSError:
+        return None
+    match = re.search(r'"timestamp":\s*"([^"]+)"', head)
+    if match is None:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(match.group(1).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None

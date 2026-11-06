@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._call_tasks import start_call_task
 from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     SelectionUnavailableError,
@@ -85,11 +86,7 @@ def _start_selection(ctx: Any, revspec: str | None) -> asyncio.Task | None:
     """
     if not revspec or getattr(ctx, "session_factory", None) is None:
         return None
-    task = asyncio.create_task(_select_committed(ctx, revspec))
-    request = asyncio.current_task()
-    if request is not None:
-        request.add_done_callback(lambda _done: task.cancel())
-    return task
+    return start_call_task(_select_committed(ctx, revspec))
 
 
 async def _select_committed(ctx: Any, revspec: str) -> None:

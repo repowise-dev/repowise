@@ -321,10 +321,56 @@ def decision_add(
             f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
-    _report_added(repo_path, stored, fmt)
+    warnings = _collect_add_warnings(repo_path, fields, stored.kind)
+    _report_added(repo_path, stored, fmt, warnings=warnings)
 
 
-def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
+def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
+    """Return True if raw_path resolves to an existing file or directory under repo_root."""
+    clean = raw_path.strip()
+    if not clean:
+        return True
+    try:
+        target = (repo_root / clean).resolve()
+        return target.is_relative_to(repo_root) and target.exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _collect_path_warnings(repo_path: Path, paths: list[str]) -> list[str]:
+    """Return advisory warnings for any affected paths not found under repo_path."""
+    resolved_root = repo_path.resolve()
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for p in paths:
+        if not p.strip() or _is_path_under_repo(resolved_root, p) or p in seen:
+            continue
+        seen.add(p)
+        warnings.append(f"affects path not found: {p}")
+    return warnings
+
+
+def _collect_add_warnings(
+    repo_path: Path, fields: _DecisionFields, kind: str
+) -> list[str]:
+    """Collect non-blocking advisory warnings for missing rationale or affects paths.
+
+    An unresolvable ``--affects`` path still persists because the file may be
+    created later in the branch, but surfaces a warning so the author knows the
+    record currently governs nothing. Agreements govern conduct rather than files
+    and are exempt from path checks.
+    """
+    warnings: list[str] = []
+    if kind != AGREEMENT_KIND:
+        warnings.extend(_collect_path_warnings(repo_path, fields.affected_files))
+    if not (fields.rationale and fields.rationale.strip()):
+        warnings.append("no rationale given")
+    return warnings
+
+
+def _report_added(
+    repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str] | None = None
+) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
         # The full id: a caller passes it back to `confirm` or `show`.
@@ -337,6 +383,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         }
         if stored.existed:
             payload["kept"] = stored.kept
+        if warnings:
+            payload["warnings"] = list(warnings)
         if stored.blockers:
             payload["blockers"] = stored.blockers
             agent_flag = f" --agent {stored.agent}" if stored.agent else ""
@@ -360,6 +408,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         f"\n[green]{verb}[/green] [dim]({stored.status}{kept})[/dim] — "
         f"ID: [bold]{stored.id[:8]}[/bold]"
     )
+    for warning in warnings or []:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _refuse_partial_flags(fmt: str, *given) -> None:
@@ -836,12 +886,12 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     repo_path = _resolve_decision_repo(path, fmt)
     rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
-        notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
-        if fmt == "json":
-            emit_json({"query": decision_id, "decision": None})
-        # Non-zero for the same reason the lifecycle commands are: a caller
-        # scripting `show` cannot tell a missing id from an empty record.
-        raise click.exceptions.Exit(1)
+        emit_refusal(
+            "decision_not_found",
+            f"Decision not found: {decision_id}",
+            fmt,
+            query=decision_id,
+        )
 
     # Asked of git at read time: affordable for one record on demand, never on
     # the hook or update path. None means git could not decide.

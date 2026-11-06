@@ -91,7 +91,7 @@ def test_meta_keeps_the_directive_and_drops_its_diagnostics() -> None:
                 "indexed_commit": "abc",
                 "live_head": "def",
                 "index_behind": True,
-                "stale_warning": "run `repowise update`",
+                "stale_warning": "Facts below describe abc; HEAD is def.",
                 "completeness": {"capped": True},
                 "state": {"truncated": True},
                 "floor": ["dependents_count"],
@@ -103,7 +103,7 @@ def test_meta_keeps_the_directive_and_drops_its_diagnostics() -> None:
 
     assert result == {
         "_meta": {
-            "stale_warning": "run `repowise update`",
+            "stale_warning": "Facts below describe abc; HEAD is def.",
             "omitted": {"refs": ["repowise#1"], "restore": "expand"},
         }
     }
@@ -152,3 +152,71 @@ async def test_debug_meta_keeps_the_whole_shape(monkeypatch: pytest.MonkeyPatch)
 
     assert result["flag_truncated"] is False
     assert result["_meta"]["index_behind"] is False
+
+
+async def test_a_full_meta_tool_still_carries_one_omission_entry() -> None:
+    """get_overview keeps its whole envelope, but not a marker restating ``_meta.omitted``."""
+
+    async def get_overview(include: list[str] | None = None) -> dict[str, Any]:
+        return _with_marker()
+
+    result = await tool_middleware(get_overview)()
+
+    assert "omission_marker" not in result
+    assert result["_meta"]["omitted"]["refs"] == ["repowise#aaaaaaaaaaaa"]
+
+
+def _with_marker() -> dict[str, Any]:
+    return {
+        "summary": "x",
+        "omission_marker": "[repowise#aaaaaaaaaaaa: 3 lines omitted]",
+        "_meta": {"omitted": {"refs": ["repowise#aaaaaaaaaaaa"], "restore": "r"}},
+    }
+
+
+def test_a_bridged_cli_call_keeps_its_marker() -> None:
+    """CLI commands budget with an empty signature and print the marker themselves."""
+    import inspect
+
+    from repowise.server.mcp_server._budget import enforce_response_budget
+
+    def _bridged() -> None:
+        pass
+
+    def _tool(question: str = "") -> None:
+        pass
+
+    cli = enforce_response_budget("get_overview", _with_marker(), signature=inspect.signature(_bridged), args=(), kwargs={})
+    mcp = enforce_response_budget("get_overview", _with_marker(), signature=inspect.signature(_tool), args=(), kwargs={})
+
+    assert "omission_marker" in cli
+    assert "omission_marker" not in mcp
+
+
+async def get_overview() -> dict[str, Any]:
+    return {"_meta": {"index_behind": False, "embedder_degraded": False, "contract_version": 4}}
+
+
+async def test_the_orientation_call_keeps_diagnostics_but_no_false_status_flag() -> None:
+    meta = (await tool_middleware(get_overview)())["_meta"]
+
+    assert "embedder_degraded" not in meta
+    assert meta["index_behind"] is False
+    assert meta["contract_version"] == 4
+
+
+async def test_the_orientation_call_keeps_a_raised_flag() -> None:
+    async def get_overview() -> dict[str, Any]:
+        return {"_meta": {"embedder_degraded": True}}
+
+    assert (await tool_middleware(get_overview)())["_meta"]["embedder_degraded"] is True
+
+
+async def test_debug_meta_keeps_the_orientation_calls_false_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+
+    meta = (await tool_middleware(get_overview)())["_meta"]
+
+    assert meta["embedder_degraded"] is False

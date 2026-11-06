@@ -1,42 +1,24 @@
 "use client";
 
 /**
- * Impact host — binds the shared {@link ImpactView} to web's `/api` client and
- * supplies the reviewer-suggestions panel as the analyzer's reviewer slot. The
- * composition (file picker, hotspot chips, depth control, blast-radius results)
- * lives in `@repowise-dev/ui/blast-radius`; this file only injects the
- * app-specific pieces so web and hosted render the same view.
+ * Impact host: binds the shared {@link ImpactView} to web's `/api` client and
+ * keeps the picked change in the URL. The composition lives in
+ * `@repowise-dev/ui/blast-radius`; this file only injects the app-specific
+ * pieces so web and hosted render the same view.
  */
 
-import useSWR from "swr";
-import { useSearchParams } from "next/navigation";
+import { useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ImpactView, type ImpactAdapter } from "@repowise-dev/ui/blast-radius";
-import { ReviewerSuggestions } from "@repowise-dev/ui/git/reviewer-suggestions";
-import { analyzeBlastRadius } from "@/lib/api/blast-radius";
-import { getHotspots, getReviewerSuggestions } from "@/lib/api/git";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import {
+  analyzeBlastRadius,
+  analyzeChangeBlastRadius,
+  checkChangeHealth,
+  listBlastRadiusChanges,
+} from "@/lib/api/blast-radius";
+import { getHotspots } from "@/lib/api/git";
 import { searchNodes } from "@/lib/api/graph";
-
-/**
- * Reviewer slot — fetches suggestions for the analyzed changeset and renders
- * the rich panel, or nothing when there are none (graceful degradation).
- */
-function ReviewersPanel({ repoId, files }: { repoId: string; files: string[] }) {
-  const { data } = useSWR(
-    files.length ? ["impact-reviewers", repoId, files.join("\n")] : null,
-    () =>
-      getReviewerSuggestions(repoId, files, 8)
-        .then((r) => r.suggestions)
-        .catch(() => []),
-    { revalidateOnFocus: false },
-  );
-  if (!data || data.length === 0) return null;
-  return (
-    <ReviewerSuggestions
-      suggestions={data}
-      subtitle={`Based on authorship and co-change history for ${files.length} changed paths`}
-    />
-  );
-}
 
 export function ImpactTab({ repoId }: { repoId: string }) {
   // `?file=` is how every route into this view arrives: the file card's "Blast
@@ -46,7 +28,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
   const searchParams = useSearchParams();
   const seeded = searchParams.getAll("file").filter(Boolean);
 
-  const adapter: ImpactAdapter = {
+  const adapter: ImpactAdapter = useMemo(() => ({
     cacheKey: repoId,
     listHotspots: (limit) => getHotspots(repoId, limit),
     searchFiles: async (q) => {
@@ -54,9 +36,31 @@ export function ImpactTab({ repoId }: { repoId: string }) {
       return results.map((r) => r.node_id);
     },
     analyze: ({ changedFiles, maxDepth }) =>
-      analyzeBlastRadius(repoId, { changed_files: changedFiles, max_depth: maxDepth }),
-    renderReviewers: (files) => <ReviewersPanel repoId={repoId} files={files} />,
+      analyzeBlastRadius(repoId, { changed_files: changedFiles, max_depth: maxDepth, with_graph: true }),
+    listChanges: () => listBlastRadiusChanges(repoId),
+    analyzeChange: ({ changeId, maxDepth }) =>
+      analyzeChangeBlastRadius(repoId, { change_id: changeId, max_depth: maxDepth }),
+    checkHealth: (changeId) => checkChangeHealth(repoId, changeId),
+    fileHref: (path) => fileEntityPath(`/repos/${repoId}`, path),
+  }), [repoId]);
+
+  // `?change=` (wip, a branch, a full sha) makes a review shareable: picking a
+  // change writes it, opening the link opens that change.
+  const router = useRouter();
+  const pathname = usePathname();
+  const onChangePicked = (change: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("file");
+    next.set("change", change);
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
   };
 
-  return <ImpactView adapter={adapter} {...(seeded.length > 0 ? { initialFiles: seeded } : {})} />;
+  return (
+    <ImpactView
+      adapter={adapter}
+      {...(seeded.length > 0 ? { initialFiles: seeded } : {})}
+      initialChange={searchParams.get("change") ?? undefined}
+      onChangePicked={onChangePicked}
+    />
+  );
 }

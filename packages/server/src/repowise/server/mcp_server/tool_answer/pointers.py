@@ -2,7 +2,8 @@
 
 Quoted code in the answer gets the line range it came from, and functions the
 answer names without serving their bodies get the get_symbol call that reads
-them (``next_actions``). Applied at projection time, so cached replies get them
+them (``next_actions``; on an answer with a flow path the first call adds
+``depth=2``). Applied at projection time, so cached replies get them
 too. Best-effort: a failure leaves the reply as it was.
 """
 
@@ -139,6 +140,20 @@ def helper_calls(answer: str, rows: list, served: set[tuple[str, str]]) -> list[
     return calls
 
 
+def chain_first(calls: list[str], question: str = "") -> list[str]:
+    """*calls* led by the chain's entry, which also reads its callees (``depth=2``).
+
+    For an answer that walks a call chain: one call returns the chain, where
+    one call per helper costs a round trip each. The entry is the first helper
+    the question names (``client.get``), else the first the answer names.
+    """
+    if not calls:
+        return calls
+    asked = set(re.findall(r"[A-Za-z_$#][\w$#]*", question))
+    entry = next((c for c in calls if re.split(r"::|'", c)[-2] in asked), calls[0])
+    return [f"{entry[:-1]}, depth=2)", *(c for c in calls if c != entry)]
+
+
 def _answer_files(payload: dict[str, Any]) -> list[str]:
     """The files the answer cites, then the files on its flow path."""
     files = [c for c in payload.get("citations") or [] if isinstance(c, str) and "." in c]
@@ -190,7 +205,9 @@ async def _callable_rows(ctx: Any, files: list[str], names: set[str]) -> list:
         return list(res.scalars().all())
 
 
-async def attach_pointers(payload: dict[str, Any], repo: str | None) -> None:
+async def attach_pointers(
+    payload: dict[str, Any], repo: str | None, question: str = "", chain: bool = False
+) -> None:
     """Add line ranges to the answer's quoted code and ``next_actions`` for unserved helpers."""
     answer = payload.get("answer")
     files = _answer_files(payload)
@@ -209,4 +226,4 @@ async def attach_pointers(payload: dict[str, Any], repo: str | None) -> None:
         _log.debug("get_answer: locate pointers skipped", exc_info=True)
         return
     if calls := helper_calls(answer, rows, _served(payload)):
-        payload["next_actions"] = calls
+        payload["next_actions"] = chain_first(calls, question) if chain else calls

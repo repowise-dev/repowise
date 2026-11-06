@@ -10,10 +10,17 @@ import {
   type DecisionRecord,
 } from "@repowise-dev/types/decisions";
 import { cn } from "../lib/cn";
-import { formatDate, stripMarkdown } from "../lib/format";
+import { formatDate, parseDateOrNull, stripMarkdown } from "../lib/format";
 import { Button } from "../ui/button";
 import { describeRecordStaleness } from "./decision-staleness";
 import { VerificationBadge } from "./verification-badge";
+import {
+  GapList,
+  ReasonField,
+  isReasonGap,
+  type DecisionAcceptOptions,
+} from "./decision-confirm";
+import { DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
 
 /**
  * One record of the review queue, read in full without leaving the queue.
@@ -31,8 +38,11 @@ export interface DecisionReviewDrawerProps {
   /** Whether the review verbs apply: only a candidate is accepted or dismissed. */
   reviewable: boolean;
   onClose: () => void;
-  onAccept?: ((decision: DecisionRecord) => void) | undefined;
+  /** Accepts; `options.reason` carries a reason typed in the drawer. */
+  onAccept?: ((decision: DecisionRecord, options?: DecisionAcceptOptions) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
+  /** Re-accepts a decision whose files moved. Given only where it applies. */
+  onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
   readOnlyReason?: string | undefined;
   pending?: boolean | undefined;
   /** The full record page, where its fields are edited. */
@@ -58,6 +68,7 @@ export function DecisionReviewDrawer({
   onClose,
   onAccept,
   onDismiss,
+  onReaffirm,
   readOnlyReason,
   pending,
   href,
@@ -79,10 +90,13 @@ export function DecisionReviewDrawer({
         >
           {d && (
             <DrawerBody
+              // Keyed so a reason typed for one record never carries to the next.
+              key={d.id}
               d={d}
               reviewable={reviewable}
               onAccept={onAccept}
               onDismiss={onDismiss}
+              onReaffirm={onReaffirm}
               readOnlyReason={readOnlyReason}
               pending={pending}
               href={href}
@@ -104,9 +118,13 @@ function DrawerBody(props: BodyProps) {
   const { d, reviewable, onAccept } = props;
   const blockers = decisionAcceptanceBlockers(d);
   const reason = stripMarkdown(d.rationale || d.context || "");
+  const [typed, setTyped] = React.useState("");
+  const needsReason = blockers.some(isReasonGap);
+  const otherGaps = blockers.filter((b) => !isReasonGap(b));
+  const askReason = reviewable && !!onAccept && needsReason && otherGaps.length === 0;
   return (
     <>
-      <DrawerHeader {...props} blockers={blockers} />
+      <DrawerHeader {...props} blockers={blockers} typedReason={askReason ? typed : ""} />
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4 text-sm">
         <Field label="Decision">
           <p className="text-[var(--color-text-primary)]">{stripMarkdown(d.decision || d.title)}</p>
@@ -116,28 +134,40 @@ function DrawerBody(props: BodyProps) {
             <p className="text-[var(--color-text-secondary)]">{reason}</p>
           </Field>
         )}
+        <DecisionOrigin decision={d} />
+        <DecisionAppliedLine decision={d} />
+        {askReason && (
+          <ReasonField
+            id={`drawer-reason-${d.id}`}
+            value={typed}
+            onChange={setTyped}
+            disabled={props.pending}
+          />
+        )}
         <EvidenceField d={d} />
         <ScopeField d={d} />
-        {reviewable && onAccept && blockers.length > 0 && (
-          <Field label="Cannot accept yet">
-            <p className="text-xs text-[var(--color-text-secondary)]">
-              {blockers.join("; ")}. Fill it in on the full record, or with{" "}
-              <code className="font-mono text-xs">repowise decision confirm {d.id.slice(0, 8)}</code>.
-            </p>
-          </Field>
+        {reviewable && onAccept && otherGaps.length > 0 && (
+          <GapList gaps={otherGaps} id={d.id} onRecordPage={false} />
         )}
       </div>
     </>
   );
 }
 
-function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers: string[] }) {
+function DrawerHeader({
+  d,
+  marks,
+  href,
+  Link,
+  ...verbs
+}: BodyProps & { blockers: string[]; typedReason: string }) {
   const flagged = d.verification && d.verification !== "exact" ? d.verification : null;
   return (
     <header className="flex items-start justify-between gap-3 border-b border-[var(--color-border-default)] px-5 py-4">
       <div className="min-w-0 space-y-1.5">
         <p className={MICRO_LABEL}>
-          {decisionSourceLabel(d.source)} · recorded {formatDate(d.created_at)}
+          {decisionSourceLabel(d.source)}
+          {parseDateOrNull(d.created_at) ? ` · recorded ${formatDate(d.created_at)}` : ""}
         </p>
         <DialogPrimitive.Title className="break-words text-base font-medium leading-snug text-[var(--color-text-primary)]">
           {stripMarkdown(d.title)}
@@ -171,25 +201,44 @@ function DrawerHeader({ d, marks, href, Link, ...verbs }: BodyProps & { blockers
   );
 }
 
-function DrawerVerbs({
-  d,
-  reviewable,
-  onAccept,
-  onDismiss,
-  readOnlyReason,
-  pending,
-  blockers,
-}: Pick<BodyProps, "d" | "reviewable" | "onAccept" | "onDismiss" | "readOnlyReason" | "pending"> & {
-  blockers: string[];
-}) {
-  if (!reviewable) return null;
+type VerbProps = Pick<
+  BodyProps,
+  "d" | "reviewable" | "onAccept" | "onDismiss" | "onReaffirm" | "readOnlyReason" | "pending"
+> & { blockers: string[]; typedReason: string };
+
+function DrawerVerbs(props: VerbProps) {
+  const { reviewable, onReaffirm, readOnlyReason } = props;
+  if (!reviewable && !onReaffirm) return null;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
+  return onReaffirm ? <ReaffirmVerb {...props} onReaffirm={onReaffirm} /> : <ReviewVerbs {...props} />;
+}
+
+function ReaffirmVerb({
+  d,
+  pending,
+  onReaffirm,
+}: VerbProps & { onReaffirm: (decision: DecisionRecord) => void }) {
+  return (
+    <Button size="sm" disabled={pending} onClick={() => onReaffirm(d)}>
+      {pending ? "Reaffirming..." : "Reaffirm"}
+    </Button>
+  );
+}
+
+function ReviewVerbs({ d, onAccept, onDismiss, pending, blockers, typedReason }: VerbProps) {
+  // A reason typed below fills the one gap a reader can fill here.
+  const reason = typedReason.trim();
+  const open = blockers.filter((b) => !(reason && isReasonGap(b)));
   return (
     <div className="flex items-center gap-2">
       {onAccept && (
-        <Button size="sm" disabled={pending || blockers.length > 0} onClick={() => onAccept(d)}>
+        <Button
+          size="sm"
+          disabled={pending || open.length > 0}
+          onClick={() => (reason ? onAccept(d, { reason }) : onAccept(d))}
+        >
           {pending ? "Accepting…" : "Accept"}
         </Button>
       )}

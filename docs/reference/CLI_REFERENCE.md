@@ -156,7 +156,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Model set: subsystem (concept) tree, repo overview, architecture diagram, onboarding. `--prose` writes it (key needed); `--no-prose` leaves stubs.
   - `--no-prose` makes no model calls even with a key, so decision extraction from PRs, commits and comments waits; [`repowise generate`](#repowise-generate-path) fills both later.
   - Full-text search always; semantic search needs an embedder.
-- **`--onboarding`.** Slots: Project Overview, Architecture Guide, Getting Started, Codebase Map, Key Concepts, How It Works, Development Guide, Active Landscape; thin ones skipped.
+- **`--onboarding`.** Slots: Project Overview, Getting Started, How It Works, Active Landscape; thin ones skipped.
 - **`--resume`.** No-op when fully indexed. Skips done phases (indexing, analysis), keeps the git tier, writes only
   missing pages, never paying twice: for interrupted runs or failed pages (outage, rate limits). Per-page matching
   survives provider switches.
@@ -169,8 +169,8 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   inert.
 - **`--hook`.** Asked interactively; `--yes` and non-interactive runs install it, printing the undo (`repowise hook uninstall`).
 - **Workspace.** `--distill-hook` and `--hook` apply to every selected repo.
-- **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP entry, Claude Code
-  PostToolUse/SessionStart hooks. Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
+- **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude.json`) and Claude Desktop MCP entry, Claude Code
+  PostToolUse/SessionStart hooks (`~/.claude/settings.json`). Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
 - **`--no-editor-setup`.** Writes only `.repowise/` (scratch checkouts, throwaway venvs, worktrees, CI); skips the post-commit hook (git hooks dir) and `--distill-hook` offer (user-level hook).
   - One `repowise` MCP key per config, so a second `init` repoints it; `repowise mcp .` prints config for manual setup.
   - `--no-distill-hook`, `--no-claude-md`, `--no-agents` still save to repo config: they mean "never".
@@ -233,6 +233,7 @@ repowise update                        # diff since last sync
 repowise update --since v1.0.0 --working-tree
 repowise update --workspace --docs     # every stale repo, docs forced
 repowise update --repo backend         # one workspace repo
+repowise update --no-workspace --index-only --defer-docs   # facts now, docs later
 repowise update --full --provider anthropic   # fast index to full
 ```
 
@@ -246,7 +247,8 @@ repowise update --full --provider anthropic   # fast index to full
 | `--yes` / `-y` | Skip the `--full` cost prompt. | off |
 | `--dry-run` | Preview only. | off |
 | `--docs` / `--no-docs` | This run: `--docs` LLM-regenerates changed pages (even if indexed without docs); `--no-docs` = `--index-only`. | `docs_mode` in `.repowise/state.json` (from `init`) |
-| `--index-only` | No doc regeneration; in a workspace, for every stale repo. | off |
+| `--index-only` | Skip model regeneration; template wikis still render. In a workspace, applies to every stale repo. | off |
+| `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
 | `--full` | Fast (`--mode fast`) index to full (below). Errors in workspace mode. | off |
 | `--workspace` / `-w` | All stale workspace repos plus cross-repo analysis; see notes. | auto-detect |
@@ -265,6 +267,7 @@ repowise update --full --provider anthropic   # fast index to full
 **Flag notes**
 
 - **`--working-tree`.** Uncommitted renames reach the graph. Off so hooks and plain runs stay commit-anchored. Workspace: uncommitted changes make a repo stale. `repowise watch` always does this.
+- **`--defer-docs`.** Pass a repo path and `--no-workspace`. Existing page bodies and surviving vectors stay in place; deleted sources still follow the normal tombstone cleanup. Renderer changes mark every template page stale and retain the old renderer fingerprint. Generation config changes retain their old fingerprints until a rendering run completes. `status` reports `stale_pages`; the JSON `done` event also includes `docs_deferred: true` and `stale_pages` (null if the count is unreadable). Run `update --index-only` without this flag to render the pending template pages. Model-written stale pages still use `generate --stale`. This flag cannot be combined with `--docs` or `--full`, and does not force a Git history walk when its existing stamps say current.
 - **`--workspace`.** Each repo's `docs_mode` (`docs_enabled` beside it) plus `--docs` / `--no-docs` / `--index-only`
   picks docs or index-only. `--docs` needs each repo's provider and key (or `--provider`).
   - Docs repos run the full single-repo docs path (pages, diagrams, decisions); others the fast parallel index-only path.
@@ -1984,7 +1987,7 @@ repowise hook read-reread status -w
 | `read-reread` | `hooks.read_reread` | Re-reading an unchanged, unedited file returns a notice naming the earlier read; changed content comes in full, flagged; reading again returns content. |
 
 - No hook to install: `init`'s PostToolUse hook carries all three; these set the verdict in `.repowise/config.yaml` (`init` sets it from `--distill-hook`).
-- `uninstall` returns whole results (the digest rides alongside again). `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
+- `uninstall` returns whole results, with nothing added. `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
 
 ### `repowise hook health-gate install|uninstall|status`
 

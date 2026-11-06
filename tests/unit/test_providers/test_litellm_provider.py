@@ -232,3 +232,18 @@ async def test_discovery_and_execution_accept_the_same_effort_flags(monkeypatch)
     await provider.generate("sys", "user", reasoning="minimal")
 
     assert completion.call_args.kwargs["reasoning_effort"] == "minimal"
+
+
+@pytest.mark.parametrize(
+    "kwargs, local",
+    [
+        ({"model": "anthropic/claude-sonnet-4-6"}, False),
+        ({"model": "ollama/qwen3.5:4b"}, True),
+        ({"model": "openai/qwen", "api_base": "http://localhost:8000"}, True),
+    ],
+)
+def test_context_window_is_small_only_for_a_local_backend(kwargs, local):
+    from repowise.core.providers.llm.base import LOCAL_CONTEXT_WINDOW
+
+    expected = LOCAL_CONTEXT_WINDOW if local else None
+    assert LiteLLMProvider(**kwargs).context_window() == expected

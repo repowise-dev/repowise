@@ -52,6 +52,10 @@ class SearchResult:
 
 _SNIPPET_LEN = 200
 
+# How far a snippet edge may move inward to land on whitespace instead of
+# inside a word. Past this the word is a long token and the cut stays.
+_SNIPPET_EDGE_SLACK = 20
+
 # Markdown heading lines and blank lines at the start of a text.
 _LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?\n)+")
 
@@ -227,19 +231,50 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
 
     lowered = content.lower()
     position = -1
+    match_end = 0
     for term in _meaningful_terms(query):
         found = lowered.find(term)
         if found != -1 and (position == -1 or found < position):
             position = found
+            match_end = found + len(term)
     if position == -1:
-        return content[:length].rstrip()
+        start, end = _word_edges(content, 0, min(length, len(content)), 0, 0)
+        return content[start:end].rstrip()
 
     # Centre the window, then slide it back inside the page rather than
     # letting it run off an edge: a match in the first or last few characters
     # would otherwise return a window shorter than the budget for no reason.
     start = max(0, position - length // 2)
     start = min(start, max(0, len(content) - length))
-    return content[start : start + length].strip()
+    end = min(start + length, len(content))
+    start, end = _word_edges(content, start, end, position, match_end)
+    return content[start:end].strip()
+
+
+def _word_edges(
+    content: str, start: int, end: int, keep_from: int, keep_to: int
+) -> tuple[int, int]:
+    """Move a cut that falls inside a word inward to the nearest whitespace.
+
+    Edges only move inward, so the window never grows past its budget, and
+    never into ``content[keep_from:keep_to]``, the matched term (pass ``0, 0``
+    when there is none and the window starts at the page). A cut with no
+    whitespace within :data:`_SNIPPET_EDGE_SLACK` characters stays where it
+    is, so a page that is one long token still gives a non-empty window.
+    """
+    if 0 < start < end and not content[start - 1].isspace() and not content[start].isspace():
+        limit = min(start + _SNIPPET_EDGE_SLACK, keep_from)
+        for i in range(start, limit):
+            if content[i].isspace():
+                start = i + 1
+                break
+    if start < end < len(content) and not content[end - 1].isspace() and not content[end].isspace():
+        limit = max(end - _SNIPPET_EDGE_SLACK, keep_to, start + 1)
+        for i in range(end - 1, limit - 1, -1):
+            if content[i].isspace():
+                end = i
+                break
+    return start, end
 
 
 def strip_leading_headings(text: str) -> str:

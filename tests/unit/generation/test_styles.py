@@ -69,14 +69,40 @@ def test_list_styles_covers_builtins():
 # ---------------------------------------------------------------------------
 
 
-def test_comprehensive_is_inert():
-    """The default style must contribute nothing — byte-identical to pre-feature."""
+def test_comprehensive_carries_the_default_voice():
+    """The default style states the voice for every page, onboarding included."""
     spec = resolve_style("comprehensive")
-    assert spec.is_active is False
-    assert spec.fingerprint == ""
-    assert spec.user_prompt_prefix(is_onboarding=False) == ""
-    assert spec.user_prompt_prefix(is_onboarding=True) == ""
+    assert spec.is_active is True
+    assert spec.fingerprint
+    for is_onboarding in (False, True):
+        prefix = spec.user_prompt_prefix(is_onboarding=is_onboarding)
+        assert prefix.startswith("<!-- repowise-style:comprehensive")
+        assert "Style (comprehensive)" in prefix
+    # Voice lives in the user prompt; the system prompt stays shared.
     assert spec.system_prompt_suffix(is_onboarding=False) == ""
+
+
+def test_only_the_default_style_states_a_word_range():
+    """A word range is a default-only number: other styles keep their own density."""
+    comprehensive = resolve_style("comprehensive")
+    prefix = comprehensive.user_prompt_prefix(is_onboarding=False, word_budget=(700, 900))
+    assert "Length: 700 to 900 words" in prefix
+    assert "Length:" not in comprehensive.user_prompt_prefix(is_onboarding=False)
+    assert comprehensive.states_length(is_onboarding=False)
+
+    for name in ("caveman", "reference", "tutorial"):
+        spec = resolve_style(name)
+        assert not spec.states_length(is_onboarding=False)
+        with_budget = spec.user_prompt_prefix(is_onboarding=False, word_budget=(700, 900))
+        assert with_budget == spec.user_prompt_prefix(is_onboarding=False)
+
+
+def test_fingerprint_changes_when_length_note_changes():
+    from repowise.core.generation.styles.spec import StyleSpec
+
+    a = StyleSpec(name="x", description="d", user_directive="v", length_note="{lo}-{hi}")
+    b = StyleSpec(name="x", description="d", user_directive="v", length_note="{lo} to {hi}")
+    assert a.fingerprint != b.fingerprint
 
 
 def test_active_style_has_prefix_and_suffix():
@@ -150,24 +176,30 @@ async def test_config_threads_style_into_generator(
     assert gen._style.name == "caveman"
 
 
-async def test_comprehensive_prompt_is_unchanged_vs_no_style(
+async def test_word_budget_reaches_the_prefix_and_the_template_flag(
     sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
 ):
-    """Default-style rendering must not alter the prompt the model sees."""
+    """A renderer's word range lands in the default style's prefix, and the
+    template is told so, so it can leave its own length line out."""
+    import jinja2
+
     from repowise.core.providers.llm.mock import MockProvider
 
-    config = GenerationConfig(wiki_style="comprehensive")
-    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
-    ctx = gen._assembler.assemble_file_page(
-        sample_parsed_file,
-        sample_graph,
-        graph_metrics["pagerank"],
-        graph_metrics["betweenness"],
-        graph_metrics["community"],
-        sample_source_bytes,
-    )
-    rendered = gen._render("file_page.j2", ctx=ctx)
-    assert not rendered.startswith("<!-- repowise-style")
+    def render(style: str, budget):
+        config = GenerationConfig(wiki_style=style)
+        gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+        gen._jinja_env = jinja2.Environment(
+            loader=jinja2.DictLoader({"t.j2": "flag={{ style_states_length }}"})
+        )
+        return gen._render("t.j2", word_budget=budget)
+
+    default = render("comprehensive", (800, 1000))
+    assert "Length: 800 to 1000 words" in default
+    assert default.endswith("flag=True")
+    assert render("comprehensive", None).endswith("flag=False")
+    caveman = render("caveman", (800, 1000))
+    assert "Length:" not in caveman
+    assert caveman.endswith("flag=False")
 
 
 async def test_active_style_prepends_directive_to_prompt(
@@ -289,9 +321,15 @@ async def test_a_spotlight_render_key_moves_when_its_template_does(
     )
 
     subject = sample_parsed_file.content_hash
-    current = structural_content_hash(subject, structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE))
+    style_fp = resolve_style(DEFAULT_STYLE).fingerprint
+    current = structural_content_hash(
+        subject, structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE, style_fingerprint=style_fp)
+    )
     older = structural_content_hash(
-        subject, structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE, source="# an older template")
+        subject,
+        structural_fingerprint(
+            SYMBOL_SPOTLIGHT_TEMPLATE, style_fingerprint=style_fp, source="# an older template"
+        ),
     )
 
     assert page.metadata["render_key"] == current

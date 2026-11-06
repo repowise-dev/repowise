@@ -236,6 +236,7 @@ async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
 @pytest.mark.asyncio
 async def test_cap_hit_marks_lines_incomplete(tree, monkeypatch):
     monkeypatch.setattr(_line_hits, "MAX_LINES_PER_FILE", 0)
+    monkeypatch.setattr(_line_hits, "SMALL_SET_LINES", 0)
 
     out = await search_codebase("47821")
 
@@ -480,6 +481,23 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
     assert out["complete"] is False
     assert any("lines_omitted_by_file" in r for r in out["reasons"])
     assert out["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_reference_set_is_served_whole(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n" + "mock(backend_of)\n" * 6, encoding="utf-8"
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    refs = [r for r in _rows(out) if r[0] == "tests/test_widget.py" and r[2] == "reference"]
+    assert len(refs) == 6
+    assert out["complete"] is True
+    assert "lines_omitted_by_file" not in out
 
 
 @pytest.mark.asyncio
@@ -808,3 +826,36 @@ async def test_punctuated_literals_return_their_lines(tree):
     # An identifier inside the literal (``backend_of``) does not turn it into a symbol query.
     call = await search_codebase("backend_of('m')")
     assert [(r["path"], r["line"]) for r in call["lines"]] == [("app/widget.py", 6)]
+
+
+def _scan(tmp_path, counts: dict[str, int]):
+    for rel, n in counts.items():
+        (tmp_path / rel).write_text("".join(f"limit_{i} = max_hops\n" for i in range(n)), "utf-8")
+    return _line_hits.scan_literal(tmp_path, list(counts), "max_hops", True)
+
+
+def test_a_small_set_comes_back_whole_in_file_order(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 2})
+
+    assert reasons == []
+    assert [(r["path"], r["line"]) for r in rows] == [
+        *(("a.py", n) for n in range(1, 11)),
+        ("b.py", 1),
+        ("b.py", 2),
+    ]
+
+
+def test_a_large_set_keeps_the_per_file_cut(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 15})
+
+    cap = _line_hits.MAX_LINES_PER_FILE
+    assert len(rows) == 2 * cap
+    assert reasons == [f"over {cap} lines in 2 files"]
+
+
+def test_the_small_set_bound_is_inclusive(tmp_path):
+    size = _line_hits.SMALL_SET_LINES
+    rows, reasons = _scan(tmp_path, {"a.py": size})
+    assert (len(rows), reasons) == (size, [])
+    rows, reasons = _scan(tmp_path, {"a.py": size + 1})
+    assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons

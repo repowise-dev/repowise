@@ -184,6 +184,9 @@ class DecisionStatusUpdate(BaseModel):
     """
 
     status: str | None = None
+    # Why the decision holds, for a confirm of a record that says none. Stored
+    # as the rationale, as `repowise decision confirm --reason` does.
+    reason: str | None = None
     superseded_by: str | None = None
     affected_modules: list[str] | None = None
     affected_files: list[str] | None = None

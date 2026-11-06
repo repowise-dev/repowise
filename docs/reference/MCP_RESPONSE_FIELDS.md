@@ -24,13 +24,13 @@ Routine responses carry a lean envelope. `get_overview` (called once per session
 |-------|--------------|---------|
 | `hint` | Sometimes | A short follow-up suggestion |
 | `cached` | Only when `true` | The response came from cache |
-| `stale_warning` | Only on a real signal | The index is behind in a way that matters for this response |
+| `stale_warning` | Only on a real signal | One fact: the commit the facts below describe, and what differs from it for this response |
 | `index_scope` | Recorded, and `status` not `complete` | How the index was built: run mode, provenance, git tier, whether it is whole |
 | `degraded` | A part of the server failed for this call | Reasons, e.g. `["embedder"]` or `["retrieval:vector"]` |
 | `embedder_warning` | Embedder fell back, or the semantic index could not open | Why |
 | `semantic_search` | Only when `false` | Retrieval is full-text only (keyless install or degraded embedder) |
 | `newer_release` | Once per server process | A newer repowise is published; restart the server after upgrading |
-| `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade); restart the MCP server |
+| `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade) until it restarts |
 | `keyless_note` | Keyless `get_answer`; `get_overview` until a model writes the prose | The command that adds answers and docs |
 | `omitted` | Content was cut | `refs`, `tokens`, `restore`; see [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | The omission store could not be written | The storage failure; cut rows cannot be restored |
@@ -55,8 +55,8 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 
 Notes:
 
-- **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again.
-- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. With uncommitted edits it names `repowise update --working-tree`.
+- **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD and no file it cites changed, it says so.
+- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. It is a fact, never a command: `Facts below describe <indexed sha>; a file this response serves differs at HEAD <sha>.` (or `differs in the working tree`, or, for a call from another checkout, `differs in <checkout> at <sha>`). `repowise update` (`--working-tree` for uncommitted edits) brings the index up to date.
 - **`index_scope`:** the whole object comes with `get_overview(include=["scope"])`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`.
 - **`keyless_note`:** on every `get_answer` that degrades with `no-llm-provider`, and on `get_overview` while no model has written the prose. One line: set a provider key, run `repowise generate` (one command, no re-index; `repowise update --full` on an Index only repo), then restart the MCP server. With model-written prose, `get_answer` names only the key and the restart.
 - **`complete`:** sliced bodies and partial ranges never count.
@@ -163,7 +163,7 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `degraded` | Synthesis could not run (no provider, or the call failed) |
 | `grounding` | No-synthesis answers: `exact_symbol` or `extracted` |
 | `note`, `next_action_hint` | How the answer was built; on weak retrieval, which `best_guesses` row to start from |
-| `next_actions` | Up to 3 `get_symbol('<id>')` calls for functions the answer names whose bodies it does not serve |
+| `next_actions` | Up to 3 `get_symbol('<id>')` calls for functions the answer names whose bodies it does not serve; with a `flow_path`, the first is `get_symbol('<id>', depth=2)`, which also returns the bodies it calls |
 
 Notes:
 
@@ -240,7 +240,7 @@ Never complete for:
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
 - over 50 documents naming it
-- over 3 plain `reference` sites in one file: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`
+- over 3 plain `reference` sites in one file of a set over 20 sites: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 sites or fewer is served whole.
 
 ### changes
 
@@ -329,7 +329,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `not_rendered` | Bodies past the budget, each with a `fetch_with` range read |
 | `outlined`, `members`, `members_total` | Container too large to serve whole |
 | fallback lines | On a miss, closest matches from a live grep |
-| `source`, `created_at`, `original_tokens` | Omission ref: where the stored content came from |
+| `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
 `outlined: true` puts the header in `source` and `members` (each `symbol_id`, signature, lines; `members_total` when capped) in place of the body, with no `_meta.complete`.
 
@@ -362,7 +362,7 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
-- Past 3 plain `reference` lines per file, or 50 total, rows go to `lines_omitted_by_file`, recoverable from `_meta.omitted`. Test files sort last.
+- Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows go to `lines_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Test files sort last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports) and lists the 5 files with most omitted rows; `lines_omitted_by_file_total` counts all.
 
 Ranking:
@@ -458,10 +458,12 @@ In workspace mode the directive adds `will_break_consumers` (structural reach on
 | `cross_repo` | Workspace: consumers and breaking changes |
 | `status` | `"nothing_to_score"` on an empty diff |
 
+- **`next_actions`** names only what the diff needs: inspect a finding at `path:line`, run the selected tests, cover changed lines. Skipped files read in `reasons` and `health_delta.skipped`, a missing test map in `impacted_tests.status`, and coverage measured before the change in `patch_coverage.freshness` with `file_counts.stale_file`.
 - **Directive order:** gating findings (high or critical, not performance) lead the reasons, inspect actions and `top_findings`; the count reads "N of M" when others are lower. The headline ends with the code's health on both sides.
 - **`include=["scales"]`** adds each field's unit and calibration, and the `review_priority` tercile with `classification` (`Below-typical`, `Typical`, `Above-typical diff size`).
 - **`include=["diagnostics"]`** adds `score` (raw 0 to 10), `fallback_band`, `risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`, `features`, `drivers`, `fix_history` `density` and `percentile`, and `health_delta.analyzer` (rules fingerprint; `context` is `index_dependents` when centrality gates read the index's dependents counts on both sides, `changed_files` with no index), `.base`, `.head` (resolved revisions), `.limits`.
 - **`include=["findings"]`** lists every finding with its expand call as `inspect`. `evidence` adds the evidence checklist; `tests` adds `impacted_tests.why` and `basis_by_file`.
+- **`per_commit=true`** (a range only) replaces the review with `commits`: one row per non-merge commit, oldest first, up to 30, each with `sha`, `subject`, `files`, `lines`, `risk_percentile` (or `fallback_band`), up to two `drivers` that raised it, `fix_prone` files and `is_fix`. Every row ranks against the same history (`ranked_against`, read at the range's merge-base), so a row can differ slightly from that commit scored alone. `review` names the full-review calls, `merges_skipped` counts merge commits, and `more` carries the call for the commits past the cap (on a range with merged branches it can repeat a few rows, and it ranks against its own start). `include=["diagnostics"]` adds each row's `score`.
 
 ### health_delta
 
@@ -560,6 +562,8 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 | `git_archaeology` | No decision governs the path; `git_log` keeps its 5 newest rows, rest via the omission marker |
 | `provenance`, `evidence_refs` | Self-contained evidence refs. Matching ids mean shared evidence, not corroboration |
 
+- **A question no decision answers** (no top-level decision, no rule or candidate on a named file) gets a compact verdict: `reason`, at most 3 `code_rationale` rows (`path`, `lines`, `comment`), at most 2 `key_commits` (`sha`, `date`, `message`, `pr_number`; commits the question singled out first, then the file's key commits carrying its terms), and `more`, the `get_why(targets=[...])` call for the full file history. `repowise why --full` keeps the whole card.
+- `body_excerpt` on a commit row: up to 280 characters of the commit's body, the paragraph that best matches the question. On a squash or merge commit that body is usually the PR description, cited by `pr_number`. It comes from the indexed commit or the local clone, never the network, and the compact verdict carries one.
 - Commit rows under `git_archaeology` and `origin_story.key_commits` inherit the block's `provenance`.
 - Read the lane, not `status`: `status: "active"` can lack acceptance. Only `repowise decision confirm` or a committed ADR marked accepted accepts.
 - `candidates` and `history` shed first under budget, so an absent lane may mean a tight budget.

@@ -109,3 +109,90 @@ async def test_file_tests_names_the_evidence_per_file(async_session):
         "tests/test_foo.py": FileTests("test"),
         "pyproject.toml": FileTests("not_code"),
     }
+
+
+async def test_a_module_a_test_loads_through_its_package_is_not_a_gap(async_session):
+    """``test_why`` imports the ``tool_why`` package; its ``__init__`` imports
+    ``tool.py``, which imports ``workspace.py``. A file only an untested page
+    imports stays a gap, and a test the index has not seen yet is a test."""
+    from repowise.core.analysis.pr_blast import FileTests, file_tests
+    from repowise.core.persistence.models import GraphEdge
+
+    repo = await insert_repo(async_session)
+    nodes = {
+        "tests/test_why.py": True,
+        "src/server.py": False,
+        "src/tool_why/__init__.py": False,
+        "src/tool_why/tool.py": False,
+        "src/tool_why/workspace.py": False,
+        "web/app/page.tsx": False,
+        "web/components/view.tsx": False,
+    }
+    for node, is_test in nodes.items():
+        await _node(async_session, repo.id, node, is_test=is_test)
+    for src, dst in [
+        ("tests/test_why.py", "src/tool_why/__init__.py"),
+        ("src/server.py", "src/tool_why/__init__.py"),
+        ("src/tool_why/__init__.py", "src/tool_why/tool.py"),
+        ("src/tool_why/tool.py", "src/tool_why/workspace.py"),
+        ("web/app/page.tsx", "web/components/view.tsx"),
+    ]:
+        async_session.add(
+            GraphEdge(
+                repository_id=repo.id, source_node_id=src, target_node_id=dst, edge_type="imports"
+            )
+        )
+    await async_session.commit()
+
+    rows = await file_tests(
+        async_session,
+        repo.id,
+        ["src/tool_why/workspace.py", "web/components/view.tsx", "tests/unit/test_new.py"],
+    )
+    assert rows == {
+        "src/tool_why/workspace.py": FileTests("tested", reached_by=("tests/test_why.py",)),
+        "web/components/view.tsx": FileTests("untested"),
+        "tests/unit/test_new.py": FileTests("test"),
+    }
+
+
+async def test_a_file_the_index_has_not_seen_is_new_never_a_gap(async_session):
+    """A file the change adds has no tests or callers in the graph yet: no claim either way."""
+    from repowise.core.analysis.pr_blast import FileTests, file_tests, untested_files
+
+    repo = await insert_repo(async_session)
+    await _node(async_session, repo.id, "src/old.py")
+    await _node(async_session, repo.id, "tests/test_misc.py", is_test=True)
+    await async_session.commit()
+
+    rows = await file_tests(async_session, repo.id, ["src/old.py", "src/added.py"])
+    assert rows == {"src/old.py": FileTests("untested"), "src/added.py": FileTests("new")}
+    assert await untested_files(async_session, repo.id, ["src/old.py", "src/added.py"]) == [
+        "src/old.py"
+    ]
+
+
+async def test_generated_and_vendored_code_owes_no_test(async_session):
+    """No test is owed by code that does not ship, by its stored origin or, unscored, its path."""
+    from repowise.core.analysis.pr_blast import FileTests, file_tests, untested_files
+    from repowise.core.persistence.models import HealthFileMetric
+
+    repo = await insert_repo(async_session)
+    paths = ["src/app.py", "src/api_pb2.py", "vendor/lib/x.go", "src/client.ts"]
+    for p in paths:
+        await _node(async_session, repo.id, p)
+    await _node(async_session, repo.id, "tests/test_misc.py", is_test=True)
+    # The stored origin decides; the path alone would call this one production.
+    async_session.add(
+        HealthFileMetric(repository_id=repo.id, file_path="src/client.ts", code_origin="generated")
+    )
+    await async_session.commit()
+
+    rows = await file_tests(async_session, repo.id, paths)
+    assert rows == {
+        "src/app.py": FileTests("untested"),
+        "src/api_pb2.py": FileTests("not_applicable"),
+        "vendor/lib/x.go": FileTests("not_applicable"),
+        "src/client.ts": FileTests("not_applicable"),
+    }
+    assert await untested_files(async_session, repo.id, paths) == ["src/app.py"]

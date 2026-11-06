@@ -1,6 +1,6 @@
 """What init does to the per-user ``repowise`` MCP entries, and the one place it asks.
 
-Claude Code (``~/.claude/settings.json``) and Claude Desktop each hold a
+Claude Code (top-level ``mcpServers`` in ``~/.claude.json``) and Claude Desktop each hold a
 single ``repowise`` server key shared by every repo on the machine. init adds
 it when absent and heals it when the repo it names is gone, but never moves an
 entry that serves another repo (``claude_config.planned_global_entry`` owns
@@ -23,7 +23,6 @@ from repowise.cli.editor_integrations import claude_config
 
 logger = logging.getLogger(__name__)
 
-NOT_SET = "not set"
 #: Writes the user-level entries for this repo, moving any that serve another.
 REGISTER_LATER_COMMAND = "repowise agents add --target=claude-code --scope=user"
 
@@ -94,8 +93,14 @@ class GlobalMcpTarget:
         for e in self.entries:
             if not e.moves:
                 continue
-            now = (e.target or NOT_SET) if e.present else NOT_SET
-            if e.present and e.target and not Path(e.target).is_dir():
+            if not e.present:
+                lines.append(
+                    f"{e.client} repowise MCP entry added, "
+                    f"will serve {_serves(e.planned_target)}"
+                )
+                continue
+            now = _serves(e.target)
+            if e.target and not Path(e.target).is_dir():
                 now += " (missing)"
             lines.append(
                 f"{e.client} repowise MCP entry now points at {now}, "
@@ -126,12 +131,13 @@ class GlobalMcpTarget:
 def read_global_mcp_target(repo_path: Path) -> GlobalMcpTarget:
     """Read-only: what each global config holds and what init would write.
 
-    Lists the clients registration would write: Claude Code always, Claude
-    Desktop only when installed, the same rule the writers apply.
+    Lists the clients registration would write: Claude Code unless the
+    repowise plugin serves it, Claude Desktop only when installed, the same
+    rules the writers apply.
     """
-    configs: list[tuple[str, Path, bool]] = [
-        ("Claude Code", claude_config._claude_code_settings_path(), True)
-    ]
+    configs: list[tuple[str, Path, bool]] = []
+    if not claude_config.claude_code_plugin_installed():
+        configs.append(("Claude Code", claude_config._claude_code_user_config_path(), True))
     desktop = claude_config._claude_desktop_config_path()
     if desktop is not None and desktop.parent.exists():
         configs.append(("Claude Desktop", desktop, False))

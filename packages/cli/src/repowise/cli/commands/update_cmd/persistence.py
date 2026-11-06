@@ -590,6 +590,9 @@ def _persist_index_only_update(
     vector_store: Any | None = None,
     require_config_rebuild_success: bool = False,
     history_window_changed: bool = False,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
+    stamp_config: bool = True,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
@@ -638,6 +641,8 @@ def _persist_index_only_update(
             reconcile_full_scope=reconcile_full_scope,
             full_generation_page_ids=full_generation_page_ids,
             vector_store=vector_store,
+            deferred_page_scope=deferred_page_scope,
+            deferred_page_paths=deferred_page_paths,
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
@@ -672,9 +677,13 @@ def _persist_index_only_update(
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": config_fingerprint(repo_path),
+        "config_fingerprint": (
+            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
+        ),
         "config_dependency_fingerprints": (
-            dependency_fingerprints
+            state.get("config_dependency_fingerprints")
+            if not stamp_config
+            else dependency_fingerprints
             if dependency_fingerprints is not None
             else config_dependency_fingerprints(repo_path)
         ),

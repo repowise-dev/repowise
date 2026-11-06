@@ -51,6 +51,8 @@ class IncrementalPersist(PersistRun):
     reconcile_full_scope: bool = False
     full_generation_page_ids: set[str] | None = None
     vector_store: Any | None = None
+    deferred_page_scope: str | None = None
+    deferred_page_paths: list[str] | None = None
 
     traversed_paths: frozenset[str] | None = None
     pruned_paths: set[str] = field(default_factory=set)
@@ -173,6 +175,21 @@ async def rebuild_tree(ctx: IncrementalPersist) -> None:
 
     with timed(ctx.timings, "persist.page_tree"):
         await rebuild_page_tree(ctx.session, ctx.repo_id)
+
+
+async def defer_pages(ctx: IncrementalPersist) -> None:
+    from repowise.core.pipeline.persist.tombstones import mark_deferred_pages
+
+    with timed(ctx.timings, "persist.stale_pages"):
+        await mark_deferred_pages(
+            ctx.session,
+            ctx.repo_id,
+            scope=ctx.deferred_page_scope,
+            repo_path=Path(ctx.repo_path),
+            paths=ctx.deferred_page_paths or (),
+            parsed_files=ctx.parsed_files,
+            graph_builder=ctx.graph_builder,
+        )
 
 
 async def persist_git(ctx: IncrementalPersist) -> None:
@@ -409,7 +426,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
         reconcile_generation_scope,
         when=lambda ctx: ctx.full_generation_page_ids is not None,
     ),
-    Step("Retired page sweep", sweep_retired),
+    Step("Retired page sweep", sweep_retired, when=lambda ctx: ctx.deferred_page_scope is None),
     Step(
         "Tombstone marking",
         mark_tombstones,
@@ -457,6 +474,12 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step(
+        "Deferred page staleness",
+        defer_pages,
+        when=lambda ctx: ctx.deferred_page_scope is not None,
+        guarded=False,
+    ),
     # Unguarded and last: plugins see the final rows, and a raise rolls back the update.
     Step("Plugin records", persist_plugin_records, guarded=False),
 )
@@ -586,6 +609,8 @@ async def persist_incremental_index(
     reconcile_full_scope: bool = False,
     full_generation_page_ids: set[str] | None = None,
     vector_store: Any | None = None,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
@@ -640,6 +665,8 @@ async def persist_incremental_index(
         reconcile_full_scope=reconcile_full_scope,
         full_generation_page_ids=full_generation_page_ids,
         vector_store=vector_store,
+        deferred_page_scope=deferred_page_scope,
+        deferred_page_paths=deferred_page_paths,
         log=log or _noop_log,
         degraded=[] if degraded is None else degraded,
         failed_steps=failed_steps,

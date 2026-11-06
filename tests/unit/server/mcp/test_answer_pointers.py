@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from repowise.server.mcp_server.tool_answer.pointers import anchor_code_blocks, helper_calls
+from repowise.server.mcp_server.tool_answer.pointers import (
+    anchor_code_blocks,
+    chain_first,
+    helper_calls,
+)
 
 SOURCE = """export const compose = (middleware) => {
   return (context, next) => {
@@ -114,3 +118,25 @@ def test_names_inside_quoted_code_are_not_helpers():
     rows = [_row("render_row", None)]
     answer = "It builds rows:\n\n```js\nconst s = `render_row()`\n```\n"
     assert helper_calls(answer, rows, served=set()) == []
+
+
+def test_a_call_chain_answer_reads_the_first_helper_with_its_callees():
+    calls = ["get_symbol('command.go::Command::ExecuteC')", "get_symbol('command.go::Command::execute')"]
+    assert chain_first(calls) == [
+        "get_symbol('command.go::Command::ExecuteC', depth=2)",
+        "get_symbol('command.go::Command::execute')",
+    ]
+    assert chain_first([]) == []
+
+
+def test_the_chain_entry_is_the_helper_the_question_names():
+    calls = [
+        "get_symbol('src/hono-base.ts::Hono::#handleError')",
+        "get_symbol('src/hono-base.ts::Hono::fetch')",
+        "get_symbol('src/utils/url.ts::getPath')",
+    ]
+    assert chain_first(calls, "What happens inside `app.fetch(request)`?") == [
+        "get_symbol('src/hono-base.ts::Hono::fetch', depth=2)",
+        "get_symbol('src/hono-base.ts::Hono::#handleError')",
+        "get_symbol('src/utils/url.ts::getPath')",
+    ]
