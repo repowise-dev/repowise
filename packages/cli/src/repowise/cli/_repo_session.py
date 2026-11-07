@@ -11,6 +11,24 @@ from pathlib import Path
 from typing import Any
 
 
+def unopenable_store_error(url: str, exc: BaseException):
+    """A CLI error naming the recovery for a store that would not open.
+
+    The root group renders a ``ClickException`` as ``Error: <message>`` with
+    no traceback, so a corrupt store fails with its recovery instead of a
+    stack trace. The ``reason`` slug keeps the failure classifiable.
+    """
+    from repowise.cli.errors import reasoned_error
+
+    db_path = url.split(":///", 1)[-1] if ":///" in url else url
+    return reasoned_error(
+        f"Cannot open the index at {db_path}: {exc}. "
+        "Remove wiki.db, wiki.db-wal and wiki.db-shm, "
+        "then run repowise init to rebuild it.",
+        reason="store-unreadable",
+    )
+
+
 async def open_repo_db(
     repo_path: Path,
     *,
@@ -39,12 +57,26 @@ async def open_repo_db(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url, busy_timeout_ms=busy_timeout_ms)
-    if init:
-        await init_db(engine)
-    sf = create_session_factory(engine)
-    async with get_session(sf) as session:
-        repo = await upsert_repository(
-            session, name=repo_name or repo_path.name, local_path=str(repo_path)
-        )
-        repo_id = repo.id
+    try:
+        if init:
+            await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(
+                session, name=repo_name or repo_path.name, local_path=str(repo_path)
+            )
+            repo_id = repo.id
+    except Exception as exc:
+        # The caller never receives the engine on this path, so it cannot
+        # dispose it: a store that cannot be opened used to surface here as
+        # a traceback while the undisposed engine's aiosqlite worker thread
+        # kept the command alive. Dispose first, then fail with the recovery.
+        await engine.dispose()
+        import sqlite3
+
+        from sqlalchemy.exc import DatabaseError
+
+        if isinstance(exc, (DatabaseError, sqlite3.Error)):
+            raise unopenable_store_error(url, exc) from exc
+        raise
     return engine, sf, repo_id
