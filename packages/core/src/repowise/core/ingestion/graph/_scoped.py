@@ -9,6 +9,7 @@ the edited files. Global passes still run and can add or merge their edge types.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any, Protocol
 
 from ..models import REGISTRATION_HINT
@@ -31,15 +32,23 @@ class ScopedBuildMixin:
             return list(parsed_files.items())
         return [(p, pf) for p, pf in parsed_files.items() if p in scope]
 
-    def seed_graph_snapshot(self: _ScopedGraphHost, snapshot: dict[str, Any]) -> int:
+    def seed_graph_snapshot(
+        self: _ScopedGraphHost, snapshot: dict[str, Any], drop_paths: Collection[str] = ()
+    ) -> int:
         """Seed the exact last-built graph; return its edge count.
 
         Current parse results own the file/symbol attributes. Snapshot values
         fill only attributes the parser does not provide, while all edge
         attributes (including non-column resolver facts) are restored exactly.
+        Nodes of the deleted files in *drop_paths*, and their edges, are skipped.
         """
         graph = self._graph
+        drop = set(drop_paths)
+        dropped: set[str] = set()
         for node_id, attrs in snapshot.get("nodes", ()):
+            if drop and (node_id in drop or attrs.get("file_path") in drop):
+                dropped.add(node_id)
+                continue
             if node_id not in graph:
                 graph.add_node(node_id, **attrs)
                 continue
@@ -48,6 +57,8 @@ class ScopedBuildMixin:
                 node.setdefault(key, value)
         added = 0
         for source, target, attrs in snapshot.get("edges", ()):
+            if source in dropped or target in dropped:
+                continue
             if source not in graph:
                 graph.add_node(source, language="external", symbol_count=0, has_error=False)
             if target not in graph:
