@@ -249,7 +249,7 @@ def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
     got = _by_name(rows)
     assert got[".repowise/ directory"][0] is False
     assert got["Database"] == (False, "wiki.db not found")
-    assert got["state.json"] == (False, "Not found or empty")
+    assert got["state.json"] == (False, "missing")
 
 
 def test_missing_state_drops_store_format_row(env, tmp_path) -> None:
@@ -257,7 +257,40 @@ def test_missing_state_drops_store_format_row(env, tmp_path) -> None:
     (repo / ".repowise" / "state.json").unlink()
     rows = _rows(repo)
     assert "Store format" not in [r[0] for r in rows]
-    assert _by_name(rows)["state.json"] == (False, "Not found or empty")
+    assert _by_name(rows)["state.json"] == (False, "missing")
+
+
+def _state_check(repo_path: Path):
+    _ok, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="json")
+    return next(check for check in checks if check.id == "state-json")
+
+
+def test_empty_state_is_a_failure_with_the_init_command(env, tmp_path) -> None:
+    repo = asyncio.run(_build(tmp_path))
+    (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    row = _state_check(repo)
+    assert (row.id, row.level, row.ok, row.detail, row.fix) == (
+        "state-json",
+        "fail",
+        False,
+        "Not found or empty",
+        "repowise init",
+    )
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]", "null"])
+def test_corrupt_state_is_reported_as_unreadable_with_the_init_command(
+    env, tmp_path, content
+) -> None:
+    repo = asyncio.run(_build(tmp_path))
+    state_path = repo / ".repowise" / "state.json"
+    state_path.write_text(content, encoding="utf-8")
+    row = _state_check(repo)
+    assert row.id == "state-json"
+    assert row.level == "fail"
+    assert row.ok is False
+    assert row.fix == "repowise init"
+    assert row.detail.startswith(f"unreadable: {state_path}:")
 
 
 def test_drift_rows_and_coordinator(env, tmp_path) -> None:
