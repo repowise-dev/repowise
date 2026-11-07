@@ -797,9 +797,11 @@ class PageCheckpointer:
             upsert_repository,
         )
 
+        queue = self._queue
+        assert queue is not None  # start() creates the queue before scheduling this task.
         repo_id: str | None = None
         while True:
-            page = await self._queue.get()
+            page = await queue.get()
             if page is None:
                 return
             if self.failure is not None:
@@ -1235,7 +1237,7 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")
-    if not isinstance(last, (int, float)):
+    if not isinstance(last, int | float):
         return True
     return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
 

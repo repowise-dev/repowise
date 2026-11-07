@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 import structlog
@@ -103,6 +103,7 @@ log = structlog.get_logger(__name__)
 
 #: ``state.json`` key: the commit whose run last looked for files with no page.
 FILE_PAGE_FILL_KEY = "file_page_fill_commit"
+
 
 def _fail_on_embed_failure(
     repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
@@ -333,6 +334,15 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     ),
 )
 @click.option(
+    "--refresh-git",
+    is_flag=True,
+    default=False,
+    help=(
+        "Re-read Git history within the current index scope, even at an unchanged HEAD. "
+        "Requires --index-only --defer-docs."
+    ),
+)
+@click.option(
     "--defer-docs",
     is_flag=True,
     default=False,
@@ -447,6 +457,7 @@ def update_command(
     progress: str = "rich",
     include_working_tree: bool = False,
     defer_docs: bool = False,
+    refresh_git: bool = False,
 ) -> None:
     """Incrementally update the index and pages for files changed since the last sync.
 
@@ -478,6 +489,7 @@ def update_command(
         progress=progress,
         include_working_tree=include_working_tree,
         defer_docs=defer_docs,
+        refresh_git=refresh_git,
     )
 
 
@@ -521,9 +533,7 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print(
-        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
-    )
+    console.print(f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]")
     console.print(
         "  Documentation for the whole repository: written by the model after a cost "
         "preview, or built from code when no model is configured. Completed stages "
@@ -714,15 +724,44 @@ def _resolve_target(opts: UpdateOptions):
     return target
 
 
+def _validate_update_options(opts: UpdateOptions) -> None:
+    if opts.refresh_git and opts.full:
+        raise reasoned_error(
+            "--refresh-git keeps the current index scope; use --full separately to upgrade it.",
+            reason="refresh_git_conflicts_with_full",
+        )
+    if opts.refresh_git and not (opts.index_only and opts.defer_docs):
+        raise reasoned_error(
+            "--refresh-git requires --index-only --defer-docs.",
+            reason="refresh_git_needs_deferred_index",
+        )
+    if opts.defer_docs and (
+        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
+    ):
+        raise reasoned_error(
+            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
+            reason="defer_docs_needs_index_only",
+        )
+
+
 def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.refresh_git:
+        raise reasoned_error(
+            "--refresh-git supports one repo at a time. Pass its path and --no-workspace.",
+            reason="refresh_git_needs_one_repo",
+        )
+    if opts.defer_docs:
+        raise reasoned_error(
+            "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
+            reason="defer_docs_needs_one_repo",
+        )
     if opts.full and opts.repo_alias:
         entry = target.ws_config.get_repo(opts.repo_alias)
         run.repo_path = (target.ws_root / entry.path).resolve()
         return _full_upgrade(opts, run)
     if opts.full:
         raise reasoned_error(
-            "--full upgrades one repo at a time. Run it inside that repo, or pass "
-            "--repo <alias>.",
+            "--full upgrades one repo at a time. Run it inside that repo, or pass --repo <alias>.",
             reason="full_needs_one_repo",
         )
     with _errors_reported(run):
@@ -819,15 +858,16 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )
     # ``or``, not a ``get`` default: ``last_docs_commit`` can be an explicit null.
-    run.base_ref = opts.since or (
+    base_ref = opts.since or (
         state.get("last_sync_commit")
         if run.index_only
         else state.get("last_docs_commit") or state.get("last_sync_commit")
     )
     run.head = get_head_commit(repo_path)
 
-    if run.base_ref is None:
+    if base_ref is None:
         _raise_no_sync_base(run)
+    run.base_ref = base_ref
 
     # Re-cover a range an earlier update failed to persist. Index-only only: the
     # repair marker is written against ``last_sync_commit``, and --since wins.
@@ -835,7 +875,7 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         _widen_to_pending_repair(run)
 
 
-def _raise_no_sync_base(run: UpdateRun) -> None:
+def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
     if upstream_ws is not None:
@@ -939,6 +979,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.analyzer_changed = health_analyzer_changed(state)
     # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
+    run.refresh_git = opts.refresh_git
     run.git_is_current = bool(
         run.head
         and run.head == run.base_ref
@@ -948,6 +989,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and not run.working_tree_diffs
         and not run.analyzer_changed
         and not run.history_stale
+        and not run.refresh_git
     )
     # A store read, so only asked when the run would otherwise exit.
     run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
@@ -959,8 +1001,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; "
-            "rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; " "rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
@@ -1020,6 +1061,8 @@ def _announce_rework(run: UpdateRun) -> None:
             else "[yellow]Git history rules changed since this index was built; "
             "re-reading the full history once.[/yellow]"
         )
+    if run.refresh_git:
+        console.print("[yellow]Re-reading Git history within the current index scope.[/yellow]")
 
 
 def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
@@ -1135,7 +1178,8 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
 def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
     from repowise.core.ingestion.change_detector import FileDiff
 
-    present, absent = [], []
+    present: list[str] = []
+    absent: list[str] = []
     for path in run.stale_db_paths:
         (present if (run.repo_path / path).exists() else absent).append(path)
     run.stale_db_paths = present
@@ -1268,6 +1312,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         or run.analyzer_changed
         or run.extraction_changed
         or run.history_stale
+        or run.refresh_git
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
@@ -1313,7 +1358,11 @@ def _config_change_only(run: UpdateRun) -> bool:
     """A config edit with no commits to index; those fall through to the full path."""
     config = run.config
     return config.changed and not (
-        run.file_diffs or config.git_changed or run.full_generation or run.history_stale
+        run.file_diffs
+        or config.git_changed
+        or run.full_generation
+        or run.history_stale
+        or run.refresh_git
     )
 
 
@@ -1382,7 +1431,11 @@ def _rebuild_index(run: UpdateRun) -> None:
         idle_decay_sink=None if run.working_tree_only else run.git_decay_map,
         # A full re-render quotes every file's history, as init does.
         force_full_git=(
-            run.config.git_changed or run.history_stale or run.renderer_changed or run.wiki_rebuild
+            run.config.git_changed
+            or run.history_stale
+            or run.renderer_changed
+            or run.wiki_rebuild
+            or run.refresh_git
         ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
@@ -1409,6 +1462,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
             or run.analyzer_changed
             or run.extraction_changed
             or run.history_stale
+            or run.refresh_git
         )
     )
 
@@ -1418,13 +1472,14 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     _stage(run, "plan_pages")
 
     run.timings.start("plan_pages")
-    run.cascade_budget = opts.cascade_budget
-    if run.cascade_budget is None:
+    cascade_budget = opts.cascade_budget
+    if cascade_budget is None:
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
-        run.cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
+        cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
         if opts.verbose:
-            console.print(f"Adaptive cascade budget: [cyan]{run.cascade_budget}[/cyan]")
+            console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
+    run.cascade_budget = cascade_budget
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -1641,6 +1696,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
         or run.renderer_changed
         or run.wiki_rebuild
         or run.history_stale
+        or run.refresh_git
         or config.changed
     ):
         return False
@@ -2278,6 +2334,7 @@ def run_update(
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
     defer_docs: bool = False,
+    refresh_git: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2319,27 +2376,18 @@ def run_update(
         skip_cross_repo_hooks=skip_cross_repo_hooks,
         include_working_tree=include_working_tree,
         defer_docs=defer_docs,
+        refresh_git=refresh_git,
     )
-    if opts.defer_docs and (
-        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
-    ):
-        raise reasoned_error(
-            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
-            reason="defer_docs_needs_index_only",
-        )
+    _validate_update_options(opts)
     run = _start_run(opts)
     target = _resolve_target(opts)
     if target.is_workspace:
-        if opts.defer_docs:
-            raise reasoned_error(
-                "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
-                reason="defer_docs_needs_one_repo",
-            )
         return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
-    run.repo_path = target.repo_path
-    assert run.repo_path is not None  # single mode always sets repo_path
+    repo_path = target.repo_path
+    assert repo_path is not None  # single mode always sets repo_path
+    run.repo_path = repo_path
     _prepare_repo(run.repo_path)
     if not opts.dry_run:
         # A moved or copied checkout still names its old path; adopt the store's
@@ -2356,6 +2404,9 @@ def run_update(
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
     _assess_staleness(opts, run)
+    if opts.refresh_git and opts.dry_run:
+        console.print("[yellow]Dry run: Git history would be re-read. No changes made.[/yellow]")
+        return _emit_done(run, UpdateOutcome.DRY_RUN)
     if run.git_is_current and not (
         run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
     ):

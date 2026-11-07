@@ -16,6 +16,7 @@ def _run(tmp_path, *paths: str, **overrides) -> SimpleNamespace:
         "renderer_changed": False,
         "wiki_rebuild": False,
         "history_stale": False,
+        "refresh_git": False,
         "config": SimpleNamespace(changed=False),
         "file_diffs": [SimpleNamespace(path=p, old_path=None) for p in paths],
         "affected": SimpleNamespace(regenerate=[]),
@@ -39,6 +40,7 @@ def test_no_change_keeps_stored_findings(tmp_path) -> None:
     [
         {"analyzer_changed": True},
         {"history_stale": True},
+        {"refresh_git": True},
         {"wiki_rebuild": True},
         {"config": SimpleNamespace(changed=True)},
         {"affected": SimpleNamespace(regenerate=["src/a.py"])},
