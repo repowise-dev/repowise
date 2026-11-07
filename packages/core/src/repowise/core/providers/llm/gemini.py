@@ -376,13 +376,17 @@ class GeminiProvider(BaseProvider):
             return GeneratedResponse(
                 content=response.text or "",
                 input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
-                output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+                output_tokens=(
+                    (getattr(usage, "candidates_token_count", 0) or 0)
+                    + (getattr(usage, "thoughts_token_count", 0) or 0)
+                ),
                 cached_tokens=getattr(usage, "cached_content_token_count", 0) or 0,
                 stop_reason=stop_reason,
                 provider_stop_reason=provider_stop_reason,
                 usage={
                     "prompt_token_count": getattr(usage, "prompt_token_count", 0) or 0,
                     "candidates_token_count": getattr(usage, "candidates_token_count", 0) or 0,
+                    "thoughts_token_count": getattr(usage, "thoughts_token_count", 0) or 0,
                     "total_token_count": getattr(usage, "total_token_count", 0) or 0,
                 }
                 if usage
@@ -581,6 +585,9 @@ class _UsageTotal:
     def add(self, metadata: Any) -> None:
         prompt = getattr(metadata, "prompt_token_count", None)
         output = getattr(metadata, "candidates_token_count", None)
+        thoughts = getattr(metadata, "thoughts_token_count", None)
+        if isinstance(thoughts, int):
+            output = (output or 0) + thoughts
         if isinstance(prompt, int):
             self.input_tokens += prompt
             self.output_tokens += output if isinstance(output, int) else 0
