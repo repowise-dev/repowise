@@ -159,6 +159,63 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
     bound = _http_bindings(tree)
     if not bound:
         return set()
+    
+    http_attributes: set[str] = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+
+        value = node.value
+        if not isinstance(value, ast.Call):
+            continue
+
+        if _dotted(_root(value)) not in bound:
+            continue
+
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in ("self", "cls")
+            ):
+                http_attributes.add(target.attr)
+    
+    def is_shadowed(name: str, call_line: int) -> bool:
+        """Check whether a module-level assignment replaced a bound name."""
+        latest_import = -1
+        latest_assignment = -1
+
+        for statement in tree.body:
+            if isinstance(statement, ast.Import):
+                if any(
+                    (alias.asname or alias.name.split(".")[0]) == name
+                    for alias in statement.names
+                ):
+                    latest_import = statement.lineno
+
+            elif (
+                isinstance(statement, ast.Assign)
+                and statement.lineno < call_line
+                and any(
+                    isinstance(target, ast.Name) and target.id == name
+                    for target in statement.targets
+                )
+            ):
+                if (
+                    isinstance(statement.value, ast.Call)
+                    and _dotted(_root(statement.value)) in bound
+                ):
+                    latest_assignment = -1
+                    latest_import = statement.lineno
+                    continue
+
+                latest_assignment = statement.lineno
+
+        return latest_assignment > latest_import
+    
     found: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -170,14 +227,34 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
                 reaches = (
                     _dotted(receiver) in bound
                     or _dotted(func.value) in bound
-                    or not isinstance(receiver, ast.Name)
-                    or receiver.id in ("self", "cls")
+                    or (
+                        isinstance(receiver, ast.Name)
+                        and receiver.id in ("self", "cls")
+                        and isinstance(func.value, ast.Attribute)
+                        and (
+                            func.value.attr.lower()
+                            in ("http", "https", "client", "session")
+                            or func.value.attr in http_attributes
+                        )
+                    )
+                    or (
+                        isinstance(func.value, ast.Call)
+                        and _dotted(_root(func.value)) in bound
+                    )
                 )
             elif isinstance(func, ast.Name):
                 name, reaches = func.id, func.id in bound
             else:
                 continue
-            if name in _HTTP_CALLS and reaches:
+            if (
+                name in _HTTP_CALLS
+                and reaches
+                and not (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(receiver, ast.Name)
+                    and is_shadowed(receiver.id, node.lineno)
+                )
+            ):
                 found.update(
                     kw.lineno
                     for kw in node.keywords

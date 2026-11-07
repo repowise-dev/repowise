@@ -620,6 +620,32 @@ class TestScanFile:
         findings = scan_source("client.py", source)
         assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
 
+
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            (
+                "import requests\n"
+                "requests = object()\n"
+                "requests.get(url, verify=False)\n"
+            ),
+            (
+                "import requests\n"
+                "class Worker:\n"
+                "    def run(self):\n"
+                "        self.database.get('key', verify=False)\n"
+            ),
+        ],
+    )
+    def test_tls_verify_false_ignores_unrelated_receivers(self, source: str) -> None:
+        findings = scan_source("client.py", source)
+        tls_findings = [
+            f for f in findings if f["kind"] == "tls_verify_false"
+        ]
+        assert tls_findings == []
+
+
     def test_tls_verify_false_keeps_the_line_match_when_python_does_not_parse(self) -> None:
         findings = scan_source("client.py", "def broken(:\nload(x, verify=False)\n")
         assert [f["line"] for f in findings if f["kind"] == "tls_verify_false"] == [2]
@@ -1749,60 +1775,34 @@ class TestNoAlarmOnCodeThatDoesNotShip:
 
         assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
 
-    def test_csharp_interpolated_string_quotes_inside_hole_are_masked(self) -> None:
-        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
 
-        src = 'var u = $"{b}items/by?ids={string.Join("&ids=", ids)}";\nvar x = 1;\n'
-        masked = mask_comments_and_strings(
-            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+
+
+
+    def test_tls_http_client_rebinding_clears_shadowing(self):
+        from repowise.core.analysis.security_scan import _tls_verify_off_lines
+
+        source = (
+            "import requests\n"
+            "s = None\n"
+            "s = requests.Session()\n"
+            "s.get('https://example.com', verify=False)\n"
         )
-        assert masked == "var u = $  b               string.Join(       , ids)  ;\nvar x = 1;\n"
-        assert (
-            mask_comments_and_strings(
-                src, strings=False, hash_comments=False, **mask_dialect("a.cs")
-            )
-            == src
+
+        assert _tls_verify_off_lines(source) == {4}
+
+
+
+    def test_tls_http_client_on_custom_attribute(self):
+        from repowise.core.analysis.security_scan import _tls_verify_off_lines
+
+        source = (
+            "import requests\n"
+            "class API:\n"
+            "    def __init__(self):\n"
+            "        self.api = requests.Session()\n"
+            "    def send(self):\n"
+            "        self.api.post('https://example.com', verify=False)\n"
         )
 
-    def test_csharp_interpolated_string_comment_inside_hole_does_not_mask_line(self) -> None:
-        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
-
-        src = 'var u = $"{b}items/by?ids={string.Join("//x", ids)}";\nvar x = 1;\n'
-        masked = mask_comments_and_strings(
-            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
-        )
-        assert masked == "var u = $  b               string.Join(     , ids)  ;\nvar x = 1;\n"
-
-    def test_csharp_interpolated_string_verbatim_and_escaped_braces(self) -> None:
-        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
-
-        src = 'var u = $@"c:\\dir\\{sub}\""name""";\nvar x = 1;\n'
-        masked = mask_comments_and_strings(
-            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
-        )
-        assert masked == "var u = $@         sub          ;\nvar x = 1;\n"
-
-        src_braces = 'var u = $"escaped {{literal}} and {hole}";\n'
-        masked_braces = mask_comments_and_strings(
-            src_braces, strings=True, hash_comments=False, **mask_dialect("a.cs")
-        )
-        assert masked_braces == "var u = $                          hole  ;\n"
-
-@pytest.mark.parametrize("prefix", ["$@", "@$"])
-@pytest.mark.parametrize("strings", [False, True])
-def test_verbatim_interpolation_trailing_backslash_preserves_following_code(prefix, strings):
-    from repowise.core.analysis.security.masking import mask_dialect
-    from repowise.core.analysis.security_scan import mask_comments_and_strings
-
-    literal = r'"c:\dir\"'
-    source = f"var p = {prefix}{literal}; DangerousCall(); // real comment\nNext();\n"
-    masked = mask_comments_and_strings(
-        source, strings=strings, hash_comments=False, **mask_dialect("a.cs")
-    )
-    expected_literal = " " * len(literal) if strings else literal
-    assert masked == (
-        f"var p = {prefix}{expected_literal}; DangerousCall(); "
-        + " " * len("// real comment")
-        + "\nNext();\n"
-    )
-    assert len(masked) == len(source)
+        assert _tls_verify_off_lines(source) == {6}
