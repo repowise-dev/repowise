@@ -58,6 +58,7 @@ from ..decision_graph import (
     upsert_decision_edge,
 )
 from ..models import (
+    SUPERSEDED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -471,11 +472,14 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
 async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | None:
     """Resolve an id that may be a retired alias to the live record's id.
 
-    Merging and superseding retire ids that are already in circulation — in a
+    Merging and re-keying retire ids that are already in circulation — in a
     committed manifest, in an agent's notes. Every id-taking entry point routes
     through here so those keep resolving instead of reading as deleted.
     """
     alias = await session.get(DecisionAlias, decision_id)
+    if alias is not None and alias.reason == SUPERSEDED_REASON:
+        # A pre-fix supersede pointer names the successor, not this id's record.
+        alias = None
     if alias is not None and alias.reason == "merged":
         # A merged candidate's row survives, because its evidence is worth
         # keeping, so the record still resolves by id. Following the alias is
@@ -838,8 +842,9 @@ async def supersede_decision(
     """Retire *record* in favour of *successor_id*, with an explicit edge.
 
     Similarity never reaches here: an edge is written because someone named the
-    successor. The retired id becomes an alias of the successor so references to
-    it keep resolving to the decision that now governs.
+    successor. No alias: the retired id still names this record, wherever the
+    id migration later moves it, and ``superseded_by`` plus the edge are where
+    the successor is read from.
     """
     successor = await session.get(DecisionRecord, successor_id)
     if successor is None:
@@ -868,7 +873,6 @@ async def supersede_decision(
         confidence=1.0,
         evidence=f"superseded by {accepter or artifact}",
     )
-    await _add_alias(session, record.id, successor.id, reason="superseded")
     return acceptance
 
 

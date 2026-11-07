@@ -618,10 +618,16 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         return
     console.print(
         f"created {len(result['created'])}  accepted {len(result['accepted'])}  "
-        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}"
+        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}  "
+        f"repaired {len(result['repaired'])}"
     )
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
+    for fix in result["repaired"]:
+        if fix["to"]:
+            console.print(f"  [cyan]repointed[/cyan] {fix['id'][:8]} -> {fix['to'][:8]}")
+        else:
+            console.print(f"  [cyan]deleted[/cyan] {fix['id'][:8]}: stale supersede pointer")
     if dry_run:
         console.print("[dim]Nothing was written.[/dim]")
 

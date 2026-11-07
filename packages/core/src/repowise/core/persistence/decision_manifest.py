@@ -38,7 +38,8 @@ from .crud.authority import (
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
-from .models import DecisionAlias, DecisionRecord
+from .decision_id_migration import repair_superseded_aliases
+from .models import SUPERSEDED_REASON, DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
 
@@ -89,7 +90,11 @@ def _json_list(raw: str) -> list[str]:
 
 async def _aliases_for(session: AsyncSession, decision_id: str) -> list[str]:
     rows = await session.execute(
-        select(DecisionAlias.alias_id).where(DecisionAlias.decision_id == decision_id)
+        select(DecisionAlias.alias_id).where(
+            DecisionAlias.decision_id == decision_id,
+            # A pre-fix supersede pointer names another record, not this one.
+            DecisionAlias.reason != SUPERSEDED_REASON,
+        )
     )
     return [r[0] for r in rows.all()]
 
@@ -166,7 +171,7 @@ async def export_manifest(
 class ImportOutcome:
     """What reconciling the store against the manifest did."""
 
-    __slots__ = ("accepted", "created", "reaffirmed", "skipped", "unchanged")
+    __slots__ = ("accepted", "created", "reaffirmed", "repaired", "skipped", "unchanged")
 
     def __init__(self) -> None:
         self.created: list[str] = []
@@ -174,6 +179,8 @@ class ImportOutcome:
         self.reaffirmed: list[str] = []
         self.unchanged: list[str] = []
         self.skipped: list[tuple[str, str]] = []
+        #: ``(alias_id, decision_id)`` per supersede pointer, ``decision_id`` empty for a deletion.
+        self.repaired: list[tuple[str, str]] = []
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -182,6 +189,10 @@ class ImportOutcome:
             "reaffirmed": self.reaffirmed,
             "unchanged": self.unchanged,
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
+            "repaired": [
+                {"id": a, "action": "repointed" if d else "deleted", "to": d or None}
+                for a, d in self.repaired
+            ],
         }
 
 
@@ -264,6 +275,11 @@ async def import_manifest(
     outcome = ImportOutcome()
     entries, _ = load_manifest(repo_path)
     artifact = f".repowise/{MANIFEST_FILENAME}"
+    listed = {entry.id for entry in entries}
+    # A pre-fix supersede pointer resolves nowhere until repaired, and an entry
+    # under that old id would then be created a second time.
+    outcome.repaired = await repair_superseded_aliases(session, repository_id, apply=not dry_run)
+    repaired = dict(outcome.repaired)
 
     for entry in entries:
         if not entry.id or not entry.title:
@@ -276,7 +292,19 @@ async def import_manifest(
             outcome.skipped.append((entry.id, "no scope recorded"))
             continue
 
-        resolved = await resolve_decision_id(session, entry.id)
+        resolved = repaired.get(entry.id) or await resolve_decision_id(session, entry.id)
+        if resolved and resolved != entry.id and resolved in listed:
+            # The alias lands on a record the file holds as its own entry, so
+            # following it would write one decision over a different one.
+            outcome.skipped.append(
+                (entry.id, f"its alias resolves to {resolved[:8]}, which the file lists")
+            )
+            continue
+        if resolved is None and await session.get(DecisionAlias, entry.id) is not None:
+            # A retired id the repair could not place: creating it would copy a
+            # record that lives on under another id.
+            outcome.skipped.append((entry.id, "retired id, supersede pointer not repaired"))
+            continue
         record = await session.get(DecisionRecord, resolved) if resolved else None
         if record is not None and record.repository_id != repository_id:
             # One store can hold several repositories. An id that resolves into
