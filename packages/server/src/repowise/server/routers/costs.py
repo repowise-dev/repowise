@@ -85,7 +85,7 @@ async def list_costs(
     if by == "model":
         group_col = LlmCost.model
     elif by == "day":
-        group_col = sa.func.strftime("%Y-%m-%d", LlmCost.ts)
+        group_col = sa.func.date(LlmCost.ts, type_=sa.Date)
     else:
         # Default: operation
         group_col = LlmCost.operation
@@ -111,7 +111,7 @@ async def list_costs(
 
     return [
         CostGroupResponse(
-            group=row.group or "(unknown)",
+            group=row.group.isoformat() if isinstance(row.group, date) else row.group or "(unknown)",
             calls=row.calls or 0,
             input_tokens=row.input_tokens or 0,
             output_tokens=row.output_tokens or 0,
