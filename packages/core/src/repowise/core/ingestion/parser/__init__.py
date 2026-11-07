@@ -333,7 +333,8 @@ def _astro_markup_imports(original_source: bytes) -> list[Import]:
     Astro bundles a ``<script>`` whose only attribute is ``src`` as ``import "<src>"``,
     so its value is kept as written, like a frontmatter import: an alias or a package
     resolves. Any other value is a URL the browser fetches, page-relative as in HTML,
-    so a bare one (``favicon.ico``) gains ``./``.
+    so a bare one (``favicon.ico``) gains ``./``. The resolver tries it beside the
+    page, then under the nearest ``public/``.
     """
     from ..lightweight_imports.html import ref_imports
 

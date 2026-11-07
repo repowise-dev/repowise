@@ -11,7 +11,9 @@ file, not a package. Everything else goes to the TS/JS resolver: frontmatter
 and ``<script>`` imports are ordinary ESM, as is a markup ``<script src>`` with
 no other attribute, which Astro compiles to ``import "<src>"``, so an alias or a
 package resolves. Any other markup value is a URL, so a bare one
-(``favicon.ico``) arrives page-relative as ``./favicon.ico``.
+(``favicon.ico``) arrives page-relative as ``./favicon.ico``. A ``./`` value the
+TS/JS resolver misses is then tried as ``/``-rooted, under the nearest
+``public/``, since a layout or top-level page sits at the web root.
 """
 
 from __future__ import annotations
@@ -28,11 +30,29 @@ if TYPE_CHECKING:
 def resolve_astro_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve an Astro import or markup ref to a repo-relative path, or None."""
     # shortcut: a relative href that misses takes the TS ``.x`` -> ``.ts``
-    # fallback, so ``./site.css`` could bind a sibling ``site.ts``, and a missed
-    # ``/``-rooted URL takes a tsconfig alias (a catch-all ``*`` maps it into
-    # ``src/``); route markup refs separately once a repo shows that.
+    # fallback, so ``./site.css`` could bind a sibling ``site.ts``, an
+    # extensionless one takes its extension guessing, so a prefetch ``docs``
+    # binds a sibling page ``docs.astro`` (navigation, not a dependency), and a
+    # missed ``/``-rooted URL takes a tsconfig alias (a catch-all ``*`` maps it
+    # into ``src/``); route markup refs separately once a repo shows that.
     if not module_path.startswith("/"):
-        return resolve_ts_js_import(module_path, importer_path, ctx)
+        hit = resolve_ts_js_import(module_path, importer_path, ctx)
+        # shortcut: a page-relative miss is retried as ``/``-rooted, which is right
+        # for a layout or top-level page but can bind a ``public/`` file a page in
+        # a subfolder never fetches; join the route path once pages are mapped to URLs.
+        if hit is None and module_path.startswith("./"):
+            hit = _served_file(module_path[1:], importer_path, ctx)
+        return hit
+    hit = _served_file(module_path, importer_path, ctx)
+    # A ``/``-rooted tsconfig alias (``"/@/*"``) resolves as in a ``.ts`` file.
+    if hit is None and ctx.tsconfig_resolver is not None:
+        importer_abs = str(ctx.repo_path / importer_path) if ctx.repo_path else importer_path
+        hit = ctx.tsconfig_resolver.resolve(module_path, importer_abs)
+    return hit
+
+
+def _served_file(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    """The file a ``/``-rooted URL names: under the nearest ``public/``, or a ``/src/`` path."""
     # A query string or fragment is cache-busting, not part of the filename.
     tail = module_path.split("?", 1)[0].split("#", 1)[0].lstrip("/")
     # Vite resolves and serves a ``/src/...`` path from the project root, so any such
@@ -48,8 +68,4 @@ def resolve_astro_import(module_path: str, importer_path: str, ctx: ResolverCont
             if not directory:
                 break
             directory = posixpath.dirname(directory)
-    # A ``/``-rooted tsconfig alias (``"/@/*"``) resolves as in a ``.ts`` file.
-    if ctx.tsconfig_resolver is not None:
-        importer_abs = str(ctx.repo_path / importer_path) if ctx.repo_path else importer_path
-        return ctx.tsconfig_resolver.resolve(module_path, importer_abs)
     return None

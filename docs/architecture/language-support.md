@@ -698,7 +698,11 @@ as `import "<src>"`, so its value is kept as written, like a frontmatter
 import. A tsconfig alias (`@/scripts/menu.ts`) resolves, and a bare value can
 name a package. Any other markup value (a `<link href>`, a `<script>` with
 `is:inline`, `type` or another attribute) is a URL relative to the page, never
-a package name: a bare `favicon.ico` becomes `./favicon.ico`. A `/`-rooted value
+a package name: a bare `favicon.ico` becomes `./favicon.ico`. If no file sits
+beside the page under that name, the `./` value is retried as `/`-rooted, so a
+layout's `href="favicon.ico"` finds `public/favicon.ico`. That is where the
+browser fetches it from a layout or a top-level page; for a page in a subfolder
+it can bind a `public/` file the browser would not fetch. A `/`-rooted value
 (an `is:inline` script, an icon) is served from `public/`, so
 `ingestion/resolvers/astro.py` looks for it under the nearest `public/` above
 the page, walking up to the repository root. Vite resolves and serves any
@@ -710,7 +714,9 @@ as in a `.ts` file. A URL takes it too, so a catch-all `*` alias can bind a
 missed URL into `src/`. A miss is no node at all. Astro's `base` prefix and a custom
 `publicDir` or `srcDir` are not read, so those values miss.
 Anything else takes the TS/JS resolver, whose `./site.css` → `site.ts` fallback
-is the known ceiling for a relative `href`.
+is the known ceiling for a relative `href`. Its extension guessing is another:
+`<link rel="prefetch" href="docs">` in `src/pages/index.astro` binds
+`src/pages/docs.astro`, which is navigation, not a dependency.
 
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a

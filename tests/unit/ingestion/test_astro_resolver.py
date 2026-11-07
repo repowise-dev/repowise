@@ -44,3 +44,12 @@ def test_a_root_src_path_falls_back_to_the_project_root() -> None:
     root_script = resolve_import("/src/scripts/root.ts", _PAGE, "astro", ctx)
     assert root_script == "apps/site/src/scripts/root.ts"
     assert resolve_import("/js/a.js", _PAGE, "astro", ctx) is None
+
+
+def test_a_relative_markup_ref_falls_back_to_public() -> None:
+    # ``href="favicon.ico"`` arrives as ``./favicon.ico``; a sibling file still wins.
+    layout = "src/layouts/Base.astro"
+    ctx = _ctx({layout, "public/favicon.ico", "public/js/a.js", "public/a.js", "src/layouts/a.js"})
+    assert resolve_import("./favicon.ico", layout, "astro", ctx) == "public/favicon.ico"
+    assert resolve_import("./js/a.js", layout, "astro", ctx) == "public/js/a.js"
+    assert resolve_import("./a.js", layout, "astro", ctx) == "src/layouts/a.js"
