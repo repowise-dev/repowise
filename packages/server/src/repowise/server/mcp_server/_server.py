@@ -502,17 +502,20 @@ def _detect_workspace(repo_path: str | None):
                 best_match_depth = match_depth
                 best_match_abs = entry_abs
 
+        if (
+            resolved not in (best_match_abs, ws_root)
+            and (resolved / ".repowise" / "state.json").exists()
+        ):
+            # resolved is its own indexed repo but not a registered member:
+            # either nested in a member's directory (containment matched the
+            # enclosing entry) or a sibling no member contains. Serving the
+            # enclosing repo or the primary is wrong for it — drop to
+            # single-repo mode.
+            return None, None, None
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default
             primary = ws_config.get_primary()
             repo_alias = primary.alias if primary else ws_config.repos[0].alias
-        elif resolved != best_match_abs and (resolved / ".repowise" / "state.json").exists():
-            # resolved is its own indexed repo, nested inside a matched
-            # member/primary's directory but not itself a registered member.
-            # Containment made it match the enclosing entry above; that's
-            # wrong for an indexed, non-member repo — drop to single-repo
-            # mode instead of silently serving the enclosing repo.
-            return None, None, None
 
         return ws_root, ws_config, repo_alias
     except Exception:
