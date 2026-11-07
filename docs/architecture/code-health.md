@@ -350,6 +350,26 @@ object literal inside JSX (`{fmt(a ? b : c)}`), with a non-JSX branch
 
 </details>
 
+### 5.6 What adds a CCN point
+
+`max_ccn` is not the number a token-based counter such as lizard gives for the same
+function — a few points of gap per function in real code, so thresholds quoted in the docs
+are on this scale, not lizard's. The rule is fixed in the walker (`complexity/cyclomatic.py`)
+and the per-language maps in `complexity/languages.py`:
+
+| Construct | Adds a point | Why |
+|---|:---:|---|
+| `if` / `elif`, `for`, `while`, ternary arm, conditional expression | 1 | One decision each. |
+| Boolean operators (`&&`, `||`, `and`, `or`) | 1 per operator | The same rule token-based counters use, so not the source of gaps. |
+| `catch` / `except` arm | 1 | A `try` body and a `finally` block add none — they are not decisions. |
+| Python `match` case arm | 1 | `match` counts per `case`. |
+| Comprehension `for` (`for_in_clause`) | 0 | A generator, not a decision. Its `if` filter adds 1. |
+| `finally` | 0 | Not a decision point. |
+| TS/JS `??` | 0 | A default, not a branch — token-based counters count one. |
+| Flat `switch` / `when` dispatch | 1 for the whole dispatch | Arms that hold no branch, loop or nested switch are one decision (`_is_flat_match`), instead of 1 per arm; Python `match` is excluded and still counts per `case`. This is the flat-dispatch rule §5.5 applies. |
+
+Example: a TS `switch` with 2 cases plus `default` is CCN 2 here and 3 in lizard.
+
 ---
 
 ## 6. Scoring (`scoring.py`)
