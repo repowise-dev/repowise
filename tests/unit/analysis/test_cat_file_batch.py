@@ -126,6 +126,22 @@ def test_cat_file_batch_submodule_gitlink(sample_repo: Path, tmp_path: Path) -> 
         str(sub_repo),
         "sub_mod",
     )
+    # Staged submodule index specs are resolved without raising
+    staged_specs = [
+        ":0:file1.txt",
+        ":0:sub_mod",
+        ":sub_mod",
+    ]
+    staged_res = cat_file_batch(str(sample_repo), staged_specs, on_missing="raise")
+    assert staged_res is not None
+    assert len(staged_res) == 3
+    assert staged_res[0] == (":0:file1.txt", b"hello from file1\n")
+    assert staged_res[1] == (":0:sub_mod", None)
+    assert staged_res[2] == (":sub_mod", None)
+
+    with pytest.raises(ValueError, match=r"git has no object for ':0:not_found'"):
+        cat_file_batch(str(sample_repo), [":0:not_found"], on_missing="raise")
+
     _run_git(sample_repo, "commit", "-m", "Add submodule")
 
     specs = [
@@ -133,7 +149,7 @@ def test_cat_file_batch_submodule_gitlink(sample_repo: Path, tmp_path: Path) -> 
         "HEAD:sub_mod",
         "HEAD:subdir/nested.txt",
     ]
-    res = cat_file_batch(str(sample_repo), specs)
+    res = cat_file_batch(str(sample_repo), specs, on_missing="raise")
     assert res is not None
     assert len(res) == 3
     assert res[0] == ("HEAD:file1.txt", b"hello from file1\n")
@@ -154,7 +170,9 @@ def test_cat_file_batch_check_flag(sample_repo: Path, tmp_path: Path) -> None:
         cat_file_batch(str(not_a_repo), ["HEAD:file1.txt"], check=True)
 
 
-def test_cat_file_batch_timeout_handling(sample_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cat_file_batch_timeout_handling(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def _mock_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=["git", "cat-file", "--batch"], timeout=1.0)
 
@@ -185,7 +203,9 @@ def test_cat_file_batch_sets_env_vars(sample_repo: Path, monkeypatch: pytest.Mon
     assert captured_env.get("GIT_LITERAL_PATHSPECS") == "1"
 
 
-def test_cat_file_batch_ambiguous_header(sample_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cat_file_batch_ambiguous_header(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def _mock_run(*args, **kwargs):
         return subprocess.CompletedProcess(
             args=args[0],
@@ -200,3 +220,64 @@ def test_cat_file_batch_ambiguous_header(sample_repo: Path, monkeypatch: pytest.
         cat_file_batch(str(sample_repo), ["deadbeef"], on_missing="raise")
 
 
+def test_cat_file_batch_staged_submodule_fallback_on_missing(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When git cat-file outputs 'missing' for staged submodules, cat_file_batch
+
+    falls back to git ls-files to identify mode 160000 gitlinks.
+    """
+    missing_sha = "1111111111111111111111111111111111111111"
+    _run_git(
+        sample_repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{missing_sha},missing_sub",
+    )
+    real_run = subprocess.run
+
+    def _mock_cat_file_missing(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "cat-file":
+            input_data = kwargs.get("input", b"")
+            lines = input_data.decode("utf-8").splitlines()
+            out = b"".join(f"{line} missing\n".encode() for line in lines)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr=b"")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _mock_cat_file_missing)
+
+    # Both :0:missing_sub and :missing_sub resolve as submodule gitlinks (returning None)
+    res = cat_file_batch(
+        str(sample_repo),
+        [":0:missing_sub", ":missing_sub"],
+        on_missing="raise",
+    )
+    assert res == [(":0:missing_sub", None), (":missing_sub", None)]
+
+    # Stage mismatch (:1:missing_sub vs index stage 0) fails closed with ValueError
+    with pytest.raises(ValueError, match=r"git has no object for ':1:missing_sub'"):
+        cat_file_batch(str(sample_repo), [":1:missing_sub"], on_missing="raise")
+
+
+def test_cat_file_batch_staged_submodule_ls_files_error(
+    sample_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When git ls-files encounters an error, cat_file_batch raises ValueError."""
+    real_run = subprocess.run
+
+    def _mock_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "cat-file":
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b":0:missing_sub missing\n",
+                stderr=b"",
+            )
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "ls-files":
+            raise OSError("mocked ls-files failure")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    with pytest.raises(ValueError, match=r"git has no object for ':0:missing_sub'"):
+        cat_file_batch(str(sample_repo), [":0:missing_sub"], on_missing="raise")
