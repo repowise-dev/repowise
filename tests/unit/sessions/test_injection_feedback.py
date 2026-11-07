@@ -460,6 +460,31 @@ async def test_a_rekeyed_decision_id_still_resolves_through_its_alias(session, t
     assert summary == {"followed": 0, "contradicted": 1, "unjudgeable": 0}
 
 
+async def test_a_pre_fix_supersede_pointer_is_not_judged_as_the_successor(session, tmp_path):
+    """``old -> successor`` from an older supersede names another decision."""
+    from repowise.core.persistence.models import DecisionAlias
+
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "successor")
+    session.add(
+        DecisionAlias(
+            alias_id="old-id",
+            repository_id=_REPO_ID,
+            decision_id="successor",
+            reason="superseded",
+        )
+    )
+    await session.flush()
+    _record_injection(tmp_path, "sess-1", "old-id", _OLD_ENOUGH)
+    _stage_correction(
+        tmp_path, "sess-1", "no, stop using JWT tokens for service auth, revert to sessions"
+    )
+
+    summary = await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    assert summary == {"followed": 0, "contradicted": 0, "unjudgeable": 0}
+
+
 async def test_a_contradiction_whose_evidence_has_aged_out_is_not_reopened(
     session, tmp_path
 ):

@@ -51,20 +51,29 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
     accepts a unique prefix. Returns None when nothing matches; raises on an
     ambiguous prefix.
     """
-    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
+    from repowise.core.persistence.models import (
+        SUPERSEDED_REASON,
+        DecisionAlias,
+        DecisionRecord,
+    )
 
     full_id = await _match_prefix(session, DecisionRecord.id, DecisionRecord.id, decision_id)
     if full_id is not None:
         return full_id
-    # Merging and superseding retire ids that are already written down
+    # Merging and re-keying retire ids that are already written down
     # somewhere. Resolving through the alias keeps those working instead of
-    # reporting the decision as gone.
+    # reporting the decision as gone. A pre-fix supersede pointer names the
+    # successor, not the id's own record, so it is not followed.
     return await _match_prefix(
-        session, DecisionAlias.decision_id, DecisionAlias.alias_id, decision_id
+        session,
+        DecisionAlias.decision_id,
+        DecisionAlias.alias_id,
+        decision_id,
+        DecisionAlias.reason != SUPERSEDED_REASON,
     )
 
 
-async def _match_prefix(session, selected, matched, prefix: str) -> str | None:
+async def _match_prefix(session, selected, matched, prefix: str, *where) -> str | None:
     """*selected* from the one row whose *matched* column starts with *prefix*."""
     from sqlalchemy import select
 
@@ -72,7 +81,7 @@ async def _match_prefix(session, selected, matched, prefix: str) -> str | None:
 
     result = await session.execute(
         select(selected)
-        .where(matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE))
+        .where(matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE), *where)
         .limit(2)
     )
     ids = [row[0] for row in result.all()]

@@ -1234,9 +1234,9 @@ def decision_deprecate(
 ) -> None:
     """Retire a decision, optionally naming the one that replaces it.
 
-    With ``--superseded-by`` this writes an explicit lineage edge and keeps the
-    retired id resolving to its successor. Similarity never does either: an edge
-    exists because somebody named the successor.
+    With ``--superseded-by`` this writes an explicit lineage edge; the retired
+    id keeps naming its own record. Similarity never writes an edge: one exists
+    because somebody named the successor.
     """
     from repowise.cli.commands.decision_batch import _RefusedError
 

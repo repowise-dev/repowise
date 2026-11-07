@@ -1608,14 +1608,24 @@ class DecisionCandidateMeta(Base):
     )
 
 
+#: Written on an alias by ``supersede_decision`` before the fix: a pointer at
+#: the successor, not an id alias. Nothing writes it now; readers skip it and
+#: ``repair_superseded_aliases`` settles it.
+SUPERSEDED_REASON = "superseded"
+
+
 class DecisionAlias(Base):
     """A retired decision id that still resolves to a live record.
 
-    Merging a candidate into a decision, and superseding one decision with
-    another, both leave an id in circulation: in a manifest someone committed,
-    in an agent's notes, in a link. The alias keeps it resolving instead of
-    failing to find anything, which is what makes merge and supersede safe to
-    perform.
+    Merging a candidate into a decision, and moving a record onto its derived
+    id, both leave an id in circulation: in a manifest someone committed, in an
+    agent's notes, in a link. The alias keeps it resolving instead of failing to
+    find anything, which is what makes merge and the move safe to perform.
+
+    Superseding writes none: the superseded record keeps its id, and the
+    successor lives in ``DecisionRecord.superseded_by`` and a ``supersedes``
+    edge. Rows with reason ``superseded`` predate that and are repaired by
+    ``repair_superseded_aliases``.
     """
 
     __tablename__ = "decision_aliases"

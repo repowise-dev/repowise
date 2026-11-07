@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 import structlog
@@ -48,6 +49,7 @@ from .crud.decision_identity import (
 from .crud.decision_lane_fold import RewordingIndex
 from .crud.decisions import derive_decision_id
 from .models import (
+    SUPERSEDED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -65,6 +67,11 @@ logger = structlog.get_logger(__name__)
 #: exists, which is right for a fold and wrong here, where the old id names the
 #: same decision rather than a different one that was folded into it.
 ALIAS_REASON = "rekeyed"
+
+#: How far before the pointer alias a supersede's acceptance row may sit. The
+#: same call stamps both, the acceptance first, two flushes apart: milliseconds.
+#: Two separate supersedes sit at least one process start apart.
+_SUPERSEDE_ALIAS_SLACK = timedelta(seconds=1)
 
 #: Written on the alias left behind by a fold. ``merged`` is right here in a
 #: way it is not for a rekey: the old id names a record that no longer exists,
@@ -430,9 +437,11 @@ async def _write_alias(
         return
     if await session.get(DecisionAlias, row.old_id) is not None:
         # This id was already retired once, and the row saying where it went is
-        # not ours to rewrite. A merged candidate keeps its record, so it is
-        # reachable here: repointing its alias at the moved candidate would
-        # undo the merge and leave nothing recording that it happened.
+        # not ours to rewrite (a supersede pointer on a live record is gone by
+        # now: the repair at the head of ``apply_id_migration`` drops it). A
+        # merged candidate keeps its record, so it is reachable here:
+        # repointing its alias at the moved candidate would undo the merge and
+        # leave nothing recording that it happened.
         return
     session.add(
         DecisionAlias(
@@ -443,6 +452,104 @@ async def _write_alias(
             created_at=_now_utc(),
         )
     )
+
+
+async def repair_superseded_aliases(
+    session: AsyncSession, repository_id: str, *, apply: bool = True
+) -> list[tuple[str, str]]:
+    """Undo the supersede pointers a pre-fix store holds in its alias table.
+
+    ``supersede_decision`` used to write ``old -> successor``. While the old
+    record sits on its id that row is inert, and it is deleted here: the
+    successor is already in ``superseded_by``. Once the id migration has moved
+    the record, the row is all that is left of the old id and it resolves to
+    the successor, because the move found the id taken and wrote no alias. The
+    moved record is found by its own log: the ``superseded`` acceptance it
+    carried along, stamped just before the pointer in the same call. The row
+    is repointed there as a re-key. A pointer with no such record, with several, or whose record
+    another pointer also picks, is left alone; nothing follows it.
+
+    Returns ``(alias_id, decision_id)`` per change, ``decision_id`` empty for a
+    deletion. With ``apply=False`` it only reports.
+    """
+    pointers = (
+        (
+            await session.execute(
+                select(DecisionAlias).where(
+                    DecisionAlias.repository_id == repository_id,
+                    DecisionAlias.reason == SUPERSEDED_REASON,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    live = set(
+        (
+            await session.execute(
+                select(DecisionRecord.id).where(
+                    DecisionRecord.id.in_([p.alias_id for p in pointers])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    picks = {
+        p.alias_id: await _record_behind_pointer(session, p, exclude=live)
+        for p in pointers
+        if p.alias_id not in live
+    }
+    claims = Counter(picks.values())
+    changes: list[tuple[str, str]] = []
+    for pointer in pointers:
+        if pointer.alias_id in live:
+            changes.append((pointer.alias_id, ""))
+            if apply:
+                await session.delete(pointer)
+            continue
+        moved = picks[pointer.alias_id]
+        if moved is None or claims[moved] > 1:
+            continue  # two pointers on one record: one of them is wrong
+        changes.append((pointer.alias_id, moved))
+        if apply:
+            pointer.decision_id = moved
+            pointer.reason = ALIAS_REASON
+    if apply and changes:
+        await session.flush()
+        logger.info(
+            "decision_supersede_aliases_repaired",
+            repository_id=repository_id,
+            repointed=sum(1 for _, target in changes if target),
+            deleted=sum(1 for _, target in changes if not target),
+        )
+    return changes
+
+
+async def _record_behind_pointer(
+    session: AsyncSession, pointer: DecisionAlias, *, exclude: set[str]
+) -> str | None:
+    """The moved record whose supersede wrote *pointer*, or ``None``."""
+    rows = await session.execute(
+        select(DecisionAcceptance.decision_id, DecisionAcceptance.created_at)
+        .join(DecisionRecord, DecisionRecord.id == DecisionAcceptance.decision_id)
+        .where(
+            DecisionRecord.repository_id == pointer.repository_id,
+            # No ``superseded_by`` match: a chain or a revert changes either end
+            # after the fact, and the stamp alone names the record.
+            DecisionAcceptance.action == "superseded",
+        )
+    )
+    # SQLite hands back naive datetimes and Postgres aware ones; both are UTC.
+    stamped = pointer.created_at.replace(tzinfo=None)
+    # Only an acceptance stamped before the pointer can be the one its call wrote.
+    near = {
+        decision_id
+        for decision_id, created_at in rows.all()
+        if decision_id not in exclude
+        and timedelta(0) <= stamped - created_at.replace(tzinfo=None) <= _SUPERSEDE_ALIAS_SLACK
+    }
+    return near.pop() if len(near) == 1 else None  # several: refuse to guess
 
 
 async def _fold_one(
@@ -627,6 +734,9 @@ async def apply_id_migration(
     Idempotent: a second run classifies every id as ``stable``, finds no
     rewrites and no folds, and touches nothing.
     """
+    # The pointers an older supersede left are this migration's to settle: an
+    # earlier run moved records past them without writing the alias it owed.
+    await repair_superseded_aliases(session, repository_id)
     plan = plan or await plan_id_migration(session, repository_id)
     rewrites = plan.rewrites()
     folds = plan.folds()

@@ -81,6 +81,9 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
     become candidates, which is a visible loss of standing decisions and the
     intended one: they were never accepted. Nothing is deleted, every id keeps
     resolving, and re-running changes nothing.
+
+    Also repairs the alias rows an older ``deprecate --superseded-by`` left:
+    an id that pointed at its successor is repointed at its own moved record.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -88,6 +91,7 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     async def _run():
         from repowise.core.persistence import get_session
+        from repowise.core.persistence.decision_id_migration import repair_superseded_aliases
         from repowise.core.persistence.decision_migration import (
             apply_migration,
             plan_migration,
@@ -101,17 +105,29 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
                 plan = await plan_migration(session, repo_id)
                 if apply_:
                     plan = await apply_migration(session, repo_id, plan=plan)
-                return plan, render_plan(plan, limit=limit)
+                aliases = await repair_superseded_aliases(session, repo_id, apply=apply_)
+                return plan, render_plan(plan, limit=limit), aliases
         finally:
             await engine.dispose()
 
-    plan, report = run_async(_run())
+    plan, report, aliases = run_async(_run())
     if fmt == "json":
         payload = plan.as_dict()
         payload["applied"] = apply_
+        payload["alias_repairs"] = [
+            {"alias": alias, "decision_id": target or None} for alias, target in aliases
+        ]
         emit_json(payload)
         return
     console.print(report.replace("(dry run)", "(applied)" if apply_ else "(dry run)"))
+    if aliases:
+        console.print(f"\n  Supersede alias fixes        {len(aliases):>5}")
+        for alias, target in aliases:
+            console.print(
+                f"    {alias[:8]} -> {target[:8]} (its moved record)"
+                if target
+                else f"    {alias[:8]} pointer dropped (superseded_by keeps the successor)"
+            )
     if not apply_:
         console.print("\n[dim]Nothing was written. Re-run with --apply.[/dim]")
 
