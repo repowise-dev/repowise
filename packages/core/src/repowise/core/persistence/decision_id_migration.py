@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -437,11 +437,9 @@ async def _write_alias(
         return
     if await session.get(DecisionAlias, row.old_id) is not None:
         # This id was already retired once, and the row saying where it went is
-        # not ours to rewrite (a supersede pointer on a live record is gone by
-        # now: the repair at the head of ``apply_id_migration`` drops it). A
-        # merged candidate keeps its record, so it is reachable here:
-        # repointing its alias at the moved candidate would undo the merge and
-        # leave nothing recording that it happened.
+        # not ours to rewrite. A merged candidate keeps its record, so it is
+        # reachable here: repointing its alias at the moved candidate would
+        # undo the merge and leave nothing recording that it happened.
         return
     session.add(
         DecisionAlias(
@@ -495,11 +493,11 @@ async def repair_superseded_aliases(
         .scalars()
         .all()
     )
-    picks = {
-        p.alias_id: await _record_behind_pointer(session, p, exclude=live)
-        for p in pointers
-        if p.alias_id not in live
-    }
+    moved_pointers = [p for p in pointers if p.alias_id not in live]
+    stamps = (
+        await _superseded_stamps(session, repository_id, exclude=live) if moved_pointers else []
+    )
+    picks = {p.alias_id: _record_behind_pointer(p, stamps) for p in moved_pointers}
     claims = Counter(picks.values())
     changes: list[tuple[str, str]] = []
     for pointer in pointers:
@@ -526,28 +524,38 @@ async def repair_superseded_aliases(
     return changes
 
 
-async def _record_behind_pointer(
-    session: AsyncSession, pointer: DecisionAlias, *, exclude: set[str]
-) -> str | None:
-    """The moved record whose supersede wrote *pointer*, or ``None``."""
+async def _superseded_stamps(
+    session: AsyncSession, repository_id: str, *, exclude: set[str]
+) -> list[tuple[str, datetime]]:
+    """Every ``superseded`` acceptance in the repo outside *exclude*, naive UTC."""
     rows = await session.execute(
         select(DecisionAcceptance.decision_id, DecisionAcceptance.created_at)
         .join(DecisionRecord, DecisionRecord.id == DecisionAcceptance.decision_id)
         .where(
-            DecisionRecord.repository_id == pointer.repository_id,
+            DecisionRecord.repository_id == repository_id,
             # No ``superseded_by`` match: a chain or a revert changes either end
             # after the fact, and the stamp alone names the record.
             DecisionAcceptance.action == "superseded",
         )
     )
     # SQLite hands back naive datetimes and Postgres aware ones; both are UTC.
+    return [
+        (decision_id, created_at.replace(tzinfo=None))
+        for decision_id, created_at in rows.all()
+        if decision_id not in exclude
+    ]
+
+
+def _record_behind_pointer(
+    pointer: DecisionAlias, stamps: list[tuple[str, datetime]]
+) -> str | None:
+    """The moved record whose supersede wrote *pointer*, or ``None``."""
     stamped = pointer.created_at.replace(tzinfo=None)
     # Only an acceptance stamped before the pointer can be the one its call wrote.
     near = {
         decision_id
-        for decision_id, created_at in rows.all()
-        if decision_id not in exclude
-        and timedelta(0) <= stamped - created_at.replace(tzinfo=None) <= _SUPERSEDE_ALIAS_SLACK
+        for decision_id, created_at in stamps
+        if timedelta(0) <= stamped - created_at <= _SUPERSEDE_ALIAS_SLACK
     }
     return near.pop() if len(near) == 1 else None  # several: refuse to guess
 

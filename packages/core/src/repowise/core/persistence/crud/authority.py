@@ -478,10 +478,7 @@ async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | 
     """
     alias = await session.get(DecisionAlias, decision_id)
     if alias is not None and alias.reason == SUPERSEDED_REASON:
-        # Written by supersede before the edge alone carried it: a pointer at the
-        # successor, not an id alias. Followed, it hands a moved superseded
-        # record's old id to its successor; ``repair_superseded_aliases`` turns
-        # it into the alias it should have been.
+        # A pre-fix supersede pointer names the successor, not this id's record.
         alias = None
     if alias is not None and alias.reason == "merged":
         # A merged candidate's row survives, because its evidence is worth

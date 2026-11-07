@@ -62,13 +62,13 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
         return full_id
     # Merging and re-keying retire ids that are already written down
     # somewhere. Resolving through the alias keeps those working instead of
-    # reporting the decision as gone. A pre-fix supersede pointer names the
-    # successor, not the id's own record, so it is not followed.
+    # reporting the decision as gone.
     return await _match_prefix(
         session,
         DecisionAlias.decision_id,
         DecisionAlias.alias_id,
         decision_id,
+        # A pre-fix supersede pointer names the successor, not this id's record.
         DecisionAlias.reason != SUPERSEDED_REASON,
     )
 

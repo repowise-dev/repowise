@@ -268,6 +268,17 @@ async def _pointer(session, repo_id, alias_id, successor_id, at) -> None:
     await session.flush()
 
 
+async def _move_as_pre_fix(session, repo_id, monkeypatch) -> None:
+    """The id migration as the old version ran it: no supersede repair first."""
+
+    async def _pre_fix(*_args, **_kwargs):
+        return []
+
+    with monkeypatch.context() as m:
+        m.setattr(decision_id_migration, "repair_superseded_aliases", _pre_fix)
+        await apply_id_migration(session, repo_id)
+
+
 async def _target(session, alias_id) -> tuple[str, str]:
     alias = await session.get(DecisionAlias, alias_id)
     return alias.decision_id, alias.reason
@@ -297,12 +308,7 @@ async def test_import_before_a_full_index_does_not_recreate_a_moved_record(
     await _pointer(async_session, repo.id, old_id, successor.id, datetime.now(UTC))
     await export_manifest(async_session, repo.id, tmp_path)
 
-    async def _pre_fix(*_args, **_kwargs):
-        return []
-
-    with monkeypatch.context() as m:  # the move as the old version ran it
-        m.setattr(decision_id_migration, "repair_superseded_aliases", _pre_fix)
-        await apply_id_migration(async_session, repo.id)
+    await _move_as_pre_fix(async_session, repo.id, monkeypatch)
     moved = await _by_title(async_session, repo.id, "One user-pickable agent per plugin")
     moved_id = moved.id
     assert moved_id != old_id
@@ -336,20 +342,6 @@ async def test_the_repair_does_not_hand_a_reverted_sibling_its_neighbours_record
     )
     (await async_session.get(DecisionRecord, a_id)).superseded_by = None
     await async_session.flush()
-
-    await repair_superseded_aliases(async_session, repo.id)
-
-    assert await _target(async_session, a_old) == (a_id, ALIAS_REASON)
-    assert await _target(async_session, b_old) == (b_id, ALIAS_REASON)
-
-
-async def test_the_repair_gives_each_of_several_moved_records_its_own_pointer(async_session):
-    repo = await insert_repo(async_session)
-    successor = await _successor(async_session, repo.id)
-    a_old, a_id = await _moved_with_pointer(async_session, repo.id, successor, 1, _T0)
-    b_old, b_id = await _moved_with_pointer(
-        async_session, repo.id, successor, 2, _T0 + timedelta(seconds=2)
-    )
 
     await repair_superseded_aliases(async_session, repo.id)
 
@@ -397,17 +389,14 @@ async def test_a_chained_supersede_does_not_strand_the_first_id(
     at = (await latest_acceptance(async_session, a_old)).created_at
     await _pointer(async_session, repo.id, a_old, s_id, at + timedelta(milliseconds=10))
     await supersede_decision(async_session, s, successor_id=t_id, accepter="tester")
+    # A real now() can land inside A's pointer window on a fast runner; S's came later.
+    (await latest_acceptance(async_session, s_id)).created_at = at + timedelta(seconds=2)
     # The old ``_add_alias(S, T)`` repointed every row naming S onto T.
     (await async_session.get(DecisionAlias, a_old)).decision_id = t_id
     await async_session.flush()
     await export_manifest(async_session, repo.id, tmp_path)
 
-    async def _pre_fix(*_args, **_kwargs):
-        return []
-
-    with monkeypatch.context() as m:  # the move as the old version ran it
-        m.setattr(decision_id_migration, "repair_superseded_aliases", _pre_fix)
-        await apply_id_migration(async_session, repo.id)
+    await _move_as_pre_fix(async_session, repo.id, monkeypatch)
     moved_id = (await _by_title(async_session, repo.id, "One user-pickable agent per plugin")).id
     assert moved_id != a_old
 
