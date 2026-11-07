@@ -1190,3 +1190,79 @@ class TestRustRefusals:
     def test_rust_is_not_a_field_language(self) -> None:
         """A field is read through ``self.``, a dotted receiver not walked yet."""
         assert "rust" not in IMPLICIT_FIELD_LANGUAGES
+
+
+class TestTypeScriptShapes:
+    def test_parameter(self) -> None:
+        body = "function run(service: UserService) { service.start(); }"
+        assert declared_types(body, "typescript")["service"] == "UserService"
+
+    def test_annotated_const(self) -> None:
+        body = "function run() { const client: Client = make(); client.connect(); }"
+        assert declared_types(body, "typescript")["client"] == "Client"
+
+    def test_annotated_let(self) -> None:
+        body = "function run() { let manager: TaskManager; }"
+        assert declared_types(body, "typescript")["manager"] == "TaskManager"
+
+    def test_class_field(self) -> None:
+        source = (
+            "class Store {\n"
+            "    users: Users;\n"
+            "    private client: Client;\n"
+            "    run() {}\n"
+            "}"
+        )
+        assert fields(source, "typescript", [(4, 4)]) == {
+            "users": "Users",
+            "client": "Client",
+        }
+
+
+class TestTypeScriptRefusals:
+    def test_interface_properties_are_not_declarations(self) -> None:
+        source = (
+            "interface ServiceConfig {\n"
+            "    service: UserService;\n"
+            "    timeout: number;\n"
+            "}\n"
+        )
+        assert scan_declarations(source, "typescript") == ()
+        assert declared_types(source, "typescript") == {}
+
+    def test_type_alias_properties_are_not_declarations(self) -> None:
+        source = (
+            "type Options = {\n"
+            "    client: HttpClient;\n"
+            "    timeout: number;\n"
+            "};\n"
+        )
+        assert scan_declarations(source, "typescript") == ()
+        assert declared_types(source, "typescript") == {}
+
+    def test_generic_interface_and_nested_types_are_not_declarations(self) -> None:
+        source = (
+            "interface Container<T> extends Base<T> {\n"
+            "    item: T;\n"
+            "    nested: {\n"
+            "        handler: EventHandler;\n"
+            "    };\n"
+            "}\n"
+        )
+        assert scan_declarations(source, "typescript") == ()
+
+    def test_interface_inside_function_does_not_declare_local_variable(self) -> None:
+        source = (
+            "function setup() {\n"
+            "    interface LocalConfig {\n"
+            "        service: UserService;\n"
+            "    }\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
+

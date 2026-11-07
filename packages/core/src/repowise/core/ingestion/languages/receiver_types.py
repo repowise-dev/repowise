@@ -1190,6 +1190,40 @@ def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int],
     return inside
 
 
+_TS_TYPE_HEADER = re.compile(
+    r"\b(?:interface\s+[A-Za-z_$][\w$]*|type\s+[A-Za-z_$][\w$]*[^=]*=)"
+)
+
+
+def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
+    """Is an offset of *cleaned* inside a TypeScript interface or type alias body?
+
+    Interface and type bodies declare type-level property signatures rather
+    than runtime variables or class fields. Any brace opened by an interface or
+    type alias (and any brace nested inside one) is a type construct.
+    """
+    offsets: list[int] = []
+    innermost: list[bool] = []
+    stack: list[bool] = []
+    segment_start = 0
+    for match in _BRACE.finditer(cleaned):
+        char = match.group()
+        if char == "{":
+            is_type = bool(_TS_TYPE_HEADER.search(cleaned[segment_start : match.start()]))
+            stack.append(is_type or (bool(stack) and stack[-1]))
+        elif char == "}" and stack:
+            stack.pop()
+        segment_start = match.end()
+        offsets.append(match.start())
+        innermost.append(stack[-1] if stack else False)
+
+    def inside(offset: int) -> bool:
+        index = bisect_left(offsets, offset) - 1
+        return index >= 0 and innermost[index]
+
+    return inside
+
+
 def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     """Every declaration *text* makes, in line order."""
     patterns = _LANGUAGE_PATTERNS.get(language)
@@ -1206,10 +1240,13 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
+    inside_type = _inside_ts_type(cleaned) if language == "typescript" else None
     type_header = _TYPE_HEADERS.get(language)
     in_type_body = _in_type_body(cleaned, type_header) if type_header else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
+            if inside_type is not None and inside_type(match.start()):
+                continue
             if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
                 cleaned, _lambda_end(cleaned, match.end()), language
             ):
