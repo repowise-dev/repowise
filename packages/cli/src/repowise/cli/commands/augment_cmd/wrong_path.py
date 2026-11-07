@@ -27,7 +27,16 @@ from ._shared import HookResult, _find_repo_root
 #: fail on paths too ("cd: no such file"), but their input is a command line
 #: rather than a path argument, so extracting the intended path is a different
 #: problem with a different error surface. Out of scope on purpose.
-_PATH_TOOLS = frozenset({"Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit"})
+#:
+#: The lowercase spellings are Pi's (``read``, ``edit``, ``write``,
+#: ``grep``, ``find``) — the same tools under the other host's names, and
+#: the same rescue. Pi reaches this module through
+#: :mod:`repowise.cli.commands.augment_cmd.pi`, which normalises the
+#: payload but keeps the tool name.
+_PATH_TOOLS = frozenset(
+    {"Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit",
+     "read", "edit", "write", "grep", "find"}
+)
 
 #: The two verbatim shapes a missing path takes, taken from the corpus rather
 #: than from the docs. Grep/Glob name the path in the error; Read does not, and
@@ -42,12 +51,24 @@ _FILE_MISSING = re.compile(r"(?:^|\n)File does not exist\.")
 _ALREADY_SUGGESTED = re.compile(r"Did you mean ", re.IGNORECASE)
 
 #: The tools whose failure can be a timed-out search rather than a bad path.
-_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+#: Pi's spellings (``grep``, ``find``) alongside Claude Code's.
+_SEARCH_TOOLS = frozenset({"Grep", "Glob", "grep", "find"})
+
+#: Pi's read/edit failures arrive as Node ``fs`` errors, not Claude Code's
+#: ``<tool_use_error>`` envelope: ``ENOENT: no such file or directory,
+#: open '/abs/path'``. The quoted path is the attempted one; the basename
+#: resolution below is what keeps a loose extraction honest — a path that
+#: is not in this tree, or whose basename is ambiguous, still answers
+#: with silence.
+_PATH_MISSING_NODE = re.compile(r"""ENOENT[^'"]*['"](?P<path>[^'"]+)['"]""")
 
 
 def _failed_path(tool_input: dict, error_text: str) -> str:
     """The path the tool tried and did not find, or "" if this is not that."""
     m = _PATH_MISSING.search(error_text)
+    if m:
+        return m.group("path").strip()
+    m = _PATH_MISSING_NODE.search(error_text)
     if m:
         return m.group("path").strip()
     if _FILE_MISSING.search(error_text):
