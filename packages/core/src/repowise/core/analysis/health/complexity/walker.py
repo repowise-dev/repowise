@@ -267,7 +267,14 @@ def walk_file(
         fc_by_node_id[fn_node.id] = fc
 
     classes = _collect_classes(
-        scan.class_nodes, lmap, source, fc_by_node_id, scan.lines, language
+        scan.class_nodes,
+        lmap,
+        source,
+        fc_by_node_id,
+        scan.lines,
+        language,
+        fn_nodes=fn_nodes,
+        root_node=tree.root_node,
     )
     perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(
         tree.root_node, language, lmap, scan.io_names
