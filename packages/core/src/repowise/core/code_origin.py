@@ -315,6 +315,10 @@ _VENDORED_DIR_TOKENS = frozenset(
 # package that talks to external services (``inference/external/``) or a
 # monorepo's own libraries as it is a copy of someone else's code.
 _VENDORED_ROOT_TOKENS = frozenset({"external", "externals"})
+# A root ``.repos/`` holds checkouts of reference projects cloned by tooling
+# (``.repos/<name>/src/...``). Only the root name means a copy: below it the
+# name can be an ordinary package directory.
+_VENDORED_CLONE_ROOT = ".repos"
 _NATIVE_TREE = "native"
 # A ``deps/`` directory holding a library directory (aria2's ``deps/wslay/``,
 # hugo's ``internal/warpc/deps/parson/``). A file directly in ``deps/`` is the
@@ -329,7 +333,7 @@ _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
 def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
     if any(d in _VENDORED_DIR_TOKENS for d in dirs):
         return True
-    if dirs and dirs[0] in _VENDORED_ROOT_TOKENS:
+    if dirs and (dirs[0] in _VENDORED_ROOT_TOKENS or dirs[0] == _VENDORED_CLONE_ROOT):
         return True
     # ``native/external/<lib>/...``: the library directory must be there too.
     if any(
