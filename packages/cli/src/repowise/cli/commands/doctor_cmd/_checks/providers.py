@@ -121,10 +121,11 @@ def _hosted_account_check() -> DoctorCheck:
         if creds.get("stale"):
             return _check(
                 name,
-                False,
+                True,
                 "Session expired or revoked; run repowise login",
                 check_id=check_id,
                 fix="repowise login",
+                warn=True,
             )
         account = auth.fetch_account()
         cached = (account or creds.get("account") or {}) or {}
