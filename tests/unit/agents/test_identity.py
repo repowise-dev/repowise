@@ -137,6 +137,7 @@ def test_the_published_target_ids_are_exactly_what_users_already_type() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "pi",
     ]
 
 
@@ -267,6 +268,7 @@ def test_the_shipped_registry_is_the_integrated_agents() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "pi",
     ]
 
 

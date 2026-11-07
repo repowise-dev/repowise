@@ -563,7 +563,7 @@ languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
 
 ## Supported agents and editors
 
-**Eight agents wired end to end · two at the Full tier · every other MCP host one
+**Nine agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -579,6 +579,7 @@ paste away.**
   <img src="https://img.shields.io/badge/Hermes-000000?style=flat-square&logoColor=white" alt="Hermes" />
   <img src="https://img.shields.io/badge/GitHub_Copilot_CLI-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot CLI" />
   <img src="https://img.shields.io/badge/Kiro-790ECB?style=flat-square&logoColor=white" alt="Kiro" />
+  <img src="https://img.shields.io/badge/Pi-000000?style=flat-square" alt="Pi" />
 </p>
 
 **Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
