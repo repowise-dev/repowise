@@ -1494,6 +1494,7 @@ class CallResolver(
         language: str,
     ) -> ResolvedCall | None:
         """Resolve a chain's inner call, remembered unless a cycle cut it short."""
+        nested = self._nested_receiver_call(file_path, call, inner, language)
         link = (file_path, call.line, inner.receiver_name, inner.target_name)
         inner_call = CallSite(
             target_name=inner.target_name,
@@ -1501,7 +1502,7 @@ class CallResolver(
             caller_symbol_id=caller_id,
             line=call.line,
             argument_count=inner.argument_count,
-            receiver_call=self._nested_receiver_call(file_path, call.line, inner, language),
+            receiver_call=nested,
         )
         cycles = self._chain_cycle_hits
         self._chain_links_in_flight.add(link)
@@ -1527,7 +1528,7 @@ class CallResolver(
         if language == "java" and self._returns_java_self_type(callee_id):
             # A self-bounded ``B`` is the type of whatever the call was made on.
             # Ceiling: only a chained receiver is typed; ``b.name(x).w(1)`` stops.
-            nested = self._nested_receiver_call(file_path, call.line, inner, language)
+            nested = self._nested_receiver_call(file_path, call, inner, language)
             if nested is None:
                 return None
             nested_callee = self._chain_inner_callee(file_path, call, nested, caller_id, language)
@@ -1537,7 +1538,7 @@ class CallResolver(
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
     def _nested_receiver_call(
-        self, file_path: str, line: int, inner: CallReceiver, language: str
+        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
     ) -> CallReceiver | None:
         """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
 
@@ -1545,8 +1546,7 @@ class CallResolver(
         as its own site on the chain's first line, so the hop below is read
         off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
         builder chain types each link from the one before; elsewhere an inner call
-        is still typed as if nothing were chained under it. A name repeated in
-        one chain (``a().b().b()``) keeps its first link, the innermost.
+        is still typed as if nothing were chained under it.
         """
         if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
@@ -1556,9 +1556,17 @@ class CallResolver(
             sites = {}
             for c in parsed.calls if parsed else ():
                 if c.receiver_call is not None:
-                    sites.setdefault((c.line, c.receiver_name, c.target_name), c.receiver_call)
+                    sites.setdefault((c.line, c.receiver_name, c.target_name), []).append(c)
             _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
-        return sites.get((line, inner.receiver_name, inner.target_name))
+        matches = sites.get((call.line, inner.receiver_name, inner.target_name))
+        if not matches:
+            return None
+        if len(matches) == 1 and matches[0] is not call:
+            return matches[0].receiver_call
+        for c in reversed(matches):
+            if c is not call and (inner.argument_count is None or c.argument_count == inner.argument_count):
+                return c.receiver_call
+        return None
 
     def _callee_return_type(
         self, callee_id: str, argument_count: int | None, language: str
