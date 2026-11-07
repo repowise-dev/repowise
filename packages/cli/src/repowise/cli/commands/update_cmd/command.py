@@ -834,6 +834,37 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
 
+    _verify_sync_base(run)
+
+
+def _verify_sync_base(run: UpdateRun) -> None:
+    """Refuse a base ref that git cannot resolve before diffing."""
+    from repowise.core.git_repo import Repo
+
+    try:
+        repo = Repo(run.repo_path, search_parent_directories=True)
+    except Exception:
+        return
+    try:
+        try:
+            _ = repo.commit(run.base_ref).committed_date
+        except Exception as exc:
+            _raise_missing_sync_base(run, exc)
+    finally:
+        repo.close()
+
+
+def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
+    message = (
+        f"Sync base '{run.base_ref}' is not in the git history of {run.repo_path}. "
+        "Run 'repowise update --since <reachable ref>' to diff from a reachable commit, "
+        "or 'repowise init' to rebuild the index."
+    )
+    if run.emitter is not None:
+        run.emitter.error(message)
+    raise reasoned_error(message, reason="missing_sync_base") from exc
+
+
 
 def _raise_no_sync_base(run: UpdateRun) -> None:
     hint = ""
@@ -1116,11 +1147,13 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
     """The diffed files since the base, plus stale pages whose files are gone."""
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    with timed(run.timings, "detect_changes"):
-        run.file_diffs = merge_file_diffs(
-            run.detector.get_changed_files(run.base_ref, run.head or "HEAD"),
-            run.working_tree_diffs,
-        )
+    try:
+        with timed(run.timings, "detect_changes"):
+            changed = run.detector.get_changed_files(run.base_ref, run.head or "HEAD")
+    except Exception as exc:
+        release_update_lock(run.repo_path)
+        _raise_git_diff_failed(run, exc)
+    run.file_diffs = merge_file_diffs(changed, run.working_tree_diffs)
 
     # Loaded already when git is current; otherwise load now so old structural
     # debt is carried forward.
@@ -1130,6 +1163,16 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
     # A stale page whose file is gone goes through the deletion path.
     if run.stale_db_paths:
         _tombstone_missing_stale_pages(run)
+
+
+def _raise_git_diff_failed(run: UpdateRun, exc: Exception) -> None:
+    message = (
+        f"Git diff from '{run.base_ref}' to '{run.head or 'HEAD'}' failed: {exc}. "
+        "Run 'repowise update --since <reachable ref>' or 'repowise init'."
+    )
+    if run.emitter is not None:
+        run.emitter.error(message)
+    raise reasoned_error(message, reason="git_diff_failed") from exc
 
 
 def _tombstone_missing_stale_pages(run: UpdateRun) -> None:

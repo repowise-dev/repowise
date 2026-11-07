@@ -150,8 +150,9 @@ class ChangeDetector:
     ) -> list[FileDiff]:
         """Return a list of FileDiff objects for files changed between *base_ref* and *until_ref*.
 
-        Falls back to an empty list if the directory is not a git repo or the
-        refs don't exist.
+        Falls back to an empty list if the directory is not a git repo; git
+        failures on a real repository are raised so callers never mistake a
+        missing base commit or broken diff for "no changes".
         """
         repo = self._get_repo()
         if repo is None:
@@ -166,7 +167,7 @@ class ChangeDetector:
                 diff_items = base_commit.diff(until_commit)
         except Exception as exc:
             log.warning("git diff failed", base=base_ref, until=until_ref, error=str(exc))
-            return []
+            raise
 
         return [self._file_diff_from_item(item) for item in diff_items if self._item_in_scope(item)]
 
