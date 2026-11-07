@@ -509,9 +509,10 @@ async def _pre_synthesis_reply(
 def _fallback_targets(hits: list[dict]) -> list[str]:
     """Readable paths of the top hits, for the agent to verify."""
     return [
-        h["target_path"]
+        h.get("section_id") or h["target_path"]
         for h in hits
-        if h.get("target_path") and _is_readable_path(h["target_path"])
+        if (h.get("target_path") or h.get("section_id"))
+        and _is_readable_path(h.get("section_id") or h["target_path"])
     ]
 
 

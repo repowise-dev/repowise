@@ -18,6 +18,35 @@ _FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
 _FOLD_RE = re.compile(r"^[ \t]*\.\.\. \d+ lines \((\d+)-(\d+)\)$", re.M)
 
 
+def _extracted_document_outline(source: str, file_path: str) -> dict[str, Any]:
+    """A heading outline for an extracted document without source lines."""
+    from repowise.core.distill.budget import estimate_tokens
+
+    lines = [line.removesuffix("\r") for line in source.split("\n")]
+    outline_headings: list[dict[str, Any]] = []
+    text_lines: list[str] = []
+    for line in lines:
+        m_head = re.match(r"^(#{1,6})\s+(.+?)(?:\s+#+)?$", line.strip())
+        if m_head:
+            lvl = len(m_head.group(1))
+            title = m_head.group(2).strip()
+            outline_headings.append({"level": lvl, "title": title})
+            text_lines.append(f"{'#' * lvl} {title}")
+    text = "\n".join(text_lines) if text_lines else source[:500]
+    full_tokens = estimate_tokens(source)
+    tokens = estimate_tokens(text)
+    return {
+        "mode": "outline",
+        "outline": outline_headings,
+        "tokens": tokens,
+        "full_tokens": full_tokens,
+        "pct_of_full": round(100 * tokens / max(1, full_tokens), 1),
+        "text": text,
+        "verified": True,
+        "note": f"Extracted document outline for {file_path}.",
+    }
+
+
 def _document_outline(source: str, file_path: str) -> dict[str, Any] | None:
     """A document over the skeleton budget as its headings with line numbers.
 
@@ -110,9 +139,16 @@ async def _resolve_skeleton(
         from repowise.core.ingestion.document_extractors import is_extracted_document
 
         if is_extracted_document(repo_path / file_target):
-            result_data["skeleton"] = {
-                "error": "Source skeletons are not available for extracted documents."
-            }
+            from repowise.core.ingestion.source_reader import read_source
+
+            raw = read_source(repo_path, file_target, allow_extracted=True)
+            if raw is None:
+                result_data["skeleton"] = {
+                    "error": "Source file could not be read; it may have moved since indexing."
+                }
+                return
+            source = raw.decode("utf-8", errors="replace")
+            result_data["skeleton"] = _extracted_document_outline(source, file_target)
             return
         source = abs_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
