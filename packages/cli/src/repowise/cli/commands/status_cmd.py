@@ -41,6 +41,7 @@ from repowise.core.index_scope import (
     resolve_index_scope,
     upgrade_command,
 )
+from repowise.core.update_lock import stuck_update_line
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -906,6 +907,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     db_path = repowise_dir / "wiki.db"
     has_db = db_path.exists() or db_configured()
     incomplete = _incomplete_index(repo_path, state)
+    # A live update past the suspect age, worded as doctor and update word it.
+    stuck_update = stuck_update_line(repo_path)
     pending_lanes = pending_decision_lanes(state, repo_path)
     # An unfinished init has no stamps yet; the resume line covers it.
     rescore = _rescore_pending(state) if incomplete is None else []
@@ -929,6 +932,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "mapping": mapping,
                 "indexed": True,
                 "incomplete": incomplete,
+                "stuck_update_lock": stuck_update,
                 "state": {
                     "last_sync_commit": state.get("last_sync_commit"),
                     "total_pages": state.get("total_pages", 0),
@@ -986,6 +990,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
+    if stuck_update is not None:
+        state_table.add_row("Update lock", f"[yellow]{stuck_update}[/yellow]")
     state_table.add_row("Total pages", str(total_pages))
     state_table.add_row("Stale pages", str(stale_pages) if stale_pages is not None else "Unknown")
     state_table.add_row("Provider", state.get("provider", "—") or "—")

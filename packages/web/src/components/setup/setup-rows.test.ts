@@ -73,6 +73,33 @@ describe("deriveSetup", () => {
     expect(view.doneCount).toBe(1);
   });
 
+  it("shows an index behind HEAD once when doctor reports it too", () => {
+    const s = setupFixture();
+    const view = deriveSetup(
+      {
+        ...s,
+        index: { ...s.index, state: "behind", live_head: "9999999aaa" },
+        checks: [
+          {
+            id: "index-freshness",
+            name: "Index freshness",
+            level: "warn",
+            detail: "indexed at 1234567a; HEAD has moved on to 9999999a",
+            fix: "repowise update",
+          },
+          {
+            id: "update-lock",
+            name: "Update lock",
+            level: "warn",
+            detail: "An update (pid 42) has held the lock for 9.0h.",
+          },
+        ],
+      },
+      OPTS,
+    );
+    expect(ids(view.attention)).toEqual(["index-behind", "check-update-lock"]);
+  });
+
   it("names the wrong-folder case for an agent with no call a day after it connected", () => {
     const s = setupFixture();
     const old = { ...s, index: { ...s.index, indexed_at: "2026-10-23T12:00:00Z" } };
