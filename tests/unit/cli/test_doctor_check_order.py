@@ -293,8 +293,9 @@ def test_stale_pages_row(env, monkeypatch, tmp_path) -> None:
 def test_expired_and_cached_hosted_identity(env, monkeypatch, tmp_path) -> None:
     repo = asyncio.run(_build(tmp_path))
     monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: {"stale": True})
+    # A stale session is a warning, not a failure (#5234).
     assert _by_name(_rows(repo))["Hosted account"] == (
-        False,
+        True,
         "Session expired or revoked; run repowise login",
     )
     monkeypatch.setattr(
