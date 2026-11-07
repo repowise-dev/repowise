@@ -123,3 +123,20 @@ class TestSwiftExportedImport:
         by_module = {i.module_path: i for i in result.imports}
         assert by_module["FooKit"].is_reexport is True
         assert by_module["Foundation"].is_reexport is False
+
+
+class TestSwiftDocstringPerformance:
+    def test_large_struct_member_docstrings_parse_in_seconds(self, parser: ASTParser) -> None:
+        # #5277: 5,000 members in one struct previously caused quadratic O(N^2)
+        # child list copying taking 50+ seconds. With O(1) prev_sibling it takes < 2s.
+        import time
+
+        members = "\n".join(f"    /// Documentation for field {i}\n    let field{i}: Int = {i}" for i in range(5000))
+        src = f"struct MonolithicType {{\n{members}\n}}\n".encode()
+
+        start = time.monotonic()
+        result = parser.parse_file(_file("MonolithicType.swift"), src)
+        elapsed = time.monotonic() - start
+
+        assert len(result.symbols) >= 5000
+        assert elapsed < 10.0, f"Parsing 5,000 members took {elapsed:.2f}s (expected < 10s)"

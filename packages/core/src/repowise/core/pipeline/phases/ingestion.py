@@ -644,21 +644,73 @@ def parse_guarded(
     in-process parser for whatever is left when the pool cannot start. Each
     result is a ``ParsedFile``, an ``(abs_path, error)`` tuple or an
     exception. ``on_done(i)`` fires once per file, from the calling thread.
+
+    Files over :data:`_SOURCE_POOL_MAX_FILE_SIZE_BYTES` are parsed serially
+    after the pool, one at a time, to bound RSS to a single file at a time (#5280).
     """
     if not to_parse:
         return []
     results: list[Any] = [PENDING] * len(to_parse)
-    workers = parse_pool_workers(len(to_parse))
-    pool_done = None if on_done is None else (lambda i, _result: on_done(i))
+
+    from repowise.core.ingestion.traverser import _SOURCE_POOL_MAX_FILE_SIZE_BYTES
+
+    pool_indices = [
+        i
+        for i, (_idx, (fi, _src), _h) in enumerate(to_parse)
+        if fi.size_bytes <= _SOURCE_POOL_MAX_FILE_SIZE_BYTES
+    ]
+    serial_indices = [
+        i
+        for i, (_idx, (fi, _src), _h) in enumerate(to_parse)
+        if fi.size_bytes > _SOURCE_POOL_MAX_FILE_SIZE_BYTES
+    ]
+
     try:
-        run_with_deadline(
-            _parse_one,
-            [item for _idx, item, _h in to_parse],
-            workers,
-            results,
-            timeout=parse_timeout_s(),
-            on_done=pool_done,
-        )
+        if pool_indices:
+            pool_items = [to_parse[i][1] for i in pool_indices]
+            pool_results = [PENDING] * len(pool_indices)
+            workers = parse_pool_workers(len(pool_indices))
+            pool_done = (
+                None
+                if on_done is None
+                else (lambda sub_i, _result: on_done(pool_indices[sub_i]))
+            )
+            try:
+                run_with_deadline(
+                    _parse_one,
+                    pool_items,
+                    workers,
+                    pool_results,
+                    timeout=parse_timeout_s(),
+                    on_done=pool_done,
+                )
+            finally:
+                for sub_i, res in enumerate(pool_results):
+                    if res is not PENDING:
+                        results[pool_indices[sub_i]] = res
+
+        if serial_indices:
+            serial_items = [to_parse[i][1] for i in serial_indices]
+            serial_results = [PENDING] * len(serial_indices)
+            serial_done = (
+                None
+                if on_done is None
+                else (lambda sub_i, _result: on_done(serial_indices[sub_i]))
+            )
+            try:
+                run_with_deadline(
+                    _parse_one,
+                    serial_items,
+                    1,
+                    serial_results,
+                    timeout=parse_timeout_s(),
+                    on_done=serial_done,
+                )
+            finally:
+                for sub_i, res in enumerate(serial_results):
+                    if res is not PENDING:
+                        results[serial_indices[sub_i]] = res
+
     except Exception as pool_exc:
         if on_fallback is not None:
             on_fallback(pool_exc)

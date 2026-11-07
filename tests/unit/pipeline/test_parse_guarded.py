@@ -80,6 +80,49 @@ def test_timeouts_and_crashes_come_back_and_are_named(monkeypatch) -> None:
     assert parsed == ["parsed"]
 
 
+def test_oversize_files_parsed_serially_after_pool(monkeypatch) -> None:
+    calls: list[tuple[int, list[str]]] = []
+
+    def mock_run_with_deadline(_fn, items, workers, results, **kw):
+        paths = [item[0].path for item in items]
+        calls.append((workers, paths))
+        on_done = kw.get("on_done")
+        for i, item in enumerate(items):
+            results[i] = f"parsed_{item[0].path}"
+            if on_done:
+                on_done(i, results[i])
+
+    monkeypatch.setattr(ing, "run_with_deadline", mock_run_with_deadline)
+
+    small1 = _fi("small1.py")
+    small1.size_bytes = 100 * 1024
+    big = _fi("big.swift")
+    big.size_bytes = 3 * 1024 * 1024  # 3 MB > 2 MB pool limit
+    small2 = _fi("small2.py")
+    small2.size_bytes = 50 * 1024
+
+    to_parse = [
+        (0, (small1, b"x = 1"), "h1"),
+        (1, (big, b"struct B {}"), "h2"),
+        (2, (small2, b"y = 2"), "h3"),
+    ]
+
+    done: list[int] = []
+    results = ing.parse_guarded(to_parse, on_done=done.append)
+
+    # First call: pool workers for small files
+    assert calls[0][0] > 1 or calls[0][0] == 2
+    assert calls[0][1] == ["small1.py", "small2.py"]
+
+    # Second call: 1 worker (serial) for oversized file
+    assert calls[1][0] == 1
+    assert calls[1][1] == ["big.swift"]
+
+    # Results match original to_parse order: [small1, big, small2]
+    assert results == ["parsed_small1.py", "parsed_big.swift", "parsed_small2.py"]
+    assert done == [0, 2, 1]
+
+
 def test_nothing_to_parse_starts_no_pool(monkeypatch) -> None:
     def no_pool(*_a, **_kw):
         raise AssertionError("a pool was started for zero files")
