@@ -26,6 +26,8 @@ def _git_identity(repo_path: Path) -> str:
             capture_output=True,
             stdin=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )
@@ -68,6 +70,8 @@ def is_tracked(repo_path: Path | str, rel_path: str) -> bool:
             capture_output=True,
             stdin=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )

@@ -24,6 +24,8 @@ def get_head_commit(repo_path: Path) -> str | None:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         if result.returncode == 0:
@@ -41,6 +43,8 @@ def count_commits_between(repo_path: Path, base: str, head: str) -> int:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         if result.returncode == 0:

@@ -110,6 +110,8 @@ def _load_codex_model_catalog(codex_cmd: str) -> dict[str, CodexModelReasoning] 
             capture_output=True,
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             # Inside a stdio MCP server stdin is the JSON-RPC pipe; never share it.
             stdin=subprocess.DEVNULL,
             timeout=_CATALOG_TIMEOUT_SECONDS,

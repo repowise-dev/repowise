@@ -112,6 +112,8 @@ def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if result.returncode == 0:

@@ -78,6 +78,8 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         ).stdout.strip()
     except Exception:

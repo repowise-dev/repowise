@@ -172,6 +172,8 @@ def _git_root(path: str) -> str | None:
         cwd=path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=5,
     )
     if result.returncode != 0 or not result.stdout.strip():
@@ -193,6 +195,8 @@ def _head_commit(repo_path: Path) -> tuple[str, float, str]:
         cwd=str(repo_path),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=5,
     )
     if result.returncode != 0:
