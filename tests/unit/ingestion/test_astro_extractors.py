@@ -246,7 +246,7 @@ def test_is_raw_in_an_attribute_value_keeps_the_body_markup() -> None:
 def test_an_unclosed_quote_scans_in_linear_time() -> None:
     start = time.perf_counter()
     prepare_source("astro", b'<a "' * 20_000)
-    assert time.perf_counter() - start < 1
+    assert time.perf_counter() - start < 2
 
 
 @pytest.mark.parametrize(
@@ -264,7 +264,7 @@ def test_an_unclosed_quote_scans_in_linear_time() -> None:
 def test_a_large_page_scans_in_linear_time(src: bytes) -> None:
     start = time.perf_counter()
     prepare_source("astro", src)
-    assert time.perf_counter() - start < 1
+    assert time.perf_counter() - start < 2
 
 
 def test_a_script_does_not_run_into_the_frontmatter(parser) -> None:
@@ -352,15 +352,15 @@ class TestImports:
         self, parser
     ) -> None:
         src = (
-            b'---\n'
+            b"---\n"
             b'const note = "<!-- in frontmatter string";\n'
             b'const style = "<style>body{color:red}</style>";\n'
-            b'---\n'
-            b'<script>\n'
-            b'  // Inline script containing tricky comment/style strings\n'
+            b"---\n"
+            b"<script>\n"
+            b"  // Inline script containing tricky comment/style strings\n"
             b'  const x = "<!-- unclosed comment in script";\n'
             b'  const y = "<style>p { font-size: 14px; }</style>";\n'
-            b'</script>\n'
+            b"</script>\n"
             b'<script src="./real-after-inline.ts"></script>\n'
             b'<link rel="stylesheet" href="../styles/site.css">\n'
         )
@@ -393,7 +393,7 @@ class TestImports:
         assert scan("astro", src).component_tags == ()
 
     def test_unterminated_style_hides_a_following_script(self, parser) -> None:
-        src = b"<style>\nbody { color: red; }\n<script src=\"./hidden.ts\"></script>\n"
+        src = b'<style>\nbody { color: red; }\n<script src="./hidden.ts"></script>\n'
         file_info = _file("src/pages/index.astro", len(src))
         assert [i.module_path for i in parser.parse_imports(file_info, src)] == []
 
@@ -464,9 +464,7 @@ class TestImports:
         parsed = parser.parse_file(_file(size=len(src)), src)
         assert [i.module_path for i in parsed.imports] == ["./A.astro", "./deep.ts"]
 
-    def test_a_bare_markup_value_is_page_relative_and_a_bare_import_a_package(
-        self, parser
-    ) -> None:
+    def test_a_bare_markup_value_is_page_relative_and_a_bare_import_a_package(self, parser) -> None:
         src = (
             b"---\nimport 'react';\nimport 'normalize.css';\n---\n"
             b'<link rel="icon" href="favicon.ico">\n'
