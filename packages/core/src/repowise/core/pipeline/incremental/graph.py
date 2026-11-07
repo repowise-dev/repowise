@@ -337,7 +337,7 @@ def _new_update_graph_builder(
     include_nested_repos: bool,
     traverser: Any,
     file_infos: list[Any],
-    rescore_due: bool = False,
+    rescore_due: bool = True,
 ) -> Any:
     """Create the graph builder and attach traversal metadata used downstream."""
     from repowise.core.ingestion import GraphBuilder
@@ -431,7 +431,7 @@ def build_repo_graph(
     changed_paths: set[str] | None = None,
     patch_requested: bool = False,
     cache_resolutions: bool = False,
-    rescore_due: bool = False,
+    rescore_due: bool = True,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -737,7 +737,7 @@ async def rebuild_graph_and_git(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     patch_graph: bool = False,
-    rescore_due: bool = False,
+    rescore_due: bool = True,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
