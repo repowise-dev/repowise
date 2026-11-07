@@ -11,6 +11,7 @@ import pytest
 
 from repowise.cli.commands.update_cmd.persistence import (
     _full_rescore_interval_days,
+    full_metrics_rescore_due,
     full_rescore_due,
     health_analyzer_changed,
 )
@@ -108,6 +109,28 @@ class TestFullRescoreDue:
         if stamp is not None:
             state["last_full_rescore_at"] = stamp
         assert full_rescore_due(state, 1_000_000.0) is True
+
+
+class TestFullMetricsRescoreDue:
+    """The cadence gate deciding when `repowise update` re-scores metrics (#5283)."""
+
+    def test_no_git_is_not_due(self):
+        state = {"last_full_metrics_rescore_at": 1_000_000.0}
+        assert full_metrics_rescore_due(state, None) is False
+
+    def test_missing_or_unusable_stamp_is_due(self):
+        assert full_metrics_rescore_due({}, 1_000_000.0) is True
+        assert full_metrics_rescore_due({"last_full_metrics_rescore_at": "invalid"}, 1_000_000.0) is True
+
+    def test_fresh_stamp_is_not_due(self):
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": head_ts}
+        assert full_metrics_rescore_due(state, head_ts) is False
+
+    def test_stale_stamp_is_due(self):
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": head_ts - (8 * 86400.0)}
+        assert full_metrics_rescore_due(state, head_ts) is True
 
 
 class TestInitStampsTheCadence:

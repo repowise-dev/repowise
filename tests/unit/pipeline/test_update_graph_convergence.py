@@ -370,3 +370,17 @@ def test_incremental_graph_is_on_unless_turned_off(
     else:
         monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", value)
     assert incremental_graph_enabled() is expected
+
+
+def test_build_repo_graph_defaults_rescore_due_to_true(tmp_path: Path) -> None:
+    (tmp_path / "mod.py").write_text("x = 1\n")
+    _pf, _src, gb, _structure, _count = build_repo_graph(tmp_path, [])
+    assert getattr(gb, "_rescore_due", False) is True
+
+
+@pytest.mark.asyncio
+async def test_rebuild_graph_and_git_defaults_rescore_due_to_true(tmp_path: Path) -> None:
+    _build_git_repo(tmp_path)
+    _pf, _sm, gb, _structure, _count, _meta = await rebuild_graph_and_git(tmp_path, [], {}, [])
+    assert getattr(gb, "_rescore_due", False) is True
+

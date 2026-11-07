@@ -43,6 +43,7 @@ import threading
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -132,6 +133,9 @@ class CentralityCache:
         # kind -> (signature, alpha, values). Exact-signature reuse only: unlike
         # betweenness, PageRank is cheap enough that drift is never worth serving.
         self._pagerank: dict[str, tuple[str, float, dict[str, float]]] = {}
+        self._file_communities: tuple[dict[str, int], dict[int, Any], str] | None = None
+        self._symbol_communities: dict[str, int] | None = None
+        self._execution_flow: Any | None = None
         self._lock = threading.Lock()
         self._loaded = False
         self._signatures: dict[str, tuple[weakref.ref, str]] = {}
@@ -155,6 +159,9 @@ class CentralityCache:
         self._signature_lock = threading.Lock()
         self.__dict__.setdefault("_signatures", {})
         self.__dict__.setdefault("_pagerank", {})
+        self.__dict__.setdefault("_file_communities", None)
+        self.__dict__.setdefault("_symbol_communities", None)
+        self.__dict__.setdefault("_execution_flow", None)
 
     def signature(self, kind: str, graph) -> str:
         """:func:`subgraph_signature` of *graph*, hashed once per subgraph object.
@@ -182,6 +189,9 @@ class CentralityCache:
             self._entries = payload.get("entries", {})
             # Optional key: files written before PageRank was cached lack it.
             self._pagerank = payload.get("pagerank", {})
+            self._file_communities = payload.get("file_communities")
+            self._symbol_communities = payload.get("symbol_communities")
+            self._execution_flow = payload.get("execution_flow")
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
@@ -194,6 +204,9 @@ class CentralityCache:
                 "version": _CACHE_VERSION,
                 "entries": self._entries,
                 "pagerank": self._pagerank,
+                "file_communities": self._file_communities,
+                "symbol_communities": self._symbol_communities,
+                "execution_flow": self._execution_flow,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
@@ -219,14 +232,79 @@ class CentralityCache:
             self._pagerank[kind] = (signature, alpha, dict(values))
             self._save_locked()
 
+    def lookup_file_communities(
+        self, *, rescore_due: bool = False
+    ) -> tuple[dict[str, int], dict[int, Any], str] | None:
+        """Return cached (assignment, info, algo) for file-level communities."""
+        if rescore_due:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            if self._file_communities is None:
+                return None
+            assignment, info, algo = self._file_communities
+            return dict(assignment), dict(info), algo
+
+    def put_file_communities(
+        self, assignment: dict[str, int], info: dict[int, Any], algo: str
+    ) -> None:
+        """Record file-level community detection results and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._file_communities = (dict(assignment), dict(info), algo)
+            self._save_locked()
+
+    def lookup_symbol_communities(
+        self, *, rescore_due: bool = False
+    ) -> dict[str, int] | None:
+        """Return cached symbol-level community assignment."""
+        if rescore_due:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            if self._symbol_communities is None:
+                return None
+            return dict(self._symbol_communities)
+
+    def put_symbol_communities(self, assignment: dict[str, int]) -> None:
+        """Record symbol-level community detection results and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._symbol_communities = dict(assignment)
+            self._save_locked()
+
+    def lookup_execution_flows(self, *, rescore_due: bool = False) -> Any | None:
+        """Return cached execution flow report."""
+        if rescore_due:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            return self._execution_flow
+
+    def put_execution_flows(self, report: Any) -> None:
+        """Record execution flow report and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._execution_flow = report
+            self._save_locked()
+
     def lookup(
-        self, kind: str, graph, *, signature: str, max_churn: int
+        self,
+        kind: str,
+        graph,
+        *,
+        signature: str,
+        max_churn: int,
+        rescore_due: bool = True,
     ) -> BetweennessScoring | None:
         """Return the last exact scoring for *kind* if *graph* is close enough.
 
         ``None`` when there is no entry, or when the graph has drifted further
-        than *max_churn* nodes-plus-edges from the one that was scored; both
-        mean the caller must recompute.
+        than *max_churn* nodes-plus-edges from the one that was scored and
+        *rescore_due* is True; both mean the caller must recompute. When
+        *rescore_due* is False (e.g. during incremental update between periodic
+        cadences), the previous scoring continues to be served past the churn budget
+        as long as the graph still overlaps with scored nodes.
         """
         with self._lock:
             self._ensure_loaded()
@@ -238,10 +316,12 @@ class CentralityCache:
         # Both compute paths return one entry per node, so the scored node set
         # is the values' keys.
         nodes = set(graph.nodes())
-        scored = entry.values.keys()
+        scored = set(entry.values.keys())
+        if not (nodes & scored):
+            return None
         churn = len(nodes - scored) + len(scored - nodes)
         churn += len(_edge_fingerprints(graph) ^ entry.edges)
-        if churn > max_churn:
+        if rescore_due and churn > max_churn:
             return None
         return BetweennessScoring(dict(entry.values), entry.scored_commit, churn)
 
