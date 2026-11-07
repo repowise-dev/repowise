@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
 from repowise.cli._helpers.paths import STATE_FILENAME, ensure_repowise_dir, get_repowise_dir
-
-_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # State file
@@ -17,28 +14,11 @@ _log = logging.getLogger(__name__)
 
 
 def load_state(repo_path: Path) -> dict[str, Any]:
-    """Load ``.repowise/state.json`` or return an empty dict if absent or unreadable.
-
-    A file that is not valid UTF-8 JSON, or whose top level is not an object, is
-    treated as absent (with a warning) so a corrupt state file never crashes a
-    command. Other errors, such as a permission problem, still propagate.
-    """
+    """Load ``.repowise/state.json`` or return an empty dict if absent."""
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
-    if not state_path.exists():
-        return {}
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as err:
-        _log.warning("Could not parse state file at %s: %s", state_path, err)
-        return {}
-    if not isinstance(data, dict):
-        _log.warning(
-            "Ignoring state file at %s: expected a JSON object, got %s",
-            state_path,
-            type(data).__name__,
-        )
-        return {}
-    return data
+    if state_path.exists():
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    return {}
 
 
 #: Slots the last whole-repo generation put in front of this repository's
