@@ -30,7 +30,13 @@ async def load_stored_git_meta(
     # wiki.db was deleted to force a rebuild would otherwise be handed an
     # empty one here, and an empty database reads as "indexed" downstream.
     # Same guard, and the same reason, as the head-commit stamper.
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    # The question is whether a store exists, not whether one file does:
+    # ``resolve_db_url`` prefers a configured database, and the repo-local
+    # file it replaces is absent by design. Reading that database does not
+    # create one, so the reason for this guard does not reach that case.
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(repo_path):
         log("[yellow]No store to read git metadata from; dead-code scope narrowed[/yellow]")
         return None
     try:
@@ -80,7 +86,9 @@ async def load_stored_performance_callers(
     log = log or _noop_log
     if not changed_paths:
         return set()
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(repo_path):
         return None
     try:
         import json
@@ -144,7 +152,9 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
     walked-set computation in that case.
     """
     log = log or _noop_log
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(repo_path):
         return None
     try:
         from repowise.core.persistence import (
@@ -205,7 +215,9 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     """
     log = log or _noop_log
 
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(repo_path):
         return {}
     try:
         from repowise.core.persistence import (
