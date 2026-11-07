@@ -1364,6 +1364,9 @@ def _rebuild_index(run: UpdateRun) -> None:
     # partial health's repo-wide aggregates are unaffected.
     run.working_tree_only = _working_tree_only(run)
     run.head_ts = None if run.working_tree_only else _head_commit_ts(run.repo_path)
+    from .persistence import full_metrics_rescore_due
+
+    metrics_due = full_metrics_rescore_due(run.state, run.head_ts)
     (
         run.parsed_files,
         run.source_map,
@@ -1386,6 +1389,7 @@ def _rebuild_index(run: UpdateRun) -> None:
         ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
+        rescore_due=metrics_due,
     )
     decision = getattr(run.graph_builder, "incremental_graph_decision", None)
     if decision is not None:
@@ -2095,7 +2099,7 @@ def _rescore_after_persist(run: UpdateRun) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
-    from .persistence import full_rescore_due, run_decay_health_rescore
+    from .persistence import full_metrics_rescore_due, full_rescore_due, run_decay_health_rescore
 
     health_changed = run.config.health_changed
     rescored = False
@@ -2113,6 +2117,8 @@ def _rescore_after_persist(run: UpdateRun) -> None:
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts
         run.state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    if run.head_ts is not None and full_metrics_rescore_due(run.state, run.head_ts):
+        run.state["last_full_metrics_rescore_at"] = run.head_ts
     if health_changed and not rescored:
         raise RuntimeError(
             "Configuration-triggered health re-score failed; the previous "

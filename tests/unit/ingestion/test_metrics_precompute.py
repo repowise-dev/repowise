@@ -67,3 +67,67 @@ class TestMetricsPrecompute:
         assert gb._symbol_betweenness_cache is not None
         assert gb._community_cache is not None
         assert gb._symbol_community_cache is not None
+
+    def test_reused_communities_give_new_nodes_file_community(self, tmp_path: Path, monkeypatch) -> None:
+        """When rescore_due=False, communities are reused from disk and new symbols inherit their file's community (#5283)."""
+        cache_dir = tmp_path / ".repowise"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        gb1 = GraphBuilder(str(tmp_path), centrality_cache_dir=cache_dir, rescore_due=True)
+        for rel, content in _FILES.items():
+            gb1.add_file(_parsed(tmp_path, rel, content))
+        gb1.build()
+        asyncio.run(gb1.compute_metrics_parallel())
+
+        file_cd1 = gb1.community_detection()
+        sym_cd1 = gb1.symbol_communities()
+        flows1 = gb1.execution_flows()
+
+        # Update: add a new function in b.py
+        files2 = dict(_FILES)
+        files2["b.py"] = _FILES["b.py"] + "\ndef new_helper():\n    return 42\n"
+
+        # Ensure community detection algorithm is NOT called when rescore is not due
+        def _forbid_detect(*args, **kwargs):
+            raise AssertionError("File community detection must not run when rescore is not due")
+
+        monkeypatch.setattr("repowise.core.analysis.communities.detect_file_communities", _forbid_detect)
+
+        gb2 = GraphBuilder(str(tmp_path), centrality_cache_dir=cache_dir, rescore_due=False)
+        for rel, content in files2.items():
+            gb2.add_file(_parsed(tmp_path, rel, content))
+        gb2.build()
+
+        file_cd2 = gb2.community_detection()
+        assert file_cd2["b.py"] == file_cd1["b.py"]
+
+        sym_cd2 = gb2.symbol_communities()
+        # Existing symbols retain their community
+        assert sym_cd2["b.py::helper"] == sym_cd1["b.py::helper"]
+        # New symbol inherits its file's community
+        assert "b.py::new_helper" in sym_cd2
+        assert sym_cd2["b.py::new_helper"] == file_cd2["b.py"]
+
+        # Execution flows are also reused
+        flows2 = gb2.execution_flows()
+        assert flows2.total_entry_points_scored == flows1.total_entry_points_scored
+
+    def test_rescore_due_recomputes_communities(self, tmp_path: Path) -> None:
+        """When rescore_due=True, communities recompute fresh rather than reusing (#5283)."""
+        cache_dir = tmp_path / ".repowise"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        gb1 = GraphBuilder(str(tmp_path), centrality_cache_dir=cache_dir, rescore_due=True)
+        for rel, content in _FILES.items():
+            gb1.add_file(_parsed(tmp_path, rel, content))
+        gb1.build()
+        asyncio.run(gb1.compute_metrics_parallel())
+
+        # Update with rescore_due=True
+        gb2 = GraphBuilder(str(tmp_path), centrality_cache_dir=cache_dir, rescore_due=True)
+        for rel, content in _FILES.items():
+            gb2.add_file(_parsed(tmp_path, rel, content))
+        gb2.build()
+
+        assert gb2.community_detection() is not None
+        assert gb2.symbol_communities() is not None

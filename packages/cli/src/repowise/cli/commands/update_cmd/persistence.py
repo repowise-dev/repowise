@@ -356,6 +356,7 @@ def _rescore_stale_findings(
     # invalidates every persisted score, and the partial health update above
     # only reached the changed files.
     last_full_rescore_at = state.get("last_full_rescore_at")
+    last_full_metrics_rescore_at = state.get("last_full_metrics_rescore_at")
     health_analyzer_version = state.get("health_analyzer_version")
     rescored = False
     if force_full_rescore or full_rescore_due(state, head_ts):
@@ -376,6 +377,8 @@ def _rescore_stale_findings(
         from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
         health_analyzer_version = HEALTH_ANALYZER_VERSION
+    if (force_full_rescore or full_metrics_rescore_due(state, head_ts)) and head_ts is not None:
+        last_full_metrics_rescore_at = head_ts
     if force_full_rescore and not rescored:
         raise RuntimeError(
             "Configuration-triggered health re-score failed; the previous "
@@ -392,7 +395,12 @@ def _rescore_stale_findings(
         with timed(timings, "security_rescan"):
             if run_full_security_rescan(repo_path, exclude_patterns or []):
                 security_scanner_version = SECURITY_SCANNER_VERSION
-    return last_full_rescore_at, health_analyzer_version, security_scanner_version
+    return (
+        last_full_rescore_at,
+        health_analyzer_version,
+        security_scanner_version,
+        last_full_metrics_rescore_at,
+    )
 
 
 def _stamp_git_history(
@@ -659,22 +667,26 @@ def _persist_index_only_update(
 
     from .command import _current_renderer_fingerprint
 
-    last_full_rescore_at, health_analyzer_version, security_scanner_version = (
-        _rescore_stale_findings(
-            repo_path,
-            graph_builder,
-            state,
-            head_ts=head_ts,
-            parsed_files=parsed_files,
-            exclude_patterns=exclude_patterns,
-            force_full_rescore=force_full_rescore,
-            timings=timings,
-        )
+    (
+        last_full_rescore_at,
+        health_analyzer_version,
+        security_scanner_version,
+        last_full_metrics_rescore_at,
+    ) = _rescore_stale_findings(
+        repo_path,
+        graph_builder,
+        state,
+        head_ts=head_ts,
+        parsed_files=parsed_files,
+        exclude_patterns=exclude_patterns,
+        force_full_rescore=force_full_rescore,
+        timings=timings,
     )
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
+        "last_full_metrics_rescore_at": last_full_metrics_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
         "config_fingerprint": (
@@ -1235,6 +1247,22 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")
+    if not isinstance(last, (int, float)):
+        return True
+    return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
+
+
+def full_metrics_rescore_due(state: dict, head_ts: float | None) -> bool:
+    """Whether a full metrics re-score (betweenness, communities, flows) is due this update.
+
+    Gated by the same periodic cadence as health re-scoring (#5283).
+    Absent ``head_ts`` (git unavailable) → the time gate cannot fire.
+    Absent time stamp (never re-scored, or legacy state) → due, to establish
+    the recovered baseline.
+    """
+    if head_ts is None:
+        return False
+    last = state.get("last_full_metrics_rescore_at")
     if not isinstance(last, (int, float)):
         return True
     return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0

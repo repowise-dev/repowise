@@ -650,3 +650,4 @@ def stamp_fresh_index(state: dict[str, Any], repo_path: Path, result: Any) -> No
     _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
     if _head_ts is not None:
         state["last_full_rescore_at"] = _head_ts
+        state["last_full_metrics_rescore_at"] = _head_ts

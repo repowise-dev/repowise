@@ -334,6 +334,25 @@ class MetricsMixin:
         if self._community_cache is not None:
             return self._community_cache
 
+        cache = getattr(self, "_centrality_cache", None)
+        rescore_due = getattr(self, "_rescore_due", True)
+        if cache is not None and not rescore_due:
+            try:
+                cached = cache.lookup_file_communities(rescore_due=rescore_due)
+                if cached is not None:
+                    assignment, info, algo = cached
+                    file_nodes = [
+                        n for n, d in self._graph.nodes(data=True) if d.get("node_type", "file") == "file"
+                    ]
+                    for fn in file_nodes:
+                        assignment.setdefault(fn, 0)
+                    self._community_cache = assignment
+                    self._community_info_cache = info
+                    self._community_algo = algo
+                    return self._community_cache
+            except Exception as exc:
+                log.debug("file_community_cache_lookup_failed", error=str(exc))
+
         from repowise.core.analysis.communities import detect_file_communities
 
         try:
@@ -344,6 +363,11 @@ class MetricsMixin:
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
+            if cache is not None:
+                try:
+                    cache.put_file_communities(assignment, info, algo)
+                except Exception as exc:
+                    log.debug("file_community_cache_store_failed", error=str(exc))
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [
@@ -359,10 +383,35 @@ class MetricsMixin:
         if self._symbol_community_cache is not None:
             return self._symbol_community_cache
 
+        cache = getattr(self, "_centrality_cache", None)
+        rescore_due = getattr(self, "_rescore_due", True)
+        if cache is not None and not rescore_due:
+            try:
+                cached = cache.lookup_symbol_communities(rescore_due=rescore_due)
+                if cached is not None:
+                    sym_assignment = dict(cached)
+                    file_cd = self.community_detection()
+                    for node_id, data in self._graph.nodes(data=True):
+                        if (
+                            data.get("node_type") == "symbol" or "::" in node_id
+                        ) and node_id not in sym_assignment:
+                            file_path = node_id.split("::")[0]
+                            if file_path in file_cd:
+                                sym_assignment[node_id] = file_cd[file_path]
+                    self._symbol_community_cache = sym_assignment
+                    return self._symbol_community_cache
+            except Exception as exc:
+                log.debug("symbol_community_cache_lookup_failed", error=str(exc))
+
         from repowise.core.analysis.communities import detect_symbol_communities
 
         try:
             self._symbol_community_cache = detect_symbol_communities(self._graph)
+            if cache is not None:
+                try:
+                    cache.put_symbol_communities(self._symbol_community_cache)
+                except Exception as exc:
+                    log.debug("symbol_community_cache_store_failed", error=str(exc))
         except Exception as exc:
             log.warning("symbol_community_detection_failed", error=str(exc))
             self._symbol_community_cache = {}
@@ -469,7 +518,14 @@ class MetricsMixin:
         if cache is not None:
             try:
                 signature = cache.signature(kind, g)
-                hit = cache.lookup(kind, g, signature=signature, max_churn=self._churn_budget(g))
+                rescore_due = getattr(self, "_rescore_due", True)
+                hit = cache.lookup(
+                    kind,
+                    g,
+                    signature=signature,
+                    max_churn=self._churn_budget(g),
+                    rescore_due=rescore_due,
+                )
                 if hit is not None:
                     log.info(
                         "betweenness_reused_from_cache",
@@ -527,6 +583,17 @@ class MetricsMixin:
         if config is None and self._execution_flow_cache is not None:
             return self._execution_flow_cache
 
+        cache = getattr(self, "_centrality_cache", None)
+        rescore_due = getattr(self, "_rescore_due", True)
+        if config is None and cache is not None and not rescore_due:
+            try:
+                cached = cache.lookup_execution_flows(rescore_due=rescore_due)
+                if cached is not None:
+                    self._execution_flow_cache = cached
+                    return cached
+            except Exception as exc:
+                log.debug("execution_flow_cache_lookup_failed", error=str(exc))
+
         file_cd = self.community_detection()
         merged_cd: dict[str, int] = dict(file_cd)
 
@@ -550,6 +617,11 @@ class MetricsMixin:
             )
         if config is None:
             self._execution_flow_cache = report
+            if cache is not None:
+                try:
+                    cache.put_execution_flows(report)
+                except Exception as exc:
+                    log.debug("execution_flow_cache_store_failed", error=str(exc))
         return report
 
     async def compute_metrics_parallel(self) -> None:

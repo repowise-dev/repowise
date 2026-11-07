@@ -97,7 +97,9 @@ class GraphBuilder(
         head_commit: str | None = None,
         include_submodules: bool = False,
         include_nested_repos: bool = False,
+        rescore_due: bool = True,
     ) -> None:
+        self._rescore_due: bool = rescore_due
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         # Raw source bytes the caller already read, keyed like _parsed_files.
