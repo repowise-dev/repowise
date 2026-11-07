@@ -171,7 +171,7 @@ async def export_manifest(
 class ImportOutcome:
     """What reconciling the store against the manifest did."""
 
-    __slots__ = ("accepted", "created", "reaffirmed", "skipped", "unchanged")
+    __slots__ = ("accepted", "created", "reaffirmed", "repaired", "skipped", "unchanged")
 
     def __init__(self) -> None:
         self.created: list[str] = []
@@ -179,6 +179,8 @@ class ImportOutcome:
         self.reaffirmed: list[str] = []
         self.unchanged: list[str] = []
         self.skipped: list[tuple[str, str]] = []
+        #: ``(alias_id, decision_id)`` per supersede pointer, ``decision_id`` empty for a deletion.
+        self.repaired: list[tuple[str, str]] = []
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -187,6 +189,10 @@ class ImportOutcome:
             "reaffirmed": self.reaffirmed,
             "unchanged": self.unchanged,
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
+            "repaired": [
+                {"id": a, "action": "repointed" if d else "deleted", "to": d or None}
+                for a, d in self.repaired
+            ],
         }
 
 
@@ -272,7 +278,8 @@ async def import_manifest(
     listed = {entry.id for entry in entries}
     # A pre-fix supersede pointer resolves nowhere until repaired, and an entry
     # under that old id would then be created a second time.
-    repaired = dict(await repair_superseded_aliases(session, repository_id, apply=not dry_run))
+    outcome.repaired = await repair_superseded_aliases(session, repository_id, apply=not dry_run)
+    repaired = dict(outcome.repaired)
 
     for entry in entries:
         if not entry.id or not entry.title:

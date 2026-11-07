@@ -226,6 +226,21 @@ async def test_the_repair_repoints_a_stranded_old_id_at_its_moved_record(async_s
     assert await repair_superseded_aliases(async_session, repo.id) == []
 
 
+async def test_import_reports_a_deleted_pointer_apart_from_a_repoint(async_session, tmp_path):
+    repo = await insert_repo(async_session)
+    successor = await _successor(async_session, repo.id)
+    old = await _legacy_adr(async_session, repo.id)
+    await supersede_decision(async_session, old, successor_id=successor.id, accepter="tester")
+    old_id = old.id
+    await _pointer(async_session, repo.id, old_id, successor.id, datetime.now(UTC))
+    await export_manifest(async_session, repo.id, tmp_path)
+
+    outcome = await import_manifest(async_session, repo.id, tmp_path)
+
+    assert outcome.as_dict()["repaired"] == [{"id": old_id, "action": "deleted", "to": None}]
+    assert await async_session.get(DecisionAlias, old_id) is None
+
+
 async def test_supersede_writes_no_alias(async_session):
     repo = await insert_repo(async_session)
     successor = await _successor(async_session, repo.id)
@@ -316,7 +331,10 @@ async def test_import_before_a_full_index_does_not_recreate_a_moved_record(
 
     preview = await import_manifest(async_session, repo.id, tmp_path, dry_run=True)
     assert old_id not in preview.created
-    await import_manifest(async_session, repo.id, tmp_path)
+    assert preview.repaired == [(old_id, moved_id)]
+    assert (await _target(async_session, old_id))[1] == "superseded"
+    outcome = await import_manifest(async_session, repo.id, tmp_path)
+    assert outcome.as_dict()["repaired"] == [{"id": old_id, "action": "repointed", "to": moved_id}]
 
     titled = (
         await async_session.execute(
