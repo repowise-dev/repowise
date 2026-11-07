@@ -37,7 +37,6 @@ from repowise.cli.providers import model_run_embedder
 from repowise.cli.ui import load_dotenv
 from repowise.cli.ui.mode_names import provider_model
 from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
-from repowise.core.generation.onboarding.registry import get_spec as get_onboarding_spec
 from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
@@ -80,16 +79,6 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
     pointing at the command that does refresh those pages.
     """
     bad = [pid for pid in page_ids if pid.split(":", 1)[0] in STRUCTURAL_PAGE_TYPES]
-    onboarding_deterministic: list[str] = []
-    for pid in page_ids:
-        prefix, _, suffix = pid.partition(":")
-        if prefix == "onboarding":
-            subkind = suffix.partition("/")[2] if "/" in suffix else suffix
-            spec = get_onboarding_spec(subkind)
-            if spec and spec.deterministic:
-                onboarding_deterministic.append(pid)
-    if onboarding_deterministic:
-        bad.extend(onboarding_deterministic)
     if bad:
         joined = ", ".join(bad)
         raise click.ClickException(
