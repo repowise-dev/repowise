@@ -354,3 +354,111 @@ def test_update_reports_phase_timings(tmp_path, forbid_full_pipeline):  # noqa: 
     assert any(name.startswith("rescore.") for name in timings)
     assert all(seconds >= 0 for seconds in timings.values())
     assert timings["run"] >= timings["persist"]
+
+
+@pytest.mark.usefixtures("forbid_full_pipeline")
+def test_sink_drift_report_keeps_a_carried_forward_symbol_finding(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import repowise.core.pipeline.incremental as incremental
+    from repowise.cli.commands.update_cmd.incremental import _run_doc_drift_partial
+    from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+    from repowise.core.analysis.doc_drift.serialize import serialize_finding
+    from repowise.core.analysis.doc_drift.symbols import SymbolOptions, graph_symbol_names
+
+    repo = _make_git_repo(tmp_path)
+    _commit_file(repo, ".gitignore", ".repowise/\n")
+    _commit_file(repo, "README.md", "Call `alpha()`.\n")
+    _commit_file(repo, "GUIDE.md", "See `a.py`.\n")
+    _mark_indexed(repo, get_head_commit(repo))
+    _add_commit(repo, "b.py")
+    assert asyncio.run(update_single_repo_index(repo)).error is None
+    _mark_indexed(repo, get_head_commit(repo))
+
+    partials = []
+    analyze = incremental.run_doc_drift_partial
+
+    def record(*args, **kwargs):
+        report = analyze(*args, **kwargs)
+        partials.append(report)
+        return report
+
+    monkeypatch.setattr(incremental, "run_doc_drift_partial", record)
+    _commit_file(repo, "a.py", "def renamed():\n    return 1\n")
+    first: list[UpdateProducts] = []
+    result = asyncio.run(update_single_repo_index(repo, products_sink=first))
+    assert result.error is None
+    assert first[0].doc_drift_report.total_findings == 1
+    # README has no stored reverse edge for alpha; the changed name includes it.
+    assert "README.md" in partials[-1].documents
+    base = get_head_commit(repo)
+    _mark_indexed(repo, base)
+
+    _commit_file(repo, "b.py", "def unrelated():\n    return 2\n")
+    sink: list[UpdateProducts] = []
+    result = asyncio.run(update_single_repo_index(repo, products_sink=sink))
+    assert result.error is None
+    assert partials[-1].findings == []
+    products = sink[0]
+    stored = products.doc_drift_report
+    assert stored.total_findings == 1
+    assert [(f.file_path, f.target) for f in stored.findings] == [("README.md", "alpha")]
+    full = DocDriftAnalyzer(
+        source_map=products.source_map,
+        tracked_paths=products.graph_builder.traversed_file_paths,
+        repo_root=repo,
+        symbols=SymbolOptions(graph_symbol_names(products.graph_builder.graph())),
+    ).analyze()
+    assert [serialize_finding(f) for f in stored.findings] == [
+        serialize_finding(f) for f in full.findings
+    ]
+    assert stored.confidence_summary == full.confidence_summary
+
+    cli_report = _run_doc_drift_partial(
+        products.graph_builder, products.source_map, repo_path=repo, base_ref=base,
+        file_diffs=[SimpleNamespace(path="b.py", old_path=None, status="modified")],
+    )
+    assert cli_report.documents == frozenset()
+    assert cli_report.findings == []
+
+
+@pytest.mark.usefixtures("forbid_full_pipeline")
+@pytest.mark.parametrize("replacement", [None, "MOVED.md"])
+def test_sink_drift_report_prunes_deleted_and_renamed_documents(tmp_path, replacement):
+    from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+    from repowise.core.analysis.doc_drift.symbols import SymbolOptions, graph_symbol_names
+    from tests.unit.pipeline.test_doc_drift_incremental import _finding_keys
+
+    repo = _make_git_repo(tmp_path)
+    _commit_file(repo, ".gitignore", ".repowise/\n")
+    _commit_file(repo, "README.md", "Call `alpha()` and read `GUIDE.md`.\n")
+    _commit_file(repo, "GUIDE.md", "Call `alpha()`.\n")
+    _mark_indexed(repo, get_head_commit(repo))
+    _commit_file(repo, "a.py", "def renamed():\n    return 1\n")
+    first: list[UpdateProducts] = []
+    assert asyncio.run(update_single_repo_index(repo, products_sink=first)).error is None
+    assert {(f.file_path, f.target) for f in first[0].doc_drift_report.findings} == {
+        ("README.md", "alpha"), ("GUIDE.md", "alpha"),
+    }
+    assert any(r.doc_path == "README.md" for r in first[0].doc_drift_report.resolved_references)
+    _mark_indexed(repo, get_head_commit(repo))
+
+    if replacement:
+        _git(repo, "mv", "README.md", replacement)
+    else:
+        _git(repo, "rm", "README.md")
+    _git(repo, "commit", "-m", "remove old document path")
+    sink: list[UpdateProducts] = []
+    assert asyncio.run(update_single_repo_index(repo, products_sink=sink)).error is None
+    products = sink[0]
+    stored = products.doc_drift_report
+    assert all(f.file_path != "README.md" for f in stored.findings)
+    assert all(r.doc_path != "README.md" for r in stored.resolved_references)
+    full = DocDriftAnalyzer(
+        source_map=products.source_map,
+        tracked_paths=products.graph_builder.traversed_file_paths,
+        repo_root=repo,
+        symbols=SymbolOptions(graph_symbol_names(products.graph_builder.graph())),
+    ).analyze()
+    assert _finding_keys(stored.findings) == _finding_keys(full.findings)
+    assert set(stored.resolved_references) == set(full.resolved_references)

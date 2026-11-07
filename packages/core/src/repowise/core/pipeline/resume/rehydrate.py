@@ -32,6 +32,7 @@ __all__ = [
     "attach_stored_commit_shas",
     "rehydrate_dead_code_report",
     "rehydrate_decision_report",
+    "rehydrate_doc_drift_report",
     "rehydrate_git_meta_map",
     "rehydrate_graph_builder",
     "rehydrate_health_report",
@@ -278,6 +279,63 @@ async def rehydrate_health_report(session: Any, repo_id: str) -> Any:
         ),
         repo_function_mod_p80=getattr(repo, "function_mod_p80", None),
         refactoring_suggestions=suggestions,
+    )
+
+
+async def rehydrate_doc_drift_report(session: Any, repo_id: str) -> Any:
+    """Read the complete stored drift findings and references after an update.
+
+    This is a read-only report: scan counters, renderer, suppression counts
+    and write scopes were never stored. Unknown counters are ``None``, not
+    the partial pass's counts. Raises on a DB error.
+    """
+    from repowise.core.analysis.doc_drift import summarize_confidence
+    from repowise.core.analysis.doc_drift.models import (
+        DocDriftFindingData,
+        DriftKind,
+        ResolvedDocReference,
+    )
+    from repowise.core.persistence.crud import get_doc_drift_findings, get_doc_drift_references
+
+    rows = await get_doc_drift_findings(session, repo_id)
+    findings = [
+        DocDriftFindingData(
+            kind=DriftKind(row.kind),
+            file_path=row.file_path,
+            line_number=row.line_number,
+            target=row.target,
+            confidence=row.confidence,
+            reason=row.reason,
+            origin=row.origin,
+            evidence=json.loads(row.evidence_json or "[]"),
+            raw=row.raw,
+            context=row.context,
+            suggestion=row.suggestion or "",
+            suggestion_basis=row.suggestion_basis or "",
+        )
+        for row in rows
+    ]
+    references = [
+        ResolvedDocReference(
+            doc_path=row.document_path,
+            target_path=row.target_path,
+            kind=DriftKind(row.kind),
+            line=row.line_number,
+            section=row.section,
+        )
+        for row in await get_doc_drift_references(session, repo_id)
+    ]
+    return SimpleNamespace(
+        repo_id=repo_id,
+        findings=findings,
+        total_findings=len(findings),
+        confidence_summary=summarize_confidence(findings),
+        resolved_references=references,
+        documents_scanned=None,
+        references_checked=None,
+        verdict_summary={},
+        anchor_renderer=None,
+        suppressed=None,
     )
 
 

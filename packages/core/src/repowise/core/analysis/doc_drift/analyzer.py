@@ -172,11 +172,15 @@ class DocDriftAnalyzer:
         config: dict | None = None,
         *,
         on_step: Any | None = None,
+        document_paths: frozenset[str] | None = None,
     ) -> DocDriftReport:
         """Run the drift pass.
 
         Config keys: ``min_confidence`` (float), and ``check_<kind>`` booleans
         for each :class:`~.models.DriftKind`, all defaulting to on.
+        ``document_paths`` narrows the pass while retaining every document as
+        an anchor target. References to changed symbol names also recheck
+        their documents, since resolved symbols have no stored reverse edge.
         """
         cfg = config or {}
         step = on_step or (lambda _stage: None)
@@ -197,6 +201,7 @@ class DocDriftAnalyzer:
         )
         step("index")
 
+        documents = self._selected_documents(documents, document_paths)
         tally = _Tally()
         candidates = _SymbolCandidates(self._symbols.recheck if self._symbols else None)
         for rel, text in documents.items():
@@ -234,6 +239,17 @@ class DocDriftAnalyzer:
             resolved_references=tally.resolved,
             symbol_scope=candidates.scope(),
         )
+
+    def _selected_documents(
+        self, documents: dict[str, str], paths: frozenset[str] | None
+    ) -> dict[str, str]:
+        if paths is None:
+            return documents
+        recheck = self._symbols.recheck if self._symbols else None
+        return {
+            path: text for path, text in documents.items()
+            if path in paths or (recheck is not None and recheck.affects_document(path, text))
+        }
 
     def _resolve_symbols(self, refs: list[DocReference], tally: _Tally) -> None:
         """The symbol kind, batched over every document's candidates."""

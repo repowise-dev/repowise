@@ -46,6 +46,7 @@ from .commits import (
     reconcile_commit_experience,
     reconcile_commit_offsets,
 )
+from .doc_drift import run_doc_drift_update
 from .external_systems import (
     refresh_external_systems,
 )
@@ -120,5 +121,6 @@ __all__ = [
     "refresh_knowledge_graph",
     "refresh_unchanged_history",
     "run_doc_drift_partial",
+    "run_doc_drift_update",
     "run_partial_analysis",
 ]
