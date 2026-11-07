@@ -438,3 +438,43 @@ class TestAdvancedExcludeMergesWithFlag:
     def test_no_flag_uses_typed_patterns(self, tmp_path):
         got = self._exclude_patterns(tmp_path, [], ("build/",))
         assert got == ["build/"]
+
+
+def _fresh_git_repo(tmp_path, name="repo"):
+    import subprocess
+
+    repo = tmp_path / name
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "app.py").write_text("def main():\n    return 1\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-qm", "init"],
+        check=True,
+    )
+    return repo
+
+
+class TestCommitLimitRange:
+    """Issue #4033: --commit-limit must be a usage error outside 1..10000."""
+
+    @pytest.mark.parametrize("limit", ["0", "-5", "20000"])
+    def test_out_of_range_is_usage_error_and_writes_no_config(self, tmp_path, limit):
+        repo = _fresh_git_repo(tmp_path)
+        result = CliRunner().invoke(cli, [
+            "init", str(repo), "--mode", "fast", "--yes",
+            "--no-editor-setup", "--commit-limit", limit,
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--commit-limit" in result.output
+        assert not (repo / ".repowise" / "config.yaml").exists()
+
+    @pytest.mark.parametrize("limit", ["1", "10000"])
+    def test_range_bounds_are_accepted(self, tmp_path, limit):
+        repo = _fresh_git_repo(tmp_path)
+        result = CliRunner().invoke(cli, [
+            "init", str(repo), "--mode", "fast", "--yes",
+            "--no-editor-setup", "--dry-run", "--commit-limit", limit,
+        ])
+        assert result.exit_code == 0, result.output
