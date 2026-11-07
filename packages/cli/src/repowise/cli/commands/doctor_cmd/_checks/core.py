@@ -133,12 +133,19 @@ def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
         errors = load_event_settings(repo_path).errors
     except Exception as exc:
         return _check(
-            "Events config", True, f"could not read it ({exc})", check_id="events-config", warn=True
+            "Events config",
+            True,
+            f"could not read .repowise/config.yaml events settings ({exc}); inspect that file manually",
+            check_id="events-config",
+            warn=True,
         )
     if not errors:
         return None
     return _check(
-        "Events config", False, "; ".join(errors) + " (defaults used)", check_id="events-config"
+        "Events config",
+        False,
+        f".repowise/config.yaml: {'; '.join(errors)} (defaults used; edit the events block)",
+        check_id="events-config",
     )
 
 
@@ -176,7 +183,9 @@ def _git_check(repo_path: _DoctorPath) -> DoctorCheck:
                 raise
         return _check("Git repository", True, str(repo_path), check_id="git-repository")
     except Exception:
-        return _check("Git repository", False, "Not a git repo", check_id="git-repository")
+        return _check(
+            "Git repository", False, "Not a git repo", check_id="git-repository", fix="git init"
+        )
 
 
 def _hook_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
@@ -213,7 +222,14 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
         ctx.page_count = run_async(_count_pages(ctx.repo_path))
         ctx.db_ok = True
     except Exception as e:
-        return [_check("Database", False, str(e), check_id="database")]
+        return [
+            _check(
+                "Database",
+                False,
+                f"Could not open the repository database: {e}. Restore it from a backup or inspect the database and connection settings.",
+                check_id="database",
+            )
+        ]
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 
@@ -227,6 +243,7 @@ def _state_row(ctx: CheckContext) -> DoctorCheck:
         if ctx.state_ok
         else "Not found or empty",
         check_id="state-json",
+        fix=None if ctx.state_ok else "repowise init",
     )
 
 
@@ -309,7 +326,12 @@ def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
             cached, cache_dir = runtime_grammar_cache(tag)
         except Exception as exc:
             rows.append(
-                _check(name, False, f"could not read the grammar cache ({exc})", check_id=check_id)
+                _check(
+                    name,
+                    False,
+                    f"could not read the grammar cache ({exc}); inspect cache permissions and REPOWISE_GRAMMAR_DIR",
+                    check_id=check_id,
+                )
             )
             continue
         if cached:
@@ -323,6 +345,7 @@ def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
                     "Re-run 'repowise init' with network access, or stage a cache with "
                     "'repowise grammars fetch <dir>' and set REPOWISE_GRAMMAR_DIR to it",
                     check_id=check_id,
+                    fix="repowise init",
                 )
             )
     return rows

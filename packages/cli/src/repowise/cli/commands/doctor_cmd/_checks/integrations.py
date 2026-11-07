@@ -194,7 +194,13 @@ def _mcp_responds_check() -> DoctorCheck:
             )
         return mcp_smoke_check(command, [str(a) for a in args], entry.get("env"))
     except Exception as exc:  # a doctor check must never be the crash
-        return _check(CHECK_NAME, True, f"Could not check: {exc}", check_id=CHECK_ID, warn=True)
+        return _check(
+            CHECK_NAME,
+            True,
+            f"Could not check the registered MCP command: {exc}; inspect the MCP registration manually",
+            check_id=CHECK_ID,
+            warn=True,
+        )
 
 
 def _claude_registration_check(
@@ -253,7 +259,13 @@ def _claude_registration_check(
             return _check(name, True, detail, check_id=check_id, warn=True, fix=add), False
         return _check(name, True, _registered_detail(entry, target), check_id=check_id), False
     except Exception as exc:
-        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True), False
+        return _check(
+            name,
+            True,
+            f"Could not check the Claude Code MCP registration: {exc}; inspect the registration manually",
+            check_id=check_id,
+            warn=True,
+        ), False
 
 
 def _registered_detail(entry: dict, target: str | None) -> str:
@@ -371,7 +383,13 @@ def _claude_desktop_entry_row() -> DoctorCheck | None:
         )
         return _check(name, True, detail, check_id=check_id, warn=True, fix=REGISTER_LATER_COMMAND)
     except Exception as exc:
-        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+        return _check(
+            name,
+            True,
+            f"Could not check the Claude Desktop MCP registration: {exc}; inspect the registration manually",
+            check_id=check_id,
+            warn=True,
+        )
 
 
 def _distill_config_row(repo_path: _DoctorPath) -> tuple[DoctorCheck, object]:
@@ -385,13 +403,22 @@ def _distill_config_row(repo_path: _DoctorPath) -> tuple[DoctorCheck, object]:
 
         problems = validate_distill_config(distill_cfg)
         if problems:
-            row = _check("Distill config", False, "; ".join(problems), check_id="distill-config")
+            row = _check(
+                "Distill config",
+                False,
+                f".repowise/config.yaml: {'; '.join(problems)}; edit the distill block manually",
+                check_id="distill-config",
+            )
             return row, distill_cfg
         detail = "valid" if distill_cfg else "defaults (no block)"
         return _check("Distill config", True, detail, check_id="distill-config"), distill_cfg
     except Exception as exc:
         row = _check(
-            "Distill config", True, f"Could not check: {exc}", check_id="distill-config", warn=True
+            "Distill config",
+            True,
+            f"Could not check .repowise/config.yaml: {exc}; inspect or repair that file manually",
+            check_id="distill-config",
+            warn=True,
         )
         return row, distill_cfg
 
@@ -414,7 +441,11 @@ def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCh
         return _check("Omission store", ok, detail, check_id="omission-store")
     except Exception as exc:
         return _check(
-            "Omission store", True, f"Could not check: {exc}", check_id="omission-store", warn=True
+            "Omission store",
+            True,
+            f"Could not check .repowise/omissions/omissions.db: {exc}; inspect that store manually",
+            check_id="omission-store",
+            warn=True,
         )
 
 

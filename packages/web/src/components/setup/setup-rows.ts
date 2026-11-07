@@ -35,7 +35,7 @@ export interface SetupRow {
   title: SetupMsg;
   detail: SetupMsg;
   action: SetupAction | null;
-  command: string;
+  command?: string;
   prompt: SetupPromptRow;
   /** Paths the row can list on request, e.g. files that failed to parse. */
   files?: string[];
@@ -114,7 +114,6 @@ function indexParseRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     title: msg("index.title"),
     detail: msg("index.detailSkipped", { count }),
     action: { kind: "prompt" },
-    command: "repowise doctor --format json",
     files,
     prompt: {
       repoName: o.repoName,
@@ -432,14 +431,15 @@ function rewriteRow(s: SetupResponse, o: DeriveOptions): SetupRow {
 const RUN_HINT = /\s*\(run:?\s+`?([^`)]+?)`?\)\s*\.?\s*$/;
 
 /** Doctor text without a closing "(run X)" that repeats the row's command. */
-export function withoutRunHint(detail: string, command: string): string {
+export function withoutRunHint(detail: string, command?: string): string {
+  if (!command) return detail;
   const hint = RUN_HINT.exec(detail);
   if (!hint || hint[1]?.trim() !== command.trim()) return detail;
   return detail.slice(0, hint.index).trimEnd();
 }
 
 function checkRow(check: NonNullable<SetupResponse["checks"]>[number], o: DeriveOptions): SetupRow {
-  const command = check.fix ?? "repowise doctor --format json";
+  const command = check.fix ?? undefined;
   const detail = withoutRunHint(check.detail ?? "", command);
   return {
     id: `check-${check.id}`,

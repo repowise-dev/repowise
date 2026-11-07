@@ -48,6 +48,7 @@ describe("deriveSetup", () => {
     const row = view.attention[0]!;
     expect(row.action).toEqual({ kind: "prompt" });
     expect(row.files).toEqual(["a.py", "b.py"]);
+    expect(row.command).toBeUndefined();
     expect(row.prompt).toMatchObject({ fix: true, verify: "doctor", items: ["a.py", "b.py"] });
     // The doctor command shows the files; it is not a fix, so the prompt names none.
     expect(row.prompt.command).toBeUndefined();
@@ -131,13 +132,13 @@ describe("deriveSetup", () => {
     expect(view.attention[1]!.detail).toEqual({ text: "stale (run repowise doctor --fix)" });
   });
 
-  it("gives a doctor check with no fix a prompt with no command", () => {
+  it("keeps doctor checks without a fix command free of a doctor fallback", () => {
     const view = deriveSetup(
       setupFixture({ checks: [{ id: "database", name: "Database", level: "fail", detail: "locked" }] }),
       OPTS,
     );
     const row = view.attention[0]!;
-    expect(row.command).toBe("repowise doctor --format json");
+    expect(row.command).toBeUndefined();
     expect(row.prompt.command).toBeUndefined();
   });
 

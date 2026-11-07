@@ -236,6 +236,7 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
                     f"cannot open .repowise/lancedb ({vector_store_error}); semantic "
                     "search is off until it opens, then run `repowise reindex`",
                     check_id="vector-store",
+                    fix="repowise reindex",
                 )
             )
         vec_ok, vec_detail = _drift_detail(drift.missing_from_vector, drift.orphaned_vector)
@@ -358,11 +359,15 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
             str(vector_count) if vector_count != -1 and vector_count is not None else "unknown"
         )
         detail = f"SQL={sql_pages}, Vector={vec_display}, Drift={drift_pct}"
+        fix = None
+        if drift is not None and drift >= 0.05:
+            fix = "repowise init" if sql_pages == 0 else _REPAIR
         row = _check(
             "Coordinator drift",
             drift is None or drift < 0.05,
             detail,
             check_id="coordinator-drift",
+            fix=fix,
         )
         ctx.coord_drift_color = drift_color
         ctx.coord_drift_pct = drift_pct
