@@ -108,15 +108,16 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v44: this release's maintainability, performance and coverage detectors stop
-# firing on several idiomatic patterns, ternary dispatch chains in Java, C, C++,
-# C#, Dart, Objective-C and PHP keep each decision without nesting their
-# else-arms, and refactoring gains and the headline split change. Re-score
-# stored metrics so old findings do not survive the new rules.
+# v45: Astro joins the TypeScript family in constant-flag gating, Extract Method
+# plans (render and helper naming) and the move-destination language family. The
+# Astro projection the walker parses changed too: a string or comment in a markup
+# ``{expr}`` (``{"<style>"}``) no longer blanks a later ``<script>`` function. The
+# walk cache keys on file bytes, so unchanged ``.astro`` files re-score only on
+# this stamp.
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 44
+HEALTH_ANALYZER_VERSION = 45
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
