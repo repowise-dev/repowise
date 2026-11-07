@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,23 +26,24 @@ def quiet_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return reads
 
 
-def _run(*, wiki_rebuild: bool) -> UpdateRun:
+def _run(repo_path: Path, *, wiki_rebuild: bool) -> UpdateRun:
     run = UpdateRun(start=0.0, timings=PhaseTimings())
+    run.repo_path = repo_path
     run.head = run.base_ref = "abc123"
     run.config = SimpleNamespace(changed=False)
     run.wiki_rebuild = wiki_rebuild
     return run
 
 
-def test_no_rebuild_owed_is_up_to_date(quiet_store: list[str]) -> None:
-    run = _run(wiki_rebuild=False)
+def test_no_rebuild_owed_is_up_to_date(quiet_store: list[str], tmp_path: Path) -> None:
+    run = _run(tmp_path, wiki_rebuild=False)
     command._assess_staleness(SimpleNamespace(), run)
     assert run.git_is_current
     assert quiet_store == ["parser", "stale"]
 
 
-def test_owed_rebuild_is_not_up_to_date(quiet_store: list[str]) -> None:
-    run = _run(wiki_rebuild=True)
+def test_owed_rebuild_is_not_up_to_date(quiet_store: list[str], tmp_path: Path) -> None:
+    run = _run(tmp_path, wiki_rebuild=True)
     command._assess_staleness(SimpleNamespace(), run)
     assert not run.git_is_current
     # The "up to date" store reads are skipped, as for any other pending rework.
