@@ -337,7 +337,10 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     "--refresh-git",
     is_flag=True,
     default=False,
-    help="Re-read Git history within the current index scope, even at an unchanged HEAD.",
+    help=(
+        "Re-read Git history within the current index scope, even at an unchanged HEAD. "
+        "Requires --index-only --defer-docs."
+    ),
 )
 @click.option(
     "--defer-docs",
