@@ -68,6 +68,11 @@ _OWN_HEADER = (
         ("third_party/zlib/inflate.c", "vendored"),
         ("src/thirdparty/docopt.py", "vendored"),
         ("external/abseil/str.cc", "vendored"),
+        # cloned reference checkouts in a root .repos/ are someone else's code
+        (".repos/foo/src/index.ts", "vendored"),
+        (".repos/foo/packages/a/src/x.ts", "vendored"),
+        ("src/repos/a.ts", "production"),
+        ("packages/external/a.ts", "production"),
         ("static/js/app.min.js", "vendored"),
         ("assets/site.min.css", "vendored"),
         ("docs_src/tutorial/first_steps.py", "docs_example"),
