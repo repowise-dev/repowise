@@ -133,7 +133,12 @@ def _field_symbol(
         language=_LANGUAGE,
         parent_name=parent,
     )
-    refs = [SchemaReference(sym_id, t.text, t.line) for t in targets if t.text]
+    relationship = el.first("relationshipName")
+    refs = [
+        SchemaReference(sym_id, t.text, t.line, relationship_name=relationship)
+        for t in targets
+        if t.text
+    ]
     return sym, refs
 
 
@@ -253,29 +258,54 @@ class _Index:
     objects: dict[str, list[tuple[str, str]]]  # key -> [(path, symbol id)]
     fields: dict[tuple[str, str], list[tuple[str, str]]]  # (object key, field key)
     lookups: dict[str, set[str]]  # field symbol id -> referenced object keys
+    # (parent object key, relationship key) -> {(child object key, lookup field key)}
+    children: dict[tuple[str, str], set[tuple[str, str]]]
+
+
+def _relationship_key(project: _Project, name: str) -> str:
+    """A child relationship's comparison key: ``Shifts`` and ``Shifts__r`` are one."""
+    key = project.key(name)
+    return key[:-3] if key.endswith("__r") else key
 
 
 def _build_index(parsed_files: dict[str, ParsedFile], project: _Project) -> _Index:
     objects: dict[str, list[tuple[str, str]]] = defaultdict(list)
     fields: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     lookups: dict[str, set[str]] = defaultdict(set)
+    children: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != _LANGUAGE:
             continue
+        field_keys: dict[str, tuple[str, str]] = {}
         for sym in parsed.symbols:
             if sym.kind == "class":
                 objects[project.key(sym.name)].append((path, sym.id))
             elif sym.kind == "property" and "." in sym.qualified_name:
                 obj = sym.qualified_name.rsplit(".", 1)[0]
-                fields[(project.key(obj), project.key(sym.name))].append((path, sym.id))
+                field_key = (project.key(obj), project.key(sym.name))
+                fields[field_key].append((path, sym.id))
+                field_keys[sym.id] = field_key
         for ref in parsed.schema_refs:
-            lookups[ref.source_symbol_id].add(project.key(ref.object_name))
-    return _Index(project, objects, fields, lookups)
+            target = project.key(ref.object_name)
+            lookups[ref.source_symbol_id].add(target)
+            owner = field_keys.get(ref.source_symbol_id)
+            if ref.relationship_name and owner is not None:
+                children[(target, _relationship_key(project, ref.relationship_name))].add(owner)
+    return _Index(project, objects, fields, lookups, children)
 
 
 def _resolve(index: _Index, ref: SchemaReference) -> Iterator[str]:
     key = index.project.key
     current = key(ref.object_name)
+    for relationship in ref.via:
+        # A child relationship names its object only through the lookup that
+        # declares it; an undeclared or ambiguous name binds nothing.
+        owners = index.children.get((current, _relationship_key(index.project, relationship)), ())
+        if len(owners) != 1:
+            return
+        child, lookup = next(iter(owners))
+        yield from index.project.preferred(index.fields.get((child, lookup), ()))
+        current = child
     if not ref.path:
         yield from index.project.preferred(index.objects.get(current, ()))
         return
