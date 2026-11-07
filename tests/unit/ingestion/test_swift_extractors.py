@@ -8,6 +8,7 @@ Class and protocol cases are exercised as regression coverage.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 import pytest
@@ -123,3 +124,29 @@ class TestSwiftExportedImport:
         by_module = {i.module_path: i for i in result.imports}
         assert by_module["FooKit"].is_reexport is True
         assert by_module["Foundation"].is_reexport is False
+
+
+class TestSwiftDocstringScale:
+    def test_many_member_struct_keeps_docstrings_and_parses_fast(
+        self, parser: ASTParser
+    ) -> None:
+        # #5277: each docstring lookup used to copy all of the parent's
+        # children, so a type with N members cost N x N.
+        members = 5000
+        lines = ["struct Big {"]
+        for i in range(members):
+            lines.append(f"    /// Doc {i}.")
+            lines.append(f"    var m{i}: Int = {i}")
+        lines.append("}")
+        src = ("\n".join(lines) + "\n").encode()
+
+        start = time.perf_counter()
+        result = parser.parse_file(_file("Big.swift"), src)
+        elapsed = time.perf_counter() - start
+
+        docs = {s.name: s.docstring for s in result.symbols}
+        assert docs["m0"] == "Doc 0."
+        assert docs[f"m{members - 1}"] == f"Doc {members - 1}."
+        assert sum(1 for name in docs if name.startswith("m")) == members
+        assert all(docs[f"m{i}"] for i in range(members))
+        assert elapsed < 3.0, f"parsing {members} members took {elapsed:.1f}s"

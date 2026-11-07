@@ -90,18 +90,13 @@ def _fsharp_preceding_doc(node: Node, src: str) -> list[Node]:
     its own doc by the ``and`` token -- so both are stepped over the way
     Rust's ``#[...]`` items are.
     """
-    parent = node.parent
-    if parent is None:
-        return []
-    siblings = list(parent.children)
-    idx = next((i for i, sib in enumerate(siblings) if sib.id == node.id), -1)
-    i = idx - 1
-    while i >= 0 and (siblings[i].type == "attributes" or not siblings[i].is_named):
-        i -= 1
+    prev = node.prev_sibling
+    while prev is not None and (prev.type == "attributes" or not prev.is_named):
+        prev = prev.prev_sibling
     docs: list[Node] = []
-    while i >= 0 and siblings[i].type == "xml_doc":
-        docs.insert(0, siblings[i])
-        i -= 1
+    while prev is not None and prev.type == "xml_doc":
+        docs.insert(0, prev)
+        prev = prev.prev_sibling
     return docs
 
 
@@ -340,25 +335,13 @@ def _python_symbol_doc(def_node: Node, src: str) -> str | None:
     return None
 
 
-def _preceding_siblings(node: Node) -> tuple[list[Node], int]:
-    """*node*'s parent's children and *node*'s index there (``-1`` when unparented)."""
-    parent = node.parent
-    if parent is None:
-        return [], -1
-    siblings = list(parent.children)
-    return siblings, next((i for i, s in enumerate(siblings) if s.id == node.id), -1)
-
-
 def _go_symbol_doc(def_node: Node, src: str) -> str | None:
     """The ``//`` lines right before the declaration."""
-    siblings, idx = _preceding_siblings(def_node)
-    if idx <= 0:
-        return None
     lines: list[str] = []
-    i = idx - 1
-    while i >= 0 and siblings[i].type == "comment":
-        lines.insert(0, node_text(siblings[i], src).lstrip("/ ").strip())
-        i -= 1
+    prev = def_node.prev_sibling
+    while prev is not None and prev.type == "comment":
+        lines.insert(0, node_text(prev, src).lstrip("/ ").strip())
+        prev = prev.prev_sibling
     return "\n".join(lines) if lines else None
 
 
@@ -394,23 +377,20 @@ def _fsharp_symbol_doc(def_node: Node, src: str) -> str | None:
 
 def _rust_symbol_doc(def_node: Node, src: str) -> str | None:
     """A ``/**`` block, else ``///`` lines, before the item, over ``#[...]`` attributes."""
-    siblings, idx = _preceding_siblings(def_node)
-    if idx <= 0:
-        return None
-    i = idx - 1
-    while i >= 0 and siblings[i].type == "attribute_item":
-        i -= 1
-    if i >= 0 and siblings[i].type == "block_comment":
-        text = node_text(siblings[i], src).strip()
+    prev = def_node.prev_sibling
+    while prev is not None and prev.type == "attribute_item":
+        prev = prev.prev_sibling
+    if prev is not None and prev.type == "block_comment":
+        text = node_text(prev, src).strip()
         if text.startswith("/**"):
             return clean_jsdoc(text)
     lines: list[str] = []
-    while i >= 0 and siblings[i].type == "line_comment":
-        text = node_text(siblings[i], src).strip()
+    while prev is not None and prev.type == "line_comment":
+        text = node_text(prev, src).strip()
         if not text.startswith("///"):
             break
         lines.insert(0, text[3:].strip())
-        i -= 1
+        prev = prev.prev_sibling
     return "\n".join(lines) if lines else None
 
 
@@ -462,13 +442,10 @@ def _csharp_symbol_doc(def_node: Node, src: str) -> str | None:
 
 def _luau_symbol_doc(def_node: Node, src: str) -> str | None:
     """A ``--[[ ]]`` block, else ``---`` lines, before the symbol."""
-    siblings, idx = _preceding_siblings(def_node)
-    if idx <= 0:
-        return None
     lines: list[str] = []
-    i = idx - 1
-    while i >= 0 and siblings[i].type == "comment":
-        text = node_text(siblings[i], src).strip()
+    prev = def_node.prev_sibling
+    while prev is not None and prev.type == "comment":
+        text = node_text(prev, src).strip()
         if text.startswith("--[["):
             inner = text[4:]
             if inner.endswith("]]"):
@@ -477,7 +454,7 @@ def _luau_symbol_doc(def_node: Node, src: str) -> str | None:
         if not text.startswith("---"):
             break
         lines.insert(0, text.lstrip("- ").strip())
-        i -= 1
+        prev = prev.prev_sibling
     return "\n".join(lines) if lines else None
 
 
@@ -503,20 +480,13 @@ _SYMBOL_DOC: dict[str, Callable[[Node, str], str | None]] = {
 
 def _find_preceding_line_doc_comments(node: Node, src: str, prefix: str) -> str | None:
     """Collect consecutive line comments with *prefix* (e.g. ``///``) before *node*."""
-    parent = node.parent
-    if parent is None:
-        return None
-    siblings = list(parent.children)
-    idx = next((i for i, s in enumerate(siblings) if s.id == node.id), -1)
-    if idx <= 0:
-        return None
     lines: list[str] = []
-    i = idx - 1
-    while i >= 0 and siblings[i].type in ("comment", "line_comment"):
-        text = node_text(siblings[i], src).strip()
+    prev = node.prev_sibling
+    while prev is not None and prev.type in ("comment", "line_comment"):
+        text = node_text(prev, src).strip()
         if text.startswith(prefix):
             lines.insert(0, text[len(prefix) :].strip())
-            i -= 1
+            prev = prev.prev_sibling
         else:
             break
     return "\n".join(lines) if lines else None
