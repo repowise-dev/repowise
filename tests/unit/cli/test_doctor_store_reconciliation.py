@@ -222,3 +222,57 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
     out = " ".join(" ".join(printed).split())
     assert "2 page(s) need embedding with openai" in out
     assert "repowise reindex" in out
+
+
+def _missing_lancedb_repo(tmp_path: Path, monkeypatch, embedder: str) -> Path:
+    """A repo whose lancedb directory was deleted, pinned to *embedder*."""
+    import shutil
+
+    # An exported REPOWISE_EMBEDDER outranks the pin. serve's config loading
+    # assigns it on os.environ, so an earlier test in the same worker can
+    # leave one behind and turn the pin below into a no-op.
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+    (repo_path / ".repowise" / "config.yaml").write_text(f"embedder: {embedder}\n")
+    return repo_path
+
+
+def test_a_deleted_store_under_a_real_embedder_is_not_in_sync(tmp_path: Path, monkeypatch) -> None:
+    """A missing lancedb with a real embedder is every indexable page missing."""
+    repo_path = _missing_lancedb_repo(tmp_path, monkeypatch, "openai")
+
+    ok, detail = _rows(repo_path)["SQL ↔ Vector Store"]
+    assert ok is False
+    assert detail == "2 missing, 0 orphaned"
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    vector_row = next(c for c in checks if c.name == "SQL ↔ Vector Store")
+    assert vector_row.fix == "repowise reindex"
+
+
+def test_a_deleted_store_under_mock_stays_in_sync(tmp_path: Path, monkeypatch) -> None:
+    """Fast mode never embeds, so a missing lancedb under mock is not drift."""
+    repo_path = _missing_lancedb_repo(tmp_path, monkeypatch, "mock")
+
+    assert _rows(repo_path)["SQL ↔ Vector Store"] == (True, "in sync")
+
+
+def test_a_deleted_store_whose_embedder_cannot_resolve_is_not_in_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A resolution failure is named, not read as fast mode."""
+    import repowise.cli.providers as providers
+
+    repo_path = _missing_lancedb_repo(tmp_path, monkeypatch, "openai")
+
+    def _boom(_repo_path):
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr(providers, "resolve_embedder_for_repo", _boom)
+    rows = _rows(repo_path)
+
+    assert "SQL ↔ Vector Store" not in rows
+    ok, detail = rows["Store consistency"]
+    assert ok is True  # a warn row
+    assert "Could not check: RuntimeError: resolver exploded" in detail

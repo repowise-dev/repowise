@@ -197,22 +197,47 @@ async def _reconcile(
     vs_ids, vs_error = await _vector_ids(lance_dir)
     fts_ids = await _fts_ids(engine)
     await engine.dispose()
+    # A missing directory used to read as "nothing to compare", so fast mode
+    # (mock embedder, nothing ever embedded) stays quiet. But a deleted
+    # store under a real embedder is not fast mode: every indexable page is
+    # missing, and the fix is a reindex, not a doctor repair.
+    store_missing = not lance_dir.exists()
+    expects_vectors = store_missing and _expects_vectors(repo_path)
     return (
         StoreDrift(
             # An index on disk that holds none of the indexable pages is every
             # one of them missing. Only no index at all (fast mode, nothing
             # embedded yet) has nothing to compare.
             missing_from_vector=(
-                sql.vector_indexable_ids - vs_ids if lance_dir.exists() else set()
+                set(sql.vector_indexable_ids)
+                if expects_vectors
+                else (sql.vector_indexable_ids - vs_ids if not store_missing else set())
             ),
             orphaned_vector=vs_ids - sql.vector_sql_ids,
             missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
             orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
-            vector_store_empty=lance_dir.exists() and vs_error is None and not vs_ids,
+            vector_store_empty=(
+                expects_vectors or (not store_missing and vs_error is None and not vs_ids)
+            ),
         ),
         sql.stub_count,
         vs_error,
     )
+
+
+def _expects_vectors(repo_path: _DoctorPath) -> bool:
+    """True when a missing vector store means vectors are expected.
+
+    The repo's resolved embedder decides: ``mock`` means no semantic search
+    (fast mode), anything else means vectors are expected. A broken
+    ``config.yaml`` or ``.env`` already resolves (their parsers fall back to
+    empty), so nothing is caught here: an unexpected failure must reach the
+    "Could not check" row rather than read as "in sync", the silent case this
+    check exists to close.
+    """
+    from repowise.cli.providers import resolve_embedder_for_repo
+
+    return resolve_embedder_for_repo(repo_path) != "mock"
 
 
 def _drift_detail(missing: set[str], orphaned: set[str]) -> tuple[bool, str]:
