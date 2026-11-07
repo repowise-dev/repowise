@@ -727,6 +727,11 @@ def _validate_update_options(opts: UpdateOptions) -> None:
             "--refresh-git keeps the current index scope; use --full separately to upgrade it.",
             reason="refresh_git_conflicts_with_full",
         )
+    if opts.refresh_git and not (opts.index_only and opts.defer_docs):
+        raise reasoned_error(
+            "--refresh-git requires --index-only --defer-docs.",
+            reason="refresh_git_needs_deferred_index",
+        )
     if opts.defer_docs and (
         not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
     ):

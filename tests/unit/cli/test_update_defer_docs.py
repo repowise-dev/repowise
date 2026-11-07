@@ -438,8 +438,25 @@ def test_git_refresh_workspace_is_refused_before_writing(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(command, "_resolve_target", lambda opts: SimpleNamespace(is_workspace=True))
     result = _split_output_runner().invoke(
-        command.update_command, [str(tmp_path), "--refresh-git", "--workspace"]
+        command.update_command,
+        [str(tmp_path), "--refresh-git", "--index-only", "--defer-docs", "--workspace"],
     )
     assert result.exit_code != 0
     assert "--refresh-git supports one repo" in result.stderr
     assert not (tmp_path / ".repowise").exists()
+
+
+@pytest.mark.parametrize("flags", [[], ["--index-only"], ["--defer-docs"]])
+def test_git_refresh_requires_deferred_index_mode_before_writing(
+    indexed_repo: Path, flags: list[str]
+):
+    root = indexed_repo / ".repowise"
+    before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    result = _split_output_runner().invoke(
+        command.update_command,
+        [str(indexed_repo), "--no-workspace", "--refresh-git", *flags],
+    )
+    assert result.exit_code != 0
+    assert "--refresh-git requires --index-only --defer-docs" in result.stderr
+    after = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert after == before
