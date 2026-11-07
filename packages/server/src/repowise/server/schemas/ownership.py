@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from repowise.server.schemas._datetime import UTCDateTime
 
 #: Who an identity is: a person, other automation, or a coding agent.
 IdentityKindField = Literal["human", "bot", "agent"]
@@ -53,7 +54,7 @@ class OwnerListEntry(BaseModel):
     commit_count_90d: int | None
     # A floor of that count when the indexed commits stop inside the window.
     commit_count_90d_at_least: int | None = None
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     bus_factor_risk_files: int  # files they own whose bus_factor is exactly 1
 
 
@@ -70,7 +71,7 @@ class OwnerFileEntry(BaseModel):
     churn_percentile: float  # 0-100
     bus_factor: int
     is_hotspot: bool
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     primary_owner_commit_pct: float | None
 
 
@@ -103,8 +104,8 @@ class OwnerProfileResponse(BaseModel):
     dead_code_lines_owned: int
     commit_count_90d: int | None
     commit_count_90d_at_least: int | None = None
-    last_commit_at: datetime | None
-    first_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
+    first_commit_at: UTCDateTime | None
     bus_factor_risk_files: int
 
     # 90d activity proxies (approximated from file-level totals weighted by
@@ -152,7 +153,7 @@ class SiloModule(BaseModel):
 
 
 class QuietOwner(OwnerRef):
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     files_owned: int
     changing_files_owned: int  # owned files with a commit in the last 90 days
 

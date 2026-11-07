@@ -106,7 +106,7 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
       if (!warnedVersionLow) {
         warnedVersionLow = true;
         void vscode.window.showWarningMessage(
-          `The Repowise server (${health.version}) is older than this extension supports (${MIN_SERVER_VERSION}). Upgrade with: pip install --upgrade repowise`,
+          `The Repowise server (${health.version}) is older than this extension supports (${MIN_SERVER_VERSION}). Upgrade with: uv tool upgrade repowise (or pip install --upgrade repowise)`,
         );
       }
       return;

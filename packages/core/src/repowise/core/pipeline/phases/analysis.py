@@ -241,6 +241,8 @@ def _build_pipeline_coverage(
                 )
             for path, err in errors:
                 progress.on_message("warning", f"  ↳ coverage {path.name}: {err}")
+            if stale := resolved.alignment.warning():
+                progress.on_message("warning", f"  ↳ coverage: {stale}")
 
         return (
             resolved.coverage_map,

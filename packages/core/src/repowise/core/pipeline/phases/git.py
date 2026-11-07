@@ -14,7 +14,7 @@ import structlog
 
 from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer import GitIndexTier
-from repowise.core.pipeline.progress import ProgressCallback, emit_warning
+from repowise.core.pipeline.progress import ProgressCallback, emit_phase_failed, emit_warning
 
 from ._common import _phase_done
 
@@ -71,6 +71,11 @@ async def _run_git_indexing(
 
     Returns (git_summary, git_metadata_list, git_meta_map).
     """
+    # Announced before the repo-wide commit walk, which runs before the file
+    # count is known and can take minutes on a long history; ``_on_start``
+    # re-announces with the total.
+    if progress:
+        progress.on_phase_start("git", None)
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
 
@@ -85,7 +90,11 @@ async def _run_git_indexing(
             record_episodes=True,
         )
 
+        started = False
+
         def _on_start(total: int) -> None:
+            nonlocal started
+            started = True
             if progress:
                 progress.on_phase_start("git", total)
 
@@ -121,6 +130,11 @@ async def _run_git_indexing(
             timings=getattr(progress, "table", None),
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
+        # No repository or no tracked files: the early row closes without a
+        # done line claiming history was indexed. The done report still runs
+        # for the phase's timing and hooks.
+        if not started:
+            emit_phase_failed(progress, "git")
         _phase_done(progress, "git")
         # co_change phase already closed inside the done-callback above;
         # call again only as a safety-net in case the callback was never
@@ -131,6 +145,7 @@ async def _run_git_indexing(
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Git indexing skipped: {exc}")
+        emit_phase_failed(progress, "git")
         _phase_done(progress, "git")
         _phase_done(progress, "co_change")
         return None, [], {}

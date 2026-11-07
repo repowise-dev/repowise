@@ -197,7 +197,7 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     (issue #1739).
 
     Returns ``{path: coverage-dict}`` by reloading the persisted ``CoverageFile``
-    rows, mirroring ``_coverage_for_rescore`` in the CLI update path. A report
+    rows, mirroring ``coverage_for_rescore`` in :mod:`.rescore`. A report
     :func:`coverage_reports_to_reread` names is read and stored first, so the
     rows describe the newest report. Empty dict when no coverage is stored, the
     store is unreadable, or the repository row is missing — the analyzer then
@@ -323,5 +323,7 @@ async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn)
                 provenance=resolved.provenance,
             )
         log(f"Re-read coverage from {len(reports)} report(s): {len(resolved.files)} file(s) stored")
+        if stale := resolved.alignment.warning():
+            log(f"[yellow]{stale}[/yellow]")
     except Exception as exc:
         log(f"[yellow]Coverage re-read skipped: {exc}[/yellow]")

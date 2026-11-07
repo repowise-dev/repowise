@@ -219,29 +219,18 @@ end.
         assert len(matches) == 1
         assert matches[0].end_line > matches[0].start_line
 
-    def test_anon_record_array_field_orphans_one_duplicate_but_keeps_the_real_method(
+    def test_a_member_orphaned_by_an_anon_record_array_field_pairs_with_its_body(
         self, parser: ASTParser
     ) -> None:
         # `array[...] of record ... end` -- an anonymous record type used
         # inline as an array element type -- has no grammar rule at all
         # (unlike a *named* `TFoo = record ... end` declaration, which
-        # parses fine). Found on this repo's own uDualPanelWindow.pas: the
-        # class's declType closes early at the error, and every member
-        # declared after the field (Run included) gets reparented to the
-        # unit's interface section instead of the class.
-        #
-        # A regex-based sanitizer originally blanked the anonymous record
-        # before parsing to keep the class body intact. Dropped on review
-        # (PR #1353): an AST-driven replacement that blanks whatever ERROR
-        # nodes the grammar produces here isn't safe either -- on this
-        # exact input, one of the ERROR spans tree-sitter-pascal's error
-        # recovery reports is the class's own legitimate closing `end;`,
-        # and blanking it produces the identical broken structure. A
-        # correct fix needs a nesting-aware scanner for the record's own
-        # `end` (out of scope for one construct seen in one file); this
-        # documents the accepted degradation instead: Run appears twice,
-        # once correctly parented and once as an orphan, rather than
-        # asserting a fix that doesn't hold up.
+        # parses fine). The class's declType closes early at the error, and
+        # every member declared after the field (Run included) is reparented
+        # to the unit's interface section instead of the class. Blanking the
+        # ERROR spans is not safe (one of them is the class's own `end;`), so
+        # the dedupe pairs the parentless declaration with the one method
+        # body of its signature instead, leaving a single Run.
         src = b"""\
 unit Foo;
 interface
@@ -261,10 +250,40 @@ end.
 """
         result = parser.parse_file(_pas(), src)
         matches = [s for s in result.symbols if s.name == "Run"]
-        assert len(matches) == 2
-        parented = [s for s in matches if s.parent_name == "TFoo"]
-        assert len(parented) == 1
-        assert parented[0].kind == "method"
+        assert len(matches) == 1
+        assert matches[0].parent_name == "TFoo"
+        assert matches[0].kind == "method"
+        assert matches[0].visibility == "public"
+
+    def test_an_orphaned_member_with_two_matching_bodies_stays(self, parser: ASTParser) -> None:
+        # Two classes implement ``Run`` with the orphan's signature, so its
+        # class cannot be told: the parentless declaration is kept beside both
+        # bodies instead of being paired with either.
+        src = b"""\
+unit Foo;
+interface
+type
+  TFoo = class
+    FTotals: array[TSide] of record
+      Valid: Boolean;
+    end;
+    procedure Run;
+  end;
+  TBar = class
+    procedure Run;
+  end;
+implementation
+procedure TFoo.Run;
+begin
+end;
+procedure TBar.Run;
+begin
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        runs = sorted((s.parent_name or "", s.kind) for s in result.symbols if s.name == "Run")
+        assert runs == [("", "function"), ("TBar", "method"), ("TFoo", "method")]
 
 
 class TestPascalImports:
@@ -279,9 +298,10 @@ class TestPascalImports:
         # `uses UnitA;` exposes UnitA's entire public interface section --
         # there's no Pascal syntax to name a specific imported symbol the
         # way Python's `from x import y` does. `imported_names=["*"]`
-        # (this codebase's existing wildcard-import sentinel) lets
-        # dead_code/analyzer.py's file-level unused-export rescue work for
-        # Pascal; `imported_names=[]` meant it could never fire.
+        # (this codebase's existing wildcard-import sentinel) lets the call
+        # resolver merge every name of the imported unit into the importer's
+        # scope. Dead-code analysis does not read it as a use of any one
+        # symbol (see dead_code/pascal_name_uses.py).
         result = parser.parse_file(_pas(), UNIT_SOURCE)
         assert result.imports
         assert all(i.imported_names == ["*"] for i in result.imports)
@@ -996,3 +1016,53 @@ end.
         result = parser.parse_file(_pas(), src)
         refs = {t.type_name for t in result.type_refs}
         assert refs.isdisjoint({"TFoo", "TBar"})
+
+
+class TestPascalVisibility:
+    SOURCE = b"""\
+unit Vis;
+interface
+type
+  TFoo = class
+  strict private
+    procedure Hidden;
+  protected
+    procedure Guarded;
+  public
+    procedure Open;
+  published
+    property Value: Integer read FValue;
+  end;
+procedure Exported;
+implementation
+procedure UnitOnly;
+begin
+end;
+procedure Exported;
+begin
+end;
+procedure TFoo.Hidden;
+begin
+end;
+procedure TFoo.Guarded;
+begin
+end;
+procedure TFoo.Open;
+begin
+end;
+end.
+"""
+
+    def test_class_members_take_their_section_visibility(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_pas("Vis.pas"), self.SOURCE)
+        by_id = {s.id: s.visibility for s in result.symbols}
+        assert by_id["Vis.pas::TFoo::Hidden"] == "private"
+        assert by_id["Vis.pas::TFoo::Guarded"] == "protected"
+        assert by_id["Vis.pas::TFoo::Open"] == "public"
+        assert by_id["Vis.pas::TFoo::Value"] == "public"
+
+    def test_only_interface_routines_are_exported_from_the_unit(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_pas("Vis.pas"), self.SOURCE)
+        by_id = {s.id: s.visibility for s in result.symbols}
+        assert by_id["Vis.pas::Exported"] == "public"
+        assert by_id["Vis.pas::UnitOnly"] == "private"

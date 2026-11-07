@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +32,9 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session, refresh_planner_stats
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
+from repowise.core.pipeline.index_persistence import publish_index_persistence
 from repowise.core.pipeline.modes import OrchestratorMode
+from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 # The ``noqa: F401`` names live in the sibling job modules and are re-exported
@@ -57,7 +60,9 @@ from repowise.server.job_records import (
 from repowise.server.job_state import (
     _load_state,  # noqa: F401
     _persist_initial_index_state,
+    _read_head_sha,
     _stamp_last_sync_commit,
+    newer_health_analyzer,
 )
 from repowise.server.services.areas import warm_area_model
 from repowise.server.services.coupling import warm_coupling_model
@@ -128,11 +133,37 @@ _PHASE_LEVELS = {
 }
 
 
+class _PhaseCount:
+    """One phase's progress within the active group of a JobProgressCallback."""
+
+    __slots__ = ("completed", "done", "total")
+
+    def __init__(self, total: int | None) -> None:
+        self.completed = 0
+        self.total = total
+        self.done = False
+
+    @property
+    def open(self) -> bool:
+        """Still running with a known total. A phase without one adds nothing
+        to the denominator, so it never holds the group together."""
+        return not self.done and self.total is not None and self.completed < self.total
+
+
 class JobProgressCallback:
     """ProgressCallback that writes progress to the GenerationJob record.
 
     The SSE stream endpoint polls the job table, so updating the record
     is sufficient to push live progress to the frontend.
+
+    Phases can run concurrently (ingestion beside git, the four analyses,
+    generation beside its paid tier), so progress is counted per phase. The
+    record shows the phases that are active together as one bar: the sum of
+    their counts, each capped at its own total, over the sum of their totals.
+    A phase that starts while another with a known total is still short of it
+    joins that group; one that starts after every such phase finished begins a
+    new group, as a sequential phase did before. ``on_phase_done`` finishes a
+    phase early and ``on_stage`` starts a fresh group.
     """
 
     def __init__(
@@ -144,8 +175,9 @@ class JobProgressCallback:
         self._job_id = job_id
         self._session_factory = session_factory
         self._events = events
-        self._completed = 0
-        self._total: int | None = None
+        # Phases of the active group; ticks arrive from worker threads.
+        self._phases: dict[str, _PhaseCount] = {}
+        self._lock = threading.Lock()
         self._phase = ""
         self._pending_flush = 0
         self._stopped = False
@@ -163,20 +195,55 @@ class JobProgressCallback:
         self._phase = phase
         if self._events is not None:
             self._events.set_phase(phase, total)
-        # Reset per-phase counters so the bar shows progress within the current phase
-        self._completed = 0
-        self._total = total
+        with self._lock:
+            # Sequential phases start a new group, so the bar shows progress
+            # within the current phase; concurrent ones join the running group.
+            if not any(p.open for p in self._phases.values()):
+                self._phases.clear()
+            self._phases[phase] = _PhaseCount(total)
         self._pending_flush = 0
         # Force a write so the UI's phase label updates promptly.
         self._sync_job_status(force=True)
         logger.info("job_phase_start", job_id=self._job_id, phase=phase, total=total)
 
     def on_item_done(self, phase: str) -> None:
-        self._completed += 1
-        self._pending_flush += 1
-        if self._pending_flush >= self._flush_interval:
+        with self._lock:
+            # A tick for a sub-phase that was never started ("generation.llm"
+            # without its own start) counts for its parent; any other unknown
+            # phase is not part of the group and is not counted.
+            count = self._phases.get(phase) or self._phases.get(phase.split(".", 1)[0])
+            if count is None:
+                return
+            count.completed += 1
+            self._pending_flush += 1
+            if self._pending_flush < self._flush_interval:
+                return
             self._pending_flush = 0
-            self._sync_job_status()
+        self._sync_job_status()
+
+    def on_phase_done(self, phase: str) -> None:
+        with self._lock:
+            count = self._phases.get(phase)
+            if count is not None:
+                count.done = True
+
+    def on_stage(self, stage: str) -> None:
+        with self._lock:
+            self._phases.clear()
+
+    def _progress_counts(self) -> tuple[int, int]:
+        """The active group as ``(completed, total)`` for the job record.
+
+        With no known total in the group the bar is indeterminate: total 0 and
+        the raw count, as a single phase without a total was reported before.
+        """
+        with self._lock:
+            counts = list(self._phases.values())
+        known = [p for p in counts if p.total is not None]
+        if not known:
+            return sum(p.completed for p in counts), 0
+        total = sum(p.total or 0 for p in known)
+        return sum(min(p.completed, p.total or 0) for p in known), total
 
     def on_message(self, level: str, text: str) -> None:
         if self._events is not None:
@@ -228,14 +295,15 @@ class JobProgressCallback:
         self._pending_tasks.clear()
 
     async def _async_update(self) -> None:
+        completed, total = self._progress_counts()
         try:
             async with get_session(self._session_factory) as session:
                 await update_job_status(
                     session,
                     self._job_id,
                     "running",
-                    completed_pages=self._completed,
-                    total_pages=self._total if self._total is not None else 0,
+                    completed_pages=completed,
+                    total_pages=total,
                     current_level=_PHASE_LEVELS.get(self._phase, 0),
                 )
         except Exception as exc:
@@ -434,9 +502,7 @@ async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
         repo = await get_repository(session, job.repository_id)
         if repo is None:
             logger.error("repo_not_found", job_id=job_id, repo_id=job.repository_id)
-            await update_job_status(
-                session, job_id, "failed", error_message="Repository not found"
-            )
+            await update_job_status(session, job_id, "failed", error_message="Repository not found")
             return None
 
         repo_path = repo.local_path
@@ -454,9 +520,7 @@ async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
         )
         if mode not in VALID_JOB_MODES:
             valid_str = ", ".join(sorted(VALID_JOB_MODES))
-            raise ValueError(
-                f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
-            )
+            raise ValueError(f"Invalid job mode '{mode}'. Expected one of: {valid_str}")
 
         # Mark running
         await update_job_status(session, job_id, "running")
@@ -527,24 +591,72 @@ async def _run_scoped_generation(run: _JobRun) -> None:
     )
 
 
+def _refuse_older_analyzer(repo_path: Path) -> None:
+    """Fail the job before it writes health rows older than the stored ones."""
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    stored = newer_health_analyzer(repo_path)
+    if stored is not None:
+        raise RuntimeError(
+            f"The index holds health scores from analyzer version {stored}, newer "
+            f"than this server's {HEALTH_ANALYZER_VERSION}. Restart `repowise serve` "
+            "to load the upgraded package."
+        )
+
+
 async def _run_index_job(run: _JobRun, app_state: Any) -> None:
+    """Index under the CLI's update lock, so the two never write one index at once."""
+    repo_path = Path(run.spec.repo_path)
+    head = await asyncio.to_thread(_read_head_sha, repo_path)
+    # Acquired and released without an await, so a cancel cannot leak the lock.
+    owner = try_acquire_update_lock(repo_path, head)
+    if owner is not None:
+        # The holder's run advances the baseline; nothing failed here.
+        await _finalize_job_status(
+            app_state,
+            run.session_factory,
+            run.progress,
+            run.spec.job_id,
+            status="cancelled",
+            error_message=(
+                f"Another repowise update or sync (pid {owner.get('pid')}) is "
+                "running on this repository, so this job did not run."
+            ),
+        )
+        return
+    try:
+        await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+        await _run_locked_index_job(run, app_state)
+    finally:
+        release_update_lock(repo_path)
+
+
+async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     """Index the repository, persist everything, and record the outcome."""
     spec = run.spec
     docs = _DocsPlan.for_job(spec, run.llm_client)
     result = await _run_index_pipeline(run, docs)
     incremental_pages = await _sync_incremental_pages(run, result)
+    # A CLI init does not take the update lock; check again right before writing.
+    await asyncio.to_thread(_refuse_older_analyzer, Path(spec.repo_path))
     swept_page_ids = await _persist_index_result(run, result, incremental_pages)
 
     all_pages = (result.generated_pages or []) + incremental_pages
     await _refresh_fts(run.fts, swept_page_ids, all_pages)
     await refresh_planner_stats(run.session_factory.kw["bind"])
+    await publish_index_persistence(spec.repo_id, Path(spec.repo_path))
 
     # Stop progress updates first, so none overwrites "completed".
     await run.progress.drain_and_stop()
 
     elapsed = time.monotonic() - run.start
     pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
-    await _write_index_state(run, docs, total_pages=len(all_pages))
+    await _write_index_state(
+        run,
+        docs,
+        total_pages=len(all_pages),
+        health_rescored=getattr(result, "health_report", None) is not None,
+    )
     await _reload_cross_repo_enricher(app_state, spec.job_id)
     # The area rollup and the coupling fold are read on the first dashboard
     # load after an index; fold them here, in the job's own task, instead.
@@ -711,11 +823,14 @@ async def _record_index_completion(
     return pages_generated
 
 
-async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int) -> None:
+async def _write_index_state(
+    run: _JobRun, docs: _DocsPlan, *, total_pages: int, health_rescored: bool = False
+) -> None:
     """Update state.json so CLI incremental updates know the new baseline.
 
     An initial index also persists the full baseline (docs flags, run
-    mode, config) that `repowise init` would have written.
+    mode, config) that `repowise init` would have written. A run that
+    rescored health stamps the analyzer version its rows came from.
     """
     spec = run.spec
     try:
@@ -729,9 +844,12 @@ async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int)
                 total_pages=total_pages,
                 wiki_style=spec.wiki_style,
                 exclude_patterns=spec.exclude_patterns,
+                health_rescored=health_rescored,
             )
         else:
-            await asyncio.to_thread(_stamp_last_sync_commit, Path(spec.repo_path))
+            await asyncio.to_thread(
+                _stamp_last_sync_commit, Path(spec.repo_path), health_rescored=health_rescored
+            )
     except Exception:
         logger.debug("state_json_update_failed", job_id=spec.job_id, exc_info=True)
 

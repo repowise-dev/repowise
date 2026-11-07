@@ -148,6 +148,7 @@ def resolve_csharp_same_namespace_refs(
     dotnet_index: DotNetProjectIndex | None,
     cs_texts: dict[str, str],
     repo_path: Path | None,
+    scan_paths: set[str] | None = None,
 ) -> int:
     """Emit same-namespace / global-using ``imports`` edges for C# files.
 
@@ -216,9 +217,10 @@ def resolve_csharp_same_namespace_refs(
             shadowed=frozenset(m.group(1) for m in _USING_ALIAS_RE.finditer(text)),
         )
 
+    paths = set(cs_texts) if scan_paths is None else set(cs_texts) & scan_paths
     return emit_scope_edges(
         graph,
-        ((path, cs_texts[path]) for path in sorted(cs_texts)),
+        ((path, cs_texts[path]) for path in sorted(paths)),
         plan,
         skip_names=_BCL_COMMON_TYPES,
     )

@@ -89,6 +89,8 @@ _PRICING: dict[str, dict[str, float]] = {
     "kimi-for-coding": {"input": 0.60, "output": 2.40},
     "kimi-k2.5": {"input": 0.60, "output": 2.40},
     "kimi-k2.6": {"input": 0.95, "output": 4.00},
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large-latest": {"input": 0.5, "output": 1.5},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}

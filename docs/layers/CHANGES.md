@@ -72,7 +72,7 @@ message closes (`Fixes #12`). A field it cannot read is `null`, which means unkn
 
 A plugin registers another source under `SeamRegistry("change-metadata")`, selected
 with `REPOWISE_SEAM_CHANGE_METADATA`. See
-[pluggable storage and capability seams](../architecture/pluggable-storage.md).
+[the plugin author guide](../reference/PLUGINS.md).
 
 ## Where it shows
 

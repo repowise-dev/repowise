@@ -5,22 +5,29 @@ from __future__ import annotations
 import posixpath
 import re
 
-from ..models import CallSite
+from ..models import CallSite, Symbol
+from ..return_types import declared_return_type
 from ..symbol_identity import outer_scope, symbol_id_path
 from ..type_names import bare_type_name, strip_type_arguments, type_qualifier
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
 
-# Where a Java declaration header opens its type-parameter list: after a type's
-# name, or after a method's modifiers and annotations, before its return type.
+# Where a JVM declaration header opens its type-parameter list: after a type's
+# name, after a Java method's modifiers and annotations, before its return
+# type, or after Kotlin's ``fun`` keyword.
 _JAVA_TYPE_PARAMETERS = re.compile(
     r"\b(?:class|interface|record)\s+\w+\s*<"
+    r"|\bfun\s*<"
     r"|^(?:\s*(?:@[\w.]+(?:\([^)]*\))?|public|protected|private|static|final|abstract"
     r"|synchronized|native|default|strictfp)\b)*\s*<"
 )
 
 
+# Kotlin words that can precede a type parameter's name: variance and ``reified``.
+_TYPE_PARAMETER_MODIFIERS = frozenset({"in", "out", "reified"})
+
+
 def _header_type_parameters(header: str) -> set[str]:
-    """The names a Java declaration header's ``<...>`` list declares."""
+    """The names a Java or Kotlin declaration header's ``<...>`` list declares."""
     opened = _JAVA_TYPE_PARAMETERS.search(header)
     if opened is None:
         return set()
@@ -30,8 +37,19 @@ def _header_type_parameters(header: str) -> set[str]:
         close += 1
     names: set[str] = set()
     for param in strip_type_arguments(header[opened.end() : close - 1]).split(","):
-        names.update(param.split()[:1])
+        words = [
+            word
+            for word in param.split()
+            if word not in _TYPE_PARAMETER_MODIFIERS and not word.startswith("@")
+        ]
+        names.update(words[:1])
     return names
+
+
+def _self_bounded(header: str, parameter: str, owner: str) -> bool:
+    """Is *parameter* declared in *header* as ``parameter extends owner<...>``?"""
+    bound = rf"[<,]\s*{re.escape(parameter)}\s+extends\s+{re.escape(owner)}\s*<"
+    return re.search(bound, header) is not None
 
 
 class JavaTypeVisibility:
@@ -50,7 +68,7 @@ class JavaTypeVisibility:
         """
         if bare in self._externally_bound_names(file_path):
             return None
-        declared = self._declared_types_named(bare)
+        declared = self._kotlin_platform_declaration(file_path, self._declared_types_named(bare))
         if len(declared) != 1 or bare in self._java_type_parameters(file_path, caller_id):
             return None
         type_file, (type_id, *_), _ = declared[0]
@@ -59,7 +77,57 @@ class JavaTypeVisibility:
         if self._declares(type_id, call.target_name) is not None:
             return None
         hit = self._ancestor_method(type_id, call.target_name, caller_id, class_chain_first=True)
+        if hit is not None and self._is_expect(hit):
+            hit = self._kotlin_platform_member(file_path, hit)
         return None if hit is None else (hit, "global")
+
+    def _kotlin_platform_declaration(
+        self, file_path: str, declared: list[tuple[str, tuple[str, ...], int]]
+    ) -> list[tuple[str, tuple[str, ...], int]]:
+        """*declared*, narrowed to the one a Kotlin Multiplatform caller compiles against.
+
+        An ``expect`` type and its ``actual`` twins are one type to the compiler,
+        so the caller's source set picks among them (see ``_most_visible``).
+        Any other set of same-named types is left as it is.
+        """
+        if len(declared) < 2 or self._language_of(file_path) != "kotlin":
+            return declared
+        expect = [ident[0] for _, ident, _ in declared if self._is_expect(ident[0])]
+        if len(expect) != 1 or not all(
+            self._platform_twin(expect[0], ident[0]) for _, ident, _ in declared
+        ):
+            return declared
+        chosen = self._most_visible(file_path, ((path, ident[0]) for path, ident, _ in declared))
+        return [entry for entry in declared if entry[1][0] == chosen]
+
+    def _kotlin_platform_member(self, file_path: str, expect_id: str) -> str | None:
+        """The twin of the ``expect`` member *expect_id* that *file_path*'s source set sees.
+
+        Twins share the id past the file path; the caller's own platform's
+        ``actual`` outranks the ``expect`` (see ``_most_visible``).
+        """
+        path = symbol_id_path(expect_id)
+        scoped = expect_id[len(path) :]
+        name = self._symbols_by_id[expect_id].name
+        twins = (
+            (symbol_id_path(sym_id), sym_id)
+            for sym_id in self._global_symbols.get(name, ())
+            if sym_id[len(symbol_id_path(sym_id)) :] == scoped
+            and self._platform_twin(expect_id, sym_id)
+        )
+        return self._most_visible(file_path, twins)
+
+    def _platform_twin(self, expect_id: str, sym_id: str) -> bool:
+        """Is *sym_id* *expect_id* itself, or an ``actual`` of it in the same package?"""
+        if sym_id == expect_id:
+            return True
+        symbol = self._symbols_by_id[sym_id]
+        owner = self._symbols_by_id.get(self._caller_class_id(sym_id)) if symbol.parent_name else None
+        if "actual" not in symbol.modifiers and (owner is None or "actual" not in owner.modifiers):
+            return False
+        index = self._get_jvm_index()
+        expect_path = symbol_id_path(expect_id)
+        return index is not None and symbol_id_path(sym_id) in index.same_package_files(expect_path)
 
     def _visible_java_type(self, file_path: str, bare: str, type_file: str) -> bool:
         """Whether Java lets *file_path* write *bare* for the type in *type_file*.
@@ -230,3 +298,28 @@ class JavaTypeVisibility:
             header = "\n".join(lines[start - 1 : end]).partition("{")[0]
             names.update(_header_type_parameters(header))
         return names
+
+    def _returns_java_self_type(self, callee_id: str) -> bool:
+        """Does *callee_id* return its class's self-bounded type parameter?
+
+        ``B`` of ``class Builder<B extends Builder<B>>`` is the receiver's own
+        type, a subclass included, which is how a fluent builder hierarchy
+        keeps chaining through a method it inherits. Ceiling: a method's own
+        ``<B>`` shadowing the class's is not read.
+        """
+        symbol = self._symbols_by_id.get(callee_id)
+        if symbol is None or not symbol.parent_name:
+            return False
+        returned = declared_return_type(symbol.signature or "") or ""
+        path = symbol_id_path(callee_id)
+        owner = self._symbols_by_id.get(self._only_type_in(path, symbol.parent_name) or "")
+        if owner is None or not returned.isidentifier():
+            return False
+        return _self_bounded(self._java_type_header(path, owner), returned, symbol.parent_name)
+
+    def _java_type_header(self, file_path: str, symbol: Symbol) -> str:
+        """A type's declaration up to its body, or the signature a synthesised one carries."""
+        if "<" in (symbol.signature or ""):
+            return symbol.signature or ""
+        start, end = self._spans_for(file_path).get(symbol.id, (1, 0))
+        return "\n".join(self._text_of(file_path).splitlines()[start - 1 : end]).partition("{")[0]

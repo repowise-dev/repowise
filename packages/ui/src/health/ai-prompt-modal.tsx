@@ -14,6 +14,7 @@ import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { useChatHandoff } from "../chat/chat-handoff";
 import { ViewToggle } from "./code-health-controls";
 import type { AiPromptFlavor } from "./ai-prompt-builder";
+import { formatNumber } from "../lib/format";
 
 export interface AiPromptModalProps {
   open: boolean;
@@ -44,7 +45,7 @@ export function fileChatContext(path: string | null | undefined): ChatContext | 
  *  own label already names, and the hint for the active one says the rest. */
 const FLAVORS: { value: AiPromptFlavor; label: string; hint: string }[] = [
   { value: "generic", label: "Generic", hint: "Any agent: Copilot, Codex, ChatGPT, custom." },
-  { value: "claude-code", label: "Claude Code", hint: "Tuned for Claude Code's tools (Read / Edit / TodoWrite)." },
+  { value: "claude-code", label: "Claude Code", hint: "Tuned for Claude Code." },
   {
     value: "claude-code-mcp",
     label: "Claude + MCP",
@@ -261,8 +262,8 @@ export function AiPromptBlock({
         <span className="min-w-0 tabular-nums">
           {load && !prompt ? null : (
             <>
-              {prompt.length.toLocaleString()} chars, approx{" "}
-              {Math.round(prompt.length / 4).toLocaleString()} tokens
+              {formatNumber(prompt.length)} chars, approx{" "}
+              {formatNumber(Math.round(prompt.length / 4))} tokens
             </>
           )}
         </span>

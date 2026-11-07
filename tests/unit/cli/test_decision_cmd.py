@@ -336,7 +336,12 @@ def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> Non
     )
 
     assert result.exit_code == 1, result.output
-    assert json.loads(result.output)["error"].startswith("--title and --decision")
+    payload = json.loads(result.output)
+    assert payload["error"].startswith("--title and --decision")
+
+    guidance = payload.get("guidance", "")
+    assert "prompted" not in guidance
+    assert "--decision" in guidance
 
 
 def test_decision_add_help_lists_a_flag_per_field() -> None:
@@ -1003,3 +1008,29 @@ def test_config_commands_do_not_need_an_index(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "No index found" not in result.output
+
+
+def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
+    indexed_repo: Path,
+) -> None:
+    """A decision drops only the actions view, and the write does not rebuild
+    it: the first reader stores it, so recording decisions stays fast."""
+    import sqlite3
+
+    from repowise.cli.commands._index_outcome import refresh_read_snapshots
+
+    _seed_wiki_db(
+        indexed_repo, [{"id": "d" * 32, "title": "Seeded", "status": "proposed"}]
+    )
+    assert refresh_read_snapshots(indexed_repo)
+    added = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--title", "Cache read views", "--decision", "Store them",
+         str(indexed_repo)],
+        input="",
+    )  # fmt: skip
+    assert added.exit_code == 0, added.output
+    with sqlite3.connect(indexed_repo / ".repowise" / "wiki.db") as conn:
+        kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
+    assert "actions" not in kinds
+    assert "fix_first" in kinds

@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import type { Rect } from "../../src/zoom/camera";
 import { CARD_ASPECT } from "../../src/zoom/constants";
-import { gridDimensions, packLayout, type LayoutChild } from "../../src/zoom/layout";
+import { labelAspect } from "../../src/zoom/card-content";
+import {
+  gridDimensions,
+  type LayoutChild,
+  type LayoutRelation,
+  packLayout,
+} from "../../src/zoom/layout";
 
 function child(id: string, rank: number, importance = 0.5): LayoutChild {
   return { id, sibling_rank: rank, importance };
@@ -113,5 +119,168 @@ describe("packLayout", () => {
     const r = packLayout([child("only", 1, 0.5)], 1).get("only")!;
     expect(r.w).toBeCloseTo(1, 6);
     expect(r.x).toBeCloseTo(0, 6);
+  });
+
+  it("widens a card whose name needs room, keeping importance as its height", () => {
+    const kids: LayoutChild[] = [
+      { ...child("short", 1, 0.5), name: "Core", kind: "layer" },
+      { ...child("long", 2, 0.5), name: "Command Line Interface", kind: "layer" },
+    ];
+    const r = packLayout(kids, 1);
+    const short = r.get("short")!;
+    const long = r.get("long")!;
+    expect(short.w / short.h).toBeCloseTo(CARD_ASPECT, 5);
+    expect(long.w / long.h).toBeCloseTo(labelAspect("Command Line Interface", "layer"), 5);
+    expect(long.h).toBeCloseTo(short.h, 9);
+  });
+
+  it("keeps the name-aware aspect depth-stable", () => {
+    const kids: LayoutChild[] = Array.from({ length: 5 }, (_, i) => ({
+      ...child(`n${i}`, i + 1, (i + 1) / 5),
+      name: "Infrastructure Provisioning",
+      kind: "group" as const,
+    }));
+    const want = labelAspect("Infrastructure Provisioning", "group");
+    for (const parentAspect of [1, 1.5, 3]) {
+      for (const r of packLayout(kids, parentAspect).values()) {
+        expect((r.w * parentAspect) / r.h).toBeCloseTo(want, 5);
+      }
+    }
+  });
+
+  it("packs to the parent's shape: a wide parent gets fewer, longer rows", () => {
+    const kids = Array.from({ length: 12 }, (_, i) => child(`n${i}`, i + 1, ((i * 5) % 12) / 12));
+    const rowsIn = (aspect: number): number =>
+      new Set([...packLayout(kids, aspect).values()].map((r) => Math.round((r.y + r.h / 2) * 1e6))).size;
+    expect(rowsIn(1.75)).toBeLessThan(rowsIn(1));
+  });
+
+  it("fills the parent: the cluster spans the binding axis and most of the other", () => {
+    const kids = Array.from({ length: 11 }, (_, i) => child(`n${i}`, i + 1, ((i * 7) % 11) / 11));
+    for (const aspect of [1, 1.75, 2.4]) {
+      const rects = [...packLayout(kids, aspect).values()];
+      const spanX = Math.max(...rects.map((r) => r.x + r.w)) - Math.min(...rects.map((r) => r.x));
+      const spanY = Math.max(...rects.map((r) => r.y + r.h)) - Math.min(...rects.map((r) => r.y));
+      expect(Math.max(spanX, spanY)).toBeCloseTo(1, 6);
+      expect(Math.min(spanX, spanY)).toBeGreaterThan(0.7);
+    }
+  });
+});
+
+const link = (source_id: string, target_id: string, edge_count = 1): LayoutRelation => ({
+  source_id,
+  target_id,
+  edge_count,
+});
+
+const midY = (r: Rect): number => r.y + r.h / 2;
+const midX = (r: Rect): number => r.x + r.w / 2;
+
+/** The packed rows, top to bottom, each as ids left to right. */
+function rowsOf(rects: Map<string, Rect>): string[][] {
+  const byY = new Map<number, [string, Rect][]>();
+  for (const [id, r] of rects) {
+    const k = Math.round(midY(r) * 1e6);
+    byY.set(k, [...(byY.get(k) ?? []), [id, r]]);
+  }
+  return [...byY.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, row]) => row.sort((a, b) => a[1].x - b[1].x).map(([id]) => id));
+}
+
+describe("packLayout with sibling relations", () => {
+  it("ranks callers above callees, whatever the importance order", () => {
+    // A chain a -> b -> c -> d -> e -> f, ranked the other way round.
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    const kids = ids.map((id, i) => child(id, ids.length - i, 0.5));
+    const rels = ids.slice(1).map((id, i) => link(ids[i]!, id));
+    const r = packLayout(kids, 1, {}, rels);
+    for (const rel of rels) {
+      expect(midY(r.get(rel.source_id)!)).toBeLessThanOrEqual(midY(r.get(rel.target_id)!) + 1e-9);
+    }
+    expect(midY(r.get("a")!)).toBeLessThan(midY(r.get("f")!));
+  });
+
+  it("breaks a cycle at its weakest link", () => {
+    const kids = [child("c", 1), child("b", 2), child("a", 3)];
+    const rels = [link("a", "b", 10), link("b", "c", 10), link("c", "a", 1)];
+    // A tall parent: one card per row, so the order reads top to bottom.
+    const r = packLayout(kids, 0.3, {}, rels);
+    expect(midY(r.get("a")!)).toBeLessThan(midY(r.get("b")!));
+    expect(midY(r.get("b")!)).toBeLessThan(midY(r.get("c")!));
+  });
+
+  it("orders a row to cut crossings: a callee sits under its caller", () => {
+    const kids = [child("p", 1), child("q", 2), child("x", 3), child("y", 4)];
+    const rels = [link("p", "y", 5), link("q", "x", 5)];
+    const r = packLayout(kids, CARD_ASPECT, {}, rels);
+    const rows = rowsOf(r);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows[0])).toEqual(new Set(["p", "q"]));
+    expect(midX(r.get("p")!) < midX(r.get("q")!)).toBe(midX(r.get("y")!) < midX(r.get("x")!));
+  });
+
+  it("keeps importance driving size and the rank order where links do not decide", () => {
+    const kids = [child("hi", 1, 0.9), child("lo", 2, 0.1), child("x", 3, 0.5), child("y", 4, 0.5)];
+    const r = packLayout(kids, 1, {}, [link("x", "y")]);
+    expect(area(r.get("hi")!)).toBeGreaterThan(area(r.get("lo")!));
+    // Linked children rank first; the unlinked follow in rank order.
+    expect(midY(r.get("x")!)).toBeLessThanOrEqual(midY(r.get("hi")!) + 1e-9);
+  });
+
+  it("ignores links to children outside the set and self links", () => {
+    const kids = Array.from({ length: 5 }, (_, i) => child(`n${i}`, i + 1, (i + 1) / 5));
+    const plain = packLayout(kids, 1.4);
+    const noisy = packLayout(kids, 1.4, {}, [link("n0", "gone", 9), link("n1", "n1", 9)]);
+    expect([...noisy.entries()]).toEqual([...plain.entries()]);
+  });
+
+  it("stays deterministic, inside the box and overlap-free with links", () => {
+    const kids = Array.from({ length: 14 }, (_, i) => child(`n${i}`, i + 1, ((i * 5) % 14) / 14));
+    const rels = Array.from({ length: 30 }, (_, i) => link(`n${(i * 3) % 14}`, `n${(i * 5 + 1) % 14}`, 1 + (i % 7)));
+    const a = packLayout(kids, 1.7, {}, rels);
+    expect([...packLayout(kids, 1.7, {}, rels).entries()]).toEqual([...a.entries()]);
+    const rects = [...a.values()];
+    for (const r of rects) {
+      expect(r.x).toBeGreaterThanOrEqual(-1e-9);
+      expect(r.x + r.w).toBeLessThanOrEqual(1 + 1e-9);
+      expect(r.y + r.h).toBeLessThanOrEqual(1 + 1e-9);
+    }
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) expect(overlaps(rects[i]!, rects[j]!)).toBe(false);
+    }
+  });
+});
+
+describe("setting children aside", () => {
+  const aside = new Set(["tests"]);
+
+  it("puts them in a column on the right and ranks without their links", () => {
+    const kids = [child("tests", 1, 1), child("a", 2), child("b", 3), child("c", 4)];
+    const rels = [
+      link("tests", "a", 100),
+      link("tests", "b", 100),
+      link("b", "tests", 100),
+      link("a", "b", 3),
+      link("b", "c", 3),
+    ];
+    const parentAspect = 1.8;
+    const r = packLayout(kids, parentAspect, {}, rels, aside);
+    const test = r.get("tests")!;
+    for (const id of ["a", "b", "c"]) {
+      expect(r.get(id)!.x + r.get(id)!.w).toBeLessThan(test.x);
+    }
+    expect(test.x + test.w).toBeLessThanOrEqual(1 + 1e-9);
+    expect(test.y).toBeCloseTo(Math.min(...["a", "b", "c"].map((id) => r.get(id)!.y)), 9);
+    expect(midY(r.get("a")!)).toBeLessThanOrEqual(midY(r.get("b")!) + 1e-9);
+    expect(midY(r.get("b")!)).toBeLessThanOrEqual(midY(r.get("c")!) + 1e-9);
+    // Both columns keep the on-screen card aspect once composeRect stretches them.
+    for (const rect of r.values()) expect((rect.w * parentAspect) / rect.h).toBeCloseTo(CARD_ASPECT, 5);
+  });
+
+  it("packs a lone set-aside child like any other", () => {
+    expect([...packLayout([child("tests", 1)], 1.5, {}, [], aside).entries()]).toEqual([
+      ...packLayout([child("tests", 1)], 1.5).entries(),
+    ]);
   });
 });

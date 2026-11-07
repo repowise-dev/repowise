@@ -68,7 +68,7 @@ def wired(monkeypatch, tmp_path):
             repo_path=repo_path,
         )
 
-    monkeypatch.setattr("repowise.server.chat_tools.init_tool_state", _fake_init)
+    monkeypatch.setattr("repowise.server.mcp_server._state.init_tool_state", _fake_init)
     return engine, store, published, tmp_path
 
 
@@ -436,3 +436,17 @@ def test_a_bridged_call_is_bounded_like_an_mcp_one(wired):
     assert result["truncated"] is True
     assert len(result["results"]) < 80
     assert result["_meta"]["omitted"]["refs"]
+
+
+def test_publishing_tool_state_does_not_load_the_http_stack():
+    """A CLI tool call wires state per process; FastAPI costs about half a second."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; from repowise.server.mcp_server._state import init_tool_state; "
+        "init_tool_state(None, None, None); "
+        "assert 'fastapi' not in sys.modules, 'fastapi imported'"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

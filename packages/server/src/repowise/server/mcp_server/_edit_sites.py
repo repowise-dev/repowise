@@ -38,6 +38,9 @@ MAX_TEXT_CHARS = 160
 # Plain mentions kept per file when a collector can hold the rest: a mock-heavy
 # test can name a symbol hundreds of times and bury its real callers.
 MAX_REFERENCES_PER_FILE = 3
+# A set this small comes back whole: the per-file cuts only keep one busy file
+# from crowding out the rest of a large set.
+SMALL_SET_LINES = 20
 # Ceiling on files read per call; past it the set is reported incomplete
 # rather than read without bound.
 MAX_FILES = 300
@@ -114,13 +117,62 @@ def _import_lines(lines: list[str], start: re.Pattern[str] = _IMPORT_START) -> s
     return out
 
 
+# The module a statement imports from: a quoted path, a Python ``from``
+# module, or a bare ``import`` / ``use`` target.
+_IMPORT_SOURCE = re.compile(
+    r"""\bfrom\s+["'`]([^"'`\n]+)["'`]|\brequire\s*\(\s*["'`]([^"'`\n]+)["'`]"""
+    r"""|^\s*from\s+([\w.]+)\s+import\b|^\s*import\s+["'`]([^"'`\n]+)["'`]"""
+)
+
+
+#: How far from an import site its statement's head and module line are looked for.
+_IMPORT_SCAN_LINES = 200
+
+
+def _import_source(lines: list[str], n: int) -> str | None:
+    """The module the multi-line import statement holding line *n* names.
+
+    ``None`` when line *n* names it already (the reader sees it) or the
+    statement names no module.
+    """
+    if _IMPORT_SOURCE.search(lines[n - 1]):
+        return None
+    floor = max(-1, n - _IMPORT_SCAN_LINES)
+    head = next((i for i in range(n - 1, floor, -1) if _IMPORT_START.match(lines[i])), None)
+    return None if head is None else _statement_module(lines, head, n)
+
+
+def _statement_module(lines: list[str], head: int, n: int) -> str | None:
+    """The module named by the statement opening at index *head* and holding line *n*."""
+    depth = 0
+    for i in range(head, min(len(lines), n + _IMPORT_SCAN_LINES)):
+        if i > head and i >= n and _IMPORT_START.match(lines[i]):
+            return None  # the next statement: an unbalanced bracket never closed this one
+        if m := _IMPORT_SOURCE.search(lines[i]):
+            return next(g for g in m.groups() if g)
+        depth += sum(lines[i].count(c) for c in "({[") - sum(lines[i].count(c) for c in ")}]")
+        if depth <= 0 and i >= n - 1:
+            return None
+    return None
+
+
+def _site(rel: str, n: int, kind: str, lines: list[str]) -> dict[str, Any]:
+    """One edit site; a wrapped import line also names the module it imports from."""
+    site: dict[str, Any] = {"path": rel, "line": n, "kind": kind, "text": lines[n - 1].strip()[:MAX_TEXT_CHARS]}
+    if kind == "import" and (source := _import_source(lines, n)):
+        site["from"] = source
+    return site
+
+
 def _read_lines(root: Path, rel: str) -> list[str] | None:
     try:
-        if (root / rel).stat().st_size > _MAX_FILE_BYTES:
+        abs_path = (root / rel).resolve()
+        abs_path.relative_to(root.resolve())
+        if abs_path.stat().st_size > _MAX_FILE_BYTES:
             return None
-    except OSError:
+    except (OSError, ValueError):
         return None
-    text = read_repo_file_text(root, rel)
+    text = read_repo_file_text(root, rel, allow_extracted=False)
     if text is None:
         return None
     # Only a newline ends a line: splitlines() also splits on form feeds and
@@ -165,8 +217,9 @@ def _renames(
         aliases.update(found)
         if n in imports:
             imported.update(found)
-    # ``name as default`` is a default export, not a rename.
+    # ``name as default`` is a default export, and ``name as name`` keeps the name.
     aliases.discard("default")
+    aliases.discard(name)
     return aliases, aliases & imported
 
 
@@ -412,7 +465,7 @@ def _scan(
                 kind = "call"
             else:
                 kind = "reference"
-            sites.append({"path": rel, "line": n, "kind": kind, "text": text.strip()[:MAX_TEXT_CHARS]})
+            sites.append(_site(rel, n, kind, lines))
     return sites, unreadable, stale, renamed, is_default, python_aliases, packages
 
 
@@ -448,8 +501,15 @@ def _aliases_leave(rel: str, lines: list[str], aliases: set[str], imports: set[i
     return False
 
 
+# Served after the code sites: other symbols' definitions, then documentation.
+_TRAILING_KINDS = {"same_name": 1, "doc": 2}
+
+
 def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*sites* with plain references past the per-file cap dropped; other kinds always stay."""
+    """*sites* with plain references past the per-file cap dropped; other kinds
+    always stay, and a set of at most ``SMALL_SET_LINES`` rows stays whole."""
+    if len(sites) <= SMALL_SET_LINES:
+        return sites
     seen: Counter[str] = Counter()
     kept: list[dict[str, Any]] = []
     for site in sites:
@@ -547,7 +607,9 @@ def _jvm_package_files(
 
 def _live_definition(root: Path, node: GraphNode, name: str, language: str) -> tuple[int, int]:
     """*node*'s bounds re-parsed from its edited file; ``(0, 0)`` when it is not found."""
-    text = read_repo_file_text(root, node.file_path)
+    text = read_repo_file_text(root, node.file_path, allow_extracted=False)
+    if text is None:
+        return (0, 0)
     row = WikiSymbol(
         file_path=node.file_path,
         symbol_id=node.node_id,
@@ -767,8 +829,6 @@ def _scope_reasons(
         reasons.append(f"renamed on import or export: {', '.join(sorted(scan.renamed_in)[:3])}")
     if scan.is_default:
         reasons.append("default export: importers may rename it")
-    if node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1:
-        reasons.append("member: calls through untyped receivers are not scanned")
     touched = sorted({s["path"] for s in scan.sites if s["path"] in unindexed})
     if touched:
         reasons.append(f"unindexed edits name it: {', '.join(touched[:3])}")
@@ -776,6 +836,42 @@ def _scope_reasons(
     if not has_definition and node.file_path not in scan.unreadable:
         reasons.append("definition not found at its indexed line")
     return reasons
+
+
+def _language_family(language: str) -> tuple[str, ...]:
+    """The languages whose files can call a member *language* defines."""
+    if language in ("typescript", "javascript"):
+        return ("typescript", "javascript")
+    return _JVM if language in _JVM else (language,)
+
+
+def _member_reasons(
+    root: Path, node: GraphNode, name: str, language: str, scanned: set[str]
+) -> list[str]:
+    """Why a member's set may miss calls through receivers of unknown type.
+
+    The scan reads importers only. A file that never imports the definition
+    can still reach the member through a parameter, an attribute, an
+    inherited bare call or a destructuring, so any file of its language
+    family outside the scan that names it as a word may hold another site.
+    """
+    if node.kind not in _MEMBER_KINDS and node.node_id.count("::") <= 1:
+        return []
+    from repowise.server.mcp_server._line_hits import _files_holding
+
+    exts = REGISTRY.extensions_for(_language_family(language))
+    held = _files_holding(root, name) if exts else None
+    if held is None:
+        return ["member: calls through untyped receivers are not scanned"]
+    word = _word(name)
+    for rel in sorted(held):
+        if rel in scanned or PurePosixPath(rel).suffix not in exts:
+            continue
+        lines = _read_lines(root, rel)
+        if lines is None or any(word.search(t) for t in lines):
+            # The first such file is enough to say why, and keeps the reason short.
+            return [f"member: an unscanned file names it: {rel}"]
+    return []
 
 
 def _served_sites(
@@ -788,6 +884,7 @@ def _served_sites(
     sites.sort(
         key=lambda s: (
             s["kind"] != "definition",
+            _TRAILING_KINDS.get(s["kind"], 0),
             is_test_related_path(s["path"]),
             s["path"],
             s["line"],
@@ -831,12 +928,15 @@ async def reference_edit_set(
     repo_root: str | Path,
     node: GraphNode,
     collector: OmissionCollector | None = None,
+    *,
+    wider: bool = False,
 ) -> dict[str, Any]:
     """Every live site naming *node*, classified, with a completeness verdict.
 
     Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
     plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
-    definition | import | call | reference. With a *collector*, plain
+    definition | import | call | reference, and with *wider* also reexport |
+    same_name | doc (see :mod:`._edit_sites_wider`). With a *collector*, plain
     references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
     ``sites_omitted_by_file`` counts every row not shown.
     """
@@ -872,4 +972,34 @@ async def reference_edit_set(
     scanned = set(ordered) - set(scan.unreadable)
     foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
     reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
+    reasons += await asyncio.to_thread(
+        _member_reasons, root, node, name, language, scanned | set(unindexed)
+    )
+    if wider:
+        reasons += await _widen(
+            session, repo_id, root, node, name, ordered + unindexed, scan.sites
+        )
     return _served_sites(scan.sites, reasons, node, collector)
+
+
+async def _widen(
+    session: AsyncSession,
+    repo_id: str,
+    root: Path,
+    node: GraphNode,
+    name: str,
+    files: list[str],
+    sites: list[dict[str, Any]],
+) -> list[str]:
+    """Add re-export, same-name and doc sites to *sites*; why the docs may be short."""
+    from repowise.server.mcp_server import _edit_sites_wider as wide
+
+    seen = {(s["path"], s["line"]) for s in sites}
+    found = await asyncio.to_thread(wide.reexport_sites, root, files, node.file_path)
+    found += await wide.same_name_sites(session, repo_id, root, node, name)
+    docs, reasons = await asyncio.to_thread(wide.doc_sites, root, name)
+    for site in found + docs:
+        if (site["path"], site["line"]) not in seen:
+            seen.add((site["path"], site["line"]))
+            sites.append(site)
+    return reasons

@@ -8,6 +8,7 @@ from typing import Any
 
 from repowise.core.analysis.health.biomarkers.function_hotspot import FunctionHotspotDetector
 from repowise.core.analysis.health.biomarkers.prior_defect import PriorDefectDetector
+from repowise.core.analysis.health.gain import removal_gain
 from repowise.core.analysis.health.queue.eligibility import DeadSpan, dead_target
 from repowise.core.analysis.health.queue.order import LEVEL_RANK
 from repowise.core.analysis.health.queue.value import (
@@ -68,8 +69,10 @@ class _Files:
         dead: Mapping[str, list[DeadSpan]] | None = None,
         function_changes: Mapping[str, int] | None = None,
         blame_skipped: Iterable[str] = (),
+        findings: Mapping[str, list[Any]] | None = None,
     ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
+        self.findings = findings or {}
         self.function_changes = function_changes
         self.blame_skipped = frozenset(blame_skipped)
         self.functions = functions
@@ -95,6 +98,15 @@ class _Files:
                 if field(f, "biomarker_type") == FunctionHotspotDetector.name}
             for p, rows in history.items()
         }
+
+    def gain(self, finding: Any) -> float:
+        """What fixing *finding* recovers: its file rescored without it.
+
+        Over the file's shown findings, so a hidden or triaged marker sharing
+        its category is not counted; the error is that marker's slice.
+        """
+        path = field(finding, "file_path")
+        return removal_gain(self.findings.get(path, [finding]), [(finding, 1.0)])
 
     def is_test(self, path: str) -> bool | None:
         """The stored flag; ``None`` when the file has no metric row or flag."""

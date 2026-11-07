@@ -14,7 +14,7 @@ from .types import CostEstimate, CostRange, PageTypePlan
 # repo indexed before this change carries historical LLM averages for these
 # types that would otherwise price free pages as if a model still wrote them.
 STRUCTURAL_PAGE_TYPES = frozenset(
-    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
+    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page"}
 )
 
 

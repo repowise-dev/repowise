@@ -44,19 +44,24 @@ def test_warning_points_model_pages_at_generate_stale() -> None:
     assert "Cascade budget of 50 pages was reached. 2752 dependent files were skipped" in out
     assert "1235 structural pages (file / cycle) refresh on the next repowise update" in out
     assert "122 pages written by a model: run repowise generate --stale" in out
-    assert "or pass `--cascade-budget 2802` to regenerate everything in this run." in out
+    assert "or pass `--cascade-budget 2802` on the update that brings these changes." in out
+    assert "in this run" not in out
+    assert "to regenerate" not in out
 
 
 def test_warning_without_model_pages_skips_generate_hint() -> None:
     out = _render(50, 10, (0, 10))
     assert "generate --stale" not in out
-    assert "Pass `--cascade-budget 60` to regenerate them in this run." in out
+    assert "Pass `--cascade-budget 60` on the update that brings these changes." in out
+    assert "in this run" not in out
+    assert "to regenerate" not in out
 
 
 def test_unreadable_store_falls_back_to_the_unsplit_hint() -> None:
     out = _render(50, 10, None)
-    assert "Pass `--cascade-budget 60` to regenerate them all." in out
+    assert "Pass `--cascade-budget 60` on the update that brings these changes." in out
     assert "structural" not in out
+    assert "to regenerate" not in out
 
 
 def test_loader_reads_the_split_from_the_store(tmp_path: Path) -> None:

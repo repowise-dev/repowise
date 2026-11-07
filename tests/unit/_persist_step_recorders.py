@@ -116,7 +116,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
 
     rec.patch(persist, "reconcile_full_index_scope", ret=[])
     rec.patch(persist, "tombstone_pages_outside_generation", ret=[])
-    rec.patch(persist, "sweep_retired_pages", ret=[SWEPT])
+    rec.patch(persist, "sweep_store_hygiene", ret=[SWEPT])
     rec.patch(persist, "sweep_absent_cycle_pages", ret=[])
     rec.patch(persist, "sweep_absent_symbol_spotlights", ret=[])
     rec.patch(persist, "sweep_deselected_pages", ret=[])

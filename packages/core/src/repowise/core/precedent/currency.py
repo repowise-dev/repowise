@@ -217,6 +217,10 @@ def short(sha: str) -> str:
     return sha[:12]
 
 
+#: How an episode sentence ends when its git query failed.
+GIT_UNASKED = "git could not be asked"
+
+
 @dataclass(frozen=True)
 class Currency:
     """What git says about an episode's claim, and whether it vouches for it.
@@ -281,7 +285,7 @@ def episode_currency(row: dict, *, root: Path) -> Currency:
         )
         if changed is None:
             return Currency(
-                f"recorded {recorded} at {short(birth_commit)}; git could not be asked", False
+                f"recorded {recorded} at {short(birth_commit)}; {GIT_UNASKED}", False
             )
         if changed > 0:
             plural = "commit has" if changed == 1 else "commits have"

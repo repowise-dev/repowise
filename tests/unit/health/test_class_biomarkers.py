@@ -229,6 +229,53 @@ def test_god_class_requires_size_and_method_count():
     assert GodClassDetector().detect(_ctx([cls])) == []
 
 
+def _god(name: str, *, init: bool = False) -> ClassComplexity:
+    methods = _brainy_methods() + ([_fn("__init__")] if init else [])
+    return _cls(name, method_count=len(methods), total_nloc=320, methods=methods)
+
+
+def test_god_class_skips_stateless_python_mixin():
+    assert GodClassDetector().detect(_ctx([_god("ResolveMixin")])) == []
+
+
+@pytest.mark.parametrize(("name", "init"), [("StatefulMixin", True), ("Resolver", False)])
+def test_god_class_still_flags_stateful_mixin_and_plain_class(name: str, init: bool):
+    assert len(GodClassDetector().detect(_ctx([_god(name, init=init)]))) == 1
+
+
+def test_god_class_mixin_rule_is_python_only():
+    ctx = _ctx([_god("ResolveMixin")])
+    ctx.language = "typescript"
+    assert len(GodClassDetector().detect(ctx)) == 1
+
+
+def test_god_class_skips_partial_type_split_across_files():
+    # ``Encoder`` stands for a partial whose only other part is source
+    # generated: no co-fragment edge, so the file holds the whole class.
+    ctx = _ctx([_god("StdAdoDelegate"), _god("Encoder")])
+    ctx.split_partial_types = frozenset({"StdAdoDelegate"})
+    assert [r.function_name for r in GodClassDetector().detect(ctx)] == ["Encoder"]
+
+
+def test_split_partial_types_reads_partial_class_edges():
+    import networkx as nx
+
+    from repowise.core.analysis.health.refactoring.graph_signals import (
+        build_split_partial_types,
+    )
+
+    g = nx.DiGraph()
+    # The reverse direction already had a plain import, so the linker added one edge.
+    g.add_edge("A.Jobs.cs", "A.cs", edge_type="imports", imported_names=["X"])
+    g.add_edge("A.cs", "A.Jobs.cs", edge_type="imports", imported_names=["A"], hint_source="partial_class")
+    g.add_edge("A.cs", "B.cs", edge_type="imports", imported_names=["B"])
+    assert build_split_partial_types(g) == {
+        "A.cs": frozenset({"A"}),
+        "A.Jobs.cs": frozenset({"A"}),
+    }
+    assert build_split_partial_types(None) == {}
+
+
 def test_god_class_critical_severity():
     cls = _cls("Behemoth", method_count=26, total_nloc=450, methods=_brainy_methods())
     out = GodClassDetector().detect(_ctx([cls]))

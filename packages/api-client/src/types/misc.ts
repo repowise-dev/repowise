@@ -42,7 +42,7 @@ export interface ProviderInfo {
   /** What on this machine makes it usable: a signed-in agent CLI (only with
    *  `detect`), a key in the env or the repo's `.repowise/.env`, or a key
    *  stored on this server. */
-  detected?: "signed_in" | "env" | "saved" | null;
+  detected?: "signed_in" | "installed" | "env" | "saved" | null;
 }
 
 export interface EmbedderInfo {

@@ -20,6 +20,7 @@ import click
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
+    config_fingerprint,
     console,
     get_head_commit,
     load_config,
@@ -29,6 +30,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     resolve_repo_path,
     run_async,
+    save_config_partial,
     save_state,
 )
 from repowise.cli.providers import model_run_embedder
@@ -510,6 +512,14 @@ def _write_state(
     all_written = outcome.remaining_template_pages == 0
     if all_written and resolve_docs_mode(state) != "llm":
         state.update(docs_mode_state_fields("llm"))
+        cfg = load_config(repo_path)
+        if not cfg.get("provider"):
+            save_config_partial(
+                repo_path,
+                provider=provider.provider_name,
+                model=provider.model_name,
+            )
+            state["config_fingerprint"] = config_fingerprint(repo_path)
     provider_block = {
         "name": provider.provider_name,
         "model": provider.model_name,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -12,6 +13,39 @@ from repowise.server.mcp_server._budget import DEFAULT_RESPONSE_CHARS
 
 #: Same threshold get_symbol uses to outline a container instead of inlining it.
 _FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
+
+#: The elision marker ``build_skeleton`` writes for a folded run of lines.
+_FOLD_RE = re.compile(r"^[ \t]*\.\.\. \d+ lines \((\d+)-(\d+)\)$", re.M)
+
+
+def _document_outline(source: str, file_path: str) -> dict[str, Any] | None:
+    """A document over the skeleton budget as its headings with line numbers.
+
+    ``None`` for a code file, a document within the budget (served whole), or
+    one without headings.
+    """
+    from repowise.core.distill.budget import estimate_tokens
+    from repowise.core.distill.skeleton import DEFAULT_TOKEN_BUDGET
+    from repowise.server.mcp_server.tool_context.preview import heading_rows
+
+    full_tokens = estimate_tokens(source)
+    rows = heading_rows(source, file_path) if full_tokens > DEFAULT_TOKEN_BUDGET else None
+    if not rows:
+        return None
+    text = "\n".join(f"{n}: {title}" for n, title in rows)
+    tokens = estimate_tokens(text)
+    return {
+        "mode": "outline",
+        "tokens": tokens,
+        "full_tokens": full_tokens,
+        "pct_of_full": round(100 * tokens / full_tokens, 1),
+        "text": text,
+        "verified": True,
+        "note": (
+            "Document over the skeleton budget: its headings with line numbers. "
+            f"Read a section with get_symbol('{file_path}:<start>-<end>')."
+        ),
+    }
 
 
 async def _resolve_skeleton(
@@ -73,6 +107,13 @@ async def _resolve_skeleton(
     abs_path = (repo_path / file_target).resolve()
     try:
         abs_path.relative_to(repo_path.resolve())
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
+        if is_extracted_document(repo_path / file_target):
+            result_data["skeleton"] = {
+                "error": "Source skeletons are not available for extracted documents."
+            }
+            return
         source = abs_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         result_data["skeleton"] = {
@@ -115,6 +156,9 @@ async def _resolve_skeleton(
         mode=mode,
         hotspot=bool(result_data.get("hotspot")),
     )
+    if result.mode == "raw" and (outline := _document_outline(source, file_target)):
+        result_data["skeleton"] = outline
+        return
     result_data["skeleton"] = {
         "mode": result.mode,
         "tokens": result.skeleton_tokens,
@@ -148,10 +192,13 @@ async def _resolve_skeleton(
             "No usable symbol bounds for this file — returned source as-is."
         )
     elif result.pct_of_full > 40.0 and not focused:
-        # A skeleton this close to the source makes a Read nearly as cheap;
-        # a focused skeleton is not the case (it is the symbol plus a file map).
+        # A focused skeleton is not "mostly full": it is the symbol plus a file map.
         result_data["skeleton"]["mostly_full"] = True
         result_data["skeleton"]["note"] = (
-            f"Skeleton is {round(result.pct_of_full, 1)}% of the full file — "
-            "a direct Read costs little more."
+            f"Skeleton is {round(result.pct_of_full, 1)}% of the full file."
+        )
+    if fold := _FOLD_RE.search(result.text):
+        result_data["skeleton"]["fold_hint"] = (
+            f"get_symbol('{file_target}:{fold[1]}-{fold[2]}') returns the "
+            f"'({fold[1]}-{fold[2]})' fold; every fold reads the same way."
         )

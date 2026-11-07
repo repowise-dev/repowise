@@ -237,7 +237,10 @@ def _handle_edit_post(
     skeleton_warning = _edit_from_skeleton_notice(rel, state)
     if skeleton_warning:
         notices.append(skeleton_warning)
-    if with_decisions:
+    from .fast_lookup import index_locked
+
+    # A locked index would fail both lookups, each after its own busy waits.
+    if with_decisions and not index_locked(repo_path):
         from .decision_inject import _edit_decision_notice, _edit_fix_history_notice
 
         for emit in (

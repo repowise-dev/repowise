@@ -98,7 +98,7 @@ your-repo/
 ```
 
 Outside the tree, `init` also registers the MCP server with Claude Code
-(`~/.claude/settings.json`) and Claude Desktop, adds the Claude Code
+(`~/.claude.json`) and Claude Desktop, adds the Claude Code
 PostToolUse and SessionStart hooks, and installs a git post-commit hook that
 runs `repowise update`.
 

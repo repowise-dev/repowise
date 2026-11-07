@@ -161,6 +161,18 @@ def test_verify_quote_unverified_without_source():
     assert verify_quote("anything", "") == "unverified"
 
 
+def test_verify_quote_ignores_punctuation_on_tokens():
+    """A trailing period or a dropped apostrophe is not a different word."""
+    src = "dont wanna do the sqlite rewrite like mentioned"
+    assert verify_quote("Do not implement the SQLite rewrite.", src) == "fuzzy"
+    assert verify_quote("Don't do the SQLite rewrite.", src) == "fuzzy"
+
+
+def test_verify_quote_still_refuses_a_fabricated_pair_with_punctuation():
+    src = "dont wanna do the sqlite rewrite like mentioned"
+    assert verify_quote("Migrate billing to Kafka, for event-sourcing.", src) == "unverified"
+
+
 # ---------------------------------------------------------------------------
 # Substring gate
 # ---------------------------------------------------------------------------

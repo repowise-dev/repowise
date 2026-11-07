@@ -83,15 +83,16 @@ repowise mcp --all                             # every tool usable in this mode
 
 Every tool returns JSON with a `_meta` envelope ([fields](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope)). Check:
 
-- `stale_warning`: run `repowise update` (or `repowise update --working-tree` when `working_tree_dirty` is set) before trusting file-level detail. Absent means current.
+- `stale_warning`: the commit the facts describe and what differs from it; read the files this response served from disk. Absent means current.
 - `complete`: content verified against the live file. Do not re-read it.
-- `state`: `degraded`, `partial` or `truncated`. A degraded empty result is a failed read, not an empty repository.
+- `degraded`: the parts of the server that failed for this call. A degraded empty result is a failed read, not an empty repository.
 - `get_answer`'s top-level `confidence` is its one trust signal.
-- Diagnostics such as `timing_ms` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
+- Empty fields, `null` and a `false` status flag are not sent; absence means nothing to report.
+- Diagnostics (`timing_ms`, index commits and age, budget accounting) ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
 
 ### Reversible truncation: `_meta.omitted`
 
-Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. Capped lists keep `*_total` counts. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
+Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. A list that was cut carries `<key>_total`, its size before the cut. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
 
 ### Unrecognised arguments: `ignored_arguments`
 
@@ -155,7 +156,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
-| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
+| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
 | `repo` | string | default repo | `"all"` returns an error |
@@ -163,7 +164,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 Target kinds:
 
 - `path::Symbol`: a miss falls back to the file's card.
-- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`). Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
+- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`, and `docs.files_all` naming the opt-in when more exist). `include=["files"]` lists every file under it with `has_test` and the tests that cover each, for questions like "which files here have no test". Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
 - `component:<name>`: declared context and rolled-up facts, from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or derived.
 - `change:<id>` (`change:pr-123` or a commit sha): one [Change Record](../reference/CLI_REFERENCE.md#repowise-changes).
 - `package:<name>` (`package:requests`, `package:npm:lodash`): where a package is imported ([PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md)).
@@ -257,6 +258,7 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 | `baseline` | int | `200` | Recent commits sampled for percentiles; `0` disables |
 | `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `evidence` (the record `repowise changes show` prints), `tests` |
 | `finding_id` | string | none | Expand one `health_delta` finding |
+| `per_commit` | bool | `false` | With a range, one compact row per commit (up to 30) in place of the review |
 | `repo` | string | default repo | `"all"` not supported |
 
 `include_paths` and `exclude_patterns` scope the score, health delta and per-file blocks; `impacted_tests` still selects over the whole change, less repowise's own output.
@@ -267,6 +269,7 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 get_change_risk()
 get_change_risk(revspec="main..HEAD", exclude_patterns=["tests/"])
 get_change_risk(revspec="main..HEAD", finding_id="chf_27a13be11e7ee33f")
+get_change_risk(revspec="main..HEAD", per_commit=True)
 ```
 
 ---
@@ -341,7 +344,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | `performance_confidence` | string | none | `high`, `medium`, `low` |
 | `performance_actionability` | string | none | `plan_ready`, `advisory`, `investigate`, `expected` |
 | `performance_sort` | string | `rank` | `rank`, `leverage`, `observations` |
-| `scope` | string | `"all"` | `production` drops test files from every figure |
+| `scope` | string | `"all"` | `production` drops test, tooling, vendored and generated files from every figure |
 | `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
 | `repo` | string | default repo | `"all"` not supported |
 

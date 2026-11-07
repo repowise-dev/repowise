@@ -16,7 +16,7 @@ from typing import Any
 
 from repowise.core.cancellation import check_cancelled
 
-from ..source_reader import disk_source_reader
+from ..source_reader import reads_working_tree
 from .detector import (
     DEFAULT_MIN_LINES,
     DEFAULT_WINDOW_TOKENS,
@@ -36,6 +36,7 @@ class _FileInfo:
     path: str
     abs_path: str
     language: str
+    is_test: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,7 @@ class _ParsedFile:
 
 def _worker(
     sender: Any,
-    files: list[tuple[str, str, str]],
+    files: list[tuple[str, str, str, bool | None]],
     git_meta_map: dict[str, dict[str, Any]],
     window_tokens: int,
     min_lines: int,
@@ -89,7 +90,7 @@ def detect_clones_with_isolation(
 ) -> DuplicationReport:
     """Detect clones, isolating repository-scale transient allocations.
 
-    Only the three file-info strings used by the detector cross the process
+    Only the file-info fields the detector reads cross the process
     boundary. The full parsed AST/model graph remains in the parent, and the
     child returns the comparatively small final report.
 
@@ -104,7 +105,7 @@ def detect_clones_with_isolation(
     # revision's, which that reader documents as the thing it must not do.
     # Those callers (the base side of a diff, a historical commit) analyse a
     # changed-file set, not a repository, so the bound is not what they need.
-    reader_is_working_tree = source_reader is None or source_reader is disk_source_reader
+    reader_is_working_tree = reads_working_tree(source_reader)
 
     if len(parsed_files) < isolation_file_threshold or not reader_is_working_tree:
         return detect_clones(
@@ -119,7 +120,12 @@ def detect_clones_with_isolation(
         )
 
     files = [
-        (pf.file_info.path, str(pf.file_info.abs_path), pf.file_info.language)
+        (
+            pf.file_info.path,
+            str(pf.file_info.abs_path),
+            pf.file_info.language,
+            getattr(pf.file_info, "is_test", None),
+        )
         for pf in parsed_files
     ]
     # Clone weighting only reads this field. Avoid serializing the much larger

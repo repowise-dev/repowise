@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { useTranslations } from "next-intl";
 import type { AreaRailLabels } from "@repowise-dev/ui/health";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 /** The area rail's copy from the catalog. */
 export function useAreaRailLabels(): AreaRailLabels {
@@ -19,7 +20,7 @@ export function useAreaRailLabels(): AreaRailLabels {
       heldOutHint: t("heldOutHint"),
       scopeWith: (names) => t("scopeWith", { names }),
       originName: (origin) => (t.has(`origin.${origin}`) ? t(`origin.${origin}`) : origin.replace(/_/g, " ")),
-      showHeld: (name, count) => t("showHeld", { name, count: count.toLocaleString() }),
+      showHeld: (name, count) => t("showHeld", { name, count: formatNumber(count) }),
       hideHeld: (name) => t("hideHeld", { name }),
       hotspotChip: (count, health) =>
         health == null ? t("hotspotChip", { count }) : t("hotspotChipScored", { count, health }),

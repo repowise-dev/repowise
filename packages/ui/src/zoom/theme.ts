@@ -37,12 +37,15 @@ export interface ZoomPalette {
    */
   paperWash: string;
   nodeText: string;
+  /** Card body text (summaries, chips): quieter than the title, firmer than muted. */
+  textSecondary: string;
   textMuted: string;
   accent: string;
   /** Neutral connector hue (edges are intentionally low-emphasis). */
   edge: string;
   /** Slightly stronger neutral for tightly-coupled relations. */
   edgeStrong: string;
+  /** Role icon inks: hotspot flame, entry-point triangle, dead-code circle-slash. */
   hotspot: string;
   dead: string;
   entry: string;
@@ -71,13 +74,15 @@ const TOKEN_SPEC: Record<keyof ZoomPalette, string> = {
   rule: "--color-zoom-card-rule",
   paperWash: "--color-zoom-card-paper-wash",
   nodeText: "--color-zoom-card-text",
+  textSecondary: "--color-text-secondary",
   textMuted: "--color-text-muted",
   accent: "--color-accent-primary",
   edge: "--color-zoom-edge",
   edgeStrong: "--color-zoom-edge-strong",
   hotspot: "--color-risk-high",
-  dead: "--color-stale",
-  entry: "--color-success",
+  dead: "--color-text-muted",
+  // Not `--color-success`: green belongs to the health score in the same corner.
+  entry: "--color-accent-secondary",
   flow: "--color-accent-secondary",
   // Same tokens `healthInk` maps to, so a zoom card, the detail panel beside
   // it and a /files treemap tile agree on the colour of one band.
@@ -101,13 +106,14 @@ const FALLBACK: ZoomPalette = {
   rule: "transparent",
   paperWash: "rgba(255,255,255,0.82)",
   nodeText: "black",
+  textSecondary: "dimgray",
   textMuted: "gray",
   accent: "blue",
   edge: "silver",
   edgeStrong: "gray",
   hotspot: "crimson",
   dead: "gray",
-  entry: "green",
+  entry: "teal",
   flow: "teal",
   healthAtRisk: "crimson",
   healthNeedsWork: "orange",

@@ -101,6 +101,14 @@ def test_brain_method_is_advisory():
     assert deductions[2] == 0.0
 
 
+def test_repeated_nesting_is_advisory():
+    """Low precision in a blind study; still detected, never deducted."""
+    assert is_advisory("repeated_nesting")
+    scores, deductions = score_file([_result("repeated_nesting", Severity.CRITICAL)])
+    assert scores["defect"] == scores["maintainability"] == 10.0
+    assert deductions == [0.0]
+
+
 def test_advisory_findings_do_not_dilute_a_real_deduction():
     """Adding an advisory finding to a scored one leaves the score alone."""
     scored_only, _ = score_file([_result("low_cohesion")])

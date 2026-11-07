@@ -60,6 +60,8 @@ class InitOptions:
     no_cost_tracking: bool
     verbose: bool
     progress: str
+    # Raw ``GLOB=PCT`` rules, validated by the option callback.
+    folder_coverage_rules: tuple[str, ...] = ()
 
 
 @dataclass

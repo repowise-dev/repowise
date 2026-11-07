@@ -49,6 +49,25 @@ def model_command(scope: Mapping[str, Any] | None) -> str:
     """The command that has a model write *scope*'s documentation, for its mode."""
     return upgrade_command(scope) or MODEL_COMMAND
 
+
+def answers_upgrade_line(scope: Mapping[str, Any] | None) -> str | None:
+    """How an index with no model-written prose gets answers and docs; None once it has them.
+
+    The one wording the MCP server and the CLI share. The key is what lets
+    ``get_answer`` synthesize, and the server reads it at start, hence the restart.
+    """
+    fast = upgrade_command(scope)
+    if fast is None and not (
+        isinstance(scope, Mapping) and scope.get("content_provenance") == "template"
+    ):
+        return None
+    command = fast or MODEL_COMMAND
+    no_reindex = "" if fast else " (one command, no re-index)"
+    return (
+        f"answers and docs: set a provider key, run `{command}`{no_reindex}, "
+        "then restart the MCP server"
+    )
+
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
 # re-parses config.yaml. Keyed on mtime+size so an index rebuild invalidates it.
@@ -438,15 +457,14 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def compact_index_scope(
-    scope: Mapping[str, Any] | None, *, full_hint: str = 'get_overview(include=["scope"])'
-) -> dict[str, Any] | None:
+def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """The routine-response projection of a canonical scope.
 
     Keeps what changes how an answer should be read — the run mode, where the
     prose came from, how much git there is, and whether the index is whole —
-    plus a fingerprint identifying the full object and the call that returns
-    it. Everything else is a diagnostic, and a diagnostic that rides on every
+    plus a fingerprint identifying the full object. The call that returns it
+    (``get_overview(include=["scope"])``) is documented, not repeated on every
+    response: agents did not follow it. Everything else is a diagnostic, and a diagnostic that rides on every
     response is a tax, not a disclosure.
 
     The one exception is ``degraded_analyses``, carried only when non-empty:
@@ -464,7 +482,6 @@ def compact_index_scope(
         "git_tier": scope.get("git_tier", "unknown"),
         "status": _scope_status(scope),
         "fingerprint": index_scope_fingerprint(scope),
-        "full": full_hint,
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:

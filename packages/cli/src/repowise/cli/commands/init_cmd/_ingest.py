@@ -49,6 +49,30 @@ def _index_vector_store(run: InitRun) -> Any:
 #: What the long-step line tells a user to run after Ctrl-C.
 RESUME_COMMAND = "repowise init --resume"
 
+#: Printed on the first Ctrl-C, which stops the run at the next step rather than at once.
+STOPPING_NOTICE = "Stopping after the current step. Press Ctrl-C again to quit now."
+
+
+class _StopAtStepStart:
+    """Progress wrapper that ends the run at the next step after a first Ctrl-C.
+
+    Every step starts with ``on_phase_start``. A checkpoint step still runs: it
+    saves what the steps before it finished, which is what ``--resume`` reads.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def on_phase_start(self, phase: str, total: int | None) -> None:
+        if not phase.startswith("checkpoint."):
+            from repowise.core.cancellation import check_cancelled
+
+            check_cancelled()
+        self._inner.on_phase_start(phase, total)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
 
 async def _index_with_resume(
     run: InitRun,
@@ -132,7 +156,7 @@ def index_repository(run: InitRun) -> None:
         resume_command=RESUME_COMMAND,
         total_phases=run.total_phases,
     ) as steps:
-        callback = PhaseTimingRecorder(steps)
+        callback = _StopAtStepStart(PhaseTimingRecorder(steps))
         # Whole-run total: phases nest and overlap, so their sum can exceed it.
         callback.table.start("run")
 
@@ -145,7 +169,9 @@ def index_repository(run: InitRun) -> None:
         from repowise.core.cancellation import PipelineCancelled, cancellation_scope
 
         try:
-            with cancellation_scope():
+            with cancellation_scope(
+                on_first_interrupt=lambda: callback.on_message("notice", STOPPING_NOTICE)
+            ):
                 result = run_async(
                     _index_with_resume(
                         run,

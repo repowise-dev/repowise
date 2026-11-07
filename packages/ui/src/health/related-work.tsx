@@ -26,6 +26,7 @@ import { TIER_LABEL } from "./fix-first/scope";
 import { EFFORT_LABEL } from "./labels";
 import { ACTIONABILITY_LABEL, humanizeToken } from "./performance/presentation";
 import { SEVERITY_LABEL, type Severity } from "./tokens";
+import { formatNumber } from "../lib/format";
 
 export type RelatedLensName = RelatedWorkItem["lens"];
 
@@ -121,7 +122,7 @@ function describe(item: RelatedWorkItem): { label: string; facts: string[] } {
     case "fix_first":
       label = item.title ?? "Ranked fix";
       facts = [
-        item.rank != null ? `#${(item.rank + 1).toLocaleString()} in Fix first` : null,
+        item.rank != null ? `#${formatNumber(item.rank + 1)} in Fix first` : null,
         lookup(TIER_LABEL, item.tier),
       ];
       break;
@@ -210,8 +211,8 @@ export function RelatedWork({
                 {RELATED_LENS_LABEL[name]}{" "}
                 <span className="font-normal tabular-nums text-[var(--color-text-tertiary)]">
                   {items.length < total
-                    ? `${items.length} of ${total.toLocaleString()}`
-                    : total.toLocaleString()}
+                    ? `${items.length} of ${formatNumber(total)}`
+                    : formatNumber(total)}
                 </span>
               </p>
               <ul className="flex flex-col">

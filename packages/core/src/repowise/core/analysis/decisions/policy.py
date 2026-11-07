@@ -161,6 +161,18 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         default_enabled=True,
         togglable=False,
     ),
+    SourceSpec(
+        key="agent",
+        label="Agent entry",
+        description="Decisions a coding agent recorded with `repowise decision add --agent`.",
+        deterministic=True,
+        llm=False,
+        # An entry route like ``cli``, not machine capture: the record is what
+        # the agent stated, and acceptance still gates it.
+        authority="human",
+        default_enabled=True,
+        togglable=False,
+    ),
 )
 
 _SPECS_BY_KEY: dict[str, SourceSpec] = {spec.key: spec for spec in SOURCE_SPECS}
@@ -451,7 +463,7 @@ class DecisionPolicy:
         provider_available: bool,
     ) -> tuple[SourceStatus, str]:
         if not spec.togglable:
-            return "always_on", "Manual entry is always available."
+            return "always_on", f"{spec.label} is always available."
         if not self.enabled:
             return "disabled", "Decision capture is off for this repository."
         if not enabled:

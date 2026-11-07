@@ -53,6 +53,7 @@ wiki_style: comprehensive
 language: en
 enable_onboarding: true
 max_file_pages: 2000
+folder_coverage: ["src/core=1.0", "src/legacy=0.5"]
 exclude_patterns: [vendor/, "*.generated.*", proto/]
 distill: {enabled: true}
 mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
@@ -66,13 +67,16 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedding_model` | provider default | Embedding model id. |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; see [below](#reasoning). |
 | `max_tokens` | `16384` | Most output tokens per model-written documentation page. |
+| `context_window` | from the provider | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: none for hosted models, 16384 for a local one. |
 | `commit_limit` | `5000` | Newest commits walked for git analysis and stored as commit rows, clamped 1-10000. |
 | `follow_renames` | `false` | Track file renames through git history. |
 | `exclude_patterns` | `[]` | Gitignore-style patterns on top of `.gitignore`; see [Exclude patterns](#exclude-patterns). |
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, or a custom style name under `.repowise/styles/<name>/`. |
 | `language` | `en` | Wiki output language: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. |
 | `enable_onboarding` | `true` | First-run onboarding prompts (CLI and web). |
+| `editor_setup` | unset | `init --no-editor-setup` writes `false`: `update` then leaves editor files alone. A later `init` with editor setup sets it `true`. |
 | `max_file_pages` | unset | Most file pages per run, highest importance first; see [below](#max_file_pages). |
+| `folder_coverage` | `[]` | File-page floors per folder as `"GLOB=PCT"` strings; see [below](#folder_coverage). |
 | `forges.hosts` | `{}` | Self-managed git host to forge (`github`, `gitlab`, `azure`, `bitbucket`, `generic`); see [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts). |
 
 Blocks, each with its own section: [`generation_context`](#grounded-generation-context),
@@ -98,7 +102,7 @@ run and are not stored here; `--include-submodules` is recorded in `state.json`
 
 Applies to documentation-generation calls on reasoning-capable chat models.
 
-- `auto` keeps provider defaults.
+- `auto` keeps provider defaults, except on Ollama, where it turns thinking off.
 - `off` / `none` disable Qwen3-style thinking on OpenAI-compatible vLLM/SGLang
   (sends `extra_body.chat_template_kwargs.enable_thinking=false`) and map to
   OpenRouter's `reasoning.effort=none` for effort-capable families.
@@ -122,6 +126,15 @@ Applies to documentation-generation calls on reasoning-capable chat models.
   `--max-file-pages N` sets it non-interactively. `update --full` and
   `generate` honour the recorded value.
 - File pages are rendered from structure, so a cap does not reduce model spend.
+
+### `folder_coverage`
+
+- `"src/core=1.0"` gives every eligible code file under `src/core` a file page
+  whatever its importance or the cap; `"src/legacy=0.5"` gives the top half.
+- A floor, not a cap: pinned files are added to the selection and never
+  displace a global pick, so the estimate rises with them.
+- `init --folder-coverage GLOB=PCT` (repeatable) sets it. Every run reads it,
+  and editing it re-renders the wiki on the next `update`.
 
 ### `wiki_style`
 
@@ -162,13 +175,12 @@ generation_context:
 | `files` | none | Page key to an ordered list of repo-relative paths. |
 
 - Page keys: `repo_overview`, or `onboarding/` plus `getting_started`,
-  `key_concepts`, `how_it_works` or `active_landscape`.
+  `how_it_works` or `active_landscape`.
 - `onboarding/project_overview` is invalid (that slot is `repo_overview`).
-  `onboarding/glossary` is accepted but has no effect: that page is rendered
-  from mined vocabulary with no model.
-- `onboarding/guided_tour`, `onboarding/codebase_map` and
-  `onboarding/development_guide` name pages Repowise does not generate: they
-  are ignored with a warning naming the key, so upgrades never break a config.
+- `onboarding/guided_tour`, `onboarding/codebase_map`,
+  `onboarding/development_guide`, `onboarding/key_concepts` and
+  `onboarding/glossary` name pages Repowise does not generate: they are
+  ignored with a warning naming the key, so upgrades never break a config.
 - Other unknown page keys and malformed values fail generation. Keys other than
   `token_budget` and `files` directly under the block are ignored.
 - Eligible files are in the indexed source map with non-empty UTF-8 text.
@@ -244,7 +256,7 @@ distill:
   disables rewrites here.
 - Filter names: `test_output`, `build_output`, `lint_output`, `install_output`,
   `infra_plan`, `git_status`, `git_log`, `git_diff`, `git_diff_stat`,
-  `search_results`, `file_listing`, `logs`. `repowise doctor` checks them
+  `search_results`, `file_listing`, `file_read`, `logs`. `repowise doctor` checks them
   against the live registry.
 - Declining the `repowise init` opt-in writes `commands.enabled: false`, so a
   rewrite hook installed globally from another repo stays inert here.
@@ -271,6 +283,12 @@ overrides a key for one session.
   any span and a second Read returns the whole file.
 - `plus` mode keeps imports, constants, class fields, decorators and comments,
   eliding only function and method bodies.
+- A file whose skeleton is over the 10,000-character hook output cap is served
+  as an outline: one line per symbol, long signatures cut, the same range
+  markers. When the outline is still over the cap, it lists as many symbols as
+  fit (top-level types first, then the longest functions) and says how many.
+- A file edited since the last index is passed through whole, so the line
+  numbers are never off.
 - Savings show in `repowise saved` under `read_skeleton`. Needs Claude Code
   2.1.218+; older clients get the one-line pointer at
   `get_context(include=["skeleton"])`.
@@ -330,9 +348,10 @@ editor_files:
 
 - Default sections: `architecture`, `key_modules`, `entry_points`,
   `hotspots`, `health` (score and worst file), `decisions` (top three titles),
-  `how_to_work` (three bullets), `tools`.
+  `how_to_work` (which task goes to Grep and which to a Repowise call).
 - Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
-  `commands` (build, test and lint from manifests), `how_to_work_full`.
+  `commands` (build, test and lint from manifests), `how_to_work_full`,
+  `tools` (the MCP tool table).
 
 ## The `decisions:` block
 
@@ -858,8 +877,15 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
-- `num_ctx` is sized to each prompt, so pages are not cut to Ollama's small
-  default; `REPOWISE_OLLAMA_NUM_CTX` pins it (e.g. to fit memory).
+- The window is the model's own `num_ctx` if its Modelfile sets one, else
+  16384, never above its trained context length. Page material (code
+  excerpts, source evidence) shrinks to fit it, least important first, so a
+  4B model on a laptop writes a page in seconds instead of minutes.
+- `REPOWISE_OLLAMA_NUM_CTX` pins `num_ctx` and sizes material to it, which
+  gives a bigger model more to read; `context_window` in `config.yaml` sizes
+  material only, and `num_ctx` grows to hold the prompt.
+- `reasoning: auto` turns thinking off for page generation; `low`, `medium` or
+  `high` turn it on, and the window grows to hold the longer answer.
 - Requests go one at a time; with server `OLLAMA_NUM_PARALLEL` above 1, set the
   same value where Repowise runs.
 
@@ -913,6 +939,10 @@ model and base URL the same way; first match wins:
   CLI uses it too.
 - A local OpenAI-compatible server such as LM Studio: `provider: openai` with
   `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
+  Page material is sized for a 16384-token window, since the server does not
+  report its own; start the server with at least that context, or set
+  `context_window` to the context length it runs with. A
+  local backend behind LiteLLM is sized the same way.
 - Since `config.yaml` may be committed, a non-local base URL there gets a key
   not in `.repowise/.env` only after you confirm in Settings or `repowise init`.
 - The repo's Settings page sets all this: the model field lists live models
@@ -982,7 +1012,7 @@ Keys resolve in order:
 | `ANTHROPIC_BASE_URL`, `GEMINI_BASE_URL`, `DEEPSEEK_BASE_URL`, `KIMI_BASE_URL`, `LITELLM_BASE_URL` | Override that provider's API base URL |
 | `OPENAI_BASE_URL` | Override the OpenAI base URL (vLLM/SGLang, 9router, other compatible endpoints) |
 | `OLLAMA_BASE_URL` | Ollama server (default `http://localhost:11434`) |
-| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it per prompt |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; page material is sized to it. Unset: the Modelfile's `num_ctx`, else 16384 |
 | `OLLAMA_NUM_PARALLEL` | Ollama requests sent at once (default 1) |
 
 ### Provider and model overrides
@@ -1013,6 +1043,8 @@ yields a client error instead of Repowise's "synthesis exceeded its budget".
 | `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | Seconds per vector-store query (default `30`, capped at `120`) |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model; also selects the `ollama` embedder |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama output dimensions (optional; inferred from the model) |
+| `REPOWISE_EMBED_QUERY_PREFIX` | Text the `openai` embedder prepends to search queries (default empty) |
+| `REPOWISE_EMBED_DOC_PREFIX` | Text the `openai` embedder prepends to stored pages and decisions (default empty) |
 
 - Raise the embed timeout for a local endpoint: one request embeds a whole
   batch, and an expired batch shows only as `N/N items failed to embed`.
@@ -1023,6 +1055,9 @@ yields a client error instead of Repowise's "synthesis exceeded its budget".
   on a slow disk or large wiki; a timeout drops the semantic leg with a
   warning, leaving full-text hits.
 - An unparseable timeout warns and keeps the default.
+- Set the embed prefixes only for a model trained with them (such as
+  `query: ` / `passage: `), then run `repowise reindex`: vectors stored before
+  a prefix was set or changed stop matching, with no error.
 
 ### Server and database
 
@@ -1060,6 +1095,37 @@ Anonymous usage telemetry is **on by default** (opt-out).
 | `REPOWISE_FORGE_HOSTS` | `host=forge` pairs, comma separated (`git.corp.com=gitlab,tfs.corp.com=azure`); wins over `forges.hosts` |
 | `REPOWISE_CHANGELOG` | Changelog source for the "what's new" check |
 | `REPOWISE_PARSE_WORKERS` | Indexing parse processes: default CPU count capped at 8, never above the files to parse. Each holds about 50 MB; above 8 is not measurably faster |
+| `REPOWISE_NO_SAVE_KEY` | Truthy: `init` does not save the provider API key to `.repowise/.env`, like `init --no-save-key`. Use it where credentials are injected at runtime and must not be written to disk |
+| `REPOWISE_MCP_NO_WATCHDOG` | `1`, `true` or `yes` turns off the parent-process watchdog in `repowise mcp --transport stdio`, which exits the server when the MCP client dies abnormally (crash, force-quit, killed terminal) |
+| `REPOWISE_INDEX_INFORMATION_FLOOR` | Minimum characters of substantive prose a wiki page needs to get a vector in the search index. Pages below it stay readable and linkable, they are only left out of semantic search. Default `0` (off) |
+
+### BLAS thread pool
+
+repowise caps the BLAS thread pool to 1 before numpy loads. An uncapped pool costs about 32 MB of memory per thread (about 750 MB on a 32-core machine) and does not speed up the sparse graph work repowise runs. Spawned worker processes inherit the cap through the environment.
+
+A value you set yourself always wins:
+
+```bash
+OPENBLAS_NUM_THREADS=4 repowise init   # 4 BLAS threads instead of 1
+```
+
+| Variable | Applies to | Default |
+|----------|-----------|---------|
+| `OPENBLAS_NUM_THREADS` | OpenBLAS | `1` unless set |
+| `MKL_NUM_THREADS` | Intel MKL | `1` unless set |
+| `NUMEXPR_NUM_THREADS` | NumExpr | `1` unless set |
+| `VECLIB_MAXIMUM_THREADS` | Apple Accelerate | `1` unless set |
+
+`OMP_NUM_THREADS` is not set: igraph's community detection uses OpenMP threads and is slower without them.
+
+### Cache integrity key
+
+repowise integrity-checks its on-disk caches with a machine-local key.
+
+| Variable | Description |
+|----------|-------------|
+| `REPOWISE_CACHE_HMAC_KEY` | Hex-encoded key (at least 32 hex characters, 16 bytes) used instead of the key file. For CI and tests where the home directory is ephemeral or shared |
+| `REPOWISE_CACHE_KEY_PATH` | Path to the key file. Default `$XDG_CONFIG_HOME/repowise/cache_hmac_key`, or `~/.config/repowise/cache_hmac_key` when `XDG_CONFIG_HOME` is unset |
 
 ## Exclude patterns
 

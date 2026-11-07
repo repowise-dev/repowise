@@ -354,6 +354,31 @@ def test_detect_names_signed_in_agent_clis(clean_env, monkeypatch):
     assert "codex" in calls
 
 
+def test_detect_never_reports_signed_in_for_an_agent_without_a_login_check(clean_env, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}")
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["opencode"]["detected"] == "installed"
+    assert by_id["copilot_cli"]["detected"] == "installed"
+
+
+def test_detect_does_not_run_login_checks_when_the_network_is_off(clean_env, monkeypatch):
+    import shutil
+    import subprocess
+
+    clean_env["DO_NOT_TRACK"] = "1"
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("a login check was spawned with DO_NOT_TRACK set")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] == "installed"
+    assert by_id["codex_cli"]["detected"] == "installed"
+
+
 def test_a_broken_login_check_counts_as_not_signed_in(clean_env, monkeypatch):
     from repowise.core.agents.identity import AgentIdentity
 

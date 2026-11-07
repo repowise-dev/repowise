@@ -57,10 +57,13 @@ class FunctionComplexity:
     # Of ``param_count``, the ones a framework binds by annotation
     # (``@PathVariable``); they are in neither count above.
     bound_param_count: int = 0
+    # Of ``param_count``, the ones every call site must pass by name (Python
+    # parameters after ``*`` or ``*args``).
+    keyword_only_param_count: int = 0
     # A constructor, by node kind, conventional name, or its type's name.
     is_constructor: bool = False
     # The parameter list is set by another declaration (an override, an
-    # interface or trait implementation, a native binding).
+    # interface or trait implementation, a native binding, a CLI command).
     signature_fixed: bool = False
     # Per-condition boolean-operator counts collected during the walk.
     # Empty when no branch/loop carries compound boolean expressions.

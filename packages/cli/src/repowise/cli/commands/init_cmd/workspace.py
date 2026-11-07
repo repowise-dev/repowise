@@ -9,6 +9,7 @@ same helpers as the single-repo flow.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -30,6 +31,7 @@ from repowise.cli.editor_setup import (
     resolve_editor_setup_options,
     write_editor_project_files,
 )
+from repowise.cli.git_exclude import keep_workspace_data_out
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -71,7 +73,11 @@ from repowise.core.workspace.update import stamp_workspace_entry
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._workspace_config import WorkspacePick, build_workspace_config
 from ._workspace_plan import WorkspaceAnswers, WorkspacePlan, run_workspace_plan_screen
 from ._workspace_repos import repos_primary_line, select_workspace_repos
@@ -110,6 +116,7 @@ def _run_workspace_generation(
     onboarding: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
+    reuse_prior_pages: bool = True,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -117,6 +124,9 @@ def _run_workspace_generation(
     the user declines the cost gate (caller persists the index without docs);
     other errors propagate so the caller can log per-repo failures without
     aborting the whole workspace run.
+
+    ``reuse_prior_pages=False`` is ``--force``: every page is regenerated
+    instead of reused from the prior run (issue #1089).
     """
     from repowise.core.generation import GenerationConfig
 
@@ -130,6 +140,7 @@ def _run_workspace_generation(
         # No question is asked in the workspace flow, so this only picks up a cap
         # already recorded for this repo (by a single-repo init, or by hand).
         max_file_pages=resolve_max_file_pages(config=load_config(repo_path)),
+        reuse_prior_pages=reuse_prior_pages,
     )
     plans, est = estimate_generation(
         result=result,
@@ -505,6 +516,7 @@ def _generate_repo_with_model(
             onboarding=ctx.onboarding,
             wiki_style=ctx.wiki_style,
             language=ctx.language,
+            reuse_prior_pages=not ctx.force,
         )
         result.generated_pages = generated_pages
         # ``result.vector_store`` is set inside the generation call.
@@ -1039,6 +1051,14 @@ def _save_workspace(
         no_editor_setup=not editor_setup,
     ):
         register_editor_clients(console, primary_path)
+        # The repos' .mcp.json files were written before the user-scope entry
+        # existed; drop each one that entry now serves, as single-repo init does.
+        from repowise.cli.agent_targets.targets.claude_code import sync_project_mcp_config
+
+        for repo in selected:
+            # Best effort: a malformed .mcp.json was already reported when written.
+            with contextlib.suppress(Exception):
+                sync_project_mcp_config(Path(repo.path))
 
 
 def _resolve_workspace_provider(
@@ -1099,6 +1119,8 @@ def _workspace_config(pick: WorkspacePick, *, ask: bool, dry_run: bool) -> Any:
     else:
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]{glyph('ok')}[/] {verb} {config_path.name}")
+        if excluded := keep_workspace_data_out(root):
+            console.print(f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]")
     console.print()
     return ws_config
 
@@ -1168,6 +1190,9 @@ def _offer_workspace_hooks(
         distill_hook,
         yes=yes,
         no_editor_setup=not editor_setup,
+    )
+    warn_unresolved_hooks(
+        console, [r.path for r in selected], no_editor_setup=not editor_setup
     )
 
 

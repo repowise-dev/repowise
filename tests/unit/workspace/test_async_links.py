@@ -114,6 +114,36 @@ def test_a_nestjs_object_pattern_across_repos(tmp_path: Path) -> None:
     assert _links(api, math) == {("api", "math", 'topic::{"cmd":"sum","role":"math"}')}
 
 
+_DAPR_PUBLISH = (
+    "using Dapr.Client;\n"
+    "private readonly DaprClient dapr;\n"
+    'await dapr.PublishEventAsync("pubsub", "orders", evt);\n'
+)
+_DAPR_SUBSCRIPTION = (
+    "apiVersion: dapr.io/v2alpha1\n"
+    "kind: Subscription\n"
+    "metadata: \n"
+    "  name: orders\n"
+    "spec: \n"
+    "  pubsubname: pubsub\n"
+    "  topic: orders\n"
+    "  routes: \n"
+    "    default: /orders\n"
+)
+
+
+def test_a_dapr_publisher_reaches_a_kafka_consumer(tmp_path: Path) -> None:
+    api = _repo(tmp_path, "api", {"Pub.cs": _DAPR_PUBLISH})
+    worker = _repo(tmp_path, "worker", {"c.ts": "await consumer.subscribe({ topic:  'orders'  });\n"})
+    assert _links(api, worker) == {("api", "worker", "topic::orders")}
+
+
+def test_a_dapr_subscription_manifest_reaches_a_dapr_publisher(tmp_path: Path) -> None:
+    api = _repo(tmp_path, "api", {"Pub.cs": _DAPR_PUBLISH})
+    billing = _repo(tmp_path, "billing", {"deploy/sub.yaml": _DAPR_SUBSCRIPTION})
+    assert _links(api, billing) == {("api", "billing", "topic::orders")}
+
+
 def test_fastapi_websocket_to_browser(tmp_path: Path) -> None:
     api = _repo(tmp_path, "api", {"ws.py": '@app.websocket("/ws/chat/{room_id}")\nasync def chat(): ...\n'})
     web = _repo(tmp_path, "web", {"c.ts": "new WebSocket(`wss://${host}/ws/chat/${room}`);\n"})

@@ -423,7 +423,7 @@ def test_the_full_claude_handler_leaves_coverage_to_its_own_entry(repo, spawned)
 def test_spawn_breaks_away_from_the_job_and_retries_inside_it(monkeypatch, nt) -> None:
     import subprocess
 
-    from repowise.cli import spawn
+    from repowise.core import spawn
 
     calls: list[dict] = []
 

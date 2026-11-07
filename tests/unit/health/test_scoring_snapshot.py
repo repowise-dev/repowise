@@ -70,7 +70,6 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     # floored - fired widely but weak/non-predictive at T0
     "developer_congestion": 0.5,
     "low_cohesion": 0.5,
-    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,

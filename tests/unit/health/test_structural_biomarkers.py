@@ -98,7 +98,7 @@ def test_primitive_obsession_finds_cpp_scalar_signature():
     assert finding.function_name == "f"
     assert finding.details == {
         "param_count": 7, "typed_param_count": 7, "primitive_param_count": 7,
-        "bound_param_count": 0,
+        "bound_param_count": 0, "keyword_only_param_count": 0,
     }
 
 

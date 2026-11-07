@@ -27,6 +27,8 @@ A few shapes are deliberately quiet:
 - A loop that appends to one string several times is one `string_concat_in_loop`
   finding that lists every append line. TypeScript and JavaScript never get this
   finding, because JavaScript engines make repeated `+=` linear.
+- A `+=` onto the name the loop header binds each pass (`for p in ps: p += "/32"`)
+  is not flagged, because each pass grows a different string.
 - A TypeScript or JavaScript `includes` check against a short `const` table of
   literals that the file never changes is not flagged, because a table of fixed
   size costs the same at any scale.

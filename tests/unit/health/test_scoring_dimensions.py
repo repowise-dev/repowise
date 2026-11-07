@@ -225,11 +225,11 @@ def test_maintainability_dimension_matches_golden():
 def test_code_shape_markers_reach_maintainability():
     """A method too complex to follow is a maintainability problem.
 
-    These three are calibrated defect predictors and were scored as nothing
-    else, which left the pillar a reader watches while refactoring blind to the
-    most common thing a refactor removes.
+    These are calibrated defect predictors and were scored as nothing else,
+    which left the pillar a reader watches while refactoring blind to the most
+    common thing a refactor removes.
     """
-    for marker in ("complex_method", "complex_conditional", "repeated_nesting"):
+    for marker in ("complex_method", "complex_conditional"):
         scores, _ = score_file([_r(marker, Severity.CRITICAL)])
         assert scores["maintainability"] < 10.0, marker
 

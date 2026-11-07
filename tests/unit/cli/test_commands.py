@@ -441,6 +441,14 @@ class TestBuildRepoGraph:
             return real_parse(self, fi, source)
 
         monkeypatch.setattr(ASTParser, "parse_file", _maybe_raise)
+        # The patch above cannot reach a spawned parse worker, so run the
+        # pool's in-process fallback, where it applies.
+        from repowise.core.pipeline.phases import ingestion as ing
+
+        def _no_pool(*_args, **_kwargs):
+            raise OSError("no pool in this test")
+
+        monkeypatch.setattr(ing, "run_with_deadline", _no_pool)
 
         printed: list[str] = []
 

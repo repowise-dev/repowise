@@ -167,30 +167,21 @@ async def get_dead_code(
 ) -> dict:
     """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
-    Run before a cleanup sprint, not a targeted fix. Findings tier
-    high/medium/low with per-directory and per-owner rollups; workspace
-    mode withdraws safety on findings other repos may use.
+    For a cleanup sweep, not a targeted fix.
 
     Args:
-        repo: usually omitted.
         kind: unreachable_file | unused_export | unused_internal | zombie_package.
-            An unrecognised value is dropped and named in ignored_arguments,
-            never applied as a filter that matches nothing.
-        min_confidence: floor, default 0.4 (0.7 = cleanup-ready only). Also
-            accepts a tier name: "high" | "medium" | "low".
-        safe_only: deletion-ready findings only (no runtime-load risk).
-        limit: max findings per tier (clamped to 25).
-        tier: "high" | "medium" | "low", banded as min_confidence.
-        directory: path-prefix filter.
-        owner: primary-owner filter.
-        group_by: "directory" | "owner" rollup.
-        include_internals: also scan private symbols (more false positives).
-        include_zombie_packages: monorepo package findings (default true).
-        no_unreachable: skip file-level reachability findings.
-        no_unused_exports: skip public-export findings.
-        include_unverified: also show provisional kinds and languages held
-            back pending verification (``summary.gated`` counts them).
-        finding_id: stable ``id`` emitted by a dead-code finding.
+        min_confidence: default 0.4 (0.7 = cleanup-ready), or a tier name.
+        tier: "high" | "medium" | "low".
+        safe_only: deletion-ready findings only.
+        limit: max findings per tier (up to 25).
+        directory, owner: path-prefix or primary-owner filter.
+        group_by: "directory" | "owner".
+        include_internals: also scan private symbols.
+        include_zombie_packages, no_unreachable, no_unused_exports,
+            include_unverified: switch finding kinds on or off.
+        finding_id: one finding by its ``id``.
+        repo: usually omitted.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
     # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget

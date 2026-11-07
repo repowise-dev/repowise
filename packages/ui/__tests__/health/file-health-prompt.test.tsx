@@ -148,7 +148,7 @@ describe("buildFileHealthAiPrompt", () => {
 describe("FLAVOR_PREAMBLE", () => {
   it("keeps every flavor's opening", () => {
     expect(FLAVOR_PREAMBLE).toMatchSnapshot();
-    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to Read / Grep / Glob only");
+    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to reading and searching the files only");
   });
 });
 

@@ -91,6 +91,7 @@ export const DECISION_SOURCES = [
   "inline_marker",
   "llm_inferred",
   "pr",
+  "pr_review",
   "session",
 ] as const;
 
@@ -132,6 +133,7 @@ export const DECISION_SOURCE_LABELS: Record<
   inline_marker: "Marker",
   llm_inferred: "Model",
   pr: "Pull request",
+  pr_review: "PR review",
   session: "Session",
   changelog: "Changelog",
   code_comment: "Comment",
@@ -300,6 +302,29 @@ export interface DecisionRecord {
   accepter?: string | null;
   accepter_kind?: AccepterKind | "" | null;
   accepter_session?: string | null;
+  /**
+   * True when the record was accepted without a person pressing Confirm: a
+   * trusted GitHub reply to the bot accepts it for that person, and
+   * `accepter` then reads `github:<login>`. Absent on a backend that never
+   * auto-accepts.
+   */
+  auto_accepted?: boolean | null;
+  /**
+   * Where the record was said, when that is a page: the PR review thread for a
+   * `pr_review` record. Absent on records with no such link.
+   */
+  source_url?: string | null;
+  /** Reviews that applied this decision. Absent where nothing counts them. */
+  applied_count?: number | null;
+  /** When a review last applied it (ISO-8601). */
+  last_applied_at?: string | null;
+  /** The pull request number of that review. */
+  last_applied_pr?: number | null;
+  /**
+   * The code it names has changed since it was last applied, so a reader
+   * should re-check it. A hint, not a currency.
+   */
+  may_be_stale?: boolean | null;
   /** Why a record just created stayed a candidate. Create endpoint only. */
   blockers?: string[] | null;
   /**
@@ -312,6 +337,11 @@ export interface DecisionRecord {
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
   evidence_preview?: EvidencePreview | null;
+  /**
+   * Named files that are churn hotspots, one of the signals the review order
+   * reads. List endpoint only; absent on a backend that predates it.
+   */
+  hotspot_files?: string[] | null;
 }
 
 /** The top-ranked evidence row, slimmed for decision list rows. */
@@ -346,6 +376,11 @@ export interface DecisionCreateInput {
  */
 export interface DecisionStatusUpdate {
   status?: DecisionStatus;
+  /**
+   * Why the decision holds, sent with `status: "active"` when the record has
+   * no rationale or context of its own. Stored as the rationale.
+   */
+  reason?: string;
   superseded_by?: string;
   affected_modules?: string[];
   affected_files?: string[];
