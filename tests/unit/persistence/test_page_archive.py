@@ -21,6 +21,7 @@ from repowise.core.pipeline.persist import (
     sweep_expired_tombstones,
     sweep_retired_pages,
     sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
 )
 from tests.unit.persistence.helpers import insert_repo
 
@@ -337,3 +338,22 @@ async def test_successor_relationship_requires_a_live_same_repository_target(
     assert (await _archived(session, "module_page:old"))["superseded_by"] is None
     if target_exists_elsewhere:
         assert (await crud.get_page(session, "module_page:target")).human_notes == "Foreign notes"
+
+
+@pytest.mark.parametrize("tied", [False, True])
+async def test_an_unyielded_module_page_goes_to_the_produced_page_covering_most(async_session, tied):
+    session = async_session
+    repo = await insert_repo(session)
+    members = ["src/a.py", "src/b.py", "src/c.py"]
+    await _add_page(session, repo.id, "module_page:old", members=members)
+    await _add_page(session, repo.id, "module_page:a", members=members[:1])
+    await _add_page(session, repo.id, "module_page:b", members=members[1:])
+    plan = {"src/a.py": "module_page:a", "src/b.py": "module_page:b", "src/c.py": "module_page:b"}
+    if tied:
+        plan["src/b.py"] = "module_page:a"
+    swept = await sweep_unyielded_module_pages(
+        session, repo.id, {"module_page:old"}, plan, {"module_page:a", "module_page:b"}
+    )
+    assert swept == ["module_page:old"]
+    expected = "module_page:a" if tied else "module_page:b"
+    assert (await _archived(session, "module_page:old"))["superseded_by"] == expected
