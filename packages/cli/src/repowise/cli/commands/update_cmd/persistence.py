@@ -333,6 +333,14 @@ def resolve_repair_base(
     return from_commit, None
 
 
+def _resolve_last_full_metrics_rescore(
+    state: dict, head_ts: float | None, *, force_full_rescore: bool
+) -> float | None:
+    if head_ts is not None and (force_full_rescore or full_metrics_rescore_due(state, head_ts)):
+        return head_ts
+    return state.get("last_full_metrics_rescore_at")
+
+
 def _rescore_stale_findings(
     repo_path: Any,
     graph_builder: Any,
@@ -356,7 +364,9 @@ def _rescore_stale_findings(
     # invalidates every persisted score, and the partial health update above
     # only reached the changed files.
     last_full_rescore_at = state.get("last_full_rescore_at")
-    last_full_metrics_rescore_at = state.get("last_full_metrics_rescore_at")
+    last_full_metrics_rescore_at = _resolve_last_full_metrics_rescore(
+        state, head_ts, force_full_rescore=force_full_rescore
+    )
     health_analyzer_version = state.get("health_analyzer_version")
     rescored = False
     if force_full_rescore or full_rescore_due(state, head_ts):
@@ -377,8 +387,6 @@ def _rescore_stale_findings(
         from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
         health_analyzer_version = HEALTH_ANALYZER_VERSION
-    if (force_full_rescore or full_metrics_rescore_due(state, head_ts)) and head_ts is not None:
-        last_full_metrics_rescore_at = head_ts
     if force_full_rescore and not rescored:
         raise RuntimeError(
             "Configuration-triggered health re-score failed; the previous "
