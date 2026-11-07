@@ -190,3 +190,68 @@ async def test_a_different_repository_is_untouched(session, repo_id, other_repo_
     )
     assert swept == []
     assert "module_page:src/old" in await _ids(session, other_repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_member_does_not_keep_a_row_stale(session, repo_id):
+    """A produced page can never claim a deleted file, so it must not block retirement."""
+    await _add(
+        session, repo_id, "module_page:src/old", "module_page", ["src/a.py", "src/gone.py"]
+    )
+    swept = await sweep_superseded_generated_pages(
+        session,
+        repo_id,
+        [_Generated("module_page:src/new", "module_page", ["src/a.py"])],
+        existing_files={"src/a.py"},
+    )
+    assert swept == ["module_page:src/old"]
+    assert "module_page:src/old" not in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_surviving_members_only_partly_covered_keep_the_row(session, repo_id):
+    await _add(
+        session,
+        repo_id,
+        "module_page:src/old",
+        "module_page",
+        ["src/a.py", "src/b.py", "src/gone.py"],
+    )
+    swept = await sweep_superseded_generated_pages(
+        session,
+        repo_id,
+        [_Generated("module_page:src/new", "module_page", ["src/a.py"])],
+        existing_files={"src/a.py", "src/b.py"},
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_no_surviving_member_is_left_alone(session, repo_id):
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/gone.py"])
+    swept = await sweep_superseded_generated_pages(
+        session,
+        repo_id,
+        [_Generated("module_page:src/new", "module_page", ["src/a.py"])],
+        existing_files={"src/a.py"},
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_stub_fallback_page_is_kept_with_a_deleted_member(session, repo_id):
+    """The stub carve-out holds when the file set narrows membership."""
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
+
+    await _add(
+        session, repo_id, "module_page:src/old", "module_page", ["src/a.py", "src/gone.py"]
+    )
+    stub = _Generated("module_page:src/new", "module_page", ["src/a.py"])
+    stub.metadata[STUB_FALLBACK_ERROR] = "provider failed"
+    swept = await sweep_superseded_generated_pages(
+        session, repo_id, [stub], existing_files={"src/a.py"}
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)

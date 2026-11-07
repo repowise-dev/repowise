@@ -272,7 +272,10 @@ async def execute_scoped_generation(
         # delete every page of a type this run did not reproduce, which on a
         # scoped run is nearly all of them.
         swept_page_ids = await sweep_superseded_generated_pages(
-            session, repo_id, generated_pages
+            session,
+            repo_id,
+            generated_pages,
+            existing_files={p.file_info.path for p in rehydrated.parsed_files},
         )
         # Rows of a page type that no longer exists. Safe on a scoped run
         # precisely because it does not ask what the run produced: nothing can
