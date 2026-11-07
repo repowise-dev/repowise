@@ -37,14 +37,14 @@ def _run(repo_path: Path, *, wiki_rebuild: bool) -> UpdateRun:
 
 def test_no_rebuild_owed_is_up_to_date(quiet_store: list[str], tmp_path: Path) -> None:
     run = _run(tmp_path, wiki_rebuild=False)
-    command._assess_staleness(SimpleNamespace(), run)
+    command._assess_staleness(SimpleNamespace(refresh_git=False), run)
     assert run.git_is_current
     assert quiet_store == ["parser", "stale"]
 
 
 def test_owed_rebuild_is_not_up_to_date(quiet_store: list[str], tmp_path: Path) -> None:
     run = _run(tmp_path, wiki_rebuild=True)
-    command._assess_staleness(SimpleNamespace(), run)
+    command._assess_staleness(SimpleNamespace(refresh_git=False), run)
     assert not run.git_is_current
     # The "up to date" store reads are skipped, as for any other pending rework.
     assert quiet_store == []

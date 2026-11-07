@@ -37,6 +37,7 @@ class UpdateOptions:
     skip_cross_repo_hooks: bool = False
     include_working_tree: bool = False
     defer_docs: bool = False
+    refresh_git: bool = False
 
 
 @dataclass
@@ -67,6 +68,7 @@ class UpdateRun:
     working_tree_diffs: list = field(default_factory=list)
     analyzer_changed: bool = False
     history_stale: bool = False
+    refresh_git: bool = False
     git_is_current: bool = False
     extraction_changed: bool = False
     scanner_changed: bool = False
