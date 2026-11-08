@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .._interfaces.job_store import JobRecord, JobState, JobStore
+from .._interfaces.job_store import STALE_JOB_ERROR, JobRecord, JobState, JobStore
 from ..models import PipelineJob, _now_utc
 
 
@@ -49,6 +49,10 @@ class SqlJobStore(JobStore):
         phase: str,
         metadata: dict | None = None,
     ) -> JobRecord:
+        # A new job starts a new run: reap any RUNNING rows a previous run
+        # left behind before inserting, so a stale row can never be mistaken
+        # for this run's in-flight work.
+        await self.reap_stale_jobs(repository_id=repository_id)
         row = PipelineJob(
             id=uuid4().hex,
             repository_id=repository_id,
@@ -61,6 +65,25 @@ class SqlJobStore(JobStore):
         self._session.add(row)
         await self._session.flush()
         return _to_record(row)
+
+    async def reap_stale_jobs(self, *, repository_id: str) -> list[JobRecord]:
+        """Mark stale ``RUNNING`` rows INTERRUPTED with a single UPDATE."""
+        result = await self._session.execute(
+            update(PipelineJob)
+            .where(
+                PipelineJob.repository_id == repository_id,
+                PipelineJob.state == JobState.RUNNING.value,
+            )
+            .values(
+                state=JobState.INTERRUPTED.value,
+                error=STALE_JOB_ERROR,
+                updated_at=_now_utc(),
+            )
+            .returning(PipelineJob)
+        )
+        rows = result.scalars().all()
+        await self._session.flush()
+        return [_to_record(row) for row in rows]
 
     async def get_job(self, job_id: str) -> JobRecord | None:
         row = await self._session.get(PipelineJob, job_id)

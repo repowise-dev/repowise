@@ -213,6 +213,67 @@ async def test_job_store_get_unknown_returns_none(job_store):
 
 
 @pytest.mark.asyncio
+async def test_job_store_create_reaps_stale_running_jobs(job_store):
+    """A new job reaps RUNNING rows a dead run left behind (issue #5339)."""
+    from repowise.core.persistence._interfaces import STALE_JOB_ERROR
+
+    repo_id = job_store._test_repo_id  # type: ignore[attr-defined]
+    pending = await job_store.create_job(repository_id=repo_id, phase="parse")
+    done = await job_store.create_job(repository_id=repo_id, phase="done")
+    await job_store.update_state(done.id, JobState.COMPLETED)
+    failed = await job_store.create_job(repository_id=repo_id, phase="failed")
+    await job_store.update_state(failed.id, JobState.FAILED, error="boom")
+    # Simulate a hard kill mid-run: a RUNNING job left behind.
+    stale = await job_store.create_job(repository_id=repo_id, phase="git")
+    await job_store.update_state(stale.id, JobState.RUNNING)
+
+    # Starting a new run reaps the stale RUNNING row before inserting.
+    new = await job_store.create_job(repository_id=repo_id, phase="git")
+    assert new.state is JobState.PENDING
+
+    reaped = await job_store.get_job(stale.id)
+    assert reaped is not None
+    assert reaped.state is JobState.INTERRUPTED
+    assert reaped.error == STALE_JOB_ERROR
+
+    # Only RUNNING rows are reaped; PENDING and terminal rows are untouched.
+    assert (await job_store.get_job(pending.id)).state is JobState.PENDING
+    assert (await job_store.get_job(done.id)).state is JobState.COMPLETED
+    assert (await job_store.get_job(failed.id)).state is JobState.FAILED
+
+    # The reaped row no longer looks resumable.
+    resumable = await job_store.find_resumable(repository_id=repo_id)
+    assert stale.id not in {j.id for j in resumable}
+
+
+@pytest.mark.asyncio
+async def test_job_store_reap_stale_jobs_scoped_to_repository(job_store, async_session):
+    """Reaping touches only the named repository's RUNNING rows."""
+    from repowise.core.persistence.stores import SqlIndexStore
+
+    repo_id = job_store._test_repo_id  # type: ignore[attr-defined]
+    other = await SqlIndexStore(async_session).upsert_repository(
+        # Distinct local_path: upsert keys on it, so this is a second repo.
+        **make_repo_kwargs(name="job-host-2", local_path="/tmp/test-repo-2")
+    )
+    own = await job_store.create_job(repository_id=repo_id, phase="git")
+    await job_store.update_state(own.id, JobState.RUNNING)
+    foreign = await job_store.create_job(repository_id=other.id, phase="git")
+    await job_store.update_state(foreign.id, JobState.RUNNING)
+
+    reaped = await job_store.reap_stale_jobs(repository_id=repo_id)
+    assert [j.id for j in reaped] == [own.id]
+    assert reaped[0].state is JobState.INTERRUPTED
+    assert (await job_store.get_job(foreign.id)).state is JobState.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_job_store_reap_stale_jobs_empty_when_none_running(job_store):
+    repo_id = job_store._test_repo_id  # type: ignore[attr-defined]
+    assert await job_store.reap_stale_jobs(repository_id=repo_id) == []
+
+
+@pytest.mark.asyncio
 async def test_find_completed_phases_survives_many_non_completed_jobs(job_store):
     """Completed phases must be found even when many newer non-completed jobs exist."""
     from repowise.core.pipeline.checkpoint import find_completed_phases

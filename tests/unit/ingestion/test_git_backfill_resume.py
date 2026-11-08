@@ -1,10 +1,13 @@
 """Crash-resume contract for the git-tier backfill worker.
 
 ``backfill_full_tier`` brackets its run in a JobStore record so an interrupted
-backfill is detectable and re-runnable. These tests cover the two failure
-shapes:
+backfill is detectable and re-runnable. These tests cover the failure shapes:
 
 * an in-process exception → the job is marked FAILED with the error;
+* Ctrl-C (``KeyboardInterrupt``) → the job is marked FAILED too, not left
+  RUNNING with ``error`` NULL (issue #5339);
+* a dead connection on the failure write itself → the original error still
+  propagates; the failed write never masks it;
 * a hard kill mid-run → the job is left RUNNING (orphaned) and is reported by
   ``find_resumable`` so a re-run can pick it up (and completes cleanly).
 """
@@ -57,9 +60,10 @@ class _FakeJobStore:
 class _FlakyIndexer:
     """Fake GitIndexer that fails its first *fail_times* index_repo calls."""
 
-    def __init__(self, fail_times: int = 0) -> None:
+    def __init__(self, fail_times: int = 0, exc: BaseException | None = None) -> None:
         self.tier = GitIndexTier.ESSENTIAL
         self._fail_times = fail_times
+        self._exc = exc if exc is not None else RuntimeError("simulated git crash")
         self.calls = 0
 
     async def index_repo(self, repo_id: str):
@@ -67,8 +71,17 @@ class _FlakyIndexer:
         # backfill must force FULL for the duration of the run.
         assert self.tier is GitIndexTier.FULL
         if self.calls <= self._fail_times:
-            raise RuntimeError("simulated git crash")
+            raise self._exc
         return SimpleNamespace(files_indexed=3), [{"file_path": "a.py"}]
+
+
+class _DeadConnectionJobStore(_FakeJobStore):
+    """The failure write itself cannot land (dropped connection)."""
+
+    async def update_state(self, job_id, state, *, cursor=None, error=None) -> JobRecord:
+        if state is JobState.FAILED:
+            raise RuntimeError("connection dropped")
+        return await super().update_state(job_id, state, cursor=cursor, error=error)
 
 
 async def test_backfill_exception_marks_job_failed_and_restores_tier():
@@ -83,6 +96,35 @@ async def test_backfill_exception_marks_job_failed_and_restores_tier():
     assert failed[0].phase == BACKFILL_PHASE
     assert failed[0].error and "simulated git crash" in failed[0].error
     # Tier is restored to its original value even on failure.
+    assert indexer.tier is GitIndexTier.ESSENTIAL
+
+
+async def test_backfill_keyboard_interrupt_marks_job_failed_and_restores_tier():
+    """Ctrl-C must land on the row, not leave it RUNNING with error NULL."""
+    store = _FakeJobStore()
+    indexer = _FlakyIndexer(fail_times=1, exc=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        await backfill_full_tier(indexer, "repo1", job_store=store)
+
+    failed = [j for j in store.jobs.values() if j.state is JobState.FAILED]
+    assert len(failed) == 1
+    assert failed[0].phase == BACKFILL_PHASE
+    assert failed[0].error == "KeyboardInterrupt"
+    assert indexer.tier is GitIndexTier.ESSENTIAL
+
+
+async def test_backfill_failure_write_failure_does_not_mask_original_error():
+    """A dead connection cannot take the failure write; the original error wins."""
+    store = _DeadConnectionJobStore()
+    indexer = _FlakyIndexer(fail_times=1)
+
+    with pytest.raises(RuntimeError, match="simulated git crash"):
+        await backfill_full_tier(indexer, "repo1", job_store=store)
+
+    # The FAILED write never landed, so the row stays RUNNING — but the
+    # caller sees the original failure, not the write failure.
+    assert all(j.state is JobState.RUNNING for j in store.jobs.values())
     assert indexer.tier is GitIndexTier.ESSENTIAL
 
 

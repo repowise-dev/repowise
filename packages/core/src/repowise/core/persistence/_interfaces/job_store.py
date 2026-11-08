@@ -31,6 +31,13 @@ class JobState(enum.StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
+#: Error text recorded on a job reaped as stale: the process that owned it
+#: exited (crash, dropped connection, Ctrl-C) without finishing, so the row
+#: no longer describes in-flight work.
+STALE_JOB_ERROR = "abandoned: process exited without finishing"
 
 
 @dataclass(frozen=True)
@@ -65,7 +72,13 @@ class JobStore(ABC):
         phase: str,
         metadata: dict | None = None,
     ) -> JobRecord:
-        """Insert a new job in :attr:`JobState.PENDING`. Returns the row."""
+        """Insert a new job in :attr:`JobState.PENDING`. Returns the row.
+
+        Creating a job starts a new run for the repository, so it first
+        reaps any stale :attr:`JobState.RUNNING` jobs for that repository
+        (see :meth:`reap_stale_jobs`): a previous run that died without
+        finishing must not keep claiming to be in flight.
+        """
 
     @abstractmethod
     async def get_job(self, job_id: str) -> JobRecord | None: ...
@@ -91,6 +104,26 @@ class JobStore(ABC):
         inside a tight loop. The OSS default coalesces writes via a single
         UPDATE per call.
         """
+
+    async def reap_stale_jobs(self, *, repository_id: str) -> list[JobRecord]:
+        """Mark stale :attr:`JobState.RUNNING` jobs INTERRUPTED.
+
+        A job is stale when its owning run is gone: it was left ``running``
+        by a crash, a dropped connection, or Ctrl-C, and nothing will ever
+        update it again. Reaping records :attr:`JobState.INTERRUPTED` with
+        :data:`STALE_JOB_ERROR` so status reads stop reporting dead work as
+        in flight, and so ``find_resumable`` no longer offers it for resume.
+
+        The default implementation reaps through :meth:`find_resumable` +
+        :meth:`update_state`; stores may override it with a bulk UPDATE.
+        Only ``RUNNING`` rows are reaped — ``PENDING`` rows never started,
+        and terminal rows are history.
+        """
+        reaped: list[JobRecord] = []
+        for job in await self.find_resumable(repository_id=repository_id):
+            if job.state is JobState.RUNNING:
+                reaped.append(await self.update_state(job.id, JobState.INTERRUPTED, error=STALE_JOB_ERROR))
+        return reaped
 
     @abstractmethod
     async def find_resumable(

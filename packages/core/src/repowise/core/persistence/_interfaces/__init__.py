@@ -24,9 +24,10 @@ from __future__ import annotations
 
 from .graph_store import GraphStore
 from .index_store import IndexStore
-from .job_store import JobRecord, JobState, JobStore
+from .job_store import STALE_JOB_ERROR, JobRecord, JobState, JobStore
 
 __all__ = [
+    "STALE_JOB_ERROR",
     "GraphStore",
     "IndexStore",
     "JobRecord",

@@ -63,9 +63,22 @@ async def backfill_full_tier(
     indexer.tier = GitIndexTier.FULL
     try:
         summary, results = await indexer.index_repo(repo_id)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException (not Exception): Ctrl-C raises KeyboardInterrupt,
+        # which must also land on the row — otherwise the job is left
+        # RUNNING with error NULL, exactly the abandonment this fixes.
+        # The failure write itself is best-effort: a dead connection cannot
+        # take the write either, and a failed write must never mask the
+        # original failure.
         if job_store is not None and job_id is not None:
-            await job_store.update_state(job_id, JobState.FAILED, error=str(exc))
+            try:
+                await job_store.update_state(job_id, JobState.FAILED, error=_error_summary(exc))
+            except BaseException:
+                logger.warning(
+                    "git_backfill_failure_write_failed",
+                    repo_id=repo_id,
+                    error_type=type(exc).__name__,
+                )
         logger.warning("git_backfill_failed", repo_id=repo_id, error=str(exc))
         raise
     finally:
@@ -79,3 +92,14 @@ async def backfill_full_tier(
         files=summary.files_indexed,
     )
     return summary, results
+
+
+def _error_summary(exc: BaseException) -> str:
+    """One-line failure summary for the job row: ``TypeName: message``.
+
+    ``str(exc)`` is empty for e.g. ``KeyboardInterrupt``, so fall back to
+    the bare type name rather than recording a blank error.
+    """
+    lines = str(exc).strip().splitlines()
+    detail = lines[0] if lines else ""
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
