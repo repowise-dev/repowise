@@ -151,11 +151,11 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     project = data.get("project")
     name = project.get("name") if isinstance(project, dict) else None
     if not isinstance(name, str):
-        name = _table(data, "tool", "poetry").get("name")
+        name = toml_table(data, "tool", "poetry").get("name")
     if not isinstance(name, str) or not name:
         return None
     prefix = f"{root}/" if root else ""
-    dirs = _pypi_package_dirs(data)
+    dirs = pypi_package_dirs(data)
     if not dirs:
         # PEP 503 allows `-`/`.` in a distribution name where the module needs
         # an identifier, and the two often differ beyond that. A guess, used
@@ -165,7 +165,7 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     return name, frozenset(f"{prefix}{d}/__init__.py" for d in dirs), frozenset()
 
 
-def _table(data: Any, *keys: str) -> dict[str, Any]:
+def toml_table(data: Any, *keys: str) -> dict[str, Any]:
     """Walk a chain of TOML tables, yielding {} the moment one is not a table."""
     for key in keys:
         if not isinstance(data, dict):
@@ -174,7 +174,7 @@ def _table(data: Any, *keys: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
+def pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     """Package directories the build backend declares, newest layouts first.
 
     Every read is shape-checked: a hand-edited ``pyproject.toml`` must not be
@@ -185,11 +185,11 @@ def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     def strings(value: Any) -> list[str]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
-    dirs: list[str] = strings(_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
+    dirs: list[str] = strings(toml_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
     dirs += [
-        p.replace(".", "/") for p in strings(_table(data, "tool", "setuptools").get("packages"))
+        p.replace(".", "/") for p in strings(toml_table(data, "tool", "setuptools").get("packages"))
     ]
-    for entry in _table(data, "tool", "poetry").get("packages") or []:
+    for entry in toml_table(data, "tool", "poetry").get("packages") or []:
         include = entry.get("include") if isinstance(entry, dict) else None
         if isinstance(include, str):
             source = entry.get("from")
