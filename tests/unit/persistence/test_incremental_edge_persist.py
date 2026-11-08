@@ -261,20 +261,43 @@ async def test_store_predating_the_stamp_is_backfilled_once(async_session, tmp_p
     assert await _stored_fingerprint(async_session, repo.id) == parser_fingerprint()
 
 
-async def test_unchanged_file_edges_follow_the_graph_under_the_same_parser(
+async def test_an_unchanged_files_edge_into_a_changed_file_follows_the_graph(
     async_session, tmp_path
 ):
-    """Same parser build: an unchanged file's stored edges still match the graph.
-
-    A file git did not touch gains or loses edges when what it points at
-    changes, so the reconcile is not scoped to the changed set.
-    """
+    """Same parser build: a file git did not touch still gains an edge into a changed one."""
     repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
+
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["a.py"])
+    await async_session.commit()
+
+    assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
+
+
+async def test_an_edge_that_differs_from_the_last_persisted_graph_is_reconciled(
+    async_session, tmp_path
+):
+    """The stored snapshot names files whose edges moved without touching the change set."""
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
+    graph = gb.graph()
+    gb.previous_seed_edges = {
+        "nodes": [(n, dict(d)) for n, d in graph.nodes(data=True)],
+        "edges": [(u, v, dict(d)) for u, v, d in graph.edges(data=True) if u != "c.py"],
+    }
 
     await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
     await async_session.commit()
 
     assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
+
+
+async def test_a_file_the_change_does_not_reach_is_not_reconciled(async_session, tmp_path):
+    """Without a snapshot or an edge into the change set, a file keeps its rows untouched."""
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
+
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+    await async_session.commit()
+
+    assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)
 
 
 async def test_unchanged_file_keeps_co_change_rows_the_graph_does_not_cover(

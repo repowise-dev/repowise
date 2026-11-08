@@ -331,19 +331,19 @@ def _changed_file_edges(
         return [], []
 
     graph = graph_builder.graph()
-    owner: dict[str, str | None] = {}
-    for node_id in graph.nodes:
-        data = graph.nodes[node_id]
-        owner[node_id] = (
-            node_id if data.get("node_type", "file") == "file" else data.get("file_path")
-        )
-
-    edges: list[dict] = []
-    for u, v, data in graph.edges(data=True):
-        if owner.get(u) in reconcile or (
-            data.get("hint_source") in TARGET_OWNED_HINTS and owner.get(v) in reconcile
-        ):
-            edges.append(_edge_row(u, v, data))
+    owned = [
+        node for node, path in _edge_owners(graph.nodes(data=True)).items() if path in reconcile
+    ]
+    owned_set = set(owned)
+    # Out-edges of the owned nodes, plus target-owned edges into them from
+    # elsewhere: the same rows as a scan of every edge, at the cost of the
+    # files' own adjacency.
+    edges = [_edge_row(u, v, data) for u, v, data in graph.out_edges(owned, data=True)]
+    edges += [
+        _edge_row(u, v, data)
+        for u, v, data in graph.in_edges(owned, data=True)
+        if u not in owned_set and data.get("hint_source") in TARGET_OWNED_HINTS
+    ]
     return sorted(reconcile), edges
 
 
@@ -512,13 +512,13 @@ async def persist_incremental_edges(
     index. Phase E flow-path answers and any graph expansion read adjacency
     straight from this table, so they decayed on every incremental update.
 
-    Every parsed file is reconciled, not only *changed_paths*. A file git did
-    not touch still gains or loses edges when what it points at changes: a call
-    resolves to a symbol a new file defines, or stops resolving to one that
-    moved, and an extraction change (``parser_fingerprint``) alters every
-    file's edges at once. The update rebuilds the whole graph in memory anyway,
-    so the right edges are already computed, and the reconcile writes only the
-    rows that differ.
+    Files outside *changed_paths* are reconciled too when their edges moved.
+    A file git did not touch still gains or loses edges when what it points at
+    changes: a call resolves to a symbol a new file defines, or stops resolving
+    to one that moved. Those files are found without reading the whole table
+    (:func:`_drifted_files`), so the store work follows the change rather than
+    the repository. An extraction change (``parser_fingerprint``) alters every
+    file's edges at once, so it reconciles every parsed file, once.
 
     The files outside the change set keep the old scoping when the graph is
     known to be short: a traversed file failed to parse (its symbols are
@@ -546,7 +546,12 @@ async def persist_incremental_edges(
     if reconcile_paths:
         await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
     other_paths = await _reconcile_unchanged_files(
-        session, repo_id, graph_builder, parsed_files, set(reconcile_paths)
+        session,
+        repo_id,
+        graph_builder,
+        parsed_files,
+        set(changed_paths or ()),
+        widen=parser_changed,
     )
     if reconcile_paths or other_paths:
         # A symbol renamed or removed otherwise keeps its node beside the new one.
@@ -569,12 +574,19 @@ async def persist_incremental_edges(
 
 
 async def _reconcile_unchanged_files(
-    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any], changed: set[str]
+    session: Any,
+    repo_id: str,
+    graph_builder: Any,
+    parsed_files: list[Any],
+    changed: set[str],
+    *,
+    widen: bool,
 ) -> list[str]:
-    """Reconcile the parsed files outside *changed*; returns the paths reconciled.
+    """Reconcile the parsed files outside *changed* whose edges moved.
 
-    Nothing when the graph is short (:func:`_graph_is_complete`). Their
-    ``co_changes`` rows are left to the co-change sync.
+    Every one of them when *widen*. Returns the paths reconciled. Nothing when
+    the graph is short (:func:`_graph_is_complete`). Their ``co_changes`` rows
+    are left to the co-change sync.
     """
     from repowise.core.persistence.crud import reconcile_edges_for_files
 
@@ -582,11 +594,12 @@ async def _reconcile_unchanged_files(
 
     if not _graph_is_complete(graph_builder, parsed_files):
         return []
-    paths, edges = _changed_file_edges(
-        graph_builder,
-        parsed_files,
-        [pf.file_info.path for pf in parsed_files if pf.file_info.path not in changed],
-    )
+    others = {pf.file_info.path for pf in parsed_files} - changed
+    if not widen:
+        others &= await _drifted_files(session, repo_id, graph_builder, changed)
+    if not others:
+        return []
+    paths, edges = _changed_file_edges(graph_builder, parsed_files, sorted(others))
     if paths:
         await reconcile_edges_for_files(
             session,
@@ -596,6 +609,127 @@ async def _reconcile_unchanged_files(
             keep_edge_types=frozenset({_CO_CHANGES}),
         )
     return paths
+
+
+def _edge_owners(nodes: Any) -> dict[str, str | None]:
+    """``{node_id: owning file}`` over ``(node_id, attrs)`` pairs.
+
+    A file node owns itself, a symbol node its ``file_path``.
+    """
+    return {
+        node_id: node_id if attrs.get("node_type", "file") == "file" else attrs.get("file_path")
+        for node_id, attrs in nodes
+    }
+
+
+# The in-memory edge fields that reach a ``graph_edges`` row (see _edge_row).
+_EDGE_ROW_FIELDS = (
+    "imported_names",
+    "confidence",
+    "hint_source",
+    "resolution_origin",
+    "call_lines",
+    "type_only",
+    "deferred",
+)
+
+
+def _edge_signature(data: dict) -> tuple:
+    return tuple(
+        tuple(value) if isinstance(value, list) else value
+        for value in (data.get(field) for field in _EDGE_ROW_FIELDS)
+    )
+
+
+async def _drifted_files(
+    session: Any, repo_id: str, graph_builder: Any, changed: set[str]
+) -> set[str]:
+    """Files whose stored edges may no longer match the rebuilt graph.
+
+    The owners of every edge into a changed file, in the rebuilt graph and in
+    the stored rows (indexed lookups on the changed files' node ids, the old
+    ids included). When the update holds the last persisted graph
+    (``previous_seed_edges``), also the owners of every edge that differs from
+    it, which catches a call that stopped resolving without gaining a target
+    in a changed file. The store is read only for the changed files and the
+    rest is a dictionary diff, so no step reads the whole edge table.
+    """
+    from repowise.core.analysis.execution_graph import file_of_symbol
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
+    graph = graph_builder.graph()
+    owner = _edge_owners(graph.nodes(data=True))
+    drifted: set[str] = set()
+
+    def mark(source: str, target: str, hint: Any, owners: dict) -> None:
+        drifted.add(owners.get(source) or file_of_symbol(source))
+        if hint in TARGET_OWNED_HINTS:
+            drifted.add(owners.get(target) or file_of_symbol(target))
+
+    previous = getattr(graph_builder, "previous_seed_edges", None)
+    if previous is None:
+        # The snapshot diff below covers these when there is one.
+        for u, v, data in graph.edges(data=True):
+            if owner.get(v) in changed:
+                mark(u, v, data.get("hint_source"), owner)
+    targets = {node for node, path in owner.items() if path in changed} | changed
+    for source, target, hint in await _stored_edges_into(session, repo_id, targets, changed):
+        mark(source, target, hint, owner)
+
+    if previous is not None:
+        prev_owner = _edge_owners(previous["nodes"])
+        prev_edges = {
+            (u, v, attrs.get("edge_type", "imports")): attrs for u, v, attrs in previous["edges"]
+        }
+        for u, v, data in graph.edges(data=True):
+            before = prev_edges.pop((u, v, data.get("edge_type", "imports")), None)
+            # Whole-dict equality first: it is the common case and runs in C.
+            if before is None or (
+                before != data and _edge_signature(before) != _edge_signature(data)
+            ):
+                mark(u, v, data.get("hint_source"), owner)
+        for (u, v, _edge_type), attrs in prev_edges.items():
+            mark(u, v, attrs.get("hint_source"), prev_owner)
+    drifted.discard(None)
+    return drifted
+
+
+async def _stored_edges_into(
+    session: Any, repo_id: str, targets: set[str], changed: set[str]
+) -> list[tuple[str, str, str | None]]:
+    """``(source, target, hint_source)`` of the stored rows into *targets*.
+
+    Also into every stored node of a changed file, so a symbol the rebuilt
+    graph no longer has still names the callers that pointed at it.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    paths = sorted(changed)
+    ids = set(targets)
+    for i in range(0, len(paths), _PRUNE_CHUNK):
+        ids.update(
+            (
+                await session.execute(
+                    select(GraphNode.node_id).where(
+                        GraphNode.repository_id == repo_id,
+                        GraphNode.file_path.in_(paths[i : i + _PRUNE_CHUNK]),
+                    )
+                )
+            ).scalars()
+        )
+    ordered = sorted(ids)
+    out: list[tuple[str, str, str | None]] = []
+    for i in range(0, len(ordered), _PRUNE_CHUNK):
+        rows = await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.hint_source).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.target_node_id.in_(ordered[i : i + _PRUNE_CHUNK]),
+            )
+        )
+        out.extend(tuple(row) for row in rows)
+    return out
 
 
 def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
