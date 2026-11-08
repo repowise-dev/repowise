@@ -140,6 +140,8 @@ class GraphBuilder(
         # expensive metric kernel). Opt-in via *centrality_cache_dir* — the
         # ingest paths pass ``<repo>/.repowise``; ad-hoc builders are unchanged.
         self._centrality_cache: Any | None = None
+        # The framework scan cache lives beside it, under the same opt-in.
+        self._cache_dir: Path | str | None = centrality_cache_dir
         if centrality_cache_dir is not None:
             try:
                 from ._centrality_cache import CentralityCache

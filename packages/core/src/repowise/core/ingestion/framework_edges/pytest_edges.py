@@ -45,6 +45,7 @@ from .base import (
     _add_edge_if_new,
     add_symbol_edge,
 )
+from .scan_cache import ScanCache, scans_of
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -292,12 +293,14 @@ def _add_conftest_edges(
     """
     count = 0
     conftest_paths = [p for p in path_set if Path(p).name == "conftest.py"]
+    # Decided once per file, not once per (conftest, file) pair.
+    seers = [p for p in path_set if _sees_conftests(graph, p, roots)] if conftest_paths else []
 
     for conf in conftest_paths:
         conf_dir = Path(conf).parent.as_posix()
         prefix = f"{conf_dir}/" if conf_dir != "." else ""
-        for p in path_set:
-            if p == conf or not _sees_conftest(graph, p, prefix, roots):
+        for p in seers:
+            if p == conf or not _under(p, prefix):
                 continue
             if _add_edge_if_new(graph, p, conf):
                 graph[p][conf]["hint_source"] = CONFTEST_HINT
@@ -305,14 +308,17 @@ def _add_conftest_edges(
     return count
 
 
-def _sees_conftest(graph: nx.DiGraph, p: str, prefix: str, roots: PytestRoots | None) -> bool:
-    """Whether *p* is a collected test file or conftest under the conftest directory *prefix*."""
+def _sees_conftests(graph: nx.DiGraph, p: str, roots: PytestRoots | None) -> bool:
+    """Whether *p* is a collected test file or conftest, which sees the conftests above it."""
     if roots is not None and not (
         Path(p).name == "conftest.py" or (p.endswith(".py") and roots.may_collect_name(p))
     ):
         return False
-    if not graph.nodes.get(p, {}).get("is_test", False):
-        return False
+    return bool(graph.nodes.get(p, {}).get("is_test", False))
+
+
+def _under(p: str, prefix: str) -> bool:
+    """Whether *p* sits under the conftest directory *prefix* (``""`` is the root)."""
     return p.startswith(prefix) or (prefix == "" and "/" not in p)
 
 
@@ -568,11 +574,15 @@ def _hidden_request(text: str) -> str | None:
     return None
 
 
-def _runtime_requests(text: str, parsed: Any) -> tuple[list[tuple[Any, list[str]]], bool]:
-    """``(enclosing function, names)`` per readable ``getfixturevalue``, and whether any is not."""
+def _runtime_requests(
+    text: str, parsed: Any, lexed: _Lexed | None
+) -> tuple[list[tuple[Any, list[str]]], bool]:
+    """``(enclosing function, names)`` per readable ``getfixturevalue``, and whether any is not.
+
+    *lexed* is :func:`_lex` of *text*.
+    """
     out: list[tuple[Any, list[str]]] = []
     unknown = False
-    lexed = _lex(text)
     code = lexed.calls if lexed is not None else None
     trees: dict[str, ast.Module | None] = {}  # parsed once, on the first parameter request
     for match in _GETFIXTUREVALUE_RE.finditer(text):
@@ -761,6 +771,7 @@ def _add_fixture_injection_edges(
     read: Callable[[str], str | None] | None = None,
     roots: PytestRoots | None = None,
     helper_text: Callable[[str], str | None] | None = None,
+    scans: ScanCache | None = None,
 ) -> int:
     """Link each test and fixture to every fixture it asks for by name.
 
@@ -771,7 +782,8 @@ def _add_fixture_injection_edges(
     (an override) gets the next one out. *read* returns a file's text, for the
     forms only the text shows; *roots* say which files pytest collects;
     *helper_text* returns the text of any other Python file from the bytes
-    ingestion already holds (``None`` when it does not hold it).
+    ingestion already holds (``None`` when it does not hold it). *scans* keeps
+    each file's tokenize pass across runs.
 
     A request no edge can record is stamped on the requester's conftest edges
     instead (:data:`UNRECORDED_HINT`, see :func:`_stamp_unrecorded`).
@@ -790,6 +802,7 @@ def _add_fixture_injection_edges(
             conftests[Path(path).parent.as_posix()] = declared
 
     class_globs = _test_class_globs(repo_path)
+    scans = scans if scans is not None else ScanCache()
     unrecorded: set[str] = set()
     everywhere = False
     count = 0
@@ -806,7 +819,9 @@ def _add_fixture_injection_edges(
             uses = None if text is None else _request_name_uses(text)
             everywhere = everywhere or uses is None or bool(uses)
             continue
-        added, hidden, anywhere = _link_file(graph, path, parsed, conftests, class_globs, read)
+        added, hidden, anywhere = _link_file(
+            graph, path, parsed, conftests, class_globs, read, scans
+        )
         count += added
         everywhere = everywhere or anywhere
         if hidden:
@@ -842,6 +857,7 @@ def _link_file(
     conftests: dict[str, dict[str, str]],
     class_globs: tuple[str, ...],
     read: Callable[[str], str | None] | None,
+    scans: ScanCache,
 ) -> tuple[int, bool, bool]:
     """The fixture-request edges leaving one test module or conftest, and whether some cannot be.
 
@@ -871,7 +887,8 @@ def _link_file(
     if text is None:
         # Unread, the file may hold any request form.
         return linker.count, True, False
-    text_hidden, everywhere = _link_text(linker, text, tests, fixture_ids, recorded)
+    lexed = scans.lookup("pytest_lex", parsed, lambda: _lex(text))
+    text_hidden, everywhere = _link_text(linker, text, lexed, tests, fixture_ids, recorded)
     return linker.count, class_hidden or symbol_hidden or text_hidden, everywhere
 
 
@@ -973,17 +990,19 @@ def _test_requests(
 def _link_text(
     linker: _FileLinker,
     text: str,
+    lexed: _Lexed | None,
     tests: list[Any],
     fixture_ids: set[str],
     recorded: Counter[str],
 ) -> tuple[bool, bool]:
     """Link the request forms only the file's text shows; ``(hidden, everywhere)``."""
     marks_unknown = _link_module_marks(linker, text, tests, recorded)
-    runtime_unknown, everywhere = _link_runtime_requests(linker, text, tests, fixture_ids, recorded)
+    runtime_unknown, everywhere = _link_runtime_requests(
+        linker, text, lexed, tests, fixture_ids, recorded
+    )
     # Any other use (an alias, a mark stored in a variable, `add_marker`,
     # `request.fixturenames`, a lazy-fixture plugin) is a request no edge records.
     # Code run from a string (``exec``, ``eval``, ``compile``) can ask in any way.
-    lexed = _lex(text)
     hidden = (
         _hidden_request(text) is not None
         or marks_unknown
@@ -1013,6 +1032,7 @@ def _link_module_marks(
 def _link_runtime_requests(
     linker: _FileLinker,
     text: str,
+    lexed: _Lexed | None,
     tests: list[Any],
     fixture_ids: set[str],
     recorded: Counter[str],
@@ -1020,7 +1040,7 @@ def _link_runtime_requests(
     """Link readable ``getfixturevalue`` calls; ``(any computed, a helper asks)``."""
     if "getfixturevalue" not in text:
         return False, False
-    runtime, unknown = _runtime_requests(text, linker.parsed)
+    runtime, unknown = _runtime_requests(text, linker.parsed, lexed)
     everywhere = False
     for sym, names in runtime:
         if sym in tests or sym.id in fixture_ids:
@@ -1073,6 +1093,7 @@ class _FixtureInjectionHandler:
             _source_reader(ctx),
             ctx.pytest_roots,
             _held_text(ctx),
+            scans_of(ctx),
         )
 
 

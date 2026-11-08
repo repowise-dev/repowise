@@ -92,6 +92,20 @@ def test_every_skill_reaches_both_hosts() -> None:
             assert path in rendered, f"{item.source.name} renders nothing for {host.id}"
 
 
+def test_every_skill_name_matches_its_directory() -> None:
+    """The directory a skill is written to and the name in its frontmatter must agree."""
+    assert GEN.skill_name_mismatches() == []
+
+
+def test_skill_name_mismatch_fails_generation_and_check(monkeypatch) -> None:
+    """A skill whose frontmatter name diverges from its directory causes --check to fail."""
+    monkeypatch.setattr(
+        GEN, "skill_name_mismatches", lambda: ["mock-host: dummy frontmatter name does not match dir"]
+    )
+    assert GEN.main(["--check"]) == 1
+    assert GEN.main([]) == 1
+
+
 def test_codex_prompts_carry_only_frontmatter_codex_reads() -> None:
     """`allowed-tools` is a Claude Code field.
 

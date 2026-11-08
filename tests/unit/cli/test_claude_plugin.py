@@ -285,7 +285,8 @@ def test_claude_plugin_skills_have_metadata() -> None:
     for path in skill_paths:
         text = path.read_text(encoding="utf-8")
         assert _has_skill_frontmatter(text)
-        assert re.search(r"^name: \S+", text, re.MULTILINE)
+        match = re.search(r"^name:\s*(\S+)", text, re.MULTILINE)
+        assert match and match.group(1) == path.parent.name
 
 
 def _has_command_frontmatter(text: str) -> bool:

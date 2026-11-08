@@ -1,0 +1,31 @@
+{
+  "name": "repowise",
+  "displayName": "Repowise",
+  "version": "1.0.0",
+  "description": "Ask how a codebase works: architecture, how features work, symbols and callers, change risk, code health, dead code and design decisions. Answers come from the Repowise index of the repository, so they cite real files and line ranges. Read-only.",
+  "author": {
+    "name": "Repowise",
+    "email": "hello@repowise.dev"
+  },
+  "homepage": "https://repowise.dev",
+  "repository": "https://github.com/repowise-dev/repowise",
+  "license": "AGPL-3.0-only",
+  "logo": "assets/logo.png",
+  "keywords": [
+    "repowise",
+    "codebase",
+    "code-intelligence",
+    "architecture",
+    "code-health",
+    "change-risk",
+    "dead-code",
+    "mcp"
+  ],
+  "category": "developer-tools",
+  "tags": [
+    "mcp",
+    "codebase",
+    "code-health",
+    "documentation"
+  ]
+}

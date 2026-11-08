@@ -21,7 +21,8 @@ that CCN charges one point is one point here too. It changes no stored CCN.
 "Top level" means not nested inside another branch, case or catch. Loops,
 ``try`` / ``with`` blocks and closures are walked through, since a visitor's
 dispatch usually sits inside the loop that reads the next token, and a
-middleware factory's inside the closure it returns.
+middleware factory's inside the closure it returns. A block-bodied arrow bound
+to a name is not: it is a unit of its own, with its own dispatch.
 
 """
 
@@ -31,6 +32,7 @@ import re
 from collections import Counter
 from typing import TYPE_CHECKING, NamedTuple
 
+from .ast_utils import is_named_block_lambda
 from .cyclomatic import (
     _ELSE_IF_NODE_KINDS,
     _collect_case_children,
@@ -291,12 +293,20 @@ def dispatch_points(body: Node, lmap: LanguageNodeMap) -> Dispatch:
     """The largest top-level dispatch on one subject, by decision points."""
     stop_kinds = lmap.case_kinds | lmap.catch_kinds | lmap.function_kinds
     descend_past = stop_kinds | lmap.switch_kinds | lmap.branch_kinds
+    lambda_kinds = lmap.lambda_kinds
     best = Dispatch()
     stack: list[Node] = [body]
     while stack:
         children = [c for c in stack.pop().children if c.is_named]
         best = max([best, *_dispatches(children, lmap)])
-        stack.extend(c for c in children if c.type not in descend_past)
+        # A named block-bodied arrow is a unit of its own, as the CCN walk
+        # reads it, so its dispatches are its own too.
+        stack.extend(
+            c
+            for c in children
+            if c.type not in descend_past
+            and not (c.type in lambda_kinds and is_named_block_lambda(c, lmap))
+        )
     return best
 
 

@@ -207,12 +207,19 @@ def test_a_partly_lost_source_keeps_what_survived():
 
 
 async def test_both_commit_miners_ask_for_the_measured_budget(tmp_path):
-    """One constant, so a change cannot raise one lane and starve the other."""
+    """All three decision miners must use the shared token budget."""
     assert _BATCH_MAX_TOKENS >= 8000
 
     ex = _extractor(tmp_path, "[]")
+
+    # Stub comment snippets to ensure comment archaeology calls the provider.
+    ex._comment_snippets = lambda: [
+        ("src/example.py", "We chose caching because it reduces latency.")
+    ]
+
     await ex.mine_pr_bodies()
     await ex.mine_git_archaeology()
+    await ex.mine_comment_archaeology()
 
-    assert ex.test_provider.max_tokens
+    assert len(ex.test_provider.max_tokens) == 3
     assert set(ex.test_provider.max_tokens) == {_BATCH_MAX_TOKENS}
