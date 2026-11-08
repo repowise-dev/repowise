@@ -372,6 +372,26 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
 # duplicate. Generous enough to cover two hook processes racing on the same
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
+_MAX_MARKER_CLEANUP_PER_RUN = 20
+
+
+def _cleanup_stale_markers(
+    temp_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
+) -> None:
+    """Delete expired .repowise-augment-* markers."""
+    deleted = 0
+    try:
+        for entry in temp_dir.glob(".repowise-augment-*"):
+            if deleted >= max_delete:
+                break
+            try:
+                if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
+                    entry.unlink(missing_ok=True)
+                    deleted += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 def _claim_emission(event: str, context: str) -> bool:
@@ -406,6 +426,7 @@ def _claim_emission(event: str, context: str) -> bool:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
+            _cleanup_stale_markers(marker.parent, now)
             return True
         except FileExistsError:
             # Someone emitted recently — defer unless the marker is stale, in
@@ -418,6 +439,7 @@ def _claim_emission(event: str, context: str) -> bool:
                 return True
             with contextlib.suppress(OSError):
                 marker.write_text(str(now), encoding="utf-8")
+            _cleanup_stale_markers(marker.parent, now)
             return True
     except Exception:
         return True

@@ -196,3 +196,29 @@ def test_edit_post_tool_use_stays_silent_without_codex_client(
 
     assert result.exit_code == 0
     assert result.output == ""
+
+
+def test_claim_emission_cleans_up_expired_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import time
+
+    from repowise.cli.commands.augment_cmd.command import _claim_emission
+
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+    active = tmp_path / ".repowise-augment-active"
+    expired = tmp_path / ".repowise-augment-expired"
+    active.write_text("active", encoding="utf-8")
+    expired.write_text("expired", encoding="utf-8")
+
+    now = time.time()
+    os.utime(str(expired), (now - 20, now - 20))
+    os.utime(str(active), (now, now))
+
+    claimed = _claim_emission("test_event", "test_context")
+    assert claimed is True
+
+    assert not expired.exists()
+    assert active.exists()
