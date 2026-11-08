@@ -12,12 +12,22 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any, Protocol
 
-from ..models import REGISTRATION_HINT
+from ..models import REGISTRATION_HINT, is_dynamic_edge
+
+# Stamped on nodes by passes every build runs over every file (warmups,
+# always-run detection), so a seeded value could only be stale.
+_REBUILT_NODE_ATTRS = frozenset({"package_export", "always_run_reason"})
+# Stamped on a re-resolved file's own node by the type-reference pass, which
+# adds to whatever is there.
+_SCOPE_REBUILT_NODE_ATTRS = frozenset({"local_type_uses"})
+# Edge types only the framework pass writes; dynamic hints are matched by prefix.
+_FRAMEWORK_EDGE_TYPES = frozenset({"framework", "framework_binds"})
 
 
 class _ScopedGraphHost(Protocol):
     _graph: Any
     _parsed_files: dict[str, Any]
+    _stashed_co_changes: list[tuple[str, str, dict[str, Any]]]
 
 
 class ScopedBuildMixin:
@@ -33,28 +43,44 @@ class ScopedBuildMixin:
         return [(p, pf) for p, pf in parsed_files.items() if p in scope]
 
     def seed_graph_snapshot(
-        self: _ScopedGraphHost, snapshot: dict[str, Any], drop_paths: Collection[str] = ()
+        self: _ScopedGraphHost,
+        snapshot: dict[str, Any],
+        drop_paths: Collection[str] = (),
+        scope: Collection[str] = (),
     ) -> int:
         """Seed the exact last-built graph; return its edge count.
 
         Current parse results own the file/symbol attributes. Snapshot values
-        fill only attributes the parser does not provide, while all edge
-        attributes (including non-column resolver facts) are restored exactly.
-        Nodes of the deleted files in *drop_paths*, and their edges, are skipped.
+        fill only attributes the parser does not provide and this build will
+        not stamp again, while all edge attributes (including non-column
+        resolver facts) are restored exactly. Nodes of the deleted files in
+        *drop_paths*, symbols the files in *scope* no longer declare, and the
+        edges of both are skipped.
         """
         graph = self._graph
         drop = set(drop_paths)
+        rescoped = set(scope)
         dropped: set[str] = set()
         for node_id, attrs in snapshot.get("nodes", ()):
-            if drop and (node_id in drop or attrs.get("file_path") in drop):
+            owner = attrs.get("file_path")
+            if node_id in drop or owner in drop:
                 dropped.add(node_id)
                 continue
             if node_id not in graph:
+                if owner in rescoped:
+                    dropped.add(node_id)
+                    continue
                 graph.add_node(node_id, **attrs)
                 continue
             node = graph.nodes[node_id]
+            rebuilt = (
+                _REBUILT_NODE_ATTRS | _SCOPE_REBUILT_NODE_ATTRS
+                if node_id in rescoped or owner in rescoped
+                else _REBUILT_NODE_ATTRS
+            )
             for key, value in attrs.items():
-                node.setdefault(key, value)
+                if key not in rebuilt:
+                    node.setdefault(key, value)
         added = 0
         for source, target, attrs in snapshot.get("edges", ()):
             if source in dropped or target in dropped:
@@ -136,3 +162,64 @@ class ScopedBuildMixin:
                     and not data.get("no_scope_widening")
                 )
             }
+
+    def _clear_global_pass_edges(self: _ScopedGraphHost, scope: frozenset[str]) -> None:
+        """Drop seeded edges the whole-graph passes of a refreshing patch re-derive.
+
+        Registration and override-dispatch edges are rebuilt by
+        :meth:`build`; framework and dynamic-hint edges by the synthetic edge
+        passes that run after it. Removing them first leaves the resolver
+        passes the same graph a full build gives them. ``co_changes`` edges on
+        a re-resolved file are set aside the same way and put back by
+        :meth:`restore_co_change_edges` once the synthetic passes are done:
+        a full build adds them last, and only between files nothing else
+        links.
+        """
+        graph = self._graph
+        stale: list[tuple[str, str]] = []
+        stashed: list[tuple[str, str, dict[str, Any]]] = []
+        for source, target, data in graph.edges(data=True):
+            edge_type = data.get("edge_type")
+            if edge_type == "co_changes":
+                if source in scope or target in scope:
+                    stashed.append((source, target, dict(data)))
+                    stale.append((source, target))
+            elif (
+                edge_type == "dispatches_to"
+                or edge_type in _FRAMEWORK_EDGE_TYPES
+                or is_dynamic_edge(edge_type)
+                or data.get("hint_source") == REGISTRATION_HINT
+            ):
+                stale.append((source, target))
+        graph.remove_edges_from(stale)
+        self._stashed_co_changes = stashed
+
+    def restore_co_change_edges(self: _ScopedGraphHost) -> None:
+        """Put back the set-aside ``co_changes`` edges between still-unlinked files."""
+        graph = self._graph
+        for source, target, data in getattr(self, "_stashed_co_changes", ()):
+            if source not in graph or target not in graph:
+                continue
+            if graph.has_edge(source, target) or graph.has_edge(target, source):
+                continue
+            graph.add_edge(source, target, **data)
+        self._stashed_co_changes = []
+
+    def _drop_unreferenced_seed_nodes(self: _ScopedGraphHost, seeded: set[str]) -> None:
+        """Remove seeded nodes no file declares and no edge reaches any more.
+
+        An external module or anchor node only exists because something linked
+        to it; a full build would not create one nothing links to.
+        """
+        graph = self._graph
+        parsed = self._parsed_files
+        graph.remove_nodes_from(
+            [
+                node
+                for node in seeded
+                if node in graph
+                and graph.degree(node) == 0
+                and node not in parsed
+                and graph.nodes[node].get("file_path") not in parsed
+            ]
+        )
