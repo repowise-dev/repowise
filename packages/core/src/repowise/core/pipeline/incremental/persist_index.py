@@ -203,7 +203,27 @@ async def persist_git(ctx: IncrementalPersist) -> None:
             ctx.git_decay_map,
             ctx.full_git_summary,
             keep_commit_health=not ctx.history_window_changed,
+            gone_paths=_deleted_paths(ctx),
         )
+
+
+def _deleted_paths(ctx: IncrementalPersist) -> set[str]:
+    """Paths this range deleted or renamed away that are gone from disk and git."""
+    from repowise.core.pipeline.persist import path_liveness
+
+    is_live = path_liveness(ctx.repo_path)
+    if is_live is None:
+        return set()
+    candidates = {
+        path
+        for fd in ctx.file_diffs or []
+        for path in (
+            fd.path if fd.status == "deleted" else None,
+            getattr(fd, "old_path", None) if fd.status == "renamed" else None,
+        )
+        if path
+    }
+    return {path for path in candidates if not is_live(path)}
 
 
 async def capture_commits(ctx: IncrementalPersist) -> None:
@@ -396,14 +416,20 @@ async def refresh_git_rollups(ctx: IncrementalPersist) -> None:
     # Repo-wide aggregates over rows this run rewrites, so they go after both
     # writers. Fix attribution maps each fix's old line ranges onto
     # wiki_symbols, which still held the last index's spans until the symbol
-    # step; the git percentiles rank git_metadata, which still held the deleted
-    # files' rows until the prune.
+    # step. The git step ranks the table without the files this range deleted;
+    # a row the prune removed on other evidence moves the ranks again, and the
+    # percentile-gated history markers with them.
     from repowise.core.persistence.crud import recompute_git_percentiles
     from repowise.core.pipeline.fix_rollups import apply_fix_rollups
 
     with timed(ctx.timings, "persist.git_rollups"):
         if ctx.pruned_paths:
+            from .health import refresh_unchanged_history
+
             await recompute_git_percentiles(ctx.session, ctx.repo_id)
+            await refresh_unchanged_history(
+                ctx.session, ctx.repo_id, ctx.repo_path, skip_paths=set()
+            )
         await apply_fix_rollups(ctx.session, ctx.repo_id)
 
 

@@ -69,3 +69,26 @@ async def test_tied_entropy_ranks_by_path_in_both_paths(async_session) -> None:
     assert {r["file_path"]: r["co_change_scatter_pct"] for r in rows} == expected
     assert {r.file_path: r.change_entropy_pct for r in stored} == pytest.approx(expected)
     assert {r.file_path: r.co_change_scatter_pct for r in stored} == pytest.approx(expected)
+
+
+async def test_deleted_rows_leave_before_the_percentiles_are_ranked(async_session) -> None:
+    from repowise.core.pipeline.persist import persist_git_refresh
+
+    repo = await insert_repo(async_session)
+    rows = [
+        {"file_path": f"m{i}.py", "temporal_hotspot_score": float(i), "commit_count_90d": 9}
+        for i in range(3)
+    ]
+    await upsert_git_metadata_bulk(async_session, repo.id, rows)
+
+    await persist_git_refresh(
+        async_session, repo.id, {r["file_path"]: r for r in rows}, None, None,
+        gone_paths={"m2.py"},
+    )
+
+    stored = (
+        (await async_session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert {r.file_path: r.churn_percentile for r in stored} == {"m0.py": 0.0, "m1.py": 1.0}

@@ -399,6 +399,10 @@ async def recompute_git_percentiles(
     if not rows:
         return 0
 
+    # Ties rank by path in code-point order, as the Python ranker sorts them;
+    # a Postgres locale collation would order the same paths differently.
+    bind = session.get_bind()
+    path_order = 'file_path COLLATE "C"' if bind.dialect.name == "postgresql" else "file_path"
     sql = """
 WITH ranked AS (
   SELECT id,
@@ -411,7 +415,7 @@ WITH ranked AS (
 ),
 entropy_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0), file_path) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0), {path_order}) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
@@ -420,7 +424,7 @@ entropy_ranked AS (
 ),
 scatter_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0), file_path) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0), {path_order}) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
@@ -451,7 +455,7 @@ SET churn_percentile = COALESCE(
 WHERE repository_id = :repo_id;
 """
     await session.execute(
-        text(sql),
+        text(sql.format(path_order=path_order)),
         {
             "repo_id": repository_id,
             "min_commits_90d": HOTSPOT_MIN_COMMITS_90D,

@@ -115,7 +115,7 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert rec.args_of("fts.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
     assert rec.args_of("vectors.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
-    assert git_kwargs == {"keep_commit_health": True}
+    assert git_kwargs == {"keep_commit_health": True, "gone_paths": set()}
 
 
 async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(repo, monkeypatch):
@@ -126,7 +126,7 @@ async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(rep
 
     assert "persist_incremental_commits" not in rec.order
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
-    assert git_kwargs == {"keep_commit_health": False}
+    assert git_kwargs == {"keep_commit_health": False, "gone_paths": set()}
     assert [a[2] for a, _k in rec.args_of("purge_proposed_decisions_by_source")] == [
         "code_comment",
         "git_archaeology",
