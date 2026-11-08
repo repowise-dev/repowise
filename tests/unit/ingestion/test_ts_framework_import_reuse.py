@@ -4,10 +4,14 @@ The Express, Hono, tRPC, Next, Remix and Angular handlers resolve a file's
 imports through ``_build_ts_var_to_file``. It is memoised on the pass's
 ``ResolverContext``, Express builds it only for files whose text names an
 identifier to look up, and Express, Hono and tRPC read the bytes ingestion
-already holds. None of that may change the graph. These tests pin the edges on
-a repository covering route registration across files, path aliases, barrels,
-re-exports and CRLF sources, then mutate it (edit, add, remove, rename,
-tsconfig change) and compare every graph with the unshared, eager resolution.
+already holds. None of that may change the graph.
+
+The pinned edge set below was taken from the code before the map was shared,
+on a repository covering route registration across files, path aliases,
+barrels, re-exports and CRLF sources, and again after each mutation (edit, add,
+remove, rename, tsconfig change; each a fresh build, as every framework pass
+gets a fresh context). The memo and the source-map read are also switched off
+and the full graph compared, which isolates those two from the handler logic.
 """
 
 from __future__ import annotations
@@ -86,6 +90,14 @@ _FILES: dict[str, str] = {
         "app.route('/misc', misc);\n"
     ),
     "src/api/notes.ts": "// Mentions hono but registers nothing.\nexport const n = 1;\n",
+    # The only route names the second, renamed binding of a shared import.
+    "src/api/second.ts": (
+        "import { Hono } from 'hono';\n"
+        "import { first, second as picked } from '../pair/handlers';\n"
+        "export const app = new Hono();\n"
+        "app.get('/picked', picked);\n"
+    ),
+    "src/pair/handlers.ts": "export const first = 1;\nexport function second() {}\n",
     "src/handlers/items.ts": "export function listItems() { return []; }\n",
     "src/handlers/item.ts": "export function getItem() { return {}; }\n",
     "src/handlers/misc.ts": "export const ping = () => 'pong';\n",
@@ -110,6 +122,7 @@ _EXPECTED: set[tuple[str, str]] = {
     ("src/api/app.ts", "src/handlers/item.ts"),
     ("src/api/app.ts", "src/handlers/items.ts"),
     ("src/api/app.ts", "src/handlers/misc.ts"),
+    ("src/api/second.ts", "src/pair/handlers.ts"),
     ("src/crlf.ts", "src/middleware/audit.ts"),
     ("src/routes/index.ts", "src/routes/admin.ts"),
     ("src/routes/index.ts", "src/routes/users.ts"),
@@ -367,16 +380,16 @@ def test_memo_follows_the_file_set_and_the_parsed_file(repo: Path) -> None:
     assert first["admin"] == "src/routes/index.ts"
     assert fe_base._build_ts_var_to_file(server, "src/server.ts", ctx, ctx.path_set) is first
 
-    # A different file set (the barrel is gone) must not answer from the memo.
-    smaller = ctx.path_set - {"src/routes/index.ts"}
-    assert "usersRouter" not in fe_base._build_ts_var_to_file(server, "src/server.ts", ctx, smaller)
-
-    # Nor may a different parse of the same path.
+    # A different parse of the same path, same file set, must not answer from the memo.
     reparsed = copy.copy(server)
     reparsed.imports = [imp for imp in server.imports if imp.module_path != "@/routes"]
     assert "usersRouter" not in fe_base._build_ts_var_to_file(
         reparsed, "src/server.ts", ctx, ctx.path_set
     )
+
+    # Nor may a different file set (the barrel is gone).
+    smaller = ctx.path_set - {"src/routes/index.ts"}
+    assert "usersRouter" not in fe_base._build_ts_var_to_file(server, "src/server.ts", ctx, smaller)
 
 
 def test_reused_context_gives_identical_edges(repo: Path) -> None:

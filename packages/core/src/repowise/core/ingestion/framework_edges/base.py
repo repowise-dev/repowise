@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..source_text import source_text as _shared_source_text
+
 if TYPE_CHECKING:
     import networkx as nx
 
@@ -140,19 +142,13 @@ def read_text(parsed: Any, encoding: str = "utf-8") -> str:
 
 
 def read_text_from(path: str, parsed: Any, source_map: dict[str, bytes] | None) -> str:
-    """:func:`read_text`'s exact result, from the bytes ingestion already read.
+    """:func:`read_text`'s result, from the bytes ingestion already read.
 
-    Decodes the way ``Path.read_text`` does (``errors="ignore"`` and universal
-    newlines), so a regex over the text matches the same spans whichever source
-    it came from. Falls back to disk when *source_map* lacks *path*.
+    Decoded like the disk read (``errors="ignore"``, universal newlines), so a
+    regex over it matches the same spans. Falls back to disk when *source_map*
+    lacks *path*.
     """
-    raw = source_map.get(path) if source_map else None
-    if raw is None:
-        return read_text(parsed)
-    text = raw.decode("utf-8", errors="ignore")
-    if "\r" in text:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return text
+    return _shared_source_text(path, parsed.file_info.abs_path, source_map) or ""
 
 
 def source_text(
@@ -249,6 +245,9 @@ def _build_ts_var_to_file(
             continue
         # One resolution per import, not per name: every name of an import
         # shares its module path, and resolving is deterministic within a run.
+        # Fewer calls drop no graph node: the resolver's one side effect, an
+        # ``external:`` node, was already added by the import pass that ran
+        # (or was seeded) before this one.
         resolved = resolve_import(imp.module_path, path, language, ctx)
         if resolved and resolved in path_set:
             for name in imp.local_names:
