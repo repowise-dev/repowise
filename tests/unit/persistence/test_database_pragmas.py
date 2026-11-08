@@ -385,3 +385,52 @@ async def test_planner_stats_skip_other_backends() -> None:
             raise AssertionError("ANALYZE must not run off SQLite")
 
     await refresh_planner_stats(_Engine())  # type: ignore[arg-type]
+
+
+def test_postgres_engine_configures_keepalives_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import patch
+
+    from repowise.core.persistence import database
+
+    monkeypatch.delenv("REPOWISE_PG_KEEPALIVES_IDLE", raising=False)
+    monkeypatch.delenv("REPOWISE_PG_KEEPALIVES_INTERVAL", raising=False)
+    monkeypatch.delenv("REPOWISE_PG_KEEPALIVES_COUNT", raising=False)
+    monkeypatch.delenv("REPOWISE_PG_COMMAND_TIMEOUT", raising=False)
+
+    with patch.object(database, "create_async_engine") as mock_create:
+        database.create_engine("postgresql://user:pass@localhost:5432/testdb")
+        assert mock_create.called
+        kwargs = mock_create.call_args.kwargs
+        connect_args = kwargs.get("connect_args", {})
+        assert connect_args.get("server_settings") == {
+            "tcp_keepalives_idle": "60",
+            "tcp_keepalives_interval": "15",
+            "tcp_keepalives_count": "4",
+        }
+        assert "command_timeout" not in connect_args
+
+
+def test_postgres_engine_keepalives_and_command_timeout_configurable_via_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import patch
+
+    from repowise.core.persistence import database
+
+    monkeypatch.setenv("REPOWISE_PG_KEEPALIVES_IDLE", "120")
+    monkeypatch.setenv("REPOWISE_PG_KEEPALIVES_INTERVAL", "30")
+    monkeypatch.setenv("REPOWISE_PG_KEEPALIVES_COUNT", "5")
+    monkeypatch.setenv("REPOWISE_PG_COMMAND_TIMEOUT", "45")
+
+    with patch.object(database, "create_async_engine") as mock_create:
+        database.create_engine("postgresql://user:pass@localhost:5432/testdb")
+        assert mock_create.called
+        kwargs = mock_create.call_args.kwargs
+        connect_args = kwargs.get("connect_args", {})
+        assert connect_args.get("server_settings") == {
+            "tcp_keepalives_idle": "120",
+            "tcp_keepalives_interval": "30",
+            "tcp_keepalives_count": "5",
+        }
+        assert connect_args.get("command_timeout") == 45
+

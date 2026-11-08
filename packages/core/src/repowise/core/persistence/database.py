@@ -178,6 +178,25 @@ __all__ = [
 DB_FILENAME = "wiki.db"
 REPOWISE_DIRNAME = ".repowise"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
+PG_KEEPALIVE_IDLE_ENV = "REPOWISE_PG_KEEPALIVES_IDLE"
+PG_KEEPALIVE_INTERVAL_ENV = "REPOWISE_PG_KEEPALIVES_INTERVAL"
+PG_KEEPALIVE_COUNT_ENV = "REPOWISE_PG_KEEPALIVES_COUNT"
+PG_COMMAND_TIMEOUT_ENV = "REPOWISE_PG_COMMAND_TIMEOUT"
+
+DEFAULT_PG_KEEPALIVES_IDLE = 60
+DEFAULT_PG_KEEPALIVES_INTERVAL = 15
+DEFAULT_PG_KEEPALIVES_COUNT = 4
+
+
+def _int_env(name: str, default: int | None = None) -> int | None:
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return default
+    try:
+        return int(val.strip())
+    except ValueError:
+        return default
+
 
 
 def get_repo_db_path(repo_path: str | Path) -> Path:
@@ -333,6 +352,30 @@ def create_engine(
         kwargs["pool_pre_ping"] = True
         if short_lived:
             kwargs["poolclass"] = NullPool
+
+        connect_args: dict[str, Any] = {}
+        server_settings: dict[str, str] = {}
+
+        idle = _int_env(PG_KEEPALIVE_IDLE_ENV, DEFAULT_PG_KEEPALIVES_IDLE)
+        interval = _int_env(PG_KEEPALIVE_INTERVAL_ENV, DEFAULT_PG_KEEPALIVES_INTERVAL)
+        count = _int_env(PG_KEEPALIVE_COUNT_ENV, DEFAULT_PG_KEEPALIVES_COUNT)
+        command_timeout = _int_env(PG_COMMAND_TIMEOUT_ENV, None)
+
+        if idle is not None:
+            server_settings["tcp_keepalives_idle"] = str(idle)
+        if interval is not None:
+            server_settings["tcp_keepalives_interval"] = str(interval)
+        if count is not None:
+            server_settings["tcp_keepalives_count"] = str(count)
+
+        if server_settings:
+            connect_args["server_settings"] = server_settings
+        if command_timeout is not None:
+            connect_args["command_timeout"] = command_timeout
+
+        if connect_args:
+            kwargs["connect_args"] = connect_args
+
 
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
