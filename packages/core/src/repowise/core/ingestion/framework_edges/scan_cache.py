@@ -37,6 +37,7 @@ _SCANNER_SOURCES = (
     _INGESTION_DIR / "framework_edges" / "test_path_strings.py",
     _INGESTION_DIR / "framework_edges" / "pytest_edges.py",
     _INGESTION_DIR / "framework_edges" / "alembic_runner.py",
+    _INGESTION_DIR / "framework_edges" / "scan_cache.py",
     _INGESTION_DIR / "languages" / "python_strings.py",
     _INGESTION_DIR / "source_text.py",
     _INGESTION_DIR.parent / "pyparse.py",
