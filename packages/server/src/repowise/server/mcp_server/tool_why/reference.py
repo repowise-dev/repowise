@@ -29,7 +29,23 @@ async def _why_reference(
     ctx, repository, records, _target_git, accepted = await _load_corpus(repo, None)
     async with get_session(ctx.session_factory) as session:
         await _attach_decision_evidence(session, records)
-        reference_id = await _follow_moved_decision_id(session, reference_id, records)
+        resolved_id, candidates = await _resolve_reference_id(session, reference_id, records)
+
+    meta = _build_meta(repository=repository)
+    if candidates:
+        return {
+            "mode": "reference",
+            "reference_id": reference_id,
+            "resolved": False,
+            "ambiguous": True,
+            "candidates": candidates,
+            "error": f"Decision id prefix {reference_id!r} is ambiguous; candidates: {', '.join(candidates)}",
+            "decisions": [],
+            "evidence_refs": [],
+            "_meta": meta,
+        }
+
+    reference_id = resolved_id
 
     payload = {
         "decisions": [
@@ -58,7 +74,6 @@ async def _why_reference(
         or any(ref["id"] == reference_id for ref in row.get("evidence_refs", []))
     ]
     matching_refs = _matching_evidence_refs(matches, reference_id, reference, ctx)
-    meta = _build_meta(repository=repository)
     persistence = (payload.get("_meta") or {}).get("reference_persistence")
     if persistence is not None:
         meta["reference_persistence"] = persistence
@@ -72,18 +87,70 @@ async def _why_reference(
     }
 
 
+async def _resolve_reference_id(
+    session: Any, reference_id: str, records: list
+) -> tuple[str, list[str]]:
+    """Resolve an exact or prefix decision id, following aliases or identifying ambiguous candidates."""
+    if reference_id.startswith("ev_"):
+        return reference_id, []
+
+    # 1. Exact match on live records
+    if any(record.id == reference_id for record in records):
+        return reference_id, []
+
+    # 2. Exact match on retired alias or direct ID in DB
+    direct = await resolve_decision_id(session, reference_id)
+    if direct and direct != reference_id:
+        return direct, []
+
+    # 3. Prefix match on live records
+    matching_records = sorted({r.id for r in records if r.id.startswith(reference_id)})
+    if len(matching_records) == 1:
+        return matching_records[0], []
+    if len(matching_records) > 1:
+        return reference_id, matching_records
+
+    # 4. Prefix match on DecisionRecord in DB
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
+    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
+
+    pattern = f"{escape_like(reference_id)}%"
+    stmt = (
+        select(DecisionRecord.id)
+        .where(DecisionRecord.id.like(pattern, escape=LIKE_ESCAPE))
+        .limit(10)
+    )
+    db_records = sorted([row[0] for row in (await session.execute(stmt)).all()])
+    if len(db_records) == 1:
+        return db_records[0], []
+    if len(db_records) > 1:
+        return reference_id, db_records
+
+    # 5. Prefix match on DecisionAlias
+    alias_stmt = (
+        select(DecisionAlias.decision_id, DecisionAlias.alias_id)
+        .where(DecisionAlias.alias_id.like(pattern, escape=LIKE_ESCAPE))
+        .limit(10)
+    )
+    aliases = (await session.execute(alias_stmt)).all()
+    if len(aliases) == 1:
+        target_id = aliases[0][0]
+        live_target = await resolve_decision_id(session, target_id) or target_id
+        return live_target, []
+    if len(aliases) > 1:
+        return reference_id, sorted({a[1] for a in aliases})
+
+    return reference_id, []
+
+
 async def _follow_moved_decision_id(
     session: Any, reference_id: str, records: list
 ) -> str:
     """The live id for a decision id that no longer names a live record."""
-    # A quoted id may name a decision that has since moved. A live id is left
-    # alone, so a merged candidate still answers about itself.
-    stale_decision_id = not reference_id.startswith("ev_") and not any(
-        record.id == reference_id for record in records
-    )
-    if stale_decision_id:
-        reference_id = await resolve_decision_id(session, reference_id) or reference_id
-    return reference_id
+    resolved_id, _ = await _resolve_reference_id(session, reference_id, records)
+    return resolved_id
 
 
 def _matching_evidence_refs(
