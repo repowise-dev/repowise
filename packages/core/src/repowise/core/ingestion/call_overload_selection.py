@@ -294,6 +294,21 @@ def _array_fit(
     return None if _argument_fit(takes, element, repo_types, type_parameters) is None else 1
 
 
+def _needs_java_type_parameters(
+    language: str,
+    typed: list[tuple[str, list[str]]],
+    repo_types: Mapping[str, bool],
+) -> bool:
+    """Whether any candidate Java member parameter might collide with known or repo types."""
+    if language != "java":
+        return False
+    return any(
+        p in repo_types or p in _JAVA_KNOWN_TYPES
+        for _, params in typed
+        for p in params
+    )
+
+
 def _closest_fit(
     members: list[tuple[str, list[str]]],
     argument_types: tuple[str | None, ...],
@@ -983,12 +998,11 @@ class OverloadSelectionMixin:
             closest = _exact_kotlin_fit(typed, argument_types)
         else:
             repo_types = self._jvm_lambda_type_map()
-            needs_type_params = language == "java" and any(
-                p in repo_types or p in _JAVA_KNOWN_TYPES
-                for _, params in typed
-                for p in params
+            type_params = (
+                self._member_type_parameters(found)
+                if _needs_java_type_parameters(language, typed, repo_types)
+                else None
             )
-            type_params = self._member_type_parameters(found) if needs_type_params else None
             closest = _closest_fit(
                 typed, argument_types, expanded, repo_types, type_params
             )
