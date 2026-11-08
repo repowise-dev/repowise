@@ -21,7 +21,7 @@ to the full rebuild with the reason recorded.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import replace
 from typing import Any
 
@@ -37,11 +37,8 @@ _SCOPE_FLOOR = 8
 # Edges that are not one file resolving another: containment, and git history.
 _NON_RESOLUTION_EDGES = frozenset({"defines", "has_method", "co_changes"})
 
-# Spelled by syntax, not by the code that reaches them: a default export is
-# reached through its file's importers (``importers_of``), and dunder or
-# constructor members through their class name. Matching them as words would
-# pull in nearly every file.
-_UNSPELLED = frozenset({"default", "constructor"})
+#: How many ``*`` re-export hops a re-routed import's names are followed through.
+_MAX_STAR_DEPTH = 16
 
 
 def _resolvable(parsed: Any) -> bool:
@@ -126,7 +123,12 @@ def _resolve_unchanged_imports(path: str, parsed: Any, ctx: Any) -> list[tuple[s
                 binding.source_file = source
 
 
-def _rerouted_names(parsed_files: dict[str, Any], imp: Any, targets: Iterable[str]) -> set[str]:
+def _rerouted_names(
+    parsed_files: dict[str, Any],
+    targets_of: Callable[[str], list[tuple[str, ...]]],
+    imp: Any,
+    targets: Iterable[str],
+) -> set[str]:
     """What a re-routed import can re-export: its own names, or for ``*`` its targets' names."""
     from .surface_names import _words
 
@@ -135,28 +137,63 @@ def _rerouted_names(parsed_files: dict[str, Any], imp: Any, targets: Iterable[st
         names.update(_words(binding.local_name, binding.exported_name))
     if names - {"*"} and "*" not in imp.imported_names:
         return names
-    for target in targets:
-        parsed = parsed_files.get(target)
-        if parsed is not None:
-            names |= _module_names(parsed)
+    return names | _star_closure_names(parsed_files, targets_of, targets)
+
+
+def _star_closure_names(
+    parsed_files: dict[str, Any],
+    targets_of: Callable[[str], list[tuple[str, ...]]],
+    targets: Iterable[str],
+) -> set[str]:
+    """Every name a whole-module import of *targets* can bind, through ``*`` re-exports.
+
+    A target that no longer exists has no parse; every file its last-saved
+    imports reached is followed instead, which can only over-collect.
+    """
+    names: set[str] = set()
+    seen: set[str] = set()
+    frontier = list(targets)
+    for _depth in range(_MAX_STAR_DEPTH):
+        if not frontier:
+            break
+        nxt: list[str] = []
+        for path in frontier:
+            if path in seen:
+                continue
+            seen.add(path)
+            module_names, onward = _module_names(parsed_files.get(path), targets_of(path))
+            names |= module_names
+            nxt.extend(onward)
+        frontier = nxt
     return names
 
 
-def _module_names(parsed: Any) -> set[str]:
-    """Every name a whole-module import of *parsed* can bind, its own imports included."""
+def _module_names(
+    parsed: Any | None, import_targets: list[tuple[str, ...]]
+) -> tuple[set[str], list[str]]:
+    """A module's bindable names, and the files its ``*`` imports re-export from.
+
+    *import_targets* holds each import's targets; for a deleted module (no
+    *parsed*) every one is followed.
+    """
     from .surface_names import _words
 
+    if parsed is None:
+        return set(), [t for found in import_targets for t in found]
     names = {sym.name for sym in parsed.symbols} | set(parsed.exports)
-    for imp in parsed.imports:
+    onward: list[str] = []
+    for imp, found in zip(parsed.imports, import_targets, strict=True):
         names.update(_words(*imp.imported_names))
         names.update(_words(*(binding.local_name for binding in imp.bindings)))
-    return names
+        if not imp.imported_names or "*" in imp.imported_names:
+            onward.extend(found)
+    return names, onward
 
 
-def _rerouted_files(
-    graph_builder: Any, scope: set[str], resolutions: dict[str, tuple]
-) -> tuple[set[str], set[str]]:
-    """Unchanged files whose imports now land elsewhere, and the names they carry.
+def _import_lookup(
+    graph_builder: Any, resolutions: dict[str, tuple]
+) -> Callable[[str], list[tuple[str, ...]]]:
+    """``targets_of(path)``: each import's targets now, or as last saved for a deleted file.
 
     Resolves against a copy of the graph, after the same warmups a build
     runs, so nothing here touches the graph the build will patch.
@@ -166,17 +203,58 @@ def _rerouted_files(
     parsed_files = graph_builder._parsed_files
     ctx = graph_builder.resolver_context(graph_builder._graph.copy())
     run_warmups(parsed_files, ctx)
+    fresh: dict[str, list[tuple[str, ...]]] = {}
+
+    def targets_of(path: str) -> list[tuple[str, ...]]:
+        parsed = parsed_files.get(path)
+        if parsed is None:
+            return [found for _r, _s, found in resolutions.get(path, (None, []))[1]]
+        if path not in fresh:
+            fresh[path] = _resolve_unchanged_imports(path, parsed, ctx)
+        return fresh[path]
+
+    return targets_of
+
+
+def _passed_on_names(
+    parsed_files: dict[str, Any],
+    resolutions: dict[str, tuple],
+    targets_of: Callable[[str], list[tuple[str, ...]]],
+    paths: Iterable[str],
+) -> set[str]:
+    """Names edited files pass on through whole-module imports, before and after.
+
+    The old imports are known only by where they resolved, so every file they
+    reached is followed, which can only over-collect.
+    """
+    reached: list[str] = []
+    for path in paths:
+        parsed = parsed_files.get(path)
+        if parsed is not None:
+            reached.extend(_module_names(parsed, targets_of(path))[1])
+        reached.extend(t for _r, _s, found in resolutions.get(path, (None, []))[1] for t in found)
+    return _star_closure_names(parsed_files, targets_of, reached)
+
+
+def _rerouted_files(
+    parsed_files: dict[str, Any],
+    targets_of: Callable[[str], list[tuple[str, ...]]],
+    edited: Collection[str],
+    resolutions: dict[str, tuple],
+) -> tuple[set[str], set[str]]:
+    """Unedited files whose imports now land elsewhere, and the names they carry."""
     rerouted: set[str] = set()
     names: set[str] = set()
     for path, parsed in parsed_files.items():
-        if path in scope or not parsed.imports:
+        if path in edited or not parsed.imports:
             continue
         saved = resolutions[path][1]
-        fresh = _resolve_unchanged_imports(path, parsed, ctx)
-        for imp, now, (_resolved, _sources, before) in zip(parsed.imports, fresh, saved, strict=True):
+        for imp, now, (_resolved, _sources, before) in zip(
+            parsed.imports, targets_of(path), saved, strict=True
+        ):
             if now != before:
                 rerouted.add(path)
-                names |= _rerouted_names(parsed_files, imp, (*now, *before))
+                names |= _rerouted_names(parsed_files, targets_of, imp, (*now, *before))
     return rerouted, names
 
 
@@ -218,7 +296,7 @@ def _files_spelling(
     skip: set[str],
 ) -> set[str]:
     """Files whose source spells one of *names*, or one of *stems* in any case."""
-    exact = _word_pattern(names - _UNSPELLED)
+    exact = _word_pattern(names)
     folded = _word_pattern(stems, re.IGNORECASE)
     if exact is None and folded is None:
         return set()
@@ -277,9 +355,15 @@ def expand_scope(
         seed, owners, graph_builder._graph, plan.removed, plan.scope
     )
     scope |= _importers(seed, owners, plan.importers_of)
-    rerouted, carried = _rerouted_files(graph_builder, scope, resolutions)
+    targets_of = _import_lookup(graph_builder, resolutions)
+    rerouted, carried = _rerouted_files(parsed_files, targets_of, set(plan.scope), resolutions)
     scope |= rerouted
-    names = _with_aliases(set(plan.names) | carried, parsed_files)
+    carried |= _passed_on_names(parsed_files, resolutions, targets_of, plan.module_imports_changed)
+    names = set(plan.names) | carried
+    # A changed default export travels under whatever name a re-export gives
+    # it; ``default`` itself is spelled by syntax, not by the code reaching it.
+    seeds = names | {"default"} if plan.importers_of else names
+    names |= _with_aliases(seeds, parsed_files) - {"default"}
     scope |= _files_spelling(
         parsed_files, graph_builder._source_map, names, plan.stems, scope
     )

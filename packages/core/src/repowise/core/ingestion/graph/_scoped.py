@@ -201,6 +201,13 @@ class ScopedBuildMixin:
         graph.remove_edges_from(stale)
         self._stashed_co_changes = stashed
 
+    def _clear_dispatch_edges(self: _ScopedGraphHost) -> None:
+        """Drop every seeded ``dispatches_to`` edge; :meth:`build` re-derives them all."""
+        graph = self._graph
+        graph.remove_edges_from(
+            [(u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "dispatches_to"]
+        )
+
     def restore_co_change_edges(self: _ScopedGraphHost) -> None:
         """Put back the set-aside ``co_changes`` edges between still-unlinked files."""
         graph = self._graph
@@ -219,7 +226,8 @@ class ScopedBuildMixin:
         to it; a full build would not create one nothing links to.
         """
         graph = self._graph
-        parsed = self._parsed_files
+        # A file the walk found but could not parse keeps its earlier rows.
+        parsed = set(self._parsed_files) | set(getattr(self, "traversed_file_paths", ()))
         graph.remove_nodes_from(
             [
                 node

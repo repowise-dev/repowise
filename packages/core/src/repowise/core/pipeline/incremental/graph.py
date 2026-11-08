@@ -220,10 +220,16 @@ def _plan_with_resolutions(
         if patch_plan.refresh:
             from .affected import expand_scope
 
-            patch_plan = expand_scope(
-                graph_builder, patch_plan, seed=seed_edges, resolutions=resolutions
-            )
+            try:
+                patch_plan = expand_scope(
+                    graph_builder, patch_plan, seed=seed_edges, resolutions=resolutions
+                )
+            except Exception as exc:  # a planner bug must cost a full build, not the update
+                logger.warning("graph_patch_scope_failed", error=str(exc))
+                patch_plan = PatchPlan(False, reason=f"patch planning failed: {exc}")
         return patch_plan, (resolutions if patch_plan.eligible else None)
+    if resolutions is None:
+        return PatchPlan(False, reason="no import resolution cache from this parser version"), None
 
     missing_path = next(
         (

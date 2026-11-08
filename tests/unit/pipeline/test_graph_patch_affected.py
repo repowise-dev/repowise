@@ -136,6 +136,24 @@ _JS = {
     "lib/noise.js": "export function noise() { return 0; }\n",
 }
 
+_STAR_TS = {
+    "src/index.ts": "export * from './old';\nexport function idx() { return 0; }\n",
+    "src/old.ts": "export * from './third';\n",
+    "src/third.ts": "export function deep() { return 1; }\n",
+    "src/other.ts": "export function deep() { return 2; }\n",
+    "src/consumer.ts": "import { deep } from './index';\nexport function go() { return deep(); }\n",
+    "src/noise.ts": "export function noise() { return 0; }\n",
+}
+
+_STAR_PY = {
+    "pkg/__init__.py": "from .old import *\n",
+    "pkg/old.py": "from .third import *\n",
+    "pkg/third.py": "def deep():\n    return 1\n",
+    "pkg/other.py": "def deep():\n    return 2\n",
+    "consumer.py": "from pkg import deep\n\ndef go():\n    return deep()\n",
+    "noise.py": "def noise():\n    return 0\n",
+}
+
 _CASES = [
     # Python
     pytest.param(_PY, _edit(pkg__helpers_DOT_py="def slug(text):\n    return text\n"), id="py-add-competing-definer"),
@@ -188,6 +206,18 @@ _CASES = [
     pytest.param(_JS, _edit(lib__main_DOT_js="import { total } from './calc.js';\nexport default function start() { return total([3]); }\n"), id="js-change-default-export"),
     pytest.param(_JS, _edit(lib__math_DOT_js=None), id="js-remove-module"),
     pytest.param(_JS, _edit(lib__more_DOT_js="export function add(a, b) { return a - b; }\n"), id="js-add-competing-definer"),
+    # ``*`` re-export chains: a middle file added, removed or re-pointed.
+    pytest.param(_STAR_TS, _edit(src__old_DOT_ts=None), id="ts-remove-middle-barrel"),
+    pytest.param(_STAR_TS, _edit(src__mid_DOT_ts="export * from './third';\n", src__index_DOT_ts="export * from './old';\nexport * from './mid';\n"), id="ts-add-middle-barrel"),
+    pytest.param(_STAR_TS, _edit(src__old_DOT_ts="export * from './other';\n"), id="ts-repoint-middle-barrel"),
+    pytest.param(_STAR_PY, _edit(pkg__old_DOT_py=None), id="py-remove-middle-barrel"),
+    pytest.param(_STAR_PY, _edit(pkg__old_DOT_py="from .other import *\n"), id="py-repoint-middle-barrel"),
+    # A function that happens to be called ``default``, bound by global name.
+    pytest.param(
+        {"pkg/h.py": "def default():\n    return 1\n", "app/glob.py": "def run():\n    return default()\n", "app/x.py": "def x():\n    return 0\n"},
+        _edit(pkg__more_DOT_py="def default():\n    return 2\n"),
+        id="py-add-competing-default-function",
+    ),
 ]
 
 
@@ -202,6 +232,32 @@ def test_refreshing_patch_equals_a_full_rebuild(
 
     assert patched.patch_plan.eligible, patched.patch_plan.reason
     assert patched.patch_plan.refresh
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+_DISPATCH = {
+    "base.py": "from impl import Impl\n\nclass Base:\n    def render(self):\n        return Impl().render()\n",
+    "impl.py": "import base\n\nclass Impl(base.Base):\n    def render(self):\n        return 1\n",
+    "noise.py": "def noise():\n    return 0\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("start", "after"),
+    [
+        pytest.param(_DISPATCH["base.py"], _DISPATCH["base.py"].replace("Impl().render()", "None"), id="call-removed"),
+        pytest.param(_DISPATCH["base.py"].replace("Impl().render()", "None"), _DISPATCH["base.py"], id="call-added"),
+    ],
+)
+def test_body_patch_re_derives_dispatch_edges(tmp_path: Path, start: str, after: str) -> None:
+    """A base method calling its override holds the pair with ``calls``, not ``dispatches_to``."""
+    tree, seed = _index(tmp_path, {**_DISPATCH, "base.py": start})
+    _edit(base_DOT_py=after)(tree)
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.patch_plan.refresh
     _assert_equals_full(tree, patched, tmp_path)
 
 
@@ -422,7 +478,7 @@ def test_files_spelling_matches_whole_words_and_folds_stems() -> None:
         "d.ts": b"export default 1",
     }
 
-    found = _files_spelling(files, source, {"slug", "default"}, {"button"}, set())
+    found = _files_spelling(files, source, {"slug"}, {"button"}, set())
 
     assert found == {"b.ts", "c.ts"}
 

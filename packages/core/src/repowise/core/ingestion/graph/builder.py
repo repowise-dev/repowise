@@ -481,6 +481,8 @@ class GraphBuilder(
         else:
             if refresh_global:
                 self._clear_global_pass_edges(scope_set)
+            else:
+                self._clear_dispatch_edges()
             self._clear_scope_edges(scope_set)
         # Passes that run over every file: a full build, or a patch whose edit
         # can change what they read (``refresh_global``).
@@ -642,8 +644,9 @@ class GraphBuilder(
 
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
-        if run_global:
-            self._resolve_override_dispatch(progress=progress)
+        # Reads only the graph and is cheap, so every build re-derives it: a
+        # seeded edge cannot tell whether a call now holds its pair.
+        self._resolve_override_dispatch(progress=progress)
 
         # Which symbols a package exports, read off the imports just resolved.
         try:

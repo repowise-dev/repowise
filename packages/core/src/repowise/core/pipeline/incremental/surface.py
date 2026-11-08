@@ -54,8 +54,9 @@ class PatchPlan:
     build re-runs its whole-graph passes, and the scope must first be widened
     to every file the edit can reach, using ``names`` (identifiers the edit
     added, removed or changed), ``stems`` (lowercased file-name words of added
-    or removed files) and ``importers_of`` (files whose importers must be
-    re-resolved).
+    or removed files), ``importers_of`` (files whose importers must be
+    re-resolved) and ``module_imports_changed`` (edited files whose ``*`` or
+    whole-module imports changed, so the names they pass on did).
     """
 
     eligible: bool
@@ -66,6 +67,7 @@ class PatchPlan:
     names: frozenset[str] = frozenset()
     stems: frozenset[str] = frozenset()
     importers_of: tuple[str, ...] = ()
+    module_imports_changed: tuple[str, ...] = ()
 
 
 def is_inert(parsed: Any) -> bool:
@@ -350,4 +352,5 @@ def plan_patch(
         names=keys.names,
         stems=keys.stems,
         importers_of=keys.importers_of,
+        module_imports_changed=keys.module_imports_changed,
     )
