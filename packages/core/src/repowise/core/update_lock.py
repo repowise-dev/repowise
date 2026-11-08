@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 UPDATE_LOCK_FILENAME = ".update.lock"
 
@@ -178,6 +178,77 @@ def release_update_lock(repo_path: Path) -> None:
 def release_workspace_lock(workspace_root: Path) -> None:
     """Remove the workspace-level update lock. Safe to call if it doesn't exist."""
     _release_lock_at(workspace_update_lock_path(workspace_root))
+
+
+class RepoUpdateLocks(NamedTuple):
+    """Result of :func:`try_acquire_update_locks`.
+
+    ``workspace_root`` is the workspace the repo belongs to, or ``None`` for
+    a standalone repo (no workspace lock exists to hold). ``blocking_owner``
+    is ``None`` when both locks were acquired; otherwise ``blocking_scope``
+    names the lock that lost (``"workspace"`` or ``"repo"``) and
+    ``blocking_owner`` is its holder's payload.
+    """
+
+    workspace_root: Path | None
+    blocking_owner: dict[str, Any] | None
+    blocking_scope: str | None
+
+
+def try_acquire_update_locks(
+    repo_path: Path,
+    target_commit: str | None,
+    *,
+    workspace_root: Path | None = None,
+) -> RepoUpdateLocks:
+    """Acquire the per-repo lock and, for a workspace member, the workspace lock.
+
+    One lock domain for the two entry points that used to race (#5341): a
+    repo-level ``repowise update`` — exactly what the post-commit hook spawns —
+    took only the per-repo lock, so it could run alongside a workspace pass
+    holding the workspace lock and rewrite the cross-repo layer under it.
+    ``workspace add`` indexes under the same guard. Both locks are taken here
+    so neither entry point can run while the other holds the workspace lock.
+
+    The workspace lock is taken first — the same order the workspace pass
+    uses — so the two never wait on each other in opposite order. Both
+    acquires are non-blocking try-acquires; a loss is reported, never waited
+    on. When the per-repo acquire loses after the workspace lock was taken,
+    the workspace lock is released again, so a loss never leaves a lock held.
+
+    *workspace_root* guards an explicit workspace (``workspace add`` passes
+    the workspace it is adding to, which need not contain the added repo);
+    when omitted it is resolved by walking up from *repo_path*, which is how
+    a member update finds its workspace. A repo outside any workspace takes
+    only the per-repo lock.
+
+    Callers must release with :func:`release_update_locks` when
+    ``blocking_owner`` is ``None``.
+    """
+    from repowise.core.workspace.config import find_workspace_root
+
+    if workspace_root is None:
+        workspace_root = find_workspace_root(repo_path)
+    if workspace_root is not None:
+        workspace_owner = update_workspace_lock(workspace_root)
+        if workspace_owner is not None:
+            return RepoUpdateLocks(workspace_root, workspace_owner, "workspace")
+    repo_owner = try_acquire_update_lock(repo_path, target_commit)
+    if repo_owner is not None:
+        if workspace_root is not None:
+            release_workspace_lock(workspace_root)
+        return RepoUpdateLocks(workspace_root, repo_owner, "repo")
+    return RepoUpdateLocks(workspace_root, None, None)
+
+
+def release_update_locks(repo_path: Path, workspace_root: Path | None) -> None:
+    """Release what :func:`try_acquire_update_locks` acquired.
+
+    Safe to call when nothing is held: each release tolerates a missing file.
+    """
+    release_update_lock(repo_path)
+    if workspace_root is not None:
+        release_workspace_lock(workspace_root)
 
 
 def _read_lock_at(lock_path: Path) -> dict[str, Any] | None:

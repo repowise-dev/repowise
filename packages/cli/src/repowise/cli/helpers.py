@@ -253,7 +253,16 @@ from repowise.core.update_lock import (
     release_update_lock as release_update_lock,
 )
 from repowise.core.update_lock import (
+    release_update_locks as release_update_locks,
+)
+from repowise.core.update_lock import (
+    release_workspace_lock as release_workspace_lock,
+)
+from repowise.core.update_lock import (
     try_acquire_update_lock as try_acquire_update_lock,
+)
+from repowise.core.update_lock import (
+    try_acquire_update_locks as try_acquire_update_locks,
 )
 
 T = TypeVar("T")
