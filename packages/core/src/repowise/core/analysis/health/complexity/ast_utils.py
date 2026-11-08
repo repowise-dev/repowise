@@ -278,6 +278,12 @@ def _node_text(node: Node) -> str:
     return (node.text or b"").decode("utf-8", errors="replace")
 
 
+# Wrappers a lambda's binding is read through: ``(() => {})``, ``(() => {}) as T``.
+_TRANSPARENT_LAMBDA_PARENTS = frozenset(
+    {"parenthesized_expression", "as_expression", "satisfies_expression"}
+)
+
+
 def _find_assigned_lambda_name(node: Node) -> str | None:
     parent = node.parent
     while parent is not None:
@@ -303,10 +309,61 @@ def _find_assigned_lambda_name(node: Node) -> str | None:
             lhs = parent.child_by_field_name("lhs")
             if lhs is not None and lhs.text is not None:
                 return _node_text(lhs)
-        if parent.type not in {"parenthesized_expression", "as_expression", "satisfies_expression"}:
+        if parent.type == "pair" and node.type in _UNIT_LAMBDA_KINDS:
+            # JS/TS ``{ check: () => { ... } }``: the property key names it.
+            # Other grammars' ``pair`` (a Python dict entry) is left alone.
+            key = parent.child_by_field_name("key")
+            if key is not None and key.text is not None:
+                return _node_text(key).strip("'\"`")
+        if parent.type not in _TRANSPARENT_LAMBDA_PARENTS:
             return None
         parent = parent.parent
     return None
+
+
+# Lambda kinds that can be a unit of their own when nested in a function. Only
+# the JS/TS ``arrow_function`` qualifies: PHP's ``arrow_function`` (``fn() =>
+# expr``) never has a block body, and no other grammar binds a block-bodied
+# lambda to a name often enough to read it as a function.
+_UNIT_LAMBDA_KINDS = frozenset({"arrow_function"})
+# Where a lambda is bound to a name: ``const f = ...``, ``obj.f = ...``,
+# ``{ f: ... }``.
+_UNIT_LAMBDA_HOLDERS = frozenset({"variable_declarator", "assignment_expression", "pair"})
+
+
+def is_named_block_lambda(node: Node, lmap: LanguageNodeMap) -> bool:
+    """True for a lambda that is a function in every practical sense.
+
+    A JS/TS arrow function with a ``{ ... }`` body bound to a name, as a
+    variable's value, the right side of an assignment or an object property's
+    value, read through parentheses and ``as`` / ``satisfies``. Nested in a
+    function, it is measured as a unit of its own, like a nested ``function``.
+    An arrow passed as an argument (an inline callback) or with an expression
+    body is not one and stays with the function that holds it.
+    """
+    if node.type not in _UNIT_LAMBDA_KINDS or node.type not in lmap.lambda_kinds:
+        return False
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "statement_block":
+        return False
+    holder = _binding_holder(node)
+    return (
+        holder is not None and holder.type in _UNIT_LAMBDA_HOLDERS and _is_bound_value(node, holder)
+    )
+
+
+def _binding_holder(node: Node) -> Node | None:
+    """*node*'s parent, read through parentheses and ``as`` / ``satisfies``."""
+    holder = node.parent
+    while holder is not None and holder.type in _TRANSPARENT_LAMBDA_PARENTS:
+        holder = holder.parent
+    return holder
+
+
+def _is_bound_value(node: Node, holder: Node) -> bool:
+    """*node* sits on *holder*'s value side (``value`` / ``right``), not its name."""
+    value = holder.child_by_field_name("value") or holder.child_by_field_name("right")
+    return value is not None and value.start_byte <= node.start_byte < value.end_byte
 
 
 def _find_call_callback_callee(node: Node) -> str | None:
@@ -456,30 +513,68 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     return out
 
 
+_DECLARATION_KINDS = frozenset({"lexical_declaration", "variable_declaration"})
+
+
+def unit_extent(node: Node) -> Node:
+    """The node whose lines a nested unit owns: its binding when it has one.
+
+    ``const f = () => { ... };`` is one statement that only exists to define
+    ``f``, so its first and last line are the unit's, as ``function f() {``
+    and its ``}`` are a declaration's. The declaration stands in when it binds
+    this one name, the expression statement for an assignment, the property
+    for an object pair; a binding that shares its statement with others
+    (``const a = ..., b = ...``) is the declarator. Anything else is the node
+    itself.
+    """
+    holder = _binding_holder(node)
+    if holder is None or holder.type not in _UNIT_LAMBDA_HOLDERS:
+        return node
+    statement = holder.parent
+    if statement is None or holder.type == "pair":
+        return holder
+    if holder.type == "variable_declarator":
+        return statement if _declares_only(statement, holder) else holder
+    return statement if statement.type == "expression_statement" else holder
+
+
+def _declares_only(statement: Node, declarator: Node) -> bool:
+    """*statement* is a ``let`` / ``const`` / ``var`` declaring *declarator* alone."""
+    if statement.type not in _DECLARATION_KINDS:
+        return False
+    return [c.id for c in statement.named_children if c.type == "variable_declarator"] == [
+        declarator.id
+    ]
+
+
+def _is_nested_unit(node: Node, lmap: LanguageNodeMap) -> bool:
+    """A function unit that is no local value, or a named block-bodied lambda."""
+    if is_function_node(node, lmap):
+        return _is_function_unit(node, lmap) and (
+            lmap.local_value is None or not lmap.local_value(node)
+        )
+    return is_named_block_lambda(node, lmap)
+
+
 def _nested_function_nodes(
     collected: list[Node], candidates: list[Node], lmap: LanguageNodeMap
 ) -> list[Node]:
     """The functions and methods defined inside a collected function.
 
     *collected* is what :func:`_collect_function_nodes` returned and
-    *candidates* every ``function_kinds`` node in the file. That collector
-    stops at the first function or lambda it meets and descends everything
-    else, so a function it did not return sits below one it did: a nested
-    ``def``, a function expression, a local function, a method of a local or
-    anonymous class. Each is a unit of its own, which the enclosing function's
-    walk skips. Lambdas are not candidates; they stay with the function that
+    *candidates* every ``function_kinds`` node and every unit-capable lambda
+    (``arrow_function``) in the file. That collector stops at the first
+    function or lambda it meets and descends everything else, so a function it
+    did not return sits below one it did: a nested ``def``, a function
+    expression, a local function, a method of a local or anonymous class, or a
+    block-bodied arrow function bound to a name (:func:`is_named_block_lambda`).
+    Each is a unit of its own, which the enclosing function's walk skips. Other
+    lambdas (inline callbacks, expression bodies) stay with the function that
     holds them. A local value that shares a function's node type
     (``lmap.local_value``) is no unit either.
     """
     seen = {node.id for node in collected}
-    local_value = lmap.local_value
-    return [
-        node
-        for node in candidates
-        if node.id not in seen
-        and _is_function_unit(node, lmap)
-        and not (local_value is not None and local_value(node))
-    ]
+    return [node for node in candidates if node.id not in seen and _is_nested_unit(node, lmap)]
 
 
 def _parameter_list(fn_node: Node) -> Node | None:
@@ -490,8 +585,12 @@ def _parameter_list(fn_node: Node) -> Node | None:
             (
                 c
                 for c in fn_node.children
-                if c.type in (
-                    "parameters", "parameter_list", "formal_parameters", "function_value_parameters",
+                if c.type
+                in (
+                    "parameters",
+                    "parameter_list",
+                    "formal_parameters",
+                    "function_value_parameters",
                 )
             ),
             None,

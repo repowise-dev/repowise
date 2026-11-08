@@ -7,6 +7,7 @@ routing core log output through the CLI ``console``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -264,7 +265,7 @@ def _run_doc_drift_partial(
     repo_path: Any | None = None,
     timings: PhaseTimings | None = None,
     base_ref: str | None = None,
-    file_diffs: list[Any] = (),
+    file_diffs: Sequence[Any] = (),
 ) -> Any | None:
     """Re-check the repo's markdown against the tree. Delegates to core."""
     from repowise.core.pipeline.incremental import DocDriftUpdate, run_doc_drift_partial

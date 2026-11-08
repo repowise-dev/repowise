@@ -3065,6 +3065,188 @@ class TestJavaStaticImport:
         }
         assert callees == {"a/Ex.java::Sync::flush"}
 
+    def test_a_static_import_binds_a_method_the_named_type_inherits(self, tmp_path: Path) -> None:
+        """``import static a.Ex.m`` binds ``Base.m`` when ``Ex`` inherits it, not a nested ``m``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base {\n  public static void m() { }\n}\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Base {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Ex.java::Ex": {"a/Base.java::Base"}},
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
+    def test_a_static_import_never_binds_a_nested_types_member_the_type_lacks(
+        self, tmp_path: Path
+    ) -> None:
+        """``Ex`` neither declares nor inherits ``m``, so ``Ex.Inner.m`` is not what it names."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/Use.java": {"a/Ex.java"}})
+            if src == "b/Use.java::Use::run"
+        }
+        assert callees == set()
+
+    def test_a_static_import_binds_the_nearest_superclass_declaration(self, tmp_path: Path) -> None:
+        """``Mid`` overrides ``Base.m``, so ``import static a.Ex.m`` is ``Mid.m``, not ambiguous."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base {\n  public static void m() { }\n}\n",
+                ),
+                "a/Mid.java": (
+                    "java",
+                    "package a;\npublic class Mid extends Base {\n"
+                    "  public static void m() { }\n}\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Mid {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "a/Ex.java::Ex": {"a/Mid.java::Mid"},
+                "a/Mid.java::Mid": {"a/Base.java::Base"},
+            },
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Mid.java::Mid::m"}
+
+    def test_a_static_import_binds_a_method_a_grandparent_declares(self, tmp_path: Path) -> None:
+        """``Ex`` extends ``Mid`` extends ``Base``; only ``Base`` declares ``m``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base {\n  public static void m() { }\n}\n",
+                ),
+                "a/Mid.java": ("java", "package a;\npublic class Mid extends Base { }\n"),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Mid {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "a/Ex.java::Ex": {"a/Mid.java::Mid"},
+                "a/Mid.java::Mid": {"a/Base.java::Base"},
+            },
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
+    def test_a_static_import_the_type_inherits_from_two_branches_binds_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Two unrelated ancestors declare ``m``: neither is the target, and ``Inner.m`` is not."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Left.java": (
+                    "java",
+                    "package a;\npublic interface Left {\n  static void m() { }\n}\n",
+                ),
+                "a/Right.java": (
+                    "java",
+                    "package a;\npublic interface Right {\n  static void m() { }\n}\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex implements Left, Right {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Ex.java::Ex": {"a/Left.java::Left", "a/Right.java::Right"}},
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == set()
+
 
 class TestPythonLocalShadowsModuleClass:
     """A Python local of a module-level class's name hides that class.

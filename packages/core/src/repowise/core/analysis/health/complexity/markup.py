@@ -171,3 +171,8 @@ def markup_rows(root: Node, grammar_tag: str, source: bytes) -> list[int]:
 def rows_within(rows: list[int], node: Node) -> int:
     """How many of the sorted *rows* fall inside *node*'s line span."""
     return bisect_right(rows, node.end_point[0]) - bisect_left(rows, node.start_point[0])
+
+
+def rows_in_ranges(rows: list[int], ranges: list[tuple[int, int]]) -> int:
+    """How many of the sorted *rows* fall inside the inclusive, disjoint *ranges*."""
+    return sum(bisect_right(rows, last) - bisect_left(rows, first) for first, last in ranges)

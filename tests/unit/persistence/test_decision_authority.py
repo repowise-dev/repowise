@@ -344,6 +344,24 @@ async def test_merging_folds_a_candidate_and_redirects_its_id(async_session):
         await accept_decision(async_session, candidate, accepter="tester")
 
 
+async def test_merging_rests_on_the_evidence_the_target_was_confirmed_with(async_session):
+    repo = await insert_repo(async_session)
+    candidate, target = await _seed(async_session, repo.id, "Duplicate", "Canonical")
+    for record in (candidate, target):
+        record.evidence_commits_json = "[]"
+        record.evidence_file = None
+    await async_session.flush()
+    # Evidence given at confirm is stored on the acceptance row, not on the record.
+    await accept_decision(async_session, target, accepter="tester", evidence=["deadbeef"])
+
+    acceptance = await merge_candidate(
+        async_session, candidate, into_id=target.id, accepter="tester"
+    )
+
+    assert json.loads(acceptance.evidence_json) == ["deadbeef"]
+    assert await resolve_decision_id(async_session, candidate.id) == target.id
+
+
 async def test_merging_refuses_a_candidate_target_and_an_accepted_source(async_session):
     repo = await insert_repo(async_session)
     a, b = await _seed(async_session, repo.id, "A", "B")
