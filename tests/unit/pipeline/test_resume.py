@@ -86,7 +86,7 @@ async def test_ledger_marks_a_dead_runs_open_job_failed(sf):
     repo_id = await _make_repo(sf)
     await ResumeLedger(sf, repo_id).mark_started(ResumePhase.ANALYSIS)
 
-    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.INDEX)
+    await ResumeLedger(sf, repo_id, reap_abandoned=True).mark_started(ResumePhase.INDEX)
 
     jobs = await _jobs_by_phase(sf, repo_id)
     [abandoned] = jobs["analysis"]
@@ -96,9 +96,21 @@ async def test_ledger_marks_a_dead_runs_open_job_failed(sf):
     assert current.state == JobState.RUNNING
 
 
+async def test_ledger_without_the_init_lock_leaves_open_jobs_alone(sf):
+    """An overlapping init that lost the lock must not fail the owner's live row."""
+    repo_id = await _make_repo(sf)
+    await ResumeLedger(sf, repo_id, reap_abandoned=True).mark_started(ResumePhase.ANALYSIS)
+
+    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.INDEX)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    assert [job.state for job in jobs["analysis"]] == [JobState.RUNNING]
+    assert [job.state for job in jobs["index"]] == [JobState.RUNNING]
+
+
 async def test_ledger_does_not_reap_its_own_open_jobs(sf):
     repo_id = await _make_repo(sf)
-    ledger = ResumeLedger(sf, repo_id)
+    ledger = ResumeLedger(sf, repo_id, reap_abandoned=True)
     await ledger.mark_started(ResumePhase.INDEX)
 
     await ledger.mark_started(ResumePhase.ANALYSIS)
@@ -116,7 +128,7 @@ async def test_ledger_ignores_open_jobs_of_other_phases(sf):
         backfill = await store.create_job(repository_id=repo_id, phase="git.backfill")
         await store.update_state(backfill.id, JobState.RUNNING)
 
-    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.INDEX)
+    await ResumeLedger(sf, repo_id, reap_abandoned=True).mark_started(ResumePhase.INDEX)
 
     jobs = await _jobs_by_phase(sf, repo_id)
     assert [job.state for job in jobs["git.backfill"]] == [JobState.RUNNING]
@@ -552,3 +564,13 @@ async def test_stored_git_meta_for_reads_only_the_paths(sf):
         meta = await stored_git_meta_for(session, repo_id, ["src/b.py", "src/gone.py"])
 
     assert set(meta) == {"src/b.py"}
+
+
+def test_only_the_init_holding_the_lock_owns_it(tmp_path):
+    from repowise.core.update_lock import holds_init_lock, init_in_progress
+
+    (tmp_path / ".repowise").mkdir()
+    assert not holds_init_lock(tmp_path)
+    with init_in_progress(tmp_path):
+        assert holds_init_lock(tmp_path)
+    assert not holds_init_lock(tmp_path)

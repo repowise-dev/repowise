@@ -57,9 +57,14 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
     leaves a resumable, persisted index behind.
     """
     from repowise.core.pipeline.resume import ResumeController
+    from repowise.core.update_lock import holds_init_lock
 
     engine, sf, repo_id = await open_repo_db(repo_path)
-    return ResumeController(sf, repo_id, resume=resume), engine
+    # An overlapping init that lost the lock must not reap the owner's live rows.
+    controller = ResumeController(
+        sf, repo_id, resume=resume, reap_abandoned=holds_init_lock(repo_path)
+    )
+    return controller, engine
 
 
 # Chunk size for the preserved-page FTS backfill — keeps the IN (...) below

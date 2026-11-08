@@ -300,6 +300,12 @@ def read_init_lock(repo_path: Path) -> dict[str, Any] | None:
     return _read_lock_at(_init_lock_path(repo_path))
 
 
+def holds_init_lock(repo_path: Path) -> bool:
+    """True when this process is the ``init`` that holds the repo's init lock."""
+    payload = read_init_lock(repo_path)
+    return payload is not None and payload.get("pid") == os.getpid()
+
+
 def _commit_health_lock_path(repo_path: Path) -> Path:
     return Path(repo_path) / ".repowise" / COMMIT_HEALTH_LOCK_FILENAME
 
