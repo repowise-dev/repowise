@@ -167,19 +167,35 @@ async def test_embed_raises_when_api_returns_wrong_width():
     assert "_DIMS" in msg   # points at the table entry
 
 
-async def test_default_model_requests_its_declared_width(monkeypatch):
-    # OpenRouter serves google/gemini-embedding-001 at 3072 unless a width is
-    # requested, so a request without ``dimensions`` could never match the 768
-    # declared in _DIMS. The requested width must equal the declared width.
+@pytest.mark.parametrize("model", sorted(OpenRouterEmbedder._DIMS))
+async def test_every_known_model_requests_its_declared_width(monkeypatch, model):
+    # OpenRouter serves google/gemini-embedding-001 (the default) at 3072 unless
+    # a width is requested, so a request without ``dimensions`` could never match
+    # the 768 declared in _DIMS. For every model in the table, the width the
+    # request asks for must equal the width the code declares.
     monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
-    emb = OpenRouterEmbedder(api_key="k")
+    emb = OpenRouterEmbedder(api_key="k", model=model)
 
     with patch("openai.OpenAI") as mock_client:
         create = mock_client.return_value.embeddings.create
         create.return_value = _make_mock_response([[1.0] * emb.dimensions])
         await emb.embed(["hello"])
 
-    assert create.call_args.kwargs["dimensions"] == emb.dimensions == 768
+    assert (
+        create.call_args.kwargs["dimensions"] == emb.dimensions == OpenRouterEmbedder._DIMS[model]
+    )
+
+
+async def test_default_model_requests_768(monkeypatch):
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    emb = OpenRouterEmbedder(api_key="k")
+
+    with patch("openai.OpenAI") as mock_client:
+        create = mock_client.return_value.embeddings.create
+        create.return_value = _make_mock_response([[1.0] * 768])
+        await emb.embed(["hello"])
+
+    assert create.call_args.kwargs["dimensions"] == 768
 
 
 async def test_configured_width_is_sent_to_the_api(monkeypatch):
