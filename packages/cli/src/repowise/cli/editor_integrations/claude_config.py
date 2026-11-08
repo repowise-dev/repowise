@@ -464,6 +464,24 @@ def _rewrite_hook_command() -> str:
     return hook_shell_command(_REWRITE)
 
 
+#: The gate releases before :data:`_CAPTURE_GATE` wrote: ``git commit`` alone.
+_COMMIT_ONLY_GATE = 'input=$(cat); case "$input" in *"git commit"*) '
+
+
+def _widened_capture_gate(cmd: str) -> str:
+    """*cmd* with a commit-only release's gate widened, else *cmd* unchanged.
+
+    Only the gate moves. The invocation after it, and the install it pins,
+    stay as written: which install a hook runs is :func:`_needs_repin`'s call.
+    That call leaves a live pin alone during the self-heal, and an unpinned
+    command alone when this install has no script to pin, so a gate left to
+    it would stay commit-only in both cases.
+    """
+    if cmd.startswith(_COMMIT_ONLY_GATE) and cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
+        return _CAPTURE_GATE + cmd.removeprefix(_COMMIT_ONLY_GATE)
+    return cmd
+
+
 #: Unguarded commands older releases wrote. Each moves to the current form.
 _BARE_COMMANDS = ("repowise augment", _AUGMENT, _REWRITE)
 
@@ -514,9 +532,12 @@ def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
     changed = False
     for hook in _all_hooks(hooks):
         cmd = _hook_command(hook)
-        want = _current_command(cmd)
-        if want is not None and _needs_repin(cmd, want, repin=repin):
-            hook["command"] = want
+        fresh = _widened_capture_gate(cmd)
+        want = _current_command(fresh)
+        if want is not None and _needs_repin(fresh, want, repin=repin):
+            fresh = want
+        if fresh != cmd:
+            hook["command"] = fresh
             changed = True
     return changed
 
