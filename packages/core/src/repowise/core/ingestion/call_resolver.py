@@ -1539,12 +1539,9 @@ class CallResolver(
             )
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
-    def _nested_receiver_site(
-        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
-    ) -> CallSite | None:
-        """The CallSite in the same chain that corresponds to `inner`."""
-        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
-            return None
+    def _chained_sites_for(
+        self, file_path: str
+    ) -> dict[tuple[int, str | None, str], list[CallSite]]:
         sites = self._chained_sites.get(file_path)
         if sites is None:
             parsed = self._parsed_files.get(file_path)
@@ -1553,7 +1550,17 @@ class CallResolver(
                 if c.receiver_call is not None:
                     sites.setdefault((c.line, c.receiver_name, c.target_name), []).append(c)
             _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
-        matches = sites.get((call.line, inner.receiver_name, inner.target_name))
+        return sites
+
+    def _nested_receiver_site(
+        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
+    ) -> CallSite | None:
+        """The CallSite in the same chain that corresponds to `inner`."""
+        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
+            return None
+        matches = self._chained_sites_for(file_path).get(
+            (call.line, inner.receiver_name, inner.target_name)
+        )
         if not matches:
             return None
         candidates = [c for c in matches if c.start_byte < call.start_byte]
