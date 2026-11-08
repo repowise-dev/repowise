@@ -232,6 +232,53 @@ def test_chained_patches_stay_equal_to_full_builds(tmp_path: Path) -> None:
         seed = _seed(patched)
 
 
+_PYTEST = {
+    "tests/conftest.py": "import pytest\n\n@pytest.fixture\ndef client():\n    return 1\n",
+    "tests/test_a.py": "def test_a(client):\n    assert client\n",
+    "src/app.py": "def serve():\n    return 1\n",
+}
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param(_edit(tests__test_b_DOT_py="def test_b(client):\n    assert client\n"), id="add-fixture-user"),
+        pytest.param(
+            _edit(tests__conftest_DOT_py=_PYTEST["tests/conftest.py"].replace("def client", "def api")),
+            id="rename-fixture",
+        ),
+        pytest.param(_edit(tests__test_a_DOT_py=None), id="remove-fixture-user"),
+    ],
+)
+def test_framework_edges_are_re_derived(tmp_path: Path, edit: Any) -> None:
+    tree, seed = _index(tmp_path, _PYTEST)
+    edit(tree)
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_co_change_edges_of_re_resolved_files_come_back_where_nothing_else_links(
+    tmp_path: Path,
+) -> None:
+    tree, seed = _index(tmp_path, _PY)
+    seed["edges"] += [
+        ("app/unrelated.py", "pkg/util.py", {"edge_type": "co_changes", "weight": 3.0, "imported_names": []}),
+        ("app/service.py", "app/unrelated.py", {"edge_type": "co_changes", "weight": 2.0, "imported_names": []}),
+    ]
+    # unrelated.py now imports util: their co-change pair is explained by an import.
+    _edit(app__unrelated_DOT_py="from pkg.util import slug\n\ndef ping():\n    return slug('pong')\n")(tree)
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    graph = patched.graph()
+    assert graph["app/unrelated.py"]["pkg/util.py"]["edge_type"] == "imports"
+    assert graph["app/service.py"]["app/unrelated.py"]["edge_type"] == "co_changes"
+
+
 _JAVA = {
     "src/com/a/Util.java": "package com.a;\npublic class Util { public static int one() { return 1; } }\n",
     "src/com/a/Svc.java": "package com.a;\npublic class Svc { int go() { return Util.one(); } }\n",

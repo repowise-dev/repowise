@@ -138,13 +138,18 @@ def _rerouted_names(parsed_files: dict[str, Any], imp: Any, targets: Iterable[st
     for target in targets:
         parsed = parsed_files.get(target)
         if parsed is not None:
-            names.update(sym.name for sym in parsed.symbols)
-            names.update(parsed.exports)
-            # A star import also passes on what the target itself imported.
-            for target_import in parsed.imports:
-                names.update(_words(*target_import.imported_names))
-                for binding in target_import.bindings:
-                    names.update(_words(binding.local_name))
+            names |= _module_names(parsed)
+    return names
+
+
+def _module_names(parsed: Any) -> set[str]:
+    """Every name a whole-module import of *parsed* can bind, its own imports included."""
+    from .surface_names import _words
+
+    names = {sym.name for sym in parsed.symbols} | set(parsed.exports)
+    for imp in parsed.imports:
+        names.update(_words(*imp.imported_names))
+        names.update(_words(*(binding.local_name for binding in imp.bindings)))
     return names
 
 
