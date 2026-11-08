@@ -626,40 +626,53 @@ async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder
     and :func:`persist_graph_nodes` only upserts: a package the last importer
     stopped using kept its node and metrics row after every update, though a
     fresh index has neither. The rebuilt graph is the authority, as it is for
-    :func:`prune_absent_graph_rows` on a full run. A node a stored edge still
-    targets is kept, since a file that failed to parse keeps its edges.
+    :func:`prune_absent_graph_rows` on a full run, and an empty graph is a
+    broken run that prunes nothing. A node a stored edge still starts or ends
+    at is kept: a file that failed to parse keeps its edges, and no update
+    reconciles the edges a ``framework:`` anchor sources.
 
     Returns the number of nodes deleted.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import delete, or_, select
 
-    from repowise.core.analysis.dead_code.finding_helpers import _is_synthetic_node
     from repowise.core.persistence.models import GraphEdge, GraphMetric, GraphNode
 
     graph = graph_builder.graph()
+    if graph.number_of_nodes() == 0:
+        return 0
     stored: set[str] = set()
     for model in (GraphNode, GraphMetric):
         stored.update(
             (
                 await session.execute(
-                    select(model.node_id).where(model.repository_id == repo_id).distinct()
+                    select(model.node_id)
+                    .where(
+                        model.repository_id == repo_id,
+                        or_(
+                            model.node_id.like("external:%"),
+                            model.node_id.like("framework:%"),
+                        ),
+                    )
+                    .distinct()
                 )
             ).scalars()
         )
-    absent = sorted(n for n in stored if _is_synthetic_node(n) and n not in graph)
+    absent = sorted(n for n in stored if n not in graph)
     gone: list[str] = []
     for i in range(0, len(absent), _PRUNE_CHUNK):
         batch = absent[i : i + _PRUNE_CHUNK]
-        targeted = set(
-            (
-                await session.execute(
-                    select(GraphEdge.target_node_id).where(
-                        GraphEdge.repository_id == repo_id, GraphEdge.target_node_id.in_(batch)
+        linked: set[str] = set()
+        for column in (GraphEdge.target_node_id, GraphEdge.source_node_id):
+            linked.update(
+                (
+                    await session.execute(
+                        select(column).where(
+                            GraphEdge.repository_id == repo_id, column.in_(batch)
+                        )
                     )
-                )
-            ).scalars()
-        )
-        gone.extend(n for n in batch if n not in targeted)
+                ).scalars()
+            )
+        gone.extend(n for n in batch if n not in linked)
     for i in range(0, len(gone), _PRUNE_CHUNK):
         batch = gone[i : i + _PRUNE_CHUNK]
         for model in (GraphNode, GraphMetric):

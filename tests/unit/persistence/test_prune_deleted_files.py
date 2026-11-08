@@ -357,7 +357,7 @@ async def test_synthetic_nodes_the_rebuilt_graph_dropped_are_pruned(async_sessio
     from repowise.core.pipeline.persist import prune_absent_synthetic_nodes
 
     repo = await insert_repo(async_session)
-    for node_id in ("external:gone", "external:kept", "external:targeted", KEPT):
+    for node_id in ("external:gone", "external:kept", "external:targeted", "framework:anchor", KEPT):
         async_session.add(GraphNode(repository_id=repo.id, node_id=node_id, node_type="file"))
         async_session.add(GraphMetric(repository_id=repo.id, node_id=node_id))
     # A file that failed to parse keeps its stored edge, and with it the target.
@@ -367,6 +367,15 @@ async def test_synthetic_nodes_the_rebuilt_graph_dropped_are_pruned(async_sessio
             source_node_id="src/unparsed.js",
             target_node_id="external:targeted",
             edge_type="imports",
+        )
+    )
+    # Edges a framework anchor sources are never reconciled, so they keep it.
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="framework:anchor",
+            target_node_id=KEPT,
+            edge_type="framework",
         )
     )
     await async_session.flush()
@@ -379,6 +388,6 @@ async def test_synthetic_nodes_the_rebuilt_graph_dropped_are_pruned(async_sessio
     await async_session.commit()
 
     assert pruned == 1
-    expected = {KEPT, "external:kept", "external:targeted"}
+    expected = {KEPT, "external:kept", "external:targeted", "framework:anchor"}
     assert await _paths(async_session, GraphNode, GraphNode.node_id, repo.id) == expected
     assert await _paths(async_session, GraphMetric, GraphMetric.node_id, repo.id) == expected

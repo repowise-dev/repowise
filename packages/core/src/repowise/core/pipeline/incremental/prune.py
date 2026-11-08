@@ -35,8 +35,8 @@ async def prune_deleted_files(
 
     The graph's file nodes join *live_paths* because resolver passes mint
     file-shaped nodes that name no file (`external:`, `framework:`, Spring SPI
-    sources); they fail every liveness test, and only changed files' edges are
-    rebuilt afterwards. A graph that cannot be read skips the prune.
+    sources); they fail every liveness test, and edges deleted with them are
+    not rebuilt afterwards. A graph that cannot be read skips the prune.
 
     *left_index* is passed through: see prune_deleted_file_rows.
     """
