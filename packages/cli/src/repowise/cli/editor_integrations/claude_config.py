@@ -370,8 +370,9 @@ def enable_tool_search_in_claude_code() -> Path | None:
 # paid before repowise reads the payload, so no gate inside the handler can
 # avoid it — the only lever is the matcher. Shell commands were also paying it
 # twice, here and again for the ``repowise-rewrite`` PreToolUse hook.
-# SessionStart already carries the freshness line. A commit still reaches the
-# handler through :data:`_CAPTURE_MATCHER`'s entry, which gates in the shell.
+# SessionStart already carries the freshness line. A commit, pull, merge,
+# rebase or cherry-pick still reaches the handler through
+# :data:`_CAPTURE_MATCHER`'s entry, which gates in the shell.
 #
 # Claude Code only. ``_handle_bash_post`` stays in the augment dispatcher:
 # Codex has no Read/Grep/Glob tools and no SessionStart block, so the shell is
@@ -411,26 +412,36 @@ _FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
 
 
 #: The shell tools, as their own PostToolUse entry rather than widened into
-#: :data:`_AUGMENT_MATCHER`. The capture prompt is the only thing that needs
-#: them, and the narrowing of the shared matcher is a measured decision this
-#: must not quietly reverse: 51% of hook invocations for 0.7% of emissions.
-#: That cost was a Python start on every shell call; :data:`_CAPTURE_HOOK_COMMAND`
-#: gates in the shell instead, so a call that is not a commit costs only the
-#: shell the host already spawns for the hook.
+#: :data:`_AUGMENT_MATCHER`. Only the capture prompt and the stale-wiki check
+#: after a Git operation need them, and the narrowing of the shared matcher is
+#: a measured decision this must not quietly reverse: 51% of hook invocations
+#: for 0.7% of emissions. That cost was a Python start on every shell call;
+#: :data:`_CAPTURE_HOOK_COMMAND` gates in the shell instead, so a call that
+#: names none of the gated Git operations costs only the shell the host
+#: already spawns for the hook.
 #:
 #: **Never add this to :data:`_LEGACY_AUGMENT_MATCHERS`.** That list is what
 #: the self-heal rewrites to the narrow matcher, and this entry exists
 #: precisely to survive it.
 _CAPTURE_MATCHER = "Bash|PowerShell"
 
-#: Starts ``repowise-augment`` only when the payload mentions ``git commit``,
-#: the one command the capture prompt answers. ``$(cat)`` rather than a
-#: builtin read: bash's ``read`` takes a pipe one byte at a time, and
-#: ``/dev/stdin`` does not resolve for a Windows pipe under Git Bash. The
-#: plugin's ``hooks.json`` ships this exact string.
+#: The shell entry's filter: the payload mentions one of the Git operations that
+#: can leave the index behind ``HEAD``, the same list the stale-wiki check
+#: (``bash_staleness``) answers. The capture prompt answers only the commit
+#: and checks the command itself. A substring test over the whole payload,
+#: tool output included, so it is a cheap pre-filter rather than a parser: the
+#: handlers read the actual command. ``$(cat)`` rather than a builtin read:
+#: bash's ``read`` takes a pipe one byte at a time, and ``/dev/stdin`` does
+#: not resolve for a Windows pipe under Git Bash.
+_CAPTURE_GATE = (
+    'input=$(cat); case "$input" in '
+    '*"git commit"*|*"git pull"*|*"git merge"*|*"git rebase"*|*"git cherry-pick"*) '
+)
+
+#: Starts ``repowise-augment`` only past :data:`_CAPTURE_GATE`. The plugin's
+#: ``hooks.json`` ships this exact string.
 _CAPTURE_HOOK_COMMAND = (
-    'input=$(cat); case "$input" in *"git commit"*) '
-    "if command -v repowise-augment >/dev/null 2>&1; then "
+    f"{_CAPTURE_GATE}if command -v repowise-augment >/dev/null 2>&1; then "
     'printf "%s" "$input" | repowise-augment; fi;; esac'
 )
 
@@ -446,7 +457,7 @@ def _augment_hook_command() -> str:
 def _capture_hook_command() -> str:
     """:data:`_CAPTURE_HOOK_COMMAND`, pinned to the running install when it can be."""
     run = hook_shell_command(_AUGMENT, 'printf "%s" "$input" | {}')
-    return f'input=$(cat); case "$input" in *"git commit"*) {run};; esac'
+    return f"{_CAPTURE_GATE}{run};; esac"
 
 
 def _rewrite_hook_command() -> str:
@@ -646,8 +657,9 @@ def set_claude_code_capture_hook(enabled: bool) -> Path | None:
     The entry is per *install* and ships on with the prompt: ``init``, the
     self-heal and the plugin all put it in place. Every repository on this
     machine pays a shell start on shell calls and nothing else, since the
-    entry starts Python only for a commit, so a repository that turns the
-    prompt off keeps the entry and stays silent.
+    entry starts Python only for a commit or another Git operation that moves
+    ``HEAD``, so a repository that turns the prompt off keeps the entry and
+    stays silent.
     """
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
@@ -941,7 +953,8 @@ def install_claude_code_hooks() -> Path | None:
 
     PostToolUse enriches Grep/Glob results and emits
     Read-intelligence notices, and a shell entry asks for a decision after a
-    commit; SessionStart injects the live index-freshness
+    commit and checks freshness after a commit, pull, merge, rebase or
+    cherry-pick; SessionStart injects the live index-freshness
     context block; PostToolUseFailure carries the wrong-path rescue. Existing
     user hooks are preserved.
     """

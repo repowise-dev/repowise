@@ -287,9 +287,11 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | the repo's `.codex/hooks.json` |
 | Cursor | `preToolUse` (opt-in rewrite) | `Shell` | `~/.cursor/hooks.json` |
 
-The capture prompt's entry checks the payload for `git commit` in the shell
-and starts `repowise-augment` only on a match, so any other shell call costs
-only the shell start. `init` skips it when the repowise plugin already ships
+The capture prompt's entry checks the payload for `git commit`, `git pull`,
+`git merge`, `git rebase` or `git cherry-pick` in the shell and starts
+`repowise-augment` only on a match, so any other shell call costs only the
+shell start. The prompt itself answers only a commit; all five can bring the
+stale-wiki notice. `init` skips it when the repowise plugin already ships
 it, so it never runs twice.
 
 The coverage re-ingest entries are written by the next `repowise coverage add`,
