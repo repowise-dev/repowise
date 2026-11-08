@@ -299,6 +299,18 @@ _DISPATCH = {
 }
 
 
+def test_unlinked_nodes_a_full_build_keeps_survive_a_patch(tmp_path: Path) -> None:
+    """The TypeScript warmup adds an ``.mdx`` file's packages as nodes no edge reaches."""
+    files = {**_TS, "docs/intro.mdx": "import Tabs from '@theme/Tabs'\n\n# Intro\n"}
+    tree, seed = _index(tmp_path, files)
+    _edit(src__extra_DOT_ts="export function trim(s: string) { return s; }\n")(tree)
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    _assert_equals_full(tree, patched, tmp_path)
+
+
 @pytest.mark.parametrize(
     ("start", "after"),
     [
