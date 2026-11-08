@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from repowise.cli.providers.keys import (
@@ -58,7 +57,7 @@ def resolve_embedder_choice(
     from repowise.core.providers.llm.resolve import repo_getenv
 
     overlay = env or {}
-    base_getenv = repo_getenv(repo_path if repo_path is not None else Path("."))
+    base_getenv = repo_getenv(repo_path)
 
     def getenv(name: str) -> str | None:
         return os.environ.get(name) or overlay.get(name) or base_getenv(name)

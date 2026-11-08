@@ -1157,3 +1157,20 @@ def test_deterministic_embedder_name_reads_repo_env(
     (env_dir / ".env").write_text("REPOWISE_EMBEDDER=ollama\n", encoding="utf-8")
 
     assert deterministic_embedder_name({}, repo_path=repo) == "ollama"
+
+
+
+def test_resolve_embedder_with_none_repo_path_does_not_read_cwd_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When repo_path is None, resolve_embedder must not read cwd's .repowise/.env."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    env_dir = tmp_path / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert resolve_embedder(None, repo_path=None) == "mock"
+    assert resolve_embedder(None, repo_path=tmp_path) == "openrouter"

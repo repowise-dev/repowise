@@ -2293,7 +2293,7 @@ def _fail_if_embed_failed(run: UpdateRun, docs: DocsPass) -> None:
 
         _fail_on_embed_failure(
             run.repo_path,
-            resolve_embedder(run.cfg.get("embedder")),
+            resolve_embedder(run.cfg.get("embedder"), repo_path=run.repo_path),
             docs.full_stats["embed_failed_pages"],
             run.emitter,
         )

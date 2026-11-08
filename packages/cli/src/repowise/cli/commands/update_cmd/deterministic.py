@@ -38,7 +38,7 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     from repowise.cli.providers import resolve_embedder
     from repowise.core.providers.llm.resolve import repo_getenv
 
-    env_lookup = repo_getenv(repo_path if repo_path is not None else Path("."))
+    env_lookup = repo_getenv(repo_path)
     chosen = cfg.get("embedder") or (env_lookup("REPOWISE_EMBEDDER") or "").strip()
     if chosen:
         return str(chosen)

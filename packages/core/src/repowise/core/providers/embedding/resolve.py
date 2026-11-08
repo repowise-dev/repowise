@@ -244,14 +244,14 @@ def _positive_int(var: str, lookup: EnvLookup | None = None) -> int | None:
 
 def embedding_model_for(name: str, repo_path: Path | str | None = None) -> str | None:
     """The configured embedding model for *name*, or ``None`` for its default."""
-    lookup = repo_getenv(repo_path if repo_path is not None else Path("."))
+    lookup = repo_getenv(repo_path)
     if name == "ollama":
         return lookup("OLLAMA_EMBEDDING_MODEL") or lookup("REPOWISE_EMBEDDING_MODEL")
     return lookup("REPOWISE_EMBEDDING_MODEL")
 
 
 def _ollama_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
-    lookup = repo_getenv(repo_path if repo_path is not None else Path("."))
+    lookup = repo_getenv(repo_path)
     kwargs: dict[str, Any] = {}
     base_url = lookup("OLLAMA_BASE_URL")
     if base_url:
@@ -265,7 +265,7 @@ def _ollama_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
 
 
 def _gemini_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
-    lookup = repo_getenv(repo_path if repo_path is not None else Path("."))
+    lookup = repo_getenv(repo_path)
     # Gemini spells the width ``output_dimensionality``; openai and ollama
     # read REPOWISE_EMBEDDING_DIMS in their own constructors.
     dims = _positive_int("REPOWISE_EMBEDDING_DIMS", lookup)
