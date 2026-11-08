@@ -16,7 +16,7 @@ import hashlib
 import os
 import sqlite3
 import warnings
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -825,27 +825,57 @@ def _planner_stats_stale(conn: Any) -> bool:
     return False
 
 
-async def refresh_planner_stats(engine: AsyncEngine) -> None:
-    """Refresh SQLite's planner statistics at the end of a write to the index.
+def _quote_identifier(name: str) -> str:
+    """Quote an SQL identifier for safe inclusion in statements."""
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
 
-    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
+
+async def refresh_planner_stats(
+    engine: AsyncEngine,
+    tables: Sequence[str] | None = None,
+) -> None:
+    """Refresh database planner statistics at the end of a write to the index.
+
+    Without statistics the planner guesses, and on a large store it picks
     a wide covering index over the selective one (a full edge-table scan in
-    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
-    index leads with ``repository_id``, which a sample (``analysis_limit``, and
-    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
-    keeps the wrong index. It runs only when the statistics are missing or a
-    table's size has drifted, since a full pass reads the whole store. Other
-    backends keep their own statistics. A failure costs only a slower plan, so
-    it never fails the write.
+    place of an index lookup).
+
+    For SQLite: a full ``ANALYZE``, not a sampled one: every index leads with
+    ``repository_id``, which a sample (``analysis_limit``, and ``PRAGMA optimize``
+    since SQLite 3.46) reads as selective, so the planner keeps the wrong index.
+    It runs only when the statistics are missing or a table's size has drifted,
+    since a full pass reads the whole store.
+
+    For PostgreSQL: autovacuum keeps statistics over time, but across a bulk load
+    (e.g. init or update) autovacuum has not yet analyzed the newly inserted rows,
+    leaving the planner with pre-load or empty statistics. Executing ``ANALYZE``
+    refreshes planner statistics immediately. If specific tables are provided,
+    only those tables are analyzed; otherwise a full ``ANALYZE`` is executed.
+
+    Other backends keep their own statistics. A failure costs only a slower
+    plan, so it never fails the write.
     """
-    if engine.dialect.name != "sqlite":
-        return
-    try:
-        async with engine.begin() as conn:
-            if await conn.run_sync(_planner_stats_stale):
-                await conn.execute(text("ANALYZE"))
-    except DBAPIError as exc:  # a locked or read-only store
-        log.warning("sqlite.analyze_failed", error=str(exc))
+    if engine.dialect.name == "sqlite":
+        try:
+            async with engine.begin() as conn:
+                if await conn.run_sync(_planner_stats_stale):
+                    await conn.execute(text("ANALYZE"))
+        except DBAPIError as exc:  # a locked or read-only store
+            log.warning("sqlite.analyze_failed", error=str(exc))
+    elif engine.dialect.name == "postgresql":
+        try:
+            async with engine.begin() as conn:
+                if tables is not None:
+                    table_list = [t for t in tables if t]
+                    if not table_list:
+                        return
+                    quoted = ", ".join(_quote_identifier(t) for t in table_list)
+                    await conn.execute(text(f"ANALYZE {quoted}"))
+                else:
+                    await conn.execute(text("ANALYZE"))
+        except DBAPIError as exc:
+            log.warning("postgresql.analyze_failed", error=str(exc))
 
 
 async def schema_behind(engine: AsyncEngine) -> bool:
