@@ -219,11 +219,12 @@ class ScopedBuildMixin:
             graph.add_edge(source, target, **data)
         self._stashed_co_changes = []
 
-    def _drop_unreferenced_seed_nodes(self: _ScopedGraphHost, seeded: set[str]) -> None:
-        """Remove seeded nodes no file declares and no edge reaches any more.
+    def _drop_unreferenced_seed_nodes(self: _ScopedGraphHost) -> None:
+        """Remove seeded nodes no file declares and no remaining edge reaches.
 
-        An external module or anchor node only exists because something linked
-        to it; a full build would not create one nothing links to.
+        Called once the edges this patch re-derives are cleared: an external
+        module or anchor node that only those edges reached is re-created by
+        whichever pass still needs it, as a full build would create it.
         """
         graph = self._graph
         # A file the walk found but could not parse keeps its earlier rows.
@@ -231,9 +232,8 @@ class ScopedBuildMixin:
         graph.remove_nodes_from(
             [
                 node
-                for node in seeded
-                if node in graph
-                and graph.degree(node) == 0
+                for node in graph
+                if graph.degree(node) == 0
                 and node not in parsed
                 and graph.nodes[node].get("file_path") not in parsed
             ]

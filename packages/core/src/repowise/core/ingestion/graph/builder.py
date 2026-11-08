@@ -487,7 +487,10 @@ class GraphBuilder(
         # Passes that run over every file: a full build, or a patch whose edit
         # can change what they read (``refresh_global``).
         run_global = scope_set is None or refresh_global
-        seeded_nodes = set(self._graph) if scope_set is not None and refresh_global else None
+        if scope_set is not None and refresh_global:
+            # Before the warmups and resolvers, which re-create every node a
+            # full build has, linked or not.
+            self._drop_unreferenced_seed_nodes()
 
         ctx = self.resolver_context(self._graph)
 
@@ -659,9 +662,6 @@ class GraphBuilder(
                 )
         except Exception as exc:  # a reader bug must not fail the index
             log.warning("public_api_stamp_failed", error=str(exc))
-
-        if seeded_nodes is not None:
-            self._drop_unreferenced_seed_nodes(seeded_nodes)
 
         self._built = True
 
