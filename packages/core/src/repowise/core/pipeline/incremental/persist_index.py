@@ -309,7 +309,7 @@ async def persist_security(ctx: IncrementalPersist) -> None:
 
 
 async def persist_edges(ctx: IncrementalPersist) -> None:
-    # Refresh graph_edges for the changed files. The full-init path was
+    # Bring graph_edges in line with the rebuilt graph. The full-init path was
     # historically the only writer of edges, so adjacency froze at the last
     # full index: new imports/calls stayed invisible and dropped ones lingered
     # as false paths. Phase E flow-path traversal reads adjacency straight

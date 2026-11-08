@@ -140,7 +140,7 @@ async def test_incremental_edge_persist_leaves_unchanged_files_untouched(async_s
     await async_session.commit()
 
     after = await _db_edge_set(async_session, repo.id)
-    # Both survive: b.py re-inserted its (unchanged) edge, c.py was never touched.
+    # Both survive: b.py re-inserted its (unchanged) edge, c.py's still holds.
     assert ("b.py", "a.py", "imports") in after
     assert ("c.py", "a.py", "imports") in after
 
@@ -499,3 +499,17 @@ async def test_complete_co_change_refresh_syncs_pairs_between_unchanged_files(
     await async_session.flush()
     await persist_incremental_edges(async_session, repo.id, gb, parsed, [])
     assert await _co_change_rows(async_session, repo.id) == {("b.py", "c.py")}
+
+
+async def test_unchanged_files_keep_their_edges_when_the_graph_is_short(async_session, tmp_path):
+    """A failed parse or synthetic-edge pass leaves the graph missing real edges."""
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
+    gb.traversed_file_paths = {pf.file_info.path for pf in parsed} | {"broken.py"}
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+
+    gb.traversed_file_paths = {pf.file_info.path for pf in parsed}
+    gb.synthetic_edges_complete = False
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+    await async_session.commit()
+
+    assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)

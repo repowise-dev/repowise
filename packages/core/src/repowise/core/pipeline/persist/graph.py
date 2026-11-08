@@ -518,7 +518,12 @@ async def persist_incremental_edges(
     moved, and an extraction change (``parser_fingerprint``) alters every
     file's edges at once. The update rebuilds the whole graph in memory anyway,
     so the right edges are already computed, and the reconcile writes only the
-    rows that differ. A file that failed to parse this run keeps its rows.
+    rows that differ.
+
+    The files outside the change set keep the old scoping when the graph is
+    known to be short: a traversed file failed to parse (its symbols are
+    missing, so every caller's edge into it would read as gone), or the
+    framework or dynamic-hint pass failed (``synthetic_edges_complete``).
 
     The one difference between the two sets is ``co_changes``. The graph holds
     every pair only when the history walk completed; otherwise it has the
@@ -541,10 +546,14 @@ async def persist_incremental_edges(
     if reconcile_paths:
         await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
     changed = set(reconcile_paths)
-    other_paths, other_edges = _changed_file_edges(
-        graph_builder,
-        parsed_files,
-        [pf.file_info.path for pf in parsed_files if pf.file_info.path not in changed],
+    other_paths, other_edges = (
+        _changed_file_edges(
+            graph_builder,
+            parsed_files,
+            [pf.file_info.path for pf in parsed_files if pf.file_info.path not in changed],
+        )
+        if _graph_is_complete(graph_builder, parsed_files)
+        else ([], [])
     )
     if other_paths:
         from .co_change_edges import _CO_CHANGES
@@ -572,6 +581,14 @@ async def persist_incremental_edges(
     # rather than stranding the files it never reached.
     if parser_changed:
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
+    """Whether every traversed file parsed and every synthetic-edge pass ran."""
+    if not getattr(graph_builder, "synthetic_edges_complete", True):
+        return False
+    traversed = getattr(graph_builder, "traversed_file_paths", None) or set()
+    return not (set(traversed) - {pf.file_info.path for pf in parsed_files})
 
 
 async def _prune_vanished_symbol_nodes(
