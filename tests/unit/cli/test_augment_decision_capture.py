@@ -241,8 +241,16 @@ def test_a_non_commit_shell_call_says_nothing(repo: Path) -> None:
     assert _fire(repo, tool_input={"command": "git status"}) is None
 
 
-def test_a_merge_is_not_a_commit_worth_asking_about(repo: Path) -> None:
-    assert _fire(repo, tool_input={"command": "git merge --no-ff feature"}) is None
+@pytest.mark.parametrize(
+    "command",
+    ["git merge --no-ff feature", "git pull", "git rebase main", "git cherry-pick abc123"],
+)
+def test_a_history_change_that_is_not_a_commit_is_not_worth_asking_about(
+    repo: Path, command: str
+) -> None:
+    """The shell gate admits these for the stale-wiki check, not for this prompt."""
+    assert _fire(repo, tool_input={"command": command}) is None
+    assert _fire(repo) is not None  # and the session's one ask is still unspent
 
 
 def test_a_commit_in_a_nested_repository_is_not_this_one(
