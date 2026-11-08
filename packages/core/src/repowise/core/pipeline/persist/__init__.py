@@ -17,6 +17,7 @@ from typing import Any
 
 import structlog
 
+from ..index_persistence import IndexWrite, apply_index_persistence
 from .analysis import (
     persist_analysis,
 )
@@ -245,5 +246,12 @@ async def persist_pipeline_result(
         graph_nodes=result.graph_builder.graph().number_of_nodes(),
         symbols=symbol_count,
         git_files=len(result.git_metadata_list),
+    )
+    await apply_index_persistence(
+        session,
+        repo_id,
+        IndexWrite(
+            "full", result.parsed_files, traversed_paths=frozenset(current_graph_file_paths)
+        ),
     )
     return swept_page_ids

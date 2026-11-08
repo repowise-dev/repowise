@@ -11,6 +11,7 @@ from repowise.core.generation.models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
 )
+from repowise.core.persistence.crud.page_archive import purge_retired_pages
 
 from .prune import delete_pages
 
@@ -73,6 +74,10 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
     )
     from repowise.core.persistence.models import Page
 
+    # This sweep runs on every full/scoped persistence path, even when there
+    # are no obsolete live rows. Retention belongs to that existing pass.
+    await purge_retired_pages(session, repo_id)
+
     retired_types = sorted(set(SUPERSEDED_TYPES) | set(SUPERSEDED_TO_REPO_WIDE))
     retired_ids = sorted(RETIRED_IDS)
     if not retired_types and not retired_ids:
@@ -94,7 +99,7 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
         .scalars()
         .all()
     )
-    await delete_pages(session, repo_id, stale)
+    await delete_pages(session, repo_id, stale, "retired")
     if stale:
         logger.info(
             "retired_pages_swept",
@@ -174,7 +179,7 @@ async def _sweep_stale_generated_pages(
             .all()
         )
         stale = [pid for pid in existing if pid not in current]
-        await delete_pages(session, repo_id, stale)
+        await delete_pages(session, repo_id, stale, "stale_generation")
         swept.extend(stale)
 
     if swept:
@@ -230,7 +235,7 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
         .all()
     )
     stale = [pid for pid in existing if pid not in valid]
-    await delete_pages(session, repo_id, stale)
+    await delete_pages(session, repo_id, stale, "cycle_absent")
     if stale:
         logger.info("absent_cycle_pages_swept", repo_id=repo_id, count=len(stale))
     return stale
@@ -300,7 +305,7 @@ async def sweep_absent_symbol_spotlights(
         names = names_by_file.get(path)
         if sep and names is not None and name not in names:
             stale.append(page_id)
-    await delete_pages(session, repo_id, stale)
+    await delete_pages(session, repo_id, stale, "symbol_absent")
     if stale:
         logger.info("absent_symbol_spotlights_swept", repo_id=repo_id, count=len(stale))
     return stale
@@ -408,7 +413,7 @@ async def sweep_deselected_pages(
             if sep and path in parsed_by_path and (path, name) not in kept:
                 retired.append(pid)
 
-    await delete_pages(session, repo_id, retired)
+    await delete_pages(session, repo_id, retired, "deselected")
     if retired:
         logger.info("deselected_pages_swept", repo_id=repo_id, count=len(retired))
     return retired
@@ -450,7 +455,7 @@ async def sweep_deselected_file_keyed_pages(
     retired = [
         pid for pid, kind, path in rows if path in judged and path not in selected[kind]
     ]
-    await delete_pages(session, repo_id, retired)
+    await delete_pages(session, repo_id, retired, "deselected")
     if retired:
         logger.info("deselected_file_keyed_pages_swept", repo_id=repo_id, count=len(retired))
     return retired
@@ -537,6 +542,7 @@ async def sweep_superseded_generated_pages(
 
     produced_ids: dict[str, set[str]] = {}
     covered: dict[str, set[str]] = {}
+    coverage: dict[str, dict[str, set[str]]] = {}
     for page in generated_pages or []:
         page_type = page.page_type
         if page_type not in _SWEPT_GENERATED_PAGE_TYPES:
@@ -551,7 +557,9 @@ async def sweep_superseded_generated_pages(
         produced_ids.setdefault(page_type, set()).add(page.page_id)
         metadata = getattr(page, "metadata", None) or {}
         members = metadata.get("file_paths") or metadata.get("files") or []
-        covered.setdefault(page_type, set()).update(m for m in members if isinstance(m, str))
+        files = {m for m in members if isinstance(m, str)}
+        covered.setdefault(page_type, set()).update(files)
+        coverage.setdefault(page_type, {})[page.page_id] = files
 
     swept: list[str] = []
     for page_type, current in produced_ids.items():
@@ -568,6 +576,7 @@ async def sweep_superseded_generated_pages(
             )
         ).all()
         stale: list[str] = []
+        successors: dict[str, str] = {}
         for page_id, raw in rows:
             if page_id in current:
                 continue
@@ -584,7 +593,11 @@ async def sweep_superseded_generated_pages(
             # full index to retire.
             if members and members <= union:
                 stale.append(page_id)
-        await delete_pages(session, repo_id, stale)
+                successors[page_id] = min(
+                    coverage[page_type],
+                    key=lambda pid: (-len(members & coverage[page_type][pid]), pid),
+                )
+        await delete_pages(session, repo_id, stale, "superseded", successors)
         swept.extend(stale)
 
     if swept:

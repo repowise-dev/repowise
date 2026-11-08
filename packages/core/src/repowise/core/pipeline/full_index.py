@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+from repowise.core.pipeline.index_persistence import publish_index_persistence
 
 
 async def index_repo_full(
@@ -65,6 +66,10 @@ async def index_repo_full(
     if require_health_success and getattr(result, "health_report", None) is None:
         raise RuntimeError("Health analysis failed during a required configuration rebuild")
 
+    from repowise.core.pipeline.incremental.graph_seed import invalidate_seed_edge_cache
+
+    # The rewrite below would leave a prior update's graph snapshot stale.
+    invalidate_seed_edge_cache(repo_path)
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
     stale_page_ids: list[str] = []
@@ -147,4 +152,5 @@ async def index_repo_full(
 
         save_knowledge_graph_json(repo_path, kg)
 
+    await publish_index_persistence(repo.id, repo_path)
     return result

@@ -24,6 +24,7 @@ from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
@@ -44,14 +45,18 @@ from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
+from repowise.server.mcp_server.tool_context.files import files_section
 from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
     _NO_SYMBOL_SUMMARY_SUFFIX,
-    _file_preview,
+    _file_preview_async,
     _markdown_headings,
     _outline_lines,
     _preview_summary,
     _rst_headings,
     _rst_table_lines,
+)
+from repowise.server.mcp_server.tool_context.preview import (
+    _file_preview as _file_preview,
 )
 from repowise.server.mcp_server.tool_context.resolution import (  # noqa: F401  (re-exported)
     ResolvedTarget,
@@ -229,7 +234,9 @@ def _file_page_docs(card: CardState, docs: dict[str, Any]) -> None:
     page = card.page
     if page is None:
         return
-    docs["title"] = page.title
+    if page.title != f"File: {page.target_path}":
+        # The generated title only repeats the path.
+        docs["title"] = page.title
     docs["summary"] = page.summary or ""
     if card.wants("full_doc"):
         docs["content_md"] = page.content
@@ -267,7 +274,7 @@ async def _file_docs(card: CardState, docs: dict[str, Any]) -> None:
     # A symbol-less file still has content: one read serves counts and a
     # verbatim excerpt instead of a card that restates the filename.
     if not symbols:
-        _attach_file_preview(card, docs)
+        await _attach_file_preview(card, docs)
 
 
 async def _compact_file_symbols(card: CardState, docs: dict[str, Any], symbols: Any) -> None:
@@ -343,8 +350,8 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
         }
 
 
-def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
-    preview = _file_preview(card.query.repo_root, card.target)
+async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
         # Replace the stub summary with the preview's own counts.
@@ -372,6 +379,10 @@ def _cap_file_rows(card: CardState, docs: dict[str, Any], rows: list[dict[str, A
         card.query.collector,
         label=f"{card.target} :: docs.files beyond cap={_SYMBOL_CAP}",
     )
+    # Agents asking "which files here lack tests" miss the opt-in from the
+    # tool description alone, so a cut list names it.
+    if len(rows) > _SYMBOL_CAP and not card.wants("files"):
+        docs["files_all"] = 'include=["files"]'
 
 
 async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
@@ -382,8 +393,6 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
     exclude_spec = card.query.exclude_spec
     docs["title"] = page.title
     docs["summary"] = page.summary or ""
-    if page.section_number:
-        docs["section"] = page.section_number
     if card.wants("full_doc"):
         docs["content_md"] = page.content
         # Questions, identifiers, public API and git signals: kept off the
@@ -408,7 +417,6 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
                     "title": ch.title,
                     "target_path": ch.target_path,
                     "page_type": ch.page_type,
-                    "section": ch.section_number,
                 }
                 for ch in child_pages
             ],
@@ -428,6 +436,7 @@ async def _module_file_docs(card: CardState, page: Page, docs: dict[str, Any]) -
         select(Page).where(
             Page.repository_id == card.repo_id,
             Page.page_type == "file_page",
+            Page.freshness_status != TOMBSTONE,
             Page.target_path.like(f"{escape_like(page.target_path)}/%", escape=LIKE_ESCAPE),
         )
     )
@@ -468,7 +477,9 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
         if value:
             docs[key] = clean_signature(value) if attr == "signature" else value
     # File page summary (full content gated behind include=["full_doc"])
-    sym_page = await card.session.get(Page, f"file_page:{sym.file_path}")
+    sym_page = await file_backed_page(card.session, card.repo_id, sym.file_path)
+    if sym_page is not None and sym_page.freshness_status == TOMBSTONE:
+        sym_page = None
     if sym_page is not None:
         docs["file_summary"] = sym_page.summary or ""
     if card.wants("full_doc"):
@@ -514,7 +525,9 @@ async def _spotlight_page(card: CardState, sym: Any) -> Page | None:
     page = await card.session.get(
         Page, compute_page_id("symbol_spotlight", f"{sym.file_path}::{sym.name}")
     )
-    if page is None:
+    # A tombstoned spotlight was deselected or its file is gone; either way its
+    # body is no longer this symbol's documentation.
+    if page is None or page.freshness_status == TOMBSTONE:
         return None
     key = (sym.file_path, sym.name)
     owner = (await spotlight_owners(card.session, card.repo_id, {key})).get(key)
@@ -674,6 +687,7 @@ _DOCS_BY_TYPE = {"file": _file_docs, "module": _module_docs, "symbol": _symbol_d
 _CARD_SECTIONS: tuple[CardSection, ...] = (
     _parent_page_section,
     _docs_section,
+    files_section,
     _triage_section,
     _ownership_section,
     _last_change_section,

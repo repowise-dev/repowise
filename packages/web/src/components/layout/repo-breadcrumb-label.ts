@@ -42,6 +42,7 @@ const SEGMENT_LABELS: Record<string, string> = {
  * segment itself.
  */
 export const SEGMENT_MESSAGE_KEYS: Record<string, string> = {
+  review: "review",
   overview: "overview",
   docs: "docs",
   chat: "chat",

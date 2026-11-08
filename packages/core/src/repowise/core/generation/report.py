@@ -19,12 +19,12 @@ from .page_overlap import OverlapReport, measure_orientation_overlap
 from .page_tree import LayerGroupingReport, measure_layer_grouping
 from .prose import prose_word_count
 
-# How much prose the repository overview may ask a reader to get through.
-# The page is the first thing anyone reads and it had grown past nine hundred
-# words while saying what four hundred and fifty say.  The prompt asks for the
-# same number; the check below reports whether the run honoured it.  Warn-only
-# on purpose — a long overview is worth seeing, never worth failing a run over.
-ORIENTATION_PROSE_WORD_BUDGET = 850
+# How much prose the repository overview may ask a reader to get through: the
+# top of the range its prompt states (the parts narrative, the walkthrough
+# paragraphs and the reading order need about this much). The check below
+# reports whether the run honoured it. Warn-only on purpose: a long overview is
+# worth seeing, never worth failing a run over.
+ORIENTATION_PROSE_WORD_BUDGET = 900
 
 # How many leading words of a module page's opening count as its frame. Five is
 # where the observed repetition sits: "the presentation layer is the" opened ten

@@ -424,16 +424,6 @@ def _parse_diff_batch(raw: str) -> dict[str, dict[str, FileDiff]]:
     """Split a batched ``--format=%x00%H --patch`` log into per-sha parsed diffs."""
     # Imported here, not at module scope: ``analysis.change_risk`` imports back
     # into this package, so a top-level import would close an import cycle.
-    from ...analysis.changed_lines import parse_unified_diff
+    from ...analysis.changed_lines import parse_unified_diff, split_commit_patches
 
-    diffs: dict[str, dict[str, FileDiff]] = {}
-    for record in raw.split(_RECORD_SEP):
-        record = record.strip("\n")
-        if not record:
-            continue
-        sha, _, diff = record.partition("\n")
-        sha = sha.strip()
-        if len(sha) != 40:
-            continue
-        diffs[sha] = parse_unified_diff(diff)
-    return diffs
+    return {sha: parse_unified_diff(diff) for sha, diff in split_commit_patches(raw)}

@@ -131,6 +131,33 @@ async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(rep
     ]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_graph_seed_persist_follows_the_switch(repo, monkeypatch, enabled: bool) -> None:
+    import repowise.core.pipeline.incremental.graph_seed as graph_seed
+
+    calls = []
+
+    async def record_save(repo_path, builder):
+        calls.append((repo_path, builder))
+
+    monkeypatch.setattr(graph_seed, "save_seed_edge_cache", record_save)
+    if enabled:
+        monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "1")
+    else:
+        monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
+    rec = StepRecorder(monkeypatch)
+    install_shared_steps(rec)
+
+    await _persist(repo, rec)
+
+    if enabled:
+        assert len(calls) == 1
+        assert calls[0][0] == repo
+        assert calls[0][1].graph().has_node("src/a.py")
+    else:
+        assert calls == []
+
+
 async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked(repo, monkeypatch):
     from repowise.core.pipeline.cleanup_debt import record_cleanup_debt
 

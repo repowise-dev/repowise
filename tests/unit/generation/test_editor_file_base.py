@@ -10,6 +10,7 @@ from repowise.core.generation.editor_files.data import (
     EditorFileData,
     HotspotFile,
 )
+from repowise.core.generation.editor_files.sections import DEFAULT_SECTIONS
 from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
 # ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ _KEYED_SCOPE = {
     "provider": {"embedder": "openai", "model_cost_possible": True},
     "search": {"full_text": "available", "semantic": "available"},
 }
-_KEYLESS_BULLET = "**No model on this index.**"
+_KEYLESS_BULLET = "No model on this index:"
 
 
 @pytest.fixture(params=["claude_md.j2", "agents_md.j2"])
@@ -139,7 +140,13 @@ def any_gen(request):
 def _scoped(scope: dict) -> EditorFileData:
     import dataclasses
 
-    return dataclasses.replace(_minimal_data(), avg_confidence=1.0, index_scope=scope)
+    # The tool table is opt-in; it carries the keyed-only clauses checked here.
+    return dataclasses.replace(
+        _minimal_data(),
+        avg_confidence=1.0,
+        index_scope=scope,
+        sections=DEFAULT_SECTIONS | {"tools"},
+    )
 
 
 def test_keyless_index_gets_keyless_steering(any_gen):

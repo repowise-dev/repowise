@@ -105,6 +105,11 @@ def _write(root: Path, files: dict[str, str]) -> None:
 
 def _seed_rows(graph_builder: Any) -> dict[str, list]:
     """Full node/edge snapshot as written by the sealed seed cache."""
+    from repowise.core.pipeline.incremental.resolution_cache import save_resolutions
+
+    index_dir = Path(graph_builder._repo_path) / ".repowise"
+    index_dir.mkdir(exist_ok=True)
+    save_resolutions(index_dir, graph_builder._parsed_files.values())
     graph = graph_builder.graph()
     return {
         "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
@@ -150,7 +155,7 @@ def indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
 
 def _patched(tree: Path, seed: dict[str, list]) -> Any:
     graph_builder = build_repo_graph(
-        tree, [], collect_sources=True, seed_edges=seed
+        tree, [], collect_sources=True, seed_edges=seed, patch_requested=True
     )[2]
     return graph_builder
 
@@ -191,7 +196,13 @@ def test_phase_timings_identify_the_patched_graph_path(
     timings = PhaseTimings()
 
     graph_builder = build_repo_graph(
-        tree, [], collect_sources=True, seed_edges=seed, changed_paths={_SERVICE}, timings=timings
+        tree,
+        [],
+        collect_sources=True,
+        seed_edges=seed,
+        patch_requested=True,
+        changed_paths={_SERVICE},
+        timings=timings,
     )[2]
 
     assert graph_builder.patch_plan.eligible
@@ -215,6 +226,7 @@ def test_phase_timings_identify_full_rebuild_after_surface_change(
         [],
         collect_sources=True,
         seed_edges=seed,
+        patch_requested=True,
         changed_paths={_SERVICE},
         timings=timings,
         log=messages.append,
@@ -237,7 +249,7 @@ def test_phase_timings_identify_full_path_when_patching_is_not_requested(
     graph_builder = build_repo_graph(tree, [], collect_sources=True, timings=timings)[2]
 
     assert not graph_builder.patch_plan.eligible
-    assert graph_builder.patch_plan.reason == "not requested"
+    assert graph_builder.patch_plan.reason == "feature disabled"
     assert "rebuild.graph.full" in timings.totals
     assert "rebuild.graph.patch" not in timings.totals
 
@@ -285,12 +297,25 @@ def test_detected_unparsed_config_change_forces_full_rebuild(
         [],
         collect_sources=True,
         seed_edges=seed,
+        patch_requested=True,
         changed_paths={_SERVICE, "pom.xml"},
     )[2]
 
     assert not patched.patch_plan.eligible
     assert "unparsed files" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_resolution_cache_is_written_only_when_requested(tmp_path: Path) -> None:
+    tree = tmp_path / "repo"
+    _write(tree, {"main.java": "class Main {}\n"})
+    cache = tree / ".repowise" / "resolved_imports.pkl"
+
+    build_repo_graph(tree, [], collect_sources=True)
+    assert not cache.exists()
+
+    build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)
+    assert cache.is_file()
 
 
 @pytest.mark.parametrize(
@@ -325,7 +350,7 @@ def test_detected_unparsed_config_change_forces_full_rebuild(
         ),
         pytest.param(
             lambda t: (t / "src/com/acme/util/Clock.java").unlink(),
-            "added or removed",
+            "file removed",
             id="removed-file",
         ),
     ],
@@ -356,6 +381,35 @@ def test_unsupported_language_falls_back(tmp_path: Path) -> None:
     assert not patched.patch_plan.eligible
     assert "shell edits are not patched" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_module_level_call_edit_matches_full_build(tmp_path: Path) -> None:
+    tree = tmp_path / "module-calls"
+    files = {
+        "util.py": "def first():\n    return 1\n\ndef second():\n    return 2\n",
+        "service.py": "from util import first, second\nfirst()\n",
+    }
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    original_module_calls = {
+        (source, target)
+        for source, target, attrs in original.graph().edges(data=True)
+        if source == "service.py::__module__" and attrs.get("edge_type") == "calls"
+    }
+    assert original_module_calls == {("service.py::__module__", "util.py::first")}
+
+    (tree / "service.py").write_text(files["service.py"].replace("\nfirst()", "\nsecond()"))
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    patched_module_calls = {
+        (source, target)
+        for source, target, attrs in patched.graph().edges(data=True)
+        if source == "service.py::__module__" and attrs.get("edge_type") == "calls"
+    }
+    assert patched_module_calls == {("service.py::__module__", "util.py::second")}
+    _assert_equals_full(tree, patched, tmp_path / "module-calls-oracle")
 
 
 def test_go_package_clause_change_falls_back(
@@ -430,7 +484,7 @@ def test_no_seed_means_a_plain_full_build(indexed: tuple[Path, dict[str, list]])
     graph_builder = build_repo_graph(tree, [], collect_sources=True)[2]
 
     assert not graph_builder.patch_plan.eligible
-    assert graph_builder.patch_plan.reason == "not requested"
+    assert graph_builder.patch_plan.reason == "feature disabled"
 
 
 def test_patch_resolves_only_the_changed_file(

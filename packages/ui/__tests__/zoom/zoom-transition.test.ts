@@ -8,9 +8,9 @@ import {
 
 describe("expandThresholds", () => {
   it("scales with canvas width within bounds", () => {
-    const t = expandThresholds(1440);
-    expect(t.start).toBeCloseTo(360); // 1440 * 0.25
-    expect(t.end).toBeCloseTo(576); // 1440 * 0.40
+    const t = expandThresholds(1000);
+    expect(t.start).toBeCloseTo(360); // 1000 * 0.36
+    expect(t.end).toBeCloseTo(520); // 1000 * 0.52
     expect(t.end).toBeGreaterThan(t.start);
   });
 

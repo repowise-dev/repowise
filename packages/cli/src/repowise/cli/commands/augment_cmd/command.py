@@ -13,8 +13,9 @@ asymmetric, durable value:
     * Flood digest: a multi-file grep flood is served as a compact
       per-file digest via updatedToolOutput, with match counts and anchor
       line numbers per file, with the dropped tail named. Opt-in
-      (hooks.search_digest), default off, Claude Code only. Falls back
-      to appending the same digest beside the flood, as it always did.
+      (hooks.search_digest), default off, Claude Code only. When it is
+      not served, nothing is added: appending it beside the flood only
+      grew the result.
     * Zero-result rescue: grep returned 0 hits but the wiki has a
       semantic match (FTS on docs, fuzzy symbol match, decision record
       mention). Surfaces the closest hit so the agent doesn't burn

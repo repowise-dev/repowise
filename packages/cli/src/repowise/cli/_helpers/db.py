@@ -99,6 +99,16 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
         yield opened
 
 
+async def adopt_moved_repo_best_effort(root: Path) -> bool:
+    """Point a moved or copied checkout's only repository row at *root*.
+
+    See :func:`repowise.core.persistence.crud.adopt_moved_repository_best_effort`.
+    """
+    from repowise.core.persistence.crud import adopt_moved_repository_best_effort
+
+    return await adopt_moved_repository_best_effort(root)
+
+
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
 #: sized for bulk graph-edge writes; inheriting it here is a trap, because a
 #: read command opens several engines (``status`` four, ``doctor`` five) and a

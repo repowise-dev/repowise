@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.pipeline.index_persistence import (
+    IndexWrite,
+    apply_index_persistence,
+    index_persistence,
+    publish_index_persistence,
+)
 from repowise.core.pipeline.phase_timing import PhaseTimings, timed
 from repowise.core.pipeline.step_runner import PersistRun, Step, run_steps
 
@@ -45,6 +51,11 @@ class IncrementalPersist(PersistRun):
     reconcile_full_scope: bool = False
     full_generation_page_ids: set[str] | None = None
     vector_store: Any | None = None
+    deferred_page_scope: str | None = None
+    deferred_page_paths: list[str] | None = None
+
+    traversed_paths: frozenset[str] | None = None
+    pruned_paths: set[str] = field(default_factory=set)
 
     session: Any = None
     repo_id: str = ""
@@ -82,6 +93,7 @@ async def reconcile_scope(ctx: IncrementalPersist) -> None:
             current_graph_paths,
             current_git_paths,
         )
+    ctx.traversed_paths = frozenset(current_graph_paths)
 
 
 async def reconcile_generation_scope(ctx: IncrementalPersist) -> None:
@@ -163,6 +175,21 @@ async def rebuild_tree(ctx: IncrementalPersist) -> None:
 
     with timed(ctx.timings, "persist.page_tree"):
         await rebuild_page_tree(ctx.session, ctx.repo_id)
+
+
+async def defer_pages(ctx: IncrementalPersist) -> None:
+    from repowise.core.pipeline.persist.tombstones import mark_deferred_pages
+
+    with timed(ctx.timings, "persist.stale_pages"):
+        await mark_deferred_pages(
+            ctx.session,
+            ctx.repo_id,
+            scope=ctx.deferred_page_scope,
+            repo_path=Path(ctx.repo_path),
+            paths=ctx.deferred_page_paths or (),
+            parsed_files=ctx.parsed_files,
+            graph_builder=ctx.graph_builder,
+        )
 
 
 async def persist_git(ctx: IncrementalPersist) -> None:
@@ -327,6 +354,20 @@ async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
         await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "git_archaeology")
 
 
+def _left_index(ctx: IncrementalPersist) -> set[str]:
+    """Documents the change detector dropped as no longer indexable, though on disk.
+
+    Only those: any other deleted path that still exists keeps its rows, as the
+    disk-and-git liveness rule intends.
+    """
+    traversed = set(getattr(ctx.graph_builder, "traversed_file_paths", None) or ())
+    return {
+        fd.path
+        for fd in ctx.file_diffs or []
+        if fd.status == "deleted" and getattr(fd, "unindexable", False)
+    } - traversed
+
+
 async def prune_deleted(ctx: IncrementalPersist) -> None:
     # Last in the session on purpose: everything above upserts, and the git
     # step indexes the changed *paths*, deleted ones included, so the prune
@@ -342,10 +383,29 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
             else {pf.file_info.path for pf in ctx.parsed_files or []}
         ),
         health_report=ctx.partial_health_report,
+        pruned=ctx.pruned_paths,
+        left_index=_left_index(ctx),
         skip=ctx.skip,
         log=ctx.log,
         degraded=ctx.degraded,
         timings=ctx.timings,
+    )
+
+
+async def persist_plugin_records(ctx: IncrementalPersist) -> None:
+    if not index_persistence.all():
+        return
+    await apply_index_persistence(
+        ctx.session,
+        ctx.repo_id,
+        IndexWrite(
+            "incremental",
+            ctx.parsed_files,
+            changed_paths=tuple(ctx.changed_paths),
+            deleted_paths=tuple(sorted(ctx.pruned_paths)),
+            traversed_paths=ctx.traversed_paths,
+            degraded=tuple(ctx.degraded or []),
+        ),
     )
 
 
@@ -366,7 +426,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
         reconcile_generation_scope,
         when=lambda ctx: ctx.full_generation_page_ids is not None,
     ),
-    Step("Retired page sweep", sweep_retired),
+    Step("Retired page sweep", sweep_retired, when=lambda ctx: ctx.deferred_page_scope is None),
     Step(
         "Tombstone marking",
         mark_tombstones,
@@ -414,6 +474,14 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step(
+        "Deferred page staleness",
+        defer_pages,
+        when=lambda ctx: ctx.deferred_page_scope is not None,
+        guarded=False,
+    ),
+    # Unguarded and last: plugins see the final rows, and a raise rolls back the update.
+    Step("Plugin records", persist_plugin_records, guarded=False),
 )
 
 
@@ -541,6 +609,8 @@ async def persist_incremental_index(
     reconcile_full_scope: bool = False,
     full_generation_page_ids: set[str] | None = None,
     vector_store: Any | None = None,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
@@ -595,8 +665,10 @@ async def persist_incremental_index(
         reconcile_full_scope=reconcile_full_scope,
         full_generation_page_ids=full_generation_page_ids,
         vector_store=vector_store,
+        deferred_page_scope=deferred_page_scope,
+        deferred_page_paths=deferred_page_paths,
         log=log or _noop_log,
-        degraded=degraded,
+        degraded=[] if degraded is None else degraded,
         failed_steps=failed_steps,
         timings=timings,
     )
@@ -677,7 +749,9 @@ async def _write(ctx: IncrementalPersist) -> None:
         if timings is not None:
             timings.stop("persist")
 
-    if persisted:
+    from .feature import incremental_graph_enabled
+
+    if persisted and incremental_graph_enabled():
         # The DB transaction is committed and its engine is disposed before we
         # refresh this optional, sealed snapshot. If the write fails, the next
         # update safely reloads the authoritative rows from SQL.
@@ -685,3 +759,5 @@ async def _write(ctx: IncrementalPersist) -> None:
 
         with timed(timings, "persist.graph_seed_cache"):
             await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
+
+    await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))

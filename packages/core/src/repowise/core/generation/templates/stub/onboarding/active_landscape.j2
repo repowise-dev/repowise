@@ -4,7 +4,7 @@
     people, by design. -#}
 # Active Landscape
 
-Where `{{ ctx.repo_name }}` has been changing{% if ctx.as_of %}, from git history up to {{ ctx.as_of }}{% endif %}. In the 90 days before that, {{ ctx.files_touched_90d }} files changed, {{ ctx.total_commits_90d }} times in all, counting each commit once per file it touched{% if ctx.stable_file_count %}; {{ ctx.stable_file_count }} files have not moved at all{% endif %}.
+Where the code of `{{ ctx.repo_name }}` has been changing{% if ctx.as_of %}, from git history up to {{ ctx.as_of }}{% endif %}. In the 90 days before that, {{ ctx.files_touched_90d }} code files changed, {{ ctx.total_commits_90d }} times in all, counting each commit once per file it touched{% if ctx.stable_file_count %}; {{ ctx.stable_file_count }} code files have not moved at all{% endif %}. Tests, documentation and examples are left out.
 
 {% if ctx.hot_dirs %}
 ## Directories under active change
@@ -37,7 +37,8 @@ Worth deleting first: it is being carried through every edit.
 {% endfor %}
 {% endif %}
 {#- The explicit newline keeps ``---`` a thematic break rather than a setext
-    heading under the paragraph above (see stub/onboarding/glossary.j2). -#}
+    heading under the paragraph above: whitespace control keeps eating a plain
+    blank line here, and ``paragraph`` followed by ``---`` is a setext H2. -#}
 {{ "\n" }}
 ---
 

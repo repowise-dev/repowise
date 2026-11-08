@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 import structlog
@@ -24,6 +24,7 @@ from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
+    adopt_moved_repo_best_effort,
     clear_update_queued,
     console,
     consume_update_pending,
@@ -90,11 +91,19 @@ from .reporting import (
     render_header,
     show_full_completion,
 )
-from .stale_targets import load_actionable_stale_targets, structure_ids_to_render
+from .stale_targets import (
+    can_regenerate_pages,
+    load_actionable_stale_targets,
+    structure_ids_to_render,
+)
 from .wiki_rebuild import record_wiki_rebuilt, resolve_wiki_rebuild
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+#: ``state.json`` key: the commit whose run last looked for files with no page.
+FILE_PAGE_FILL_KEY = "file_page_fill_commit"
+
 
 def _fail_on_embed_failure(
     repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
@@ -325,6 +334,12 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     ),
 )
 @click.option(
+    "--defer-docs",
+    is_flag=True,
+    default=False,
+    help="With --index-only, persist facts and mark docs stale without rendering or embedding.",
+)
+@click.option(
     "--working-tree",
     "include_working_tree",
     is_flag=True,
@@ -432,6 +447,7 @@ def update_command(
     verbose: bool = False,
     progress: str = "rich",
     include_working_tree: bool = False,
+    defer_docs: bool = False,
 ) -> None:
     """Incrementally update the index and pages for files changed since the last sync.
 
@@ -462,6 +478,7 @@ def update_command(
         verbose=verbose,
         progress=progress,
         include_working_tree=include_working_tree,
+        defer_docs=defer_docs,
     )
 
 
@@ -505,9 +522,7 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print(
-        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
-    )
+    console.print(f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]")
     console.print(
         "  Documentation for the whole repository: written by the model after a cost "
         "preview, or built from code when no model is configured. Completed stages "
@@ -625,7 +640,7 @@ def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
 def _start_run(opts: UpdateOptions) -> UpdateRun:
     """Start the run clock and pick the progress output (rich or JSON events)."""
     # ``run`` is the denominator of every stage row; stages nest and overlap.
-    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings())
+    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings(), defer_docs=opts.defer_docs)
     run.timings.start("run")
 
     if opts.progress == "json":
@@ -654,7 +669,11 @@ def _emit_done(
 ) -> UpdateOutcome:
     """Send the JSON ``done`` event (when one is wanted) and hand back *outcome*."""
     if run.emitter is not None:
-        extra = {} if degraded is None else {"degraded": degraded}
+        extra: dict[str, Any] = {} if degraded is None else {"degraded": degraded}
+        if run.defer_docs:
+            from repowise.cli.commands._page_freshness import stale_page_count
+
+            extra.update(docs_deferred=True, stale_pages=run_async(stale_page_count(run.repo_path)))
         run.emitter.done(
             ok=True,
             pages_generated=pages_generated,
@@ -799,23 +818,55 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )
     # ``or``, not a ``get`` default: ``last_docs_commit`` can be an explicit null.
-    run.base_ref = opts.since or (
+    base_ref = opts.since or (
         state.get("last_sync_commit")
         if run.index_only
         else state.get("last_docs_commit") or state.get("last_sync_commit")
     )
     run.head = get_head_commit(repo_path)
 
-    if run.base_ref is None:
+    if base_ref is None:
         _raise_no_sync_base(run)
+    run.base_ref = base_ref
 
     # Re-cover a range an earlier update failed to persist. Index-only only: the
     # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
 
+    _verify_sync_base(run)
 
-def _raise_no_sync_base(run: UpdateRun) -> None:
+
+def _verify_sync_base(run: UpdateRun) -> None:
+    """Refuse a base ref that git cannot resolve before diffing."""
+    from repowise.core.git_repo import Repo
+
+    try:
+        repo = Repo(run.repo_path, search_parent_directories=True)
+    except Exception:
+        return
+    try:
+        try:
+            _ = repo.commit(run.base_ref).committed_date
+        except Exception as exc:
+            _raise_missing_sync_base(run, exc)
+    finally:
+        repo.close()
+
+
+def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
+    message = (
+        f"Sync base '{run.base_ref}' is not in the git history of {run.repo_path}. "
+        "Run 'repowise update --since <reachable ref>' to diff from a reachable commit, "
+        "or 'repowise init' to rebuild the index."
+    )
+    if run.emitter is not None:
+        run.emitter.error(message)
+    raise reasoned_error(message, reason="missing_sync_base") from exc
+
+
+
+def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
     if upstream_ws is not None:
@@ -879,7 +930,12 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
     """Uncommitted work, when asked for; read before the "up to date" gate."""
     from repowise.core.ingestion import ChangeDetector
 
-    run.detector = detector = ChangeDetector(run.repo_path)
+    run.detector = detector = ChangeDetector(
+        run.repo_path,
+        exclude_patterns=run.cfg.get("exclude_patterns"),
+        include_submodules=bool(run.state.get("include_submodules", False)),
+        include_nested_repos=bool(run.state.get("include_nested_repos", False)),
+    )
     if not opts.include_working_tree:
         return
     run.working_tree_diffs = detector.get_working_tree_changes()
@@ -918,7 +974,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         run.head
         and run.head == run.base_ref
         and not run.config.changed
-        and not run.renderer_changed
+        and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
         and not run.analyzer_changed
@@ -934,12 +990,42 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; "
-            "rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; " "rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
         run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
+        run.fill_file_pages = _file_pages_to_fill(run, opts)
+
+
+def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
+    """Whether the stored scope omits file pages that a run at this commit has not tried.
+
+    Omitted pages a cap explains stay omitted. Tried once per commit, so a page
+    that cannot be built never turns every later update into a re-parse.
+    """
+    omitted = _stored_file_pages(run).get("omitted")
+    if not omitted or _file_page_cap_reached(run):
+        return False
+    if run.state.get(FILE_PAGE_FILL_KEY) == run.head:
+        return False
+    if not can_regenerate_pages(run, opts):
+        return False
+    console.print(f"[yellow]{omitted} eligible files have no page yet; rendering them.[/yellow]")
+    return True
+
+
+def _stored_file_pages(run: UpdateRun) -> dict:
+    from repowise.core.index_scope import resolve_index_scope
+
+    return resolve_index_scope(run.state, run.cfg)["file_pages"]
+
+
+def _file_page_cap_reached(run: UpdateRun) -> bool:
+    """Whether the stored scope already holds as many file pages as its cap allows."""
+    pages = _stored_file_pages(run)
+    cap = pages.get("effective_cap")
+    return cap is not None and (pages.get("generated") or 0) >= cap
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -976,10 +1062,16 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
         )
     if run.stale_pages_deferred:
-        console.print(
-            f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
-            "[bold]repowise generate --stale[/bold].[/dim]"
-        )
+        if opts.defer_docs and resolve_docs_mode(run.state) == "deterministic":
+            console.print(
+                f"[dim]{run.stale_pages_deferred} stale page(s) wait for documentation refresh: "
+                "[bold]repowise update --index-only[/bold].[/dim]"
+            )
+        else:
+            console.print(
+                f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
+                "[bold]repowise generate --stale[/bold].[/dim]"
+            )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
@@ -1018,6 +1110,10 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         log.debug("self_heal_skipped", reason="another update holds the lock")
         return
     try:
+        if opts.defer_docs and run.renderer_changed:
+            from .stale_targets import defer_renderer_pages
+
+            run_async(defer_renderer_pages(run))
         rescanned = run.scanner_changed and rescan_security_if_changed(
             repo_path, state, list(run.cfg.get("exclude_patterns") or [])
         )
@@ -1029,7 +1125,11 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
                     **state,
                     "config_fingerprint": run.config.curr_fingerprint,
                     "config_dependency_fingerprints": run.config.curr_dependency_fps,
-                    "renderer_fingerprint": run.curr_renderer_fp,
+                    "renderer_fingerprint": (
+                        state.get("renderer_fingerprint")
+                        if opts.defer_docs
+                        else run.curr_renderer_fp
+                    ),
                     "phase_timings": run.timings.totals,
                 },
             )
@@ -1046,11 +1146,13 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
     """The diffed files since the base, plus stale pages whose files are gone."""
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    with timed(run.timings, "detect_changes"):
-        run.file_diffs = merge_file_diffs(
-            run.detector.get_changed_files(run.base_ref, run.head or "HEAD"),
-            run.working_tree_diffs,
-        )
+    try:
+        with timed(run.timings, "detect_changes"):
+            changed = run.detector.get_changed_files(run.base_ref, run.head or "HEAD")
+    except Exception as exc:
+        release_update_lock(run.repo_path)
+        _raise_git_diff_failed(run, exc)
+    run.file_diffs = merge_file_diffs(changed, run.working_tree_diffs)
 
     # Loaded already when git is current; otherwise load now so old structural
     # debt is carried forward.
@@ -1062,10 +1164,21 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
         _tombstone_missing_stale_pages(run)
 
 
+def _raise_git_diff_failed(run: UpdateRun, exc: Exception) -> None:
+    message = (
+        f"Git diff from '{run.base_ref}' to '{run.head or 'HEAD'}' failed: {exc}. "
+        "Run 'repowise update --since <reachable ref>' or 'repowise init'."
+    )
+    if run.emitter is not None:
+        run.emitter.error(message)
+    raise reasoned_error(message, reason="git_diff_failed") from exc
+
+
 def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
     from repowise.core.ingestion.change_detector import FileDiff
 
-    present, absent = [], []
+    present: list[str] = []
+    absent: list[str] = []
     for path in run.stale_db_paths:
         (present if (run.repo_path / path).exists() else absent).append(path)
     run.stale_db_paths = present
@@ -1200,6 +1313,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         or run.history_stale
         or run.stale_db_paths
         or run.stale_deterministic_ids
+        or run.fill_file_pages
     )
 
 
@@ -1215,7 +1329,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         "last_sync_commit": head,
         "config_fingerprint": run.config.curr_fingerprint,
         "config_dependency_fingerprints": run.config.curr_dependency_fps,
-        "renderer_fingerprint": run.curr_renderer_fp,
+        "renderer_fingerprint": (
+            state.get("renderer_fingerprint") if opts.defer_docs else run.curr_renderer_fp
+        ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
     # is: another base says nothing about the marker's range.
@@ -1314,6 +1430,13 @@ def _rebuild_index(run: UpdateRun) -> None:
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
     )
+    decision = getattr(run.graph_builder, "incremental_graph_decision", None)
+    if decision is not None:
+        # Persist the selected path and its reason alongside this run's phase
+        # timings so a fallback is visible after the console output is gone.
+        from repowise.core.pipeline.incremental.feature import stamp_graph_update
+
+        stamp_graph_update(run.state, decision)
 
 
 def _working_tree_only(run: UpdateRun) -> bool:
@@ -1338,13 +1461,14 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     _stage(run, "plan_pages")
 
     run.timings.start("plan_pages")
-    run.cascade_budget = opts.cascade_budget
-    if run.cascade_budget is None:
+    cascade_budget = opts.cascade_budget
+    if cascade_budget is None:
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
-        run.cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
+        cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
         if opts.verbose:
-            console.print(f"Adaptive cascade budget: [cyan]{run.cascade_budget}[/cyan]")
+            console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
+    run.cascade_budget = cascade_budget
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -1362,12 +1486,50 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     from .stale_targets import stale_flow_pages
 
     stale_flow_pages(run)
-    _add_stale_pages(run, stale_renderer_paths)
+    _add_stale_pages(run, stale_renderer_paths, _unpaged_file_paths(run))
     _widen_for_full_render(run)
     _report_page_plan(run)
 
 
-def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
+def _unpaged_file_paths(run: UpdateRun) -> list[str]:
+    """Eligible files with no file page yet; rendered with the changed files.
+
+    None while the cap is reached: the pages it leaves out are omitted on purpose.
+    """
+    from .persistence import file_paths_without_page
+
+    if _file_page_cap_reached(run) or not _may_lack_file_pages(run):
+        return []
+    missing = file_paths_without_page(
+        run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
+    )
+    # Recorded so an up-to-date run retries a fill once per commit, not forever.
+    run.state[FILE_PAGE_FILL_KEY] = run.head
+    if missing:
+        console.print(f"Files with no page yet: [cyan]{len(missing)}[/cyan]")
+    return missing
+
+
+def _may_lack_file_pages(run: UpdateRun) -> bool:
+    """Whether any eligible file can be without a page, so the lookup is worth its store read.
+
+    Either the stored scope counts some as omitted (or has no count yet), or
+    this run adds a path the plan does not render. Otherwise every eligible
+    file had a page at the last stamp. A file that turns eligible without a
+    diff is counted by the stamp after this run and filled by the next one.
+    """
+    omitted = _stored_file_pages(run).get("omitted")
+    if omitted is None or omitted:
+        return True
+    rendered = set(run.affected.regenerate)
+    return any(
+        fd.status in ("added", "renamed") and fd.path not in rendered for fd in run.file_diffs
+    )
+
+
+def _add_stale_pages(
+    run: UpdateRun, stale_renderer_paths: list[str], unpaged_paths: list[str]
+) -> None:
     if stale_renderer_paths:
         console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
     # Ceiling: a stale page whose file is no longer indexed is never re-rendered
@@ -1379,7 +1541,7 @@ def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
             "Reconciling stale repository structure: "
             f"[cyan]{len(run.stale_deterministic_ids)}[/cyan]"
         )
-    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths]))
+    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths, *unpaged_paths]))
     if stale_extra:
         run.affected.regenerate = list(dict.fromkeys([*run.affected.regenerate, *stale_extra]))
         _drop_from_decay(run.affected, set(stale_extra))
@@ -1581,13 +1743,18 @@ class _TemplatePages:
     render_stats: dict[str, int] = field(default_factory=dict)
     # False after a failed renderer-driven render: keep the old stamp and pages.
     renderer_render_ok: bool = True
+    docs_deferred: bool = False
 
 
 def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Index-only: re-render a template wiki (no model), persist, and finish."""
     docs_mode = resolve_docs_mode(run.state)
-    pages = _TemplatePages(docs_mode=docs_mode, renderer_render_ok=docs_mode != "llm")
-    if pages.docs_mode == "deterministic":
+    pages = _TemplatePages(
+        docs_mode=docs_mode,
+        renderer_render_ok=docs_mode != "llm" and not opts.defer_docs,
+        docs_deferred=opts.defer_docs,
+    )
+    if pages.docs_mode == "deterministic" and not opts.defer_docs:
         _render_template_pages(opts, run, pages)
     _stage(run, "persist")
     with _errors_reported(run):
@@ -1711,6 +1878,7 @@ def _render_template_page_set(
 
 def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
     config = run.config
+    assert config is not None
     template_wiki = pages.docs_mode == "deterministic"
     persisted_changed_paths = (
         [pf.file_info.path for pf in run.parsed_files]
@@ -1737,7 +1905,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         source_map=run.source_map,
         degraded=run.degraded,
         # The repo's docs mode, not this run's page count.
-        template_wiki=template_wiki,
+        template_wiki=template_wiki and not pages.docs_deferred,
         pages_rendered=len(pages.pages),
         git_decay_map=run.git_decay_map,
         exclude_patterns=run.exclude_patterns,
@@ -1752,6 +1920,17 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         dependency_fingerprints=config.curr_dependency_fps,
         vector_store=config_vector_store,
         require_config_rebuild_success=config.rebuild_required,
+        deferred_page_scope=(
+            ("all" if run.full_generation else "template" if run.renderer_changed else "changed")
+            if pages.docs_deferred
+            else None
+        ),
+        deferred_page_paths=(
+            list(dict.fromkeys([*run.affected.regenerate, *run.affected.decay_only]))
+            if pages.docs_deferred
+            else None
+        ),
+        stamp_config=not (pages.docs_deferred and config.generation_changed),
         timings=run.timings,
     )
 
@@ -1759,6 +1938,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
 def _config_vector_store(run: UpdateRun, pages: _TemplatePages, template_wiki: bool):
     """The vector store a config-driven rebuild writes to, or None without one."""
     config = run.config
+    if pages.docs_deferred:
+        return None
     if not (config.traversal_changed or config.generation_changed):
         return None
     vector_store = _build_update_vector_store(
@@ -1779,7 +1960,7 @@ def _full_generation_page_ids(
     full_render = run.config.generation_changed or (
         (run.renderer_changed or run.wiki_rebuild) and pages.renderer_render_ok
     )
-    if template_wiki and full_render:
+    if template_wiki and full_render and not pages.docs_deferred:
         return {page.page_id for page in pages.pages}
     return None
 
@@ -2140,6 +2321,7 @@ def run_update(
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
+    defer_docs: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2180,27 +2362,48 @@ def run_update(
         progress=progress,
         skip_cross_repo_hooks=skip_cross_repo_hooks,
         include_working_tree=include_working_tree,
+        defer_docs=defer_docs,
     )
+    if opts.defer_docs and (
+        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
+    ):
+        raise reasoned_error(
+            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
+            reason="defer_docs_needs_index_only",
+        )
     run = _start_run(opts)
     target = _resolve_target(opts)
     if target.is_workspace:
+        if opts.defer_docs:
+            raise reasoned_error(
+                "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
+                reason="defer_docs_needs_one_repo",
+            )
         return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
-    run.repo_path = target.repo_path
-    assert run.repo_path is not None  # single mode always sets repo_path
+    repo_path = target.repo_path
+    assert repo_path is not None  # single mode always sets repo_path
+    run.repo_path = repo_path
     _prepare_repo(run.repo_path)
+    if not opts.dry_run:
+        # A moved or copied checkout still names its old path; adopt the store's
+        # only row before any write keys on the new one and adds a second row.
+        run_async(adopt_moved_repo_best_effort(run.repo_path))
 
     # --full reuses the persisted graph instead of diffing changed files.
     if opts.full:
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
     _check_config_and_renderer(run)
-    resolve_wiki_rebuild(opts, run)
+    if not opts.defer_docs:
+        resolve_wiki_rebuild(opts, run)
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
     _assess_staleness(opts, run)
-    if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:
+    if run.git_is_current and not (
+        run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
+    ):
         return _already_up_to_date(opts, run)
 
     deferred = _acquire_update_lock(run)

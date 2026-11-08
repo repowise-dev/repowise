@@ -103,6 +103,16 @@ export interface ActiveProviderSelection {
   embedder?: string | null;
 }
 
+/** What the index knows about one affected file. ``None`` means unknown, never healthy. */
+export interface AffectedSignal {
+  path: string;
+  is_hotspot?: boolean | null;
+  health_score?: number | null;
+  module?: string | null;
+  is_test?: boolean;
+  indexed?: boolean | null;
+}
+
 export interface AgentPromptResponse {
   flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
   text: string;
@@ -406,9 +416,13 @@ export interface ArtifactUpdateRequest {
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
+  with_graph?: boolean;
 }
 
 export interface BlastRadiusResponse {
+  affected_signals?: AffectedSignal[] | null;
+  changed_owners?: ChangedOwner[] | null;
+  test_commands?: string[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -529,6 +543,57 @@ export interface ChangeAuthor {
   email: string;
 }
 
+export interface ChangeBlastRadiusRequest {
+  change_id: string;
+  max_depth?: number;
+}
+
+export interface ChangeBlastRadiusResponse {
+  affected_signals?: AffectedSignal[] | null;
+  changed_owners?: ChangedOwner[] | null;
+  test_commands?: string[] | null;
+  direct_risks: DirectRiskEntry[];
+  transitive_affected: TransitiveEntry[];
+  cochange_warnings: CochangeWarning[];
+  recommended_reviewers: ReviewerEntry[];
+  test_gaps: string[];
+  test_impact: TestImpactResponse;
+  structural_impact_score: number;
+  structural_impact_band: "localized" | "moderate" | "broad";
+  structural_impact_scale: RiskScalarSemantics;
+  overall_risk_score: number;
+  overall_risk_score_compatibility: RiskCompatibilityField;
+  change_id: string;
+  changed_files: string[];
+  changed_files_total: number;
+}
+
+export interface ChangeCandidateModel {
+  id: string;
+  kind: "working_tree" | "branch" | "commit" | "pull_request";
+  label: string;
+  title?: string | null;
+  author?: string | null;
+  committed_at?: string | null;
+  head_sha?: string | null;
+  base?: string | null;
+  ahead?: number | null;
+  files_changed?: number | null;
+  is_current?: boolean;
+  pushed?: boolean | null;
+  number?: number | null;
+  base_sha?: string | null;
+  pr_review?: PrReviewSummary | null;
+}
+
+/** The changes a reviewer can pick, and the one to open first. */
+export interface ChangeCandidatesResponse {
+  changes: ChangeCandidateModel[];
+  default_id?: string | null;
+  working_tree_supported: boolean;
+  health_check_supported?: boolean;
+}
+
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
 export interface ChangeEvidence {
   schema_version: number;
@@ -571,6 +636,28 @@ export interface ChangeForgeMetadata {
   approvals?: number | null;
   labels?: string[] | null;
   linked_issues?: string[] | null;
+}
+
+export interface ChangeHealthCheckRequest {
+  change_id: string;
+}
+
+/**
+ * ``repowise health check <revspec> --format json`` for one listed change.
+ *
+ * ``findings`` are the gate's rows (health findings introduced, worsened or
+ * fixed, and the diff-risk rules); ``gate`` holds the verdict at the CLI
+ * defaults (fail on introduced, at high).
+ */
+export interface ChangeHealthCheckResponse {
+  change_id: string;
+  revspec: string;
+  status: string;
+  explanation?: string | null;
+  scope: Record<string, unknown>;
+  skipped: Record<string, string>;
+  findings: Record<string, unknown>[];
+  gate: Record<string, unknown>;
 }
 
 /** A finding a change's commit introduced or worsened, with that commit. */
@@ -679,6 +766,13 @@ export interface ChangeRecord {
   metadata: ChangeForgeMetadata;
   evidence?: ChangeEvidence | null;
   evidence_building?: boolean;
+}
+
+/** Who owns some of the changed files, by primary authorship. */
+export interface ChangedOwner {
+  email: string;
+  name?: string | null;
+  files: number;
 }
 
 export interface ChangelogEntryModel {
@@ -1610,6 +1704,7 @@ export interface DecisionRecordResponse {
   updated_at: string;
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
+  hotspot_files?: string[] | null;
   currency?: string | null;
   accepter?: string | null;
   accepter_kind?: string | null;
@@ -1679,6 +1774,7 @@ export interface DecisionSourceState {
  */
 export interface DecisionStatusUpdate {
   status?: string | null;
+  reason?: string | null;
   superseded_by?: string | null;
   affected_modules?: string[] | null;
   affected_files?: string[] | null;
@@ -3154,6 +3250,7 @@ export interface PageResponse {
   repository_id: string;
   page_type: string;
   title: string;
+  nav_title?: string | null;
   target_path: string;
   source_hash: string;
   model_name: string;
@@ -3401,6 +3498,7 @@ export interface PeriodHealthSummaryResponse {
   findings_introduced: number;
   findings_worsened: number;
   net_findings: number;
+  categories?: Record<string, number> | null;
 }
 
 /** Result of pinning a file's doc (issue #812). */
@@ -3454,6 +3552,18 @@ export interface PopulationBreakdown {
   include_tests?: boolean;
   include_examples?: boolean;
   include_docs?: boolean;
+}
+
+/**
+ * What the PR bot stored for a pull request: code health before and after, and new findings.
+ *
+ * A host that runs the bot fills it; a local server never does.
+ */
+export interface PrReviewSummary {
+  health_before?: number | null;
+  health_after?: number | null;
+  introduced?: number | null;
+  url?: string | null;
 }
 
 /** One provider in the catalog, as the settings picker renders it. */
@@ -3876,10 +3986,33 @@ export interface ReposSummaryResponse {
   repos: RepoSummaryRow[];
 }
 
+export interface RetiredPageDetail {
+  archive_id: string;
+  page_id: string;
+  repository_id: string;
+  retired_at: string;
+  reason: string;
+  superseded_by: string | null;
+  title: string;
+  page: Record<string, unknown>;
+  versions: Record<string, unknown>[];
+}
+
+export interface RetiredPageSummary {
+  archive_id: string;
+  page_id: string;
+  repository_id: string;
+  retired_at: string;
+  reason: string;
+  superseded_by: string | null;
+  title: string;
+}
+
 export interface ReviewerEntry {
   email: string;
   files: number;
   ownership_pct: number;
+  name?: string | null;
 }
 
 export interface ReviewerSuggestion {
@@ -4444,6 +4577,7 @@ export interface TestRecommendation {
 export interface TransitiveEntry {
   path: string;
   depth: number;
+  via?: string | null;
 }
 
 /**
@@ -5279,6 +5413,27 @@ export interface WorkspaceUnresolvedLink {
   detail?: string | null;
 }
 
+export interface ZoomContainerResponse {
+  id: string;
+  name: string;
+  path?: string;
+  kind: string;
+  technologies?: string[];
+  file_count?: number;
+}
+
+export interface ZoomExternalResponse {
+  id: string;
+  name: string;
+  display_name: string;
+  kind: string;
+  category: string;
+  io_kind?: string | null;
+  ecosystem?: string;
+  file_count?: number;
+  edge_count?: number;
+}
+
 export interface ZoomMapResponse {
   root_id: string;
   project_name: string;
@@ -5288,6 +5443,9 @@ export interface ZoomMapResponse {
   truncated?: boolean;
   nodes: ZoomNodeResponse[];
   relations: ZoomRelationResponse[];
+  externals?: ZoomExternalResponse[];
+  external_relations?: ZoomRelationResponse[];
+  containers?: ZoomContainerResponse[];
 }
 
 export interface ZoomMetricsResponse {
@@ -5319,6 +5477,8 @@ export interface ZoomNodeResponse {
   is_dead?: boolean;
   is_test?: boolean;
   on_flow?: boolean;
+  technologies?: string[];
+  container_ids?: string[];
 }
 
 export interface ZoomRelationResponse {

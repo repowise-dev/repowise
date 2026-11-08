@@ -134,6 +134,7 @@ from repowise.server.mcp_server.tool_answer.callers import (
     is_impact_question,
 )
 from repowise.server.mcp_server.tool_answer.citations import answer_files
+from repowise.server.mcp_server.tool_answer.clauses import cover_clauses
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
     _grade_answer,
@@ -153,6 +154,7 @@ from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _cache_disabled,
     _symbol_agreement_enabled,
 )
+from repowise.server.mcp_server.tool_answer.cut_off import answer_cut_off
 from repowise.server.mcp_server.tool_answer.data_shape import (
     _is_data_shape_question,
     build_data_shape_payload,
@@ -210,6 +212,7 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
     _resolve_reasoning_for_answer,
     synthesize,
 )
+from repowise.server.mcp_server.tool_answer.value_lines import value_line_anchor_hits
 from repowise.server.mcp_server.tool_search_symbols import issue_files
 
 _log = logging.getLogger("repowise.mcp.answer")
@@ -304,12 +307,18 @@ async def _run_retrieval_pipeline(
                     repo_root=_anchor_root,
                     session_factory=ctx.session_factory,
                     question=question,
+                    scope=scope,
                 )
     # Concept anchoring: a why/value question pinning a number to a behaviour
     # anchors the file whose source comment justifies that number.
     if _is_why_question(question) or _is_value_question(question):
         with contextlib.suppress(Exception):
             hits = await _concept_anchor_hits(getattr(ctx, "path", None), question, hits)
+    # Value anchoring: a value set inside a function body (``timeout=5.0``)
+    # anchors the function holding it.
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            hits = await value_line_anchor_hits(ctx, session, repo_id, question, question_ids, hits)
     # Flow-path expansion: when the question anchors 2+ endpoints, inject the
     # files on the path between them, reaching a far endpoint 1-hop expansion
     # cannot. This and the stages below run before the cap so an injected file
@@ -358,6 +367,9 @@ async def _run_retrieval_pipeline(
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
     hits = drop_ruled_out_files(hits, question)
+    # A compound question gets each later clause's best file into the top five.
+    with contextlib.suppress(Exception):
+        hits = await cover_clauses(question, hits, ctx, scope=scope, exclude_spec=exclude_spec)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -555,6 +567,8 @@ async def _gated_reply(
                 fallback_targets=fallback_targets,
                 repository=ask.repository,
                 t0=ask.t0,
+                split_at=(retrieved.homonyms.get("split_at") or {}).get(extraction["name"]),
+                repo_root=_repo_root(ask.ctx),
             )
     return None
 
@@ -588,6 +602,7 @@ async def _graded_payload(
     fallback_targets: list[str],
     agreement_dominant: bool,
     dominance,
+    stop_reason: str | None = None,
 ) -> tuple[dict, str, list[str]]:
     """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
     hits = retrieved.hits
@@ -618,6 +633,10 @@ async def _graded_payload(
         dominance=dominance,
         uncovered=uncovered,
         lead_off_top=cited.drops_top_hit(hits, answer_text),
+        unindexed_names=retrieved.homonyms.get("unindexed", ()),
+        absent_names=retrieved.homonyms.get("absent", ()),
+        split_names=retrieved.homonyms.get("split"),
+        stop_reason=stop_reason,
     )
     payload = await build_synthesized_payload(
         question=ask.question,
@@ -647,17 +666,19 @@ async def _cache_and_stamp(
     provider,
     confidence: str,
     targets: list[str],
+    cut_off: bool = False,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
     Only the trust-relevant retrieval state is cached; the cache read rebuilds
     timing and freshness. The episode is attached after the write, so it never
-    reaches the cache row.
+    reaches the cache row. A cut-off answer is not cached, so asking again
+    synthesizes afresh.
     """
     degraded = _degraded_legs(_retrieval_legs())
     if degraded:
         payload["_retrieval_degraded"] = degraded
-    if write_cache:
+    if write_cache and not cut_off:
         await _write_answer_cache(
             payload,
             ctx=ask.ctx,
@@ -834,7 +855,7 @@ async def get_answer(
 
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
-    answer_text, failure_note = await synthesize(
+    answer_text, failure_note, stop_reason = await synthesize(
         provider,
         _SYSTEM_PROMPT,
         await _user_prompt(ask, hits, graph_callers),
@@ -846,7 +867,7 @@ async def get_answer(
         return await _degrade("synthesis-failed", failure_note)
 
     payload, confidence, citations = await _graded_payload(
-        ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance
+        ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance, stop_reason
     )
     attach_graph_callers(payload, graph_callers)
     await _neighbors(payload)
@@ -858,6 +879,7 @@ async def get_answer(
         payload,
         ask,
         write_cache=bool(answer_text) and not cache_disabled,
+        cut_off=answer_cut_off(answer_text, stop_reason),
         qhash=qhash,
         provider=provider,
         confidence=confidence,
@@ -892,23 +914,18 @@ async def get_answer(
 ) -> dict:
     """Answer a how, where, or why question in one evidence-grounded call.
 
-    High confidence is content-grounded and may be used directly. Medium
-    confidence keeps the smallest verification evidence; low confidence leads
-    with an actionable local conclusion and ranked evidence. ``candidate_files``
-    ranks the files worth opening that the citations do not name. Provider keys and
-    network access are optional: local source, symbols, FTS, rationale, and
-    data-shape evidence remain usable when embeddings or synthesis fail.
-
-    Responses fit 24,000 serialized characters. Pass ``include=["evidence"]``
-    for the deduplicated expanded projection, capped at 32,000. Reductions carry
-    totals, emitted counts, reasons, and a recovery: the same call with that include.
+    High confidence may be used directly; medium and low lead with the
+    evidence to verify. ``candidate_files`` ranks files worth opening that
+    the citations do not name.
 
     Args:
-        question: Developer question.
-        scope: Optional repository-relative path prefix.
-        repo: Usually omitted; a workspace alias when needed.
-        include: Optional ``["evidence"]`` expanded projection;
-            ``["diagnostics"]`` adds ``retrieval_quality``.
+        question: One question about one subject. Split "where is X and
+            when does Y run" into two calls; do not paste a whole
+            multi-part task.
+        scope: repository-relative path prefix.
+        repo: usually omitted.
+        include: ``["evidence"]`` expanded evidence; ``["diagnostics"]``
+            adds ``retrieval_quality``.
     """
     return await _projected_get_answer(
         question=question,

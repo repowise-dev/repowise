@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.persistence.index_cache import IndexStampCache
-from repowise.core.persistence.models import GraphNode, Repository
+from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
+from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
+from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
 
 from .forward import CallGraphView, files_reached_by_tests
 from .hubs import call_hub_files
@@ -147,6 +148,19 @@ async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[st
     return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
 
 
+async def cached_file_paths(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """Every indexed file path, read once per index state."""
+    key = await _cache.key(session, repo_id, "file_paths")
+    if key in _cache:
+        return _cache.get(key)
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
+        )
+    )
+    return _cache.remember(key, frozenset(row[0] for row in res.all()))
+
+
 async def cached_hub_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
     """:func:`~.hubs.call_hub_files` by the stored call edges, read once per index state."""
     key = await _cache.key(session, repo_id, "hubs")
@@ -182,22 +196,54 @@ async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> 
     return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
 
 
+#: The ``read_snapshots`` kind that keeps :func:`cached_test_masks` across
+#: processes; listed in ``read_snapshots.SELF_KEYED_KINDS``.
+MASKS_SNAPSHOT_KIND = "test_masks"
+
+
+def _masks_snapshot_key(stamp: tuple[Any, ...]) -> str:
+    return snapshot_key(MASKS_SNAPSHOT_KIND, stamp)
+
+
 async def cached_test_masks(session: AsyncSession, repo_id: str) -> dict[str, frozenset[str]]:
     """:func:`~.mocks.replaced_files` for the stored test files, read from the checkout.
 
-    Read once per index state, like the graph it pairs with. No checkout on
-    disk means no masks, so every test keeps its reach.
+    Read once per index state, like the graph it pairs with: from this
+    process's cache, else the copy the last index run stored
+    (:func:`write_test_masks_snapshot`), else built here. Building reads and
+    parses every test file, which is most of a first call's cost on a large
+    repository. A test edited since the index is read as indexed, like the
+    import edges the masks are applied to; the next update reads the edit.
+    No checkout on disk means no masks, so every test keeps its reach.
     """
     key = await _cache.key(session, repo_id, "masks")
     if key in _cache:
         return _cache.get(key)
+    stored = await read_snapshot(session, repo_id, MASKS_SNAPSHOT_KIND, _masks_snapshot_key(key[2]))
+    if isinstance(stored, dict):
+        return _cache.remember(key, {test: frozenset(hits) for test, hits in stored.items()})
+    return _cache.remember(key, await _build_test_masks(session, repo_id))
+
+
+async def write_test_masks_snapshot(session: AsyncSession, repo_id: str) -> bool:
+    """Store :func:`cached_test_masks` under the index state it was built from."""
+
+    async def build() -> dict[str, list[str]]:
+        masks = await cached_test_masks(session, repo_id)
+        return {test: sorted(hits) for test, hits in sorted(masks.items())}
+
+    key = _masks_snapshot_key(await index_stamp(session, repo_id))
+    return await refresh_snapshot(session, repo_id, MASKS_SNAPSHOT_KIND, key, build)
+
+
+async def _build_test_masks(session: AsyncSession, repo_id: str) -> dict[str, frozenset[str]]:
     root = (
         await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
     ).scalar_one_or_none()
     tests = [t for t in await cached_test_files(session, repo_id) if t.endswith(MASKABLE_SUFFIXES)]
     texts = await asyncio.to_thread(_read_texts, root, tests) if root else {}
     files = await _file_paths(session, repo_id) if texts else set()
-    return _cache.remember(key, replaced_files(texts, files))
+    return replaced_files(texts, files)
 
 
 def _read_texts(root: str, paths: list[str]) -> dict[str, str]:
@@ -268,12 +314,39 @@ async def reach_states_from_db(
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachRow]:
-    """:func:`~.walk.reach_states` over the stored graph."""
+    """:func:`~.walk.reach_states` over the stored graph, with the origin gate on.
+
+    Code that owes no test (generated, vendored, build, tooling, docs example,
+    migration; the stored ``code_origin``, else the path) reads
+    ``not_applicable``.
+    """
     test_files = set(await cached_test_files(session, repo_id))
     walk = states_walk(
-        list(paths), test_files, changed_tests=changed_tests, contents=contents, masks=masks
+        list(paths),
+        test_files,
+        changed_tests=changed_tests,
+        contents=contents,
+        masks=masks,
+        origins=await stored_origins(session, repo_id, list(paths)),
     )
     return await drive(walk, session, repo_id)
+
+
+async def stored_origins(
+    session: AsyncSession, repo_id: str, paths: list[str]
+) -> dict[str, str | None]:
+    """The stored ``health_file_metrics.code_origin`` of *paths*, one read per batch; unscored paths are absent."""
+    out: dict[str, str | None] = {}
+    paths = list(dict.fromkeys(paths))
+    for start in range(0, len(paths), _IN_BATCH):
+        res = await session.execute(
+            select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.file_path.in_(paths[start : start + _IN_BATCH]),
+            )
+        )
+        out.update(res.tuples().all())
+    return out
 
 
 async def tests_reaching_through_helpers(
@@ -308,6 +381,25 @@ async def placed_test_files(session: AsyncSession, repo_id: str) -> set[str]:
         params,
     )
     return {row[0] for row in rows}
+
+
+async def cached_placement(
+    session: AsyncSession, repo_id: str
+) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
+    """Placed, always-run and unscanned test files, read once per index state.
+
+    Every selection asks all three and each is a scan of the graph, so a
+    process serving many calls on one index reads them once. Shared: the
+    mapping is copied on the way out, the sets are frozen.
+    """
+    key = await _cache.key(session, repo_id, "placement")
+    if key not in _cache:
+        placed = frozenset(await placed_test_files(session, repo_id))
+        always = await always_run_test_files(session, repo_id)
+        unscanned = frozenset(await unscanned_test_files(session, repo_id))
+        _cache.remember(key, (placed, always, unscanned))
+    placed, always, unscanned = _cache.get(key)
+    return placed, dict(always), unscanned
 
 
 async def always_run_test_files(session: AsyncSession, repo_id: str) -> dict[str, str]:
@@ -417,8 +509,14 @@ async def tests_reaching_by_tier(
     avoid: Collection[str] = frozenset(),
     import_graph: ImportGraph | None = None,
     hubs: Collection[str] = frozenset(),
+    helpers: bool = False,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *helpers* adds the helper or barrel hop and the package walk
+    (:func:`~.walk.package_walk`) for the targets both tiers leave
+    unanswered: the bar a caller must clear before it says "no test
+    reaches this" (``pr_blast.file_tests``).
 
     *hubs* (:func:`cached_hub_files`) tags the call-tier tests that reach a
     target only through a hub, and lists them last (``ReachedBy.transitive``).
@@ -440,7 +538,7 @@ async def tests_reaching_by_tier(
     *import_graph* (:func:`load_import_graph`) answers the import tier's
     levels from memory, for a caller that walks deep or more than once.
 
-    The walk is :func:`~.walk.tier_walk` without the helper hop: the call walk
+    The walk is :func:`~.walk.tier_walk`, by default without those: the call walk
     first, then the import walk seeded with only the targets it left
     unanswered, so the weaker tier never speaks over the stronger one and
     costs nothing where the stronger one already spoke.
@@ -456,7 +554,7 @@ async def tests_reaching_by_tier(
     if not any(targets):
         return {}
     if test_files is None:
-        test_files = await load_test_files(session, repo_id)
+        test_files = await cached_test_files(session, repo_id)
     walk = tier_walk(
         list(targets),
         test_files,
@@ -464,6 +562,7 @@ async def tests_reaching_by_tier(
         import_depth=import_depth,
         symbol_seeds=symbol_seeds,
         avoid=avoid,
+        helpers=helpers,
         hubs=hubs,
     )
     return await drive(walk, session, repo_id, import_graph=import_graph)
@@ -595,6 +694,18 @@ async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
         importers.setdefault(target, []).append(source)
     # Sorted, so a bounded walk does not depend on the order rows come back in.
     return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
+
+
+async def cached_import_graphs(
+    session: AsyncSession, repo_id: str
+) -> tuple[ImportGraph, ImportGraph]:
+    """:func:`load_import_graph` and its :meth:`~ImportGraph.with_package_inits`,
+    read once per index state. Shared, so neither is changed by a reader."""
+    key = await _cache.key(session, repo_id, "import_graphs")
+    if key in _cache:
+        return _cache.get(key)
+    graph = await load_import_graph(session, repo_id)
+    return _cache.remember(key, (graph, graph.with_package_inits()))
 
 
 async def direct_dependents(

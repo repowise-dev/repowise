@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -26,8 +28,9 @@ from repowise.core.persistence.sql import (  # noqa: F401
     escape_like,
     is_missing_table,
 )
-from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import _checkout, _state
 from repowise.server.mcp_server._query_shape import _is_path  # noqa: F401
+from repowise.server.mcp_server._why_relevance import floor_ranked, question_terms
 
 _log = logging.getLogger("repowise.mcp")
 
@@ -51,6 +54,8 @@ _VECTOR_TIMEOUT_MAX_S = 120.0
 # rate-limited embedder takes 5-13s, and full-text hits are ready long before.
 _SEMANTIC_GRACE_ENV = "REPOWISE_SEMANTIC_GRACE_S"
 _SEMANTIC_GRACE_DEFAULT_S = 1.0
+# How long a vector leg waits for the store to finish loading at server start.
+_VECTOR_STORE_READY_TIMEOUT_S = 30.0
 
 
 def vector_search_timeout_s() -> float:
@@ -125,8 +130,11 @@ def embed_timeout_s() -> float:
 # ---------------------------------------------------------------------------
 
 
+_warned_ambiguous: set[str] = set()
+
+
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository — by path, by ID, or return the first one."""
+    """Resolve a repository by path, ID or name; with none, the served directory's."""
     if repo:
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
@@ -148,13 +156,30 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         if obj:
             return obj
         raise LookupError(f"Repository not found: {repo}")
+    return await _default_repo(session)
 
-    # Default: return the first (and often only) repository
-    result = await session.execute(select(Repository).limit(1))
-    obj = result.scalar_one_or_none()
-    if obj is None:
+
+async def _default_repo(session: AsyncSession) -> Repository:
+    """The served directory's row, else the only (or first) row."""
+    served = _state._repo_path
+    if served:
+        for key in dict.fromkeys((served, str(Path(served).resolve()))):
+            obj = await get_repository_by_path(session, key)
+            if obj:
+                return obj
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if not rows:
         raise LookupError("No repositories found. Run 'repowise init' first.")
-    return obj
+    if len(rows) > 1 and served and served not in _warned_ambiguous:
+        # A store split when an older version indexed a moved or copied repo.
+        _warned_ambiguous.add(served)
+        _log.warning(
+            "The index holds several repositories and none at %s; serving %s. "
+            "Pass `repo` to pick another.",
+            served,
+            rows[0].local_path,
+        )
+    return rows[0]
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +235,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
     if registry is None:
         # Single-repo mode — validate the repo param against the DB if given
         if repo is not None:
-            from repowise.core.persistence.database import get_session as _get_session
-
-            async with _get_session(_state._session_factory) as session:
-                await _get_repo(session, repo)  # raises LookupError if invalid
+            own = await _single_repo_checkout(repo)
+            if own is not None:
+                return own
 
         return RepoContext(
             alias="default",
@@ -233,7 +257,63 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             "repo='all' must be handled explicitly by each tool. "
             "Fan out with _federation.Federation instead."
         )
+    # Only a path can name another checkout; an alias resolves as before.
+    is_path = repo is not None and Path(repo).is_absolute()
+    matched = registry.match_checkout(repo) if is_path else None
+    if matched is not None and matched[0] == resolved:
+        entry = registry.ws_config.get_repo(resolved)
+        indexed = (registry.workspace_root / entry.path).resolve()
+        if _checkout.note_match(matched[1], indexed):
+            return await _checkout.own_index_context(resolved, matched[1].checkout)
+    elif repo is not None:
+        _checkout.note_match(None, Path())
     return await registry.get(resolved)
+
+
+async def _single_repo_checkout(repo: str) -> Any:
+    """Validate *repo* on a single-repo server; a worktree's own context or None.
+
+    A row the store knows (path, id or name) is the served repo. Otherwise an
+    absolute path inside the served checkout, or inside another worktree of
+    it, resolves too; anything else raises ``LookupError`` as before.
+    """
+    from repowise.core.git_head import match_checkout
+    from repowise.core.persistence.database import get_session as _get_session
+
+    async with _get_session(_state._session_factory) as session:
+        try:
+            await _get_repo(session, repo)
+        except LookupError:
+            served = _state._repo_path
+            matched = (
+                match_checkout(repo, served) if served and Path(repo).is_absolute() else None
+            )
+            if matched is None:
+                raise
+        else:
+            _checkout.note_match(None, Path())
+            return None
+    if _checkout.note_match(matched, Path(served).resolve()):
+        return await _checkout.own_index_context("default", matched.checkout)
+    return None
+
+
+async def wait_for_vector_store(ctx: Any) -> None:
+    """Wait, bounded, for a vector store still loading at startup.
+
+    A single-repo context is a copy of ``_state`` taken when the tool started,
+    so one taken mid-load still holds the keyless placeholder and its vector
+    leg would quietly return nothing. It is pointed at the loaded stores here.
+    Workspace contexts are updated in place by their registry.
+    """
+    ready = getattr(ctx, "vector_store_ready", None)
+    if ready is None:
+        return
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(ready.wait(), timeout=_VECTOR_STORE_READY_TIMEOUT_S)
+    if _state._registry is None and ready is _state._vector_store_ready:
+        ctx.vector_store = _state._vector_store
+        ctx.decision_store = _state._decision_store
 
 
 def _unsupported_repo_all(tool_name: str) -> dict:
@@ -295,18 +375,8 @@ def attach_ignored_arguments(result: dict[str, Any], ignored: list[dict[str, Any
 # Origin story & alignment (used by get_context, get_why)
 # ---------------------------------------------------------------------------
 
-# Common stop-words stripped before commit/decision keyword overlap.
-_ORIGIN_STOP_WORDS = frozenset(
-    {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
-)
-
 #: Decisions the origin summary names, and the ceiling on its evidence clauses.
 _ORIGIN_NARRATED_DECISIONS = 3
-
-
-def _meaningful_words(text: str) -> set[str]:
-    """Lowercase keyword set with common stop-words removed."""
-    return set(text.lower().split()) - _ORIGIN_STOP_WORDS
 
 
 def _decision_body(record: object) -> str:
@@ -327,59 +397,78 @@ def _decision_body(record: object) -> str:
 
 
 def _commits_matching_decision(decision: dict, commits: list[dict]) -> list[dict]:
-    """Return commits whose messages share at least one keyword with *decision*."""
-    decision_text = (
-        f"{decision.get('title', '')} {decision.get('decision', '')} "
-        f"{decision.get('rationale', '')}"
-    )
-    decision_words = _meaningful_words(decision_text)
+    """Commits whose subject clears the relevance floor for the decision's title.
 
-    related_commits = []
-    for c in commits:
-        overlap = decision_words & _meaningful_words(c.get("message", ""))
-        if not overlap:
-            continue
-        related_commits.append(
-            {
-                "sha": c.get("sha", ""),
-                "message": c.get("message", ""),
-                "author": c.get("author", ""),
-                "date": c.get("date", ""),
-                "matching_keywords": sorted(overlap)[:5],
-            }
-        )
-    return related_commits
+    The title is the record's one-line statement, so a commit is evidence when
+    it says most of what the title says, rarer words weighing more. Rarity
+    comes from *commits*, the file's own history: a word every commit on the
+    file shares names the file, not the decision. Any one shared word used to
+    link nearly every commit to every decision.
+    """
+    statement = decision.get("title") or decision.get("decision") or ""
+    terms = question_terms(statement)
+    matched = floor_ranked(statement, commits, lambda c: c.get("message", ""), len(commits))
+    return [
+        {
+            "sha": c.get("sha", ""),
+            "message": c.get("message", ""),
+            "author": c.get("author", ""),
+            "date": c.get("date", ""),
+            "matching_keywords": [t for t in terms if t in c.get("message", "").lower()][:5],
+        }
+        for c in matched
+    ]
 
 
 def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[dict]) -> list[dict]:
-    """Attach commit evidence to each governing decision via keyword overlap."""
+    """The governing decisions that commits state, each with those commits.
+
+    A decision no commit states is left out: without evidence the row would
+    only repeat the decision lane.
+    """
     linked_decisions = []
     for d in governing_decisions:
+        evidence = _commits_matching_decision(d, commits)
+        if not evidence:
+            continue
         linked_decisions.append(
             {
                 "title": d.get("title", ""),
                 "status": d.get("status", ""),
                 "source": d.get("source", ""),
                 "rationale": d.get("rationale", ""),
-                "evidence_commits": _commits_matching_decision(d, commits),
+                "evidence_commits": evidence,
             }
         )
     return linked_decisions
 
 
+def _origin_span(first_date: str, last_date: str, age: int, capped: bool) -> str:
+    """When the file was made and last changed.
+
+    *capped* history (the commit cap, or a shallow clone's cut) starts after
+    the file was made, so its first commit is not called the creation.
+    """
+    if capped:
+        return f"History starts ~{first_date} (older commits not indexed), last modified {last_date}."
+    return f"Created ~{first_date}, last modified {last_date} ({age} days old)."
+
+
 def _origin_summary_parts(
     authors: list,
     earliest_commit: dict | None,
-    linked_decisions: list[dict],
+    narrated: list[tuple[str, dict | None]],
     primary: str,
     total: int,
-    first_date: str,
-    last_date: str,
-    age: int,
+    span: str,
 ) -> list[str]:
-    """Assemble the narrative sentences for an origin story."""
+    """Assemble the narrative sentences for an origin story.
+
+    *narrated* is ``(title, first evidence commit or None)`` per governing
+    decision the summary names; *span* is :func:`_origin_span`'s sentence.
+    """
     parts = [
-        f"Created ~{first_date}, last modified {last_date} ({age} days old).",
+        span,
         f"Primary author: {primary} ({total} total commits).",
     ]
 
@@ -389,17 +478,11 @@ def _origin_summary_parts(
             f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
         )
 
-    if linked_decisions:
-        named = linked_decisions[:_ORIGIN_NARRATED_DECISIONS]
-        parts.append(f"Governed by: {', '.join(d['title'] for d in named)}.")
-        # Unbounded, a file with 40 linked decisions got 16 evidence clauses,
-        # restating titles the caller's own cap had already removed.
-        for ld in named:
-            if ld["evidence_commits"]:
-                ec = ld["evidence_commits"][0]
-                parts.append(
-                    f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
-                )
+    if narrated:
+        parts.append(f"Governed by: {', '.join(title for title, _ in narrated)}.")
+        for title, ec in narrated:
+            if ec is not None:
+                parts.append(f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{title}".')
 
     if len(authors) > 1:
         names = [a.get("name", "") for a in authors[:3]]
@@ -431,6 +514,13 @@ def _build_origin_story(
         earliest_commit = sorted(commits, key=lambda c: c.get("date", ""))[0]
 
     linked_decisions = _link_decisions_to_commits(governing_decisions, commits)
+    first_evidence = {ld["title"]: ld["evidence_commits"][0] for ld in linked_decisions}
+    # Capped: unbounded, a file with 40 linked decisions got 16 evidence
+    # clauses, restating titles the caller's own cap had already removed.
+    narrated = [
+        (title, first_evidence.get(title))
+        for title in (d.get("title", "") for d in governing_decisions[:_ORIGIN_NARRATED_DECISIONS])
+    ]
 
     primary = git_meta.primary_owner_name or "unknown"
     total = git_meta.commit_count_total or 0
@@ -445,12 +535,12 @@ def _build_origin_story(
     parts = _origin_summary_parts(
         authors,
         earliest_commit,
-        linked_decisions,
+        narrated,
         primary,
         total,
-        first_date,
-        last_date,
-        age,
+        _origin_span(
+            first_date, last_date, age, bool(getattr(git_meta, "commit_count_capped", False))
+        ),
     )
 
     return {
@@ -620,8 +710,8 @@ def _compute_alignment(
     candidates = [d for d in governing if d["id"] not in currencies]
     # Accepted, and neither binding nor withdrawn: it names nothing the
     # repository can be asked about. Counted on its own so the four lanes add
-    # up to ``governing_count``; without it a reader could subtract them and
-    # find records unaccounted for with nothing saying where they went.
+    # up to the records naming the file; without it a reader could find
+    # records unaccounted for with nothing saying where they went.
     uncheckable = [d for d in governing if currencies.get(d["id"]) == "uncheckable"]
 
     dir_path = "/".join(file_path.split("/")[:-1])
@@ -638,11 +728,11 @@ def _compute_alignment(
     return {
         "score": score,
         "explanation": explanation,
-        # Unchanged meaning, and deliberately not renamed: how many records
-        # name this file at all, which is what every existing consumer reads
-        # it as. The authority split is carried by the four counts below, and
-        # they sum to it: accepted + withdrawn + uncheckable + candidate.
-        "governing_count": len(governing),
+        # Accepted records that still bind, so it never disagrees with a note
+        # saying the candidates govern nothing. The four lane counts below
+        # (accepted, withdrawn, uncheckable, candidate) sum to the records
+        # naming this file.
+        "governing_count": len(accepted),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
         # Accepted once and now history: superseded, dismissed, or naming only
@@ -662,7 +752,9 @@ def _compute_alignment(
 # ---------------------------------------------------------------------------
 
 
-def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | None:
+def read_repo_file_text(
+    repo_root: Path | str | None, file_path: str, *, allow_extracted: bool = True
+) -> str | None:
     """Read a repo-relative file's live text, or None when it cannot be served.
 
     Refuses any path that resolves outside *repo_root*: several tools serve
@@ -671,19 +763,23 @@ def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | N
     card describing a latin-1 file should degrade to mojibake in one field,
     rather than failing the whole call.
 
-    Several tool modules still carry their own near-identical copy of this,
-    each with one extra behaviour bolted on (a size ceiling, lines instead of
-    text). Those are left alone here rather than churned, but new callers
-    belong on this one, and a copy that needs a variation should wrap it.
+    Source-coordinate readers must set ``allow_extracted=False``. Async callers
+    allowing extraction must offload this synchronous reader.
+
+    Classification, containment and conversion belong to the core source reader;
+    this optional serving boundary translates extraction failures to unavailable.
     """
     if repo_root is None:
         return None
+    from repowise.core.ingestion.document_extractors import DocumentExtractionError
+    from repowise.core.ingestion.source_reader import read_source
+
     try:
-        root = Path(str(repo_root))
-        abs_path = (root / file_path).resolve()
-        abs_path.relative_to(root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
+        source = read_source(Path(str(repo_root)), file_path, allow_extracted=allow_extracted)
+        if source is None:
+            return None
+        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, ValueError, DocumentExtractionError):
         return None
 
 

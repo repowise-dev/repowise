@@ -126,3 +126,34 @@ async def test_inline_plus_drain_stores_the_same_rows_as_one_full_scan(
     findings = _rows(full_db, "git_commit_health_findings")
     assert findings
     assert _rows(split_db, "git_commit_health_findings") == findings
+
+
+@pytest.mark.parametrize(("stored", "update_running"), [(1, False), (0, False), (1, True)])
+async def test_a_drain_that_stores_rows_writes_the_read_views_again(
+    history, monkeypatch, stored, update_running
+) -> None:
+    """Its rows are an input of the read views, so storing them dropped the views."""
+    repo, rows = history
+    (repo / ".repowise").mkdir()
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    engine, _sf, repo_id = await _store(repo / ".repowise" / "wiki.db", rows)
+    await engine.dispose()
+
+    async def fake_drain(*_args, **_kwargs) -> int:
+        return stored
+
+    written: list[str] = []
+
+    async def fake_write(_session, rid) -> list:
+        written.append(rid)
+        return []
+
+    import repowise.core.persistence.crud.analysis.actions as actions
+
+    monkeypatch.setattr(drain_mod, "drain", fake_drain)
+    # An update that started meanwhile writes the views itself, from its final stores.
+    monkeypatch.setattr(drain_mod, "_run_active", lambda _path: update_running)
+    monkeypatch.setattr(actions, "write_read_snapshots", fake_write)
+    await drain_mod._drain_store(repo, repo_id)
+    assert written == ([repo_id] if stored and not update_running else [])

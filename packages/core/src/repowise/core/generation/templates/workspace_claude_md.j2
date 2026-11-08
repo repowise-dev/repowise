@@ -54,9 +54,6 @@ Files that frequently change together across repos; consider reviewing both when
 
 ### Repowise MCP Tools
 
-These tools work across all repos in this workspace. Pass `repo="alias"` to scope, `repo="all"` for cross-repo queries, or omit for the default repo.
-
-- **Trust the index.** Bytes marked `verified: true` need no re-read; re-read only what `bounds: "approximate"` names.
-- **Workspace-specific:** `get_overview(repo="all")` returns cross-repo topology (co-changes, package deps, API contracts); `get_risk(changed_files=[...])` picks up cross-repo consumers automatically; `get_blast_radius` / `get_conformance` / `get_architecture` cover cross-repo impact, dependency-rule violations, and coupling.
-
-{{ data.tool_table_md }}
+Pass `repo="alias"` to scope a call, `repo="all"` for cross-repo queries, or omit it for the default repo. `get_overview(repo="all")` returns cross-repo topology; `get_risk(changed_files=[...])` picks up cross-repo consumers.
+{% set client = "claude" %}
+{% include "_tool_routing.j2" %}

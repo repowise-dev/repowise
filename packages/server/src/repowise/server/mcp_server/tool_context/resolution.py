@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
@@ -39,7 +40,7 @@ from repowise.server.mcp_server._symbol_lookup import (
     resolve_symbol_rows,
     symbol_id_variants,
 )
-from repowise.server.mcp_server.tool_context.preview import _file_preview
+from repowise.server.mcp_server.tool_context.preview import _file_preview_async
 
 
 @dataclass(frozen=True)
@@ -167,19 +168,26 @@ def _excluded_error(q: TargetQuery) -> Resolution:
     }
 
 
-async def _file_page_by_id(q: TargetQuery) -> Resolution | None:
-    """A file page, the most common target."""
-    page = await q.session.get(Page, f"file_page:{q.target}")
-    if page and page.repository_id == q.repo_id:
+async def _file_page(q: TargetQuery) -> Resolution | None:
+    """The page documenting a file, the most common target: its live file,
+    API contract or infra page, or the tombstone saying the file is gone."""
+    page = await file_backed_page(q.session, q.repo_id, q.target)
+    if page is not None:
         return ResolvedTarget("file", page=page, file_path=q.target)
     return None
+
+
+# A module page is only ever tombstoned because the build regrouped or dropped
+# it, never because a file was deleted, so a tombstoned one is never served:
+# the directory rung below answers for a directory that still holds files.
+_LIVE_MODULE_PAGE = (Page.page_type == "module_page", Page.freshness_status != TOMBSTONE)
 
 
 async def _module_page_at(q: TargetQuery, target_path: str) -> Page | None:
     res = await q.session.execute(
         select(Page).where(
             Page.repository_id == q.repo_id,
-            Page.page_type == "module_page",
+            *_LIVE_MODULE_PAGE,
             Page.target_path == target_path,
         )
     )
@@ -203,7 +211,7 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
     res = await q.session.execute(
         select(Page).where(
             Page.repository_id == q.repo_id,
-            Page.page_type == "module_page",
+            *_LIVE_MODULE_PAGE,
             or_(
                 Page.target_path == clean_target,
                 Page.target_path.like(f"%/{esc}", escape=LIKE_ESCAPE),
@@ -212,9 +220,13 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
             ),
         )
     )
-    # Deterministic pick among several matches: shortest path, then
-    # lexicographic.
-    candidates = sorted(res.scalars().all(), key=lambda p: (len(p.target_path), p.target_path))
+    # SQLite's LIKE ignores case; the exact segment test decides, as in
+    # _directory._git_rows_under. Deterministic pick among several matches:
+    # shortest path, then lexicographic.
+    candidates = sorted(
+        (p for p in res.scalars().all() if f"/{clean_target}/" in f"/{p.target_path}/"),
+        key=lambda p: (len(p.target_path), p.target_path),
+    )
     return candidates[0] if candidates else None
 
 
@@ -289,21 +301,6 @@ async def _symbol(q: TargetQuery) -> Resolution | None:
     )
 
 
-async def _file_page_by_path(q: TargetQuery) -> Resolution | None:
-    """A file page found by its target_path rather than its id."""
-    res = await q.session.execute(
-        select(Page).where(
-            Page.repository_id == q.repo_id,
-            Page.page_type == "file_page",
-            Page.target_path == q.target,
-        )
-    )
-    page = res.scalar_one_or_none()
-    if page:
-        return ResolvedTarget("file", page=page, file_path=q.target)
-    return None
-
-
 async def _graph_node(q: TargetQuery) -> Resolution | None:
     """Index-only mode (no wiki pages): the graph node, typed by what it is.
 
@@ -358,7 +355,7 @@ async def _git_metadata(q: TargetQuery) -> Resolution | None:
 async def _live_file(q: TargetQuery) -> Resolution | None:
     """A live file never indexed into git_metadata is still a valid public
     path; resolve it from the checkout."""
-    if _file_preview(q.repo_root, q.target) is not None:
+    if await _file_preview_async(q.repo_root, q.target) is not None:
         return ResolvedTarget("file", file_path=q.target, live_unindexed_file=True)
     return None
 
@@ -473,10 +470,9 @@ async def _not_found(q: TargetQuery) -> dict[str, Any]:
 #: rest are fallbacks for targets with no page and no symbol row.
 _RESOLVERS: tuple[Resolver, ...] = (
     _excluded,
-    _file_page_by_id,
+    _file_page,
     _module_page,
     _symbol,
-    _file_page_by_path,
     _graph_node,
     _git_metadata,
     _live_file,

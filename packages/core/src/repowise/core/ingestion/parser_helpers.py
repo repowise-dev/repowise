@@ -57,6 +57,7 @@ from .lang_helpers.type_heads import (
     _rust_head_type_identifier,
     _rust_shadowed_by_type_param,
 )
+from .models import CSHARP_INTEGER_CONSTANT
 from .type_names import kotlin_extension_receiver
 
 log = structlog.get_logger(__name__)
@@ -273,6 +274,18 @@ def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bo
     return False, deferred
 
 
+def _has_missing_scope_separator(qualified: Node) -> bool:
+    """Is the ``::`` in this ``qualified_identifier`` a tree-sitter repair node?
+
+    When an unexpanded macro precedes a return type on the next line,
+    tree-sitter-cpp reads ``MACRO ReturnType name(...)`` as a declaration and
+    repairs it with a zero-width ``(MISSING "::")``, folding the return type
+    into a ``qualified_identifier`` scope. A real ``Foo::bar`` definition has
+    a ``::`` child with source text, so only the repaired shape trips this.
+    """
+    return any(child.type == "::" and child.is_missing for child in qualified.children)
+
+
 def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     """Return the parent class for a C/C++ ``Class::method`` definition.
 
@@ -293,6 +306,15 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
         return None
     scope = parent.child_by_field_name("scope")
     if scope is None:
+        return None
+    # tree-sitter-cpp repairs an unexpanded macro plus a return type on the
+    # following line into a qualified_identifier by inserting a zero-width
+    # ``(MISSING "::")`` node, so ``LIB_ALWAYS_INLINE box_contents_t`` +
+    # ``box_decode(...)`` reads as a declaration and the free function's
+    # return type is mistaken for the enclosing scope. A genuine
+    # ``Foo::bar`` definition carries a real ``::`` child, so skipping the
+    # missing one keeps out-of-line members classified correctly.
+    if _has_missing_scope_separator(parent):
         return None
     if scope.type == "template_type":
         return cpp_template_type_name(scope, src)
@@ -570,7 +592,30 @@ def _csharp_argument_shape(node: Node, src: str) -> str | None:
             created = created.named_children[0] if created.named_children else None
         if created is not None and created.type == "identifier":
             return f"new {node_text(created, src)}"
-    return None
+    return _csharp_literal_type(node, src)
+
+
+# C# literal nodes whose type no target type changes.
+_CSHARP_LITERAL_TYPES = {
+    "string_literal": "string",
+    "verbatim_string_literal": "string",
+    "raw_string_literal": "string",
+    "interpolated_string_expression": "string",
+    "character_literal": "char",
+    "boolean_literal": "bool",
+}
+# Integer suffixes whose constant reaches exactly what a value of the type does.
+# An ``L`` constant is left untyped: when non-negative it also reaches ``ulong``.
+_CSHARP_INTEGER_SUFFIXES = {"": CSHARP_INTEGER_CONSTANT, "u": "uint", "ul": "ulong", "lu": "ulong"}
+
+
+def _csharp_literal_type(node: Node, src: str) -> str | None:
+    if node.type == "integer_literal":
+        suffix = node_text(node, src).lower().lstrip("0123456789abcdefx_")
+        return _CSHARP_INTEGER_SUFFIXES.get(suffix)
+    if node.type == "real_literal":
+        return {"f": "float", "m": "decimal"}.get(node_text(node, src)[-1:].lower(), "double")
+    return _CSHARP_LITERAL_TYPES.get(node.type)
 
 
 def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:

@@ -118,8 +118,13 @@ def plan_patch(
     if parse_cache is None:
         return PatchPlan(False, reason="no parse cache")
     previous_paths = parse_cache.known_paths()
-    if set(current_paths) != previous_paths:
-        return PatchPlan(False, reason="files were added or removed")
+    current = set(current_paths)
+    if current != previous_paths:
+        added = sorted(current - previous_paths)
+        if added:
+            return PatchPlan(False, reason=f"{added[0]}: file added")
+        removed = sorted(previous_paths - current)
+        return PatchPlan(False, reason=f"{removed[0]}: file removed")
     for path, parsed in sorted(changed.items()):
         language = parsed.file_info.language
         if language not in PATCHABLE_LANGUAGES:

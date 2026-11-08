@@ -178,6 +178,8 @@ _FULL = {
     "java",
     "javascript",
     "kotlin",
+    # uses units resolve through .dpr in-paths and .dproj/.lpi search paths.
+    "pascal",
     # php + swift promoted after live validation (Slim, Alamofire).
     "php",
     "python",

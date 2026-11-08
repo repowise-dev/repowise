@@ -20,6 +20,7 @@ import {
   patchDecision,
 } from "@/lib/api/decisions";
 import { listModuleHealth } from "@/lib/api/modules";
+import { buildReviewDecisionPrompt } from "@/lib/decision-prompts";
 import type { DecisionRecordResponse } from "@/lib/api/types";
 
 interface DecisionDetailProps {
@@ -58,6 +59,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
     },
     hotspotsHref: () => `${prefix}/code-health`,
     LinkComponent: Link,
+    reviewPrompt: buildReviewDecisionPrompt,
   };
 
   return <SharedDecisionDetail decision={decision} adapter={adapter} />;

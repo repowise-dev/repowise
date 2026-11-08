@@ -296,6 +296,8 @@ def test_base_includes_all_models():
         "generation_jobs",
         "wiki_pages",
         "wiki_page_versions",
+        "page_archive",
+        "page_version_archive",
         "graph_nodes",
         "graph_edges",
         "webhook_events",

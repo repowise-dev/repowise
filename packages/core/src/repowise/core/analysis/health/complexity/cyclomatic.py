@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .ast_utils import is_named_block_lambda
 from .body_facts import BodyTally, step
 from .languages import LanguageNodeMap
 from .models import ConditionComplexity
@@ -31,7 +32,11 @@ def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
             tok = child.text
             if tok in (b"&&", b"||", b"and", b"or"):
                 return True
-    return False
+    return (
+        node.type in ("&&", "||")
+        and node.parent is not None
+        and node.parent.type == "let_chain"
+    )
 
 
 _BODY_FIELD_NAMES = (
@@ -65,6 +70,11 @@ _ELSE_IF_NODE_KINDS = frozenset(
 # the grammar has no dedicated wrapper node for it (Java / Go / C# / Dart /
 # Kotlin spell it "else"; Pascal spells it "kElse").
 _ELSE_TOKEN_KINDS = frozenset({"else", "kElse"})
+
+# C / C++ conditional-compilation blocks. Their arms (``#if`` / ``#elif`` /
+# ``#else``) are alternative builds of the same code, not code that all runs, so
+# the walker keeps only the largest arm's CCN and cognitive complexity.
+_PREPROC_CONDITIONAL_KINDS = frozenset({"preproc_if", "preproc_ifdef"})
 
 # Branch nodes that are a decision point (count toward CCN) but do NOT open a
 # nesting level: a comprehension filter (``[x for x in xs if a]``) and a match
@@ -263,7 +273,7 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     Falls back to all direct children except recognised body fields and
     syntactic punctuation.
     """
-    if node.type in lmap.foreach_kinds:
+    if node.type in lmap.foreach_kinds or node.type == "range_clause":
         return []
     cond = node.child_by_field_name("condition")
     if cond is not None:
@@ -299,6 +309,7 @@ def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
         and child.id not in body_nodes
         and child.type not in _BLOCK_KINDS
         and child.type not in lmap.branch_kinds
+        and child.type != "range_clause"
     ]
 
 
@@ -360,16 +371,76 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
             return True
         # A block with multiple named children (statements) is complex.
         if cur.type == "block":
-            named_children = [
-                c
-                for c in cur.children
-                if c.is_named and "comment" not in c.type
-            ]
+            named_children = [c for c in cur.children if c.is_named and "comment" not in c.type]
             if len(named_children) > 1:
                 return True
         for child in cur.children:
             stack.append(child)
     return False
+
+
+def _is_decision_body(body_node: Node, lmap: LanguageNodeMap) -> bool:
+    """True when a function's body is one expression that is itself a decision.
+
+    The walk reads a body's *children*, which is right for a block (its
+    statements) and wrong for an expression body, whose own node is the
+    ternary, ``if``, ``match`` or ``&&`` chain: its increment was never charged.
+    A block, a function node standing in for a body-less function, and a
+    wrapper node around the expression (C# ``=>`` members, Kotlin ``= expr``)
+    are unchanged: the first two have no decision of their own, and the wrapper's
+    children already include the expression.
+    """
+    # The dispatch pass hands the walk a stand-in holding only ``children``.
+    kind = getattr(body_node, "type", None)
+    if kind is None or kind in lmap.block_kinds or kind in lmap.function_kinds:
+        return False
+    if not body_node.is_named:
+        return False
+    return (
+        kind in lmap.branch_kinds
+        or kind in lmap.loop_kinds
+        or kind in lmap.case_kinds
+        or kind in lmap.catch_kinds
+        or kind in lmap.switch_kinds
+        or _is_boolean_operator(body_node, lmap)
+    )
+
+
+def _stops_at_unit(node: Node, lmap: LanguageNodeMap, tally: BodyTally | None, scope: int) -> bool:
+    """Whether the CCN walk stops at *node*, a unit measured on its own.
+
+    A nested function, or a named block-bodied lambda, whose subtree the
+    facts *tally* still reads the way the walk would have.
+    """
+    node_type = node.type
+    if node_type in lmap.function_kinds:
+        return True
+    if node_type not in lmap.lambda_kinds or not is_named_block_lambda(node, lmap):
+        return False
+    if tally is not None:
+        _tally_only(node, tally, lmap, scope)
+    return True
+
+
+def _tally_only(node: Node, tally: BodyTally, lmap: LanguageNodeMap, scope: int) -> None:
+    """Count *node*'s subtree into *tally* the way the CCN walk's visits would.
+
+    A named block-bodied lambda is a unit of its own for the complexity
+    metrics, but the facts of the function holding it still read it as the
+    lambda it is (a scope of its own that shares the receiver), so they come
+    out the same as when the walk descended it.
+    """
+    watched = tally.kinds.watched
+    function_kinds = lmap.function_kinds
+    stack: list[tuple[Node, int]] = [(node, scope)]
+    while stack:
+        cur, cur_scope = stack.pop()
+        node_type = cur.type
+        if node_type in function_kinds:
+            continue
+        if node_type in watched:
+            cur_scope = step(tally, cur, cur_scope)
+        stack.extend((child, cur_scope) for child in reversed(cur.children))
 
 
 def _walk_function_body(
@@ -381,9 +452,10 @@ def _walk_function_body(
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
 
-    Starts CCN at 1 (the entry path). Nested function bodies are
-    skipped — they will (or already did) produce their own
-    ``FunctionComplexity``.
+    Starts CCN at 1 (the entry path). Nested function bodies, and the
+    bodies of block-bodied arrow functions bound to a name
+    (:func:`.ast_utils.is_named_block_lambda`), are skipped — they will
+    (or already did) produce their own ``FunctionComplexity``.
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
@@ -425,9 +497,12 @@ def _walk_function_body(
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
-        # contribute to the enclosing function's complexity.
+        # contribute to the enclosing function's complexity, unless one is
+        # bound to a name with a block body: that is a unit of its own too.
         node_type = node.type
-        if node_type in lmap.function_kinds:
+        if _stops_at_unit(node, lmap, tally, scope):
+            return
+        if _recurse_preproc_arms(node, depth, in_markup, scope):
             return
         if tally is not None and node_type in tally.kinds.watched:
             scope = step(tally, node, scope)
@@ -445,7 +520,7 @@ def _walk_function_body(
         # would double-count.
         if is_flat_match_arm:
             # Flat match arms: no CCN increment, no nesting increment.
-            pass
+            conditions.extend(_compound_condition(node, lmap))
         elif node.is_named and (
             node.type in lmap.branch_kinds
             or node.type in lmap.loop_kinds
@@ -520,24 +595,72 @@ def _walk_function_body(
         for child in node.children:
             _recurse(child, new_depth, child_markup, scope)
 
-    root_scope = 0
-    if (
-        tally is not None
-        and body_node.type in tally.kinds.watched
-        and body_node.type not in lmap.function_kinds
-        and body_node.type not in lmap.lambda_kinds
-    ):
-        root_scope = step(tally, body_node, 0)
-    for child in body_node.children:
-        # Per-child peak depth: temporarily swap max_nesting out so we
-        # can read just this child's contribution, then restore.
+    def _recurse_preproc_arms(node: Node, depth: int, in_markup: bool, scope: int) -> bool:
+        """Walk a ``#if`` / ``#elif`` / ``#else`` chain, keeping the largest arm.
+
+        Returns ``True`` when ``node`` is such a chain and was walked here, so
+        ``_recurse`` does not descend into it again; ``False`` for every other node.
+
+        Each arm starts from the same CCN and cognitive baseline; afterwards the
+        arm with the highest (ccn, cognitive) delta is the one that stays added.
+        An ``#elif`` chain and nested blocks fall out of the same rule, because
+        nested blocks reach this function again through ``_recurse``. Nesting
+        depth, conditions and the side channels still see every arm: those lines
+        exist in the source, and a flagged condition in any arm is worth showing.
+        """
+        nonlocal ccn, cognitive
+        if node.type not in _PREPROC_CONDITIONAL_KINDS:
+            return False
+        if node.child_by_field_name("alternative") is None:
+            return False
+        base_ccn, base_cognitive = ccn, cognitive
+        best_ccn, best_cognitive = 0, 0
+        arm: Node | None = node
+        while arm is not None:
+            alternative = arm.child_by_field_name("alternative")
+            ccn, cognitive = base_ccn, base_cognitive
+            for child in arm.children:
+                if alternative is not None and child.id == alternative.id:
+                    continue
+                _recurse(child, depth, in_markup, scope)
+            best_ccn, best_cognitive = max(
+                (best_ccn, best_cognitive), (ccn - base_ccn, cognitive - base_cognitive)
+            )
+            arm = alternative
+        ccn, cognitive = base_ccn + best_ccn, base_cognitive + best_cognitive
+        return True
+
+    if _is_decision_body(body_node, lmap):
+        # An expression body (``(a, b) => a && b ? 1 : 2``, Scala ``= if (a) 1
+        # else 2``, a Python lambda) is the decision itself, not a container of
+        # statements: visit it as the one node it is, exactly as the block twin
+        # visits its ``return``'s expression. ``_recurse`` runs the body facts
+        # step for it, so the root step below is skipped.
         outer_max = max_nesting
         max_nesting = 0
-        _recurse(child, 0, scope=root_scope)
-        child_peak = max_nesting
-        max_nesting = max(outer_max, child_peak)
-        if child_peak >= 2:
+        _recurse(body_node, 0)
+        max_nesting = max(outer_max, max_nesting)
+        if max_nesting >= 2:
             bumps += 1
+    else:
+        root_scope = 0
+        if (
+            tally is not None
+            and body_node.type in tally.kinds.watched
+            and body_node.type not in lmap.function_kinds
+            and body_node.type not in lmap.lambda_kinds
+        ):
+            root_scope = step(tally, body_node, 0)
+        for child in body_node.children:
+            # Per-child peak depth: temporarily swap max_nesting out so we
+            # can read just this child's contribution, then restore.
+            outer_max = max_nesting
+            max_nesting = 0
+            _recurse(child, 0, scope=root_scope)
+            child_peak = max_nesting
+            max_nesting = max(outer_max, child_peak)
+            if child_peak >= 2:
+                bumps += 1
 
     if deepest is not None and deepest_node:
         block = _widened_block(deepest_node[0], body_node, lmap)

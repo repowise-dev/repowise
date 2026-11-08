@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 import structlog
@@ -100,7 +102,7 @@ def _checkout_with_index(repo_path: Path, fmt: str) -> Path:
     raise click.exceptions.Exit(1)  # emit_refusal already exits; keeps the return type honest
 
 
-def _describe_signature(acceptance) -> dict[str, str] | None:
+def _describe_signature(acceptance) -> dict | None:
     """Who signed *acceptance*, as a label and its parts. ``None`` for a candidate.
 
     No stored kind reads as ``unrecorded``, never as a person's. The verb
@@ -120,6 +122,8 @@ def _describe_signature(acceptance) -> dict[str, str] | None:
         "kind": kind,
         "session": acceptance.accepter_session,
         "action": acceptance.action,
+        # What the signer went on; `confirm --evidence` is stored only here.
+        "evidence": json.loads(acceptance.evidence_json or "[]"),
     }
 
 
@@ -200,7 +204,8 @@ _register_config_commands()
 class _DecisionFields:
     """The answers ``add`` records, whether they came from flags or prompts."""
 
-    kind: str
+    #: ``None`` when no flag named it: a re-add then keeps the stored kind.
+    kind: str | None
     title: str | None
     context: str | None
     decision: str | None
@@ -236,9 +241,9 @@ class _DecisionFields:
 @click.option(
     "--kind",
     type=click.Choice(DECISION_KINDS),
-    default=ARCHITECTURAL_KIND,
-    show_default=True,
-    help="'architectural' governs the code; 'agreement' governs how the work is done.",
+    default=None,
+    help="'architectural' (default) governs the code; 'agreement' governs how the work "
+    "is done.",
 )
 @_signing_options
 @format_option()
@@ -253,7 +258,7 @@ def decision_add(
     affected: tuple[str, ...],
     tags: tuple[str, ...],
     evidence_commits: tuple[str, ...],
-    kind: str,
+    kind: str | None,
     agent: str,
     agent_session: str,
     fmt: str,
@@ -270,6 +275,9 @@ def decision_add(
     A person answering eight questions has reviewed the decision; a caller
     inferring one from a diff has not, and the store should be able to tell
     them apart. Promote with `repowise decision confirm <id>`.
+
+    Adding a title that already exists updates that record: a field left out
+    keeps its stored value, and the output says which fields were kept.
 
     `--agent <slug>` records the decision as that agent's (source `agent`),
     so review can tell it from one a person typed. It needs the flags.
@@ -301,36 +309,92 @@ def decision_add(
             tags=list(tags),
         )
     else:
-        fields = _prompt_decision_fields(kind)
+        fields = _prompt_decision_fields(kind or ARCHITECTURAL_KIND)
 
-    decision_id, stored_status = run_async(
+    stored = run_async(
         _persist_decision(repo_path, fields, status, list(evidence_commits), signer)
     )
-    if stored_status != "active" and not non_interactive:
+    if stored.status == "proposed" and not non_interactive:
         console.print(
             "[yellow]Stored as a candidate: it names no files, so it cannot be "
             "checked against the code.[/yellow]\n"
-            f"[dim]repowise decision confirm {decision_id[:8]} --scope <path>[/dim]"
+            f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
+    warnings = _collect_add_warnings(repo_path, fields, stored.kind)
+    _report_added(repo_path, stored, fmt, warnings=warnings)
+
+
+def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
+    """Return True if raw_path resolves to an existing file or directory under repo_root."""
+    clean = raw_path.strip()
+    if not clean:
+        return True
+    try:
+        target = (repo_root / clean).resolve()
+        return target.is_relative_to(repo_root) and target.exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _collect_path_warnings(repo_path: Path, paths: list[str]) -> list[str]:
+    """Return advisory warnings for any affected paths not found under repo_path."""
+    resolved_root = repo_path.resolve()
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for p in paths:
+        if not p.strip() or _is_path_under_repo(resolved_root, p) or p in seen:
+            continue
+        seen.add(p)
+        warnings.append(f"affects path not found: {p}")
+    return warnings
+
+
+def _collect_add_warnings(
+    repo_path: Path, fields: _DecisionFields, kind: str
+) -> list[str]:
+    """Collect non-blocking advisory warnings for missing rationale or affects paths.
+
+    An unresolvable ``--affects`` path still persists because the file may be
+    created later in the branch, but surfaces a warning so the author knows the
+    record currently governs nothing. Agreements govern conduct rather than files
+    and are exempt from path checks.
+    """
+    warnings: list[str] = []
+    if kind != AGREEMENT_KIND:
+        warnings.extend(_collect_path_warnings(repo_path, fields.affected_files))
+    if not (fields.rationale and fields.rationale.strip()):
+        warnings.append("no rationale given")
+    return warnings
+
+
+def _report_added(
+    repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str] | None = None
+) -> None:
+    """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
         # The full id: a caller passes it back to `confirm` or `show`.
-        emit_json(
-            {
-                "repo": str(repo_path),
-                "decision": {
-                    "id": decision_id,
-                    "title": fields.title,
-                    "status": status,
-                    "kind": fields.kind,
-                },
-            }
-        )
+        payload = {
+            "id": stored.id,
+            "title": stored.title,
+            "status": stored.status,
+            "kind": stored.kind,
+            "existed": stored.existed,
+        }
+        if stored.existed:
+            payload["kept"] = stored.kept
+        if warnings:
+            payload["warnings"] = list(warnings)
+        emit_json({"repo": str(repo_path), "decision": payload})
         return
+    verb = "Updated existing decision" if stored.existed else "Decision recorded"
+    kept = f"; kept stored {', '.join(stored.kept)}" if stored.kept else ""
     console.print(
-        f"\n[green]Decision recorded[/green] [dim]({status})[/dim] — "
-        f"ID: [bold]{decision_id[:8]}[/bold]"
+        f"\n[green]{verb}[/green] [dim]({stored.status}{kept})[/dim] — "
+        f"ID: [bold]{stored.id[:8]}[/bold]"
     )
+    for warning in warnings or []:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _refuse_partial_flags(fmt: str, *given) -> None:
@@ -339,12 +403,36 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
     Falling through to the prompts would hang a caller that has no stdin.
     """
     if any(given) or fmt == "json":
+        is_non_interactive = fmt == "json" or not sys.stdin.isatty()
+
+        if is_non_interactive:
+            # given[0] corresponds to title, given[2] corresponds to decision_text
+            title = given[0] if len(given) > 0 else None
+            decision_text = given[2] if len(given) > 2 else None
+
+            missing = []
+            if not title:
+                missing.append("--title")
+            if not decision_text:
+                missing.append("--decision")
+
+            missing_str = " and ".join(missing) if missing else "required flags"
+            guidance = (
+                f"Pass {missing_str}, e.g. "
+                '`repowise decision add --title "<what>" --decision "<chosen>" '
+                "[--rationale ...] [--affects <path>]`."
+            )
+        else:
+            guidance = (
+                "Run `repowise decision add` with no flags to be "
+                "prompted for each field instead."
+            )
+
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
                 "decision without prompting.",
-                "guidance": "Run `repowise decision add` with no flags to be "
-                "prompted for each field instead.",
+                "guidance": guidance,
             },
             fmt,
         )
@@ -412,19 +500,77 @@ def _prompt_decision_fields(kind: str) -> _DecisionFields:
     )
 
 
+class _Persisted(NamedTuple):
+    """What ``add`` stored, and whether it restated an existing record."""
+
+    id: str
+    title: str
+    status: str
+    kind: str
+    existed: bool
+    kept: list[str]
+
+
+#: Restatable fields, and the column each list field is stored in.
+_RESTATED_TEXT = ("context", "rationale")
+_RESTATED_LISTS = (
+    ("alternatives", "alternatives_json"),
+    ("consequences", "consequences_json"),
+    ("affected_files", "affected_files_json"),
+    ("tags", "tags_json"),
+)
+
+
+def _keep_stored_fields(fields: _DecisionFields, rec) -> list[str]:
+    """Fill the fields this re-add left empty from *rec*; return their names.
+
+    A retried add often repeats only some flags, and writing blanks over the
+    stored scope or rationale would drop them without a word.
+    """
+    kept: list[str] = []
+    for name in _RESTATED_TEXT:
+        if not getattr(fields, name) and getattr(rec, name):
+            setattr(fields, name, getattr(rec, name))
+            kept.append(name)
+    for name, column in _RESTATED_LISTS:
+        stored = json.loads(getattr(rec, column) or "[]")
+        if not getattr(fields, name) and stored:
+            setattr(fields, name, stored)
+            kept.append(name)
+    if fields.kind is None:
+        fields.kind = rec.kind
+    return kept
+
+
+def _merged_commits(rec, given: list[str]) -> list[str] | None:
+    """The stored commits plus *given*; ``None`` leaves the stored column alone."""
+    if not given:
+        return None
+    stored = json.loads(rec.evidence_commits_json or "[]") if rec is not None else []
+    return list(dict.fromkeys([*stored, *given]))
+
+
 async def _persist_decision(
     repo_path: Path,
     fields: _DecisionFields,
     status: str,
     evidence_commits: list[str],
     signer: _Signer,
-) -> tuple[str, str]:
-    """Write the record, accept it when the prompts earned that; return id and status."""
+) -> _Persisted:
+    """Write the record, accept it when the prompts earned that."""
     from repowise.core.persistence import get_session, upsert_decision, upsert_repository
+    from repowise.core.persistence.crud.decisions import find_decision_by_title
 
+    # Not ``cli``: an agent's record gets no self-authored evidence exemption
+    # at acceptance.
+    source = "agent" if signer.agent else "cli"
     async with _open_store(repo_path) as sf:
         async with get_session(sf) as session:
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            existing = await find_decision_by_title(
+                session, repo.id, fields.title, source=source
+            )
+            kept = _keep_stored_fields(fields, existing) if existing is not None else []
             rec = await upsert_decision(
                 session,
                 repository_id=repo.id,
@@ -441,11 +587,9 @@ async def _persist_decision(
                 tags=fields.tags,
                 # What the capture hook suppresses on: without it, the hook
                 # asks again next session for a commit already recorded.
-                evidence_commits=evidence_commits,
+                evidence_commits=_merged_commits(existing, evidence_commits),
                 kind=fields.kind,
-                # Not ``cli``: an agent's record gets no self-authored evidence
-                # exemption at acceptance.
-                source="agent" if signer.agent else "cli",
+                source=source,
                 # No confidence: upsert_decision scores a manual entry.
             )
             await _note_agent_signer(session, rec, signer)
@@ -456,12 +600,15 @@ async def _persist_decision(
                 await _accept_answered_prompts(session, rec, repo_path)
 
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
-            stored_status = rec.status
+            # A different title means the derived id folded this onto a record
+            # stating the same decision, which is an update too.
+            existed = existing is not None or rec.title != fields.title
+            stored = _Persisted(rec.id, rec.title, rec.status, rec.kind, existed, kept)
 
         # After the session commits, so a network embed never holds the write
         # transaction or vectors an uncommitted record.
         await _embed_decision(repo_path, *embed)
-    return embed[0], stored_status
+    return stored
 
 
 async def _note_agent_signer(session, rec, signer: _Signer) -> None:
@@ -717,12 +864,12 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     repo_path = _resolve_decision_repo(path, fmt)
     rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
-        notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
-        if fmt == "json":
-            emit_json({"query": decision_id, "decision": None})
-        # Non-zero for the same reason the lifecycle commands are: a caller
-        # scripting `show` cannot tell a missing id from an empty record.
-        raise click.exceptions.Exit(1)
+        emit_refusal(
+            "decision_not_found",
+            f"Decision not found: {decision_id}",
+            fmt,
+            query=decision_id,
+        )
 
     # Asked of git at read time: affordable for one record on demand, never on
     # the hook or update path. None means git could not decide.
@@ -802,6 +949,7 @@ def _decision_json(rec, signed, currency) -> dict:
         "tags": json.loads(rec.tags_json),
         "evidence_file": rec.evidence_file,
         "evidence_line": rec.evidence_line,
+        "evidence_commits": json.loads(rec.evidence_commits_json or "[]"),
     }
 
 
@@ -816,6 +964,8 @@ def _decision_header_lines(rec, signed, currency) -> list[str]:
     # A candidate has no line at all; status already says so.
     if signed:
         lines.append(f"{signed['verb']} by: {signed['label']}")
+        if signed.get("evidence"):
+            lines.append(f"{signed['verb']} on: {', '.join(signed['evidence'])}")
     lines.append("")
     return lines
 
@@ -852,6 +1002,9 @@ def _decision_body_lines(rec) -> list[str]:
         if rec.evidence_line:
             loc += f":{rec.evidence_line}"
         lines.append(f"[cyan]Evidence:[/cyan] {loc}")
+    commits = json.loads(rec.evidence_commits_json or "[]")
+    if commits:
+        lines.append(f"[cyan]Commits:[/cyan] {', '.join(commits)}")
     return lines
 
 

@@ -21,7 +21,6 @@ this module is the one ``hybrid_retrieve`` calls.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import Any
 
@@ -68,7 +67,11 @@ from repowise.server.mcp_server._answer_pipeline.vectors import (
     question_vector,
     vector_search,
 )
-from repowise.server.mcp_server._helpers import _VECTOR_TIMEOUT_ENV, vector_search_timeout_s
+from repowise.server.mcp_server._helpers import (
+    _VECTOR_TIMEOUT_ENV,
+    vector_search_timeout_s,
+    wait_for_vector_store,
+)
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 from repowise.server.mcp_server._prose_symbols import filename_backed_pages, symbol_backed_pages
 
@@ -224,16 +227,13 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     Waits for a store still loading at startup, and checks for a keyless store
     before embedding anything.
     """
+    await wait_for_vector_store(ctx)
     if ctx.vector_store is None:
         _record_leg("vector", "absent")
         return []
     if not store_has_semantic_vectors(ctx.vector_store):
         _record_leg("vector", "keyless")
         return []
-    ready = getattr(ctx, "vector_store_ready", None)
-    if ready is not None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ready.wait(), timeout=30.0)
     vector = await question_vector(ctx, question)
     try:
         results = await asyncio.wait_for(

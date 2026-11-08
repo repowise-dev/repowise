@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -87,7 +89,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -246,7 +250,11 @@
         "caller_symbol_id": null,
         "line": 11,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -310,7 +318,11 @@
         "caller_symbol_id": null,
         "line": 17,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -374,7 +386,11 @@
         "caller_symbol_id": "lang_samples/javascript/route.js::validateRequest",
         "line": 29,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

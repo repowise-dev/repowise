@@ -142,14 +142,11 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
         # A page id is ``<type>:<target_path>``, so the id moves with the target:
         # generation writes the new id, and a page left under the old one is
         # never regenerated and never found by ``generate --page``.
-        has_fts = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name = 'page_fts'"
-        ).fetchone()
+        has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'page_fts'").fetchone()
         for page_type in ("repo_overview", "architecture_diagram"):
             old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
             conn.execute(
-                "UPDATE wiki_pages SET id = ?, target_path = ? "
-                "WHERE repository_id = ? AND id = ?",
+                "UPDATE wiki_pages SET id = ?, target_path = ? WHERE repository_id = ? AND id = ?",
                 (new_id, dest_repo.name, repo_id, old_id),
             )
             conn.execute(
@@ -183,8 +180,9 @@ def seed_index_from_base(
     seed's last_sync_commit is an ancestor of the target HEAD), stages the
     copy into a temp dir, then swaps it in with a rename so a crash mid-copy
     never leaves a half-written index. All-or-nothing across ``repo_paths``:
-    one failed validation rolls back every staged copy and returns False so
-    the caller falls back to a full init.
+    one failed validation rolls back every staged copy and returns False.
+    Messages give the reason only; the caller says what happens next, since
+    init falls back to a full init and update has nothing to fall back to.
 
     ``include_submodules`` is the caller's CLI flag; pass None to skip the
     conflict warning (update has no such flag).
@@ -204,10 +202,7 @@ def seed_index_from_base(
         src_repo = seed_base / r_rel
 
         if not base_is_seedable(src_repo):
-            console.print(
-                f"[yellow]Seed source {src_repo} is missing .repowise state/db. "
-                f"Falling back to full init.[/yellow]"
-            )
+            console.print(f"[yellow]Seed source {src_repo} is missing .repowise state/db.[/yellow]")
             success = False
             break
 
@@ -216,7 +211,7 @@ def seed_index_from_base(
         ):
             console.print(
                 f"[yellow]Seed source {src_repo} does not share the same initial "
-                f"commit as worktree. Falling back to full init.[/yellow]"
+                f"commit as this checkout.[/yellow]"
             )
             success = False
             break
@@ -224,10 +219,7 @@ def seed_index_from_base(
         state_data = json.loads((src_repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
         last_sync_commit = state_data.get("last_sync_commit")
         if not last_sync_commit:
-            console.print(
-                f"[yellow]Seed source {src_repo} has no last_sync_commit. "
-                f"Falling back to full init.[/yellow]"
-            )
+            console.print(f"[yellow]Seed source {src_repo} has no last_sync_commit.[/yellow]")
             success = False
             break
 
@@ -235,7 +227,7 @@ def seed_index_from_base(
         if refusal is not None:
             console.print(
                 f"[yellow]Seed source {src_repo} last_sync_commit "
-                f"{last_sync_commit[:8]} {refusal}. Falling back to full init.[/yellow]"
+                f"{last_sync_commit[:8]} {refusal}.[/yellow]"
             )
             success = False
             break
@@ -280,9 +272,7 @@ def seed_index_from_base(
 
             _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
         except Exception as e:
-            console.print(
-                f"[yellow]Error staging seed for {r_path}: {e}. Falling back to full init.[/yellow]"
-            )
+            console.print(f"[yellow]Error staging seed for {r_path}: {e}.[/yellow]")
             success = False
             break
 

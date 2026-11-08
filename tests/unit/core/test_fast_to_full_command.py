@@ -5,6 +5,7 @@ from __future__ import annotations
 from repowise.core.index_scope import (
     FAST_TO_FULL_COMMAND,
     MODEL_COMMAND,
+    answers_upgrade_line,
     compact_index_scope,
     fast_to_full_command,
     model_command,
@@ -47,3 +48,14 @@ def test_model_command_names_the_step_for_each_mode() -> None:
     assert model_command(_scope("none")) == FAST_TO_FULL_COMMAND
     assert model_command(_scope("deterministic")) == MODEL_COMMAND
     assert model_command(_scope("llm")) == MODEL_COMMAND
+
+
+def test_answers_upgrade_line_names_the_model_step_until_prose_exists() -> None:
+    no_prose = answers_upgrade_line(_scope("deterministic"))
+    assert no_prose is not None
+    assert f"`{MODEL_COMMAND}` (one command, no re-index)" in no_prose
+    index_only = answers_upgrade_line(_scope("none"))
+    assert index_only is not None
+    assert f"`{FAST_TO_FULL_COMMAND}`," in index_only
+    assert answers_upgrade_line(_scope("llm")) is None
+    assert answers_upgrade_line(None) is None

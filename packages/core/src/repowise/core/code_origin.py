@@ -44,6 +44,7 @@ __all__ = [
     "is_generated_header",
     "is_migration_path",
     "is_vendored_or_generated_path",
+    "owes_a_test",
     "path_origin",
     "ship_rank",
 ]
@@ -119,6 +120,10 @@ _GENERATED_SENTENCE_RE = re.compile(
 # lines. Only the whole line counts: "Do not modify by hand without ..." or
 # "Generated code: see docs" in a hand-written file says something else.
 _GENERATED_BANNER_LINE_RE = re.compile(r"^GENERATED CODE - DO NOT MODIFY BY HAND\s*$")
+# Go's ``// Code generated ... DO NOT EDIT.`` banner (protoc-gen-go, stringer,
+# mockgen) may sit below a license header, past the first two lines. The whole
+# line must be the banner: prose that mentions the phrase says something else.
+_GO_GENERATED_BANNER_LINE_RE = re.compile(r"^CODE GENERATED\b.*\bDO NOT EDIT\.?\s*$")
 # Visual Studio rewrites resource headers, but ingestion must keep their include edges.
 _VISUAL_CPP_BANNER_LINE_RE = re.compile(r"^MICROSOFT VISUAL C\+\+ GENERATED INCLUDE FILE\.?\s*$")
 # Bison and flex open their C output with the tool's own sentence.
@@ -129,6 +134,9 @@ _PARSER_TOOL_BANNER_RE = re.compile(
 # ``#line N "grammar.rl"`` directive near the top. A ``#line`` to a C file is
 # not one: hand-written code can carry that.
 _GRAMMAR_LINE_RE = re.compile(r'^#\s*line\s+\d+\s+"[^"]*\.(?:rl|y|yy|l|ll)"')
+# Ragel's Java host writes the same back-reference as a line comment. Only
+# a Ragel grammar target counts, not an ordinary ``// line N "Foo.java"``.
+_JAVA_GRAMMAR_LINE_RE = re.compile(r'^//\s*line\s+\d+\s+"[^"]*\.rl"')
 _GRAMMAR_LINE_LINES = 10
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
@@ -204,17 +212,22 @@ def _says_generated(text: str) -> bool:
     return bool(
         _GENERATED_SENTENCE_RE.search(text)
         or _GENERATED_BANNER_LINE_RE.search(text)
+        or _GO_GENERATED_BANNER_LINE_RE.search(text)
         or _VISUAL_CPP_BANNER_LINE_RE.search(text)
         or _PARSER_TOOL_BANNER_RE.search(text)
     )
 
 
 def _from_grammar(name: str, header: str) -> bool:
-    """A C or C++ file whose head points back at the grammar it was made from."""
-    if not name.lower().endswith(_deps_suffixes()):
+    """A C, C++ or Java file whose head points back at its source grammar."""
+    if name.lower().endswith(".java"):
+        pattern = _JAVA_GRAMMAR_LINE_RE
+    elif name.lower().endswith(_deps_suffixes()):
+        pattern = _GRAMMAR_LINE_RE
+    else:
         return False
     lines = header.splitlines()[:_GRAMMAR_LINE_LINES]
-    return any(_GRAMMAR_LINE_RE.match(line.strip()) for line in lines)
+    return any(pattern.match(line.strip()) for line in lines)
 
 
 def _above_import(lines: list[str], i: int) -> bool:
@@ -816,8 +829,11 @@ def _header_text(text: str | bytes | None) -> str:
     if isinstance(text, bytes):
         # Twenty lines of a hand-written file fit in 4 KB; a minified bundle
         # has no newlines, and its first 4 KB says as much as the rest.
-        return text[:4096].decode("utf-8", errors="ignore")
-    return text[:4096]
+        text = text[:4096].decode("utf-8", errors="ignore")
+    head = text[:4096]
+    # Binary content (a zipped .pptx, a PDF stream) has no banner and is no
+    # bundle; read as text it looks like one long minified line.
+    return "" if "\x00" in head else head
 
 
 def _split(path: str) -> tuple[str, str, list[str]] | None:
@@ -1035,6 +1051,27 @@ def path_origin(path: str) -> CodeOrigin:
     the stored ``code_origin`` reads that instead: it also saw the file's head.
     """
     return code_origin(path)
+
+
+def owes_a_test(path: str, origin: str | None = None) -> bool:
+    """Whether a missing test for *path* is a gap worth naming.
+
+    Only shipped code owes one. Generated, vendored, build, tooling and docs
+    example code, and a schema migration, read "no test" as noise: every
+    surface that says a file is untested (``pr_blast.file_tests``, the health
+    biomarkers, the inventory's "Untested" filter) asks this. *origin* is the
+    stored ``code_origin`` when there is one; without it the path decides.
+    """
+    return (origin or path_origin(path)) == "production" and not is_migration_path(path)
+
+
+def prefer_production(paths: list[str]) -> list[str]:
+    """The *paths* whose code ships, in order, or all of them when none does.
+
+    A test helper, a vendored copy or a docs tutorial that defines a production
+    name is not where that name is defined, once production code defines it too.
+    """
+    return [p for p in paths if path_origin(p) == "production"] or list(paths)
 
 
 def ship_rank(path: str) -> int:

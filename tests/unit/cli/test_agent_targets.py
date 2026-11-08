@@ -865,10 +865,10 @@ def test_claude_code_plugin_plus_desktop_is_not_a_duplicate(
     assert report.status is DoctorStatus.OK
 
 
-def test_claude_code_plugin_plus_settings_json_is_still_a_duplicate(
+def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A plugin install and a settings.json direct entry is a real duplicate.
+    """A plugin install and a ~/.claude.json direct entry is a real duplicate.
 
     Claude Code loads both, so MCP tools and hooks run twice. The doctor must
     still surface this even after the desktop-entry exclusion is added.
@@ -890,11 +890,12 @@ def test_claude_code_plugin_plus_settings_json_is_still_a_duplicate(
         ),
         encoding="utf-8",
     )
-    settings = tmp_path / "settings.json"
-    settings.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+    user_config = tmp_path / ".claude.json"
+    user_config.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
 
     monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
-    monkeypatch.setattr(target_mod, "settings_path", lambda: settings)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: user_config)
     monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
 
     report = target_mod.TARGET.doctor()

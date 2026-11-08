@@ -200,9 +200,11 @@ def git_meta_rows_to_map(rows: Any) -> dict[str, dict]:
     The detectors read git metadata as a mapping, which is how the indexer
     hands it to the engine, so ORM rows are flattened to the same shape.
     """
+    from repowise.core.persistence.crud.git import git_metadata_dict
+
     out: dict[str, dict] = {}
     for row in rows:
-        meta = {c.name: getattr(row, c.name, None) for c in row.__table__.columns}
+        meta = git_metadata_dict(row)
         path = meta.get("file_path")
         if path:
             out[str(path)] = meta

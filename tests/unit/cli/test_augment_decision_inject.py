@@ -700,6 +700,8 @@ async def test_a_candidate_reaches_the_session_labelled_as_one(tmp_path, monkeyp
     assert block is not None
     assert "Rotate the auth keys nightly" in block
     assert "NOT accepted" in block
+    # The agent is told how to accept one as itself, not given a person's form.
+    assert "repowise decision confirm <id> --agent <your slug> --evidence" in block
     assert "Standing decisions" not in block
 
 

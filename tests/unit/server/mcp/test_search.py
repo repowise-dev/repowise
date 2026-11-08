@@ -889,6 +889,29 @@ class TestPathSearch:
         assert top["next"] == "get_context"
 
     @pytest.mark.asyncio
+    async def test_a_directory_name_lists_indexed_files_without_a_page(
+        self, session, populated_db, setup_mcp
+    ):
+        from repowise.core.persistence.models import GraphNode
+        from repowise.server.mcp_server import search_codebase
+
+        for path in ("src/filters_toml/infra.toml", "src/filters_toml/README.md"):
+            session.add(
+                GraphNode(
+                    id=f"ft-{path}", repository_id=populated_db, node_id=path,
+                    node_type="file", name=path, file_path=path, language="toml",
+                )
+            )
+        await session.commit()
+
+        result = await search_codebase("filters_toml", mode="path")
+        files = {r["path"] for r in result["results"]}
+        assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
+        assert all(r["next"] == "get_context" for r in result["results"])
+        globbed = await search_codebase("filters_toml *.toml", mode="path")
+        assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
+
+    @pytest.mark.asyncio
     async def test_auto_routes_path_shaped_query(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
@@ -950,6 +973,26 @@ class TestHybridSearch:
         types = {r["type"] for r in result["results"]}
         assert "symbol" in types, "symbol hit must be present"
         assert "page" in types, "concept page must survive the merge"
+
+    @pytest.mark.asyncio
+    async def test_an_exact_hit_does_not_wait_for_a_loading_vector_store(
+        self, setup_mcp, monkeypatch
+    ):
+        """The symbol answers the query; pages from a store still loading only add context."""
+        import asyncio
+
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import _state, search_codebase
+
+        async def fake_search(query, limit=10):
+            raise AssertionError("searched a store that is still loading")
+
+        mcp_mod._vector_store.search = fake_search
+        monkeypatch.setattr(_state, "_vector_store_ready", asyncio.Event())
+        result = await asyncio.wait_for(
+            search_codebase("how does AuthService work", mode="hybrid", limit=5), timeout=10
+        )
+        assert result["results"][0]["type"] == "symbol"
 
 
 class TestHybridInterleave:
@@ -1110,6 +1153,35 @@ class TestIdentifierGrepHint:
 
         result = await search_codebase("authentication flow for the service")
         assert "grep_hint" not in result
+
+
+class TestEmptyConceptRecoveryHint:
+    @pytest.mark.asyncio
+    async def test_empty_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+        assert "grep_hint" not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+
+    @pytest.mark.asyncio
+    async def test_concept_query_with_hits_has_no_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication flow for the service", mode="concept")
+        if result["results"]:
+            assert "hint" not in result
 
 
 class TestExactMatchSignal:
@@ -1512,11 +1584,12 @@ class TestSearchCandidates:
 
         # The module page is still a legitimate ranked result.
         assert "module_page" in [r["page_type"] for r in result["results"]]
-        # ...and candidates names only things that can be opened.
-        assert result["candidates"] == [
-            {"path": "pkg/cmd/release/list.go"},
-            {"path": "pkg/cmd/release/http.go"},
+        # ...and only openable files carry a path; candidates would repeat them.
+        assert [r["path"] for r in result["results"] if r.get("path")] == [
+            "pkg/cmd/release/list.go",
+            "pkg/cmd/release/http.go",
         ]
+        assert "candidates" not in result
 
     @pytest.mark.asyncio
     async def test_a_symbol_page_is_served_as_its_file(self, setup_mcp):
@@ -1552,7 +1625,7 @@ class TestSearchCandidates:
         assert hit["path"] == "api/client.go"
         assert hit["symbol_id"] == "api/client.go::HTTP"
         assert hit["path"] == "api/client.go"
-        assert result["candidates"] == [{"path": "api/client.go"}]
+        assert "candidates" not in result  # it would repeat hit["path"]
 
     @pytest.mark.asyncio
     async def test_no_block_when_nothing_openable_was_reached(self, setup_mcp):
@@ -2421,3 +2494,16 @@ class TestServedSnippet:
             "lib/layer.rb": "Cache layer with no heading. ## not a heading here",
             "docs/only.md": "# docs/only.md\n\n## Overview\n",
         }
+
+
+def test_a_path_query_naming_one_directory_names_its_files_call():
+    from repowise.server.mcp_server.tool_search.structured import _named_directory
+
+    paths = ["src/utils/url.ts", "src/utils/url.test.ts", "src/jsx/utils.ts", "lib/utils/x.ts"]
+    assert _named_directory("src/utils", paths) == "src/utils"
+    assert _named_directory("src/utils/", paths) == "src/utils"
+    # "utils" names two directories; the call needs one.
+    assert _named_directory("utils", paths) is None
+    assert _named_directory("jsx", paths) == "src/jsx"
+    assert _named_directory("url.ts", paths) is None
+    assert _named_directory("src/*", paths) is None

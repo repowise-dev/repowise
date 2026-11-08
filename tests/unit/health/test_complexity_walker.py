@@ -743,6 +743,45 @@ def test_cpp_macro_prefixed_definition_is_named_by_its_qualified_identifier(
     assert list(_names_by_line(tmp_path, "cpp", source).values()) == [name]
 
 
+def test_cpp_macro_with_arguments_keeps_member_function_name_and_parameters(tmp_path):
+    source = b"""class basic_json {
+  JSON_HEDLEY_NON_NULL(2)
+  basic_json& parse2(const char* s, int n) { return *this; }
+};
+"""
+    results = walk_file_complexity(str(tmp_path / "macro.cpp"), "cpp", source)
+    if not results:
+        pytest.skip("tree-sitter language pack missing for cpp")
+
+    functions = {result.name: result for result in results}
+    assert functions["parse2"].param_count == 2
+
+
+def test_cpp_qualified_pointer_return_keeps_function_parameters(tmp_path):
+    source = b"""GTEST_API_ std::string* Fmt(int a, int b) { return nullptr; }
+GTEST_API_ std::vector<int>* Vec(int a, int b) { return nullptr; }
+GTEST_API_ std::string& Ref(int a, int b) { static std::string s; return s; }
+"""
+    results = walk_file_complexity(str(tmp_path / "returns.cpp"), "cpp", source)
+    if not results:
+        pytest.skip("tree-sitter language pack missing for cpp")
+
+    functions = {result.name: result for result in results}
+    assert functions["Fmt"].param_count == 2
+    assert functions["Vec"].param_count == 2
+    assert functions["Ref"].param_count == 2
+
+
+def test_cpp_qualified_identifier_spine_preserves_name_and_parameters(tmp_path):
+    source = b"GTEST_API_ std::string* Fmt(int a, int b) { return nullptr; }\n"
+    results = walk_file_complexity(str(tmp_path / "qualified.cpp"), "cpp", source)
+    if not results:
+        pytest.skip("tree-sitter language pack missing for cpp")
+
+    functions = {result.name: result for result in results}
+    assert functions["Fmt"].param_count == 2
+
+
 @pytest.mark.parametrize(
     ("prefix", "scope"),
     [
@@ -1364,3 +1403,269 @@ def test_bodyless_methods_are_not_units(language):
     assert {f.name for f in fcx.functions} == units
     classes = {c.name: c for c in fcx.classes}
     assert classes["A"].method_count == a_methods
+
+
+_PREPROC_BOTH_ARMS = b"""int f(int a, int b) {
+#if defined(USE_FAST)
+  if (a) return 1;
+  if (b) return 2;
+#else
+  if (a) return 3;
+  if (b) return 4;
+#endif
+  return 0;
+}
+"""
+
+_PREPROC_NO_ALTERNATIVE = b"""int g(int a, int b) {
+#ifdef DEBUG
+  if (a) return 1;
+  if (b) return 2;
+#endif
+  return 0;
+}
+"""
+
+_PREPROC_ELIF_CHAIN = b"""int h(int a, int b, int c) {
+#if A
+  if (a) return 1;
+#elif B
+  if (a) return 2;
+  if (b) return 3;
+#else
+  if (a) return 4;
+  if (b) return 5;
+  if (c) return 6;
+#endif
+  return 0;
+}
+"""
+
+_PREPROC_NESTED = b"""int k(int a, int b, int c) {
+#if A
+  if (a) return 1;
+#else
+#ifdef B
+  if (a) return 2;
+  if (b) return 3;
+#else
+  if (a) return 4;
+  if (b) return 5;
+  if (c) return 6;
+#endif
+#endif
+  return 0;
+}
+"""
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_preproc_arms_take_the_largest_not_the_sum(language):
+    """The arms of an #if / #else are alternative builds: CCN and cognitive take
+    the largest arm. Each build alone is CCN 3 / cognitive 2; summing gave 5 / 4."""
+    _require_language(language)
+    fn = _find(walk_file("f.c", language, _PREPROC_BOTH_ARMS).functions, "f")
+    assert fn is not None
+    assert fn.ccn == 3
+    assert fn.cognitive == 2
+    # NLOC keeps counting every arm: the lines exist in the file.
+    assert fn.nloc == 10
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_preproc_without_alternative_keeps_its_branches(language):
+    _require_language(language)
+    fn = _find(walk_file("g.c", language, _PREPROC_NO_ALTERNATIVE).functions, "g")
+    assert fn is not None
+    assert fn.ccn == 3
+    assert fn.cognitive == 2
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_preproc_elif_chain_takes_the_largest_arm(language):
+    """#if (1 branch) / #elif (2) / #else (3): the largest arm is the #else, CCN 4."""
+    _require_language(language)
+    fn = _find(walk_file("h.c", language, _PREPROC_ELIF_CHAIN).functions, "h")
+    assert fn is not None
+    assert fn.ccn == 4
+    assert fn.cognitive == 3
+
+
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_nested_preproc_blocks_take_the_largest_arm(language):
+    """The outer #else holds a nested #ifdef / #else whose larger arm has 3 branches,
+    so the outer largest arm is 3 (not 1 + 2 + 3): CCN 4."""
+    _require_language(language)
+    fn = _find(walk_file("k.c", language, _PREPROC_NESTED).functions, "k")
+    assert fn is not None
+    assert fn.ccn == 4
+    assert fn.cognitive == 3
+
+
+# ---------------------------------------------------------------------------
+# A function whose body is one expression scores like its block twin (#4792)
+# ---------------------------------------------------------------------------
+
+
+def _fns(language: str, path: str, source: bytes) -> dict:
+    """The functions of *source* by name; skips when the grammar is missing."""
+    _require_language(language)
+    fcx = walk_file(path, language, source)
+    if not fcx.functions:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return {f.name: f for f in fcx.functions}
+
+
+def _shape(fn):
+    """What a function's complexity reads as, ignoring its name and position."""
+    return (
+        fn.ccn,
+        fn.max_nesting,
+        fn.cognitive,
+        fn.bumps,
+        [(c.operator_count, c.enclosing_construct) for c in fn.complex_conditions],
+    )
+
+
+def test_typescript_arrow_ternary_body_scores_like_its_block_twin():
+    fns = _fns(
+        "typescript",
+        "a.ts",
+        b"export const f = (a, b) => a && b ? 1 : 2;\n"
+        b"function g(a, b) { return a && b ? 1 : 2; }\n",
+    )
+    assert fns["f"].ccn == 3
+    assert [(c.operator_count, c.enclosing_construct) for c in fns["f"].complex_conditions] == [
+        (1, "ternary")
+    ]
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_typescript_arrow_boolean_body_counts_its_operator():
+    fns = _fns(
+        "typescript",
+        "a.ts",
+        b"export const f = (a, b) => a && b;\nfunction g(a, b) { return a && b; }\n",
+    )
+    assert fns["f"].ccn == 2
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_javascript_arrow_nested_ternary_body_nests():
+    fns = _fns(
+        "javascript",
+        "a.js",
+        b"const f = (a, b) => a ? (b ? 1 : 2) : 3;\n"
+        b"const g = (a, b) => { return a ? (b ? 1 : 2) : 3; };\n",
+    )
+    assert fns["f"].ccn == 3
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_javascript_parenthesized_arrow_body_is_unchanged():
+    """A wrapper node already holds the expression, so it was counted."""
+    fns = _fns(
+        "javascript",
+        "a.js",
+        b"const f = (a) => (a ? 1 : 2);\nconst g = (a) => { return a ? 1 : 2; };\n",
+    )
+    assert fns["f"].ccn == 2
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_scala_if_body_is_a_decision_point():
+    fns = _fns(
+        "scala",
+        "a.scala",
+        b"object O {\n"
+        b"  def f(a: Boolean): Int = if (a) 1 else 2\n"
+        b"  def g(a: Boolean): Int = { if (a) 1 else 2 }\n"
+        b"}\n",
+    )
+    assert fns["f"].ccn == 2
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_scala_compound_if_body_reaches_complex_conditional():
+    fns = _fns(
+        "scala",
+        "a.scala",
+        b"object O {\n"
+        b"  def f(a: Boolean, b: Boolean, c: Boolean): Int = if (a && b && c) 1 else 2\n"
+        b"  def g(a: Boolean, b: Boolean, c: Boolean): Int = { if (a && b && c) 1 else 2 }\n"
+        b"}\n",
+    )
+    assert fns["f"].ccn == 4
+    assert [c.operator_count for c in fns["f"].complex_conditions] == [2]
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_scala_match_body_scores_like_its_block_twin():
+    fns = _fns(
+        "scala",
+        "a.scala",
+        b"object O {\n"
+        b'  def f(x: Int): String = x match { case 1 => "a"; case 2 => "b"; case _ => "c" }\n'
+        b'  def g(x: Int): String = { x match { case 1 => "a"; case 2 => "b"; case _ => "c" } }\n'
+        b"}\n",
+    )
+    assert _shape(fns["f"]) == _shape(fns["g"])
+
+
+def test_python_lambda_ternary_body_scores_like_its_def_twin():
+    fns = _fns(
+        "python",
+        "a.py",
+        b"g = lambda a, b: 1 if a and b else 2\n"
+        b"def h(a, b):\n    return 1 if a and b else 2\n",
+    )
+    lam = next(f for n, f in fns.items() if n.startswith("<anonymous"))
+    assert lam.ccn == 3
+    assert _shape(lam) == _shape(fns["h"])
+
+
+def test_python_lambda_without_a_decision_stays_ccn_1():
+    fns = _fns("python", "a.py", b"f = lambda x: x + 1\n")
+    assert next(iter(fns.values())).ccn == 1
+
+
+@pytest.mark.parametrize(
+    ("language", "path", "source"),
+    [
+        (
+            "csharp",
+            "a.cs",
+            b"class C {\n  int F(bool a, bool b) => a && b ? 1 : 2;\n"
+            b"  int G(bool a, bool b) { return a && b ? 1 : 2; }\n}\n",
+        ),
+        (
+            "kotlin",
+            "a.kt",
+            b"fun f(a: Boolean, b: Boolean): Int = if (a && b) 1 else 2\n"
+            b"fun g(a: Boolean, b: Boolean): Int { return if (a && b) 1 else 2 }\n",
+        ),
+    ],
+)
+def test_wrapper_node_expression_bodies_are_unchanged(language, path, source):
+    """C# ``=>`` members and Kotlin ``= expr`` functions already scored right:
+    a wrapper node holds the expression, so they match their block twin."""
+    fns = _fns(language, path, source)
+    key_f, key_g = ("F", "G") if language == "csharp" else ("f", "g")
+    assert fns[key_f].ccn == 3
+    assert _shape(fns[key_f]) == _shape(fns[key_g])
+
+
+def test_walk_accepts_a_stand_in_body_without_a_node_type():
+    """The dispatch pass walks a bare ``children`` holder, not a tree node."""
+    from repowise.core.analysis.health.complexity.cyclomatic import (
+        _is_decision_body,
+        _walk_function_body,
+    )
+    from repowise.core.analysis.health.complexity.dispatch import _Siblings
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+
+    lmap = get_language_map("python")
+    assert lmap is not None
+    stand_in = _Siblings([])
+    assert _is_decision_body(stand_in, lmap) is False  # type: ignore[arg-type]
+    assert _walk_function_body(stand_in, lmap)[0] == 1  # type: ignore[arg-type]

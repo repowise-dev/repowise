@@ -11,6 +11,13 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.interlinking import FILE_BACKED_PAGE_TYPES
+from repowise.core.persistence.crud.tombstoned_pages import (
+    TOMBSTONE_DELETED,
+    TOMBSTONE_REASON_KEY,
+    TOMBSTONE_RETIRED,
+)
+
 # Patchable steps are looked up on the package at call time, so a patch on
 # ``repowise.core.pipeline.persist`` reaches this module too.
 from repowise.core.pipeline import persist as _persist
@@ -53,10 +60,11 @@ def _metadata(metadata_json: str | None) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-def _tombstone(page: Any, successors: list[str]) -> None:
-    """Mark one page a tombstone, recording where its file went and when."""
+def _tombstone(page: Any, successors: list[str], reason: str = TOMBSTONE_DELETED) -> None:
+    """Mark one page a tombstone, recording why, where its file went and when."""
     page.freshness_status = "tombstone"
     meta = _metadata(page.metadata_json)
+    meta[TOMBSTONE_REASON_KEY] = reason
     meta["successor_paths"] = successors
     meta[TOMBSTONED_AT_KEY] = datetime.now(UTC).isoformat()
     page.metadata_json = json.dumps(meta)
@@ -104,7 +112,13 @@ async def mark_tombstone_pages(
 
     from repowise.core.persistence.models import Page
 
-    page_ids = {f"file_page:{path}": (path, successors) for path, successors in candidates}
+    # Every page documenting the file: a live API contract or infra page left
+    # behind would otherwise read as the file still being there.
+    page_ids = {
+        f"{page_type}:{path}": (path, successors)
+        for path, successors in candidates
+        for page_type in FILE_BACKED_PAGE_TYPES
+    }
     pages = list(
         (
             await session.execute(
@@ -183,6 +197,8 @@ async def tombstone_file_pages_outside_scope(
         source_path = target.split("::", 1)[0] if page.page_type == "symbol_spotlight" else target
         if source_path in current_file_paths:
             continue
+        # Deleted and excluded files both leave the traversal, and nothing here
+        # tells them apart, so the page keeps the deletion reading.
         _tombstone(page, [])
         marked.append(page.id)
     return marked
@@ -239,7 +255,7 @@ async def tombstone_pages_outside_generation(
     for page in pages:
         if page.id in current_page_ids:
             continue
-        _tombstone(page, [])
+        _tombstone(page, [], TOMBSTONE_RETIRED)
         marked.append(page.id)
     return marked
 
@@ -276,7 +292,7 @@ async def tombstone_absent_file_pages(
     res = await session.execute(
         select(Page).where(
             Page.repository_id == repo_id,
-            Page.page_type == "file_page",
+            Page.page_type.in_(FILE_BACKED_PAGE_TYPES),
             Page.freshness_status != "tombstone",
         )
     )
@@ -391,6 +407,64 @@ async def mark_page_ids_stale(session: Any, repo_id: str, page_ids: Iterable[str
     return marked
 
 
+async def mark_deferred_pages(
+    session: Any,
+    repo_id: str,
+    *,
+    scope: str,
+    repo_path: Path,
+    paths: Iterable[str] = (),
+    parsed_files: list[Any] | None = None,
+    graph_builder: Any = None,
+) -> int:
+    """Mark deferred document inputs stale without changing bodies or vectors."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    rows = list(
+        await session.execute(
+            select(Page.id, Page.provider_name, Page.target_path, Page.metadata_json).where(
+                Page.repository_id == repo_id, Page.freshness_status != "tombstone"
+            )
+        )
+    )
+    if scope == "all":
+        ids = {pid for pid, _, _, _ in rows}
+    elif scope == "template":
+        from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
+
+        ids = {pid for pid, provider, _, _ in rows if provider == TEMPLATE_PROVIDER_NAME}
+    else:
+        changed = set(paths)
+        if not changed:
+            return 0
+        from repowise.core.generation import GenerationConfig
+        from repowise.core.generation.cascade import expand_cascade
+        from repowise.core.generation.scope import build_dependencies, load_page_records
+        from repowise.core.pipeline.scoped_generation import _load_page_rows, load_kg_context
+        from repowise.core.repo_config import load_repo_config
+
+        deps = build_dependencies(
+            parsed_files=parsed_files or [],
+            graph_builder=graph_builder,
+            config=GenerationConfig.from_repo_config(load_repo_config(repo_path)),
+            kg_ctx=load_kg_context(repo_path),
+            records=load_page_records(await _load_page_rows(session, repo_id)),
+            repo_name=repo_path.name,
+        )
+        seeds = {f"file_page:{path}" for path in changed}
+        ids = seeds | expand_cascade(seeds, "none", deps).stale_ids
+        # Source-backed pages and persisted flow steps can survive selection changes.
+        ids.update(
+            pid
+            for pid, _, target, meta in rows
+            if (target or "").split("::", 1)[0] in changed
+            or changed.intersection(_metadata(meta).get("file_paths") or ())
+        )
+    return await _persist.mark_page_ids_stale(session, repo_id, ids)
+
+
 def _is_expired(metadata_json: str | None, updated_at: datetime | None, cutoff: datetime) -> bool:
     """A deleted file's tombstone older than *cutoff*. A rename's never expires.
 
@@ -436,7 +510,7 @@ async def sweep_expired_tombstones(
         )
     )
     expired = [pid for pid, meta, updated in rows if _is_expired(meta, updated, cutoff)]
-    await delete_pages(session, repo_id, expired)
+    await delete_pages(session, repo_id, expired, "expired_tombstone")
     if expired:
         logger.info("expired_tombstones_swept", repo_id=repo_id, count=len(expired))
     return expired

@@ -25,6 +25,7 @@ __all__ = [
     "change_base",
     "changed_files",
     "commit_file_sets",
+    "common_dir",
     "current_branch",
     "default_base",
     "default_branch",
@@ -33,6 +34,7 @@ __all__ = [
     "is_ancestor",
     "is_shallow",
     "list_branches",
+    "ref_sha",
     "refs_containing",
     "refs_merged_into",
     "resolve",
@@ -79,6 +81,26 @@ def toplevel(repo_path: str) -> str:
     return _read(repo_path, ["rev-parse", "--show-toplevel"])
 
 
+def ref_sha(repo_path: str, refname: str) -> str:
+    """The commit the full refname *refname* points at, ``""`` when no such ref exists.
+
+    Exact: unlike :func:`resolve`, a range, a revision expression or a short
+    name is never read as a ref.
+    """
+    if not refname.startswith("refs/"):
+        return ""
+    return _read(repo_path, ["show-ref", "--verify", "--hash", refname])
+
+
+def common_dir(repo_path: str) -> str:
+    """The git directory every worktree of *repo_path* shares, ``""`` when it is not a repo.
+
+    Refs, packed refs and ``FETCH_HEAD`` live here, not in a worktree's own git dir.
+    """
+    found = _read(repo_path, ["rev-parse", "--git-common-dir"])
+    return str(Path(repo_path, found)) if found else ""
+
+
 def remote_name(repo_path: str) -> str:
     """The repository's name on its ``origin`` remote, ``""`` when it has none.
 
@@ -97,6 +119,15 @@ def remote_name(repo_path: str) -> str:
 def tracked_paths(repo_path: str) -> frozenset[str]:
     """Every path git tracks, repo-relative POSIX, or empty when git cannot answer."""
     return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
+
+
+def deleted_paths(repo_path: str) -> frozenset[str] | None:
+    """Tracked paths missing from the working tree, or ``None`` when git cannot answer."""
+    try:
+        listing = _git(["ls-files", "--deleted", "-z"], cwd=repo_path)
+    except _GIT_FAILURES:
+        return None
+    return frozenset(p for p in listing.split("\0") if p)
 
 
 def tracked_paths_at(repo_path: str, rev: str) -> frozenset[str]:

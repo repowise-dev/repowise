@@ -35,3 +35,12 @@ def is_property_accessor(decorators: Iterable[str]) -> bool:
     return is_property_getter(decorators) or any(
         decorator_base(d).endswith(_PROPERTY_ACCESSOR_SUFFIXES) for d in decorators
     )
+
+
+def property_mutator_role(decorators: Iterable[str]) -> str | None:
+    """``"setter"`` or ``"deleter"`` for a ``@name.setter`` / ``@name.deleter`` def, else None."""
+    for d in decorators:
+        prop, dot, role = decorator_base(d).rpartition(".")
+        if prop and dot and role in ("setter", "deleter"):
+            return role
+    return None

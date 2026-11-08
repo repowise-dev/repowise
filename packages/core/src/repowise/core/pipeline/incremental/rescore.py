@@ -91,6 +91,7 @@ async def rescore_health_from_store(
     *,
     log: LogFn | None = None,
     timings: Any = None,
+    snapshot: bool = False,
 ) -> Any:
     """Re-score every file's health against the stored git metadata; return the report.
 
@@ -105,6 +106,9 @@ async def rescore_health_from_store(
     graph is rebuilt at most once per update. Stages record ``rescore.*`` rows
     in *timings* (a ``PhaseTimings``), apart from the update's own
     ``analysis.health.*`` pass.
+
+    ``snapshot`` appends a health snapshot of the re-scored store, for a
+    caller whose update skipped the changed-files health write that takes one.
     """
     import pathspec
 
@@ -116,6 +120,11 @@ async def rescore_health_from_store(
         upsert_repository,
     )
     from repowise.core.persistence.database import resolve_db_url
+    from repowise.core.pipeline.index_persistence import (
+        IndexWrite,
+        apply_index_persistence,
+        publish_index_persistence,
+    )
     from repowise.core.pipeline.phase_timing import timed
 
     log = log or _noop_log
@@ -129,7 +138,7 @@ async def rescore_health_from_store(
         async with get_session(create_session_factory(engine)) as session:
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             with timed(stage_timings, "inputs"):
-                git_meta_map = await _load_git_meta(
+                git_meta_map, excluded_paths = await _load_git_meta(
                     session, repo.id, repo_path, parsed_files, exclude_spec
                 )
                 stored_blame_findings = await _stored_blame_findings(session, repo.id)
@@ -150,15 +159,27 @@ async def rescore_health_from_store(
             await _save_rescore(
                 session, repo, repo_path, graph_builder, report, coverage, stage_timings
             )
+            # An empty report writes nothing (``save_full_health_report``).
+            if snapshot and (report.metrics or report.findings):
+                from repowise.core.pipeline.persist import snapshot_health_from_store
+
+                await snapshot_health_from_store(session, repo.id)
+            repo_id = repo.id
+            await apply_index_persistence(
+                session,
+                repo_id,
+                IndexWrite("incremental", parsed_files, deleted_paths=tuple(excluded_paths)),
+            )
     finally:
         await engine.dispose()
+    await publish_index_persistence(repo_id, Path(repo_path))
     return report
 
 
 async def _load_git_meta(
     session: Any, repo_id: str, repo_path: Any, parsed_files: list, exclude_spec: Any
-) -> dict:
-    """Stored git metadata for the analyzer, with excluded rows deleted from the store."""
+) -> tuple[dict, list[str]]:
+    """Stored git metadata for the analyzer, and the excluded paths deleted from the store."""
     from sqlalchemy import delete, select
 
     from repowise.core.analysis.health.history_refresh import git_meta_rows_to_map
@@ -197,7 +218,7 @@ async def _load_git_meta(
         parsed_files,
         git_tier=read_repo_state(Path(repo_path)).get("git_tier"),
     )
-    return git_meta_map
+    return git_meta_map, excluded_paths
 
 
 async def _stored_blame_findings(session: Any, repo_id: str) -> dict[str, list[Any]]:

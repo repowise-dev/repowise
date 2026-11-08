@@ -305,6 +305,15 @@ class LanguageNodeMap:
     #     block's tail expression (the implicit value an extraction would
     #     silently drop), so only truly expression-oriented grammars may map it.
     statement_wrapper_kinds: frozenset[str] = frozenset()
+    #   * ``single_statement_bodies`` -- a loop, branch or ``with`` body may be
+    #     one bare statement rather than a container (Pascal's ``for I := 1 to N
+    #     do X := X + I;``), so a body outside ``block_kinds`` is that statement,
+    #     not a list of its children. Its branches are the ``then`` / ``else``
+    #     fields.
+    #   * ``structure_token_kinds`` -- named keyword nodes a container holds
+    #     beside its statements (Pascal's ``kBegin`` / ``kEnd``), never statements.
+    single_statement_bodies: bool = False
+    structure_token_kinds: frozenset[str] = frozenset()
     #   * ``value_passthrough_kinds`` -- nodes a block's value flows through
     #     unchanged on its way out (Rust ``if`` / ``else`` / ``match`` arms), so
     #     the slicer can tell whether an unterminated tail statement's value is
@@ -1030,12 +1039,11 @@ _C = LanguageNodeMap(
 _CSHARP = LanguageNodeMap(
     bodyless=_no_body_field,
     ctor_kinds=frozenset({"constructor_declaration"}),
-    # ``override`` and ``extern`` modifiers; P/Invoke and source-generated
-    # bindings, whose parameters a native ABI or a message template fixes; and
-    # data-driven tests, whose arguments the runner supplies.
+    # ``override`` modifier and data-driven tests, whose arguments the runner
+    # supplies.
     fixed_signature_markers=frozenset(
         {
-            "override", "extern", "DllImport", "LibraryImport", "LoggerMessage",
+            "override",
             "Theory", "InlineData", "MemberData", "ClassData", "DataRow", "DataTestMethod",
             "DynamicData", "TestCase", "TestCaseSource",
         }
@@ -1391,6 +1399,23 @@ _PASCAL = LanguageNodeMap(
     # ``Obj.Foo(x)`` (``entity`` is an ``exprDot``). Feeds the perf pass
     # (``perf/dialects/pascal.py``).
     call_kinds=frozenset({"exprCall"}),
+    # ``X := ...`` and FPC's ``X += ...`` are both ``assignment`` (the dialect
+    # tells them apart by the operator node). Locals live in the routine's
+    # ``var`` section, outside the body, and an inline ``var X := 1`` is an
+    # assignment, so no statement is a local declaration.
+    assignment_kinds=frozenset({"assignment"}),
+    local_decl_kinds=frozenset(),
+    self_identifiers=frozenset({"Self"}),
+    member_access_kinds=frozenset({"exprDot"}),
+    # ``Exit`` / ``Exit(X)``, ``Halt``, ``Abort``, ``Break`` and ``Continue``
+    # are ordinary identifiers and calls, so they are named here: a span
+    # holding one is never lifted out, whose helper would jump from itself.
+    exit_macro_kinds=frozenset({"statement", "exprCall"}),
+    exit_macro_names=frozenset({"exit", "halt", "abort", "break", "continue"}),
+    single_statement_bodies=True,
+    structure_token_kinds=frozenset(
+        {"kBegin", "kEnd", "kTry", "kExcept", "kFinally", "kRepeat", "kUntil", "kDo", "kThen", "kElse"}
+    ),
     # A parenless call to a zero-argument procedure (``Q.Open;`` / ``Close;``)
     # has no ``exprCall`` node at all -- it is a bare ``identifier`` or
     # ``exprDot`` sitting directly under a ``statement`` wrapper (the same

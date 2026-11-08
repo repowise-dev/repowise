@@ -19,6 +19,9 @@ from .options import DocsPass, UpdateOptions, UpdateRun
 # Wider than the update cadence: a late firing is re-judged once later calls exist.
 _EFFICACY_LOOKBACK_SECONDS = 7 * 86400.0
 
+# The model-only sources that read commit history; init mines them in full.
+_HISTORY_SOURCES = ("pr", "git_archaeology")
+
 
 def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
     """Run every decision pass in order; fills the decision fields of *docs*."""
@@ -32,6 +35,9 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
     # run, or the new fingerprint would suppress the only retry.
     if run.config.git_changed and policy.source_enabled("git_archaeology"):
         _rerun_git_archaeology(run, docs, policy)
+
+    with timed(run.timings, "decisions.history"):
+        _mine_new_history(opts, run, docs, policy)
 
     run.timings.start("decisions.rescan")
     _rescan_inline_markers(opts, run, docs, policy)
@@ -85,6 +91,56 @@ def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any) -> None:
             "Configuration-triggered Git decision extraction failed; the previous "
             "fingerprint was retained so the next update retries."
         ) from exc
+
+
+def _history_sources(run: UpdateRun, docs: DocsPass, policy: Any) -> set[str]:
+    """The history sources this update may mine; empty when there is nothing to do."""
+    if docs.provider is None or not run.git_meta_map or not run.base_ref:
+        return set()
+    sources = {key for key in _HISTORY_SOURCES if policy.llm_allowed(key)}
+    if run.config.git_changed:
+        # The full re-run above already read every commit.
+        sources.discard("git_archaeology")
+    return sources
+
+
+def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any) -> None:
+    """Mine the PR bodies and commit messages in ``base_ref..head``.
+
+    Bounded by the range and by each miner's own cap, and gated like init:
+    a source the policy keeps off the model, or a run with no provider, mines
+    nothing. PR bodies that already produced a record are skipped by the miner.
+    """
+    sources = _history_sources(run, docs, policy)
+    if not sources:
+        return
+    try:
+        from repowise.core.analysis.decisions.commit_mining import restrict_to_commits
+        from repowise.core.analysis.decisions.evolution import commits_in_range
+        from repowise.core.analysis.decisions.extractor import DecisionExtractor
+
+        new_commits = commits_in_range(run.repo_path, run.base_ref, run.head)
+        git_meta = restrict_to_commits(run.git_meta_map, new_commits)
+        if not git_meta:
+            return
+        extractor = DecisionExtractor(
+            repo_path=run.repo_path,
+            provider=docs.provider,
+            graph=run.graph_builder.graph(),
+            git_meta_map=git_meta,
+            policy=policy,
+        )
+        with docs.cost_tracker.record_as("decision_extraction"):
+            report = run_async(extractor.extract_all(enabled_sources=sources))
+        for source, error in sorted(report.failures.items()):
+            run.degraded.append(f"Decision mining ({source}): {error}")
+        docs.new_decision_markers.extend(report.decisions)
+        if report.decisions and opts.verbose:
+            console.print(
+                f"Decisions mined from new commits: [green]{len(report.decisions)}[/green]"
+            )
+    except Exception as exc:
+        _skipped(opts, run, "Commit decision mining", "Commit decision mining skipped", exc)
 
 
 def _rescan_inline_markers(

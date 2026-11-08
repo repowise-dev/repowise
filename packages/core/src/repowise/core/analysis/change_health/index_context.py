@@ -27,6 +27,11 @@ async def index_dependents(session: AsyncSession, repository_id: str) -> dict[st
         .where(
             GraphEdge.repository_id == repository_id,
             GraphEdge.edge_type.not_in(_NOT_A_USE),
+            # Symbol endpoints and self-edges never count: dropping them in SQL
+            # leaves about a fifth of the rows to fetch.
+            GraphEdge.source_node_id.not_like(f"%{SYMBOL_SEP}%"),
+            GraphEdge.target_node_id.not_like(f"%{SYMBOL_SEP}%"),
+            GraphEdge.source_node_id != GraphEdge.target_node_id,
         )
         .distinct()
     )

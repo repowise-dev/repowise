@@ -85,6 +85,8 @@ export interface ChatInterfaceProps {
    * wrapper that owns its providers SWR.
    */
   modelSelectorSlot?: ReactNode;
+  /** One muted line under the composer, such as a cost or accuracy note. */
+  composerNote?: ReactNode;
   /**
    * Slot rendered in the left side of the active-conversation header bar AND
    * in the empty-state composer footer. Typically a `<ConversationHistory />`
@@ -149,6 +151,7 @@ export function ChatInterface({
   onSend,
   onCancel,
   modelSelectorSlot,
+  composerNote,
   historySlot,
   buildCitationHref,
   linkPrefix,
@@ -481,12 +484,6 @@ export function ChatInterface({
         )}
       >
         <div className={cn(column, dock && "px-3")}>
-          {showContext && context && (
-            <ChatContextIndicator
-              context={context}
-              {...(onContextRemove ? { onRemove: onContextRemove } : {})}
-            />
-          )}
           <ChatComposer
             value={input}
             onValueChange={setInput}
@@ -500,6 +497,18 @@ export function ChatInterface({
             autoFocus={autoFocus}
             textareaRef={textareaRef}
             {...(modelSelectorSlot ? { footer: modelSelectorSlot } : {})}
+            {...(composerNote ? { note: composerNote } : {})}
+            {...(showContext && context
+              ? {
+                  header: (
+                    <ChatContextIndicator
+                      context={context}
+                      className="px-0 pb-1"
+                      {...(onContextRemove ? { onRemove: onContextRemove } : {})}
+                    />
+                  ),
+                }
+              : {})}
           />
         </div>
       </div>

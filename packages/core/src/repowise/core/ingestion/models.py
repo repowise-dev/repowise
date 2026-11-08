@@ -190,6 +190,9 @@ class FileInfo:
     # Starts a framework application (``SpringApplication.run``): ranked with
     # the manifest entries, but not a public API the way those are.
     is_application_main: bool = False
+    # Plugin that extracts an otherwise unsupported source file as Markdown.
+    extractor_name: str | None = None
+    extractor_version: str | None = None
 
 
 @dataclass
@@ -358,6 +361,10 @@ CallSiteEdgeType = Literal["calls", "references"]
 #: The ``receiver_name`` of a Kotlin call on a string literal (``"/".encodeUtf8()``):
 #: no name can be spelled this way, and receiver typing reads it as ``String``.
 STRING_LITERAL_RECEIVER = '""'
+
+#: The argument type of a C# unsuffixed integer constant, which converts to any
+#: numeric type its value fits, unlike an ``int`` value.
+CSHARP_INTEGER_CONSTANT = "int constant"
 
 
 @dataclass

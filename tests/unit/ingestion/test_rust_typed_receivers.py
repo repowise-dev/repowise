@@ -150,3 +150,65 @@ class TestSelfFieldChain:
     def test_a_type_without_the_method_resolves_nothing(self, tmp_path: Path) -> None:
         _field_repo(tmp_path, "Builder", body="self.inner.missing()")
         assert not _holder_targets(tmp_path)
+
+
+def _call_typed_repo(root: Path, body: str) -> None:
+    """``Builder``'s constructors and a free ``make()``, called from ``c.rs::run``."""
+    _repo(root, body)
+    (root / "src" / "a.rs").write_text(
+        "pub struct Builder { n: u32 }\n"
+        "impl Builder {\n"
+        "    pub fn fresh() -> Self { Builder { n: 0 } }\n"
+        "    pub fn load() -> Result<Builder, ()> { Ok(Builder { n: 0 }) }\n"
+        "    pub fn find() -> Option<&'static Builder> { None }\n"
+        "    pub fn build(&self) -> u32 { self.n }\n"
+        "}\n"
+        "pub fn make() -> Builder { Builder { n: 1 } }\n"
+    )
+    c = (root / "src" / "c.rs").read_text()
+    (root / "src" / "c.rs").write_text(c.replace("use crate::a::Builder;", "use crate::a::{make, Builder};"))
+
+
+class TestCallTypedLocal:
+    def test_a_free_function_result(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, "    let b = make();\n    b.build()")
+        assert _resolves_to_builder(tmp_path)
+
+    def test_an_associated_function_returning_self(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, "    let b = Builder::fresh();\n    b.build()")
+        assert _resolves_to_builder(tmp_path)
+
+    def test_a_result_unwrapped_by_try(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, "    let b = Builder::load()?;\n    b.build()")
+        assert _resolves_to_builder(tmp_path)
+
+    def test_an_option_of_a_borrow_unwrapped(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, '    let b = Builder::find().expect("b");\n    b.build()')
+        assert _resolves_to_builder(tmp_path)
+
+    def test_a_result_not_unwrapped_resolves_nothing(self, tmp_path: Path) -> None:
+        """``b`` is the ``Result`` itself, which declares no ``build``."""
+        _call_typed_repo(tmp_path, "    let b = Builder::load();\n    b.build()")
+        assert not _resolves_to_builder(tmp_path)
+
+    def test_a_call_continued_on_the_next_line_resolves_nothing(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, "    let b = make()\n        .into_other();\n    b.build()")
+        assert not _resolves_to_builder(tmp_path)
+
+    def test_a_shadowing_let_resolves_nothing(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, "    let b = make();\n    let b = Local;\n    b.build()")
+        assert not _resolves_to_builder(tmp_path)
+
+    def test_an_untyped_second_call_assignment_resolves_nothing(self, tmp_path: Path) -> None:
+        _call_typed_repo(tmp_path, "    let b = make();\n    let b = other();\n    b.build()")
+        assert not _resolves_to_builder(tmp_path)
+
+    def test_a_closure_parameter_of_the_name_resolves_nothing(self, tmp_path: Path) -> None:
+        body = "    let b = make();\n    xs.iter().map(|b| b.build());\n    0"
+        _call_typed_repo(tmp_path, body)
+        assert not _resolves_to_builder(tmp_path)
+
+    def test_an_if_let_rebinding_resolves_nothing(self, tmp_path: Path) -> None:
+        body = "    let b = make();\n    if let Some(b) = opt { b.build(); }\n    0"
+        _call_typed_repo(tmp_path, body)
+        assert not _resolves_to_builder(tmp_path)

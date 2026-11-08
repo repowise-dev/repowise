@@ -52,6 +52,7 @@ def run_partial_analysis(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
+    health: bool = True,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -90,7 +91,8 @@ def run_partial_analysis(
     they are never folded into one row.
 
     ``dead_code=False`` skips the dead-code pass and returns ``None`` for it,
-    which keeps the stored findings.
+    which keeps the stored findings. ``health=False`` skips the health pass
+    the same way, for a caller that re-scores every file afterwards.
     """
     log = log or _noop_log
 
@@ -99,99 +101,127 @@ def run_partial_analysis(
     # The full file-list is needed because duplication is cross-file —
     # but only files in ``changed_paths`` produce new findings/metrics.
     partial_health_report = None
-    if timings is not None:
-        timings.start("analysis.health")
-    try:
-        # Performance is interprocedural. Recompute one bounded bidirectional
-        # execution closure so a changed caller can still see an unchanged sink
-        # and an unchanged caller can react to a changed sink. The index is
-        # built once; this is a multi-source walk, not one walk per finding.
-        from repowise.core.analysis.communities import file_community_labels
-        from repowise.core.analysis.execution_graph import ExecutionGraphIndex
-        from repowise.core.analysis.health import HealthAnalyzer
-        from repowise.core.analysis.health.config import HealthConfig
-        from repowise.core.analysis.health.scope import scores_language
-
-        _health_changed = {
-            fd.path for fd in file_diffs if fd.status in ("added", "modified", "renamed")
-        }
-        parsed_paths = {pf.file_info.path for pf in parsed_files}
-        execution_index = ExecutionGraphIndex(graph_builder.graph())
-        _performance_changed = execution_index.affected_files(_health_changed) & parsed_paths
-        if stored_performance_callers is not None:
-            historical_callers = stored_performance_callers & parsed_paths
-            _performance_changed |= (
-                execution_index.affected_files(historical_callers) & parsed_paths
-            )
-        _health_scope = _health_changed | _performance_changed
-        _health_analyzer = HealthAnalyzer(
-            graph_builder.graph(),
-            git_meta_map=git_meta_map,
-            parsed_files=parsed_files,
-            community_label_map=file_community_labels(graph_builder),
-            duplication_cache_dir=Path(repo_path) / ".repowise",
-            repo_root=repo_path,
-            coverage_map=coverage_map,
-        )
-        if _health_scope:
-            _hcfg = HealthConfig.load(repo_path)
-            _analyzer_config = (
-                _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if _hcfg.has_overrides()
-                else None
-            )
-            _analyzer_config = _performance_only_config(
-                _analyzer_config, _performance_changed - _health_changed
-            )
-            partial_health_report = _health_analyzer.analyze(
-                _analyzer_config,
-                changed_files=_health_scope,
-                repo_function_mod_p80=repo_function_mod_p80,
-                timings=timings,
-                # Clone pairs are read only for code; a prose-only change splices nothing.
-                duplication_files={
-                    pf.file_info.path
-                    for pf in parsed_files
-                    if pf.file_info.path in _health_changed
-                    and scores_language(pf.file_info.language)
-                },
-            )
-            # The closure exists only to refresh interprocedural performance.
-            # Preserve the historical changed-file scope for every other
-            # dimension, metric, blame row, and refactoring detector.
-            partial_health_report.authoritative_paths = set(_health_changed)
-            partial_health_report.performance_authoritative_paths = set(_performance_changed)
-            partial_health_report.metrics = [
-                metric
-                for metric in partial_health_report.metrics
-                if metric.file_path in _health_changed
-            ]
-            partial_health_report.findings = [
-                finding
-                for finding in partial_health_report.findings
-                if finding.file_path in _health_changed or finding.dimension == "performance"
-            ]
-            partial_health_report.refactoring_suggestions = [
-                suggestion
-                for suggestion in partial_health_report.refactoring_suggestions
-                if suggestion.file_path in _health_changed
-                or suggestion.refactoring_type == "performance_fix"
-            ]
-            partial_health_report.function_blame_rows = [
-                row
-                for row in partial_health_report.function_blame_rows
-                if row.get("file_path") in _health_changed
-            ]
-            log(
-                f"Health analysis (partial): [cyan]{len(_health_changed)} changed[/cyan], "
-                f"[cyan]{len(_performance_changed)} performance-affected[/cyan], "
-                f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
-            )
-    except Exception as exc:
-        log(f"[yellow]Health analysis skipped: {exc}[/yellow]")
-    finally:
+    if health:
         if timings is not None:
-            timings.stop("analysis.health")
+            timings.start("analysis.health")
+        try:
+            # Performance is interprocedural. Recompute one bounded bidirectional
+            # execution closure so a changed caller can still see an unchanged sink
+            # and an unchanged caller can react to a changed sink. The index is
+            # built once; this is a multi-source walk, not one walk per finding.
+            from repowise.core.analysis.communities import file_community_labels
+            from repowise.core.analysis.execution_graph import ExecutionGraphIndex
+            from repowise.core.analysis.health import HealthAnalyzer
+            from repowise.core.analysis.health.config import HealthConfig
+            from repowise.core.analysis.health.scope import scores_language
+
+            _health_changed = {
+                fd.path for fd in file_diffs if fd.status in ("added", "modified", "renamed")
+            }
+            parsed_paths = {pf.file_info.path for pf in parsed_files}
+            execution_index = ExecutionGraphIndex(graph_builder.graph())
+            _performance_changed = execution_index.affected_files(_health_changed) & parsed_paths
+            if stored_performance_callers is not None:
+                historical_callers = stored_performance_callers & parsed_paths
+                _performance_changed |= (
+                    execution_index.affected_files(historical_callers) & parsed_paths
+                )
+            # A loop owner the closure re-scores keeps a cross-function finding
+            # only if the pass walks the sink its calls reach, and the closure
+            # walks back to an owner without following the owner's other calls.
+            # So the walk also covers every file the owners reach within the
+            # cross-function depth (one hop to the loop callee, three to the
+            # sink). Those files are read for their sinks, not re-scored.
+            _sink_files = (
+                execution_index.affected_files(
+                    _performance_changed, forward_depth=4, reverse_depth=0
+                )
+                & parsed_paths
+            ) - _performance_changed
+            _health_scope = _health_changed | _performance_changed | _sink_files
+            _health_analyzer = HealthAnalyzer(
+                graph_builder.graph(),
+                git_meta_map=git_meta_map,
+                parsed_files=parsed_files,
+                community_label_map=file_community_labels(graph_builder),
+                duplication_cache_dir=Path(repo_path) / ".repowise",
+                repo_root=repo_path,
+                coverage_map=coverage_map,
+            )
+            if _health_scope:
+                _hcfg = HealthConfig.load(repo_path)
+                _analyzer_config = (
+                    _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
+                    if _hcfg.has_overrides()
+                    else None
+                )
+                _analyzer_config = _performance_only_config(
+                    _analyzer_config, (_performance_changed | _sink_files) - _health_changed
+                )
+                partial_health_report = _health_analyzer.analyze(
+                    _analyzer_config,
+                    changed_files=_health_scope,
+                    repo_function_mod_p80=repo_function_mod_p80,
+                    timings=timings,
+                    # Clone pairs are read only for code; a prose-only change splices nothing.
+                    duplication_files={
+                        pf.file_info.path
+                        for pf in parsed_files
+                        if pf.file_info.path in _health_changed
+                        and scores_language(pf.file_info.language)
+                    },
+                )
+                # The closure exists only to refresh interprocedural performance.
+                # Preserve the historical changed-file scope for every other
+                # dimension, metric, blame row, and refactoring detector.
+                partial_health_report.authoritative_paths = set(_health_changed)
+                partial_health_report.performance_authoritative_paths = set(_performance_changed)
+                partial_health_report.metrics = [
+                    metric
+                    for metric in partial_health_report.metrics
+                    if metric.file_path in _health_changed
+                ]
+                partial_health_report.findings = [
+                    finding
+                    for finding in partial_health_report.findings
+                    if finding.file_path in _health_changed
+                    or (
+                        finding.dimension == "performance"
+                        and finding.file_path in _performance_changed
+                    )
+                ]
+                partial_health_report.refactoring_suggestions = [
+                    suggestion
+                    for suggestion in partial_health_report.refactoring_suggestions
+                    if suggestion.file_path in _health_changed
+                    or suggestion.refactoring_type == "performance_fix"
+                ]
+                partial_health_report.function_blame_rows = [
+                    row
+                    for row in partial_health_report.function_blame_rows
+                    if row.get("file_path") in _health_changed
+                ]
+                # The writer replaces facts only for the re-scored files, so a
+                # sink file's rows would land on top of its stored ones.
+                if partial_health_report.function_facts is not None:
+                    from repowise.core.analysis.execution_graph import file_of_symbol
+
+                    _rescored = _health_changed | _performance_changed
+                    partial_health_report.function_facts = [
+                        row
+                        for row in partial_health_report.function_facts
+                        if file_of_symbol(row["symbol_id"]) in _rescored
+                    ]
+                log(
+                    f"Health analysis (partial): [cyan]{len(_health_changed)} changed[/cyan], "
+                    f"[cyan]{len(_performance_changed)} performance-affected[/cyan], "
+                    f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
+                )
+        except Exception as exc:
+            log(f"[yellow]Health analysis skipped: {exc}[/yellow]")
+        finally:
+            if timings is not None:
+                timings.stop("analysis.health")
 
     # Run dead-code analysis up front so both branches can persist its
     # results. Previously this sat below the ``if index_only``

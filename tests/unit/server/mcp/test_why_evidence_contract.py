@@ -513,12 +513,17 @@ async def test_every_single_repository_query_mode_keeps_the_exact_public_referen
         await get_why("src/auth/service.py"),
         await get_why(targets=["src/auth/service.py"]),
     ]
+    # Served lean: what the row already says is not repeated per ref, and the
+    # id resolves to the whole reference.
+    served = {"id": expected["id"], "kind": expected["kind"]}
     for result in calls:
         decision = _row_by_id(result, "dec1")
         assert decision["source"] == "readme_mining"
         assert decision["provenance"] == "historical"
-        assert decision["evidence_refs"] == [expected]
+        assert decision["evidence_refs"] == [served]
         assert list(decision)[-2:] == ["provenance", "evidence_refs"]
+    resolved = await get_why(id=expected["id"])
+    assert resolved["evidence_refs"] == [expected]
 
     multi_target = await get_why(
         targets=["src/auth/service.py", "src/auth/middleware.py"]
@@ -535,14 +540,14 @@ async def test_every_single_repository_query_mode_keeps_the_exact_public_referen
         # binds this record, so it is not a rule about this file.
         "authority": "candidate",
         "provenance": "historical",
-        "evidence_refs": [expected],
+        "evidence_refs": [served],
     }
 
     dashboard = await get_why()
     proposed = next(row for row in dashboard["proposed_awaiting_review"] if row["id"] == "dec1")
     assert proposed["source"] == "readme_mining"
     assert proposed["provenance"] == "historical"
-    assert proposed["evidence_refs"] == [expected]
+    assert proposed["evidence_refs"] == [served]
 
 
 @pytest.mark.asyncio

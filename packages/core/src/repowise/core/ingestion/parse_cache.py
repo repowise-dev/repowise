@@ -160,9 +160,9 @@ class ParseCache:
 
         Hits deserialize a new object graph (downstream resolution mutates
         ParsedFile in place) and rebind the current *file_info* so traversal
-        metadata (git hash, mtime) stays current. *content_hash* is
-        :func:`compute_content_hash` of the raw bytes — callers compute it
-        once and reuse it for the matching :meth:`put`.
+        metadata (git hash, mtime) stays current. *content_hash* is the
+        caller's source fingerprint, including extractor identity/version
+        when the file is plugin-extracted.
         """
         key = (file_info.path, content_hash)
         blob = self._entries.get(key)

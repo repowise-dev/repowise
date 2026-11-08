@@ -74,8 +74,8 @@ class TestOnlyAcceptedDecisionsGovern:
         assert result["score"] == "none"
         assert result["active_count"] == 0
         assert result["candidate_count"] == 2
-        # governing_count keeps its old meaning: records naming this file.
-        assert result["governing_count"] == 2
+        # Candidates govern nothing, and the count agrees with the note.
+        assert result["governing_count"] == 0
 
     def test_a_record_absent_from_the_currency_map_is_a_candidate(self):
         """Absence from the map is the whole test, whatever the column says.
@@ -128,7 +128,7 @@ class TestOnlyAcceptedDecisionsGovern:
 
         assert result["active_count"] == 1
         assert result["candidate_count"] == 2
-        assert result["governing_count"] == 3
+        assert result["governing_count"] == 1
 
     def test_candidates_cannot_rescue_a_withdrawn_file(self):
         governing = [self._decision("d1"), self._decision("d2", "d2")]
@@ -178,8 +178,9 @@ class TestOnlyAcceptedDecisionsGovern:
             + result["deprecated_count"]
             + result["uncheckable_count"]
             + result["candidate_count"]
-            == result["governing_count"]
+            == len(governing)
         )
+        assert result["governing_count"] == result["active_count"]
 
     def test_an_uncheckable_decision_governs_nothing(self):
         """Accepted, but it names nothing, so nothing can check it."""

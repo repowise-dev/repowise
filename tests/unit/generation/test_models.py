@@ -367,3 +367,46 @@ def test_generation_config_accepts_native_reasoning_effort():
 def test_generation_config_rejects_invalid_reasoning():
     with pytest.raises(ValueError):
         GenerationConfig(reasoning="verbose")
+
+
+class _WindowProvider:
+    def __init__(self, window: int | None) -> None:
+        self._window = window
+
+    def context_window(self) -> int | None:
+        return self._window
+
+
+def test_material_keeps_full_budgets_without_a_window():
+    config = GenerationConfig()
+    assert config.input_token_limit is None
+    assert config.material_budget(15_000, 40_000) == 15_000
+
+
+def test_material_absorbs_the_overshoot_down_to_a_quarter():
+    config = GenerationConfig(context_window=16_384)
+    # (16384 - 4096 answer) * 3/4: local tokenizers count more tokens than len/4.
+    assert config.input_token_limit == 9216
+    assert config.material_budget(9000, 9000) == 9000
+    assert config.material_budget(9000, 13_000) == 9000 - (13_000 - 9216)
+    assert config.material_budget(15_000, 40_000) == 15_000 // 4
+
+
+def test_a_provider_window_applies_unless_the_repo_names_one():
+    assert GenerationConfig().with_provider_window(_WindowProvider(None)).context_window is None
+    local = GenerationConfig().with_provider_window(_WindowProvider(16_384))
+    assert local.context_window == 16_384
+    pinned = GenerationConfig(context_window=32_768).with_provider_window(_WindowProvider(16_384))
+    assert pinned.context_window == 32_768
+
+
+def test_generation_config_reads_context_window():
+    assert GenerationConfig.from_repo_config({"context_window": 24_576}).context_window == 24_576
+    with pytest.raises(ValueError, match="context_window"):
+        GenerationConfig.from_repo_config({"context_window": "big"})
+
+
+def test_a_mock_provider_leaves_the_config_alone():
+    from unittest.mock import MagicMock
+
+    assert GenerationConfig().with_provider_window(MagicMock()).context_window is None

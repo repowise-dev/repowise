@@ -8,18 +8,22 @@ are not re-indexed.
 
 from __future__ import annotations
 
+from itertools import zip_longest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import text
 
+from repowise.core.ingestion import GraphBuilder
 from repowise.core.persistence.crud import (
     get_generation_job,
     update_job_status,
     upsert_generation_job,
     upsert_repository,
 )
+from repowise.core.pipeline.index_persistence import index_persistence
 from repowise.server.job_executor import (
     JobProgressCallback,
     _build_generation_config,
@@ -61,6 +65,50 @@ async def _seed_repo_and_job(
         )
         await session.commit()
         return job.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["apply", "publish"])
+async def test_execute_job_index_transaction(
+    session_factory, test_engine, tmp_path, monkeypatch, failure
+):
+    monkeypatch.setattr(index_persistence, "_impls", {})
+    async with test_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE plugin_records (name TEXT)"))
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    publish = AsyncMock(side_effect=RuntimeError("publish failed"))
+
+    async def apply(session, repo_id, write):
+        assert await session.scalar(text("SELECT COUNT(*) FROM git_metadata")) == 1
+        await session.execute(text("INSERT INTO plugin_records VALUES ('job')"))
+        if failure == "apply":
+            raise RuntimeError("apply failed")
+
+    index_persistence.register("test", SimpleNamespace(apply=apply, publish=publish))
+    result = _fake_result()
+    result.file_infos = []
+    result.graph_builder = GraphBuilder(tmp_path)
+    result.git_metadata_list = [{"file_path": "new.py"}]
+    result.dead_code_report = result.decision_report = result.execution_flow_report = None
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=result)),
+        patch("repowise.server.provider_config.get_chat_provider_instance", return_value=None),
+    ):
+        await execute_job(job_id, app_state)
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert await session.scalar(text("SELECT COUNT(*) FROM git_metadata")) == (
+            0 if failure == "apply" else 1
+        )
+        assert await session.scalar(text("SELECT COUNT(*) FROM plugin_records")) == (
+            0 if failure == "apply" else 1
+        )
+    if failure == "apply":
+        publish.assert_not_awaited()
+    else:
+        publish.assert_awaited_once_with(job.repository_id, tmp_path)
+    assert (job.status, job.error_message) == ("failed", f"{failure} failed")
 
 
 @pytest.mark.asyncio
@@ -1087,3 +1135,107 @@ async def test_stale_structure_lookup_degrades_only_on_a_store_failure(session_f
         AsyncMock(return_value=([], {"scc_page:scc-1"})),
     ):
         assert await _stale_structure_ids(session_factory, "repo-id") == {"scc_page:scc-1"}
+
+
+def _callback() -> JobProgressCallback:
+    """A callback whose record writes are no-ops (no running loop): the counts alone."""
+    return JobProgressCallback("job", session_factory=None)
+
+
+def test_concurrent_phases_report_one_coherent_bar():
+    """The four analyses run at once (issue #4691): ticks from every phase
+    count for their own phase, and the record shows the group's sum, never a
+    numerator above its denominator."""
+    cb = _callback()
+    cb.on_phase_start("dead_code", 4)
+    cb.on_phase_start("health", 2 * 1000)
+    cb.on_phase_start("decisions", 2)
+    cb.on_phase_start("doc_drift", 3)  # started last: used to own the total
+    # Interleaved, the way the worker threads deliver them.
+    per_phase = [["health"] * 2000, ["dead_code"] * 4, ["decisions"] * 2, ["doc_drift"] * 3]
+    ticks = [p for row in zip_longest(*per_phase) for p in row if p]
+    seen = []
+    for phase in ticks:
+        cb.on_item_done(phase)
+        completed, total = cb._progress_counts()
+        assert completed <= total
+        seen.append(completed)
+    assert cb._progress_counts() == (2009, 2009)
+    assert seen == sorted(seen)  # the bar only moves forward
+
+
+def test_overshooting_phase_is_capped_at_its_own_total():
+    cb = _callback()
+    cb.on_phase_start("health", 2)
+    cb.on_phase_start("doc_drift", 3)
+    for _ in range(5):
+        cb.on_item_done("health")
+    assert cb._progress_counts() == (2, 5)
+
+
+def test_sequential_phase_starts_a_new_bar():
+    """A phase that starts after the earlier ones finished shows its own
+    progress, as before."""
+    cb = _callback()
+    cb.on_phase_start("parse", 3)
+    for _ in range(3):
+        cb.on_item_done("parse")
+    cb.on_phase_start("graph.imports", 10)
+    cb.on_item_done("graph.imports")
+    assert cb._progress_counts() == (1, 10)
+
+
+def test_phase_done_and_stage_end_the_group():
+    cb = _callback()
+    cb.on_phase_start("parse", 100)
+    cb.on_item_done("parse")
+    cb.on_phase_done("parse")  # finished short of its total (skipped files)
+    cb.on_phase_start("graph.calls", 4)
+    assert cb._progress_counts() == (0, 4)
+    cb.on_phase_start("git", 50)  # concurrent with graph.calls
+    assert cb._progress_counts() == (0, 54)
+    cb.on_stage("analysis")
+    cb.on_phase_start("health", 6)
+    assert cb._progress_counts() == (0, 6)
+
+
+def test_subphase_ticks_count_for_their_parent_and_unknown_ticks_are_ignored():
+    cb = _callback()
+    cb.on_phase_start("generation", 10)
+    cb.on_item_done("generation.llm")  # no start of its own: counts for generation
+    cb.on_item_done("onboarding")  # never started: not part of the bar
+    assert cb._progress_counts() == (1, 10)
+    cb.on_phase_start("generation.llm", 5)  # now its own phase, joining generation
+    cb.on_item_done("generation.llm")
+    assert cb._progress_counts() == (2, 15)
+
+
+def test_phase_without_total_stays_indeterminate():
+    cb = _callback()
+    cb.on_phase_start("traverse", None)
+    cb.on_item_done("traverse")
+    cb.on_item_done("traverse")
+    assert cb._progress_counts() == (2, 0)
+    cb.on_phase_start("parse", 8)  # an unknown total does not hold a group together
+    assert cb._progress_counts() == (0, 8)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_phases_write_a_coherent_record(session_factory, tmp_path):
+    """The job record itself: the phase that starts last no longer pairs every
+    phase's ticks with its own small total (``3,905 / 3 pages``)."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    callback = JobProgressCallback(job_id, session_factory)
+    callback.on_phase_start("health", 40)
+    callback.on_phase_start("doc_drift", 3)
+    for _ in range(40):
+        callback.on_item_done("health")
+    callback.on_item_done("doc_drift")
+    callback._min_write_interval_s = 0.0
+    callback._inflight = False
+    callback._sync_job_status(force=True)
+    await callback.drain_and_stop()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert (job.completed_pages, job.total_pages) == (41, 43)
