@@ -225,6 +225,27 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
     return replace(patch_plan, refresh=True, names=patch_plan.names | names)
 
 
+def _refined_plan(
+    graph_builder: Any, patch_plan: Any, seed_edges: Any, resolutions: dict[str, tuple]
+) -> Any:
+    """*patch_plan* checked for retyped fields and, when refreshing, widened to its reach.
+
+    A failure here is a planner bug: it costs a full build, not the update.
+    """
+    from .surface import PatchPlan
+
+    try:
+        patch_plan = _with_field_changes(graph_builder, patch_plan, resolutions)
+        if not patch_plan.refresh:
+            return patch_plan
+        from .affected import expand_scope
+
+        return expand_scope(graph_builder, patch_plan, seed=seed_edges, resolutions=resolutions)
+    except Exception as exc:
+        logger.warning("graph_patch_scope_failed", error=str(exc))
+        return PatchPlan(False, reason=f"patch planning failed: {exc}")
+
+
 def _plan_with_resolutions(
     repo_path: Any,
     graph_builder: Any,
@@ -242,17 +263,7 @@ def _plan_with_resolutions(
 
     resolutions = load_resolutions(Path(repo_path) / ".repowise")
     if covers(resolutions, parsed_files, patch_plan.scope):
-        patch_plan = _with_field_changes(graph_builder, patch_plan, resolutions)
-        if patch_plan.refresh:
-            from .affected import expand_scope
-
-            try:
-                patch_plan = expand_scope(
-                    graph_builder, patch_plan, seed=seed_edges, resolutions=resolutions
-                )
-            except Exception as exc:  # a planner bug must cost a full build, not the update
-                logger.warning("graph_patch_scope_failed", error=str(exc))
-                patch_plan = PatchPlan(False, reason=f"patch planning failed: {exc}")
+        patch_plan = _refined_plan(graph_builder, patch_plan, seed_edges, resolutions)
         return patch_plan, (resolutions if patch_plan.eligible else None)
     if resolutions is None:
         return PatchPlan(False, reason="no import resolution cache from this parser version"), None
@@ -263,8 +274,7 @@ def _plan_with_resolutions(
             for pf in parsed_files
             if pf.file_info.path not in patch_plan.scope
             and (
-                resolutions is None
-                or pf.file_info.path not in resolutions
+                pf.file_info.path not in resolutions
                 or resolutions[pf.file_info.path][0] != pf.content_hash
             )
         ),

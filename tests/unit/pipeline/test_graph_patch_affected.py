@@ -566,3 +566,22 @@ def test_too_large_a_reach_is_refused() -> None:
     assert _scope_refusal({f"f{i}.py" for i in range(20)}, files) is None
     assert "reaches 21 of 100" in _scope_refusal({f"f{i}.py" for i in range(21)}, files)
     assert _scope_refusal({f"f{i}.py" for i in range(8)}, dict(list(files.items())[:10])) is None
+
+
+def test_a_planner_failure_falls_back_to_the_full_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.pipeline.incremental import affected
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("resolver exploded")
+
+    tree, seed = _index(tmp_path, _PY)
+    _edit(pkg__helpers_DOT_py="def slug(text):\n    return text\n")(tree)
+    monkeypatch.setattr(affected, "expand_scope", boom)
+
+    patched = _patch(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert "patch planning failed" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path)
