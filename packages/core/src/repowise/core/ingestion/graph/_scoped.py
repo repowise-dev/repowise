@@ -24,6 +24,35 @@ _SCOPE_REBUILT_NODE_ATTRS = frozenset({"local_type_uses"})
 _FRAMEWORK_EDGE_TYPES = frozenset({"framework", "framework_binds"})
 
 
+def _seed_nodes(
+    graph: Any, nodes: Any, drop: set[str], rescoped: set[str]
+) -> set[str]:
+    """Merge the snapshot's nodes into *graph*; return the ids left out.
+
+    Left out: nodes of deleted files, and nodes of a re-resolved file that its
+    current parse no longer declares.
+    """
+    dropped: set[str] = set()
+    for node_id, attrs in nodes:
+        owner = attrs.get("file_path")
+        gone = node_id in drop or owner in drop
+        if gone or (node_id not in graph and owner in rescoped):
+            dropped.add(node_id)
+        elif node_id not in graph:
+            graph.add_node(node_id, **attrs)
+        else:
+            _fill_node_attrs(graph.nodes[node_id], attrs, node_id in rescoped or owner in rescoped)
+    return dropped
+
+
+def _fill_node_attrs(node: dict[str, Any], attrs: dict[str, Any], rescoped: bool) -> None:
+    """Fill the attributes the parse does not set and this build will not stamp again."""
+    rebuilt = _REBUILT_NODE_ATTRS | _SCOPE_REBUILT_NODE_ATTRS if rescoped else _REBUILT_NODE_ATTRS
+    for key, value in attrs.items():
+        if key not in rebuilt:
+            node.setdefault(key, value)
+
+
 class _ScopedGraphHost(Protocol):
     _graph: Any
     _parsed_files: dict[str, Any]
@@ -58,29 +87,7 @@ class ScopedBuildMixin:
         edges of both are skipped.
         """
         graph = self._graph
-        drop = set(drop_paths)
-        rescoped = set(scope)
-        dropped: set[str] = set()
-        for node_id, attrs in snapshot.get("nodes", ()):
-            owner = attrs.get("file_path")
-            if node_id in drop or owner in drop:
-                dropped.add(node_id)
-                continue
-            if node_id not in graph:
-                if owner in rescoped:
-                    dropped.add(node_id)
-                    continue
-                graph.add_node(node_id, **attrs)
-                continue
-            node = graph.nodes[node_id]
-            rebuilt = (
-                _REBUILT_NODE_ATTRS | _SCOPE_REBUILT_NODE_ATTRS
-                if node_id in rescoped or owner in rescoped
-                else _REBUILT_NODE_ATTRS
-            )
-            for key, value in attrs.items():
-                if key not in rebuilt:
-                    node.setdefault(key, value)
+        dropped = _seed_nodes(graph, snapshot.get("nodes", ()), set(drop_paths), set(scope))
         added = 0
         for source, target, attrs in snapshot.get("edges", ()):
             if source in dropped or target in dropped:

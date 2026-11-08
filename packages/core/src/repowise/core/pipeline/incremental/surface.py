@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Collection, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # Body-only patching is enabled only for languages covered by the resolver
@@ -245,6 +245,54 @@ def _edit_plan(path: str, parsed: Any, parse_cache: Any) -> tuple[Any | None, bo
     return before, True, None
 
 
+@dataclass
+class _EditSet:
+    """An update's edits, sorted by how the patch must treat them.
+
+    ``surface`` maps each added, removed or surface-changed path to its
+    ``(before, after)`` parse, ``None`` on the side where the file did not exist.
+    """
+
+    surface: dict[str, tuple[Any | None, Any | None]] = field(default_factory=dict)
+    inert_added: list[str] = field(default_factory=list)
+    inert_removed: list[str] = field(default_factory=list)
+
+
+def _classify_removals(
+    edits: _EditSet, removed: list[str], parse_cache: Any, traversed_paths: Collection[str]
+) -> str | None:
+    """File each removed path into *edits*; the reason to refuse, if any."""
+    for path in removed:
+        before, refusal = _removal_plan(path, parse_cache, traversed_paths)
+        if refusal is not None:
+            return refusal
+        if is_inert(before):
+            edits.inert_removed.append(path)
+        else:
+            edits.surface[path] = (before, None)
+    return None
+
+
+def _classify_changes(
+    edits: _EditSet, changed: dict[str, Any], previous_paths: Collection[str], parse_cache: Any
+) -> str | None:
+    """File each changed or added path into *edits*; the reason to refuse, if any."""
+    for path, parsed in sorted(changed.items()):
+        if path in previous_paths:
+            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache)
+            if refusal is not None:
+                return refusal
+            if surface_changed:
+                edits.surface[path] = (before, parsed)
+        elif is_inert(parsed):
+            edits.inert_added.append(path)
+        elif _surface_patchable(parsed):
+            edits.surface[path] = (None, parsed)
+        else:
+            return f"{path}: file added"
+    return None
+
+
 def plan_patch(
     *,
     parse_cache: Any,
@@ -271,31 +319,13 @@ def plan_patch(
     previous_paths = parse_cache.known_paths()
     current = {pf.file_info.path for pf in parsed_files}
     removed = sorted(previous_paths - current)
-    # path -> (before, after); ``None`` on the side where the file did not exist.
-    surface_edits: dict[str, tuple[Any | None, Any | None]] = {}
-    inert_added: list[str] = []
-    inert_removed: list[str] = []
-    for path in removed:
-        before, refusal = _removal_plan(path, parse_cache, traversed_paths)
-        if refusal is not None:
-            return PatchPlan(False, reason=refusal)
-        if is_inert(before):
-            inert_removed.append(path)
-        else:
-            surface_edits[path] = (before, None)
-    for path, parsed in sorted(changed.items()):
-        if path in previous_paths:
-            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache)
-            if refusal is not None:
-                return PatchPlan(False, reason=refusal)
-            if surface_changed:
-                surface_edits[path] = (before, parsed)
-        elif is_inert(parsed):
-            inert_added.append(path)
-        elif _surface_patchable(parsed):
-            surface_edits[path] = (None, parsed)
-        else:
-            return PatchPlan(False, reason=f"{path}: file added")
+    edits = _EditSet()
+    refusal = _classify_removals(edits, removed, parse_cache, traversed_paths) or _classify_changes(
+        edits, changed, previous_paths, parse_cache
+    )
+    if refusal is not None:
+        return PatchPlan(False, reason=refusal)
+    surface_edits, inert_added, inert_removed = edits.surface, edits.inert_added, edits.inert_removed
     seed_nodes = list(seed_nodes)
     added = inert_added + [p for p, (before, _) in surface_edits.items() if before is None]
     reason = _path_set_change_reason(

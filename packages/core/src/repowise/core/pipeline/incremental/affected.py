@@ -217,18 +217,20 @@ def _files_spelling(
     folded = _word_pattern(stems, re.IGNORECASE)
     if exact is None and folded is None:
         return set()
-    found: set[str] = set()
-    for path, parsed in parsed_files.items():
-        if path in skip or not _resolvable(parsed):
-            continue
-        text = source_map.get(path)
-        if text is None:
-            found.add(path)  # nothing to read: assume it does
-        elif (exact is not None and exact.search(text)) or (
-            folded is not None and folded.search(text)
-        ):
-            found.add(path)
-    return found
+    return {
+        path
+        for path, parsed in parsed_files.items()
+        if path not in skip
+        and _resolvable(parsed)
+        and _spells(source_map.get(path), (exact, folded))
+    }
+
+
+def _spells(text: bytes | None, patterns: Iterable[re.Pattern[bytes] | None]) -> bool:
+    """Whether *text* matches one of *patterns*; a file with no text is assumed to."""
+    if text is None:
+        return True
+    return any(pattern is not None and pattern.search(text) for pattern in patterns)
 
 
 def _scope_refusal(scope: set[str], parsed_files: dict[str, Any]) -> str | None:

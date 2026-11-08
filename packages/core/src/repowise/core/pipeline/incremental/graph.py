@@ -195,7 +195,25 @@ def _plan_graph_patch(
     if not patch_plan.eligible:
         return patch_plan, None
 
+    return _plan_with_resolutions(
+        repo_path, graph_builder, patch_plan, parsed_files=parsed_files, seed_edges=seed_edges
+    )
+
+
+def _plan_with_resolutions(
+    repo_path: Any,
+    graph_builder: Any,
+    patch_plan: Any,
+    *,
+    parsed_files: list[Any],
+    seed_edges: Any,
+) -> tuple[Any, dict[str, tuple] | None]:
+    """Accept an eligible plan only when saved resolutions cover every unchanged file.
+
+    A refreshing plan is then widened to every file its edit reaches.
+    """
     from .resolution_cache import covers, load_resolutions
+    from .surface import PatchPlan
 
     resolutions = load_resolutions(Path(repo_path) / ".repowise")
     if covers(resolutions, parsed_files, patch_plan.scope):

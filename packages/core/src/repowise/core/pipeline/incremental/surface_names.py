@@ -144,6 +144,24 @@ def _stem_words(path: str) -> set[str]:
     return {w for w in words if w}
 
 
+def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool]:
+    """Identifiers one file's edit touched, and whether its importers stand in for some."""
+    old = _name_facts(before) if before is not None else set()
+    new = _name_facts(after) if after is not None else set()
+    moved = before is None or after is None
+    names: set[str] = set()
+    via_importers = False
+    for fact in old ^ new:
+        if moved and fact[0] == "import":
+            # Another file sees an added or removed file's imports only by
+            # importing that file, and that import re-routes (``affected``).
+            continue
+        fact_names, through_importers = _fact_names(fact)
+        names |= fact_names
+        via_importers = via_importers or through_importers
+    return names, via_importers
+
+
 def surface_keys(
     surface_edits: dict[str, tuple[Any | None, Any | None]], parsed_files: Collection[Any]
 ) -> SurfaceKeys:
@@ -156,19 +174,11 @@ def surface_keys(
     stems: set[str] = set()
     importers_of: set[str] = set()
     for path, (before, after) in surface_edits.items():
-        old = _name_facts(before) if before is not None else set()
-        new = _name_facts(after) if after is not None else set()
-        moved = before is None or after is None
-        for fact in old ^ new:
-            if moved and fact[0] == "import":
-                # Another file sees an added or removed file's imports only by
-                # importing that file, and that import re-routes (``affected``).
-                continue
-            fact_names, via_importers = _fact_names(fact)
-            names.update(fact_names)
-            if via_importers:
-                importers_of.add(path)
-        if moved:
+        edit_names, via_importers = _edit_names(before, after)
+        names |= edit_names
+        if via_importers:
+            importers_of.add(path)
+        if before is None or after is None:
             stems.update(_stem_words(path))
     parses = [*parsed_files, *(before for before, _ in surface_edits.values() if before)]
     return SurfaceKeys(
@@ -191,31 +201,51 @@ def path_set_reason(
     which ``__init__.py`` files exist. Any of those moving changes files the
     edit never names.
     """
-    from repowise.core.ingestion.languages.python_modules import dotted_module_for
-    from repowise.core.ingestion.resolvers.typescript import detect_platform_files
-
-    current = {pf.file_info.path for pf in parsed_files}
-    previous = set(previous_paths)
+    current = frozenset(pf.file_info.path for pf in parsed_files)
+    previous = frozenset(previous_paths)
     if current == previous:
         return None
-    if any(p.endswith((".vue", ".svelte", ".astro")) for p in current) != any(
-        p.endswith((".vue", ".svelte", ".astro")) for p in previous
-    ):
+    added = {path for path, (before, _) in surface_edits.items() if before is None}
+    return (
+        _resolver_switch_reason(current, previous)
+        or _language_set_reason(parsed_files, surface_edits, added)
+        or _python_module_reason(parsed_files, added, current, previous)
+    )
+
+
+def _resolver_switch_reason(current: frozenset[str], previous: frozenset[str]) -> str | None:
+    from repowise.core.ingestion.resolvers.typescript import detect_platform_files
+
+    def has_sfc(paths: frozenset[str]) -> bool:
+        return any(p.endswith((".vue", ".svelte", ".astro")) for p in paths)
+
+    if has_sfc(current) != has_sfc(previous):
         return "a single-file component appeared or disappeared"
     if detect_platform_files(current) != detect_platform_files(previous):
         return "platform-specific files appeared or disappeared"
-    removed = [before for before, after in surface_edits.values() if after is None]
-    added = {path for path, (before, _) in surface_edits.items() if before is None}
+    return None
+
+
+def _language_set_reason(
+    parsed_files: Collection[Any],
+    surface_edits: dict[str, tuple[Any | None, Any | None]],
+    added: set[str],
+) -> str | None:
     now = {pf.file_info.language for pf in parsed_files}
     then = {pf.file_info.language for pf in parsed_files if pf.file_info.path not in added}
-    then.update(pf.file_info.language for pf in removed)
-    if now != then:
-        return "a language appeared in or left the repository"
-    frozen_now, frozen_then = frozenset(current), frozenset(previous)
+    then.update(before.file_info.language for before, after in surface_edits.values() if after is None)
+    return None if now == then else "a language appeared in or left the repository"
+
+
+def _python_module_reason(
+    parsed_files: Collection[Any], added: set[str], current: frozenset[str], previous: frozenset[str]
+) -> str | None:
+    from repowise.core.ingestion.languages.python_modules import dotted_module_for
+
     for pf in parsed_files:
         path = pf.file_info.path
         if pf.file_info.language != "python" or path in added:
             continue
-        if dotted_module_for(path, frozen_now) != dotted_module_for(path, frozen_then):
+        if dotted_module_for(path, current) != dotted_module_for(path, previous):
             return f"{path}: its Python module path changed"
     return None
