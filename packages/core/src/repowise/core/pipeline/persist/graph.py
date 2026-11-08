@@ -545,26 +545,9 @@ async def persist_incremental_edges(
     reconcile_paths, edges = _changed_file_edges(graph_builder, parsed_files, changed_paths)
     if reconcile_paths:
         await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
-    changed = set(reconcile_paths)
-    other_paths, other_edges = (
-        _changed_file_edges(
-            graph_builder,
-            parsed_files,
-            [pf.file_info.path for pf in parsed_files if pf.file_info.path not in changed],
-        )
-        if _graph_is_complete(graph_builder, parsed_files)
-        else ([], [])
+    other_paths = await _reconcile_unchanged_files(
+        session, repo_id, graph_builder, parsed_files, set(reconcile_paths)
     )
-    if other_paths:
-        from .co_change_edges import _CO_CHANGES
-
-        await reconcile_edges_for_files(
-            session,
-            repo_id,
-            other_paths,
-            [e for e in other_edges if e["edge_type"] != _CO_CHANGES],
-            keep_edge_types=frozenset({_CO_CHANGES}),
-        )
     if reconcile_paths or other_paths:
         # A symbol renamed or removed otherwise keeps its node beside the new one.
         await _prune_vanished_symbol_nodes(
@@ -581,6 +564,36 @@ async def persist_incremental_edges(
     # rather than stranding the files it never reached.
     if parser_changed:
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+async def _reconcile_unchanged_files(
+    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any], changed: set[str]
+) -> list[str]:
+    """Reconcile the parsed files outside *changed*; returns the paths reconciled.
+
+    Nothing when the graph is short (:func:`_graph_is_complete`). Their
+    ``co_changes`` rows are left to the co-change sync.
+    """
+    from repowise.core.persistence.crud import reconcile_edges_for_files
+
+    from .co_change_edges import _CO_CHANGES
+
+    if not _graph_is_complete(graph_builder, parsed_files):
+        return []
+    paths, edges = _changed_file_edges(
+        graph_builder,
+        parsed_files,
+        [pf.file_info.path for pf in parsed_files if pf.file_info.path not in changed],
+    )
+    if paths:
+        await reconcile_edges_for_files(
+            session,
+            repo_id,
+            paths,
+            [e for e in edges if e["edge_type"] != _CO_CHANGES],
+            keep_edge_types=frozenset({_CO_CHANGES}),
+        )
+    return paths
 
 
 def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
