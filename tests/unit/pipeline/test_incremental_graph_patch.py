@@ -345,7 +345,7 @@ def test_resolution_cache_is_written_only_when_requested(tmp_path: Path) -> None
                     )
                 },
             ),
-            "new file",
+            "file added",
             id="added-file",
         ),
         pytest.param(
@@ -805,3 +805,176 @@ def test_registration_edge_survives_a_registrar_body_patch(tmp_path: Path) -> No
     assert patched.patch_plan.scope == (registrar_path,)
     assert has_registration_edge(patched)
     _assert_equals_full(tree, patched, tmp_path / "registrars-oracle")
+
+
+# Documentation is the one kind of file a patch may add, remove or edit outside
+# PATCHABLE_LANGUAGES: it gives the graph only its own file node. Every case
+# below, accepted or refused, must leave the same graph as a full rebuild.
+_DOCS_TREE = {
+    "util.py": "def helper():\n    return 1\n",
+    "main.py": "from util import helper\n\ndef run():\n    return helper() + orphan()\n",
+    "web/view.ts": (
+        "import { fmt } from './fmt';\n"
+        "import guide from './guide.md';\n"
+        "import { later } from './later';\n"
+        "export function view() { return fmt(guide) + later(); }\n"
+    ),
+    "web/fmt.ts": "export function fmt(s: string) { return s; }\n",
+    "web/guide.md": "# Guide\n",
+    "web/tsconfig.json": '{"compilerOptions": {"baseUrl": ".", "paths": {"@w/*": ["./*"]}}}\n',
+    "README.md": "# Demo\n\nRun `main.py`.\n",
+    "docs/notes.md": "# Notes\n",
+    "docs/intro.mdx": "import { fmt } from '../web/fmt'\n\n# Intro\n",
+}
+
+
+def _edit(rel: str, text: str) -> Any:
+    return lambda t: (t / rel).write_text(text)
+
+
+def _remove(rel: str) -> Any:
+    return lambda t: (t / rel).unlink()
+
+
+def _add(rel: str, text: str) -> Any:
+    return lambda t: _write(t, {rel: text})
+
+
+def _both(*edits: Any) -> Any:
+    def apply(t: Path) -> None:
+        for edit in edits:
+            edit(t)
+
+    return apply
+
+
+@pytest.fixture
+def docs_indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    tree = tmp_path / "docs-repo"
+    _write(tree, _DOCS_TREE)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    return tree, _seed_rows(first)
+
+
+@pytest.mark.parametrize(
+    ("edit", "scope", "removed"),
+    [
+        pytest.param(_edit("README.md", "# Demo\n\nRewritten.\n"), ("README.md",), (), id="edit-md"),
+        pytest.param(_add("CHANGELOG.md", "# 1.0\n"), ("CHANGELOG.md",), (), id="add-md"),
+        pytest.param(_remove("docs/notes.md"), (), ("docs/notes.md",), id="remove-md"),
+        pytest.param(
+            _both(_remove("docs/notes.md"), _add("docs/archive/notes-2026.md", "# Notes\n")),
+            ("docs/archive/notes-2026.md",),
+            ("docs/notes.md",),
+            id="rename-md",
+        ),
+        pytest.param(
+            _both(
+                _add("CHANGELOG.md", "# 1.0\n"),
+                _edit("web/fmt.ts", "export function fmt(s: string) { return s + ''; }\n"),
+            ),
+            ("CHANGELOG.md", "web/fmt.ts"),
+            (),
+            id="add-md-with-body-edit",
+        ),
+        # Code imports it, but an edit keeps the path and its (empty) surface.
+        pytest.param(_edit("web/guide.md", "# Guide\n\nMore.\n"), ("web/guide.md",), (), id="edit-imported-md"),
+    ],
+)
+def test_documentation_changes_are_patched_and_equal_a_full_rebuild(
+    docs_indexed: tuple[Path, dict[str, list]],
+    tmp_path: Path,
+    edit: Any,
+    scope: tuple[str, ...],
+    removed: tuple[str, ...],
+) -> None:
+    tree, seed = docs_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == scope
+    assert patched.patch_plan.removed == removed
+    for path in removed:
+        assert path not in patched.graph()
+        assert f"{path}::__module__" not in patched.graph()
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        # main.py calls orphan() by bare name: a new definer gives it a call edge.
+        pytest.param(_add("orphan.py", "def orphan():\n    return 2\n"), "orphan.py: file added", id="new-definer-of-bare-call"),
+        # view.ts imports './later', unresolved until this file exists.
+        pytest.param(_add("web/later.ts", "export const later = () => 1;\n"), "web/later.ts: file added", id="new-import-target"),
+        pytest.param(_remove("util.py"), "util.py: file removed", id="removed-import-target"),
+        pytest.param(_remove("web/guide.md"), "web/guide.md: an import may resolve to it", id="removed-md-imported-by-code"),
+        pytest.param(_add("docs/later.md", "# Later\n"), "docs/later.md: an import may resolve to it", id="added-md-named-by-import"),
+        # Same stem as fmt.ts: stem-map lookups would see two candidates.
+        pytest.param(_add("docs/fmt.md", "# fmt\n"), "docs/fmt.md: another file shares its import stem", id="added-md-stem-collision"),
+        pytest.param(
+            _edit("web/tsconfig.json", '{"compilerOptions": {"baseUrl": "."}}\n'),
+            "json edits are not patched",
+            id="tsconfig-edit",
+        ),
+        pytest.param(_add("web/package.json", '{"name": "web"}\n'), "web/package.json: file added", id="manifest-added"),
+        # The TypeScript warmup reads .mdx imports from disk.
+        pytest.param(
+            _edit("docs/intro.mdx", "import { fmt } from '../web/view'\n\n# Intro\n"),
+            "markdown edits are not patched",
+            id="mdx-edit",
+        ),
+        pytest.param(_add("docs/more.mdx", "# More\n"), "docs/more.mdx: file added", id="mdx-added"),
+    ],
+)
+def test_changes_that_can_reach_other_files_fall_back(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reason: str
+) -> None:
+    tree, seed = docs_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert reason in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_new_definer_of_a_bare_call_changes_an_unchanged_files_edges(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """Why an added source file is refused: it rewires a file the patch would not touch."""
+    tree, seed = docs_indexed
+    before = {(u, v) for u, v, *_ in _edges(_patched(tree, seed)) if u.startswith("main.py")}
+    _write(tree, {"orphan.py": "def orphan():\n    return 2\n"})
+
+    full = _full(tree, tmp_path / "full")
+
+    after = {(u, v) for u, v, *_ in _edges(full) if u.startswith("main.py")}
+    assert after - before, "the fixture must show an unchanged file gaining an edge"
+
+
+def test_unparsed_previously_indexed_file_is_not_treated_as_removed(
+    docs_indexed: tuple[Path, dict[str, list]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.pipeline.incremental import graph as graph_mod
+
+    tree, seed = docs_indexed
+    (tree / "docs/notes.md").write_text("# Notes\n\nEdited.\n")
+    real = graph_mod._parse_misses
+
+    def drop_notes(cached_hits, to_parse, *args, **kwargs):
+        merged = real(cached_hits, to_parse, *args, **kwargs)
+        for idx, (fi, _src), _hash in to_parse:
+            if fi.path == "docs/notes.md":
+                merged.pop(idx, None)
+        return merged
+
+    monkeypatch.setattr(graph_mod, "_parse_misses", drop_notes)
+
+    patched = _patched(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert patched.patch_plan.reason == "docs/notes.md: could not be parsed"
