@@ -51,6 +51,7 @@ HAPPY_ORDER = [
     "refresh_external_systems",
     "purge_proposed_decisions_by_source",
     "prune_deleted_file_rows",
+    "prune_absent_synthetic_nodes",
     "_analyzed_commit",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
@@ -200,6 +201,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         "refresh_external_systems",
         "purge_proposed_decisions_by_source",
         "prune_deleted_file_rows",
+        "prune_absent_synthetic_nodes",
         "_analyzed_commit",
         "finalize_performance_opportunities",
         "refresh_commit_health_after_update",
@@ -232,6 +234,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         ),
         # A prune refusal is reported verbatim, not as a skipped step.
         REFUSAL,
+        f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
         f"Tombstone full-text removal: {FAILURE}",
         f"Tombstone vector removal: {FAILURE}",

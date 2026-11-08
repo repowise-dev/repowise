@@ -67,6 +67,16 @@ async def prune_deleted_files(
     except Exception as exc:
         skip("Deleted-file prune", exc)
 
+    # The liveness prune above never judges `external:` / `framework:` nodes;
+    # the rebuilt graph does.
+    try:
+        from repowise.core.pipeline.persist import prune_absent_synthetic_nodes
+
+        with timed(timings, "persist.prune"):
+            await prune_absent_synthetic_nodes(session, repo_id, graph_builder)
+    except Exception as exc:
+        skip("Synthetic graph node prune", exc)
+
     # The performance and refactoring queues are materialized from the health
     # findings the prune just deleted; without this they keep serving a cause
     # whose evidence is gone, on a file the store no longer claims exists.

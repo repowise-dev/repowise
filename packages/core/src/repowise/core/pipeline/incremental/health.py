@@ -300,9 +300,9 @@ async def persist_partial_health(
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)
     if fn_blame_rows:
-        from repowise.core.persistence.crud import upsert_git_function_blame_bulk
+        from repowise.core.persistence.crud import replace_git_function_blame_for_files
 
-        await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+        await replace_git_function_blame_for_files(session, repo_id, fn_blame_rows)
     # Only a full index rewrites the whole population, so rows an older version
     # scored for prose or configuration go here rather than lingering in the
     # average, and rows written before ``is_test`` existed get it from their

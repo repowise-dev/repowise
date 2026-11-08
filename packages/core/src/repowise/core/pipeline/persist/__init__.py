@@ -53,6 +53,7 @@ from .graph import (
     persist_incremental_symbols,
     persist_symbol_analysis,
     prune_absent_graph_rows,
+    prune_absent_synthetic_nodes,
     stamp_edges_parser_fingerprint,
 )
 from .health import (

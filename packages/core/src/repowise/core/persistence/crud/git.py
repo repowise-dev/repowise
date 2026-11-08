@@ -931,6 +931,38 @@ async def upsert_git_function_blame_bulk(
     )
 
 
+async def replace_git_function_blame_for_files(
+    session: AsyncSession,
+    repository_id: str,
+    rows: list[dict],
+) -> None:
+    """Upsert *rows*, then drop the other stored rows of the files they cover.
+
+    Rows key on the function's symbol id, so a re-blamed file whose function
+    moved or vanished kept the old id's row beside the new one, and every
+    repo-wide rollup over the table (``function_mod_p80``) counted it.
+    """
+    keep = {row.get("symbol_id", "") for row in rows}
+    paths = sorted({row.get("file_path", "") for row in rows} - {""})
+    stale: list[str] = []
+    for start in range(0, len(paths), _BATCH_SIZE):
+        stored = await session.execute(
+            select(GitFunctionBlame.id, GitFunctionBlame.symbol_id).where(
+                GitFunctionBlame.repository_id == repository_id,
+                GitFunctionBlame.file_path.in_(paths[start : start + _BATCH_SIZE]),
+            )
+        )
+        stale.extend(row_id for row_id, symbol_id in stored if symbol_id not in keep)
+    await _batch_delete_in(
+        session,
+        GitFunctionBlame,
+        GitFunctionBlame.id,
+        stale,
+        prefilter=(GitFunctionBlame.repository_id == repository_id,),
+    )
+    await upsert_git_function_blame_bulk(session, repository_id, rows)
+
+
 async def delete_git_function_blame(session: AsyncSession, repository_id: str) -> None:
     """Remove all per-function blame rows for a repository (clean reindex)."""
     await session.execute(

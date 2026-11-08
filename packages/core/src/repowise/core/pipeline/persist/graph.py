@@ -652,3 +652,55 @@ async def _prune_vanished_symbol_nodes(
         )
     if stale:
         logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))
+
+
+async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder: Any) -> int:
+    """Delete ``external:`` / ``framework:`` rows the rebuilt graph no longer mints.
+
+    These nodes name no file, so the deleted-file prune can never judge them,
+    and :func:`persist_graph_nodes` only upserts: a package the last importer
+    stopped using kept its node and metrics row after every update, though a
+    fresh index has neither. The rebuilt graph is the authority, as it is for
+    :func:`prune_absent_graph_rows` on a full run. A node a stored edge still
+    targets is kept, since a file that failed to parse keeps its edges.
+
+    Returns the number of nodes deleted.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.analysis.dead_code.finding_helpers import _is_synthetic_node
+    from repowise.core.persistence.models import GraphEdge, GraphMetric, GraphNode
+
+    graph = graph_builder.graph()
+    stored: set[str] = set()
+    for model in (GraphNode, GraphMetric):
+        stored.update(
+            (
+                await session.execute(
+                    select(model.node_id).where(model.repository_id == repo_id).distinct()
+                )
+            ).scalars()
+        )
+    absent = sorted(n for n in stored if _is_synthetic_node(n) and n not in graph)
+    gone: list[str] = []
+    for i in range(0, len(absent), _PRUNE_CHUNK):
+        batch = absent[i : i + _PRUNE_CHUNK]
+        targeted = set(
+            (
+                await session.execute(
+                    select(GraphEdge.target_node_id).where(
+                        GraphEdge.repository_id == repo_id, GraphEdge.target_node_id.in_(batch)
+                    )
+                )
+            ).scalars()
+        )
+        gone.extend(n for n in batch if n not in targeted)
+    for i in range(0, len(gone), _PRUNE_CHUNK):
+        batch = gone[i : i + _PRUNE_CHUNK]
+        for model in (GraphNode, GraphMetric):
+            await session.execute(
+                delete(model).where(model.repository_id == repo_id, model.node_id.in_(batch))
+            )
+    if gone:
+        logger.info("graph_synthetic_nodes_pruned", repo_id=repo_id, nodes=len(gone))
+    return len(gone)

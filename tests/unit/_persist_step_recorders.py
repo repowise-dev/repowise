@@ -142,6 +142,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(external_systems, "refresh_external_systems", where=reexported)
     rec.patch(crud, "purge_proposed_decisions_by_source")
     rec.patch(persist, "prune_deleted_file_rows", ret=prune_ret)
+    rec.patch(persist, "prune_absent_synthetic_nodes", ret=0)
     rec.patch(persist, "_analyzed_commit", ret="abc123")
     rec.patch(crud, "finalize_performance_opportunities")
     rec.patch(crud, "finalize_refactoring_opportunities")
