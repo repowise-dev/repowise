@@ -17,6 +17,7 @@ import json
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import networkx as nx
 import pytest
@@ -302,18 +303,26 @@ def test_graph_equals_unshared_resolution(repo: Path, mutate, legacy) -> None:
     assert _bare_edges(repo) == shared_bare
 
 
-def test_source_map_text_equals_disk_read(tmp_path: Path) -> None:
-    raw = b"a\r\nb\rc\n\xff\xfed\r\n\xef\xbb\xbfe\r"
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"a\r\nb\rc\n\xff\xfed\r\n\xef\xbb\xbfe\r",
+        b"\r\r\n\n\r",
+        # CR, CRLF and multi-byte characters across the text reader's chunk edges.
+        b"x" * 8191 + b"\r\n" + "é".encode() * 5000 + b"\r" + b"\xe2\x82" + b"\r\n",
+        b"",
+    ],
+    ids=["mixed", "bare-cr", "chunk-edges", "empty"],
+)
+def test_source_map_text_equals_disk_read(tmp_path: Path, raw: bytes) -> None:
     path = tmp_path / "f.ts"
     path.write_bytes(raw)
+    parsed = SimpleNamespace(file_info=SimpleNamespace(abs_path=str(path)))
 
-    class _Parsed:
-        class file_info:  # noqa: N801 - mimics ParsedFile.file_info
-            abs_path = str(path)
-
-    assert fe_base.read_text_from("f.ts", _Parsed, {"f.ts": raw}) == fe_base.read_text(_Parsed)
-    assert fe_base.read_text_from("f.ts", _Parsed, None) == fe_base.read_text(_Parsed)
-    assert fe_base.read_text_from("f.ts", _Parsed, {}) == fe_base.read_text(_Parsed)
+    disk = fe_base.read_text(parsed)
+    assert fe_base.read_text_from("f.ts", parsed, {"f.ts": raw}) == disk
+    assert fe_base.read_text_from("f.ts", parsed, None) == disk
+    assert fe_base.read_text_from("f.ts", parsed, {}) == disk
 
 
 def test_each_import_resolves_once_per_pass(repo: Path, monkeypatch) -> None:

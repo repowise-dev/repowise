@@ -104,11 +104,30 @@ def _add_express_route_edges(graph: nx.DiGraph, path: str, parsed: Any, text: st
         if close == -1:
             continue
         arg_blob = JS_STRING_LITERAL_RE.sub("", text[route.paren_offset + 1 : close])
-        for ident in _ARG_IDENT_RE.finditer(arg_blob):
-            sym_id = local_funcs.get(ident.group(0))
-            if sym_id and add_symbol_edge(graph, module_sym, sym_id):
-                count += 1
+        count += _bind_route_args(graph, module_sym, arg_blob, local_funcs)
     return count
+
+
+def _bind_route_args(
+    graph: nx.DiGraph, module_sym: str, arg_blob: str, local_funcs: dict[str, str]
+) -> int:
+    """Bind *module_sym* to each local function a route's arguments name."""
+    count = 0
+    for ident in _ARG_IDENT_RE.finditer(arg_blob):
+        sym_id = local_funcs.get(ident.group(0))
+        if sym_id and add_symbol_edge(graph, module_sym, sym_id):
+            count += 1
+    return count
+
+
+def _nest_module_names(text: str) -> list[str]:
+    """Class names listed in ``@Module({...})`` arrays, in source order."""
+    return [
+        ident_match.group(1)
+        for mod_match in _NEST_MODULE_RE.finditer(text)
+        for arr_match in _NEST_ARRAY_FIELD_RE.finditer(mod_match.group(1))
+        for ident_match in _IDENT_RE.finditer(arr_match.group(1))
+    ]
 
 
 def _add_nest_module_edges(
@@ -122,14 +141,11 @@ def _add_nest_module_edges(
 ) -> int:
     """NestJS ``@Module({ controllers: [...], providers: [...], imports: [...] })``."""
     count = 0
-    for mod_match in _NEST_MODULE_RE.finditer(text):
-        for arr_match in _NEST_ARRAY_FIELD_RE.finditer(mod_match.group(1)):
-            for ident_match in _IDENT_RE.finditer(arr_match.group(1)):
-                cls = ident_match.group(1)
-                var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
-                target = var_to_file.get(cls) or class_to_file.get(cls)
-                if target and target in path_set and _add_edge_if_new(graph, path, target):
-                    count += 1
+    for cls in _nest_module_names(text):
+        var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
+        target = var_to_file.get(cls) or class_to_file.get(cls)
+        if target and target in path_set and _add_edge_if_new(graph, path, target):
+            count += 1
     return count
 
 
