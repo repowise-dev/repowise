@@ -19,7 +19,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         import tree_sitter_language_pack
 
         tree_sitter_language_pack.get_language("cobol")
-    except Exception:
+    except (ImportError, OSError):
         pass
 
 

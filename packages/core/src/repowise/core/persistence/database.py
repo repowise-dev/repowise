@@ -831,6 +831,32 @@ def _quote_identifier(name: str) -> str:
     return f'"{escaped}"'
 
 
+async def _refresh_sqlite_planner_stats(engine: AsyncEngine) -> None:
+    try:
+        async with engine.begin() as conn:
+            if await conn.run_sync(_planner_stats_stale):
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:  # a locked or read-only store
+        log.warning("sqlite.analyze_failed", error=str(exc))
+
+
+async def _refresh_postgres_planner_stats(
+    engine: AsyncEngine, tables: Sequence[str] | None
+) -> None:
+    try:
+        async with engine.begin() as conn:
+            if tables is not None:
+                table_list = [t for t in tables if t]
+                if not table_list:
+                    return
+                quoted = ", ".join(_quote_identifier(t) for t in table_list)
+                await conn.execute(text(f"ANALYZE {quoted}"))
+            else:
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:
+        log.warning("postgresql.analyze_failed", error=str(exc))
+
+
 async def refresh_planner_stats(
     engine: AsyncEngine,
     tables: Sequence[str] | None = None,
@@ -857,25 +883,9 @@ async def refresh_planner_stats(
     plan, so it never fails the write.
     """
     if engine.dialect.name == "sqlite":
-        try:
-            async with engine.begin() as conn:
-                if await conn.run_sync(_planner_stats_stale):
-                    await conn.execute(text("ANALYZE"))
-        except DBAPIError as exc:  # a locked or read-only store
-            log.warning("sqlite.analyze_failed", error=str(exc))
+        await _refresh_sqlite_planner_stats(engine)
     elif engine.dialect.name == "postgresql":
-        try:
-            async with engine.begin() as conn:
-                if tables is not None:
-                    table_list = [t for t in tables if t]
-                    if not table_list:
-                        return
-                    quoted = ", ".join(_quote_identifier(t) for t in table_list)
-                    await conn.execute(text(f"ANALYZE {quoted}"))
-                else:
-                    await conn.execute(text("ANALYZE"))
-        except DBAPIError as exc:
-            log.warning("postgresql.analyze_failed", error=str(exc))
+        await _refresh_postgres_planner_stats(engine, tables)
 
 
 async def schema_behind(engine: AsyncEngine) -> bool:
