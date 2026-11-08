@@ -1191,16 +1191,17 @@ def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int],
 
 
 _TS_TYPE_HEADER = re.compile(
-    r"\b(?:interface\s+[A-Za-z_$][\w$]*|type\s+[A-Za-z_$][\w$]*[^=]*=)"
+    r"(?:\binterface\s+[A-Za-z_$][\w$]*|\btype\s+[A-Za-z_$][\w$]*[^=]*=|(?:[:<]|\bas)\s*$)"
 )
 
 
 def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
-    """Is an offset of *cleaned* inside a TypeScript interface or type alias body?
+    """Is an offset of *cleaned* inside a TypeScript interface, type alias, or type literal?
 
-    Interface and type bodies declare type-level property signatures rather
-    than runtime variables or class fields. Any brace opened by an interface or
-    type alias (and any brace nested inside one) is a type construct.
+    Interface, type alias, and inline object-type bodies declare type-level
+    property signatures rather than runtime variables or class fields. Any
+    brace opened by an interface, a type alias, or directly after a type
+    annotation (and any brace nested inside one) is a type construct.
     """
     offsets: list[int] = []
     innermost: list[bool] = []

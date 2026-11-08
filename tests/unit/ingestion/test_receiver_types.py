@@ -1266,3 +1266,29 @@ class TestTypeScriptRefusals:
         assert "service" not in types
         assert types["realService"] == "RealService"
 
+    def test_inline_object_type_in_parameter_is_not_declaration(self) -> None:
+        source = (
+            "function run(options: { service: UserService, timeout: number }) {\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
+
+    def test_inline_object_type_in_variable_is_not_declaration(self) -> None:
+        source = (
+            "function run() {\n"
+            "    const config: { client: HttpClient } = { client: make() };\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "client" not in types
+        assert types["realService"] == "RealService"
+
+
