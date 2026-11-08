@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 import structlog
@@ -103,6 +103,7 @@ log = structlog.get_logger(__name__)
 
 #: ``state.json`` key: the commit whose run last looked for files with no page.
 FILE_PAGE_FILL_KEY = "file_page_fill_commit"
+
 
 def _fail_on_embed_failure(
     repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
@@ -521,9 +522,7 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print(
-        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
-    )
+    console.print(f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]")
     console.print(
         "  Documentation for the whole repository: written by the model after a cost "
         "preview, or built from code when no model is configured. Completed stages "
@@ -819,15 +818,16 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )
     # ``or``, not a ``get`` default: ``last_docs_commit`` can be an explicit null.
-    run.base_ref = opts.since or (
+    base_ref = opts.since or (
         state.get("last_sync_commit")
         if run.index_only
         else state.get("last_docs_commit") or state.get("last_sync_commit")
     )
     run.head = get_head_commit(repo_path)
 
-    if run.base_ref is None:
+    if base_ref is None:
         _raise_no_sync_base(run)
+    run.base_ref = base_ref
 
     # Re-cover a range an earlier update failed to persist. Index-only only: the
     # repair marker is written against ``last_sync_commit``, and --since wins.
@@ -835,7 +835,7 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         _widen_to_pending_repair(run)
 
 
-def _raise_no_sync_base(run: UpdateRun) -> None:
+def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
     if upstream_ws is not None:
@@ -959,8 +959,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; "
-            "rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; " "rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
@@ -1135,7 +1134,8 @@ def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
 def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
     from repowise.core.ingestion.change_detector import FileDiff
 
-    present, absent = [], []
+    present: list[str] = []
+    absent: list[str] = []
     for path in run.stale_db_paths:
         (present if (run.repo_path / path).exists() else absent).append(path)
     run.stale_db_paths = present
@@ -1418,13 +1418,14 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     _stage(run, "plan_pages")
 
     run.timings.start("plan_pages")
-    run.cascade_budget = opts.cascade_budget
-    if run.cascade_budget is None:
+    cascade_budget = opts.cascade_budget
+    if cascade_budget is None:
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
-        run.cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
+        cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
         if opts.verbose:
-            console.print(f"Adaptive cascade budget: [cyan]{run.cascade_budget}[/cyan]")
+            console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
+    run.cascade_budget = cascade_budget
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -2338,8 +2339,9 @@ def run_update(
         return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
-    run.repo_path = target.repo_path
-    assert run.repo_path is not None  # single mode always sets repo_path
+    repo_path = target.repo_path
+    assert repo_path is not None  # single mode always sets repo_path
+    run.repo_path = repo_path
     _prepare_repo(run.repo_path)
     if not opts.dry_run:
         # A moved or copied checkout still names its old path; adopt the store's
