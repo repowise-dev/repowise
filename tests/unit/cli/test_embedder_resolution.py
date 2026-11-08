@@ -268,7 +268,8 @@ def test_serve_seeds_a_mock_pin_into_the_environment(
 
     _write_config(tmp_path, embedder="mock")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "x")
+    monkeypatch.delenv("REPOWISE_EMBEDDER")
 
     serve_cmd._load_local_provider_config()
 

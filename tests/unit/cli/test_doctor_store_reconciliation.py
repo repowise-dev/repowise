@@ -231,6 +231,8 @@ def test_missing_lancedb_with_real_embedder_reports_missing_and_reindex_fix(
     all indexable pages are reported missing with fix `repowise reindex`."""
     import shutil
 
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
     repo_path = asyncio.run(_build_repo(tmp_path))
     shutil.rmtree(repo_path / ".repowise" / "lancedb")
     (repo_path / ".repowise" / "config.yaml").write_text(
@@ -277,12 +279,14 @@ def test_missing_lancedb_with_mock_embedder_stays_ok(
 
 
 def test_missing_lancedb_with_real_embedder_and_no_indexable_pages_stays_ok(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     """When no indexable pages exist (e.g. excluded),
     a missing lancedb with a real embedder stays OK."""
     import shutil
 
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
     repo_path = asyncio.run(_build_repo(tmp_path))
     shutil.rmtree(repo_path / ".repowise" / "lancedb")
     (repo_path / ".repowise" / "config.yaml").write_text(
