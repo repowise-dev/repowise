@@ -41,6 +41,37 @@ _NON_RESOLUTION_EDGES = frozenset({"defines", "has_method", "co_changes"})
 _MAX_STAR_DEPTH = 16
 
 
+def changed_field_names(
+    parsed_files: dict[str, Any],
+    source_map: dict[str, bytes],
+    paths: Iterable[str],
+    resolutions: dict[str, tuple],
+) -> set[str] | None:
+    """Names of the class fields whose declared type the edit to *paths* changed.
+
+    Compares each file's fields now with the record the last build saved. A
+    file with no record to compare, or no source, makes the answer unknown
+    (``None``). Added and removed files count every field they declare.
+    """
+    from .resolution_cache import field_types
+    from .surface import is_inert
+
+    names: set[str] = set()
+    for path in paths:
+        parsed = parsed_files.get(path)
+        if parsed is not None and is_inert(parsed):
+            continue
+        entry = resolutions.get(path)
+        before = entry[2] if entry is not None else {}
+        after = field_types(parsed, source_map.get(path)) if parsed is not None else {}
+        if before is None or after is None:
+            return None
+        for class_id in set(before) | set(after):
+            old, new = before.get(class_id, {}), after.get(class_id, {})
+            names.update(field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0))
+    return names
+
+
 def _resolvable(parsed: Any) -> bool:
     """Whether a build has anything of *parsed* to resolve against other files."""
     return any(

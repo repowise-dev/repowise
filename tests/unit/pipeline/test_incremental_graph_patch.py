@@ -110,7 +110,10 @@ def _seed_rows(graph_builder: Any) -> dict[str, list]:
     index_dir = Path(graph_builder._repo_path) / ".repowise"
     index_dir.mkdir(exist_ok=True)
     save_resolutions(
-        index_dir, graph_builder._parsed_files.values(), graph_builder.import_resolutions
+        index_dir,
+        graph_builder._parsed_files.values(),
+        graph_builder.import_resolutions,
+        graph_builder._source_map,
     )
     graph = graph_builder.graph()
     return {

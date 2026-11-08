@@ -1042,7 +1042,7 @@ async def _run_ingestion(
         from repowise.core.pipeline.incremental.resolution_cache import save_resolutions
 
         save_resolutions(
-            repo_path / ".repowise", parsed_files, graph_builder.import_resolutions
+            repo_path / ".repowise", parsed_files, graph_builder.import_resolutions, source_map
         )
     # Stack detection and framework edges fail separately: the stack also
     # feeds the persisted tech list and the editor files.

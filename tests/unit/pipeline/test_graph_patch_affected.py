@@ -49,6 +49,7 @@ def _seed(graph_builder: Any) -> dict[str, list]:
         Path(graph_builder._repo_path) / ".repowise",
         graph_builder._parsed_files.values(),
         graph_builder.import_resolutions,
+        graph_builder._source_map,
     )
     g = graph_builder.graph()
     return {
@@ -232,6 +233,62 @@ def test_refreshing_patch_equals_a_full_rebuild(
 
     assert patched.patch_plan.eligible, patched.patch_plan.reason
     assert patched.patch_plan.refresh
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+_FIELDS_PY = {
+    "a.py": "from b import Helper\nfrom c import Other\n\nclass A:\n    def __init__(self):\n        self.helper = Helper()\n",
+    "b.py": "class Helper:\n    def run(self):\n        return 1\n",
+    "c.py": "class Other:\n    def run(self):\n        return 2\n",
+    "d.py": "from a import A\n\ndef go():\n    a = A()\n    return a.helper.run()\n",
+    "e.py": "def x():\n    return 0\n",
+}
+_FIELDS_TS = {
+    "src/a.ts": "import { Helper } from './b';\nimport { Other } from './c';\nexport class A {\n  helper: Helper = new Helper();\n}\n",
+    "src/b.ts": "export class Helper { run() { return 1; } }\n",
+    "src/c.ts": "export class Other { run() { return 2; } }\n",
+    "src/d.ts": "import { A } from './a';\nexport function go() { return new A().helper.run(); }\n",
+    "src/e.ts": "export function x() { return 0; }\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("files", "path", "old", "new"),
+    [
+        pytest.param(_FIELDS_PY, "a.py", "self.helper = Helper()", "self.helper = Other()", id="py-field-assignment"),
+        pytest.param(_FIELDS_TS, "src/a.ts", "helper: Helper = new Helper()", "helper: Other = new Other()", id="ts-field-declaration"),
+    ],
+)
+def test_a_body_edit_that_retypes_a_field_reaches_its_chained_callers(
+    tmp_path: Path, files: dict[str, str], path: str, old: str, new: str
+) -> None:
+    """``a.helper.run()`` is typed from ``A``'s field declarations, which no parse surface holds."""
+    tree, seed = _index(tmp_path, files)
+    (tree / path).write_text(files[path].replace(old, new))
+
+    patched = _patch(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_a_missing_field_record_falls_back(tmp_path: Path) -> None:
+    tree = tmp_path / "repo"
+    _write(tree, _FIELDS_PY)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    save_resolutions(tree / ".repowise", first._parsed_files.values(), first.import_resolutions)
+    g = first.graph()
+    seed = {
+        "nodes": [(n, dict(d)) for n, d in g.nodes(data=True)],
+        "edges": [(u, v, dict(d)) for u, v, d in g.edges(data=True)],
+    }
+    (tree / "a.py").write_text(_FIELDS_PY["a.py"] + "\n# touched\n")
+
+    patched = _patch(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert "field record" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 

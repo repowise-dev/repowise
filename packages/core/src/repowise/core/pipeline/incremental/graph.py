@@ -200,6 +200,31 @@ def _plan_graph_patch(
     )
 
 
+def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) -> Any:
+    """*patch_plan*, made refreshing when an edit changed the field types a class declares.
+
+    Another file's ``obj.field.method()`` is typed from those declarations,
+    which no parse surface records: the files that spell a changed field must
+    be re-resolved too.
+    """
+    from dataclasses import replace
+
+    from .affected import changed_field_names
+    from .surface import PatchPlan
+
+    names = changed_field_names(
+        graph_builder._parsed_files,
+        graph_builder._source_map,
+        (*patch_plan.scope, *patch_plan.removed),
+        resolutions,
+    )
+    if names is None:
+        return PatchPlan(False, reason="an edited file has no field record to compare")
+    if not names:
+        return patch_plan
+    return replace(patch_plan, refresh=True, names=patch_plan.names | names)
+
+
 def _plan_with_resolutions(
     repo_path: Any,
     graph_builder: Any,
@@ -217,6 +242,7 @@ def _plan_with_resolutions(
 
     resolutions = load_resolutions(Path(repo_path) / ".repowise")
     if covers(resolutions, parsed_files, patch_plan.scope):
+        patch_plan = _with_field_changes(graph_builder, patch_plan, resolutions)
         if patch_plan.refresh:
             from .affected import expand_scope
 
@@ -570,7 +596,10 @@ pass reads the sources.
         from .resolution_cache import save_resolutions
 
         save_resolutions(
-            Path(repo_path) / ".repowise", parsed_files, graph_builder.import_resolutions
+            Path(repo_path) / ".repowise",
+            parsed_files,
+            graph_builder.import_resolutions,
+            source_map,
         )
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
