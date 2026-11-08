@@ -18,7 +18,7 @@ from .base import (
     _build_class_to_file,
     _build_ts_var_to_file,
     add_symbol_edge,
-    read_text,
+    read_text_from,
 )
 
 if TYPE_CHECKING:
@@ -52,58 +52,84 @@ def _add_express_edges(
 ) -> int:
     count = 0
     class_to_file = _build_class_to_file(parsed_files, ("typescript", "javascript"))
+    source_map = ctx.source_map
 
-    # ---- Express: app.use(routerVar) ----
     for path, parsed in parsed_files.items():
         if parsed.file_info.language not in ("typescript", "javascript"):
             continue
-        text = read_text(parsed)
+        text = read_text_from(path, parsed, source_map)
         if not text:
             continue
-
-        var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
-
+        # The import map is built only once a pattern names an identifier to
+        # look up: most TS files mention neither Express nor ``@Module``.
         if "express" in text or any(imp.module_path == "express" for imp in parsed.imports):
-            for m in _EXPRESS_USE_RE.finditer(text):
-                var_name = m.group(1)
-                target = var_to_file.get(var_name)
+            count += _add_express_use_edges(graph, path, parsed, text, ctx, path_set)
+            count += _add_express_route_edges(graph, path, parsed, text)
+        count += _add_nest_module_edges(graph, path, parsed, text, ctx, path_set, class_to_file)
+
+    return count
+
+
+def _add_express_use_edges(
+    graph: nx.DiGraph,
+    path: str,
+    parsed: Any,
+    text: str,
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> int:
+    """``app.use(routerVar)``: link the file to the module that exports the router."""
+    count = 0
+    for m in _EXPRESS_USE_RE.finditer(text):
+        target = _build_ts_var_to_file(parsed, path, ctx, path_set).get(m.group(1))
+        if target and target in path_set and _add_edge_if_new(graph, path, target):
+            count += 1
+    return count
+
+
+def _add_express_route_edges(graph: nx.DiGraph, path: str, parsed: Any, text: str) -> int:
+    """``router.get('/x', handler)``: bind the module to the local handler functions."""
+    local_funcs = {
+        sym.name: sym.id for sym in parsed.symbols if sym.kind in ("function", "method")
+    }
+    receivers = {var for var, fw in js_router_bindings(text).items() if fw == "express"}
+    if not (local_funcs and receivers):
+        return 0
+    count = 0
+    module_sym = f"{path}::__module__"
+    for route in express_routes(text):
+        if route.receiver not in receivers:
+            continue
+        close = match_paren(text, route.paren_offset)
+        if close == -1:
+            continue
+        arg_blob = JS_STRING_LITERAL_RE.sub("", text[route.paren_offset + 1 : close])
+        for ident in _ARG_IDENT_RE.finditer(arg_blob):
+            sym_id = local_funcs.get(ident.group(0))
+            if sym_id and add_symbol_edge(graph, module_sym, sym_id):
+                count += 1
+    return count
+
+
+def _add_nest_module_edges(
+    graph: nx.DiGraph,
+    path: str,
+    parsed: Any,
+    text: str,
+    ctx: ResolverContext,
+    path_set: set[str],
+    class_to_file: dict[str, str],
+) -> int:
+    """NestJS ``@Module({ controllers: [...], providers: [...], imports: [...] })``."""
+    count = 0
+    for mod_match in _NEST_MODULE_RE.finditer(text):
+        for arr_match in _NEST_ARRAY_FIELD_RE.finditer(mod_match.group(1)):
+            for ident_match in _IDENT_RE.finditer(arr_match.group(1)):
+                cls = ident_match.group(1)
+                var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
+                target = var_to_file.get(cls) or class_to_file.get(cls)
                 if target and target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
-
-            local_funcs = {
-                sym.name: sym.id
-                for sym in parsed.symbols
-                if sym.kind in ("function", "method")
-            }
-            receivers = {
-                var for var, fw in js_router_bindings(text).items() if fw == "express"
-            }
-            if local_funcs and receivers:
-                module_sym = f"{path}::__module__"
-                for route in express_routes(text):
-                    if route.receiver not in receivers:
-                        continue
-                    close = match_paren(text, route.paren_offset)
-                    if close == -1:
-                        continue
-                    arg_blob = JS_STRING_LITERAL_RE.sub(
-                        "", text[route.paren_offset + 1 : close]
-                    )
-                    for ident in _ARG_IDENT_RE.finditer(arg_blob):
-                        sym_id = local_funcs.get(ident.group(0))
-                        if sym_id and add_symbol_edge(graph, module_sym, sym_id):
-                            count += 1
-
-        # ---- NestJS: @Module({ controllers: [...], providers: [...], imports: [...] }) ----
-        for mod_match in _NEST_MODULE_RE.finditer(text):
-            body = mod_match.group(1)
-            for arr_match in _NEST_ARRAY_FIELD_RE.finditer(body):
-                for ident_match in _IDENT_RE.finditer(arr_match.group(1)):
-                    cls = ident_match.group(1)
-                    target = var_to_file.get(cls) or class_to_file.get(cls)
-                    if target and target in path_set and _add_edge_if_new(graph, path, target):
-                        count += 1
-
     return count
 
 

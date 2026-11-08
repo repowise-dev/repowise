@@ -139,6 +139,22 @@ def read_text(parsed: Any, encoding: str = "utf-8") -> str:
         return ""
 
 
+def read_text_from(path: str, parsed: Any, source_map: dict[str, bytes] | None) -> str:
+    """:func:`read_text`'s exact result, from the bytes ingestion already read.
+
+    Decodes the way ``Path.read_text`` does (``errors="ignore"`` and universal
+    newlines), so a regex over the text matches the same spans whichever source
+    it came from. Falls back to disk when *source_map* lacks *path*.
+    """
+    raw = source_map.get(path) if source_map else None
+    if raw is None:
+        return read_text(parsed)
+    text = raw.decode("utf-8", errors="ignore")
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
+
+
 def source_text(
     path: str, parsed: Any, source_map: dict[str, bytes], encoding: str = "utf-8"
 ) -> str:
@@ -214,18 +230,43 @@ def _build_ts_var_to_file(
     Keyed on ``local_names``, not ``imported_names``: the DSL names the
     handler as this file sees it, so ``import { handler as apiHandler }``
     has to answer to ``apiHandler``.
+
+    Memoised on *ctx* for one framework pass: several handlers ask about the
+    same file, and on a large TS repo re-resolving every import per handler
+    was most of the phase. The result is shared, so callers must not mutate it.
     """
+    memo = _ts_var_memo(ctx, path_set)
+    hit = memo.get(path)
+    if hit is not None and hit[0] is parsed:
+        return hit[1]
+
     from ..resolvers import resolve_import
 
     var_to_file: dict[str, str] = {}
+    language = parsed.file_info.language
     for imp in parsed.imports:
-        for name in imp.local_names:
-            resolved = resolve_import(
-                imp.module_path,
-                path,
-                parsed.file_info.language,
-                ctx,
-            )
-            if resolved and resolved in path_set:
+        if not imp.local_names:
+            continue
+        # One resolution per import, not per name: every name of an import
+        # shares its module path, and resolving is deterministic within a run.
+        resolved = resolve_import(imp.module_path, path, language, ctx)
+        if resolved and resolved in path_set:
+            for name in imp.local_names:
                 var_to_file[name] = resolved
+    memo[path] = (parsed, var_to_file)
     return var_to_file
+
+
+def _ts_var_memo(ctx: ResolverContext, path_set: set[str]) -> dict[str, tuple[Any, dict[str, str]]]:
+    """The per-file memo behind :func:`_build_ts_var_to_file`, reset for a new *path_set*.
+
+    Stashed on *ctx* like the resolvers' lazy indexes. The framework pass builds
+    a fresh context each run, so nothing outlives the run's import resolution;
+    tying the memo to the *path_set* object as well keeps a reused context from
+    answering with a resolution made against a different file set.
+    """
+    stash = getattr(ctx, "_ts_var_to_file_memo", None)
+    if stash is None or stash[0] is not path_set:
+        stash = (path_set, {})
+        ctx._ts_var_to_file_memo = stash
+    return stash[1]
