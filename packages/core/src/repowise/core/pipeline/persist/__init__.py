@@ -43,7 +43,6 @@ from .graph import (
     _community_meta,
     _derive_entry_point_scores,
     _edge_row,
-    _edges_predate_cohesion,
     _prune_vanished_symbol_nodes,
     _stamp_betweenness_commit,
     _stored_edges_parser_fingerprint,

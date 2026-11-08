@@ -447,50 +447,6 @@ async def prune_absent_graph_rows(
     return len(stale_edge_ids), len(stale_node_ids)
 
 
-async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any) -> bool:
-    """True when ``graph_edges`` was written before edge cohesion was recorded.
-
-    An incremental update rewrites only the changed files' edges, so a store
-    indexed by an older build keeps that build's edges — and its resolution
-    mistakes — on every file that has not happened to change since. The health
-    engine and the server both read a graph rehydrated from those rows, so they
-    would go on reporting cycles the current engine no longer finds.
-
-    The signal is the store's own content rather than a version marker: a
-    routine update deliberately clamps ``store_format_version`` below the first
-    reindex gate, so a version comparison would refire on every run. Here, a
-    repo whose graph now has cohesion edges but whose table has no cohesion
-    ``hint_source`` anywhere is exactly a pre-cohesion store. Rewriting it
-    stamps those rows, so this answers False from then on and the full
-    reconcile happens once.
-    """
-    from sqlalchemy import select
-
-    from repowise.core.ingestion.cohesion import COHESION_HINTS, is_cohesion_edge
-    from repowise.core.persistence.models import GraphEdge
-
-    try:
-        graph = graph_builder.graph()
-    except Exception:
-        return False
-    if not any(is_cohesion_edge(d) for _u, _v, d in graph.edges(data=True)):
-        return False  # nothing to record, so nothing can be missing
-
-    row = (
-        await session.execute(
-            select(GraphEdge.id)
-            .where(
-                GraphEdge.repository_id == repo_id,
-                # Cohesion hints only: other passes (pytest conftest) stamp a
-                # hint too, and one of theirs is not a cohesion stamp.
-                GraphEdge.hint_source.in_(COHESION_HINTS),
-            )
-            .limit(1)
-        )
-    ).first()
-    return row is None
-
-
 async def has_graph_edges(session: Any, repo_id: str) -> bool:
     """Whether this repo already has any ``graph_edges`` row."""
     from sqlalchemy import select
@@ -548,61 +504,70 @@ async def persist_incremental_edges(
     parsed_files: list[Any] | None,
     changed_paths: list[str],
 ) -> None:
-    """Refresh ``graph_edges`` for changed files on an incremental update.
+    """Make ``graph_edges`` match the rebuilt graph on an incremental update.
 
     Sibling of :func:`persist_incremental_symbols`. The full-init path was the
     only one that ever wrote ``graph_edges``; ``repowise update`` rebuilt the
     graph but never repersisted edges, so adjacency froze at the last full
     index. Phase E flow-path answers and any graph expansion read adjacency
-    straight from this table, so they decayed on every incremental update. This
-    delete-then-inserts the changed files' outgoing edges (dropping edges those
-    files no longer have). Scoped to the changed set for cost.
+    straight from this table, so they decayed on every incremental update.
 
-    That scoping is also this function's one structural blind spot: an
-    extraction change (a tree-sitter query edit, an extractor fix) alters the
-    edges of *every* file, but only the git-changed ones get rewritten, so the
-    rest keep the old build's edges until they happen to change. The parse cache
-    self-invalidates on such a change (``parser_fingerprint`` hashes the ``.scm``
-    sources) and the update rebuilds the whole graph in memory anyway, so the
-    correct edges are already computed and only the write is too narrow. Widen
-    it whenever the fingerprint that last wrote the table differs from the
-    running one, then re-stamp. One comparison covers every future extraction
-    change; :func:`_edges_predate_cohesion` is the bespoke predecessor, kept
-    until shipped stores have all been stamped.
+    Every parsed file is reconciled, not only *changed_paths*. A file git did
+    not touch still gains or loses edges when what it points at changes: a call
+    resolves to a symbol a new file defines, or stops resolving to one that
+    moved, and an extraction change (``parser_fingerprint``) alters every
+    file's edges at once. The update rebuilds the whole graph in memory anyway,
+    so the right edges are already computed, and the reconcile writes only the
+    rows that differ. A file that failed to parse this run keeps its rows.
+
+    The one difference between the two sets is ``co_changes``. The graph holds
+    every pair only when the history walk completed; otherwise it has the
+    changed files' pairs alone, so the other files' stored pairs are left to
+    :func:`sync_co_change_edges`, which runs only on a complete walk.
     """
     # An empty parse still counts: a repo with no source files has nothing to
-    # widen, and it must be stamped, or a missing stamp re-parses it forever.
+    # reconcile, and it must be stamped, or a missing stamp re-parses it forever.
     if graph_builder is None or parsed_files is None:
         return
     from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence.crud import reconcile_edges_for_files
 
-    # Widen the reconcile to the whole parsed set, once. Same code path, so the
-    # delete-then-insert still drops edges a file no longer has — which is what
-    # clears the old build's resolution mistakes, an upsert alone would leave
-    # them behind.
     fingerprint = parser_fingerprint()
     parser_changed = await _stored_edges_parser_fingerprint(session, repo_id) != fingerprint
     if parser_changed:
-        changed_paths = [pf.file_info.path for pf in parsed_files]
-        logger.info("graph_edges_parser_backfill", repo_id=repo_id, files=len(changed_paths))
-    elif await _edges_predate_cohesion(session, repo_id, graph_builder):
-        changed_paths = [pf.file_info.path for pf in parsed_files]
-        logger.info("graph_edges_cohesion_backfill", repo_id=repo_id, files=len(changed_paths))
+        logger.info("graph_edges_parser_backfill", repo_id=repo_id, files=len(parsed_files))
 
     reconcile_paths, edges = _changed_file_edges(graph_builder, parsed_files, changed_paths)
     if reconcile_paths:
         await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
-        # Every reconciled file, not only a widen's: a symbol renamed or removed
-        # in a changed file otherwise keeps its node beside the new one.
-        await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, reconcile_paths)
+    changed = set(reconcile_paths)
+    other_paths, other_edges = _changed_file_edges(
+        graph_builder,
+        parsed_files,
+        [pf.file_info.path for pf in parsed_files if pf.file_info.path not in changed],
+    )
+    if other_paths:
+        from .co_change_edges import _CO_CHANGES
+
+        await reconcile_edges_for_files(
+            session,
+            repo_id,
+            other_paths,
+            [e for e in other_edges if e["edge_type"] != _CO_CHANGES],
+            keep_edge_types=frozenset({_CO_CHANGES}),
+        )
+    if reconcile_paths or other_paths:
+        # A symbol renamed or removed otherwise keeps its node beside the new one.
+        await _prune_vanished_symbol_nodes(
+            session, repo_id, graph_builder, [*reconcile_paths, *other_paths]
+        )
     # Only when the rebuild re-added every pair; a failed or skipped walk leaves
     # the graph without them, and syncing would wipe the stored ones.
     if getattr(graph_builder, "co_change_edges_complete", False):
         from .co_change_edges import sync_co_change_edges
 
         await sync_co_change_edges(session, repo_id, graph_builder)
-    # Only after the widen actually ran to completion. Raising here (or in any
+    # Only after the reconcile actually ran to completion. Raising here (or in any
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.
     if parser_changed:
