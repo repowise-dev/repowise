@@ -1070,3 +1070,90 @@ async def test_a_record_without_its_table_is_ignored(tmp_path: Path) -> None:
     shutil.rmtree(_lance_dir(tmp_path) / "wiki_pages.lance")
 
     assert providers.existing_vector_dim(_lance_dir(tmp_path)) is None
+
+
+
+def test_repo_env_embedder_resolves_without_prior_load_dotenv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Issue #5326: .repowise/.env must be visible to embedder choice resolution
+
+    even before load_dotenv has merged it into os.environ.
+    """
+    from repowise.cli.providers.embedders import resolve_embedder, resolve_embedder_choice
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    assert "REPOWISE_EMBEDDER" not in os.environ
+    assert resolve_embedder(None, repo_path=repo) == "openrouter"
+    assert resolve_embedder_choice(None, repo_path=repo) == (
+        "openrouter",
+        "REPOWISE_EMBEDDER is set",
+    )
+
+
+def test_repo_env_key_detection_resolves_without_prior_load_dotenv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Autodetection from an API key stored in .repowise/.env works without load_dotenv."""
+    from repowise.cli.providers.embedders import resolve_embedder, resolve_embedder_choice
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("OPENAI_API_KEY=sk-test-key\n", encoding="utf-8")
+
+    assert "OPENAI_API_KEY" not in os.environ
+    assert resolve_embedder(None, repo_path=repo) == "openai"
+    assert resolve_embedder_choice(None, repo_path=repo) == (
+        "openai",
+        "OPENAI_API_KEY is set",
+    )
+
+
+def test_repo_env_embedding_dims_and_model_visible_in_kwargs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Constructor kwargs read repo-level REPOWISE_EMBEDDING_DIMS and model from .repowise/.env."""
+    from repowise.core.providers.embedding.resolve import embedder_kwargs
+
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text(
+        "GEMINI_API_KEY=gk-test\n"
+        "REPOWISE_EMBEDDING_DIMS=512\n"
+        "REPOWISE_EMBEDDING_MODEL=custom-gemini\n",
+        encoding="utf-8",
+    )
+
+    kwargs = embedder_kwargs("gemini", repo)
+    assert kwargs == {
+        "model": "custom-gemini",
+        "output_dimensionality": 512,
+        "api_key": "gk-test",
+    }
+
+
+def test_deterministic_embedder_name_reads_repo_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """deterministic_embedder_name honors REPOWISE_EMBEDDER in .repowise/.env without export."""
+    from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=ollama\n", encoding="utf-8")
+
+    assert deterministic_embedder_name({}, repo_path=repo) == "ollama"

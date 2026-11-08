@@ -155,7 +155,7 @@ def _resolve_settings(run: InitRun) -> None:
     if opts.follow_renames:
         config["follow_renames"] = True
 
-    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name, repo_path=run.repo_path)
     run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
 
 

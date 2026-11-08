@@ -1773,7 +1773,7 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
         _fail_on_embed_failure(
             repo_path,
-            deterministic_embedder_name(run.cfg),
+            deterministic_embedder_name(run.cfg, repo_path=repo_path),
             pages.render_stats["embed_failed_pages"],
             run.emitter,
         )
