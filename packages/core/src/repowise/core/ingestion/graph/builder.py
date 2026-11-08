@@ -480,7 +480,7 @@ class GraphBuilder(
             self.import_resolutions = {}
         else:
             if refresh_global:
-                self._clear_global_pass_edges(scope_set)
+                self._clear_global_pass_edges()
             else:
                 self._clear_dispatch_edges()
             self._clear_scope_edges(scope_set)

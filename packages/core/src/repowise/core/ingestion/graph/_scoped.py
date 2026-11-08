@@ -170,17 +170,16 @@ class ScopedBuildMixin:
                 )
             }
 
-    def _clear_global_pass_edges(self: _ScopedGraphHost, scope: frozenset[str]) -> None:
+    def _clear_global_pass_edges(self: _ScopedGraphHost) -> None:
         """Drop seeded edges the whole-graph passes of a refreshing patch re-derive.
 
         Registration and override-dispatch edges are rebuilt by
         :meth:`build`; framework and dynamic-hint edges by the synthetic edge
-        passes that run after it. Removing them first leaves the resolver
-        passes the same graph a full build gives them. ``co_changes`` edges on
-        a re-resolved file are set aside the same way and put back by
-        :meth:`restore_co_change_edges` once the synthetic passes are done:
-        a full build adds them last, and only between files nothing else
-        links.
+        passes that run after it. Removing them first leaves those passes the
+        same graph a full build gives them. ``co_changes`` edges are set aside
+        the same way and put back by :meth:`restore_co_change_edges` once the
+        synthetic passes are done: a full build adds them last, and only
+        between files nothing else links.
         """
         graph = self._graph
         stale: list[tuple[str, str]] = []
@@ -188,9 +187,8 @@ class ScopedBuildMixin:
         for source, target, data in graph.edges(data=True):
             edge_type = data.get("edge_type")
             if edge_type == "co_changes":
-                if source in scope or target in scope:
-                    stashed.append((source, target, dict(data)))
-                    stale.append((source, target))
+                stashed.append((source, target, dict(data)))
+                stale.append((source, target))
             elif (
                 edge_type == "dispatches_to"
                 or edge_type in _FRAMEWORK_EDGE_TYPES
