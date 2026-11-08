@@ -272,7 +272,10 @@ def _render_pages(
         # way. It also keeps the lancedb import off the post-commit hook's
         # path, which is the one place in this command that avoids it.
         resolved_vector_store = vector_store
-        embedder_name = deterministic_embedder_name(cfg, repo_path=repo_path)
+        try:
+            embedder_name = deterministic_embedder_name(cfg, repo_path=repo_path)
+        except TypeError:
+            embedder_name = deterministic_embedder_name(cfg)
         if not embed_during_generation:
             resolved_vector_store = None
         elif resolved_vector_store is None and embedder_name != "mock":

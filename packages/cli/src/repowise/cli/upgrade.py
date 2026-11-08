@@ -168,10 +168,14 @@ def assess_store(repo_path: Path) -> UpgradeVerdict:
     config = load_config(repo_path)
     recorded_model = config.get("embedding_model")
     stored_dim, current_dim = _vector_dims(repo_path)
+    try:
+        current_embedding = _current_embedding_model(repo_path)
+    except TypeError:
+        current_embedding = _current_embedding_model()
     return assess(
         state,
         recorded_embedding_model=recorded_model if isinstance(recorded_model, str) else None,
-        current_embedding_model=_current_embedding_model(repo_path),
+        current_embedding_model=current_embedding,
         stored_vector_dim=stored_dim,
         current_vector_dim=current_dim,
     )
