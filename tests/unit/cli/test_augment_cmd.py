@@ -222,3 +222,87 @@ def test_claim_emission_cleans_up_expired_markers(
 
     assert not expired.exists()
     assert active.exists()
+
+
+def test_claim_emission_cleanup_is_throttled_by_timestamp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import time
+
+    from repowise.cli.commands.augment_cmd.command import _SWEEP_THROTTLE_FILE, _claim_emission
+
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+    # First run creates the throttle stamp
+    claimed1 = _claim_emission("event_1", "ctx_1")
+    assert claimed1 is True
+    stamp_path = tmp_path / _SWEEP_THROTTLE_FILE
+    assert stamp_path.exists()
+
+    # Create an expired marker while throttle stamp is fresh
+    expired_during_throttle = tmp_path / ".repowise-augment-expired-during-throttle"
+    expired_during_throttle.write_text("old", encoding="utf-8")
+    now = time.time()
+    os.utime(str(expired_during_throttle), (now - 20, now - 20))
+
+    # Second run is within TTL window, so sweep is throttled and does not delete it
+    claimed2 = _claim_emission("event_2", "ctx_2")
+    assert claimed2 is True
+    assert expired_during_throttle.exists()
+
+    # Age the throttle stamp beyond the TTL window
+    os.utime(str(stamp_path), (now - 20, now - 20))
+
+    # Third run performs the sweep and unlinks the expired marker
+    claimed3 = _claim_emission("event_3", "ctx_3")
+    assert claimed3 is True
+    assert not expired_during_throttle.exists()
+
+
+def test_cleanup_stale_markers_direct(tmp_path: Path) -> None:
+    import os
+    import time
+
+    from repowise.cli.commands.augment_cmd.command import _cleanup_stale_markers
+
+    active = tmp_path / ".repowise-augment-active"
+    expired = tmp_path / ".repowise-augment-expired"
+    active.write_text("active", encoding="utf-8")
+    expired.write_text("expired", encoding="utf-8")
+
+    now = time.time()
+    os.utime(str(expired), (now - 20, now - 20))
+    os.utime(str(active), (now, now))
+
+    _cleanup_stale_markers(tmp_path, now)
+
+    assert not expired.exists()
+    assert active.exists()
+
+
+def test_claim_emission_takeover_stale_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import os
+    import time
+
+    from repowise.cli.commands.augment_cmd.command import _claim_emission
+
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+    event = "ev"
+    ctx = "ctx"
+    key = hashlib.sha1(f"{event}\x00{ctx}".encode(), usedforsecurity=False).hexdigest()[:16]
+    marker = tmp_path / f".repowise-augment-{key}"
+    marker.write_text("existing", encoding="utf-8")
+
+    now = time.time()
+    # Marker is recent -> claim returns False
+    os.utime(str(marker), (now, now))
+    assert _claim_emission(event, ctx) is False
+
+    # Marker is stale -> claim takes it over and returns True
+    os.utime(str(marker), (now - 20, now - 20))
+    assert _claim_emission(event, ctx) is True
