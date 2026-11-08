@@ -271,6 +271,27 @@ class TestStateFile:
         self._write_state(tmp_path, content)
         assert load_state(tmp_path) == {}
 
+    def test_load_keeps_a_copy_of_a_corrupt_file(self, tmp_path):
+        state_path = self._write_state(tmp_path, '{"last_sync_commit": "abc1')
+        assert load_state(tmp_path) == {}
+        backup = state_path.with_name("state.json.corrupt")
+        assert backup.read_text(encoding="utf-8") == '{"last_sync_commit": "abc1'
+
+    def test_save_after_corrupt_load_leaves_the_copy(self, tmp_path):
+        state_path = self._write_state(tmp_path, '{"last_sync_commit": "abc1')
+        state = load_state(tmp_path)
+        state["embed_failed"] = True
+        save_state(tmp_path, state)
+        backup = state_path.with_name("state.json.corrupt")
+        assert backup.read_text(encoding="utf-8") == '{"last_sync_commit": "abc1'
+
+    def test_load_does_not_overwrite_an_existing_copy(self, tmp_path):
+        state_path = self._write_state(tmp_path, "[1]")
+        backup = state_path.with_name("state.json.corrupt")
+        backup.write_text("first", encoding="utf-8")
+        assert load_state(tmp_path) == {}
+        assert backup.read_text(encoding="utf-8") == "first"
+
     def test_load_does_not_swallow_os_errors(self, tmp_path, monkeypatch):
         self._write_state(tmp_path, "{}")
 

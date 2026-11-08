@@ -21,7 +21,10 @@ def load_state(repo_path: Path) -> dict[str, Any]:
 
     A file that is not valid UTF-8 JSON, or whose top level is not an object, is
     treated as absent (with a warning) so a corrupt state file never crashes a
-    command. Other errors, such as a permission problem, still propagate.
+    command. Its bytes are first copied to ``state.json.corrupt`` next to it,
+    because a caller that loads, updates and saves would otherwise write the
+    empty dict over the only copy of ``last_sync_commit`` and the other recorded
+    fields. Other errors, such as a permission problem, still propagate.
     """
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
     if not state_path.exists():
@@ -29,16 +32,42 @@ def load_state(repo_path: Path) -> dict[str, Any]:
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as err:
-        _log.warning("Could not parse state file at %s: %s", state_path, err)
+        _log.warning(
+            "Could not parse state file at %s: %s%s",
+            state_path,
+            err,
+            _preserve_unreadable_state(state_path),
+        )
         return {}
     if not isinstance(data, dict):
         _log.warning(
-            "Ignoring state file at %s: expected a JSON object, got %s",
+            "Ignoring state file at %s: expected a JSON object, got %s%s",
             state_path,
             type(data).__name__,
+            _preserve_unreadable_state(state_path),
         )
         return {}
     return data
+
+
+#: Suffix of the copy :func:`load_state` keeps of a state file it could not use.
+CORRUPT_STATE_SUFFIX = ".corrupt"
+
+
+def _preserve_unreadable_state(state_path: Path) -> str:
+    """Copy an unusable state file aside and return a note for the warning.
+
+    An existing backup is left alone, so the copy always holds the first
+    unreadable contents rather than whatever a later run wrote back.
+    """
+    backup = state_path.with_name(state_path.name + CORRUPT_STATE_SUFFIX)
+    if backup.exists():
+        return f" (an earlier copy is kept at {backup})"
+    try:
+        backup.write_bytes(state_path.read_bytes())
+    except OSError as err:
+        return f" (could not keep a copy at {backup}: {err})"
+    return f" (a copy was kept at {backup})"
 
 
 #: Slots the last whole-repo generation put in front of this repository's
