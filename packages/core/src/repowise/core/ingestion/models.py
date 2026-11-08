@@ -380,6 +380,7 @@ class CallSite:
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    start_byte: int = 0  # 0-indexed start byte offset of the call node in the source file
     # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
     # ``receiver_name`` because that field routes to the member strategies,
     # and cpp has none -- a scoped call must stay on the free-call path. Java
