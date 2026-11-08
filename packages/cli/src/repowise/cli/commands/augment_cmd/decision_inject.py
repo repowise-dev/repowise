@@ -849,11 +849,16 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
             f"[repowise] {rel} has a decision recorded in it, mined but not reviewed: "
             f"{_clip(decision['title'], 100)}"
         )
+    # The notice supplies its own closing period, so a rationale that already
+    # ends a sentence must not add a second terminal mark.
+    why = why.rstrip(".!? ")
     if why:
         line += f" because {why}"
     if sessions_n >= 2:
         line += f" (seen in {sessions_n} sessions)"
-    line += "."
+    # A clipped rationale already ends in an ellipsis; do not follow it with ".".
+    if not line.endswith("…"):
+        line += "."
 
     if session_id:
         from repowise.cli.hook_ledger import _claim_injection
