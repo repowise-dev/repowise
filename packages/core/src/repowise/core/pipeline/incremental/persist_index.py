@@ -392,6 +392,21 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
     )
 
 
+async def refresh_git_rollups(ctx: IncrementalPersist) -> None:
+    # Repo-wide aggregates over rows this run rewrites, so they go after both
+    # writers. Fix attribution maps each fix's old line ranges onto
+    # wiki_symbols, which still held the last index's spans until the symbol
+    # step; the git percentiles rank git_metadata, which still held the deleted
+    # files' rows until the prune.
+    from repowise.core.persistence.crud import recompute_git_percentiles
+    from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+    with timed(ctx.timings, "persist.git_rollups"):
+        if ctx.pruned_paths:
+            await recompute_git_percentiles(ctx.session, ctx.repo_id)
+        await apply_fix_rollups(ctx.session, ctx.repo_id)
+
+
 async def persist_plugin_records(ctx: IncrementalPersist) -> None:
     if not index_persistence.all():
         return
@@ -474,6 +489,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step(
         "Deferred page staleness",
         defer_pages,
@@ -635,7 +651,8 @@ async def persist_incremental_index(
     The test for membership is "would widening the next run's diff base repair
     this, and would nothing else". Steps that re-derive the whole repo every
     run are deliberately absent (graph nodes, the sweeps, the page tree,
-    related pages, the knowledge graph, the deleted-file prune): they heal
+    related pages, the knowledge graph, the deleted-file prune, the git
+    rollups): they heal
     themselves on the next update, and marking them would let a permanently
     broken one pin the repair window open. So is the commit capture, which
     looks range-scoped and is not: it bounds its walk by the newest

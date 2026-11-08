@@ -105,6 +105,7 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     import repowise.core.persistence as persistence
     import repowise.core.persistence.search as search
     import repowise.core.pipeline.commit_health as commit_health
+    import repowise.core.pipeline.fix_rollups as fix_rollups
     import repowise.core.pipeline.incremental as incremental
     import repowise.core.pipeline.incremental.commits as commits
     import repowise.core.pipeline.incremental.external_systems as external_systems
@@ -146,6 +147,8 @@ def install_shared_steps(rec: StepRecorder, *, prune_ret: tuple[int, list[str]] 
     rec.patch(persist, "_analyzed_commit", ret="abc123")
     rec.patch(crud, "finalize_performance_opportunities")
     rec.patch(crud, "finalize_refactoring_opportunities")
+    rec.patch(crud, "recompute_git_percentiles", ret=0)
+    rec.patch(fix_rollups, "apply_fix_rollups", ret=0)
     rec.patch(commit_health, "refresh_commit_health_after_update")
     # Core reads it from the search module, the CLI from the package.
     fts = rec.fts_class()

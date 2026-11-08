@@ -411,7 +411,7 @@ WITH ranked AS (
 ),
 entropy_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0), file_path) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
@@ -420,7 +420,7 @@ entropy_ranked AS (
 ),
 scatter_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0), file_path) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank

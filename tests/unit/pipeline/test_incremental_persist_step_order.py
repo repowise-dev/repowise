@@ -55,6 +55,7 @@ HAPPY_ORDER = [
     "_analyzed_commit",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
+    "apply_fix_rollups",
     # After the session closes.
     "refresh_commit_health_after_update",
     "fts.ensure_index",
@@ -204,6 +205,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         "prune_absent_synthetic_nodes",
         "_analyzed_commit",
         "finalize_performance_opportunities",
+        "apply_fix_rollups",
         "refresh_commit_health_after_update",
         "fts.ensure_index",
         "vectors.delete_many",
@@ -236,6 +238,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         REFUSAL,
         f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
+        f"Git rollups: {FAILURE}",
         f"Tombstone full-text removal: {FAILURE}",
         f"Tombstone vector removal: {FAILURE}",
     ]

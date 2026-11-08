@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from repowise.core.persistence.crud import recompute_git_percentiles, upsert_git_metadata_bulk
@@ -38,3 +39,33 @@ async def test_sql_recompute_ranks_code_rows_only(async_session) -> None:
             assert r.churn_percentile == 0.0
             assert r.is_hotspot is False
             assert r.prior_defect_pct == 0.0
+
+
+async def test_tied_entropy_ranks_by_path_in_both_paths(async_session) -> None:
+    """A tie ranks by path in SQL and in Python, whatever order the rows arrive in."""
+    from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+    rows = [
+        {"file_path": path, "change_entropy": 0.5, "co_change_mass": 2.0}
+        for path in ("c.py", "a.py", "b.py")
+    ]
+    repo = await insert_repo(async_session)
+    await upsert_git_metadata_bulk(async_session, repo.id, [dict(r) for r in reversed(rows)])
+    await recompute_git_percentiles(async_session, repo.id)
+    stored = (
+        (
+            await async_session.execute(
+                select(GitMetadata).where(GitMetadata.repository_id == repo.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    compute_percentiles(rows)
+
+    expected = {"a.py": 0.0, "b.py": 1 / 3, "c.py": 2 / 3}
+    assert {r["file_path"]: r["change_entropy_pct"] for r in rows} == expected
+    assert {r["file_path"]: r["co_change_scatter_pct"] for r in rows} == expected
+    assert {r.file_path: r.change_entropy_pct for r in stored} == pytest.approx(expected)
+    assert {r.file_path: r.co_change_scatter_pct for r in stored} == pytest.approx(expected)

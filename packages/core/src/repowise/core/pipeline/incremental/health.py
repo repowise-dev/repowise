@@ -317,14 +317,15 @@ async def persist_partial_health(
     await prune_unscored_health_rows(session, repo_id)
     await clear_unanalysed_scores(session, repo_id)
     await backfill_is_test(session, repo_id)
-    # Then the files this run did not walk, whose git-derived markers the fresh
-    # metadata may have moved. Before the snapshot, or the trend would describe
-    # the store as it stood one update ago.
+    # Then every file's git-derived markers, against the metadata the git step
+    # just stored. The files this run walked too: the analysis scored them
+    # before the git step re-ranked the table, so a percentile-gated marker
+    # (prior defects, change entropy) could miss a file this range moved past
+    # its gate. Before the snapshot, or the trend would describe the store as it
+    # stood one update ago.
     if repo_path is not None:
         try:
-            await refresh_unchanged_history(
-                session, repo_id, repo_path, skip_paths=set(changed_paths)
-            )
+            await refresh_unchanged_history(session, repo_id, repo_path, skip_paths=set())
         except Exception as exc:
             # Never fails the run: the next update re-derives the whole thing
             # from the stored git metadata, so nothing is stranded behind.
