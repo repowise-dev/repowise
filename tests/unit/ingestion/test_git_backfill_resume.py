@@ -6,7 +6,8 @@ shapes:
 
 * an in-process exception → the job is marked FAILED with the error;
 * a hard kill mid-run → the job is left RUNNING (orphaned) and is reported by
-  ``find_resumable`` so a re-run can pick it up (and completes cleanly).
+  ``find_resumable`` so a re-run can pick it up (and completes cleanly);
+  the re-run closes the orphan as FAILED so it does not stay RUNNING forever.
 """
 
 from __future__ import annotations
@@ -18,7 +19,11 @@ import pytest
 
 from repowise.core.ingestion.git_indexer import GitIndexTier
 from repowise.core.ingestion.git_indexer.backfill import BACKFILL_PHASE, backfill_full_tier
-from repowise.core.persistence._interfaces.job_store import JobRecord, JobState
+from repowise.core.persistence._interfaces.job_store import (
+    ABANDONED_JOB_ERROR,
+    JobRecord,
+    JobState,
+)
 
 
 class _FakeJobStore:
@@ -105,6 +110,31 @@ async def test_orphaned_running_backfill_is_resumable_then_completes():
     completed = [j for j in store.jobs.values() if j.state is JobState.COMPLETED]
     assert len(completed) == 1
     assert completed[0].cursor == "3"
+
+
+async def test_rerun_marks_orphaned_backfill_failed():
+    store = _FakeJobStore()
+    orphan = await store.create_job(repository_id="repo1", phase=BACKFILL_PHASE)
+    await store.update_state(orphan.id, JobState.RUNNING)
+
+    await backfill_full_tier(_FlakyIndexer(fail_times=0), "repo1", job_store=store)
+
+    assert store.jobs[orphan.id].state is JobState.FAILED
+    assert store.jobs[orphan.id].error == ABANDONED_JOB_ERROR
+    assert await store.find_resumable(repository_id="repo1") == []
+
+
+async def test_rerun_leaves_other_repos_and_phases_alone():
+    store = _FakeJobStore()
+    other_repo = await store.create_job(repository_id="repo2", phase=BACKFILL_PHASE)
+    await store.update_state(other_repo.id, JobState.RUNNING)
+    other_phase = await store.create_job(repository_id="repo1", phase="analysis")
+    await store.update_state(other_phase.id, JobState.RUNNING)
+
+    await backfill_full_tier(_FlakyIndexer(fail_times=0), "repo1", job_store=store)
+
+    assert store.jobs[other_repo.id].state is JobState.RUNNING
+    assert store.jobs[other_phase.id].state is JobState.RUNNING
 
 
 async def test_backfill_runs_without_job_store():

@@ -61,11 +61,21 @@ class ResumeLedger:
 
     async def mark_started(self, phase: ResumePhase) -> None:
         from repowise.core.persistence import get_session
-        from repowise.core.persistence._interfaces.job_store import JobState
+        from repowise.core.persistence._interfaces.job_store import (
+            JobState,
+            reap_abandoned_jobs,
+        )
 
         try:
             async with get_session(self._sf) as session:
                 store = _store(session)
+                # Open rows this ledger did not create belong to a run that died.
+                await reap_abandoned_jobs(
+                    store,
+                    repository_id=self._repo_id,
+                    phases=[str(resume_phase) for resume_phase in ResumePhase],
+                    keep_ids=self._job_ids.values(),
+                )
                 job = await store.create_job(repository_id=self._repo_id, phase=str(phase))
                 await store.update_state(job.id, JobState.RUNNING)
                 self._job_ids[str(phase)] = job.id

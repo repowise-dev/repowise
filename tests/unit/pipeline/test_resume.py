@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence import get_session
+from repowise.core.persistence._interfaces.job_store import ABANDONED_JOB_ERROR, JobState
 from repowise.core.persistence.crud import upsert_git_metadata_bulk, upsert_repository
 from repowise.core.persistence.database import init_db
+from repowise.core.persistence.stores.sql_job_store import SqlJobStore
 from repowise.core.pipeline.resume import (
     ResumeController,
     ResumeLedger,
@@ -68,6 +70,56 @@ async def test_ledger_completion_survives_a_fresh_ledger(sf):
 
     fresh = ResumeLedger(sf, repo_id)
     assert ResumePhase.INDEX in await fresh.completed_phases()
+
+
+async def _jobs_by_phase(sf, repo_id: str) -> dict[str, list]:
+    async with get_session(sf) as session:
+        jobs = await SqlJobStore(session).list_jobs(repository_id=repo_id)
+    grouped: dict[str, list] = {}
+    for job in jobs:
+        grouped.setdefault(job.phase, []).append(job)
+    return grouped
+
+
+async def test_ledger_marks_a_dead_runs_open_job_failed(sf):
+    """A run killed mid-phase leaves its row RUNNING; the next run closes it."""
+    repo_id = await _make_repo(sf)
+    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.ANALYSIS)
+
+    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.INDEX)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    [abandoned] = jobs["analysis"]
+    assert abandoned.state == JobState.FAILED
+    assert abandoned.error == ABANDONED_JOB_ERROR
+    [current] = jobs["index"]
+    assert current.state == JobState.RUNNING
+
+
+async def test_ledger_does_not_reap_its_own_open_jobs(sf):
+    repo_id = await _make_repo(sf)
+    ledger = ResumeLedger(sf, repo_id)
+    await ledger.mark_started(ResumePhase.INDEX)
+
+    await ledger.mark_started(ResumePhase.ANALYSIS)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    assert [job.state for job in jobs["index"]] == [JobState.RUNNING]
+    assert [job.state for job in jobs["analysis"]] == [JobState.RUNNING]
+
+
+async def test_ledger_ignores_open_jobs_of_other_phases(sf):
+    """The git backfill runs under its own lock; init must not close its row."""
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        store = SqlJobStore(session)
+        backfill = await store.create_job(repository_id=repo_id, phase="git.backfill")
+        await store.update_state(backfill.id, JobState.RUNNING)
+
+    await ResumeLedger(sf, repo_id).mark_started(ResumePhase.INDEX)
+
+    jobs = await _jobs_by_phase(sf, repo_id)
+    assert [job.state for job in jobs["git.backfill"]] == [JobState.RUNNING]
 
 
 # ---------------------------------------------------------------------------
