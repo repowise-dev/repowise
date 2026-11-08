@@ -369,6 +369,19 @@ async def _commit_shas(repo: Path) -> set[str]:
         await engine.dispose()
 
 
+async def _git_file_rows(repo: Path) -> tuple[set[str], set[tuple[str, str]]]:
+    from repowise.core.persistence.models import GitCommitFile, GitMetadata
+
+    engine = create_engine(_db_url(repo))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            metadata = set((await session.execute(select(GitMetadata.file_path))).scalars())
+            changes = await session.execute(select(GitCommitFile.sha, GitCommitFile.file_path))
+            return metadata, {(sha, path) for sha, path in changes}
+    finally:
+        await engine.dispose()
+
+
 def test_git_refresh_restores_current_history_without_rendering_docs(
     indexed_repo: Path, monkeypatch
 ):
@@ -377,6 +390,7 @@ def test_git_refresh_restores_current_history_without_rendering_docs(
     vectors = _vector_files(repo)
     state = load_state(repo)
     assert not asyncio.run(_commit_shas(repo))
+    assert asyncio.run(_git_file_rows(repo)) == (set(), set())
 
     def _unwanted(*args, **kwargs):
         raise AssertionError("Git-only refresh invoked rendering or embedding")
@@ -386,6 +400,10 @@ def test_git_refresh_restores_current_history_without_rendering_docs(
     result = _defer(repo, "--refresh-git")
     assert result.exit_code == 0, result.output + result.stderr + repr(result.exception)
     assert asyncio.run(_commit_shas(repo)) == {_git(repo, "rev-parse", "HEAD")}
+    assert asyncio.run(_git_file_rows(repo)) == (
+        {"foo.py"},
+        {(_git(repo, "rev-parse", "HEAD"), "foo.py")},
+    )
     after = asyncio.run(_pages(repo))
     assert {pid: row[:2] for pid, row in after.items()} == {
         pid: row[:2] for pid, row in pages.items()
