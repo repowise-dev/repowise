@@ -116,5 +116,5 @@ def _run_repo_checks(
 
     render_checks(ctx, checks, all_ok)
     if repair:
-        run_repair(ctx)
+        run_repair(ctx, repo_ok=all_ok)
     return all_ok, checks
