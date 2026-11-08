@@ -28,14 +28,13 @@ class OpenRouterEmbedder:
     Args:
         api_key:    OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
         model:      Embedding model name. Default: "google/gemini-embedding-001".
-        dimensions: Override the declared output width. Useful when an
-                    OpenRouter-compatible endpoint returns a different number of
-                    dimensions than the built-in ``_DIMS`` table records for that
-                    model. Falls back to REPOWISE_EMBEDDING_DIMS, then ``_DIMS``.
-                    Note: this overrides only the *declared* width that the vector
-                    store trusts — it does not add a ``dimensions`` parameter to the
-                    API request. Use it to correct a wrong ``_DIMS`` entry when the
-                    model's real output differs.
+        dimensions: Output width. Falls back to REPOWISE_EMBEDDING_DIMS, then
+                    ``_DIMS``. The resolved width is both the width the vector
+                    store trusts and the ``dimensions`` parameter sent with every
+                    request, so the declaration and the server's output cannot
+                    disagree. OpenRouter's own default for
+                    ``google/gemini-embedding-001`` is 3072; without the parameter
+                    the 768 declared below would fail on every batch.
     """
 
     _DIMS: ClassVar[dict[str, int]] = {
@@ -113,7 +112,11 @@ class OpenRouterEmbedder:
                     timeout=timeout,
                 )
             client = client_for_kind(self._client, kind)
-            response = client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
+            # Request the declared width rather than relying on the model's default:
+            # OpenRouter serves gemini-embedding-001 at 3072 unless told otherwise.
+            response = client.embeddings.create(  # type: ignore[union-attr]
+                model=model, input=texts, dimensions=expected_dimensions
+            )
             raw_vectors = [list(item.embedding) for item in response.data]
             widths = {len(v) for v in raw_vectors}
             if widths and widths != {expected_dimensions}:
