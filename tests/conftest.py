@@ -11,6 +11,18 @@ from pathlib import Path
 import pytest
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Pre-warm language grammars that download or build on first use to prevent
+    race conditions during parallel pytest-xdist worker collection.
+    """
+    try:
+        import tree_sitter_language_pack
+
+        tree_sitter_language_pack.get_language("cobol")
+    except Exception:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def _ceiling_workspace_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Keep the workspace walk inside each test's tmp_path.
@@ -222,6 +234,7 @@ def _isolate_structlog_config():
     finally:
         structlog.configure(**saved)
 
+
 @pytest.fixture(autouse=True)
 def _isolate_silenced_logger_levels():
     """Restore stdlib logger levels mutated by silence_logs_for_machine_output.
@@ -256,6 +269,7 @@ def _isolate_silenced_logger_levels():
     finally:
         for logger, level in zip(loggers, previous_levels, strict=True):
             logger.setLevel(level)
+
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:

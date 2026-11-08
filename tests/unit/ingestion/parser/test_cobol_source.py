@@ -16,11 +16,14 @@ from repowise.core.ingestion.parser import ASTParser
 
 from ._helpers import _make_file_info
 
-grammar_pack = pytest.importorskip("tree_sitter_language_pack")
-try:
-    grammar_pack.get_language("cobol")
-except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
-    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
+
+@pytest.fixture(autouse=True)
+def _require_cobol() -> None:
+    grammar_pack = pytest.importorskip("tree_sitter_language_pack")
+    try:
+        grammar_pack.get_language("cobol")
+    except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+        pytest.skip(f"COBOL grammar unavailable: {exc}")
 
 
 def _program(data: str = "", procedure: str = "", header: str = "") -> bytes:
@@ -104,7 +107,10 @@ def test_constructs_the_grammar_rejects_parse_with_every_paragraph(case: bytes) 
 def test_a_null_terminated_prefix_is_blanked_and_a_name_ending_in_z_is_kept() -> None:
     line = "           MOVE Z'A' TO BUZ. MOVE z\"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
 
-    assert rewrite_gaps(line) == "           MOVE  'A' TO BUZ. MOVE  \"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
+    assert (
+        rewrite_gaps(line)
+        == "           MOVE  'A' TO BUZ. MOVE  \"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
+    )
 
 
 def test_doubled_quotes_in_an_apostrophe_literal_are_left_alone() -> None:
@@ -185,9 +191,7 @@ def _working_storage(*entries: bytes) -> bytes:
         b"       IDENTIFICATION DIVISION.\n"
         b"       PROGRAM-ID. DEMO.\n"
         b"       DATA DIVISION.\n"
-        b"       WORKING-STORAGE SECTION.\n"
-        + b"".join(entries)
-        + b"       PROCEDURE DIVISION.\n"
+        b"       WORKING-STORAGE SECTION.\n" + b"".join(entries) + b"       PROCEDURE DIVISION.\n"
         b"           STOP RUN.\n"
     )
 
