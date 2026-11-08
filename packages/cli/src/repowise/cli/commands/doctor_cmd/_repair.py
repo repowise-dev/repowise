@@ -125,6 +125,9 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
         # mock: writing 8-wide mock vectors into a real table makes LanceDB
         # drop it. build_vector_store refuses that combination and returns None.
         embedder_name = resolve_embedder_for_repo(repo_path)
+        reindex_instead = _announce_embedding(drift, embedder_name)
+        if reindex_instead and not drift.orphaned_vector:
+            return 0
         embedder = build_embedder(embedder_name, repo_path)
         vs = build_vector_store(_DoctorPath(repo_path), embedder)
         if vs is None:
@@ -132,7 +135,6 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
                 "no embedder available that can write this store; "
                 "set an embedder key and run `repowise reindex`"
             )
-        reindex_instead = _announce_embedding(drift, embedder_name)
         if drift.missing_from_vector and not reindex_instead:
             async for _page_id in _embed_missing(sf, vs, drift.missing_from_vector):
                 repaired += 1
@@ -152,7 +154,9 @@ async def _repair_stores(ctx: CheckContext) -> int:
     if drift.missing_from_fts or drift.orphaned_fts:
         repaired += await _repair_fts(engine, sf, drift)
     lance_dir = ctx.repowise_dir / "lancedb"
-    if lance_dir.exists() and (drift.missing_from_vector or drift.orphaned_vector):
+    if (lance_dir.exists() or drift.vector_store_empty) and (
+        drift.missing_from_vector or drift.orphaned_vector
+    ):
         repaired += await _repair_vectors(sf, ctx.repo_path, drift)
     await engine.dispose()
     return repaired
