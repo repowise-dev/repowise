@@ -253,3 +253,27 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         "External systems refresh",
         "Tombstone full-text removal",
     ]
+
+
+def test_deleted_paths_are_keyed_from_the_git_root(tmp_path: Path) -> None:
+    """git_metadata keys on the git root, also when the index covers a subdirectory."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.incremental.persist_index import IncrementalPersist, _deleted_paths
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "kept.py").write_text("x = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    ctx = IncrementalPersist(
+        repo_path=tmp_path / "pkg",
+        graph_builder=None,
+        git_meta_map={},
+        file_diffs=[
+            SimpleNamespace(path="gone.py", status="deleted"),
+            SimpleNamespace(path="new.py", status="renamed", old_path="kept.py"),
+            SimpleNamespace(path="moved.py", status="renamed", old_path="old.py"),
+        ],
+    )
+
+    assert _deleted_paths(ctx) == {"pkg/gone.py", "pkg/old.py"}

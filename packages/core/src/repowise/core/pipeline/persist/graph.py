@@ -562,7 +562,9 @@ async def persist_incremental_edges(
     # Only after the reconcile actually ran to completion. Raising here (or in any
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.
-    if parser_changed:
+    # A short graph skipped the files outside the change set, so they still
+    # hold the old parser's edges.
+    if parser_changed and _graph_is_complete(graph_builder, parsed_files):
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
 
 

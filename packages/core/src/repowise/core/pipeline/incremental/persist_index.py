@@ -208,14 +208,23 @@ async def persist_git(ctx: IncrementalPersist) -> None:
 
 
 def _deleted_paths(ctx: IncrementalPersist) -> set[str]:
-    """Paths this range deleted or renamed away that are gone from disk and git."""
-    from repowise.core.pipeline.persist import path_liveness
+    """Paths this range deleted or renamed away that are gone from disk and git.
 
-    is_live = path_liveness(ctx.repo_path)
-    if is_live is None:
+    Keyed like ``git_metadata``: relative to the git root, which is not the
+    indexed directory when the index covers a subdirectory.
+    """
+    from repowise.core.pipeline.persist import _FileLiveness
+
+    if not ctx.repo_path:
+        return set()
+    liveness = _FileLiveness(ctx.repo_path, git_root_keyed=True)
+    top = liveness._git_toplevel()
+    try:
+        prefix = Path(ctx.repo_path).resolve().relative_to(top).as_posix() if top else ""
+    except ValueError:
         return set()
     candidates = {
-        path
+        f"{prefix}/{path}" if prefix else path
         for fd in ctx.file_diffs or []
         for path in (
             fd.path if fd.status == "deleted" else None,
@@ -223,7 +232,7 @@ def _deleted_paths(ctx: IncrementalPersist) -> set[str]:
         )
         if path
     }
-    return {path for path in candidates if not is_live(path)}
+    return {path for path in candidates if not liveness.is_live(path)}
 
 
 async def capture_commits(ctx: IncrementalPersist) -> None:
@@ -424,13 +433,18 @@ async def refresh_git_rollups(ctx: IncrementalPersist) -> None:
 
     with timed(ctx.timings, "persist.git_rollups"):
         if ctx.pruned_paths:
+            await recompute_git_percentiles(ctx.session, ctx.repo_id)
+        await apply_fix_rollups(ctx.session, ctx.repo_id)
+        if ctx.pruned_paths:
             from .health import refresh_unchanged_history
 
-            await recompute_git_percentiles(ctx.session, ctx.repo_id)
-            await refresh_unchanged_history(
-                ctx.session, ctx.repo_id, ctx.repo_path, skip_paths=set()
-            )
-        await apply_fix_rollups(ctx.session, ctx.repo_id)
+            try:
+                await refresh_unchanged_history(
+                    ctx.session, ctx.repo_id, ctx.repo_path, skip_paths=set()
+                )
+            except Exception as exc:
+                # Best-effort, as in the health step: the next update re-derives it.
+                ctx.log(f"[yellow]History refresh after the prune skipped: {exc}[/yellow]")
 
 
 async def persist_plugin_records(ctx: IncrementalPersist) -> None:

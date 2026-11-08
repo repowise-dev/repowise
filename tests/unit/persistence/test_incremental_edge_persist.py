@@ -513,3 +513,13 @@ async def test_unchanged_files_keep_their_edges_when_the_graph_is_short(async_se
     await async_session.commit()
 
     assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)
+
+
+async def test_a_short_graph_leaves_the_parser_stamp_for_the_next_update(async_session, tmp_path):
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, "older-parser-build")
+    gb.traversed_file_paths = {pf.file_info.path for pf in parsed} | {"broken.py"}
+
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+    await async_session.commit()
+
+    assert await _stored_fingerprint(async_session, repo.id) == "older-parser-build"
