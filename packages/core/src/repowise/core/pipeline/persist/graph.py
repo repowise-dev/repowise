@@ -595,7 +595,11 @@ async def _reconcile_unchanged_files(
     if not _graph_is_complete(graph_builder, parsed_files):
         return []
     others = {pf.file_info.path for pf in parsed_files} - changed
-    if not widen:
+    # Narrowed only against a snapshot of the stored graph. Without one the
+    # rebuilt graph alone cannot show a call that stopped resolving, so every
+    # file is reconciled; the snapshot this run then saves makes the next one
+    # cheap again.
+    if not widen and getattr(graph_builder, "previous_seed_edges", None) is not None:
         others &= await _drifted_files(session, repo_id, graph_builder, changed)
     if not others:
         return []
@@ -646,16 +650,17 @@ async def _drifted_files(
 ) -> set[str]:
     """Files whose stored edges may no longer match the rebuilt graph.
 
-    The owners of every edge into a changed file, in the rebuilt graph and in
-    the stored rows (indexed lookups on the changed files' node ids, the old
-    ids included). When the update holds the last persisted graph
-    (``previous_seed_edges``), also the owners of every edge that differs from
-    it, which catches a call that stopped resolving without gaining a target
-    in a changed file. The store is read only for the changed files and the
+    The owners of every stored row into a changed file (indexed lookups on the
+    changed files' node ids, the old ids included), and of every edge that
+    differs from the last persisted graph (``previous_seed_edges``), which also
+    catches a call that stopped resolving without gaining a target in a
+    changed file. The store is read only for the changed files and the
     rest is a dictionary diff, so no step reads the whole edge table.
     """
     from repowise.core.analysis.execution_graph import file_of_symbol
     from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
+    from .co_change_edges import _CO_CHANGES
 
     graph = graph_builder.graph()
     owner = _edge_owners(graph.nodes(data=True))
@@ -666,12 +671,7 @@ async def _drifted_files(
         if hint in TARGET_OWNED_HINTS:
             drifted.add(owners.get(target) or file_of_symbol(target))
 
-    previous = getattr(graph_builder, "previous_seed_edges", None)
-    if previous is None:
-        # The snapshot diff below covers these when there is one.
-        for u, v, data in graph.edges(data=True):
-            if owner.get(v) in changed:
-                mark(u, v, data.get("hint_source"), owner)
+    previous = graph_builder.previous_seed_edges
     targets = {node for node, path in owner.items() if path in changed} | changed
     for source, target, hint in await _stored_edges_into(session, repo_id, targets, changed):
         mark(source, target, hint, owner)
@@ -682,14 +682,17 @@ async def _drifted_files(
             (u, v, attrs.get("edge_type", "imports")): attrs for u, v, attrs in previous["edges"]
         }
         for u, v, data in graph.edges(data=True):
+            if data.get("edge_type") == _CO_CHANGES:
+                continue  # left to the co-change sync
             before = prev_edges.pop((u, v, data.get("edge_type", "imports")), None)
             # Whole-dict equality first: it is the common case and runs in C.
             if before is None or (
                 before != data and _edge_signature(before) != _edge_signature(data)
             ):
                 mark(u, v, data.get("hint_source"), owner)
-        for (u, v, _edge_type), attrs in prev_edges.items():
-            mark(u, v, attrs.get("hint_source"), prev_owner)
+        for (u, v, edge_type), attrs in prev_edges.items():
+            if edge_type != _CO_CHANGES:
+                mark(u, v, attrs.get("hint_source"), prev_owner)
     drifted.discard(None)
     return drifted
 

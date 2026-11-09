@@ -291,8 +291,13 @@ async def test_an_edge_that_differs_from_the_last_persisted_graph_is_reconciled(
 
 
 async def test_a_file_the_change_does_not_reach_is_not_reconciled(async_session, tmp_path):
-    """Without a snapshot or an edge into the change set, a file keeps its rows untouched."""
+    """With a snapshot that matches it, a file the change does not reach is not read or written."""
     repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
+    graph = gb.graph()
+    gb.previous_seed_edges = {
+        "nodes": [(n, dict(d)) for n, d in graph.nodes(data=True)],
+        "edges": [(u, v, dict(d)) for u, v, d in graph.edges(data=True)],
+    }
 
     await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
     await async_session.commit()
@@ -546,3 +551,13 @@ async def test_a_short_graph_leaves_the_parser_stamp_for_the_next_update(async_s
     await async_session.commit()
 
     assert await _stored_fingerprint(async_session, repo.id) == "older-parser-build"
+
+
+async def test_without_a_snapshot_every_file_is_reconciled(async_session, tmp_path):
+    """The rebuilt graph alone cannot show a call that stopped resolving."""
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
+
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+    await async_session.commit()
+
+    assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)

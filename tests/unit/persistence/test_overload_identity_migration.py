@@ -151,8 +151,8 @@ async def test_first_update_rekeys_an_untouched_file_once(async_session, tmp_pat
     )
     assert stamp.scalar_one() == parser_fingerprint()
 
-    # Stamped: the next update reconciles only what its change reaches, so a
-    # row an untouched file holds is left exactly as it is.
+    # Stamped. With no stored-graph snapshot to narrow against, the next update
+    # reconciles every file, so an untouched file's stale symbol node goes too.
     async_session.add(
         GraphNode(repository_id=repo.id, node_id="app/Validate.java::Validate::stray",
                   node_type="symbol", file_path="app/Validate.java")
@@ -160,4 +160,4 @@ async def test_first_update_rekeys_an_untouched_file_once(async_session, tmp_pat
     await async_session.commit()
     await _update(async_session, repo.id, gb, parsed, ["app/Caller.java"])
     nodes = await _ids(async_session, repo.id, GraphNode.node_id, GraphNode)
-    assert "app/Validate.java::Validate::stray" in nodes
+    assert "app/Validate.java::Validate::stray" not in nodes

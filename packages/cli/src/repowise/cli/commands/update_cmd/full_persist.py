@@ -33,6 +33,7 @@ from repowise.core.pipeline.incremental.persist_index import (
     reconcile_generation_scope,
     reconcile_scope,
     refresh_git_rollups,
+    save_graph_snapshot,
     sweep_retired,
 )
 from repowise.core.pipeline.index_persistence import publish_index_persistence
@@ -497,6 +498,7 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
             await refresh_planner_stats(ctx.engine)
     finally:
         await ctx.engine.dispose()
+    await save_graph_snapshot(ctx)
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
     return ctx.total_pages
 

@@ -732,6 +732,28 @@ async def persist_incremental_index(
     await _write(ctx)
 
 
+async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
+    """Save the graph the store now holds, for the next update to diff and seed from.
+
+    After the transaction commits and its engine is disposed. A failed save
+    only costs the next update a full reconcile. Skipped when the graph was
+    short: the files outside the change set kept their rows, so the graph no
+    longer describes the store, and a snapshot of it would hide that.
+    """
+    from repowise.core.pipeline.persist.graph import _graph_is_complete
+
+    from .feature import incremental_graph_enabled
+
+    if not incremental_graph_enabled() or ctx.graph_builder is None:
+        return
+    if not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or []):
+        return
+    from .graph_seed import save_seed_edge_cache
+
+    with timed(ctx.timings, "persist.graph_seed_cache"):
+        await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
+
+
 async def _write(ctx: IncrementalPersist) -> None:
     """Open the store, run every step in one transaction, then the cleanup tail."""
     from repowise.core.persistence import (
@@ -806,15 +828,7 @@ async def _write(ctx: IncrementalPersist) -> None:
         if timings is not None:
             timings.stop("persist")
 
-    from .feature import incremental_graph_enabled
-
-    if persisted and incremental_graph_enabled():
-        # The DB transaction is committed and its engine is disposed before we
-        # refresh this optional, sealed snapshot. If the write fails, the next
-        # update safely reloads the authoritative rows from SQL.
-        from .graph_seed import save_seed_edge_cache
-
-        with timed(timings, "persist.graph_seed_cache"):
-            await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
+    if persisted:
+        await save_graph_snapshot(ctx)
 
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
