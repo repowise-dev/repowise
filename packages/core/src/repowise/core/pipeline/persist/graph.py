@@ -558,12 +558,7 @@ async def persist_incremental_edges(
         await _prune_vanished_symbol_nodes(
             session, repo_id, graph_builder, [*reconcile_paths, *other_paths]
         )
-    # Only when the rebuild re-added every pair; a failed or skipped walk leaves
-    # the graph without them, and syncing would wipe the stored ones.
-    if getattr(graph_builder, "co_change_edges_complete", False):
-        from .co_change_edges import sync_co_change_edges
-
-        await sync_co_change_edges(session, repo_id, graph_builder)
+    await _sync_complete_co_changes(session, repo_id, graph_builder)
     # Only after the reconcile actually ran to completion. Raising here (or in any
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.
@@ -571,6 +566,15 @@ async def persist_incremental_edges(
     # hold the old parser's edges.
     if parser_changed and _graph_is_complete(graph_builder, parsed_files):
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+async def _sync_complete_co_changes(session: Any, repo_id: str, graph_builder: Any) -> None:
+    # Only when the rebuild re-added every pair; a failed or skipped walk leaves
+    # the graph without them, and syncing would wipe the stored ones.
+    if getattr(graph_builder, "co_change_edges_complete", False):
+        from .co_change_edges import sync_co_change_edges
+
+        await sync_co_change_edges(session, repo_id, graph_builder)
 
 
 async def _reconcile_unchanged_files(
@@ -660,8 +664,6 @@ async def _drifted_files(
     from repowise.core.analysis.execution_graph import file_of_symbol
     from repowise.core.ingestion.models import TARGET_OWNED_HINTS
 
-    from .co_change_edges import _CO_CHANGES
-
     graph = graph_builder.graph()
     owner = _edge_owners(graph.nodes(data=True))
     drifted: set[str] = set()
@@ -676,25 +678,40 @@ async def _drifted_files(
     for source, target, hint in await _stored_edges_into(session, repo_id, targets, changed):
         mark(source, target, hint, owner)
 
-    if previous is not None:
-        prev_owner = _edge_owners(previous["nodes"])
-        prev_edges = {
-            (u, v, attrs.get("edge_type", "imports")): attrs for u, v, attrs in previous["edges"]
-        }
-        for u, v, data in graph.edges(data=True):
-            if data.get("edge_type") == _CO_CHANGES:
-                continue  # left to the co-change sync
-            before = prev_edges.pop((u, v, data.get("edge_type", "imports")), None)
-            # Whole-dict equality first: it is the common case and runs in C.
-            if before is None or (
-                before != data and _edge_signature(before) != _edge_signature(data)
-            ):
-                mark(u, v, data.get("hint_source"), owner)
-        for (u, v, edge_type), attrs in prev_edges.items():
-            if edge_type != _CO_CHANGES:
-                mark(u, v, attrs.get("hint_source"), prev_owner)
+    added, removed = _snapshot_diff(graph, previous)
+    for u, v, hint in added:
+        mark(u, v, hint, owner)
+    prev_owner = _edge_owners(previous["nodes"])
+    for u, v, hint in removed:
+        mark(u, v, hint, prev_owner)
     drifted.discard(None)
     return drifted
+
+
+def _snapshot_diff(
+    graph: Any, previous: dict[str, list]
+) -> tuple[list[tuple[str, str, Any]], list[tuple[str, str, Any]]]:
+    """``(added_or_changed, removed)`` edges of *graph* against *previous*, as
+    ``(source, target, hint_source)``. Co-change pairs are left to their sync."""
+    from .co_change_edges import _CO_CHANGES
+
+    prev_edges = {
+        (u, v, attrs.get("edge_type", "imports")): attrs for u, v, attrs in previous["edges"]
+    }
+    added: list[tuple[str, str, Any]] = []
+    for u, v, data in graph.edges(data=True):
+        if data.get("edge_type") == _CO_CHANGES:
+            continue
+        before = prev_edges.pop((u, v, data.get("edge_type", "imports")), None)
+        # Whole-dict equality first: it is the common case and runs in C.
+        if before is None or (before != data and _edge_signature(before) != _edge_signature(data)):
+            added.append((u, v, data.get("hint_source")))
+    removed = [
+        (u, v, attrs.get("hint_source"))
+        for (u, v, edge_type), attrs in prev_edges.items()
+        if edge_type != _CO_CHANGES
+    ]
+    return added, removed
 
 
 async def _stored_edges_into(
