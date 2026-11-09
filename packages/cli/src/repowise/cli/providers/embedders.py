@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.providers.keys import (
@@ -19,7 +20,7 @@ def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any
     return embedder_kwargs(embedder_name, repo_path)
 
 
-def resolve_embedding_model(embedder_name: str) -> str | None:
+def resolve_embedding_model(embedder_name: str, repo_path: Path | str | None = None) -> str | None:
     """Return the configured embedding model for *embedder_name*, if any.
 
     The same value :func:`_embedder_kwargs` builds with, so what ``init``
@@ -28,7 +29,7 @@ def resolve_embedding_model(embedder_name: str) -> str | None:
     """
     from repowise.core.providers.embedding.resolve import embedding_model_for
 
-    return embedding_model_for(embedder_name)
+    return embedding_model_for(embedder_name, repo_path)
 
 
 def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = None) -> str:

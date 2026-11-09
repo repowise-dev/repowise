@@ -105,3 +105,44 @@ def test_http_server_builds_from_the_shared_resolver(monkeypatch):
     monkeypatch.setenv("REPOWISE_EMBEDDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     assert isinstance(_build_embedder(), OpenAIEmbedder)
+
+
+def test_kwargs_reads_pinned_embedding_model_from_repo_config(tmp_path):
+    repo = _repo(
+        tmp_path,
+        config="embedder: openrouter\nembedding_model: mongodb/voyage-code-4\n",
+        env="OPENROUTER_API_KEY=or-key\n",
+    )
+    assert resolve.embedder_kwargs("openrouter", repo) == {
+        "model": "mongodb/voyage-code-4",
+        "api_key": "or-key",
+    }
+
+
+def test_env_var_overrides_pinned_embedding_model(tmp_path, monkeypatch):
+    repo = _repo(
+        tmp_path,
+        config="embedder: openrouter\nembedding_model: mongodb/voyage-code-4\n",
+    )
+    monkeypatch.setenv("REPOWISE_EMBEDDING_MODEL", "custom-override-model")
+    assert resolve.embedding_model_for("openrouter", repo) == "custom-override-model"
+
+
+def test_pinned_embedding_model_rejected_when_embedder_mismatches(tmp_path):
+    repo = _repo(
+        tmp_path,
+        config="embedder: openrouter\nembedding_model: mongodb/voyage-code-4\n",
+    )
+    # The pin belongs to openrouter, so resolving gemini ignores the Voyage pin
+    assert resolve.embedding_model_for("gemini", repo) is None
+
+
+def test_resolve_embedding_model_honours_repo_pin(tmp_path):
+    from repowise.cli.providers.embedders import resolve_embedding_model
+
+    repo = _repo(
+        tmp_path,
+        config="embedder: openrouter\nembedding_model: mongodb/voyage-code-4\n",
+    )
+    assert resolve_embedding_model("openrouter", repo) == "mongodb/voyage-code-4"
+    assert resolve_embedding_model("gemini", repo) is None

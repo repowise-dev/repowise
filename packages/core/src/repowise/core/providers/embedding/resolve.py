@@ -242,13 +242,36 @@ def _positive_int(var: str) -> int | None:
     return None
 
 
-def embedding_model_for(name: str) -> str | None:
-    """The configured embedding model for *name*, or ``None`` for its default."""
+def embedding_model_for(name: str, repo_path: Path | str | None = None) -> str | None:
+    """The configured embedding model for *name*, or ``None`` for its default.
+
+    Checks process env first, then *repo_path*'s ``.repowise/.env``, and finally
+    the ``embedding_model`` pin in *repo_path*'s ``config.yaml`` if configured
+    for this embedder backend.
+    """
+    getenv = repo_getenv(repo_path)
     if name == "ollama":
-        return os.environ.get("OLLAMA_EMBEDDING_MODEL") or os.environ.get(
-            "REPOWISE_EMBEDDING_MODEL"
-        )
-    return os.environ.get("REPOWISE_EMBEDDING_MODEL")
+        model = getenv("OLLAMA_EMBEDDING_MODEL") or getenv("REPOWISE_EMBEDDING_MODEL")
+    else:
+        model = getenv("REPOWISE_EMBEDDING_MODEL")
+    if model:
+        return model
+
+    if repo_path is not None:
+        cfg = read_repo_config(repo_path)
+        pinned_model = cfg.get("embedding_model")
+        if pinned_model and str(pinned_model).strip():
+            pinned_backend = str(cfg.get("embedder") or "").strip().lower()
+            if pinned_backend and pinned_backend != name.strip().lower():
+                logger.warning(
+                    "Repo pins embedding_model %r for embedder %r, but %r was resolved; ignoring pin.",
+                    pinned_model,
+                    pinned_backend,
+                    name,
+                )
+                return None
+            return str(pinned_model).strip()
+    return None
 
 
 def _ollama_kwargs() -> dict[str, Any]:
@@ -282,7 +305,7 @@ def embedder_kwargs(name: str, repo_path: Path | str | None = None) -> dict[str,
     Only what is configured is passed; everything else falls through to the
     embedder's own defaults, which are declared once in its constructor.
     """
-    model = embedding_model_for(name)
+    model = embedding_model_for(name, repo_path)
     kwargs: dict[str, Any] = {"model": model} if model else {}
     extra = _EXTRA_KWARGS.get(name)
     if extra is not None:
