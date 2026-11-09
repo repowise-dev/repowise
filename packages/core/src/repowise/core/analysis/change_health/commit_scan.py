@@ -211,7 +211,7 @@ def _fit(
     """
     try:
         pair = service.source.resolve(sha)
-    except Exception:
+    except (ValueError, OSError, subprocess.SubprocessError):
         return None, None
     cost = service.eligible_count(DeltaRequest(repo_path, sha), pair) * SECONDS_PER_FILE
     if cost <= clock.left():
