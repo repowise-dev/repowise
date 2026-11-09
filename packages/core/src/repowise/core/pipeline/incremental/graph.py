@@ -31,6 +31,25 @@ def _record_structural_episodes(repo_path: Any, traverser: Any) -> None:
         pass
 
 
+def _report_unavailable_grammars(to_parse: list, log: LogFn) -> None:
+    """Name each runtime grammar the misses need that will not load, once, before the pool.
+
+    Loading here also fills the grammar cache before the parse workers start.
+    Best-effort: a reporting failure must not stop an update.
+    """
+    from collections import Counter
+
+    try:
+        from repowise.core.ingestion.parser import unavailable_runtime_grammars
+        from repowise.core.ingestion.parser.grammars import runtime_grammar_warning
+
+        counts = Counter(item[0].language for _idx, item, _hash in to_parse)
+        for tag, reason in unavailable_runtime_grammars(counts):
+            log(f"[yellow]{runtime_grammar_warning(tag, reason, counts[tag])}[/yellow]")
+    except Exception:
+        logger.debug("update_grammar_preflight_failed", exc_info=True)
+
+
 def _parse_misses(
     cached_hits: dict[int, Any],
     to_parse: list,
@@ -51,6 +70,7 @@ def _parse_misses(
     )
 
     merged: dict[int, Any] = dict(cached_hits)
+    _report_unavailable_grammars(to_parse, log)
     with timed(timings, "rebuild.parse"):
         results = parse_guarded(to_parse)
     for (idx, _item, content_hash), parsed in zip(to_parse, results, strict=True):

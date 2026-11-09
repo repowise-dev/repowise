@@ -47,11 +47,11 @@ def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> N
     if not lang_counts:
         return
     try:
-        from repowise.core.ingestion.languages.registry import REGISTRY
         from repowise.core.ingestion.parser import (
             missing_grammar_languages,
             unavailable_runtime_grammars,
         )
+        from repowise.core.ingestion.parser.grammars import runtime_grammar_warning
 
         missing = missing_grammar_languages(lang_counts)
         unavailable = unavailable_runtime_grammars(lang_counts)
@@ -67,14 +67,7 @@ def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> N
             "reinstall repowise to pick up the missing grammars.",
         )
     for lang, reason in unavailable:
-        spec = REGISTRY.get(lang)
-        emit_warning(
-            progress,
-            f"{spec.display_name if spec else lang} grammar unavailable: "
-            f"{lang_counts[lang]:,} files indexed without symbols ({reason}). "
-            "It downloads on first use; on a machine with no network, set "
-            "REPOWISE_GRAMMAR_DIR to a pre-staged grammar cache.",
-        )
+        emit_warning(progress, runtime_grammar_warning(lang, reason, lang_counts[lang]))
 
 
 def _report_query_compilation_failures(stats: Any, progress: ProgressCallback | None) -> None:

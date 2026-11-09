@@ -57,6 +57,7 @@ def test_rebuild_index_records_graph_decision_in_run_state(monkeypatch, tmp_path
         file_diffs=[],
         git_decay_map={},
         full_git_summaries=[],
+        degraded=[],
         timings=None,
         emitter=None,
     )

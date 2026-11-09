@@ -1483,6 +1483,7 @@ def _rebuild_index(run: UpdateRun) -> None:
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
     )
+    run.degraded.extend(_unavailable_grammar_entries(run.parsed_files))
     decision = getattr(run.graph_builder, "incremental_graph_decision", None)
     if decision is not None:
         # Persist the selected path and its reason alongside this run's phase
@@ -1490,6 +1491,25 @@ def _rebuild_index(run: UpdateRun) -> None:
         from repowise.core.pipeline.incremental.feature import stamp_graph_update
 
         stamp_graph_update(run.state, decision)
+
+
+def _unavailable_grammar_entries(parsed_files: list) -> list[str]:
+    """One degraded entry per runtime grammar that failed, so the summary and state show it."""
+    from collections import Counter
+
+    from repowise.core.ingestion.parser.grammars import (
+        failed_runtime_grammars,
+        runtime_grammar_warning,
+    )
+
+    missing = Counter(
+        p.file_info.language for p in parsed_files if getattr(p, "grammar_missing", False)
+    )
+    return [
+        runtime_grammar_warning(tag, reason, missing[tag])
+        for tag, reason in failed_runtime_grammars()
+        if missing[tag]
+    ]
 
 
 def _working_tree_only(run: UpdateRun) -> bool:
