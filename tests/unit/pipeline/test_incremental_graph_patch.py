@@ -307,7 +307,7 @@ def test_detected_unparsed_config_change_forces_full_rebuild(
     )[2]
 
     assert not patched.patch_plan.eligible
-    assert "unparsed files" in (patched.patch_plan.reason or "")
+    assert "pom.xml" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 

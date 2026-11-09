@@ -75,7 +75,14 @@ def is_inert(parsed: Any) -> bool:
     return (
         parsed.file_info.language in _INERT_LANGUAGES
         and not parsed.file_info.path.lower().endswith(".mdx")
-        and not parsed.module_name
+        and parse_is_empty(parsed)
+    )
+
+
+def parse_is_empty(parsed: Any) -> bool:
+    """Whether *parsed* declares, imports and references nothing."""
+    return (
+        not parsed.module_name
         and not any(
             (
                 parsed.symbols,
@@ -228,10 +235,19 @@ def _removal_plan(
     return before, None
 
 
-def _edit_plan(path: str, parsed: Any, parse_cache: Any) -> tuple[Any | None, bool, str | None]:
-    """``(before, surface_changed, refusal)`` for an edited, previously parsed file."""
+def _edit_plan(
+    path: str, parsed: Any, parse_cache: Any, cleared: Collection[str] = ()
+) -> tuple[Any | None, bool, str | None]:
+    """``(before, surface_changed, refusal)`` for an edited, previously parsed file.
+
+    A path in *cleared* is a config or data file whose edit changed nothing the
+    build reads (:mod:`.config_inputs`); with an empty parse on both sides it
+    is planned like an inert edit.
+    """
     before = parse_cache.previous_entry(path, exclude_hash=parsed.content_hash)
     if before is not None and is_inert(before) and is_inert(parsed):
+        return before, False, None
+    if path in cleared and before is not None and parse_is_empty(before) and parse_is_empty(parsed):
         return before, False, None
     language = parsed.file_info.language
     if language not in PATCHABLE_LANGUAGES:
@@ -276,12 +292,16 @@ def _classify_removals(
 
 
 def _classify_changes(
-    edits: _EditSet, changed: dict[str, Any], previous_paths: Collection[str], parse_cache: Any
+    edits: _EditSet,
+    changed: dict[str, Any],
+    previous_paths: Collection[str],
+    parse_cache: Any,
+    cleared: Collection[str] = (),
 ) -> str | None:
     """File each changed or added path into *edits*; the reason to refuse, if any."""
     for path, parsed in sorted(changed.items()):
         if path in previous_paths:
-            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache)
+            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache, cleared)
             if refusal is not None:
                 return refusal
             if surface_changed:
@@ -302,6 +322,7 @@ def plan_patch(
     changed: dict[str, Any],
     traversed_paths: Collection[str] = (),
     seed_nodes: Iterable[tuple[str, Any]] = (),
+    cleared: Collection[str] = (),
 ) -> PatchPlan:
     """Plan a patch for the files whose content changed since the last index.
 
@@ -309,6 +330,8 @@ def plan_patch(
     *parsed_files* is every file parsed in this run and *traversed_paths*
     every file the walk found. The parse cache stands in for the previous
     run's manifest; *seed_nodes* are the snapshot's ``(node_id, attrs)`` rows.
+    *cleared* names edited config and data files proven not to change what
+    the build reads.
 
     An edit that only moved bodies (or documentation) is planned here in full.
     One that adds or removes source files or changes a file's surface comes
@@ -323,7 +346,7 @@ def plan_patch(
     removed = sorted(previous_paths - current)
     edits = _EditSet()
     refusal = _classify_removals(edits, removed, parse_cache, traversed_paths) or _classify_changes(
-        edits, changed, previous_paths, parse_cache
+        edits, changed, previous_paths, parse_cache, cleared
     )
     if refusal is not None:
         return PatchPlan(False, reason=refusal)

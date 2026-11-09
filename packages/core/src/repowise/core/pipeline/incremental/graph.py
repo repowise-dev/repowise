@@ -158,6 +158,7 @@ def _plan_graph_patch(
     to_parse: list[tuple[int, tuple, str]],
     changed_paths: set[str] | None,
     traversed_paths: set[str],
+    presence_changed: set[str] | None = None,
 ) -> tuple[Any, dict[str, tuple] | None]:
     """Return the safe patch plan and restored-import cache, if eligible."""
     from .surface import PatchPlan, plan_patch
@@ -166,6 +167,8 @@ def _plan_graph_patch(
         return PatchPlan(False, reason="feature disabled"), None
     if seed_edges is None:
         return PatchPlan(False, reason="no valid persisted graph snapshot"), None
+    if parse_cache is None:
+        return PatchPlan(False, reason="no parse cache"), None
 
     changed = {
         fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
@@ -176,7 +179,9 @@ def _plan_graph_patch(
         detected_changes = detected_changes - (
             parse_cache.known_paths() - {pf.file_info.path for pf in parsed_files}
         )
-    if detected_changes != set(changed):
+    unparsed = detected_changes - set(changed)
+    known = parse_cache.known_paths() if parse_cache is not None else set()
+    if set(changed) - detected_changes or unparsed & (traversed_paths | known):
         return (
             PatchPlan(
                 False,
@@ -184,6 +189,11 @@ def _plan_graph_patch(
             ),
             None,
         )
+    refusal, cleared = _plan_non_source(
+        repo_path, graph_builder, unparsed, changed, parse_cache, presence_changed
+    )
+    if refusal is not None:
+        return PatchPlan(False, reason=refusal), None
 
     patch_plan = plan_patch(
         parse_cache=parse_cache,
@@ -191,12 +201,46 @@ def _plan_graph_patch(
         changed=changed,
         traversed_paths=traversed_paths,
         seed_nodes=seed_edges.get("nodes", ()),
+        cleared=cleared,
     )
     if not patch_plan.eligible:
         return patch_plan, None
 
     return _plan_with_resolutions(
         repo_path, graph_builder, patch_plan, parsed_files=parsed_files, seed_edges=seed_edges
+    )
+
+
+def _plan_non_source(
+    repo_path: Any,
+    graph_builder: Any,
+    unparsed: set[str],
+    changed: dict[str, Any],
+    parse_cache: Any,
+    presence_changed: set[str] | None,
+) -> tuple[str | None, frozenset[str]]:
+    """Check the update's config, data and unindexed files (:mod:`.config_inputs`)."""
+    from .config_inputs import plan_non_source_changes
+    from .resolution_cache import load_config_inputs
+
+    root = Path(repo_path)
+    resolver = getattr(graph_builder, "_tsconfig_resolver", None)
+    config_reads = set()
+    for path in getattr(resolver, "read_paths", ()):
+        try:
+            config_reads.add(Path(path).resolve().relative_to(root.resolve()).as_posix())
+        except ValueError:
+            continue
+    return plan_non_source_changes(
+        root,
+        unparsed=unparsed,
+        changed=changed,
+        previous_parse=lambda path, parsed: parse_cache.previous_entry(
+            path, exclude_hash=parsed.content_hash
+        ),
+        presence_changed=presence_changed,
+        config_reads=config_reads,
+        load_record=lambda: load_config_inputs(root / ".repowise"),
     )
 
 
@@ -349,8 +393,11 @@ def _traverse_repo(
     include_submodules: bool,
     include_nested_repos: bool,
     timings: PhaseTimings | None,
-) -> tuple[Any, list[Any], Any]:
-    """Walk once, build file metadata in parallel, and derive repo structure."""
+) -> tuple[Any, list[Any], Any, list[str]]:
+    """Walk once, build file metadata in parallel, and derive repo structure.
+
+    Also returns every walked path, indexed or not, relative to the repo.
+    """
     import os
     from concurrent.futures import ThreadPoolExecutor
 
@@ -369,7 +416,9 @@ def _traverse_repo(
             maybe_infos = list(pool.map(traverser._build_file_info, all_paths))
         file_infos = [file_info for file_info in maybe_infos if file_info is not None]
         repo_structure = traverser.get_repo_structure(file_infos)
-    return traverser, file_infos, repo_structure
+    root = traverser.repo_root
+    walked = [path.relative_to(root).as_posix() for path in all_paths]
+    return traverser, file_infos, repo_structure, walked
 
 
 def _read_and_parse_misses(
@@ -450,6 +499,7 @@ def _build_update_graph(
     patch_requested: bool,
     seed_edges: Any | None,
     changed_paths: set[str] | None,
+    presence_changed: set[str] | None,
     timings: PhaseTimings | None,
     log: LogFn,
 ) -> tuple[list[Any], dict[str, bytes], int]:
@@ -481,6 +531,7 @@ def _build_update_graph(
             to_parse=to_parse,
             changed_paths=changed_paths,
             traversed_paths=graph_builder.traversed_file_paths,
+            presence_changed=presence_changed,
         )
         graph_builder.patch_plan = patch_plan
         _build_graph_with_plan(
@@ -512,6 +563,7 @@ def build_repo_graph(
     changed_paths: set[str] | None = None,
     patch_requested: bool = False,
     cache_resolutions: bool = False,
+    presence_changed: set[str] | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -535,7 +587,10 @@ pass reads the sources.
     complete source/config diff from the update detector; deleted files aside,
     it must exactly match the parsed cache misses before a patch is considered.
     This also catches changed manifests or excluded/unparsed files, which the
-    parse cache alone cannot see. If the changed files' cross-file surface is untouched
+    parse cache alone cannot see; ``presence_changed`` names its added, deleted
+    and renamed paths (``None``: unknown), which an unindexed file must not be
+    among for its edit to patch (:mod:`.config_inputs`). If the changed files'
+    cross-file surface is untouched
     (:func:`~.surface.plan_patch`), only those files are re-resolved; otherwise
     the full build runs. The decision is left on ``graph_builder.patch_plan``.
 
@@ -547,7 +602,7 @@ pass reads the sources.
     """
     log = log or _noop_log
 
-    traverser, file_infos, repo_structure = _traverse_repo(
+    traverser, file_infos, repo_structure, walked = _traverse_repo(
         repo_path,
         exclude_patterns,
         include_submodules=include_submodules,
@@ -598,11 +653,13 @@ pass reads the sources.
         patch_requested=patch_requested,
         seed_edges=seed_edges,
         changed_paths=changed_paths,
+        presence_changed=presence_changed,
         timings=timings,
         log=log,
     )
     skipped += unparsed
     if not read_only and cache_resolutions:
+        from .config_inputs import record_inputs
         from .resolution_cache import save_resolutions
 
         save_resolutions(
@@ -610,6 +667,7 @@ pass reads the sources.
             parsed_files,
             graph_builder.import_resolutions,
             source_map,
+            config_inputs=record_inputs(Path(repo_path), walked),
         )
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
@@ -888,6 +946,13 @@ async def rebuild_graph_and_git(
         changed_paths={
             path
             for fd in file_diffs
+            for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
+            if path
+        },
+        presence_changed={
+            path
+            for fd in file_diffs
+            if getattr(fd, "status", None) != "modified"
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
             if path
         },

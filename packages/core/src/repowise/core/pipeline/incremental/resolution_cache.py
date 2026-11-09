@@ -80,8 +80,13 @@ def save_resolutions(
     parsed_files: Iterable[Any],
     import_targets: dict[str, list[tuple[str, ...]]],
     source_map: dict[str, bytes] | None = None,
+    config_inputs: dict[str, Any] | None = None,
 ) -> None:
     """Write the resolved imports and class field types of every built file. Best effort.
+
+    *config_inputs* is what the build read from its manifests
+    (:func:`~.config_inputs.record_inputs`), saved with the rest so the two
+    always describe the same build.
 
     *import_targets* is the build's ``{path: targets of each import}``; a
     file missing from it is left out, so the next patch falls back for it.
@@ -102,14 +107,14 @@ def save_resolutions(
             "version": _VERSION,
             "fingerprint": parser_fingerprint(),
             "files": files,
+            "config_inputs": config_inputs,
         }
         dump_sealed_pickle(Path(index_dir) / _FILENAME, payload, domain=_FILENAME)
     except Exception as exc:
         log.debug("resolved_imports_save_failed", error=str(exc))
 
 
-def load_resolutions(index_dir: Path) -> dict[str, tuple] | None:
-    """The saved snapshot, or ``None`` when absent, stale or unverifiable."""
+def _load_payload(index_dir: Path) -> dict[str, Any] | None:
     from repowise.core.ingestion.parse_cache import parser_fingerprint
 
     try:
@@ -118,7 +123,19 @@ def load_resolutions(index_dir: Path) -> dict[str, tuple] | None:
         return None
     if payload.get("version") != _VERSION or payload.get("fingerprint") != parser_fingerprint():
         return None
-    return payload.get("files")
+    return payload
+
+
+def load_resolutions(index_dir: Path) -> dict[str, tuple] | None:
+    """The saved snapshot, or ``None`` when absent, stale or unverifiable."""
+    payload = _load_payload(index_dir)
+    return None if payload is None else payload.get("files")
+
+
+def load_config_inputs(index_dir: Path) -> dict[str, Any] | None:
+    """What the last build read from its manifests, or ``None`` when unrecorded."""
+    payload = _load_payload(index_dir)
+    return None if payload is None else payload.get("config_inputs")
 
 
 def covers(saved: dict[str, tuple] | None, parsed_files: Iterable[Any], skip: Collection[str]) -> bool:
