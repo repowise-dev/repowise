@@ -38,7 +38,7 @@ from .crud.authority import (
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
-from .models import DecisionAlias, DecisionRecord
+from .models import SUPERSEDED_REASON, DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
 
@@ -89,7 +89,11 @@ def _json_list(raw: str) -> list[str]:
 
 async def _aliases_for(session: AsyncSession, decision_id: str) -> list[str]:
     rows = await session.execute(
-        select(DecisionAlias.alias_id).where(DecisionAlias.decision_id == decision_id)
+        select(DecisionAlias.alias_id).where(
+            DecisionAlias.decision_id == decision_id,
+            # A pre-fix supersede pointer names another record, not this one.
+            DecisionAlias.reason != SUPERSEDED_REASON,
+        )
     )
     return [r[0] for r in rows.all()]
 

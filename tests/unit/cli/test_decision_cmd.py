@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.main import cli
 from repowise.core.persistence.database import init_db
-from repowise.core.persistence.models import DecisionRecord, Repository
+from repowise.core.persistence.models import (
+    SUPERSEDED_REASON,
+    DecisionAlias,
+    DecisionRecord,
+    Repository,
+)
 
 _REPO_ID = "decision-cli-repo"
 
@@ -540,6 +545,52 @@ def test_decision_ambiguous_prefix_errors(indexed_repo: Path) -> None:
     result = CliRunner().invoke(cli, ["decision", "show", "ffff", str(indexed_repo)])
     assert result.exit_code != 0
     assert "ambiguous" in result.output.lower()
+
+
+def _seed_aliases(repo_root: Path, aliases: list[tuple[str, str, str]]) -> None:
+    """Add ``(alias_id, decision_id, reason)`` rows to a seeded ``wiki.db``."""
+
+    async def _build() -> None:
+        db_path = repo_root / ".repowise" / "wiki.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            for alias_id, decision_id, reason in aliases:
+                session.add(
+                    DecisionAlias(
+                        alias_id=alias_id,
+                        repository_id=_REPO_ID,
+                        decision_id=decision_id,
+                        reason=reason,
+                    )
+                )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
+def test_a_prefix_skips_a_pre_fix_supersede_pointer(indexed_repo: Path) -> None:
+    # #5331: a ``superseded`` alias names the successor, not the retired id's
+    # record, so resolving through it would show the wrong decision.
+    successor = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    _seed_wiki_db(indexed_repo, [{"id": successor, "title": "The successor"}])
+    _seed_aliases(
+        indexed_repo,
+        [
+            ("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", successor, SUPERSEDED_REASON),
+            ("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", successor, "merged"),
+        ],
+    )
+
+    merged = CliRunner().invoke(cli, ["decision", "show", "c3c3c3c3", str(indexed_repo)])
+    assert merged.exit_code == 0, merged.output
+    assert "The successor" in merged.output
+
+    pointer = CliRunner().invoke(cli, ["decision", "show", "b2b2b2b2", str(indexed_repo)])
+    assert pointer.exit_code != 0, pointer.output
+    assert "The successor" not in pointer.output
+    assert "not found" in pointer.output.lower()
 
 
 def test_decision_health_prints_summary(indexed_repo: Path) -> None:
