@@ -268,6 +268,8 @@ def test_serve_seeds_a_mock_pin_into_the_environment(
 
     _write_config(tmp_path, embedder="mock")
     monkeypatch.chdir(tmp_path)
+    # Track the initially absent variable before serve assigns it directly.
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "")
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
 
     serve_cmd._load_local_provider_config()
@@ -567,7 +569,8 @@ def test_two_real_widths_are_never_compared(
             return [[0.0] * 1024 for _ in texts]
 
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _MisreportingEmbedder()
+        "repowise.cli.providers.embedders.build_embedder",
+        lambda _n, _p=None: _MisreportingEmbedder(),
     )
 
     assert _vector_dims(tmp_path) == (None, None)

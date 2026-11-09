@@ -1,5 +1,5 @@
 ---
-name: pre-modification-check
+name: pre-modification
 description: >
   Use before modifying, refactoring, or deleting files in a codebase that has Repowise indexed
   (indicated by a .repowise/ directory). Activates when Claude is about to edit code, especially

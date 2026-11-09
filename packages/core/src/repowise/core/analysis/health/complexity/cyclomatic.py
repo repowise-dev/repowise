@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .ast_utils import is_named_block_lambda
 from .body_facts import BodyTally, step
 from .languages import LanguageNodeMap
 from .models import ConditionComplexity
@@ -31,7 +32,11 @@ def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
             tok = child.text
             if tok in (b"&&", b"||", b"and", b"or"):
                 return True
-    return False
+    return (
+        node.type in ("&&", "||")
+        and node.parent is not None
+        and node.parent.type == "let_chain"
+    )
 
 
 _BODY_FIELD_NAMES = (
@@ -268,7 +273,7 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     Falls back to all direct children except recognised body fields and
     syntactic punctuation.
     """
-    if node.type in lmap.foreach_kinds:
+    if node.type in lmap.foreach_kinds or node.type == "range_clause":
         return []
     cond = node.child_by_field_name("condition")
     if cond is not None:
@@ -304,6 +309,7 @@ def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
         and child.id not in body_nodes
         and child.type not in _BLOCK_KINDS
         and child.type not in lmap.branch_kinds
+        and child.type != "range_clause"
     ]
 
 
@@ -365,11 +371,7 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
             return True
         # A block with multiple named children (statements) is complex.
         if cur.type == "block":
-            named_children = [
-                c
-                for c in cur.children
-                if c.is_named and "comment" not in c.type
-            ]
+            named_children = [c for c in cur.children if c.is_named and "comment" not in c.type]
             if len(named_children) > 1:
                 return True
         for child in cur.children:
@@ -404,6 +406,43 @@ def _is_decision_body(body_node: Node, lmap: LanguageNodeMap) -> bool:
     )
 
 
+def _stops_at_unit(node: Node, lmap: LanguageNodeMap, tally: BodyTally | None, scope: int) -> bool:
+    """Whether the CCN walk stops at *node*, a unit measured on its own.
+
+    A nested function, or a named block-bodied lambda, whose subtree the
+    facts *tally* still reads the way the walk would have.
+    """
+    node_type = node.type
+    if node_type in lmap.function_kinds:
+        return True
+    if node_type not in lmap.lambda_kinds or not is_named_block_lambda(node, lmap):
+        return False
+    if tally is not None:
+        _tally_only(node, tally, lmap, scope)
+    return True
+
+
+def _tally_only(node: Node, tally: BodyTally, lmap: LanguageNodeMap, scope: int) -> None:
+    """Count *node*'s subtree into *tally* the way the CCN walk's visits would.
+
+    A named block-bodied lambda is a unit of its own for the complexity
+    metrics, but the facts of the function holding it still read it as the
+    lambda it is (a scope of its own that shares the receiver), so they come
+    out the same as when the walk descended it.
+    """
+    watched = tally.kinds.watched
+    function_kinds = lmap.function_kinds
+    stack: list[tuple[Node, int]] = [(node, scope)]
+    while stack:
+        cur, cur_scope = stack.pop()
+        node_type = cur.type
+        if node_type in function_kinds:
+            continue
+        if node_type in watched:
+            cur_scope = step(tally, cur, cur_scope)
+        stack.extend((child, cur_scope) for child in reversed(cur.children))
+
+
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
@@ -413,9 +452,10 @@ def _walk_function_body(
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
 
-    Starts CCN at 1 (the entry path). Nested function bodies are
-    skipped — they will (or already did) produce their own
-    ``FunctionComplexity``.
+    Starts CCN at 1 (the entry path). Nested function bodies, and the
+    bodies of block-bodied arrow functions bound to a name
+    (:func:`.ast_utils.is_named_block_lambda`), are skipped — they will
+    (or already did) produce their own ``FunctionComplexity``.
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
@@ -457,9 +497,10 @@ def _walk_function_body(
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
-        # contribute to the enclosing function's complexity.
+        # contribute to the enclosing function's complexity, unless one is
+        # bound to a name with a block body: that is a unit of its own too.
         node_type = node.type
-        if node_type in lmap.function_kinds:
+        if _stops_at_unit(node, lmap, tally, scope):
             return
         if _recurse_preproc_arms(node, depth, in_markup, scope):
             return
@@ -479,7 +520,7 @@ def _walk_function_body(
         # would double-count.
         if is_flat_match_arm:
             # Flat match arms: no CCN increment, no nesting increment.
-            pass
+            conditions.extend(_compound_condition(node, lmap))
         elif node.is_named and (
             node.type in lmap.branch_kinds
             or node.type in lmap.loop_kinds

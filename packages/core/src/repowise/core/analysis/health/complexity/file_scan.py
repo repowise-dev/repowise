@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..perf.io_boundaries import _finish_io_names, _io_visit
+from .ast_utils import _UNIT_LAMBDA_KINDS
 from .error_handling import _eh_node_kinds, _eh_rust_attr_is_test, _eh_visit
 from .languages import LanguageNodeMap
 from .models import ErrorHandlingHit
@@ -44,6 +45,8 @@ class FileScan:
     class_nodes: list[Node]
     #: Every ``function_kinds`` node in the file, at any depth: the ones
     #: ``_collect_function_nodes`` returns and the ones nested below them.
+    #: Every lambda that can be a unit of its own (``arrow_function``) is
+    #: here too, in the same order, for ``_nested_function_nodes`` to sift.
     function_nodes: list[Node]
     #: 1-indexed ``(start_line, end_line)`` spans of Rust test-only code.
     rust_test_line_ranges: tuple[tuple[int, int], ...]
@@ -105,7 +108,7 @@ def scan_file(
 
     eh_kinds = _eh_node_kinds(language, lmap)
     class_kinds = lmap.class_kinds
-    function_kinds = lmap.function_kinds
+    unit_kinds = lmap.function_kinds | (lmap.lambda_kinds & _UNIT_LAMBDA_KINDS)
     is_rust = language == "rust"
 
     stack: list[tuple[Node, int]] = [(root, 0)]
@@ -120,7 +123,7 @@ def scan_file(
             _eh_visit(node, language, lmap, hits)
         if class_kinds and t in class_kinds and node.is_named:
             class_nodes.append(node)
-        if t in function_kinds:
+        if t in unit_kinds:
             function_nodes.append(node)
         if (
             is_rust

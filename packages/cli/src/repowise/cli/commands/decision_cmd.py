@@ -864,12 +864,12 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     repo_path = _resolve_decision_repo(path, fmt)
     rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
-        notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
-        if fmt == "json":
-            emit_json({"query": decision_id, "decision": None})
-        # Non-zero for the same reason the lifecycle commands are: a caller
-        # scripting `show` cannot tell a missing id from an empty record.
-        raise click.exceptions.Exit(1)
+        emit_refusal(
+            "decision_not_found",
+            f"Decision not found: {decision_id}",
+            fmt,
+            query=decision_id,
+        )
 
     # Asked of git at read time: affordable for one record on demand, never on
     # the hook or update path. None means git could not decide.
@@ -1234,9 +1234,9 @@ def decision_deprecate(
 ) -> None:
     """Retire a decision, optionally naming the one that replaces it.
 
-    With ``--superseded-by`` this writes an explicit lineage edge and keeps the
-    retired id resolving to its successor. Similarity never does either: an edge
-    exists because somebody named the successor.
+    With ``--superseded-by`` this writes an explicit lineage edge; the retired
+    id keeps naming its own record. Similarity never writes an edge: one exists
+    because somebody named the successor.
     """
     from repowise.cli.commands.decision_batch import _RefusedError
 

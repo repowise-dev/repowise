@@ -297,6 +297,17 @@ def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]
     return []
 
 
+def _generation_cost_tracker(
+    deterministic: bool, cost_tracker: Any | None, repo_path: Any, result: Any
+) -> Any | None:
+    """The run's tracker, a fresh one when indexing built none, ``None`` without a model."""
+    if deterministic:
+        return None
+    if cost_tracker is not None:
+        return cost_tracker
+    return build_cost_tracker(repo_path, result.repo_name)
+
+
 def run_repo_generation(
     *,
     repo_path: Any,
@@ -311,10 +322,12 @@ def run_repo_generation(
     timings: Any | None = None,
     warnings: list[str] | None = None,
     total_phases: int | None = None,
+    cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
-    Builds the embedder + vector store + cost tracker, runs the resume-friendly
+    Builds the embedder + vector store + cost tracker (or reuses *cost_tracker*,
+    the one indexing billed), runs the resume-friendly
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
 
@@ -363,7 +376,9 @@ def run_repo_generation(
     # llm_costs table. Attached to the provider unconditionally (all providers
     # accept ``_cost_tracker`` as an attribute). A deterministic run makes no
     # calls, so it gets none: an empty ledger, not a ledger of zeroes.
-    cost_tracker = None if deterministic else build_cost_tracker(repo_path, result.repo_name)
+    # *cost_tracker* is the one indexing already billed for decision mining;
+    # reusing it keeps one ledger and one "Cost" total for the run.
+    cost_tracker = _generation_cost_tracker(deterministic, cost_tracker, repo_path, result)
     provider._cost_tracker = cost_tracker
 
     if verbose and not deterministic:

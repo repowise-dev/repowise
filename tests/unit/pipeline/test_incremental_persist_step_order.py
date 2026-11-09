@@ -51,9 +51,11 @@ HAPPY_ORDER = [
     "refresh_external_systems",
     "purge_proposed_decisions_by_source",
     "prune_deleted_file_rows",
+    "prune_absent_synthetic_nodes",
     "_analyzed_commit",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
+    "apply_fix_rollups",
     # After the session closes.
     "refresh_commit_health_after_update",
     "fts.ensure_index",
@@ -113,7 +115,7 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert rec.args_of("fts.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
     assert rec.args_of("vectors.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
-    assert git_kwargs == {"keep_commit_health": True}
+    assert git_kwargs == {"keep_commit_health": True, "gone_paths": set()}
 
 
 async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(repo, monkeypatch):
@@ -124,7 +126,7 @@ async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(rep
 
     assert "persist_incremental_commits" not in rec.order
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
-    assert git_kwargs == {"keep_commit_health": False}
+    assert git_kwargs == {"keep_commit_health": False, "gone_paths": set()}
     assert [a[2] for a, _k in rec.args_of("purge_proposed_decisions_by_source")] == [
         "code_comment",
         "git_archaeology",
@@ -200,8 +202,10 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         "refresh_external_systems",
         "purge_proposed_decisions_by_source",
         "prune_deleted_file_rows",
+        "prune_absent_synthetic_nodes",
         "_analyzed_commit",
         "finalize_performance_opportunities",
+        "apply_fix_rollups",
         "refresh_commit_health_after_update",
         "fts.ensure_index",
         "vectors.delete_many",
@@ -232,7 +236,9 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         ),
         # A prune refusal is reported verbatim, not as a skipped step.
         REFUSAL,
+        f"Synthetic graph node prune: {FAILURE}",
         f"Queue rebuild after prune: {FAILURE}",
+        f"Git rollups: {FAILURE}",
         f"Tombstone full-text removal: {FAILURE}",
         f"Tombstone vector removal: {FAILURE}",
     ]
@@ -247,3 +253,27 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
         "External systems refresh",
         "Tombstone full-text removal",
     ]
+
+
+def test_deleted_paths_are_keyed_from_the_git_root(tmp_path: Path) -> None:
+    """git_metadata keys on the git root, also when the index covers a subdirectory."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.incremental.persist_index import IncrementalPersist, _deleted_paths
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "kept.py").write_text("x = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    ctx = IncrementalPersist(
+        repo_path=tmp_path / "pkg",
+        graph_builder=None,
+        git_meta_map={},
+        file_diffs=[
+            SimpleNamespace(path="gone.py", status="deleted"),
+            SimpleNamespace(path="new.py", status="renamed", old_path="kept.py"),
+            SimpleNamespace(path="moved.py", status="renamed", old_path="old.py"),
+        ],
+    )
+
+    assert _deleted_paths(ctx) == {"pkg/gone.py", "pkg/old.py"}

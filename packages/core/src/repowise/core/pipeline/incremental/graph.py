@@ -92,6 +92,15 @@ def _add_parsed_files(
     return parsed_files, source_map, unparsed
 
 
+def _manifest_sources(file_bytes: list, merged: dict[int, Any]) -> dict[str, bytes]:
+    """The bytes of every parsed JSON file: the manifests that map imports to paths."""
+    return {
+        fi.path: source
+        for idx, (fi, source) in enumerate(file_bytes)
+        if (parsed := merged.get(idx)) is not None and parsed.file_info.language == "json"
+    }
+
+
 def _add_synthetic_edges(
     repo_path: Any,
     graph_builder: Any,
@@ -100,7 +109,12 @@ def _add_synthetic_edges(
     log: LogFn,
     timings: PhaseTimings | None,
 ) -> None:
-    """Add the framework-aware and dynamic-hint edges to a built graph."""
+    """Add the framework-aware and dynamic-hint edges to a built graph.
+
+    Sets ``graph_builder.synthetic_edges_complete`` to whether both passes ran,
+    so the edge write knows the graph is missing their edges this time.
+    """
+    graph_builder.synthetic_edges_complete = True
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
     # Best-effort, but not silent: the update path has to report the failure the
     # init path reports, or an index degrades differently depending on how it
@@ -114,6 +128,7 @@ def _add_synthetic_edges(
         if fw_count:
             log(f"Framework edges added: [cyan]{fw_count}[/cyan]")
     except Exception as fw_exc:
+        graph_builder.synthetic_edges_complete = False
         logger.warning("framework_edges_failed", error=str(fw_exc))
         log(
             f"[yellow]Framework edge detection skipped: {fw_exc}; framework-invoked "
@@ -139,6 +154,7 @@ def _add_synthetic_edges(
             log(f"Dynamic hint edges added: [cyan]{len(dynamic_edges)}[/cyan]")
 
     except Exception as exc:
+        graph_builder.synthetic_edges_complete = False
         logger.warning("dynamic_hints_extraction_failed", error=str(exc))
         log(
             f"[yellow]Dynamic hint extraction failed: {exc}. Dynamic edges"
@@ -148,6 +164,7 @@ def _add_synthetic_edges(
 
 def _plan_graph_patch(
     repo_path: Any,
+    graph_builder: Any,
     *,
     patch_requested: bool,
     seed_edges: Any | None,
@@ -156,6 +173,8 @@ def _plan_graph_patch(
     merged: dict[int, Any],
     to_parse: list[tuple[int, tuple, str]],
     changed_paths: set[str] | None,
+    traversed_paths: set[str],
+    manifest_sources: dict[str, bytes],
 ) -> tuple[Any, dict[str, tuple] | None]:
     """Return the safe patch plan and restored-import cache, if eligible."""
     from .surface import PatchPlan, plan_patch
@@ -169,6 +188,11 @@ def _plan_graph_patch(
         fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
     }
     detected_changes = set(changed) if changed_paths is None else changed_paths
+    # A deleted file has no parse; plan_patch decides whether its removal is safe.
+    if parse_cache is not None:
+        detected_changes = detected_changes - (
+            parse_cache.known_paths() - {pf.file_info.path for pf in parsed_files}
+        )
     if detected_changes != set(changed):
         return (
             PatchPlan(
@@ -180,17 +204,87 @@ def _plan_graph_patch(
 
     patch_plan = plan_patch(
         parse_cache=parse_cache,
-        current_paths=[pf.file_info.path for pf in parsed_files],
+        parsed_files=parsed_files,
         changed=changed,
+        traversed_paths=traversed_paths,
+        seed_nodes=seed_edges.get("nodes", ()),
+        manifest_sources=manifest_sources,
     )
     if not patch_plan.eligible:
         return patch_plan, None
 
+    return _plan_with_resolutions(
+        repo_path, graph_builder, patch_plan, parsed_files=parsed_files, seed_edges=seed_edges
+    )
+
+
+def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) -> Any:
+    """*patch_plan*, made refreshing when an edit changed the field types a class declares.
+
+    Another file's ``obj.field.method()`` is typed from those declarations,
+    which no parse surface records: the files that spell a changed field must
+    be re-resolved too.
+    """
+    from dataclasses import replace
+
+    from .affected import changed_field_names
+    from .surface import PatchPlan
+
+    names = changed_field_names(
+        graph_builder._parsed_files,
+        graph_builder._source_map,
+        (*patch_plan.scope, *patch_plan.removed),
+        resolutions,
+    )
+    if names is None:
+        return PatchPlan(False, reason="an edited file has no field record to compare")
+    if not names:
+        return patch_plan
+    return replace(patch_plan, refresh=True, names=patch_plan.names | names)
+
+
+def _refined_plan(
+    graph_builder: Any, patch_plan: Any, seed_edges: Any, resolutions: dict[str, tuple]
+) -> Any:
+    """*patch_plan* checked for retyped fields and, when refreshing, widened to its reach.
+
+    A failure here is a planner bug: it costs a full build, not the update.
+    """
+    from .surface import PatchPlan
+
+    try:
+        patch_plan = _with_field_changes(graph_builder, patch_plan, resolutions)
+        if not patch_plan.refresh:
+            return patch_plan
+        from .affected import expand_scope
+
+        return expand_scope(graph_builder, patch_plan, seed=seed_edges, resolutions=resolutions)
+    except Exception as exc:
+        logger.warning("graph_patch_scope_failed", error=str(exc))
+        return PatchPlan(False, reason=f"patch planning failed: {exc}")
+
+
+def _plan_with_resolutions(
+    repo_path: Any,
+    graph_builder: Any,
+    patch_plan: Any,
+    *,
+    parsed_files: list[Any],
+    seed_edges: Any,
+) -> tuple[Any, dict[str, tuple] | None]:
+    """Accept an eligible plan only when saved resolutions cover every unchanged file.
+
+    A refreshing plan is then widened to every file its edit reaches.
+    """
     from .resolution_cache import covers, load_resolutions
+    from .surface import PatchPlan
 
     resolutions = load_resolutions(Path(repo_path) / ".repowise")
     if covers(resolutions, parsed_files, patch_plan.scope):
-        return patch_plan, resolutions
+        patch_plan = _refined_plan(graph_builder, patch_plan, seed_edges, resolutions)
+        return patch_plan, (resolutions if patch_plan.eligible else None)
+    if resolutions is None:
+        return PatchPlan(False, reason="no import resolution cache from this parser version"), None
 
     missing_path = next(
         (
@@ -198,8 +292,7 @@ def _plan_graph_patch(
             for pf in parsed_files
             if pf.file_info.path not in patch_plan.scope
             and (
-                resolutions is None
-                or pf.file_info.path not in resolutions
+                pf.file_info.path not in resolutions
                 or resolutions[pf.file_info.path][0] != pf.content_hash
             )
         ),
@@ -248,13 +341,17 @@ def _build_graph_with_plan(
         from .resolution_cache import restore_resolutions
 
         with timed(timings, "rebuild.graph.patch"):
-            restore_resolutions(resolutions, parsed_files, patch_plan.scope)
-            seeded = graph_builder.seed_graph_snapshot(seed_edges)
+            restore_resolutions(
+                resolutions, parsed_files, patch_plan.scope, graph_builder.import_resolutions
+            )
+            seeded = graph_builder.seed_graph_snapshot(
+                seed_edges, drop_paths=patch_plan.removed, scope=patch_plan.scope
+            )
             log(
                 f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
                 f"reusing {seeded:,} edges"
             )
-            graph_builder.build(scope=patch_plan.scope)
+            graph_builder.build(scope=patch_plan.scope, refresh_global=patch_plan.refresh)
         return
 
     with timed(timings, "rebuild.graph.full"):
@@ -381,17 +478,8 @@ def _build_update_graph(
         parsed_files, source_map, unparsed = _add_parsed_files(
             graph_builder, file_bytes, merged, collect_sources
         )
-        patch_plan, resolutions = _plan_graph_patch(
-            repo_path,
-            patch_requested=patch_requested,
-            seed_edges=seed_edges,
-            parse_cache=parse_cache,
-            parsed_files=parsed_files,
-            merged=merged,
-            to_parse=to_parse,
-            changed_paths=changed_paths,
-        )
-        graph_builder.patch_plan = patch_plan
+        # Wired before planning: a patch that adds or removes files re-resolves
+        # unchanged files' imports with the same resolvers the build uses.
         _wire_graph_builder(
             graph_builder,
             repo_path,
@@ -400,6 +488,20 @@ def _build_update_graph(
             source_map=source_map,
             pytest_roots=traverser.pytest_roots,
         )
+        patch_plan, resolutions = _plan_graph_patch(
+            repo_path,
+            graph_builder,
+            patch_requested=patch_requested,
+            seed_edges=seed_edges,
+            parse_cache=parse_cache,
+            parsed_files=parsed_files,
+            merged=merged,
+            to_parse=to_parse,
+            changed_paths=changed_paths,
+            traversed_paths=graph_builder.traversed_file_paths,
+            manifest_sources=_manifest_sources(file_bytes, merged),
+        )
+        graph_builder.patch_plan = patch_plan
         _build_graph_with_plan(
             graph_builder,
             patch_plan=patch_plan,
@@ -449,10 +551,10 @@ pass reads the sources.
     the incremental graph feature is enabled, including when a cache miss forces
     the safe full-build fallback. ``cache_resolutions`` opts into writing the
     supporting per-file import cache. ``changed_paths`` is the
-    complete source/config diff from the update detector; it must exactly match
-    the parsed cache misses before a patch is considered. This also catches
-    changed manifests or excluded/unparsed files, which the parse cache alone
-    cannot see. If the changed files' cross-file surface is untouched
+    complete source/config diff from the update detector; deleted files aside,
+    it must exactly match the parsed cache misses before a patch is considered.
+    This also catches changed manifests or excluded/unparsed files, which the
+    parse cache alone cannot see. If the changed files' cross-file surface is untouched
     (:func:`~.surface.plan_patch`), only those files are re-resolved; otherwise
     the full build runs. The decision is left on ``graph_builder.patch_plan``.
 
@@ -522,7 +624,12 @@ pass reads the sources.
     if not read_only and cache_resolutions:
         from .resolution_cache import save_resolutions
 
-        save_resolutions(Path(repo_path) / ".repowise", parsed_files)
+        save_resolutions(
+            Path(repo_path) / ".repowise",
+            parsed_files,
+            graph_builder.import_resolutions,
+            source_map,
+        )
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
             parse_cache.save()
@@ -531,6 +638,9 @@ pass reads the sources.
         log(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
 
     _add_synthetic_edges(repo_path, graph_builder, file_infos, source_map, log, timings)
+    # A refreshing patch set aside re-resolved files' co-change edges; a full
+    # build adds them after every other edge, so they go back only now.
+    graph_builder.restore_co_change_edges()
 
     # The flag init sets after its graph build, so an update renders and keeps
     # a route-declaring file's api_contract page instead of demoting it.
@@ -671,7 +781,11 @@ def _graph_update_decision(
         return {
             "enabled": True,
             "mode": "patch",
-            "reason": "dependency surface unchanged",
+            "reason": (
+                "re-resolved every file the edit reaches"
+                if getattr(patch_plan, "refresh", False)
+                else "dependency surface unchanged"
+            ),
             "files": list(patch_plan.scope),
         }
     return {
