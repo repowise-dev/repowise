@@ -479,26 +479,35 @@ def build_deterministic_tour(
 # ---------------------------------------------------------------------------
 
 
+# Pages written about one file. Their summary replaces what the node holds;
+# other pages that share a file's target (an API contract) only fill a blank.
+_FILE_PAGE_TYPES = frozenset({"file_page", "infra_page"})
+
+
 def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
     """Populate node summaries from generated wiki pages (zero LLM cost)."""
-    page_summaries: dict[str, str] = {}
+    file_pages: dict[str, str] = {}
+    other_pages: dict[str, str] = {}
     for p in generated_pages:
         summary = getattr(p, "summary", None) or ""
         target = getattr(p, "target_path", None) or ""
         if summary and target:
-            page_summaries[target] = summary
+            owner = file_pages if getattr(p, "page_type", None) in _FILE_PAGE_TYPES else other_pages
+            owner[target] = summary
 
     for node in kg_result.nodes:
         # Any file-level node (any presentation type — file/config/service/
-        # pipeline/schema/document). A page written this run is the richest and
-        # newest source, so it replaces what the node holds: the floor an
-        # index-only init or update already applied, or a summary carried
-        # from an older page.
+        # pipeline/schema/document). The file's own page written this run is
+        # the richest and newest source, so it replaces what the node holds:
+        # the floor an index-only init or update already applied, or a summary
+        # carried from an older page.
         if not str(node.get("id", "")).startswith("file:"):
             continue
         path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
-        if path in page_summaries:
-            node["summary"] = page_summaries[path]
+        if path in file_pages:
+            node["summary"] = file_pages[path]
+        elif path in other_pages and not node.get("summary"):
+            node["summary"] = other_pages[path]
 
 
 # ---------------------------------------------------------------------------
