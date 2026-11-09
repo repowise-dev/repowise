@@ -329,6 +329,118 @@ async def test_a_locked_store_leaves_the_revision_pending_until_a_later_open(
     assert list(_rows(path)) == [("acme.notes", "v1")]
 
 
+async def test_a_pending_revision_that_applies_on_a_later_open_readies_the_plugin(
+    store, tmp_path, monkeypatch, registry
+):
+    path = await _core_store(store)
+    seam = SeamRegistry("demo")
+    name = _plugin(tmp_path, monkeypatch, _V1 + 'seams()["demo"].register("acme", "ACME")\n')
+    async with _engine(path, busy_timeout_ms=100) as engine:
+        writer = sqlite3.connect(path, isolation_level=None)
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            await init_db(engine)  # does not raise
+        finally:
+            writer.execute("ROLLBACK")
+            writer.close()
+        record = next(r for r in plugins.load_plugins() if r.name == name)
+        assert record.status == "pending"
+        assert seam.all() == []
+
+        await init_db(engine)  # the same engine and registry, the lock released
+
+    assert list(_rows(path)) == [("acme.notes", "v1")]
+    assert registry._pending == {}
+    assert (record.status, record.error) == ("loaded", None)
+    assert seam.all() == [("acme", "ACME")]
+
+
+async def _pending_under_a_writer(engine, path: Path) -> None:
+    """Open *engine* while another connection holds *path*'s writer lock."""
+    writer = sqlite3.connect(path, isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        await init_db(engine)
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+
+
+async def test_a_store_another_process_brought_up_to_date_readies_the_plugin(
+    store, tmp_path, monkeypatch, registry
+):
+    path = await _core_store(store)
+    name = _plugin(tmp_path, monkeypatch, _V1)
+    async with _engine(path, busy_timeout_ms=100) as engine:
+        await _pending_under_a_writer(engine, path)
+        record = next(r for r in plugins.load_plugins() if r.name == name)
+        assert record.status == "pending"
+
+        other = StorageMigrationRegistry()  # another process applies and stamps it
+        other.register(_revision("acme.notes", "v1", _creates("acme_notes"), "a" * 64))
+        with monkeypatch.context() as patched:
+            patched.setattr(sm, "storage_migrations", other)
+            await _init(path)
+
+        await init_db(engine)  # the stamp matches, so the fast path returns
+
+    assert registry._pending == {}
+    assert (record.status, record.error) == ("loaded", None)
+
+
+async def test_a_namespace_that_applies_is_ready_when_a_later_one_fails(
+    store, tmp_path, monkeypatch, registry
+):
+    path = await _core_store(store)
+    name = _plugin(tmp_path, monkeypatch, _V1)
+    async with _engine(path, busy_timeout_ms=100) as engine:
+        await _pending_under_a_writer(engine, path)
+        record = next(r for r in plugins.load_plugins() if r.name == name)
+        registry.register(_revision("z.other", "v1", _creates("z_other", fail=True)))
+        with pytest.raises(StorageMigrationError, match="boom"):
+            await init_db(engine)
+
+    assert list(_rows(path)) == [("acme.notes", "v1")]
+    assert registry._pending == {}
+    assert record.status == "loaded"
+
+
+async def test_pending_clears_only_where_and_when_a_namespace_completes(
+    tmp_path, monkeypatch, registry
+):
+    read_only = await _core_store(tmp_path / "ro.db")
+    writable = await _core_store(tmp_path / "rw.db")
+    name = _plugin(tmp_path, monkeypatch, _V1)
+    async with _engine(read_only, read_only=True) as engine:
+        await init_db(engine)
+    record = next(r for r in plugins.load_plugins() if r.name == name)
+    pending = dict(registry._pending)
+
+    await _init(writable)  # applied there; still pending on the read-only store
+    assert registry._pending == pending
+    assert record.status == "pending"
+    record.status, record.error = "failed", "independent failure"
+    await _init(writable)
+    assert (record.status, record.error) == ("failed", "independent failure")
+
+
+async def test_a_namespace_left_part_applied_stays_pending(store, tmp_path, monkeypatch, registry):
+    path = await _core_store(store)
+    name = _plugin(tmp_path, monkeypatch, _V1)
+    plugins.load_plugins()
+
+    async def busy(conn) -> None:
+        raise _dbapi_error(sqlite_errorcode=sqlite3.SQLITE_BUSY)
+
+    registry.register(_revision("acme.notes", "v2", busy))
+    for _ in range(2):
+        await _init(path)
+        record = next(r for r in plugins.load_plugins() if r.name == name)
+        assert list(_rows(path)) == [("acme.notes", "v1")]
+        assert record.status == "pending"
+        assert len(registry._pending) == 1
+
+
 def _dbapi_error(**codes) -> DBAPIError:
     driver = type("Driver", (Exception,), codes)
     return DBAPIError("stmt", None, driver("schreibgeschützt"))  # the message is never read

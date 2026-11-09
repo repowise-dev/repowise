@@ -762,6 +762,8 @@ async def init_db(engine: AsyncEngine) -> None:
         if sqlite:
             stamped, cookie = await _sqlite_stamp_state(conn)
             if stamped == schema_stamp(cookie):
+                # The stamp covers every registered revision, so none is pending here.
+                storage_migrations.settled(conn)
                 return
         await conn.run_sync(Base.metadata.create_all)
         # Raises when the walk is incomplete, so a partial reconcile is never stamped.

@@ -244,10 +244,14 @@ core to resolve. A failure raises `StorageMigrationError` naming the plugin,
 namespace and revision.
 
 - A changed checksum fails every open, and `repowise plugins` lists the plugin
-  as `failed`. Add a new revision instead of editing one.
+  as `failed`. Add a new revision instead of editing one. The checksum above
+  hashes the module's bytes, so a line-ending change or a comment edit to an
+  applied revision fails every open too: keep an applied revision's file
+  byte-stable, or hash a normalised string instead.
 - An index that cannot take the write (read-only, or a SQLite store another
   writer holds past the busy timeout) still opens; the revision stays pending
-  there and the plugin is `pending` for the rest of the process.
+  there and the plugin is `pending` until a later open in the same process
+  applies it, or finds it applied, on every store where it was pending.
 - A pending plugin's seam implementations are unready: `all()` leaves them out
   and `get()` raises `KeyError` naming the plugin and revision. Its MCP tools,
   CLI commands and pipeline hooks stay registered.

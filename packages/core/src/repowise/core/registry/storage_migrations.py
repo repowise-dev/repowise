@@ -3,8 +3,9 @@
 ``init_db`` applies each registered revision not yet in ``plugin_storage_revisions``
 after the core schema, in its own transaction under the writer lock. A changed
 checksum fails every open; a store that cannot take the write leaves the plugin
-``pending``. The contract for plugin authors is in ``docs/reference/PLUGINS.md``
-under "Storage revisions".
+``pending`` until a later open applies the revision there or finds it applied.
+The contract for plugin authors is in ``docs/reference/PLUGINS.md`` under
+"Storage revisions".
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import re
 import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from itertools import groupby
+from operator import attrgetter
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Column, MetaData, String, Table, inspect, select, text
@@ -147,46 +150,69 @@ class StorageMigrationRegistry:
             for key, checksum in applied.items():
                 self._check(key, checksum)
             dialect, store = conn.dialect.name, _store(conn)
-            blocked: set[str] = set()
-            for migration in self.revisions():
-                key = (migration.namespace, migration.revision)
-                if key in applied or migration.namespace in blocked:
-                    continue
-                try:
-                    async with conn.begin():
-                        if dialect == "sqlite":
-                            await conn.exec_driver_sql("BEGIN IMMEDIATE")
-                        elif dialect == "postgresql":
-                            await conn.execute(
-                                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _PG_LOCK_KEY}
-                            )
-                        await conn.run_sync(ledger.metadata.create_all)
-                        # Another process may have applied it while this one waited.
-                        recorded = await conn.scalar(
-                            select(ledger.c.checksum).where(
-                                ledger.c.namespace == key[0], ledger.c.revision == key[1]
-                            )
-                        )
-                        if recorded is not None:
-                            self._check(key, recorded)
-                            continue
-                        await migration.apply(conn)
-                        await conn.execute(
-                            ledger.insert().values(
-                                namespace=key[0], revision=key[1], checksum=migration.checksum
-                            )
-                        )
-                except StorageMigrationError:
-                    raise
-                except DBAPIError as exc:
-                    reason = _write_refused(exc)
-                    if reason is None:
-                        raise self._failed(key, exc) from exc
-                    blocked.add(migration.namespace)
-                    self._mark_pending(store, key, reason)
-                except Exception as exc:
+            complete = True
+            for namespace, group in groupby(self.revisions(), key=attrgetter("namespace")):
+                unapplied = [m for m in group if (m.namespace, m.revision) not in applied]
+                if await self._apply_namespace(conn, dialect, store, unapplied):
+                    self._settle(store, namespace)
+                else:
+                    complete = False
+            return complete
+
+    def settled(self, conn: AsyncConnection) -> None:
+        """Record that every registered revision is applied on *conn*'s store."""
+        store = _store(conn)
+        for namespace in {key[0] for key in self._revisions}:
+            self._settle(store, namespace)
+
+    async def _apply_namespace(
+        self, conn: AsyncConnection, dialect: str, store: str, migrations: list[StorageMigration]
+    ) -> bool:
+        """Apply one namespace's *migrations* in order; return False when one is left pending."""
+        for migration in migrations:
+            key = (migration.namespace, migration.revision)
+            try:
+                await self._apply_one(conn, dialect, migration)
+            except StorageMigrationError:
+                raise
+            except DBAPIError as exc:
+                reason = _write_refused(exc)
+                if reason is None:
                     raise self._failed(key, exc) from exc
-            return not blocked
+                self._mark_pending(store, key, reason)
+                return False
+            except Exception as exc:
+                raise self._failed(key, exc) from exc
+        return True
+
+    async def _apply_one(
+        self, conn: AsyncConnection, dialect: str, migration: StorageMigration
+    ) -> None:
+        """Apply *migration* and record it, in one transaction under the writer lock."""
+        key = (migration.namespace, migration.revision)
+        async with conn.begin():
+            if dialect == "sqlite":
+                await conn.exec_driver_sql("BEGIN IMMEDIATE")
+            elif dialect == "postgresql":
+                await conn.execute(
+                    text("SELECT pg_advisory_xact_lock(:key)"), {"key": _PG_LOCK_KEY}
+                )
+            await conn.run_sync(ledger.metadata.create_all)
+            # Another process may have applied it while this one waited.
+            recorded = await conn.scalar(
+                select(ledger.c.checksum).where(
+                    ledger.c.namespace == key[0], ledger.c.revision == key[1]
+                )
+            )
+            if recorded is not None:
+                self._check(key, recorded)
+                return
+            await migration.apply(conn)
+            await conn.execute(
+                ledger.insert().values(
+                    namespace=key[0], revision=key[1], checksum=migration.checksum
+                )
+            )
 
     def _label(self, key: tuple[str, str]) -> str:
         owner = self._owners.get(key[0])
@@ -211,6 +237,20 @@ class StorageMigrationRegistry:
             owner.status = "pending"
             owner.error = message
         _log.warning("repowise plugin %s: %s (%s)", owner.name if owner else key[0], message, store)
+
+    def _settle(self, store: str, namespace: str) -> None:
+        """Drop *namespace*'s pending mark on *store*, now applied there, and ready its plugin.
+
+        The plugin returns to ``loaded`` once no store still has one of its namespaces
+        pending; a ``failed`` plugin is left alone.
+        """
+        self._pending.pop((store, namespace), None)
+        owner = self._owners.get(namespace)
+        if owner is None or owner.status != "pending":
+            return
+        if all(self._owners.get(other) is not owner for _, other in self._pending):
+            owner.status = "loaded"
+            owner.error = None
 
 
 storage_migrations = StorageMigrationRegistry()
