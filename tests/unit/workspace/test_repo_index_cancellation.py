@@ -147,3 +147,43 @@ async def test_cancelled_workspace_open_closes_already_opened_siblings(
         monkeypatch.setattr(indexes["alpha"].session, "close", original_close)
         for index in indexes.values():
             await index.close()
+
+
+async def test_cancelled_workspace_close_still_closes_every_repo(tmp_path, monkeypatch):
+    indexes = {
+        alias: await make_repo_index(tmp_path / alias, {}, alias=alias)
+        for alias in ("alpha", "beta")
+    }
+    returned = []
+    for alias, index in indexes.items():
+        event.listen(
+            index._engine.sync_engine,
+            "checkin",
+            lambda c, r, alias=alias: returned.append(alias),
+        )
+    original_close = indexes["alpha"].session.close
+    closing, resume = asyncio.Event(), asyncio.Event()
+
+    async def block_close():
+        closing.set()
+        await resume.wait()
+        await original_close()
+
+    monkeypatch.setattr(indexes["alpha"].session, "close", block_close)
+    workspace = module.WorkspaceIndex(dict(indexes))
+    task = asyncio.create_task(workspace.close())
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert returned == ["alpha", "beta"]
+        assert workspace.get("alpha") is None
+        assert workspace.get("beta") is None
+    finally:
+        resume.set()
+        monkeypatch.setattr(indexes["alpha"].session, "close", original_close)
+        await indexes["beta"].close()

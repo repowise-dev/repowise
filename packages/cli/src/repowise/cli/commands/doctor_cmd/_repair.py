@@ -125,6 +125,9 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
         # mock: writing 8-wide mock vectors into a real table makes LanceDB
         # drop it. build_vector_store refuses that combination and returns None.
         embedder_name = resolve_embedder_for_repo(repo_path)
+        reindex_instead = _announce_embedding(drift, embedder_name)
+        if reindex_instead and not drift.orphaned_vector:
+            return 0
         embedder = build_embedder(embedder_name, repo_path)
         vs = build_vector_store(_DoctorPath(repo_path), embedder)
         if vs is None:
@@ -132,7 +135,6 @@ async def _repair_vectors(sf, repo_path: _DoctorPath, drift: StoreDrift) -> int:
                 "no embedder available that can write this store; "
                 "set an embedder key and run `repowise reindex`"
             )
-        reindex_instead = _announce_embedding(drift, embedder_name)
         if drift.missing_from_vector and not reindex_instead:
             async for _page_id in _embed_missing(sf, vs, drift.missing_from_vector):
                 repaired += 1
@@ -152,13 +154,15 @@ async def _repair_stores(ctx: CheckContext) -> int:
     if drift.missing_from_fts or drift.orphaned_fts:
         repaired += await _repair_fts(engine, sf, drift)
     lance_dir = ctx.repowise_dir / "lancedb"
-    if lance_dir.exists() and (drift.missing_from_vector or drift.orphaned_vector):
+    if (lance_dir.exists() or drift.vector_store_empty) and (
+        drift.missing_from_vector or drift.orphaned_vector
+    ):
         repaired += await _repair_vectors(sf, ctx.repo_path, drift)
     await engine.dispose()
     return repaired
 
 
-def _report_store_repair(ctx: CheckContext) -> None:
+def _report_store_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
     has_mismatches = ctx.drift.has_mismatches()
     if has_mismatches:
         console.print("\n[bold]Repairing store mismatches...[/bold]")
@@ -172,8 +176,13 @@ def _report_store_repair(ctx: CheckContext) -> None:
                 f"[yellow]No store drift to repair. "
                 f"{_stale_page_guidance(ctx.stale_counts)}[/yellow]"
             )
-        else:
+        elif repo_ok:
             console.print("[green]Nothing to repair.[/green]")
+        else:
+            console.print(
+                "[yellow]Nothing here for --repair to fix; see the FAIL rows "
+                "above and run the fix each one names.[/yellow]"
+            )
 
 
 def _refresh_agents(repo_path: _DoctorPath) -> None:
@@ -208,9 +217,14 @@ def _reregister_claude(repo_path: _DoctorPath) -> None:
         )
 
 
-def run_repair(ctx: CheckContext) -> None:
-    """Store drift first, then agent integrations, then the Claude Code entry."""
-    _report_store_repair(ctx)
+def run_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
+    """Store drift first, then agent integrations, then the Claude Code entry.
+
+    *repo_ok* is the repo's overall health. When it is False, the
+    "nothing to do" branch points at the failing rows instead of
+    reporting the repo clean.
+    """
+    _report_store_repair(ctx, repo_ok=repo_ok)
     if ctx.agents_need_refresh:
         _refresh_agents(ctx.repo_path)
     if ctx.registration_wedged:
