@@ -280,3 +280,35 @@ def test_same_shape_edit_refreshes_the_changed_file_nodes(tmp_path: Path, monkey
     assert expected_fingerprint == fingerprint, "fixture must keep the graph's shape"
     assert expected != before, "fixture must move the changed file's node"
     assert _kg_graph(incremental) == (fingerprint, expected)
+
+
+def test_update_after_a_force_push_matches_init(tmp_path: Path, monkeypatch) -> None:
+    """History rewritten under a warm commit cache: the update still writes
+    what a fresh init at the new head writes. A commit limit of 2 sends the
+    walk below the window, so the deep-region cache is exercised too."""
+    incremental = tmp_path / "incremental" / "repo"
+    _seed(incremental)
+    _advance(incremental)
+    runner = CliRunner()
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, incremental, *_INIT, "--commit-limit", "2")
+    assert (incremental / ".repowise" / "commit_deep_cache.json").is_file()
+
+    # Force push: drop the last two commits and land a different one.
+    _git(incremental, "reset", "-q", "--hard", "HEAD~2")
+    _write(incremental, {"src/app/caller.py": _A["src/app/caller.py"] + "\n# rewritten\n"})
+    _commit(incremental, "fix: caller rewritten after the force push")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    control = tmp_path / "control" / "repo"
+    shutil.copytree(incremental, control, ignore=shutil.ignore_patterns(".repowise"))
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{control / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, control, *_INIT, "--commit-limit", "2")
+
+    expected, actual = _store(control), _store(incremental)
+    bad = [table for table, rows in expected.items() if actual[table] != rows]
+    assert not bad, bad
