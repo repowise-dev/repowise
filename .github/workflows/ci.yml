@@ -45,6 +45,22 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-packages --python ${{ matrix.python-version }}
 
+      # Apex and COBOL grammars download from GitHub releases on first use, and
+      # a failed load is not retried within a process. Left to the tests, one
+      # 504 empties every Apex or COBOL result on that xdist worker. Staged once
+      # here with retries, the tests load them from disk.
+      - name: Stage runtime grammars
+        run: |
+          dir="$RUNNER_TEMP/grammars/libs"
+          for attempt in 1 2 3 4 5; do
+            if uv run repowise grammars fetch "$dir"; then
+              echo "REPOWISE_GRAMMAR_DIR=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            [ "$attempt" -lt 5 ] && sleep $((attempt * 15))
+          done
+          exit 1
+
       - name: Run provider tests (no API keys required)
         run: uv run pytest tests/providers/ -v --tb=short
 
@@ -129,6 +145,19 @@ jobs:
 
       - name: Pin tree-sitter to the declared floor
         run: uv pip install "tree-sitter==0.25.0"
+
+      # Same staging as the Python tests job: COBOL and Apex download on first use.
+      - name: Stage runtime grammars
+        run: |
+          dir="$RUNNER_TEMP/grammars/libs"
+          for attempt in 1 2 3 4 5; do
+            if uv run --no-sync repowise grammars fetch "$dir"; then
+              echo "REPOWISE_GRAMMAR_DIR=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            [ "$attempt" -lt 5 ] && sleep $((attempt * 15))
+          done
+          exit 1
 
       - name: Run query-compilation test
         # --no-sync: plain `uv run` re-syncs the venv from uv.lock before
