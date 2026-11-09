@@ -680,8 +680,11 @@ class GitIndexer:
         history_files, history_changed = scope.history_files, scope.history_changed
 
         refresh_idle = self._wants_idle_refresh(idle_decay_sink, all_files)
+        # ``all_files`` is the traverser's set, which leaves out tracked code
+        # files a full index still covers (``fixtures/`` dirs, size limits);
+        # a changed one missing from the walk would index with no commits.
         target_files = (
-            set(all_files) | history_files
+            set(all_files) | set(changed_file_paths) | history_files
             if refresh_idle
             else set(changed_file_paths) | history_changed
         )

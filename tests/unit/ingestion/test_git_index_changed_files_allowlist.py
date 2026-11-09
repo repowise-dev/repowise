@@ -59,3 +59,33 @@ async def test_changed_files_and_idle_refresh_follow_the_full_index_allowlist(tm
     for path, row in by_path.items():
         assert row["history_only"] == full[path]["history_only"]
         assert row["commit_count_total"] == full[path]["commit_count_total"]
+
+
+async def test_changed_file_outside_the_traversed_set_keeps_its_history(tmp_path):
+    """The traverser skips ``fixtures/`` dirs but a full index covers the file;
+    a change to it must index with its commits, not as an empty row."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "src" / "fixtures").mkdir(parents=True)
+    (tmp_path / "src" / "a.ts").write_text("export const a = 1\n")
+    (tmp_path / "src" / "fixtures" / "b.ts").write_text("export const b = 1\n")
+    repo.index.add(["src/a.ts", "src/fixtures/b.ts"])
+    repo.index.commit("feat: add files")
+    repo.close()
+
+    rows = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_changed_files(
+        ["src/fixtures/b.ts"],
+        all_files={"src/a.ts"},
+        co_change_sink={},
+        idle_decay_sink={},
+    )
+
+    _summary, full_rows = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo("r")
+    full = {r["file_path"]: r for r in full_rows}["src/fixtures/b.ts"]
+    row = {r["file_path"]: r for r in rows}["src/fixtures/b.ts"]
+    assert row["commit_count_total"] == full["commit_count_total"] == 1
+    assert row["primary_owner_name"] == full["primary_owner_name"] == "Alice"
