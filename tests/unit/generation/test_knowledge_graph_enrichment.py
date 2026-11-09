@@ -386,22 +386,23 @@ class TestSummaryBackfill:
         assert kg.nodes[0]["summary"] == "New summary"
         assert kg.nodes[1]["summary"] == "Kept"
 
-    def test_api_contract_page_only_fills_a_blank(self):
-        # An API contract page shares its file's target path; its boilerplate
-        # must not replace the file's summary, nor beat the file page.
+    def test_file_page_outranks_an_api_contract_page(self):
+        # An API file's only page is its contract page, which replaces the
+        # floor; where a file page exists too, the file page wins either order.
         kg = _make_kg_skeleton(nodes=[
-            {"id": "file:src/api.py", "type": "file", "filePath": "src/api.py", "summary": "Carried"},
-            {"id": "file:src/new.py", "type": "file", "filePath": "src/new.py", "summary": ""},
-            {"id": "file:src/both.py", "type": "file", "filePath": "src/both.py", "summary": ""},
+            {"id": "file:src/api.py", "type": "file", "filePath": "src/api.py", "summary": "Floor"},
+            {"id": "file:src/a.py", "type": "file", "filePath": "src/a.py", "summary": ""},
+            {"id": "file:src/b.py", "type": "file", "filePath": "src/b.py", "summary": ""},
         ])
         pages = [
             SimpleNamespace(target_path="src/api.py", summary="API surface", page_type="api_contract"),
-            SimpleNamespace(target_path="src/new.py", summary="API surface", page_type="api_contract"),
-            SimpleNamespace(target_path="src/both.py", summary="File page", page_type="file_page"),
-            SimpleNamespace(target_path="src/both.py", summary="API surface", page_type="api_contract"),
+            SimpleNamespace(target_path="src/a.py", summary="File page", page_type="file_page"),
+            SimpleNamespace(target_path="src/a.py", summary="API surface", page_type="api_contract"),
+            SimpleNamespace(target_path="src/b.py", summary="API surface", page_type="api_contract"),
+            SimpleNamespace(target_path="src/b.py", summary="File page", page_type="file_page"),
         ]
         _backfill_summaries(kg, pages)
-        assert [n["summary"] for n in kg.nodes] == ["Carried", "API surface", "File page"]
+        assert [n["summary"] for n in kg.nodes] == ["API surface", "File page", "File page"]
 
     def test_handles_no_pages(self):
         kg = _make_kg_skeleton()

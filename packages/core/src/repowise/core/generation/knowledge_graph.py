@@ -479,35 +479,34 @@ def build_deterministic_tour(
 # ---------------------------------------------------------------------------
 
 
-# Pages written about one file. Their summary replaces what the node holds;
-# other pages that share a file's target (an API contract) only fill a blank.
+# A file's own page outranks another page on the same target: an API contract
+# page is the only page an API file gets, but never beats a file page.
 _FILE_PAGE_TYPES = frozenset({"file_page", "infra_page"})
 
 
 def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
     """Populate node summaries from generated wiki pages (zero LLM cost)."""
-    file_pages: dict[str, str] = {}
-    other_pages: dict[str, str] = {}
+    page_summaries: dict[str, tuple[bool, str]] = {}
     for p in generated_pages:
         summary = getattr(p, "summary", None) or ""
         target = getattr(p, "target_path", None) or ""
-        if summary and target:
-            owner = file_pages if getattr(p, "page_type", None) in _FILE_PAGE_TYPES else other_pages
-            owner[target] = summary
+        if not (summary and target):
+            continue
+        own = getattr(p, "page_type", None) in _FILE_PAGE_TYPES
+        if own or not page_summaries.get(target, (False, ""))[0]:
+            page_summaries[target] = (own, summary)
 
     for node in kg_result.nodes:
         # Any file-level node (any presentation type — file/config/service/
-        # pipeline/schema/document). The file's own page written this run is
-        # the richest and newest source, so it replaces what the node holds:
-        # the floor an index-only init or update already applied, or a summary
-        # carried from an older page.
+        # pipeline/schema/document). A page written this run is the richest and
+        # newest source, so it replaces what the node holds: the floor an
+        # index-only init or update already applied, or a summary carried
+        # from an older page.
         if not str(node.get("id", "")).startswith("file:"):
             continue
         path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
-        if path in file_pages:
-            node["summary"] = file_pages[path]
-        elif path in other_pages and not node.get("summary"):
-            node["summary"] = other_pages[path]
+        if path in page_summaries:
+            node["summary"] = page_summaries[path][1]
 
 
 # ---------------------------------------------------------------------------
