@@ -165,3 +165,50 @@ def test_skewed_commit_times_fall_back_to_a_fresh_walk(tmp_path) -> None:
 
     assert _sampled(repo, cache_dir) == _sampled(repo, None)
     repo.close()
+
+
+def test_every_deep_region_is_cached_and_matches_a_fresh_walk(tmp_path, monkeypatch) -> None:
+    """Below the first deep region each region keeps its own cache, so an
+    update diffs only the commits that moved between regions."""
+    import git as gitpython
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = gitpython.Repo.init(root)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    cache_dir = root / ".repowise"
+    cache_dir.mkdir()
+    # b.py is touched only by the root commit, so every region is walked to find it.
+    (root / "b.py").write_text("y = 0\n")
+    repo.index.add(["b.py"])
+    for i in range(12):
+        (root / "a.py").write_text(f"x = {i}\n")
+        repo.index.add(["a.py"])
+        repo.index.commit(f"c{i}")
+
+    def sampled(cache):
+        sample = git_commit_index.load_sampled_commit_index(
+            repo, 2, {"a.py", "b.py"}, deep_limit=3, deep_threshold=1, cache_dir=cache
+        )
+        return {p: [(r.sha, r.added) for r in recs] for p, recs in sample.commits.items()}
+
+    sampled(cache_dir)
+    assert (cache_dir / "commit_deep_cache_2.json").is_file()
+    (root / "a.py").write_text("x = 99\n")
+    repo.index.add(["a.py"])
+    repo.index.commit("c12")
+
+    walks: list[tuple[str, ...]] = []
+    real_log = git_commit_index._log_records
+    monkeypatch.setattr(
+        git_commit_index,
+        "_log_records",
+        lambda r, *revs: walks.append(revs) or real_log(r, *revs),
+    )
+    warm = sampled(cache_dir)
+    assert not any(arg.startswith("--skip=") for revs in walks for arg in revs)
+    monkeypatch.undo()
+    assert warm == sampled(None)
+    repo.close()

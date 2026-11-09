@@ -147,3 +147,92 @@ def test_no_cache_dir_writes_nothing(tmp_path: Path) -> None:
     _commit(repo, "a.py", "x = 1\n", "c0", 1_700_000_000)
     _walk(repo, {"a.py"}, None)
     assert not list(tmp_path.glob("**/" + _WINDOW_CACHE_NAME))
+
+
+def _numstat_walks(monkeypatch) -> list[tuple[str, ...]]:
+    """Every ``git log --numstat`` the commit index asks for, by its revision args."""
+    from repowise.core.ingestion import git_commit_index
+
+    walks: list[tuple[str, ...]] = []
+    real = git_commit_index._log_records
+    monkeypatch.setattr(
+        git_commit_index,
+        "_log_records",
+        lambda repo, *revs: walks.append(revs) or real(repo, *revs),
+    )
+    return walks
+
+
+def test_skewed_dates_still_reuse_the_cache(tmp_path: Path, monkeypatch) -> None:
+    """A child dated before its parent leaves git's walk out of time order;
+    the cache must still serve, diffing only the new commit."""
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i, ts in enumerate((100, 300, 200, 400)):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + ts)
+    _walk(repo, {"a.py"}, cache_dir)
+    new = _commit(repo, "a.py", "x = 9\n", "c4", base + 150)
+
+    walks = _numstat_walks(monkeypatch)
+    assert _walk(repo, {"a.py"}, cache_dir) == _walk(repo, {"a.py"}, None)
+    assert walks[0] == ("--no-walk=unsorted", new)
+
+
+def test_a_force_push_diffs_only_the_rewritten_commits(tmp_path: Path, monkeypatch) -> None:
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    for i in range(4):
+        _commit(repo, "a.py", f"x = {i}\n", f"c{i}", base + i * 10)
+    _walk(repo, {"a.py", "b.py"}, cache_dir)
+
+    repo.git.reset("--hard", "HEAD~2")
+    rewritten = _commit(repo, "b.py", "y = 1\n", "c2 rewritten", base + 25)
+
+    walks = _numstat_walks(monkeypatch)
+    files = {"a.py", "b.py"}
+    assert _walk(repo, files, cache_dir) == _walk(repo, files, None)
+    assert walks[0] == ("--no-walk=unsorted", rewritten)
+
+
+def test_a_branch_switch_matches_a_fresh_walk(tmp_path: Path) -> None:
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    base = 1_700_000_000
+    _commit(repo, "a.py", "x = 0\n", "c0", base)
+    trunk = repo.active_branch.name
+    repo.git.checkout("-b", "side")
+    _commit(repo, "b.py", "y = 1\n", "side", base + 10)
+    _walk(repo, {"a.py", "b.py"}, cache_dir)
+    repo.git.checkout(trunk)
+    _commit(repo, "a.py", "x = 1\n", "trunk", base + 20)
+
+    assert _walk(repo, {"a.py", "b.py"}, cache_dir) == _walk(repo, {"a.py", "b.py"}, None)
+
+
+def test_deepening_a_shallow_clone_rediffs_its_old_boundary(tmp_path: Path) -> None:
+    """A shallow clone's boundary commit diffs against the empty tree; once the
+    clone is deepened its record changes, so the cached one must not be reused."""
+    import git as gitpython
+
+    origin = _init(tmp_path / "origin")
+    base = 1_700_000_000
+    for i in range(4):
+        _commit(origin, "a.py", "x = 1\n" * (i + 1), f"c{i}", base + i * 10)
+    clone_dir = tmp_path / "clone"
+    gitpython.Repo.clone_from(f"file://{tmp_path / 'origin'}", clone_dir, depth=2)
+    clone = gitpython.Repo(clone_dir)
+    cache_dir = clone_dir / ".repowise"
+    cache_dir.mkdir()
+    shallow = _walk(clone, {"a.py"}, cache_dir)
+    assert shallow == _walk(clone, {"a.py"}, None)
+
+    clone.git.fetch("--deepen=2")
+    deepened = _walk(clone, {"a.py"}, cache_dir)
+    assert deepened == _walk(clone, {"a.py"}, None)
+    assert deepened != shallow
+    clone.close()
