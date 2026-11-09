@@ -12,11 +12,12 @@ that lives in the code eventually disagree, and only one of them runs on an
 existing store. This one has a second reason. The decision vector keys are part
 of the rewrite, and Alembic has no handle on the vector store.
 
-Nothing is deleted. A record moves by being copied to its derived id, having
+No record is deleted. A record moves by being copied to its derived id, having
 every dependent row repointed at the copy, and only then releasing the id it
 came from; an alias records where it went, so an id already written down
-somewhere keeps resolving. Idempotent: a second run finds every id already
-derived and does nothing.
+somewhere keeps resolving. Stale supersede pointers are the exception:
+:func:`repair_superseded_aliases` first deletes those on records that never
+moved. Idempotent: a second run finds every id already derived and moves nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from repowise.core.analysis.decisions.semantic_match import (
     upsert_decision_vectors,
 )
 
+from .batches import chunked
 from .crud.authority import accepted_decision_ids
 from .crud.decision_identity import (
     can_fold_away,
@@ -50,6 +52,7 @@ from .crud.decisions import derive_decision_id
 from .models import (
     MERGED_REASON,
     REKEYED_REASON,
+    SUPERSEDED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -436,6 +439,50 @@ async def _write_alias(
     )
 
 
+async def repair_superseded_aliases(
+    session: AsyncSession, repository_id: str, *, apply: bool = True
+) -> tuple[list[str], list[str]]:
+    """Delete the supersede pointers a pre-fix store left on records still on their id.
+
+    Returns ``(deleted, unplaced)`` alias ids. A pointer whose record moved names
+    the successor, so it stays and resolves to nothing. ``apply=False`` only reports.
+    """
+    pointers = (
+        (
+            await session.execute(
+                select(DecisionAlias).where(
+                    DecisionAlias.repository_id == repository_id,
+                    DecisionAlias.reason == SUPERSEDED_REASON,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # No pointers, no pieces: a clean store pays for the one query above.
+    live: set[str] = set()
+    for piece in chunked([p.alias_id for p in pointers]):
+        live.update(
+            (await session.execute(select(DecisionRecord.id).where(DecisionRecord.id.in_(piece))))
+            .scalars()
+            .all()
+        )
+    stale = [p for p in pointers if p.alias_id in live]
+    deleted = [p.alias_id for p in stale]
+    unplaced = [p.alias_id for p in pointers if p.alias_id not in live]
+    if apply and stale:
+        for pointer in stale:
+            await session.delete(pointer)
+        await session.flush()
+        logger.info(
+            "decision_supersede_aliases_repaired",
+            repository_id=repository_id,
+            deleted=len(deleted),
+            unplaced=len(unplaced),
+        )
+    return deleted, unplaced
+
+
 async def _fold_one(
     session: AsyncSession,
     from_id: str,
@@ -605,19 +652,22 @@ async def apply_id_migration(
 ) -> IdMigrationPlan:
     """Settle every record onto its derived id, and re-key its vector.
 
-    Three things happen, in this order, and the order is forced. The pinned
-    quote is written down first, so the identity a record derives stops
-    depending on a backfill being recomputed the same way next run. Rewrites
-    come next, so every keeper is sitting on its derived id. Folds come last,
-    because a fold points dependents at the keeper's *new* id.
+    The supersede pointers an older store left are repaired before anything
+    else. Then three things happen, in this order, and the order is forced.
+    The pinned quote is written down first, so the identity a record derives
+    stops depending on a backfill being recomputed the same way next run.
+    Rewrites come next, so every keeper is sitting on its derived id. Folds
+    come last, because a fold points dependents at the keeper's *new* id.
 
     A record sitting on another's target is parked on a temporary id first,
     so chains and cycles of occupied ids settle in one run. Aliases name the
     original id and the final one, never the parking id.
 
     Idempotent: a second run classifies every id as ``stable``, finds no
-    rewrites and no folds, and touches nothing.
+    rewrites and no folds, and moves nothing.
     """
+    # First, so a record that moves below finds its old id free for its alias.
+    await repair_superseded_aliases(session, repository_id)
     plan = plan or await plan_id_migration(session, repository_id)
     rewrites = plan.rewrites()
     folds = plan.folds()

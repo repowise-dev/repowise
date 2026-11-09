@@ -10,19 +10,24 @@ and wrote the superseded record over the active successor.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 
 import pytest
 from sqlalchemy import event, select
 
 from repowise.core.analysis.decisions.manifest import load_manifest, write_manifest
+from repowise.core.persistence import decision_id_migration
 from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import (
     latest_acceptance,
     resolve_decision_id,
     supersede_decision,
 )
-from repowise.core.persistence.decision_id_migration import apply_id_migration
+from repowise.core.persistence.decision_id_migration import (
+    apply_id_migration,
+    repair_superseded_aliases,
+)
 from repowise.core.persistence.decision_manifest import export_manifest, import_manifest
 from repowise.core.persistence.models import (
     MERGED_REASON,
@@ -78,6 +83,18 @@ async def _moved_with_pointer(session, repo_id, successor):
     return stranded, rec.id
 
 
+async def _move_as_pre_fix(session, repo_id, monkeypatch) -> None:
+    """The id migration as the old version ran it: no supersede repair first,
+    so the move finds its old id taken and writes no alias."""
+
+    async def _pre_fix(*_args, **_kwargs):
+        return [], []
+
+    with monkeypatch.context() as m:
+        m.setattr(decision_id_migration, "repair_superseded_aliases", _pre_fix)
+        await apply_id_migration(session, repo_id)
+
+
 async def _target(session, alias_id) -> tuple[str, str]:
     alias = await session.get(DecisionAlias, alias_id)
     return alias.decision_id, alias.reason
@@ -104,6 +121,21 @@ async def test_a_moved_superseded_record_keeps_its_old_id(async_session, tmp_pat
 
     assert await resolve_decision_id(async_session, old_id) == moved_id
     assert moved_id != successor_id
+
+
+async def test_a_legacy_supersede_pointer_gives_way_to_the_move(async_session):
+    """A store written before the fix already holds ``old -> successor``."""
+    repo = await insert_repo(async_session)
+    successor = await _successor(async_session, repo.id)
+    old = await legacy_adr(async_session, repo.id)
+    await supersede_decision(async_session, old, successor_id=successor.id, accepter="tester")
+    old_id = old.id
+    await supersede_pointer(async_session, repo.id, old_id, successor.id)
+
+    await apply_id_migration(async_session, repo.id)
+
+    moved = await _by_title(async_session, repo.id, "One user-pickable agent per plugin")
+    assert await _target(async_session, old_id) == (moved.id, REKEYED_REASON)
 
 
 async def test_importing_both_entries_leaves_the_successor_alone(async_session, tmp_path):
@@ -168,6 +200,88 @@ async def test_import_refuses_an_alias_onto_a_record_the_file_lists(async_sessio
     )
 
 
+async def test_the_repair_deletes_live_pointers_and_leaves_moved_ones_unplaced(async_session):
+    """The state a pre-fix store is left in, rebuilt row by row."""
+    repo = await insert_repo(async_session)
+    successor = await _successor(async_session, repo.id)
+    # Already moved: its old id is gone, and its pointer names the successor.
+    stranded, _ = await _moved_with_pointer(async_session, repo.id, successor)
+    # Superseded under its current id: a bare pointer.
+    await bulk_upsert_decisions(async_session, repo.id, [_dict("Older plugin layout")])
+    direct = await accept(
+        async_session, (await _by_title(async_session, repo.id, "Older plugin layout")).id
+    )
+    await supersede_decision(async_session, direct, successor_id=successor.id, accepter="tester")
+    await supersede_pointer(async_session, repo.id, direct.id, successor.id)
+    direct_id, successor_id = direct.id, successor.id
+
+    planned = await repair_superseded_aliases(async_session, repo.id, apply=False)
+    assert planned == ([direct_id], [stranded])
+    assert (await _target(async_session, direct_id))[1] == SUPERSEDED_REASON
+
+    assert await repair_superseded_aliases(async_session, repo.id) == planned
+
+    assert await _target(async_session, stranded) == (successor_id, SUPERSEDED_REASON)
+    assert await resolve_decision_id(async_session, stranded) is None
+    assert await async_session.get(DecisionAlias, direct_id) is None
+    assert (await async_session.get(DecisionRecord, direct_id)).superseded_by == successor_id
+    assert await repair_superseded_aliases(async_session, repo.id) == ([], [stranded])
+
+
+async def test_the_repair_costs_a_clean_store_one_statement(async_engine, async_session):
+    """It runs on every index save, and a store with no pointers has nothing to look up."""
+    repo = await insert_repo(async_session)
+    statements: list[str] = []
+
+    def _count(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        assert await repair_superseded_aliases(async_session, repo.id) == ([], [])
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", _count)
+    assert len(statements) == 1, statements
+
+
+async def test_the_repair_reads_live_records_past_the_parameter_cap(async_session):
+    """A pre-fix store with more supersede pointers than SQLite binds per statement.
+
+    The cap is lowered to 600 on the test connection, so 700 pointers go past it
+    the way 1000 go past the 999 of a SQLite build older than 3.32.
+    """
+    repo = await insert_repo(async_session)
+    successor = await _successor(async_session, repo.id)
+    stranded = [f"{i:032x}" for i in range(700)]
+    for alias_id in stranded:
+        await supersede_pointer(async_session, repo.id, alias_id, successor.id)
+    raw = await (await async_session.connection()).get_raw_connection()
+    raw.driver_connection._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 600)
+
+    deleted, unplaced = await repair_superseded_aliases(async_session, repo.id, apply=False)
+
+    assert (deleted, sorted(unplaced)) == ([], stranded)
+
+
+async def test_import_reports_a_deleted_pointer(async_session, tmp_path):
+    repo = await insert_repo(async_session)
+    successor = await _successor(async_session, repo.id)
+    old = await legacy_adr(async_session, repo.id)
+    await supersede_decision(async_session, old, successor_id=successor.id, accepter="tester")
+    old_id = old.id
+    await supersede_pointer(async_session, repo.id, old_id, successor.id)
+    await export_manifest(async_session, repo.id, tmp_path)
+
+    preview = await import_manifest(async_session, repo.id, tmp_path, dry_run=True)
+    assert preview.as_dict()["repaired"] == [old_id]
+    assert await async_session.get(DecisionAlias, old_id) is not None
+
+    outcome = await import_manifest(async_session, repo.id, tmp_path)
+
+    assert outcome.as_dict()["repaired"] == [old_id]
+    assert await async_session.get(DecisionAlias, old_id) is None
+
+
 async def test_supersede_writes_no_alias(async_session):
     repo = await insert_repo(async_session)
     successor = await _successor(async_session, repo.id)
@@ -178,8 +292,8 @@ async def test_supersede_writes_no_alias(async_session):
     assert await async_session.get(DecisionAlias, old.id) is None
 
 
-async def test_readers_skip_a_pre_fix_supersede_pointer(async_session, tmp_path):
-    """A pointer an older supersede left does not make the old id the successor's."""
+async def test_readers_skip_a_pointer_the_repair_has_not_reached(async_session, tmp_path):
+    """Before any repair runs, the old id is not the successor's."""
     repo = await insert_repo(async_session)
     successor = await _successor(async_session, repo.id)
     stranded, _ = await _moved_with_pointer(async_session, repo.id, successor)
@@ -190,7 +304,9 @@ async def test_readers_skip_a_pre_fix_supersede_pointer(async_session, tmp_path)
     assert stranded not in entries[successor.id].aliases
 
 
-async def test_import_before_a_full_index_does_not_recreate_a_moved_record(async_session, tmp_path):
+async def test_import_before_a_full_index_does_not_recreate_a_moved_record(
+    async_session, tmp_path, monkeypatch
+):
     """The upgrade path: a store the old supersede and move left stranded, then an import."""
     repo = await insert_repo(async_session)
     successor = await _successor(async_session, repo.id)
@@ -200,7 +316,7 @@ async def test_import_before_a_full_index_does_not_recreate_a_moved_record(async
     await supersede_pointer(async_session, repo.id, old_id, successor.id)
     await export_manifest(async_session, repo.id, tmp_path)
 
-    await apply_id_migration(async_session, repo.id)
+    await _move_as_pre_fix(async_session, repo.id, monkeypatch)
     moved = await _by_title(async_session, repo.id, "One user-pickable agent per plugin")
     moved_id = moved.id
     assert moved_id != old_id
@@ -211,7 +327,7 @@ async def test_import_before_a_full_index_does_not_recreate_a_moved_record(async
 
     assert preview.as_dict() == outcome.as_dict()
     assert outcome.skipped == [(old_id, "retired id, record moved, resolves to nothing")]
-    assert not outcome.created
+    assert not outcome.created and not outcome.repaired
 
     titled = (
         await async_session.execute(

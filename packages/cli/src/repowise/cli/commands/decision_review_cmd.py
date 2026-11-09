@@ -79,8 +79,10 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     Dry run by default. Records promoted by recurrence rather than by a person
     become candidates, which is a visible loss of standing decisions and the
-    intended one: they were never accepted. Nothing is deleted, every id keeps
-    resolving, and re-running changes nothing.
+    intended one: they were never accepted. No decision is deleted, and
+    re-running changes nothing. The supersede pointers an older version left
+    are repaired first, and each is listed; one left unplaced resolves to
+    nothing.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -88,6 +90,7 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     async def _run():
         from repowise.core.persistence import get_session
+        from repowise.core.persistence.decision_id_migration import repair_superseded_aliases
         from repowise.core.persistence.decision_migration import (
             apply_migration,
             plan_migration,
@@ -98,20 +101,26 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
+                repaired, unplaced = await repair_superseded_aliases(session, repo_id, apply=apply_)
                 plan = await plan_migration(session, repo_id)
                 if apply_:
                     plan = await apply_migration(session, repo_id, plan=plan)
-                return plan, render_plan(plan, limit=limit)
+                return plan, render_plan(plan, limit=limit), repaired, unplaced
         finally:
             await engine.dispose()
 
-    plan, report = run_async(_run())
+    plan, report, repaired, unplaced = run_async(_run())
     if fmt == "json":
         payload = plan.as_dict()
         payload["applied"] = apply_
+        payload["repaired"] = repaired
+        payload["unplaced"] = unplaced
         emit_json(payload)
         return
     console.print(report.replace("(dry run)", "(applied)" if apply_ else "(dry run)"))
+    if repaired or unplaced:
+        console.print(f"\nSupersede pointers: repaired {len(repaired)}  unplaced {len(unplaced)}")
+        _print_repairs(repaired, unplaced)
     if not apply_:
         console.print("\n[dim]Nothing was written. Re-run with --apply.[/dim]")
 
@@ -618,12 +627,26 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         return
     console.print(
         f"created {len(result['created'])}  accepted {len(result['accepted'])}  "
-        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}"
+        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}  "
+        f"repaired {len(result['repaired'])}"
     )
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
+    _print_repairs(result["repaired"])
     if dry_run:
         console.print("[dim]Nothing was written.[/dim]")
+
+
+def _print_repairs(repaired: list[str], unplaced: list[str] | None = None) -> None:
+    """One line per supersede pointer the repair deletes, or leaves resolving to nothing."""
+    for alias_id in repaired:
+        console.print(
+            f"  [cyan]stale[/cyan] {alias_id[:8]}: supersede pointer, deleted unless a dry run"
+        )
+    for alias_id in unplaced or ():
+        console.print(
+            f"  [yellow]unplaced[/yellow] {alias_id[:8]}: record moved, resolves to nothing"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -655,17 +678,33 @@ def _render_status(report: dict) -> None:
         console.print(f"  [yellow]{warning}[/yellow]")
 
     sources = Table(title="\nSources", box=None, pad_edge=False, show_edge=False)
-    for column in ("Source", "Status", "Records", "Accepted", "Last seen", "Why"):
+    for column in (
+        "Source",
+        "Status",
+        "Records",
+        "Accepted",
+        "Last seen",
+        "Last run",
+        "Last failure",
+        "Why",
+    ):
         sources.add_column(column)
     for source in report["sources"]:
         style = _STATUS_STYLE.get(source["status"], "")
         last = source.get("last_captured")
+        last_run = source.get("last_run")
+        run_cell = str(last_run)[:19] if last_run else "-"
+        if source.get("last_run_status") == "failed":
+            run_cell = f"[red]{run_cell} (failed)[/red]"
+        failure = source.get("last_failure")
         sources.add_row(
             source["key"],
             f"[{style}]{source['status']}[/{style}]" if style else source["status"],
             str(source["records"]),
             str(source["accepted"]),
             str(last)[:10] if last else "-",
+            run_cell,
+            f"[red]{str(failure)[:60]}[/red]" if failure else "-",
             f"[dim]{source['reason']}[/dim]",
         )
     console.print(sources)

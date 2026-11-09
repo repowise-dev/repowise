@@ -158,6 +158,10 @@ class TsconfigResolver:
         self._listings: dict[str, tuple[dict[str, bool], frozenset[str]] | None] = {}
         self._dir_prefixes: dict[str, str | None] = {}
 
+        # Every config file read, including ``extends`` and ``references``
+        # targets of any name: a graph patch must not treat their edits as inert.
+        self.read_paths: set[Path] = set()
+
         self._discover_configs()
         log.info(
             "tsconfig_resolver_ready",
@@ -264,7 +268,7 @@ class TsconfigResolver:
             return []
         visited = visited | {config.config_path}
 
-        data = self._parse_json_lenient(config.config_path)
+        data = self._read_config(config.config_path)
         references = data.get("references") if data else None
         if not isinstance(references, list):
             return []
@@ -317,7 +321,7 @@ class TsconfigResolver:
         """
         if config_path in visited:
             return None, None, None
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None, None, None
 
@@ -368,7 +372,7 @@ class TsconfigResolver:
             return None
         visited = visited | {config_path}
 
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None
 
@@ -673,6 +677,11 @@ class TsconfigResolver:
     # ------------------------------------------------------------------
     # JSON parsing
     # ------------------------------------------------------------------
+
+    def _read_config(self, config_path: Path) -> dict[str, Any] | None:
+        """:meth:`_parse_json_lenient`, noting *config_path* in :attr:`read_paths`."""
+        self.read_paths.add(config_path)
+        return self._parse_json_lenient(config_path)
 
     @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
