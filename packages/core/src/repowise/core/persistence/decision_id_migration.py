@@ -48,6 +48,8 @@ from .crud.decision_identity import (
 from .crud.decision_lane_fold import RewordingIndex
 from .crud.decisions import derive_decision_id
 from .models import (
+    MERGED_REASON,
+    REKEYED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -59,17 +61,6 @@ from .models import (
 )
 
 logger = structlog.get_logger(__name__)
-
-#: Written on the alias left behind by a rewrite. Deliberately not "merged":
-#: ``resolve_decision_id`` follows a merge even when the aliased record still
-#: exists, which is right for a fold and wrong here, where the old id names the
-#: same decision rather than a different one that was folded into it.
-ALIAS_REASON = "rekeyed"
-
-#: Written on the alias left behind by a fold. ``merged`` is right here in a
-#: way it is not for a rekey: the old id names a record that no longer exists,
-#: because another record was the same decision.
-FOLD_REASON = "merged"
 
 #: ``(table, column)`` pairs a fold drops instead of repointing, with the
 #: reason. Everything else in :data:`_DEPENDENT_COLUMNS` moves to the keeper.
@@ -659,10 +650,10 @@ async def apply_id_migration(
                 await _move(session, row.old_id, current[row.old_id], row.title, tables)
         for row in rewrites:
             await _move(session, current[row.old_id], row.new_id, row.title, tables)
-            await _write_alias(session, repository_id, row, ALIAS_REASON, tables)
+            await _write_alias(session, repository_id, row, REKEYED_REASON, tables)
         for row in folds:
             await _fold_one(session, current[row.old_id], row, tables)
-            await _write_alias(session, repository_id, row, FOLD_REASON, tables)
+            await _write_alias(session, repository_id, row, MERGED_REASON, tables)
         await session.flush()
     _detach_moved(session)
 

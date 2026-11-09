@@ -1608,6 +1608,12 @@ class DecisionCandidateMeta(Base):
     )
 
 
+#: ``DecisionAlias.reason`` values. ``merged``: the id's record was folded into
+#: another. ``rekeyed``: the same record moved to its derived id.
+MERGED_REASON = "merged"
+REKEYED_REASON = "rekeyed"
+
+
 class DecisionAlias(Base):
     """A retired decision id that still resolves to a live record.
 
@@ -1633,7 +1639,7 @@ class DecisionAlias(Base):
         nullable=False,
         index=True,
     )
-    reason: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, default=MERGED_REASON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
