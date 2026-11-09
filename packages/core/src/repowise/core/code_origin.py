@@ -418,9 +418,7 @@ _LICENSE_RE = re.compile(
 )
 # What says the header names a project and its release, rather than an owner:
 # a preserved banner, a license tag, or "<name> v1.2" / "<name>.js 0.10.5".
-_BANNER_RE = re.compile(
-    r"/\*!|@license|@preserve|\b[A-Za-z][\w.\-]*\s+v?\d+\.\d+(?:\.\d+)?\b"
-)
+_BANNER_RE = re.compile(r"/\*!|@license|@preserve|\b[A-Za-z][\w.\-]*\s+v?\d+\.\d+(?:\.\d+)?\b")
 # A license's own version ("Apache License, Version 2.0") is not a release.
 _LICENSE_VERSION_RE = re.compile(
     r"(?:licen[cs]e|\b[al]?gpl|\bmpl|\bepl)\W*(?:v(?:ersion)?\.?\s*)?\d+(?:\.\d+)*"
@@ -713,8 +711,7 @@ def _has_docs_site_config(names: set[str], paired: bool) -> bool:
     if names & _DOCS_SITE_MARKERS:
         return True
     return paired and any(
-        config in names and names & companions
-        for config, companions in _DOCS_SITE_PAIRED_MARKERS
+        config in names and names & companions for config, companions in _DOCS_SITE_PAIRED_MARKERS
     )
 
 
@@ -744,10 +741,9 @@ def _is_docs_example(
     """A docs root or example folder as the first segment, a build tool's example
     target, or a docs folder deeper beside a docs-site generator's config. A
     nested ``app/docs/`` with no such config is the product's own docs route."""
-    if (
-        bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
-        or _is_tool_example(normalized, dirs)
-    ):
+    if bool(
+        dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0]))
+    ) or _is_tool_example(normalized, dirs):
         return True
     if repo_root is None:
         return False
@@ -777,6 +773,7 @@ _TOOLING_DIR_TOKENS = frozenset(
         ".github",
         "bench",
         "benches",
+        "benchmark",
         "benchmarks",
         "build",
         "devtools",
@@ -897,6 +894,7 @@ _SERVED_SCRIPTS_DIR = "scripts"
 # folder (``eng/tools``, ``hack/tools``). Deeper it is as often the product's own
 # code: AI SDK tools in ``lib/ai/tools``, ``src/tools``, ``pkg/tools``. Ceiling:
 # path-only, so a monorepo member's own ``tools/`` reads as production.
+_BENCHMARK_DIR = "benchmark"
 _TOOLS_DIR = "tools"
 _TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
 
@@ -904,6 +902,8 @@ _TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
 def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
     if d not in _TOOLING_DIR_TOKENS:
         return False
+    if d == _BENCHMARK_DIR:
+        return i == 0
     if d == _TOOLS_DIR:
         return i == 0 or dirs[i - 1] in _TOOLS_PARENT_DIRS
     return d != _SERVED_SCRIPTS_DIR or _SERVED_DIRS.isdisjoint(dirs[:i])

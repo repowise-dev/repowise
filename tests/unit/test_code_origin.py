@@ -47,7 +47,10 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
-        ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", "test"),
+        (
+            "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
+            "test",
+        ),
         ("__testfixtures__/default-import.output.tsx", "test"),
         ("src/transforms/__testfixtures__/nested/input.js", "test"),
         ("src\\transforms\\__testfixtures__\\input.js", "test"),
@@ -115,6 +118,8 @@ _OWN_HEADER = (
         ("src/cmd/go/internal/tool/tool.go", "production"),
         ("tool/release.py", "production"),
         ("benchmarks/bench_app.py", "tooling"),
+        ("benchmark/run.py", "tooling"),
+        ("include/benchmark/benchmark.h", "production"),
         ("app/migrations/0001_initial.py", "tooling"),
         ("db/alembic/versions/abc_add.py", "tooling"),
         ("setup.py", "build"),
