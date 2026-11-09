@@ -1257,3 +1257,50 @@ def test_workspace_init_resolves_embedder_from_primary_repo_env(
     apply_workspace_advanced(answers, {}, repo_path=primary)
     assert answers.embedder_name_resolved == "openrouter"
     assert resolve_embedder(answers.embedder_name, repo_path=primary) == "openrouter"
+
+
+def test_workspace_member_env_ignored_for_workspace_plan_and_honored_for_member_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A member repo's .repowise/.env is ignored during workspace plan and honored during member update."""
+    from repowise.cli.commands.init_cmd._workspace_plan import (
+        WorkspaceAnswers,
+        apply_workspace_advanced,
+    )
+    from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    primary = tmp_path / "primary"
+    primary.mkdir(parents=True, exist_ok=True)
+
+    member = tmp_path / "member"
+    member_env_dir = member / ".repowise"
+    member_env_dir.mkdir(parents=True, exist_ok=True)
+    (member_env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    assert "REPOWISE_EMBEDDER" not in os.environ
+
+    # 1. Workspace plan uses primary repo, member's .env does not bleed into workspace plan
+    w_fields = {name: None for name in WorkspaceAnswers.__dataclass_fields__}
+    w_fields.update(
+        index_only=False,
+        follow_renames=False,
+        skip_tests=False,
+        skip_infra=False,
+        concurrency=10,
+        exclude_patterns=[],
+        test_run=False,
+        onboarding=True,
+        wiki_style="standard",
+        embedder_name=None,
+        embedder_name_resolved="mock",
+    )
+    answers = WorkspaceAnswers(**w_fields)
+    apply_workspace_advanced(answers, {}, repo_path=primary)
+    assert answers.embedder_name_resolved != "openrouter"
+    assert resolve_embedder(answers.embedder_name, repo_path=primary) != "openrouter"
+
+    # 2. Member repo update resolves directly from the member's own .env
+    assert deterministic_embedder_name({}, repo_path=member) == "openrouter"
+    assert resolve_embedder(None, repo_path=member) == "openrouter"
