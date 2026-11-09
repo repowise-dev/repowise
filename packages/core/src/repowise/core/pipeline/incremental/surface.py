@@ -173,11 +173,16 @@ def _path_set_change_reason(
 ) -> str | None:
     """Why adding or removing these inert files could change another file's graph.
 
-    Resolvers reach a path two ways: from an import's text (an exact path, or
-    the stem map keyed by its last segment) and from the stem map's bucket
-    sizes, which some type-reference passes read with no import at all. So a
-    moved file is safe when no other file shares its stem and no import's text
-    contains its stem.
+    Resolvers reach a path from an import's text (an exact path) or through
+    the stem map. The stem map answers two ways: its best candidate for a
+    stem, which import resolvers look up by a key usually but not always
+    spelled in the import (Ruby maps ``-`` to ``_``; Go may key on a module
+    directory), and a one-file bucket, which some type-reference passes read
+    with no import at all. So a moved file is safe when no import's text
+    contains its stem and its stem's bucket gives both answers unchanged
+    (:func:`_stem_answers`). A ``README.md`` or ``index.md`` may patch
+    beside others of its name unless it displaces or reveals a source file
+    as the best candidate.
     """
     from repowise.core.ingestion.graph._stem import stem_key
 
@@ -185,19 +190,63 @@ def _path_set_change_reason(
     if not moved:
         return None
     parsed_files = list(parsed_files)
-    others = ({pf.file_info.path for pf in parsed_files} | set(previous_paths)) - moved
-    other_stems = {stem_key(path) for path in others}
+    languages = {pf.file_info.path: pf.file_info.language for pf in parsed_files}
+    stems = {stem_key(path) for path in moved}
+    before = _stem_buckets(previous_paths, stems)
+    after = _stem_buckets(languages, stems)
     # NUL never occurs in a stem, so a match cannot straddle two imports.
     import_text = "\0".join(
         imp.module_path.lower() for pf in parsed_files for imp in pf.imports
     )
     for path in sorted(moved):
         stem = stem_key(path)
-        if stem in other_stems:
-            return f"{path}: another file shares its import stem"
+        answers = _stem_answers(before.get(stem, []), stem, languages, moved)
+        if answers != _stem_answers(after.get(stem, []), stem, languages, moved):
+            return f"{path}: changes what its import stem resolves to"
         if stem and stem in import_text:
             return f"{path}: an import may resolve to it"
     return None
+
+
+def _stem_buckets(paths: Iterable[str], stems: Collection[str | None]) -> dict[str | None, list[str]]:
+    """The stem-map buckets of *paths* for just *stems*."""
+    from repowise.core.ingestion.graph._stem import stem_key
+
+    buckets: dict[str | None, list[str]] = {}
+    for path in paths:
+        stem = stem_key(path)
+        if stem in stems:
+            buckets.setdefault(stem, []).append(path)
+    return buckets
+
+
+def _stem_answers(
+    bucket: list[str], stem: str | None, languages: dict[str, str], inert: Collection[str]
+) -> tuple[str | None, str | None]:
+    """What a stem-map bucket answers: ``(best source candidate, type target)``.
+
+    ``ResolverContext.stem_lookup`` returns the best candidate under the stem
+    map's own ordering, prose included; the resolvers whose key the import
+    may not spell (Ruby, Luau) keep it only when it is source, so a prose
+    best candidate answers as ``None``. The import-free type-reference passes
+    (``ingestion.type_ref_resolution``) read a bucket only when it holds one
+    path, and accept it only if it is source. A path of unknown language (a
+    removed source file) counts as source.
+
+    Ceiling: Go keys a module-root import on the module's directory name and
+    keeps any best candidate, so a doc can win it when that directory holds
+    no ``.go`` file, which a compiling Go import never names. The original
+    unique-stem rule accepts the same case; upgrade by comparing the raw best
+    candidate for stems that name a Go module directory.
+    """
+    from repowise.core.ingestion.graph._stem import _stem_priority
+
+    if not bucket:
+        return None, None
+    best = min(bucket, key=lambda path: _stem_priority(path, stem or ""))
+    if best in inert or languages.get(best) in _INERT_LANGUAGES:
+        return None, None
+    return best, best if len(bucket) == 1 else None
 
 
 def _stale_seed_reason(added: Collection[str], seed_nodes: Iterable[tuple[str, Any]]) -> str | None:

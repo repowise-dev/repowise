@@ -830,6 +830,18 @@ _DOCS_TREE = {
     "README.md": "# Demo\n\nRun `main.py`.\n",
     "docs/notes.md": "# Notes\n",
     "docs/intro.mdx": "import { fmt } from '../web/fmt'\n\n# Intro\n",
+    "docs/README.md": "# Docs\n",
+    # Two source files under the ``index`` stem: a bucket of two answers no
+    # import-free lookup, so an ``index.md`` may join it.
+    "web/index.ts": "export { fmt } from './fmt';\n",
+    "lib/index.js": "export const one = 1;\n",
+    # ``Shape`` and ``Kind`` are used with no import: the type-reference pass
+    # takes the only file of that stem. ``shape`` holds one file, ``kind`` two.
+    "web/shape.ts": "export interface Shape { w: number }\n",
+    "web/draw.ts": "export function draw(s: Shape) { return s.w; }\n",
+    "web/kind.ts": "export interface Kind { k: string }\n",
+    "web/pick.ts": "export function pick(k: Kind) { return k.k; }\n",
+    "docs/kind.md": "# Kind\n",
 }
 
 
@@ -884,6 +896,11 @@ def docs_indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
         ),
         # Code imports it, but an edit keeps the path and its (empty) surface.
         pytest.param(_edit("web/guide.md", "# Guide\n\nMore.\n"), ("web/guide.md",), (), id="edit-imported-md"),
+        # Directory-index docs that share a stem only with prose or with 2+ sources.
+        pytest.param(_add("web/README.md", "# Web\n"), ("web/README.md",), (), id="add-readme-beside-readmes"),
+        pytest.param(_remove("docs/README.md"), (), ("docs/README.md",), id="remove-one-of-two-readmes"),
+        pytest.param(_remove("README.md"), (), ("README.md",), id="remove-root-readme"),
+        pytest.param(_add("docs/index.md", "# Home\n"), ("docs/index.md",), (), id="add-index-md-beside-sources"),
     ],
 )
 def test_documentation_changes_are_patched_and_equal_a_full_rebuild(
@@ -913,7 +930,11 @@ def test_documentation_changes_are_patched_and_equal_a_full_rebuild(
         pytest.param(_remove("web/guide.md"), "web/guide.md: an import may resolve to it", id="removed-md-imported-by-code"),
         pytest.param(_add("docs/later.md", "# Later\n"), "docs/later.md: an import may resolve to it", id="added-md-named-by-import"),
         # Same stem as fmt.ts: stem-map lookups would see two candidates.
-        pytest.param(_add("docs/fmt.md", "# fmt\n"), "docs/fmt.md: another file shares its import stem", id="added-md-stem-collision"),
+        pytest.param(_add("docs/fmt.md", "# fmt\n"), "docs/fmt.md: changes what its import stem resolves to", id="added-md-stem-collision"),
+        # The only ``shape`` file stops being the only one: draw.ts loses its type edge.
+        pytest.param(_add("docs/shape.md", "# Shape\n"), "docs/shape.md: changes what its import stem resolves to", id="added-md-hides-type-target"),
+        # kind.ts becomes the only ``kind`` file: pick.ts gains a type edge.
+        pytest.param(_remove("docs/kind.md"), "docs/kind.md: changes what its import stem resolves to", id="removed-md-reveals-type-target"),
         pytest.param(
             _edit("web/tsconfig.json", '{"compilerOptions": {"baseUrl": "."}}\n'),
             "json edits are not patched",
@@ -978,6 +999,47 @@ def test_new_definer_of_a_bare_call_changes_an_unchanged_files_edges(
 
     after = {(u, v) for u, v, *_ in _edges(full) if u.startswith("main.py")}
     assert after - before, "the fixture must show an unchanged file gaining an edge"
+
+
+@pytest.mark.parametrize(
+    ("edit", "edge", "present_after"),
+    [
+        pytest.param(_add("docs/shape.md", "# Shape\n"), ("web/draw.ts", "web/shape.ts"), False, id="hide"),
+        pytest.param(_remove("docs/kind.md"), ("web/pick.ts", "web/kind.ts"), True, id="reveal"),
+    ],
+)
+def test_a_doc_can_change_an_unchanged_files_type_edge(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, edge: tuple, present_after: bool
+) -> None:
+    """Why a doc that changes a one-file stem bucket must fall back."""
+    tree, seed = docs_indexed
+    assert (edge in {(u, v) for u, v, _ in seed["edges"]}) is not present_after
+    edit(tree)
+
+    full = _full(tree, tmp_path / "full")
+
+    assert (edge in {(u, v) for u, v, *_ in _edges(full)}) is present_after
+
+
+def test_doc_displacing_a_stem_lookup_the_import_does_not_spell_falls_back(tmp_path: Path) -> None:
+    """Ruby looks ``require 'foo-bar'`` up as ``foo_bar``: no import text names the doc."""
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "app/main.rb": "require 'foo-bar'\n\ndef run\n  FooBar.go\nend\n",
+            "lib/a/foo_bar.rb": "class FooBar\n  def self.go; 1; end\nend\n",
+            "lib/b/foo_bar.rb": "class FooBar2\n  def self.go; 2; end\nend\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    # Fewer path parts: the root doc becomes the stem's best candidate.
+    _write(tree, {"foo_bar.md": "# Foo bar\n"})
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.reason == "foo_bar.md: changes what its import stem resolves to"
+    _assert_equals_full(tree, patched, tmp_path)
 
 
 def test_unparsed_previously_indexed_file_is_not_treated_as_removed(
