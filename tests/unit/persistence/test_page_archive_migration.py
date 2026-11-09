@@ -57,7 +57,7 @@ def test_upgrade_handles_migrated_and_additive_stores(tmp_path: Path, warm_start
 
     asyncio.run(seed())
     original = _live_rows(path)
-    command.upgrade(config, "head")
+    command.upgrade(config, "0121")
     assert _live_rows(path) == original
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0121",)

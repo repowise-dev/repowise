@@ -201,6 +201,11 @@ class ChangeHealthDeltaService:
             waiter.wait(timeout=_WAIT_TIMEOUT_SECONDS)
         return self._compare_uncached(request, pair)
 
+    def eligible_count(self, request: DeltaRequest, pair: RevisionPair) -> int:
+        """Changed files :meth:`compare` would analyse, the main driver of its cost."""
+        eligible, departed, _skipped = _partition(_filter(pair.changes, request))
+        return len(eligible) + len(departed)
+
     # -- cache --------------------------------------------------------------
 
     def _cache_key(self, request: DeltaRequest, pair: RevisionPair) -> str:
