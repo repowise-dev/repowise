@@ -25,7 +25,10 @@ from .base import DetectionContext, FrameworkHandler, anchor_edge
 log = structlog.get_logger(__name__)
 _LANGUAGES = {"swift", "objectivec"}
 _CLASS_KEYS = {
-    "NSExtensionPrincipalClass", "NSPrincipalClass", "UISceneDelegateClassName", "NSExtensionClass"
+    "NSExtensionPrincipalClass",
+    "NSPrincipalClass",
+    "UISceneDelegateClassName",
+    "NSExtensionClass",
 }
 
 
@@ -58,13 +61,15 @@ def _references(metadata: Path) -> Iterator[tuple[str, str | None]]:
         log.debug("apple_metadata_unreadable", path=str(metadata))
 
 
-def _resolve(
-    candidates: set[str], metadata: Path, root: Path, module: str | None
-) -> str | None:
+def _only(paths: set[str]) -> str | None:
+    return next(iter(paths)) if len(paths) == 1 else None
+
+
+def _resolve(candidates: set[str], metadata: Path, root: Path, module: str | None) -> str | None:
     if module and not module.startswith("$("):
         local = {p for p in candidates if module in Path(p).parts[:-1]}
         if local:
-            return next(iter(local)) if len(local) == 1 else None
+            return _only(local)
     # Resources and localization subfolders are not targets. Ascend only
     # within this repo, choosing the nearest folder containing declarations.
     for folder in (metadata.parent, *metadata.parent.parents):
@@ -73,8 +78,45 @@ def _resolve(
         prefix = folder.relative_to(root)
         local = {p for p in candidates if Path(p).is_relative_to(prefix)}
         if local:
-            return next(iter(local)) if len(local) == 1 else None
-    return next(iter(candidates)) if len(candidates) == 1 else None
+            return _only(local)
+    return _only(candidates)
+
+
+def _is_paired_header(graph: Any, path: str, paths: set[str]) -> bool:
+    if Path(path).suffix != ".h":
+        return False
+    return any(
+        target in paths
+        and Path(target).suffix in {".m", ".mm"}
+        and data.get("hint_source") == "header_source_pair"
+        for _, target, data in graph.out_edges(path, data=True)
+    )
+
+
+def _class_declarations(graph: Any, parsed_files: dict[str, Any]) -> dict[str, set[str]]:
+    declarations: dict[str, set[str]] = defaultdict(set)
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in _LANGUAGES:
+            continue
+        for symbol in parsed.symbols:
+            if symbol.kind == "class" and not symbol.parent_name:
+                declarations[symbol.name].add(path)
+    # An Objective-C interface and its implementation repeat the same
+    # declaration. Use the existing header/source pairing proof, not a
+    # guessed class-to-filename mapping, to prefer the implementation.
+    return {
+        name: {path for path in paths if not _is_paired_header(graph, path, paths)}
+        for name, paths in declarations.items()
+    }
+
+
+def _metadata_references(ctx: Any, root: Path) -> Iterator[tuple[Path, str, str | None]]:
+    for pattern in ("Info.plist", "*-Info.plist", "*.storyboard", "*.xib"):
+        for metadata in glob_via(
+            ctx.walk_snapshot, root, pattern, prune_nested_git=ctx.prune_nested_git
+        ):
+            for raw_name, module in _references(metadata):
+                yield metadata, bare_type_name(raw_name), module
 
 
 class _AppleMetadataHandler:
@@ -85,41 +127,16 @@ class _AppleMetadataHandler:
         if ctx.repo_path is None:
             return 0
         root = ctx.repo_path.resolve()
-        declarations: dict[str, set[str]] = defaultdict(set)
-        for path, parsed in parsed_files.items():
-            if parsed.file_info.language in _LANGUAGES:
-                for symbol in parsed.symbols:
-                    if symbol.kind == "class" and not symbol.parent_name:
-                        declarations[symbol.name].add(path)
-        # An Objective-C interface and its implementation repeat the same
-        # declaration. Use the existing header/source pairing proof, not a
-        # guessed class-to-filename mapping, to prefer the implementation.
-        for name, paths in declarations.items():
-            declarations[name] = {
-                path for path in paths
-                if not (
-                    Path(path).suffix == ".h" and any(
-                        target in paths
-                        and Path(target).suffix in {".m", ".mm"}
-                        and data.get("hint_source") == "header_source_pair"
-                        for _, target, data in graph.out_edges(path, data=True)
-                    )
-                )
-            }
+        declarations = _class_declarations(graph, parsed_files)
         count = 0
-        for pattern in ("Info.plist", "*-Info.plist", "*.storyboard", "*.xib"):
-            for metadata in glob_via(
-                ctx.walk_snapshot, root, pattern, prune_nested_git=ctx.prune_nested_git
-            ):
-                for raw_name, module in _references(metadata):
-                    name = bare_type_name(raw_name)
-                    candidates = declarations.get(name, set())
-                    target = _resolve(candidates, metadata, root, module)
-                    if target is not None and target in path_set:
-                        count += anchor_edge(graph, APPLE, target)
-                        graph.nodes[target]["is_entry_point"] = True
-                    elif len(candidates) > 1:
-                        log.info("apple_metadata_ambiguous_class", path=str(metadata), name=name)
+        for metadata, name, module in _metadata_references(ctx, root):
+            candidates = declarations.get(name, set())
+            target = _resolve(candidates, metadata, root, module)
+            if target is not None and target in path_set:
+                count += anchor_edge(graph, APPLE, target)
+                graph.nodes[target]["is_entry_point"] = True
+            elif len(candidates) > 1:
+                log.info("apple_metadata_ambiguous_class", path=str(metadata), name=name)
         return count
 
 
