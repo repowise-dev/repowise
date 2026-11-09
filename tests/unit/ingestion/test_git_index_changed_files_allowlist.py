@@ -89,3 +89,32 @@ async def test_changed_file_outside_the_traversed_set_keeps_its_history(tmp_path
     row = {r["file_path"]: r for r in rows}["src/fixtures/b.ts"]
     assert row["commit_count_total"] == full["commit_count_total"] == 1
     assert row["primary_owner_name"] == full["primary_owner_name"] == "Alice"
+
+
+async def test_idle_refresh_covers_tracked_code_outside_the_traversed_set(tmp_path):
+    """An idle ``fixtures/`` file gets the decay refresh a full index's row needs."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "src" / "fixtures").mkdir(parents=True)
+    (tmp_path / "src" / "a.ts").write_text("export const a = 1\n")
+    (tmp_path / "src" / "fixtures" / "b.ts").write_text("export const b = 1\n")
+    repo.index.add(["src/a.ts", "src/fixtures/b.ts"])
+    repo.index.commit("feat: add files")
+    (tmp_path / "src" / "a.ts").write_text("export const a = 2\n")
+    repo.index.add(["src/a.ts"])
+    repo.index.commit("chore: bump a")
+    repo.close()
+    sink: dict[str, dict] = {}
+
+    await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_changed_files(
+        ["src/a.ts"],
+        all_files={"src/a.ts"},
+        co_change_sink={},
+        idle_decay_sink=sink,
+    )
+
+    assert "src/fixtures/b.ts" in sink

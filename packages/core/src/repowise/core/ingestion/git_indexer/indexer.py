@@ -680,9 +680,7 @@ class GitIndexer:
         history_files, history_changed = scope.history_files, scope.history_changed
 
         refresh_idle = self._wants_idle_refresh(idle_decay_sink, all_files)
-        # ``all_files`` is the traverser's set, which leaves out tracked code
-        # files a full index still covers (``fixtures/`` dirs, size limits);
-        # a changed one missing from the walk would index with no commits.
+        # A changed file the walk leaves out would index with no commits.
         target_files = (
             set(all_files) | set(changed_file_paths) | history_files
             if refresh_idle
@@ -867,6 +865,8 @@ class GitIndexer:
         file. Non-code files get the history tier the full index gives them,
         drawn from the same tracked-file set (the parsed files miss .rst,
         LICENSE and the like), and the co-change walk reads that set too.
+        Code files come from that set as well: the caller's parsed files leave
+        out tracked code a full index covers (``fixtures/`` dirs, size limits).
         """
         # Callers hand over paths relative to the indexed directory; git and the
         # rows this indexer writes are keyed relative to the repository root.
@@ -884,8 +884,8 @@ class GitIndexer:
         history_changed = history_files.intersection(changed_file_paths)
         changed = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
         co_change_files = set(tier_paths) if tier_paths else None
-        if all_files:
-            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
+        if tier_paths:
+            all_files = {fp for fp in tier_paths if not _should_skip_index(fp)}
         return _ChangedScope(changed, all_files, history_files, history_changed, co_change_files)
 
     def _index_one_file(
