@@ -174,9 +174,38 @@ def _source_groups(run: UpdateRun, sources: set[str]) -> list[tuple[str, set[str
     groups: dict[str, set[str]] = {}
     for source in sorted(sources):
         base = mining_state.source_base(state, source, run.base_ref)
+        if base and base != run.base_ref and _unreachable(run, base):
+            # History was rewritten under the stored pointer (force-push,
+            # rebase, shallow clone). ``base..head`` can no longer name the
+            # commits this source owes, and an empty range never advances it,
+            # so the source would be stuck for good. Restart at the run's base.
+            run.degraded.append(
+                f"Decision mining ({source}): stored commit {base[:8]} is no longer "
+                f"in history; mining from {run.base_ref[:8]}"
+            )
+            base = run.base_ref
         if base:
             groups.setdefault(base, set()).add(source)
     return sorted(groups.items())
+
+
+def _unreachable(run: UpdateRun, base: str) -> bool:
+    """Whether *base* is provably not an ancestor of the run's head.
+
+    ``False`` when git cannot answer at all, so a transient failure keeps the
+    stored pointer (and its retry) instead of skipping the owed range.
+    """
+    from repowise.core import git_refs
+
+    repo = str(run.repo_path)
+    head = run.head or "HEAD"
+    reachable = git_refs.is_ancestor(repo, base, head)
+    if reachable is not None:
+        return not reachable
+    # No answer: an unknown sha (garbage-collected, or cut by a shallow clone)
+    # looks the same as a broken git. Only the first, with a readable head,
+    # is a rewritten history.
+    return not git_refs.resolve(repo, base) and bool(git_refs.resolve(repo, head))
 
 
 def _record_successes(state: dict | None, sources: set[str], commit: str | None) -> None:

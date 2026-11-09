@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +59,10 @@ def stubbed(monkeypatch):
     _StubExtractor.calls = []
     monkeypatch.setattr(extractor_mod, "DecisionExtractor", _StubExtractor)
     monkeypatch.setattr(evolution, "commits_in_range", lambda *_a: {"bbbb2222"})
+    from repowise.core import git_refs
+
+    # The fake shas below name no commit; treat every stored pointer as reachable.
+    monkeypatch.setattr(git_refs, "is_ancestor", lambda *_a: True)
     return _StubExtractor.calls
 
 
@@ -250,3 +255,90 @@ def test_a_retry_with_nothing_to_mine_advances_the_source(stubbed, monkeypatch):
     assert ledger["last_status"] == "ok"
     assert "Decision mining (pr)" not in " ".join(run.degraded)
 
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _commit(repo: Path, name: str) -> str:
+    (repo / name).write_text(name, encoding="utf-8")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", name)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def repo(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    return tmp_path
+
+
+def _rewritten_run(repo: Path, pointer: str, base: str, head: str):
+    run, docs = _run_and_docs()
+    run.repo_path = repo
+    run.base_ref = base
+    run.head = head
+    run.state = {"decision_mining": {"pr": {"last_success_commit": pointer}}}
+    return run, docs
+
+
+def test_a_pointer_rewritten_out_of_history_falls_back_to_the_run_base(repo):
+    """A force-push leaves the stored commit off HEAD's history: restart at base."""
+    base = _commit(repo, "a.txt")
+    orphaned = _commit(repo, "b.txt")
+    _git(repo, "reset", "-q", "--hard", base)
+    head = _commit(repo, "c.txt")
+    run, _docs = _rewritten_run(repo, orphaned, base, head)
+
+    groups = decision_passes._source_groups(run, {"pr"})
+
+    assert groups == [(base, {"pr"})]
+    assert run.degraded == [
+        f"Decision mining (pr): stored commit {orphaned[:8]} is no longer in history; "
+        f"mining from {base[:8]}"
+    ]
+
+
+def test_a_pointer_git_no_longer_has_falls_back_to_the_run_base(repo):
+    """A garbage-collected or shallow-cut sha names no commit at all."""
+    base = _commit(repo, "a.txt")
+    head = _commit(repo, "b.txt")
+    run, _docs = _rewritten_run(repo, "0123456789abcdef0123456789abcdef01234567", base, head)
+
+    assert decision_passes._source_groups(run, {"pr"}) == [(base, {"pr"})]
+
+
+def test_a_reachable_pointer_keeps_its_own_range(repo):
+    pointer = _commit(repo, "a.txt")
+    base = _commit(repo, "b.txt")
+    head = _commit(repo, "c.txt")
+    run, _docs = _rewritten_run(repo, pointer, base, head)
+
+    assert decision_passes._source_groups(run, {"pr"}) == [(pointer, {"pr"})]
+    assert run.degraded == []
+
+
+def test_a_rewritten_pointer_mines_again_and_advances(stubbed, repo, monkeypatch):
+    """End to end: the stuck source mines the new commits and its pointer moves."""
+    from repowise.core import git_refs
+
+    monkeypatch.setattr(git_refs, "is_ancestor", lambda *_a: False)
+    bases: list[str] = []
+
+    def _commits(_repo_path, base, _head):
+        bases.append(base)
+        return {"bbbb2222"}
+
+    monkeypatch.setattr(evolution, "commits_in_range", _commits)
+    run, docs = _run_and_docs()
+    run.state = {"decision_mining": {"pr": {"last_success_commit": "rewritten"}}}
+
+    _mine(run, docs)
+
+    assert bases == ["base"]
+    assert run.state["decision_mining"]["pr"]["last_success_commit"] == "head"
