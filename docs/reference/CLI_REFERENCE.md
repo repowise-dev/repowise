@@ -1070,6 +1070,8 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--force` | `export`: overwrite a committed manifest from a store that accepted nothing. | off |
 | `--dry-run` | `import`: write nothing. | off |
 
+- `migrate` and `import` first delete the inert supersede pointers an older version left, and list each one as `stale`. `migrate` also lists each pointer it leaves `unplaced`, which resolves to nothing. With `--format json`, both return the repairs as `repaired`; only `migrate` also returns `unplaced`.
+
 **`list`**
 
 | Flag | What it does | Default |

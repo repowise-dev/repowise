@@ -79,8 +79,10 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     Dry run by default. Records promoted by recurrence rather than by a person
     become candidates, which is a visible loss of standing decisions and the
-    intended one: they were never accepted. Nothing is deleted, every id keeps
-    resolving, and re-running changes nothing.
+    intended one: they were never accepted. No decision is deleted, and
+    re-running changes nothing. The supersede pointers an older version left
+    are repaired first, and each is listed; one left unplaced resolves to
+    nothing.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -88,6 +90,7 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     async def _run():
         from repowise.core.persistence import get_session
+        from repowise.core.persistence.decision_id_migration import repair_superseded_aliases
         from repowise.core.persistence.decision_migration import (
             apply_migration,
             plan_migration,
@@ -98,20 +101,26 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
+                repaired, unplaced = await repair_superseded_aliases(session, repo_id, apply=apply_)
                 plan = await plan_migration(session, repo_id)
                 if apply_:
                     plan = await apply_migration(session, repo_id, plan=plan)
-                return plan, render_plan(plan, limit=limit)
+                return plan, render_plan(plan, limit=limit), repaired, unplaced
         finally:
             await engine.dispose()
 
-    plan, report = run_async(_run())
+    plan, report, repaired, unplaced = run_async(_run())
     if fmt == "json":
         payload = plan.as_dict()
         payload["applied"] = apply_
+        payload["repaired"] = repaired
+        payload["unplaced"] = unplaced
         emit_json(payload)
         return
     console.print(report.replace("(dry run)", "(applied)" if apply_ else "(dry run)"))
+    if repaired or unplaced:
+        console.print(f"\nSupersede pointers: repaired {len(repaired)}  unplaced {len(unplaced)}")
+        _print_repairs(repaired, unplaced)
     if not apply_:
         console.print("\n[dim]Nothing was written. Re-run with --apply.[/dim]")
 
