@@ -181,9 +181,7 @@ def test_an_empty_vector_store_is_not_in_sync(tmp_path: Path) -> None:
     assert detail == "2 missing, 0 orphaned"
 
 
-def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path, monkeypatch) -> None:
     """An empty store is a whole reindex; doctor points there instead of spending."""
     import shutil
 
@@ -207,8 +205,12 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(
         embedded.append(page_id)
 
     monkeypatch.setattr(LanceDBVectorStore, "embed_and_upsert", _record)
-    monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "openai")
-    monkeypatch.setattr("repowise.cli.providers.build_embedder", lambda _n, _p=None: MockEmbedder())
+    monkeypatch.setattr(
+        "repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "openai"
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.build_embedder", lambda _n, _p=None: MockEmbedder()
+    )
     printed: list[str] = []
     monkeypatch.setattr(
         repo_checks.console, "print", lambda *a, **k: printed.append(" ".join(map(str, a)))
@@ -229,10 +231,11 @@ def test_missing_lancedb_with_real_embedder_reports_missing_and_reindex_fix(
     all indexable pages are reported missing with fix `repowise reindex`."""
     import shutil
 
-    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     repo_path = asyncio.run(_build_repo(tmp_path))
     shutil.rmtree(repo_path / ".repowise" / "lancedb")
-    (repo_path / ".repowise" / "config.yaml").write_text("embedder: openai\n", encoding="utf-8")
+    (repo_path / ".repowise" / "config.yaml").write_text(
+        "embedder: openai\n", encoding="utf-8"
+    )
 
     _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
     by_id = {c.id: c for c in checks}
@@ -248,13 +251,17 @@ def test_missing_lancedb_with_real_embedder_reports_missing_and_reindex_fix(
     assert coord.fix == "repowise reindex"
 
 
-def test_missing_lancedb_with_mock_embedder_stays_ok(tmp_path: Path, monkeypatch) -> None:
+def test_missing_lancedb_with_mock_embedder_stays_ok(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Fast/keyless mode (mock embedder) without .repowise/lancedb stays in sync."""
     import shutil
 
     repo_path = asyncio.run(_build_repo(tmp_path))
     shutil.rmtree(repo_path / ".repowise" / "lancedb")
-    monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "mock")
+    monkeypatch.setattr(
+        "repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "mock"
+    )
 
     _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
     by_id = {c.id: c for c in checks}
@@ -346,3 +353,4 @@ def test_coordinator_drift_counts_decisions_with_live_vector_store(
         await engine.dispose()
 
     asyncio.run(_check_fallback_and_missing())
+

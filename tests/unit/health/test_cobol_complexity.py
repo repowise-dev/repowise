@@ -7,14 +7,11 @@ import pytest
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.complexity.languages import has_health_dialect
 
-
-@pytest.fixture(autouse=True)
-def _require_cobol() -> None:
-    grammar_pack = pytest.importorskip("tree_sitter_language_pack")
-    try:
-        grammar_pack.get_language("cobol")
-    except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
-        pytest.skip(f"COBOL grammar unavailable: {exc}")
+grammar_pack = pytest.importorskip("tree_sitter_language_pack")
+try:
+    grammar_pack.get_language("cobol")
+except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
 
 
 def _program(*procedure: str) -> bytes:
@@ -201,7 +198,7 @@ def test_multi_target_goto() -> None:
         )
     )
     # 3 targets add 3 CCN points to the initial 1, then CCN should be 4, cognitive complexity receives flat +1.
-    assert rows["MAIN-P"][2:5] == (4, 0, 1)  # (ccn, max_nesting, cognitive)
+    assert rows["MAIN-P"][2:5] == (4, 0, 1)     # (ccn, max_nesting, cognitive)
 
 
 def test_single_target_goto_depending_on() -> None:

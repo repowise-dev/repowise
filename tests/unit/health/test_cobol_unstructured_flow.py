@@ -10,15 +10,11 @@ from repowise.core.analysis.health.biomarkers.registry import detect_all
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.scoring import biomarker_dimension, dimensions_for, score_file
 
-
-@pytest.fixture(autouse=True)
-def _require_cobol() -> None:
-    grammar_pack = pytest.importorskip("tree_sitter_language_pack")
-    try:
-        grammar_pack.get_language("cobol")
-    except (grammar_pack.Error, OSError) as exc:  # pragma: no cover - first-use download
-        pytest.skip(f"COBOL grammar unavailable: {exc}")
-
+grammar_pack = pytest.importorskip("tree_sitter_language_pack")
+try:
+    grammar_pack.get_language("cobol")
+except (grammar_pack.Error, OSError) as exc:  # pragma: no cover - first-use download
+    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
 
 _KIND = "cobol_unstructured_flow"
 
@@ -44,35 +40,28 @@ def _hits(source: bytes) -> list[tuple[str | None, str]]:
 def _findings(source: bytes):
     fcx = walk_file("DEMO.cbl", "cobol", source)
     ctx = FileContext(
-        file_path="DEMO.cbl",
-        language="cobol",
-        nloc=20,
-        has_test_file=False,
-        module=None,
-        perf_hits=fcx.perf_hits,
+        file_path="DEMO.cbl", language="cobol", nloc=20, has_test_file=False,
+        module=None, perf_hits=fcx.perf_hits,
     )
     return [r for r in detect_all(ctx) if r.biomarker_type == _KIND]
 
 
 def test_go_to_own_range_exit_is_silent() -> None:
-    assert (
-        _hits(
-            _program(
-                "           PERFORM A THRU A-EXIT.",
-                "           GOBACK.",
-                "       A.",
-                "           IF WS-A = 1",
-                "              GO TO A-EXIT",
-                "           END-IF",
-                "           GO TO A-COMMON-EXIT.",
-                "       A-COMMON-EXIT.",
-                "           MOVE 0 TO WS-A.",
-                "       A-EXIT.",
-                "           EXIT.",
-            )
+    assert _hits(
+        _program(
+            "           PERFORM A THRU A-EXIT.",
+            "           GOBACK.",
+            "       A.",
+            "           IF WS-A = 1",
+            "              GO TO A-EXIT",
+            "           END-IF",
+            "           GO TO A-COMMON-EXIT.",
+            "       A-COMMON-EXIT.",
+            "           MOVE 0 TO WS-A.",
+            "       A-EXIT.",
+            "           EXIT.",
         )
-        == []
-    )
+    ) == []
 
 
 def test_go_to_elsewhere_fires() -> None:
@@ -141,96 +130,81 @@ def test_alter_and_depending_on_fire() -> None:
 
 def test_unperformed_paragraph_trusts_the_exit_name() -> None:
     # A copybook's paragraphs are performed from the program that copies it.
-    assert (
-        _hits(
-            _program(
-                "       EDIT-DAY.",
-                "           GO TO EDIT-DAY-EXIT.",
-                "       EDIT-DAY-EXIT.",
-                "           EXIT.",
-            )
+    assert _hits(
+        _program(
+            "       EDIT-DAY.",
+            "           GO TO EDIT-DAY-EXIT.",
+            "       EDIT-DAY-EXIT.",
+            "           EXIT.",
         )
-        == []
-    )
+    ) == []
 
 
 def test_qualified_go_to_and_thru_resolve_in_their_section() -> None:
-    assert (
-        _hits(
-            _program(
-                "           PERFORM A OF S1 THRU A-EXIT IN S1.",
-                "           GOBACK.",
-                "       S1 SECTION.",
-                "       A.",
-                "           GO TO A-EXIT OF S1.",
-                "       A-EXIT.",
-                "           EXIT.",
-            )
+    assert _hits(
+        _program(
+            "           PERFORM A OF S1 THRU A-EXIT IN S1.",
+            "           GOBACK.",
+            "       S1 SECTION.",
+            "       A.",
+            "           GO TO A-EXIT OF S1.",
+            "       A-EXIT.",
+            "           EXIT.",
         )
-        == []
-    )
+    ) == []
 
 
 def test_thru_spanning_sections() -> None:
-    assert (
-        _hits(
-            _program(
-                "           PERFORM S1 THRU S2.",
-                "           GOBACK.",
-                "       S1 SECTION.",
-                "       A.",
-                "           GO TO S2-EXIT.",
-                "       S2 SECTION.",
-                "       B.",
-                "           MOVE 1 TO WS-A.",
-                "       S2-EXIT.",
-                "           EXIT.",
-            )
+    assert _hits(
+        _program(
+            "           PERFORM S1 THRU S2.",
+            "           GOBACK.",
+            "       S1 SECTION.",
+            "       A.",
+            "           GO TO S2-EXIT.",
+            "       S2 SECTION.",
+            "       B.",
+            "           MOVE 1 TO WS-A.",
+            "       S2-EXIT.",
+            "           EXIT.",
         )
-        == []
-    )
+    ) == []
 
 
 def test_thru_on_a_continuation_line_and_lowercase_names() -> None:
-    assert (
-        _hits(
-            _program(
-                "           perform a",
-                "              thru a-exit.",
-                "           goback.",
-                "       a.",
-                "           go to a-exit.",
-                "       a-exit.",
-                "           exit.",
-            )
+    assert _hits(
+        _program(
+            "           perform a",
+            "              thru a-exit.",
+            "           goback.",
+            "       a.",
+            "           go to a-exit.",
+            "       a-exit.",
+            "           exit.",
         )
-        == []
-    )
+    ) == []
 
 
 def test_duplicate_names_resolve_in_the_current_section() -> None:
     # Each section has its own P-EXIT; Q's jump means S2's, which a
     # first-header lookup would place behind it.
-    assert (
-        _hits(
-            _program(
-                "           PERFORM P THRU P-EXIT OF S1.",
-                "           PERFORM Q THRU P-EXIT OF S2.",
-                "           GOBACK.",
-                "       S1 SECTION.",
-                "       P.",
-                "           GO TO P-EXIT.",
-                "       P-EXIT.",
-                "           EXIT.",
-                "       S2 SECTION.",
-                "       Q.",
-                "           GO TO P-EXIT.",
-                "       P-EXIT.",
-                "           EXIT.",
-            )
+    assert _hits(
+        _program(
+            "           PERFORM P THRU P-EXIT OF S1.",
+            "           PERFORM Q THRU P-EXIT OF S2.",
+            "           GOBACK.",
+            "       S1 SECTION.",
+            "       P.",
+            "           GO TO P-EXIT.",
+            "       P-EXIT.",
+            "           EXIT.",
+            "       S2 SECTION.",
+            "       Q.",
+            "           GO TO P-EXIT.",
+            "       P-EXIT.",
+            "           EXIT.",
         )
-        == []
-    )
+    ) == []
 
 
 def test_go_to_from_the_range_end_to_a_later_exit_fires() -> None:
@@ -303,9 +277,5 @@ def test_one_finding_per_procedure_and_advisory() -> None:
 
 
 def test_jumps_keep_the_cognitive_point() -> None:
-    fcx = walk_file(
-        "DEMO.cbl",
-        "cobol",
-        _program("       A.", "           GO TO Z.", "       Z.", "           GOBACK."),
-    )
+    fcx = walk_file("DEMO.cbl", "cobol", _program("       A.", "           GO TO Z.", "       Z.", "           GOBACK."))
     assert {f.name: f.cognitive for f in fcx.functions}["A"] == 1

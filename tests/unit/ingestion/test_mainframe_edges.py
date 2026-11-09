@@ -14,15 +14,11 @@ from repowise.core.ingestion.parser import ASTParser
 
 from .parser._helpers import _make_file_info
 
-
-@pytest.fixture(autouse=True)
-def _require_cobol() -> None:
-    grammar_pack = pytest.importorskip("tree_sitter_language_pack")
-    try:
-        grammar_pack.get_language("cobol")
-    except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
-        pytest.skip(f"COBOL grammar unavailable: {exc}")
-
+grammar_pack = pytest.importorskip("tree_sitter_language_pack")
+try:
+    grammar_pack.get_language("cobol")
+except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
 
 JOB = b"""//POSTTRAN JOB 'POSTTRAN',CLASS=A,
 // NOTIFY=&SYSUID
@@ -151,9 +147,7 @@ def _edges(files: dict[str, tuple[str, bytes]]) -> nx.DiGraph:
     }
     graph = nx.DiGraph()
     graph.add_nodes_from(files)
-    _add_mainframe_edges(
-        graph, parsed, SimpleNamespace(source_map={p: s for p, (_, s) in files.items()})
-    )
+    _add_mainframe_edges(graph, parsed, SimpleNamespace(source_map={p: s for p, (_, s) in files.items()}))
     return graph
 
 
@@ -182,57 +176,36 @@ def test_csd_definitions_in_jcl_in_stream_data() -> None:
 def test_cobol_mapset_wins_a_nearest_tie(operation: str, directory: str) -> None:
     program = "sources/app/SBANK10P.cbl"
     preferred = f"sources/bms/{directory}/COSGN00.bms"
-    graph = _edges(
-        {
-            program: (
-                "cobol",
-                _program(
-                    b"SBANK10P",
-                    (
-                        f"           EXEC CICS {operation} MAP('COSGN0A') "
-                        "MAPSET('COSGN00') END-EXEC.\n"
-                    ).encode(),
-                ),
-            ),
-            preferred: ("bms", MAPSET),
-            "sources/bms/pli/COSGN00.bms": ("bms", MAPSET),
-        }
-    )
+    graph = _edges({
+        program: ("cobol", _program(b"SBANK10P", (
+            f"           EXEC CICS {operation} MAP('COSGN0A') "
+            "MAPSET('COSGN00') END-EXEC.\n"
+        ).encode())),
+        preferred: ("bms", MAPSET),
+        "sources/bms/pli/COSGN00.bms": ("bms", MAPSET),
+    })
     assert set(graph.edges) == {(program, preferred)}
 
 
-@pytest.mark.parametrize(
-    ("candidates", "expected"),
-    [
-        (["sources/bms/cobol/a/COSGN00.bms", "sources/bms/cobol/b/COSGN00.bms"], None),
-        (["sources/bms/mycobol/COSGN00.bms", "sources/bms/pli/COSGN00.bms"], None),
-        (["sources/bms/pli/COSGN00.bms"], "sources/bms/pli/COSGN00.bms"),
-        (
-            ["sources/app/maps/pli/COSGN00.bms", "lib/cobol/COSGN00.bms"],
-            "sources/app/maps/pli/COSGN00.bms",
-        ),
-        (["sources/bms/a/COSGN00.bms", "sources/bms/b/COSGN00.bms", "lib/cobol/COSGN00.bms"], None),
-        (
-            [
-                "sources/bms/cobol/COSGN00.bms",
-                "sources/bms/pli/COSGN00.bms",
-                "lib/cobol/COSGN00.bms",
-            ],
-            "sources/bms/cobol/COSGN00.bms",
-        ),
-    ],
-)
+@pytest.mark.parametrize(("candidates", "expected"), [
+    (["sources/bms/cobol/a/COSGN00.bms", "sources/bms/cobol/b/COSGN00.bms"], None),
+    (["sources/bms/mycobol/COSGN00.bms", "sources/bms/pli/COSGN00.bms"], None),
+    (["sources/bms/pli/COSGN00.bms"], "sources/bms/pli/COSGN00.bms"),
+    (["sources/app/maps/pli/COSGN00.bms", "lib/cobol/COSGN00.bms"],
+     "sources/app/maps/pli/COSGN00.bms"),
+    (["sources/bms/a/COSGN00.bms", "sources/bms/b/COSGN00.bms",
+      "lib/cobol/COSGN00.bms"], None),
+    (["sources/bms/cobol/COSGN00.bms", "sources/bms/pli/COSGN00.bms",
+      "lib/cobol/COSGN00.bms"], "sources/bms/cobol/COSGN00.bms"),
+])
 def test_mapset_preference_preserves_nearness_and_ambiguity(
-    candidates: list[str],
-    expected: str | None,
+    candidates: list[str], expected: str | None,
 ) -> None:
     program = "sources/app/SBANK10P.cbl"
-    graph = _edges(
-        {
-            program: ("cobol", PROGRAM),
-            **{path: ("bms", MAPSET) for path in candidates},
-        }
-    )
+    graph = _edges({
+        program: ("cobol", PROGRAM),
+        **{path: ("bms", MAPSET) for path in candidates},
+    })
     assert set(graph.edges) == ({(program, expected)} if expected else set())
 
 

@@ -29,12 +29,7 @@ def network_switches_off(monkeypatch):
     would otherwise turn those paths off for later tests. Tests of the gate set
     the switch themselves.
     """
-    for var in (
-        "REPOWISE_OFFLINE",
-        "DO_NOT_TRACK",
-        "REPOWISE_TELEMETRY_DISABLED",
-        "REPOWISE_EMBEDDER",
-    ):
+    for var in ("REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"):
         monkeypatch.delenv(var, raising=False)
 
 

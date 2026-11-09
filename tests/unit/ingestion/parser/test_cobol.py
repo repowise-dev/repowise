@@ -10,16 +10,13 @@ from repowise.core.ingestion.parser import ASTParser
 
 from ._helpers import _make_file_info
 
-
-@pytest.fixture(autouse=True)
-def _require_cobol() -> None:
-    grammar_pack = pytest.importorskip(
-        "tree_sitter_language_pack", reason="run `uv sync --all-packages`"
-    )
-    try:
-        grammar_pack.get_language("cobol")
-    except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
-        pytest.skip(f"COBOL grammar unavailable: {exc}")
+grammar_pack = pytest.importorskip(
+    "tree_sitter_language_pack", reason="run `uv sync --all-packages`"
+)
+try:
+    grammar_pack.get_language("cobol")
+except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
 
 
 MAIN_SOURCE = b"""       IDENTIFICATION DIVISION.
@@ -74,7 +71,9 @@ class TestCobolSymbols:
         assert ("CUSTOMER-NAME", "variable") in symbols
         assert not result.parse_errors
 
-    def test_level_88_condition_names_are_children_of_their_item(self, parser: ASTParser) -> None:
+    def test_level_88_condition_names_are_children_of_their_item(
+        self, parser: ASTParser
+    ) -> None:
         source = b"""       IDENTIFICATION DIVISION.
        PROGRAM-ID. FLAGS.
        DATA DIVISION.
@@ -122,13 +121,17 @@ class TestCobolSymbols:
         ).encode()
         warnings: list[dict] = []
         monkeypatch.setattr(parser_module, "_SYMBOL_COUNT_WARN_THRESHOLD", 5)
-        monkeypatch.setattr(parser_module.log, "warning", lambda event, **kw: warnings.append(kw))
+        monkeypatch.setattr(
+            parser_module.log, "warning", lambda event, **kw: warnings.append(kw)
+        )
         return parser.parse_file(_cobol("bloat.cbl"), source).symbols, warnings
 
     def test_level_88_children_do_not_count_toward_symbol_bloat(
         self, parser: ASTParser, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        conditions = "".join(f"          88 COND-{i:03d} VALUE '{i % 10}'.\n" for i in range(12))
+        conditions = "".join(
+            f"          88 COND-{i:03d} VALUE '{i % 10}'.\n" for i in range(12)
+        )
         symbols, warnings = self._parse_with_bloat_threshold(
             parser, monkeypatch, "       01 WS-CODE PIC X.\n" + conditions
         )
@@ -182,7 +185,9 @@ class TestCobolSymbols:
         assert by_name["NUM-BLANK"].parent_name == "WS-NUM-X"
         assert by_name["ENTRY-SET"].parent_name == "WS-ENTRY"
 
-    def test_condition_after_copy_or_section_start_stays_top_level(self, parser: ASTParser) -> None:
+    def test_condition_after_copy_or_section_start_stays_top_level(
+        self, parser: ASTParser
+    ) -> None:
         source = b"""       IDENTIFICATION DIVISION.
        PROGRAM-ID. EDGES.
        DATA DIVISION.
@@ -304,7 +309,9 @@ class TestCobolXmlStatements:
         para_names = {s.name for s in result.symbols if s.kind == "function"}
         assert {"FIRST-PARA", "SECOND-PARA", "HANDLE-XML"}.issubset(para_names)
 
-    def test_string_literal_containing_xml_keywords_is_not_masked(self, parser: ASTParser) -> None:
+    def test_string_literal_containing_xml_keywords_is_not_masked(
+        self, parser: ASTParser
+    ) -> None:
         source = b"""       IDENTIFICATION DIVISION.
        PROGRAM-ID. XMLFAIL.
        PROCEDURE DIVISION.
@@ -387,9 +394,7 @@ class TestCobolCallScope:
         parsed = {path: parser.parse_file(_cobol(path), source) for path, source in files.items()}
         resolver = CallResolver(parsed, {path: imports.get(path, set()) for path in parsed})
         caller = next(iter(files))
-        return {
-            (e.callee_id, e.origin) for e in resolver.resolve_file(caller, parsed[caller].calls)
-        }
+        return {(e.callee_id, e.origin) for e in resolver.resolve_file(caller, parsed[caller].calls)}
 
     def test_a_perform_never_binds_to_another_programs_paragraph(self, parser: ASTParser) -> None:
         caller = b"""       IDENTIFICATION DIVISION.
@@ -506,7 +511,7 @@ class TestCobolFreeFormat:
             b"    PERFORM SHOW-PARA\n"
             b"    STOP RUN.\n"
             b"SHOW-PARA.\n"
-            b'    DISPLAY "HI". *> greet\n'
+            b"    DISPLAY \"HI\". *> greet\n"
         )
         parsed = parser.parse_file(_cobol("HELLO.cbl"), source)
         assert parsed.parse_errors == []
@@ -517,3 +522,4 @@ class TestCobolFreeFormat:
             "SHOW-PARA": "function",
         }
         assert [c.target_name for c in parsed.calls] == ["SHOW-PARA"]
+
