@@ -9,7 +9,6 @@ from functools import cache
 from pathlib import Path
 
 import structlog
-from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 from tree_sitter import Language, Node, Parser
 
 from ..language_configs import LANGUAGE_CONFIGS
@@ -94,14 +93,18 @@ _RUNTIME_DOWNLOAD_PACKAGE = "tree_sitter_language_pack"
 # A pre-staged language-pack cache, for machines with no network.
 GRAMMAR_DIR_ENV = "REPOWISE_GRAMMAR_DIR"
 
-# A transient download failure (5xx, timeout, reset) is retried this many times
+# A transient download failure (5xx, timeout, reset) is tried this many times
 # in all, about 3s of backoff, before the language is given up for the process.
+# Only the parent's preflight retries: by the time the parse workers start it has
+# either cached the grammar on disk or given up, so a worker tries once.
 _DOWNLOAD_ATTEMPTS = 3
-_DOWNLOAD_WAIT = wait_exponential(multiplier=1, max=2)
+_DOWNLOAD_BACKOFF_S = 1.0
 # "http status: 504" in the pack's DownloadError text; a 4xx other than these
 # will fail the same way on every attempt.
 _HTTP_STATUS = re.compile(r"status:?\s*(\d{3})", re.IGNORECASE)
 _RETRYABLE_4XX = frozenset({408, 429})
+# Local io failures that no retry fixes.
+_LOCAL_IO_ERROR = re.compile(r"permission denied|read-only|no (?:storage|space)|quota", re.I)
 
 
 def _is_transient_download_error(pack: object, exc: BaseException) -> bool:
@@ -110,16 +113,23 @@ def _is_transient_download_error(pack: object, exc: BaseException) -> bool:
         return False
     status = _HTTP_STATUS.search(str(exc))
     if status is None:
-        return True  # connection reset, timeout, refused
+        # Connection reset, timeout, refused; not a full or read-only disk.
+        return _LOCAL_IO_ERROR.search(str(exc)) is None
     code = int(status.group(1))
     return code >= 500 or code in _RETRYABLE_4XX
 
 
-def _download_with_retry(pack: object, loader: str, *args: object) -> object:
+def _download_with_retry(
+    pack: object, loader: str, *args: object, attempts: int = _DOWNLOAD_ATTEMPTS
+) -> object:
     """``pack.<loader>(*args)``, retrying transient download failures with backoff."""
+    if attempts <= 1:
+        return getattr(pack, loader)(*args)
+    from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
+
     retrying = Retrying(
-        stop=stop_after_attempt(_DOWNLOAD_ATTEMPTS),
-        wait=_DOWNLOAD_WAIT,
+        stop=stop_after_attempt(attempts),
+        wait=wait_exponential(multiplier=_DOWNLOAD_BACKOFF_S, max=2 * _DOWNLOAD_BACKOFF_S),
         retry=retry_if_exception(lambda exc: _is_transient_download_error(pack, exc)),
         reraise=True,
     )
@@ -146,7 +156,7 @@ def failed_runtime_grammars() -> list[tuple[str, str]]:
     )
 
 
-def _load_language(tag: str) -> Language | None:
+def _load_language(tag: str, attempts: int = 1) -> Language | None:
     """Load *tag*'s grammar alone, so a repo never loads one it has no files for."""
     if tag == "tsx":
         # TypeScript's tsx variant: same package, different loader.
@@ -173,7 +183,9 @@ def _load_language(tag: str) -> Language | None:
         mod = __import__(spec.grammar_package)
         if runtime:
             _configure_grammar_dir(mod)
-            loaded = _download_with_retry(mod, spec.grammar_loader, *spec.grammar_loader_args)
+            loaded = _download_with_retry(
+                mod, spec.grammar_loader, *spec.grammar_loader_args, attempts=attempts
+            )
         else:
             loaded = getattr(mod, spec.grammar_loader)(*spec.grammar_loader_args)
         # Standalone grammar wheels return a PyCapsule; shared grammar
@@ -331,19 +343,19 @@ def unavailable_runtime_grammars(language_tags: Iterable[str]) -> list[tuple[str
         if (
             tag in LANGUAGE_CONFIGS
             and downloads_grammar_at_runtime(tag)
-            and _get_language(tag) is None
+            and _get_language(tag, attempts=_DOWNLOAD_ATTEMPTS) is None
         ):
             failed.append((tag, _GRAMMAR_FAILURES.get(tag, "not loadable")))
     return failed
 
 
-def _get_language(tag: str) -> Language | None:
+def _get_language(tag: str, attempts: int = 1) -> Language | None:
     # Filled in place, never rebound: the package re-exports this dict.
     if tag in _LANGUAGE_REGISTRY:
         return _LANGUAGE_REGISTRY[tag]
     if tag in _GRAMMAR_FAILURES:
         return None
-    language = _load_language(tag)
+    language = _load_language(tag, attempts)
     if language is not None:
         _LANGUAGE_REGISTRY[tag] = language
     return language

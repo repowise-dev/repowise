@@ -198,9 +198,8 @@ def flaky_pack(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[object]
     """A pack whose ``get_language`` plays back *script*: an exception raises, else loads."""
     import tree_sitter_language_pack as pack
     import tree_sitter_python
-    from tenacity import wait_none
 
-    monkeypatch.setattr(grammars, "_DOWNLOAD_WAIT", wait_none())
+    monkeypatch.setattr(grammars, "_DOWNLOAD_BACKOFF_S", 0)
     calls: list[str] = []
     script: list[object] = []
 
@@ -232,7 +231,7 @@ def test_a_transient_download_failure_is_retried_until_it_loads(
         ]
     )
 
-    assert grammars._get_language("apex") is not None
+    assert grammars.unavailable_runtime_grammars(["apex"]) == []
     assert calls == ["apex", "apex", "apex"]
     assert grammars.failed_runtime_grammars() == []
 
@@ -246,6 +245,7 @@ def test_a_grammar_still_failing_after_retries_warns_once_and_stays_cached(
     script.extend(_download_error("Download error: http status: 504") for _ in range(10))
 
     with capture_logs() as logs:
+        assert grammars.unavailable_runtime_grammars(["cobol"]) != []
         for _ in range(5):
             assert grammars._get_language("cobol") is None
 
@@ -263,8 +263,29 @@ def test_a_404_is_not_retried(
     calls, script = flaky_pack
     script.append(_download_error("Download error: http status: 404 Not Found"))
 
+    assert grammars.unavailable_runtime_grammars(["apex"]) != []
+    assert calls == ["apex"]
+
+
+def test_a_parse_worker_tries_a_runtime_grammar_once(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    """Only the parent preflight retries; a worker that misses it does not hammer the host."""
+    calls, script = flaky_pack
+    script.append(_download_error("Download error: http status: 504"))
+
     assert grammars._get_language("apex") is None
     assert calls == ["apex"]
+
+
+def test_a_full_disk_is_not_retried(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    calls, script = flaky_pack
+    script.append(_download_error("Download error: io: No space left on device"))
+
+    assert grammars.unavailable_runtime_grammars(["cobol"]) != []
+    assert calls == ["cobol"]
 
 
 def test_a_grammar_already_on_disk_loads_in_one_call(
@@ -275,7 +296,7 @@ def test_a_grammar_already_on_disk_loads_in_one_call(
     calls, _script = flaky_pack
 
     with capture_logs() as logs:
-        assert grammars._get_language("cobol") is not None
+        assert grammars.unavailable_runtime_grammars(["cobol"]) == []
 
     assert calls == ["cobol"]
     assert logs == []
