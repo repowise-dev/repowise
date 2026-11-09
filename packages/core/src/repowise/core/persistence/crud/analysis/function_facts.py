@@ -236,6 +236,12 @@ async def tests_in_files(
             )
             .where(
                 FunctionFact.repository_id == repository_id,
+                # Redundant with the join's ON clause: the ON equality and this
+                # constant merge into one equivalence class, so the planner
+                # derives the restriction either way. Spelled out anyway,
+                # because the ON clause stops restricting rows the moment this
+                # join becomes an outer one.
+                GraphNode.repository_id == repository_id,
                 GraphNode.file_path.in_(files[start : start + _CHUNK]),
             )
         )
