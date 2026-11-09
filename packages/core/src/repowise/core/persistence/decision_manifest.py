@@ -14,7 +14,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
@@ -42,7 +42,7 @@ from .crud.authority import (
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
 from .decision_id_migration import repair_superseded_aliases
-from .models import SUPERSEDED_REASON, DecisionAlias, DecisionRecord
+from .models import REKEYED_REASON, SUPERSEDED_REASON, DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
 
@@ -292,7 +292,10 @@ class _ImportTargets:
             return None, reason
         resolved = self.targets[entry.id]
         record = await session.get(DecisionRecord, resolved) if resolved else None
-        return record, await self._contested(session, entry.id, record)
+        reason = await self._contested(session, entry.id, record)
+        if reason is None and record is not None and resolved != entry.id:
+            reason = await _superseded_wording(session, entry, record)
+        return record, reason
 
     def _unplaceable(self, entry_id: str) -> str | None:
         resolved = self.targets[entry_id]
@@ -325,12 +328,73 @@ class _ImportTargets:
         entry_id: str,
         resolved: str,
         record: DecisionRecord | None,
-    ) -> str:
+    ) -> str | None:
         """Why *entry_id* yields *record*, stored on *resolved*, to the other
-        entries that reach it."""
+        entries that reach it, ``None`` when it is the one that applies."""
+        claimants = [i for i, t in self.targets.items() if t == resolved]
+        reasons = [self.aliases.get(i) for i in claimants]
+        # No record (a dangling alias): no keeper to fold into, so every claimant yields.
+        # Every claimant is ``rekeyed`` or ``merged``: ``superseded`` rows resolve to
+        # nothing or their own id.
+        if record is not None and reasons.count(REKEYED_REASON) == 1:
+            # The id migration moved one record onto *resolved* and folded the
+            # rest into it, so the re-keyed id's entry is the keeper's own,
+            # unless it is the wording of a record the keeper superseded.
+            kept = claimants[reasons.index(REKEYED_REASON)]
+            if entry_id == kept:
+                return None
+            if not await _superseded_wording(session, self.entries[kept], record):
+                return f"folded into {resolved[:8]}, whose own entry the file lists"
         # Two entries reach one record without either naming it, and nothing
-        # tells which one the record is.
+        # stored tells them apart: two re-keys, or folds with no re-key.
         return f"its alias resolves to {resolved[:8]}, which another entry also reaches"
+
+
+async def _superseded_wording(
+    session: AsyncSession, entry: ManifestDecision, record: DecisionRecord
+) -> str | None:
+    """Why *entry*, which reaches *record* through an alias, is the wording of a
+    record *record* superseded, ``None`` when it is not.
+
+    A pre-fix supersede moved the superseded record's aliases onto its successor
+    and left the record in place, still naming the successor. One query, walking
+    the ``superseded_by`` chain back from *record*.
+    """
+    # Only wording the successor does not share tells its predecessor's entry apart.
+    clues = [
+        column == value
+        for column, value, own in (
+            (DecisionRecord.title, entry.title, record.title),
+            (DecisionRecord.decision, entry.decision, record.decision),
+        )
+        if value and value != own
+    ]
+    if not clues:
+        return None
+    chain = (
+        select(DecisionRecord.id)
+        .where(DecisionRecord.superseded_by == record.id)
+        .cte("superseded_chain", recursive=True)
+    )
+    # UNION, not UNION ALL: a ``superseded_by`` cycle then ends the walk.
+    chain = chain.union(select(DecisionRecord.id).where(DecisionRecord.superseded_by == chain.c.id))
+    match = (
+        await session.execute(
+            select(DecisionRecord.id, DecisionRecord.superseded_by)
+            .where(DecisionRecord.id.in_(select(chain.c.id)), or_(*clues))
+            .order_by(DecisionRecord.id)
+            .limit(1)
+        )
+    ).first()
+    if match is None:
+        return None
+    match_id, via = match
+    # Down a chain the record did not supersede the match itself: name the link that did.
+    by = "superseded" if via == record.id else f"replaced via {via[:8]}"
+    return (
+        f"its alias resolves to {record.id[:8]}, but it matches {match_id[:8]},"
+        f" which {record.id[:8]} {by}"
+    )
 
 
 def _missing_field(entry: ManifestDecision) -> str | None:
