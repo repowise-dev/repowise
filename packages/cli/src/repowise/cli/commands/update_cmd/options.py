@@ -101,8 +101,8 @@ class UpdateRun:
     doc_drift_report: Any = None
     persisted_git_meta: Any = None
     knowledge_graph_result: Any = None
-    # The refresh patched the changed files' nodes on an unchanged graph shape.
-    knowledge_graph_patched: bool = False
+    # The graph kept its shape: the refresh patches only the changed files' nodes.
+    knowledge_graph_shape_unchanged: bool = False
 
     @property
     def full_generation(self) -> bool:

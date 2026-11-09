@@ -245,12 +245,9 @@ def test_update_store_matches_init_at_the_same_commit(
     assert not bad, bad
 
 
-def _kg_file_nodes(repo: Path) -> tuple[str, list[tuple]]:
+def _kg_graph(repo: Path) -> tuple[str, list[str]]:
     kg = json.loads((repo / ".repowise" / "knowledge-graph.json").read_text(encoding="utf-8"))
-    fields = ("summary", "symbolCount", "lineCount", "complexity")
-    nodes = sorted(
-        (n["id"], *(n.get(f) for f in fields)) for n in kg["nodes"] if n["id"].startswith("file:")
-    )
+    nodes = sorted(json.dumps(n, sort_keys=True) for n in kg["nodes"] + kg["edges"])
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
     return state["knowledge_graph"]["fingerprint"], nodes
 
@@ -265,7 +262,7 @@ def test_same_shape_edit_refreshes_the_changed_file_nodes(tmp_path: Path, monkey
         "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
     )
     _invoke(runner, incremental, *_INIT)
-    fingerprint, before = _kg_file_nodes(incremental)
+    fingerprint, before = _kg_graph(incremental)
 
     # Renamed in place: the same nodes, edges and communities, a new top symbol.
     _write(incremental, {"src/app/names.py": "def title(x):\n    # renamed\n    return str(x)\n"})
@@ -279,7 +276,7 @@ def test_same_shape_edit_refreshes_the_changed_file_nodes(tmp_path: Path, monkey
     )
     _invoke(runner, control, *_INIT)
 
-    expected_fingerprint, expected = _kg_file_nodes(control)
+    expected_fingerprint, expected = _kg_graph(control)
     assert expected_fingerprint == fingerprint, "fixture must keep the graph's shape"
     assert expected != before, "fixture must move the changed file's node"
-    assert _kg_file_nodes(incremental) == (fingerprint, expected)
+    assert _kg_graph(incremental) == (fingerprint, expected)

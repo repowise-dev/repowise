@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "analysis"))
-from kg_fixtures import build_repo
+from kg_fixtures import FakeSymbol, build_repo
 
 from repowise.core.analysis.knowledge_graph import (
     KnowledgeGraphResult,
@@ -215,6 +215,60 @@ async def test_unchanged_shape_patches_only_the_changed_file_nodes(tmp_path):
     _write_kg_json(tmp_path, result.to_dict())
     assert await refresh(["src/a.py"]) is None
     assert await refresh(["README.md"]) is None
+
+
+def _a_nodes(kg) -> dict:
+    nodes = {n["id"]: n for n in kg.nodes if n.get("filePath") == "src/a.py"}
+    edges = sorted((e["source"], e["target"], e["type"]) for e in kg.edges if e["target"] in nodes)
+    return {"nodes": nodes, "edges": edges, "entry_points": kg.project.get("entry_points")}
+
+
+async def _seeded(tmp_path, repo, git_meta):
+    """Write the artifact a full refresh produces; return its fingerprint."""
+    kg = await refresh_knowledge_graph(
+        tmp_path,
+        repo.parsed,
+        repo.builder,
+        repo.repo_structure,
+        git_meta,
+        None,
+        prior_fingerprint=None,
+        changed_paths=[],
+    )
+    _write_kg_json(tmp_path, kg.to_dict())
+    return compute_kg_fingerprint(repo.builder)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry_moves", [False, True], ids=["patch", "entry-rebuild"])
+async def test_unchanged_shape_matches_a_rebuild_for_the_changed_file(tmp_path, entry_moves):
+    """A renamed symbol, a new owner and (rebuilt) a new entry point: the
+    changed file's nodes, symbol edges and the entry points match a rebuild."""
+    repo = _repo()
+    fp = await _seeded(tmp_path, repo, {"src/a.py": {"primary_owner_name": "alice"}})
+    pf = next(p for p in repo.parsed if p.file_info.path == "src/a.py")
+    pf.symbols = [FakeSymbol(name="renamed")]
+    pf.file_info.is_entry_point = entry_moves
+    git_meta = {"src/a.py": {"primary_owner_name": "bob"}}
+
+    async def refresh(prior):
+        return await refresh_knowledge_graph(
+            tmp_path,
+            repo.parsed,
+            repo.builder,
+            repo.repo_structure,
+            git_meta,
+            None,
+            prior_fingerprint=prior,
+            changed_paths=["src/a.py"],
+        )
+
+    patched = await refresh(fp)
+    rebuilt = await refresh("0000000000000000")
+
+    assert patched is not None and patched.fingerprint == fp
+    assert _a_nodes(patched) == _a_nodes(rebuilt)
+    assert "function:src/a.py:renamed" in _a_nodes(patched)["nodes"]
 
 
 def test_carry_forward_layer_names_and_tour():

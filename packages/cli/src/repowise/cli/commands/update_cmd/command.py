@@ -1717,7 +1717,7 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
     """Rebuild the knowledge graph when its fingerprint moved (not before a commit)."""
     if not run.working_tree_only:
         prior_fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint")
-        run.knowledge_graph_patched = _kg_shape_unchanged(run, prior_fingerprint)
+        run.knowledge_graph_shape_unchanged = _kg_shape_unchanged(run, prior_fingerprint)
         with timed(run.timings, "knowledge_graph"):
             run.knowledge_graph_result = _refresh_knowledge_graph(
                 run.repo_path,
@@ -2089,21 +2089,38 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     return DocsPass(config=config, provider=provider, cost_tracker=cost_tracker)
 
 
+def _apply_page_summaries(run: UpdateRun, docs: DocsPass) -> None:
+    """Same graph shape: the layers stand, so only this run's pages reach the KG.
+
+    No model call. The stored artifact stands in when the refresh moved no node,
+    and it is published only if a page changed a summary.
+    """
+    from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
+    from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
+
+    kg = run.knowledge_graph_result
+    if kg is None:
+        if not docs.generated_pages:
+            return
+        kg = KnowledgeGraphResult.from_file(run.repo_path / ".repowise" / "knowledge-graph.json")
+        if kg is None:
+            return
+        kg.fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint") or ""
+    before = [n.get("summary") for n in kg.nodes]
+    kg = finalize_knowledge_graph(kg, kg.layers, kg.tour, docs.generated_pages)
+    if run.knowledge_graph_result is not None or before != [n.get("summary") for n in kg.nodes]:
+        run.knowledge_graph_result = kg
+
+
 def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
     """Model enrichment of a refreshed KG (layer names, summaries), as init does."""
     # Also runs on a builder-version bump with an unchanged graph: restored layer
     # names were written against the old layers.
+    if run.knowledge_graph_shape_unchanged:
+        _apply_page_summaries(run, docs)
+        return
     kg = run.knowledge_graph_result
     if kg is None:
-        return
-    if run.knowledge_graph_patched:
-        # Same graph shape: the layers stand, so only this run's page
-        # summaries are applied, with no model call.
-        from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
-
-        run.knowledge_graph_result = finalize_knowledge_graph(
-            kg, kg.layers, kg.tour, docs.generated_pages
-        )
         return
     try:
         from repowise.core.generation.knowledge_graph import enrich_knowledge_graph

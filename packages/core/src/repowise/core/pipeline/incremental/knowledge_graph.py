@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -55,9 +56,13 @@ async def refresh_knowledge_graph(
         kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
         new_fingerprint = compute_kg_fingerprint(graph_builder)
         if should_skip_kg_rebuild(prior_fingerprint, new_fingerprint, kg_json_path):
-            return _patch_changed_file_nodes(
-                kg_json_path, parsed_files, changed_paths, new_fingerprint
+            patched = _patch_changed_file_nodes(
+                kg_json_path, parsed_files, graph_builder, git_meta_map, changed_paths
             )
+            if patched is not _REBUILD:
+                if patched is not None:
+                    patched.fingerprint = new_fingerprint  # the artifact does not store it
+                return patched
 
         tech_stack: list[dict] = []
         try:
@@ -122,56 +127,107 @@ async def refresh_knowledge_graph(
         return None
 
 
-def _patch_changed_file_nodes(
-    kg_json_path: Path, parsed_files: list, changed_paths: set[str], fingerprint: str
-) -> Any | None:
-    """Refresh the changed files' nodes on the prior artifact; ``None`` if none moved.
+# Returned by the patch when a changed file's entry status moved: the
+# project's entry points are ranked across the whole graph, so rebuild.
+_REBUILD = object()
 
-    Recomputes what the skeleton derives from the file alone (symbol and line
-    counts, complexity) and its summary floor. Graph-wide fields (pagerank,
-    community, layers, tour, edges, symbol nodes) stay as stored until the
-    next full rebuild: an unchanged shape means they rarely move, and
-    recomputing them costs the rebuild this skip exists to avoid. Cost scales
-    with the change, not the repo, beyond reading and writing the artifact.
+
+def _patch_changed_file_nodes(
+    kg_json_path: Path,
+    parsed_files: list,
+    graph_builder: Any,
+    git_meta_map: dict,
+    changed_paths: set[str],
+) -> Any | None:
+    """Rebuild the changed files' nodes on the prior artifact; ``None`` if none moved.
+
+    The changed files' file and symbol nodes, and the edges into their
+    symbols, come from the skeleton and curation passes run over those files
+    alone, so they match a full rebuild. Layers, tour and the other files'
+    nodes stay as stored: with the graph's shape unchanged they are what a
+    rebuild would write, give or take a pagerank or community move the
+    fingerprint cannot see. The skeleton pass walks the in-memory graph's
+    edges once; the store work scales with the changed files.
     """
-    changed = {
-        pf.file_info.path: pf
+    changed = [
+        pf
         for pf in parsed_files
         if getattr(pf, "file_info", None) and pf.file_info.path in changed_paths
-    }
+    ]
     if not changed:
         return None
 
-    from repowise.core.analysis.kg_curation import apply_summary_floor
-    from repowise.core.analysis.knowledge_graph import (
-        KnowledgeGraphResult,
-        _classify_complexity,
-        _get_line_count,
-    )
+    from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
 
     kg = KnowledgeGraphResult.from_file(kg_json_path)
     if kg is None:
         return None
-    kg.fingerprint = fingerprint  # the artifact does not store it
-    patched: list[tuple[dict, dict]] = []
-    for node in kg.nodes or []:
-        pf = changed.get(node.get("filePath"))
-        if pf is None or not str(node.get("id", "")).startswith("file:"):
-            continue
-        line_count = _get_line_count(pf.file_info)
-        fields = {
-            "symbolCount": len(pf.symbols),
-            "lineCount": line_count,
-            "complexity": _classify_complexity(len(pf.symbols), line_count),
-            "summary": "",
-        }
-        before = dict(node)
-        node.update(fields)
-        patched.append((node, before))
-    apply_summary_floor(
-        KnowledgeGraphResult(nodes=[node for node, _ in patched]), list(changed.values())
+    paths = {pf.file_info.path for pf in changed}
+    fresh = _changed_file_skeleton(changed, graph_builder, git_meta_map)
+    old_nodes = [n for n in kg.nodes or [] if n.get("filePath") in paths]
+    if _entry_status_moved(old_nodes, fresh.nodes):
+        return _REBUILD
+    old_ids = {n.get("id") for n in old_nodes}
+    old_edges = [e for e in kg.edges or [] if _into_symbol(e, old_ids)]
+    new_edges = [e for e in fresh.edges if _into_symbol(e, {n["id"] for n in fresh.nodes})]
+    if _same(old_nodes, fresh.nodes) and _same(old_edges, new_edges):
+        return None
+    kg.nodes = [n for n in kg.nodes or [] if n.get("filePath") not in paths] + fresh.nodes
+    kg.edges = [e for e in kg.edges or [] if not _into_symbol(e, old_ids)] + new_edges
+    return kg
+
+
+def _changed_file_skeleton(changed: list, graph_builder: Any, git_meta_map: dict) -> Any:
+    """The skeleton, curated node types, barrel tags and floor for *changed* only."""
+    from repowise.core.analysis.kg_curation import (
+        _curate_node_types,
+        _flagged_entry_paths,
+        apply_summary_floor,
     )
-    return kg if any(node != before for node, before in patched) else None
+    from repowise.core.analysis.knowledge_graph import build_knowledge_graph_skeleton
+
+    fresh = build_knowledge_graph_skeleton(
+        parsed_files=changed,
+        graph_builder=graph_builder,
+        repo_structure=None,
+        tech_stack=[],
+        external_systems=[],
+        git_meta_map=git_meta_map,
+    )
+    pf_by_path = {pf.file_info.path: pf for pf in changed}
+    manifest = frozenset(
+        path
+        for path, pf in pf_by_path.items()
+        if getattr(pf.file_info, "is_manifest_entry", False)
+        or getattr(pf.file_info, "is_application_main", False)
+    )
+    _flagged_entry_paths(fresh, pf_by_path, manifest)  # retags barrels in place
+    _curate_node_types(fresh)
+    apply_summary_floor(fresh, changed)
+    return fresh
+
+
+def _entry_status_moved(old_nodes: list[dict], new_nodes: list[dict]) -> bool:
+    def flags(nodes: list[dict]) -> dict[str, frozenset]:
+        return {
+            n["id"]: frozenset({"entry_point", "barrel"} & set(n.get("tags") or []))
+            for n in nodes
+            if str(n.get("id", "")).startswith("file:")
+        }
+
+    return flags(old_nodes) != flags(new_nodes)
+
+
+def _into_symbol(edge: dict, node_ids: set) -> bool:
+    target = edge.get("target")
+    return target in node_ids and not str(target).startswith("file:")
+
+
+def _same(old: list[dict], new: list[dict]) -> bool:
+    def key(items: list[dict]) -> list[str]:
+        return sorted(json.dumps(i, sort_keys=True) for i in items)
+
+    return key(old) == key(new)
 
 
 def _carry_forward_kg_enrichment(
