@@ -25,8 +25,17 @@ def _extracted_document_outline(source: str, file_path: str) -> dict[str, Any]:
     lines = [line.removesuffix("\r") for line in source.split("\n")]
     outline_headings: list[dict[str, Any]] = []
     text_lines: list[str] = []
+    fence = ""
     for line in lines:
-        m_head = re.match(r"^(#{1,6})\s+(.+?)(?:\s+#+)?$", line.strip())
+        stripped = line.strip()
+        if fence:
+            if stripped and set(stripped) == {fence[0]} and len(stripped) >= len(fence):
+                fence = ""
+            continue
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fence = stripped[:3]
+            continue
+        m_head = re.match(r"^(#{1,6})\s+(.+?)(?:\s+#+)?$", stripped)
         if m_head:
             lvl = len(m_head.group(1))
             title = m_head.group(2).strip()

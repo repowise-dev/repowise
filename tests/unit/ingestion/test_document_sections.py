@@ -174,6 +174,7 @@ async def test_sync_document_sections_lifecycle(tmp_path):
 
     class FakeParsedFile:
         file_info = FakeFileInfo()
+        symbols = ()
 
     parsed_files = {"docs/payments.md": FakeParsedFile()}
     source_map = {"docs/payments.md": doc_file.read_bytes()}
@@ -236,5 +237,284 @@ async def test_sync_document_sections_lifecycle(tmp_path):
         )
         remaining = res.scalars().all()
         assert all(p.freshness_status == "tombstone" for p in remaining)
+
+    await engine.dispose()
+
+
+def test_extracted_document_outline_ignores_code_fences():
+    from repowise.server.mcp_server.tool_context.skeleton import _extracted_document_outline
+
+    source = """# User Guide
+
+Here is a guide.
+
+```python
+# This is a python comment, not a markdown heading
+def foo():
+    pass
+```
+
+## Configuration
+
+Settings for the service.
+"""
+    res = _extracted_document_outline(source, "docs/guide.md")
+    headings = res["outline"]
+    titles = [h["title"] for h in headings]
+    assert "User Guide" in titles
+    assert "Configuration" in titles
+    assert not any("This is a python comment" in t for t in titles)
+    assert not any("comment" in t.lower() for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_sync_document_sections_backfill_missing_and_extractor_bump(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = create_session_factory(engine)
+
+    async with get_session(sf) as session:
+        repo = Repository(id="repo-backfill", name="backfill-repo", local_path=str(tmp_path))
+        session.add(repo)
+        await session.commit()
+
+    doc1 = tmp_path / "docs" / "doc1.md"
+    doc1.parent.mkdir(parents=True, exist_ok=True)
+    doc1.write_text("# Doc 1\n\nContent for doc 1 with substantial description.\n\n## Section A\n\nSection A details and explanations for developers.\n", encoding="utf-8")
+
+    class FakeFileInfo:
+        path = "docs/doc1.md"
+        extractor_name = "test_extractor"
+        extractor_version = "1"
+
+    class FakeParsedFile:
+        file_info = FakeFileInfo()
+        symbols = ()
+
+    parsed_files = {"docs/doc1.md": FakeParsedFile()}
+    source_map = {"docs/doc1.md": doc1.read_bytes()}
+
+    # Scenario A: Repo updated with changed_paths={"src/main.py"} (doc1 is unchanged).
+    # Since doc1 was indexed before this PR, it has NO section rows in the DB.
+    # sync_document_sections_sql MUST backfill doc1 despite it not being in changed_paths!
+    async with get_session(sf) as session:
+        new_pages, obsolete_ids = await sync_document_sections_sql(
+            session,
+            "repo-backfill",
+            tmp_path,
+            parsed_files,
+            source_map,
+            changed_paths={"src/main.py"},
+        )
+        assert len(new_pages) >= 2
+        assert obsolete_ids == []
+        await session.commit()
+
+    # Scenario B: Unchanged sync with changed_paths={"src/main.py"}.
+    # Since doc1 is unchanged and already has matching section rows, it should skip.
+    async with get_session(sf) as session:
+        new_pages_2, obsolete_2 = await sync_document_sections_sql(
+            session,
+            "repo-backfill",
+            tmp_path,
+            parsed_files,
+            source_map,
+            changed_paths={"src/main.py"},
+        )
+        assert new_pages_2 == []
+        assert obsolete_2 == []
+
+    # Scenario C: Extractor version bump on doc1 (from "1" to "2") while doc1 itself is not in changed_paths.
+    # It MUST re-chunk and update section rows.
+    class FakeFileInfoV2:
+        path = "docs/doc1.md"
+        extractor_name = "test_extractor"
+        extractor_version = "2"
+
+    class FakeParsedFileV2:
+        file_info = FakeFileInfoV2()
+
+    parsed_files_v2 = {"docs/doc1.md": FakeParsedFileV2()}
+    async with get_session(sf) as session:
+        new_pages_3, _obsolete_3 = await sync_document_sections_sql(
+            session,
+            "repo-backfill",
+            tmp_path,
+            parsed_files_v2,
+            source_map,
+            changed_paths={"src/other.py"},
+        )
+        assert len(new_pages_3) >= 2
+        await session.commit()
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persist_document_sections_and_fts_pipeline(tmp_path):
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.incremental.persist_index import (
+        index_doc_sections_fts,
+        persist_document_sections,
+    )
+
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = create_session_factory(engine)
+    fts = FullTextSearch(engine)
+    await fts.ensure_index()
+
+    async with get_session(sf) as session:
+        repo = Repository(id="repo-pipeline", name="pipeline-repo", local_path=str(tmp_path))
+        session.add(repo)
+        await session.commit()
+
+    doc_path = tmp_path / "docs" / "arch.md"
+    doc_path.parent.mkdir(parents=True, exist_ok=True)
+    doc_path.write_text(
+        "# System Architecture\n\nOverview of the subsystems in the platform and their connections.\n\n## Database\n\nDatabase uses SQLite for relational persistence with ACID transactions.\n",
+        encoding="utf-8",
+    )
+
+    class FakeFileInfo:
+        path = "docs/arch.md"
+        extractor_name = None
+        extractor_version = None
+
+    class FakeParsedFile:
+        file_info = FakeFileInfo()
+        symbols = ()
+
+    async with get_session(sf) as session:
+        ctx = SimpleNamespace(
+            session=session,
+            engine=engine,
+            repo_id="repo-pipeline",
+            repo_path=tmp_path,
+            parsed_files={"docs/arch.md": FakeParsedFile()},
+            source_map={"docs/arch.md": doc_path.read_bytes()},
+            changed_paths={"docs/arch.md"},
+            fts_cleanup_ids=set(),
+            vector_cleanup_ids=set(),
+            new_doc_pages=[],
+            timings=None,
+        )
+        await persist_document_sections(ctx)
+        assert len(ctx.new_doc_pages) >= 2
+        await session.commit()
+
+        await index_doc_sections_fts(ctx)
+
+    hits = await fts.search("sqlite", limit=5)
+    assert any("Database" in h.title for h in hits)
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_init_persist_document_sections_path(tmp_path):
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd.persistence import persist_result
+    from repowise.core.ingestion import GraphBuilder
+
+    (tmp_path / ".repowise").mkdir()
+    doc = tmp_path / "README.md"
+    doc.write_text(
+        "# Main Project\n\nProject details and architecture overview for developers.\n\n## Installation\n\nRun pip install repowise in a virtual environment.\n",
+        encoding="utf-8",
+    )
+
+    class FakeFileInfo:
+        path = "README.md"
+        extractor_name = None
+        extractor_version = None
+        is_api_contract = False
+        is_test = False
+        language = "markdown"
+
+    class FakeParsedFile:
+        file_info = FakeFileInfo()
+        symbols = ()
+
+    result = SimpleNamespace(
+        repo_name=tmp_path.name,
+        repo_path=str(tmp_path),
+        parsed_files=[FakeParsedFile()],
+        file_infos=[FakeFileInfo()],
+        source_map={"README.md": doc.read_bytes()},
+        graph_builder=GraphBuilder(tmp_path),
+        git_metadata_list=[],
+        git_summary=None,
+        dead_code_report=None,
+        decision_report=None,
+        generated_pages=[],
+        execution_flow_report=None,
+    )
+
+    await persist_result(result, tmp_path)
+
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/.repowise/wiki.db")
+    sf = create_session_factory(engine)
+    async with get_session(sf) as session:
+        res = await session.execute(
+            select(Page).where(
+                Page.page_type == "document_section",
+            )
+        )
+        sections = res.scalars().all()
+        assert len(sections) >= 2
+        assert any("installation" in s.id for s in sections)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_workspace_member_document_sections_sync(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = create_session_factory(engine)
+
+    member_path = tmp_path / "packages" / "subpkg"
+    member_path.mkdir(parents=True, exist_ok=True)
+    doc_file = member_path / "README.md"
+    doc_file.write_text(
+        "# SubPackage\n\nSubpackage description with detailed architectural overview.\n\n## Usage Guide\n\nDetailed usage instructions and configuration parameters for this component.\n",
+        encoding="utf-8",
+    )
+
+    class FakeFileInfo:
+        path = "README.md"
+        extractor_name = None
+        extractor_version = None
+        is_api_contract = False
+        is_test = False
+        language = "markdown"
+
+    class FakeParsedFile:
+        file_info = FakeFileInfo()
+        symbols = ()
+
+    parsed_files = {"README.md": FakeParsedFile()}
+    source_map = {"README.md": doc_file.read_bytes()}
+
+    async with get_session(sf) as session:
+        repo = Repository(id="member-1", name="subpkg", local_path=str(member_path))
+        session.add(repo)
+        await session.commit()
+
+        new_pages, _obsolete_ids = await sync_document_sections_sql(
+            session,
+            "member-1",
+            member_path,
+            parsed_files,
+            source_map,
+        )
+        assert len(new_pages) >= 2
+        assert any(p.target_path == "README.md" for p in new_pages)
+        await session.commit()
 
     await engine.dispose()

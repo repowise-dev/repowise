@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.document_extractors import is_extracted_document, source_fingerprint
@@ -24,6 +24,14 @@ _log = logging.getLogger("repowise.core.ingestion.document_sections")
 _MAX_SECTION_CHARS = 3000
 _TINY_SECTION_CHARS = 40
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+#+)?$")
+
+
+@dataclass(slots=True)
+class ExistingSection:
+    id: str
+    target_path: str
+    source_hash: str | None
+    freshness_status: str
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,16 @@ def slugify(text: str) -> str:
     return slug or "section"
 
 
+def _check_fence(stripped: str, fence: str) -> str:
+    if fence:
+        if stripped and set(stripped) == {fence[0]} and len(stripped) >= len(fence):
+            return ""
+        return fence
+    if stripped.startswith("```") or stripped.startswith("~~~"):
+        return stripped[:3]
+    return ""
+
+
 def _parse_raw_sections(lines: list[str]) -> list[dict[str, Any]]:
     raw_sections: list[dict[str, Any]] = []
     current_heading: str | None = None
@@ -55,6 +73,7 @@ def _parse_raw_sections(lines: list[str]) -> list[dict[str, Any]]:
     current_lines: list[str] = []
     start_line = 1
     heading_stack: list[tuple[int, str]] = []
+    fence = ""
 
     def flush(end_line: int) -> None:
         if current_heading is not None or current_lines:
@@ -72,6 +91,12 @@ def _parse_raw_sections(lines: list[str]) -> list[dict[str, Any]]:
             )
 
     for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        new_fence = _check_fence(stripped, fence)
+        if fence or new_fence:
+            fence = new_fence
+            current_lines.append(line)
+            continue
         m = _HEADING_RE.match(line)
         if m:
             flush(i - 1)
@@ -91,33 +116,38 @@ def _parse_raw_sections(lines: list[str]) -> list[dict[str, Any]]:
     return raw_sections
 
 
+def _can_merge_into_parent(
+    sec: dict[str, Any],
+    idx: int,
+    raw_sections: list[dict[str, Any]],
+    merged: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if sec["level"] <= 1 or not merged:
+        return None
+    has_subsections = (
+        idx + 1 < len(raw_sections)
+        and raw_sections[idx + 1]["level"] > sec["level"]
+    )
+    if has_subsections:
+        return None
+    lines = sec["lines"]
+    substantive = "\n".join(lines[1:] if lines and _HEADING_RE.match(lines[0]) else lines).strip()
+    if len(substantive) >= _TINY_SECTION_CHARS:
+        return None
+    return next((prev for prev in reversed(merged) if prev["level"] < sec["level"]), None)
+
+
 def _merge_tiny_sections(raw_sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for idx, sec in enumerate(raw_sections):
-        body_text = "\n".join(sec["lines"]).strip()
-        if not body_text:
+        if not any(line.strip() for line in sec["lines"]):
             continue
-        substantive = body_text
-        if sec["lines"] and _HEADING_RE.match(sec["lines"][0]):
-            substantive = "\n".join(sec["lines"][1:]).strip()
-
-        has_subsections = (
-            idx + 1 < len(raw_sections)
-            and raw_sections[idx + 1]["level"] > sec["level"]
-        )
-
-        if (
-            not has_subsections
-            and len(substantive) < _TINY_SECTION_CHARS
-            and sec["level"] > 1
-            and merged
-        ):
-            parent = next((prev for prev in reversed(merged) if prev["level"] < sec["level"]), None)
-            if parent is not None:
-                parent["lines"].extend(["", *sec["lines"]])
-                parent["end_line"] = sec["end_line"]
-                continue
-        merged.append(sec)
+        parent = _can_merge_into_parent(sec, idx, raw_sections, merged)
+        if parent is not None:
+            parent["lines"].extend(["", *sec["lines"]])
+            parent["end_line"] = sec["end_line"]
+        else:
+            merged.append(sec)
     return merged
 
 
@@ -179,6 +209,53 @@ def _split_into_chunks(content: str, max_chars: int) -> list[str]:
     return chunks
 
 
+class _SlugAllocator:
+    def __init__(self) -> None:
+        self.issued_slugs: set[str] = set()
+
+    def allocate(self, candidate: str) -> str:
+        s = slugify(candidate) or "section"
+        if s not in self.issued_slugs:
+            self.issued_slugs.add(s)
+            return s
+        counter = 2
+        while f"{s}-{counter}" in self.issued_slugs:
+            counter += 1
+        allocated = f"{s}-{counter}"
+        self.issued_slugs.add(allocated)
+        return allocated
+
+
+def _emit_oversized_sections(
+    file_path: str,
+    sec: dict[str, Any],
+    content: str,
+    base_slug: str,
+    allocator: _SlugAllocator,
+    *,
+    is_extracted: bool,
+) -> list[DocumentSection]:
+    chunks = _split_into_chunks(content, _MAX_SECTION_CHARS)
+    sections: list[DocumentSection] = []
+    for part_idx, chunk in enumerate(chunks, 1):
+        part_slug = base_slug if part_idx == 1 else allocator.allocate(f"{base_slug}-part-{part_idx}")
+        part_title = sec["title"] if part_idx == 1 else f"{sec['title']} (Part {part_idx})"
+        sections.append(
+            DocumentSection(
+                section_id=f"{file_path}#{part_slug}",
+                file_path=file_path,
+                title=part_title,
+                slug=part_slug,
+                heading_trail=sec["trail"],
+                content=chunk,
+                start_line=None if is_extracted else sec["start_line"],
+                end_line=None if is_extracted else sec["end_line"],
+                is_extracted=is_extracted,
+            )
+        )
+    return sections
+
+
 def _build_document_sections(
     file_path: str,
     merged: list[dict[str, Any]],
@@ -186,27 +263,13 @@ def _build_document_sections(
     is_extracted: bool,
 ) -> list[DocumentSection]:
     out: list[DocumentSection] = []
-    issued_slugs: set[str] = set()
-
-    def allocate_slug(candidate: str) -> str:
-        s = slugify(candidate)
-        if not s:
-            s = "section"
-        if s not in issued_slugs:
-            issued_slugs.add(s)
-            return s
-        counter = 2
-        while f"{s}-{counter}" in issued_slugs:
-            counter += 1
-        allocated = f"{s}-{counter}"
-        issued_slugs.add(allocated)
-        return allocated
+    allocator = _SlugAllocator()
 
     for sec in merged:
         content = "\n".join(sec["lines"]).strip()
         if not content:
             continue
-        base_slug = allocate_slug(sec["title"])
+        base_slug = allocator.allocate(sec["title"])
 
         if len(content) <= _MAX_SECTION_CHARS:
             out.append(
@@ -223,29 +286,11 @@ def _build_document_sections(
                 )
             )
         else:
-            chunks = _split_into_chunks(content, _MAX_SECTION_CHARS)
-            for part_idx, chunk in enumerate(chunks, 1):
-                part_slug = (
-                    base_slug
-                    if part_idx == 1
-                    else allocate_slug(f"{base_slug}-part-{part_idx}")
+            out.extend(
+                _emit_oversized_sections(
+                    file_path, sec, content, base_slug, allocator, is_extracted=is_extracted
                 )
-                part_title = (
-                    sec["title"] if part_idx == 1 else f"{sec['title']} (Part {part_idx})"
-                )
-                out.append(
-                    DocumentSection(
-                        section_id=f"{file_path}#{part_slug}",
-                        file_path=file_path,
-                        title=part_title,
-                        slug=part_slug,
-                        heading_trail=sec["trail"],
-                        content=chunk,
-                        start_line=None if is_extracted else sec["start_line"],
-                        end_line=None if is_extracted else sec["end_line"],
-                        is_extracted=is_extracted,
-                    )
-                )
+            )
     return out
 
 
@@ -340,18 +385,27 @@ def _find_candidate_paths(root: Path, file_map: dict[str, Any]) -> set[str]:
     return candidates
 
 
-def _tombstone_deleted_files(
+async def _tombstone_deleted_files(
+    session: AsyncSession,
     root: Path,
     candidate_paths: set[str],
-    existing_by_path: dict[str, list[Page]],
+    existing_by_path: dict[str, list[ExistingSection]],
 ) -> list[str]:
     obsolete: list[str] = []
+    tombstone_ids: list[str] = []
     for target_path, old_pages in existing_by_path.items():
         if target_path not in candidate_paths or not (root / target_path).exists():
             for op in old_pages:
                 if op.freshness_status != "tombstone":
                     op.freshness_status = "tombstone"
                     obsolete.append(op.id)
+                    tombstone_ids.append(op.id)
+    if tombstone_ids:
+        await session.execute(
+            update(Page)
+            .where(Page.id.in_(tombstone_ids))
+            .values(freshness_status="tombstone")
+        )
     return obsolete
 
 
@@ -361,7 +415,7 @@ async def _sync_file_sections(
     rel_path: str,
     raw_bytes: bytes,
     fp: str,
-    old_pages: list[Page],
+    old_pages: list[ExistingSection],
     repo_id: str,
 ) -> tuple[list[Page], list[str]]:
     is_extracted = is_extracted_document(root / rel_path)
@@ -381,10 +435,13 @@ async def _sync_file_sections(
         new_pages.append(merged)
 
     obsolete = []
+    to_delete = []
     for op in old_pages:
         if op.id not in current_ids:
-            await session.delete(op)
+            to_delete.append(op.id)
             obsolete.append(op.id)
+    if to_delete:
+        await session.execute(delete(Page).where(Page.id.in_(to_delete)))
     return new_pages, obsolete
 
 
@@ -400,16 +457,17 @@ def _resolve_file_map(parsed_files: Mapping[str, Any] | Sequence[Any] | None) ->
     return {}
 
 
-async def _load_existing_by_path(session: AsyncSession, repo_id: str) -> dict[str, list[Page]]:
+async def _load_existing_by_path(session: AsyncSession, repo_id: str) -> dict[str, list[ExistingSection]]:
     res = await session.execute(
-        select(Page).where(
+        select(Page.id, Page.target_path, Page.source_hash, Page.freshness_status).where(
             Page.repository_id == repo_id,
             Page.page_type == "document_section",
         )
     )
-    by_path: dict[str, list[Page]] = {}
-    for p in res.scalars().all():
-        by_path.setdefault(p.target_path, []).append(p)
+    by_path: dict[str, list[ExistingSection]] = {}
+    for row in res.all():
+        sec = ExistingSection(id=row[0], target_path=row[1], source_hash=row[2], freshness_status=row[3])
+        by_path.setdefault(row[1], []).append(sec)
     return by_path
 
 
@@ -447,21 +505,29 @@ async def sync_document_sections_sql(
     existing_by_path = await _load_existing_by_path(session, repo_id)
 
     new_pages: list[Page] = []
-    obsolete_ids: list[str] = _tombstone_deleted_files(root, candidate_paths, existing_by_path)
+    obsolete_ids: list[str] = await _tombstone_deleted_files(
+        session, root, candidate_paths, existing_by_path
+    )
 
     for rel_path in sorted(candidate_paths):
-        if changed_paths is not None and rel_path not in changed_paths:
-            continue
         if not (root / rel_path).is_file():
             continue
 
+        old_pages = existing_by_path.get(rel_path, [])
         item = _read_bytes_and_fp(root, rel_path, file_map, sources)
         if item is None:
             continue
         raw_bytes, fp = item
 
-        old_pages = existing_by_path.get(rel_path, [])
+        # If sections already exist and their stored source_hash matches fp and they are fresh,
+        # they are already up to date.
         if old_pages and all(p.source_hash == fp and p.freshness_status == "fresh" for p in old_pages):
+            continue
+
+        # If changed_paths is provided, unchanged files that already have sections with matching hash
+        # were skipped above. If they have no sections (e.g. existing repo before this PR) or their
+        # hash differs (extractor version bump or edit), they must be synced.
+        if changed_paths is not None and rel_path not in changed_paths and old_pages and all(p.source_hash == fp for p in old_pages):
             continue
 
         created, removed = await _sync_file_sections(

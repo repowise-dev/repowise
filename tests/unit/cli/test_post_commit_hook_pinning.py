@@ -108,17 +108,10 @@ def test_the_hook_runs_the_pinned_install_when_path_has_none(repo, tmp_path, mon
     (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
     # Only sh and git reachable: a PATH lookup alone would find no repowise.
     path = os.pathsep.join(dict.fromkeys([str(Path(sh).parent), str(Path(git).parent)]))
-    env = {
-        "PATH": path,
-        "HOME": os.environ.get("HOME", ""),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-    }
+    env = {"PATH": path, "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
     subprocess.run([sh, str(repo / ".git" / "hooks" / "post-commit")], cwd=repo, env=env, check=True, timeout=30)
     ran = repo / ".repowise" / "ran"
     deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        if ran.exists() and ran.read_text(encoding="utf-8").strip() == "update":
-            break
+    while not ran.exists() and time.monotonic() < deadline:
         time.sleep(0.2)
     assert ran.read_text(encoding="utf-8").strip() == "update"

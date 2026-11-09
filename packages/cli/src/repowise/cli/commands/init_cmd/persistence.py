@@ -250,20 +250,16 @@ async def persist_result(
         persisted_repo_id = repo.id
 
         # Document sections synchronization
-        new_doc_pages: list = []
-        try:
-            from repowise.core.ingestion.document_sections import sync_document_sections_sql
+        from repowise.core.ingestion.document_sections import sync_document_sections_sql
 
-            new_doc_pages, obsolete_doc_ids = await sync_document_sections_sql(
-                session,
-                repo.id,
-                repo_path,
-                getattr(result, "parsed_files", None),
-                getattr(result, "source_map", None),
-            )
-            swept_page_ids = [*swept_page_ids, *obsolete_doc_ids]
-        except Exception as exc:
-            logger.warning("document_sections_sync_failed", error=str(exc))
+        new_doc_pages, obsolete_doc_ids = await sync_document_sections_sql(
+            session,
+            repo.id,
+            repo_path,
+            getattr(result, "parsed_files", None),
+            getattr(result, "source_map", None),
+        )
+        swept_page_ids = [*swept_page_ids, *obsolete_doc_ids]
 
         # Tombstone pages whose file is simply gone. The other tombstone path
         # reads a diff, and an init compares nothing, so until here a page

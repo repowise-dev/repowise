@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -17,10 +18,22 @@ _log = logging.getLogger("repowise.mcp.answer")
 _PAGERANK_BIAS_MAX = 0.3
 
 
+def _parse_section_meta(raw_meta: str | None, m: dict[str, Any]) -> None:
+    if not raw_meta:
+        return
+    try:
+        sec_meta = json.loads(raw_meta)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if isinstance(sec_meta, dict):
+        if "section_id" in sec_meta:
+            m["section_id"] = sec_meta["section_id"]
+        if "heading_trail" in sec_meta:
+            m["heading_trail"] = sec_meta["heading_trail"]
+
+
 async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str, Any]]:
     """Path, summary, type and freshness of each page id that has a page row."""
-    import json
-
     async with get_session(ctx.session_factory) as session:
         res = await session.execute(
             select(
@@ -40,16 +53,8 @@ async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str,
                 "page_type": row[3] or "",
                 "freshness": row[4] or "",
             }
-            if row[3] == "document_section" and row[5]:
-                try:
-                    sec_meta = json.loads(row[5])
-                    if isinstance(sec_meta, dict):
-                        if "section_id" in sec_meta:
-                            m["section_id"] = sec_meta["section_id"]
-                        if "heading_trail" in sec_meta:
-                            m["heading_trail"] = sec_meta["heading_trail"]
-                except Exception:
-                    pass
+            if row[3] == "document_section":
+                _parse_section_meta(row[5], m)
             out[row[0]] = m
         return out
 

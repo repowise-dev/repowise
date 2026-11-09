@@ -338,43 +338,38 @@ _MAX_DOC_HITS = 2
 
 
 def _is_doc_file_hit(target_path: str, page_type: str) -> bool:
-    if page_type == "document_section":
-        return True
-    from repowise.core.ingestion.document_extractors import is_extracted_document
-
-    if target_path and is_extracted_document(target_path):
-        return True
-    return page_type in ("file_page", "") and target_path.lower().endswith(
-        (".md", ".markdown", ".rst", ".txt")
-    )
+    return _classify_hit_kind(target_path, page_type) == "doc"
 
 
 def _cap_and_order_document_hits(
     output: list[dict], kind: str | None, limit: int
-) -> list[dict]:
-    """Ensure document hits are capped per response and never push top code results down."""
-    if kind in ("doc", "documents"):
-        return output
+) -> tuple[list[dict], list[dict]]:
+    """Ensure document sections never push code results down and are capped when code is present.
 
-    doc_count = 0
-    kept: list[dict] = []
-    has_code = False
-    first_code_idx = None
+    Returns (window_hits, full_ranked_pool).
+    """
+    if kind in ("doc", "documents"):
+        return output, list(output)
+
+    has_code = any(
+        _classify_hit_kind(item.get("target_path", "") or item.get("path", ""), item.get("page_type", "")) != "doc"
+        for item in output
+    )
+
+    if not has_code:
+        return output, list(output)
+
+    non_sections: list[dict] = []
+    doc_sections: list[dict] = []
 
     for item in output:
-        is_doc = _is_doc_file_hit(item.get("target_path", "") or item.get("path", ""), item.get("page_type", ""))
-        if is_doc:
-            if doc_count < _MAX_DOC_HITS:
-                doc_count += 1
-                kept.append(item)
+        if item.get("page_type") == "document_section":
+            doc_sections.append(item)
         else:
-            if not has_code:
-                has_code = True
-                first_code_idx = len(kept)
-            kept.append(item)
+            non_sections.append(item)
 
-    if has_code and first_code_idx is not None and first_code_idx > 0:
-        top_code = kept.pop(first_code_idx)
-        kept.insert(0, top_code)
+    top_doc_sections = doc_sections[:_MAX_DOC_HITS]
+    window = non_sections + top_doc_sections
+    ranked = non_sections + doc_sections
 
-    return kept
+    return window, ranked

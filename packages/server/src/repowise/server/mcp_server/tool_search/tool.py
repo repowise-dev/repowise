@@ -172,10 +172,9 @@ async def _concept_search(
     # Files the page retrievers cannot see (a private helper, a local name) get
     # the weakest tail slots.
     output = _reserve_symbol_tail(output, limit, kind)
-    output = _cap_and_order_document_hits(output, kind, limit)
+    output, ranked = _cap_and_order_document_hits(output, kind, limit)
     _drop_internal_ranking_fields(output)
-    # The full ranked pool, kept so ``candidates`` can reach past the cut.
-    ranked = list(output)
+    _drop_internal_ranking_fields(ranked)
     output = output[:limit]
     await attach_hit_symbols(ctx, query, output)
 
