@@ -618,8 +618,11 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         return
     console.print(
         f"created {len(result['created'])}  accepted {len(result['accepted'])}  "
-        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}"
+        f"reaffirmed {len(result['reaffirmed'])}  unchanged {len(result['unchanged'])}  "
+        f"skipped {len(result['skipped'])}"
     )
+    for decision_id in result["reaffirmed"]:
+        console.print(f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted")
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
     if dry_run:
