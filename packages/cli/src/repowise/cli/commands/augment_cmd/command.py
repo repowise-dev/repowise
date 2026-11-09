@@ -373,6 +373,36 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
 
+#: How many stale markers one claim may sweep. A hook runs on every tool call,
+#: so the sweep is bounded: a temp dir with thousands of leftovers is cleaned
+#: over many calls rather than in one slow pass.
+_EMIT_SWEEP_LIMIT = 32
+
+
+def _sweep_stale_markers(directory: Path, now: float) -> None:
+    """Delete ``.repowise-augment-*`` markers older than the TTL, best effort.
+
+    A marker only matters for :data:`_EMIT_DEDUP_TTL_SECONDS`; after that it is
+    dead weight in the user's temp dir. Errors are ignored — a sweep must never
+    cost an emission — and at most :data:`_EMIT_SWEEP_LIMIT` files are removed
+    per call so the hook stays fast.
+    """
+    removed = 0
+    try:
+        entries = list(directory.glob(".repowise-augment-*"))
+    except OSError:
+        return
+    for stale in entries:
+        if removed >= _EMIT_SWEEP_LIMIT:
+            return
+        try:
+            if now - stale.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
+                continue
+            stale.unlink()
+            removed += 1
+        except OSError:
+            continue
+
 
 def _claim_emission(event: str, context: str) -> bool:
     """Return True if this caller may emit ``context`` for ``event`` now.
@@ -389,6 +419,9 @@ def _claim_emission(event: str, context: str) -> bool:
     their own tool sequence produce byte-identical notices, and the second one
     is silently swallowed. The duplicates this exists to catch are two
     processes on *one* tool event, which by definition share a session.
+
+    Creating a marker also sweeps markers older than the TTL (see
+    :func:`_sweep_stale_markers`), so the temp dir does not grow without bound.
     """
     import hashlib
     import os
@@ -397,7 +430,8 @@ def _claim_emission(event: str, context: str) -> bool:
 
     try:
         key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
-        marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
+        directory = Path(tempfile.gettempdir())
+        marker = directory / f".repowise-augment-{key}"
         now = time.time()
         try:
             # O_EXCL: only the first concurrent caller creates the file.
@@ -406,6 +440,7 @@ def _claim_emission(event: str, context: str) -> bool:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
+            _sweep_stale_markers(directory, now)
             return True
         except FileExistsError:
             # Someone emitted recently — defer unless the marker is stale, in
