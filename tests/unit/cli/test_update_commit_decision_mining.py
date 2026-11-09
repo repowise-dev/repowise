@@ -192,7 +192,8 @@ def test_a_failed_source_keeps_its_range_and_a_succeeding_one_advances(stubbed, 
     run.head = "next"
     _mine(run, docs)
 
-    assert bases == ["base", "head"]
+    # Ranges in order; a pathless retry range asks git twice for the same base.
+    assert list(dict.fromkeys(bases)) == ["base", "head"]
 
 
 def test_an_empty_range_does_not_advance_a_source(stubbed, monkeypatch):
@@ -342,3 +343,20 @@ def test_a_rewritten_pointer_mines_again_and_advances(stubbed, repo, monkeypatch
 
     assert bases == ["base"]
     assert run.state["decision_mining"]["pr"]["last_success_commit"] == "head"
+
+
+def test_a_retry_over_only_empty_commits_advances_the_source(stubbed, repo, monkeypatch):
+    """Empty and merge commits name no file; that is a finished range, not a failure."""
+    monkeypatch.undo()  # real git throughout: the stubs above would hide the trigger
+    monkeypatch.setattr(extractor_mod, "DecisionExtractor", _StubExtractor)
+    pointer = _commit(repo, "a.txt")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "empty")
+    head = _git(repo, "rev-parse", "HEAD")
+    run, docs = _rewritten_run(repo, pointer, "other-base", head)
+
+    _mine(run, docs)
+
+    ledger = run.state["decision_mining"]["pr"]
+    assert ledger["last_success_commit"] == head
+    assert ledger["last_status"] == "ok"
+    assert "Decision mining (pr)" not in " ".join(run.degraded)

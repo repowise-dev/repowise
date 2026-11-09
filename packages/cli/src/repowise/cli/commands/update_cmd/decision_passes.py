@@ -248,8 +248,13 @@ def _git_meta_for_range(run: UpdateRun, base: str, commits: set[str]) -> dict | 
         }
     )
     if not touched:
-        # A non-empty commit range whose files git cannot name: retry later.
-        return None
+        # ``commit_file_sets`` drops commits that name no path (empty or merge
+        # commits) and answers ``[]`` when git fails, so ask again. Commits
+        # that git still lists touch no file: nothing to mine, like base_ref's
+        # ``{}``. No answer is a git failure: retry later.
+        from repowise.core.analysis.decisions.evolution import commits_in_range
+
+        return {} if commits_in_range(run.repo_path, base, run.head) else None
     from .deterministic import with_stored_git_meta
 
     with_stored = with_stored_git_meta(run.repo_path, run.git_meta_map, touched)
