@@ -6,13 +6,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.analysis.finding_registry import split_held
-from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
+from repowise.core.analysis.health.aggregation import group_rollup
+from repowise.core.analysis.health.rows import scored_rows
 from repowise.core.analysis.health.trends import file_trend
 from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
-from repowise.server.mcp_server.tool_health.targets import _unresolved_targets
+from repowise.server.mcp_server.tool_health.targets import (
+    _module_matches,
+    _normalize_module_name,
+    _unresolved_targets,
+)
 
 
 @dataclass(frozen=True)
@@ -31,10 +36,7 @@ def build_targeted(
     pop = data.pop
     findings_total = data.findings.findings_total
     metric_payload = _metric_payload(data)
-    module_set = set(req.module_targets)
-    module_rollup = _module_rollups(
-        [m for m in pop.all_metrics if m.module in module_set], data.deductions
-    )
+    module_rollup = _targeted_module_rollups(pop.all_metrics, req, data.deductions)
     result: dict[str, Any] = {
         "mode": "targets",
         "targets": req.raw_targets,
@@ -99,6 +101,25 @@ def _findings_hidden(data: HealthData) -> dict[str, str]:
             'not listed here; include=["unverified"] lists them.'
         )
     }
+
+
+def _targeted_module_rollups(
+    metrics: list[Any], req: HealthRequest, deductions: Any
+) -> list[dict[str, Any]]:
+    """One rollup per named module target, under the name the caller passed.
+
+    A nested ``module:`` name selects the files under that directory, which no
+    single ``module`` value names, so each row folds the files its own target
+    resolved to instead of filtering on a top-level module equality.
+    """
+    rows = []
+    for target in req.module_targets:
+        name = _normalize_module_name(target)
+        selected = [m for m in scored_rows(metrics) if _module_matches(m, name)]
+        if selected:
+            rows.append({"module": name, **group_rollup(selected, deductions)})
+    rows.sort(key=lambda row: (row["average_health"], row["module"]))
+    return rows
 
 
 def _metric_payload(data: HealthData) -> list[dict[str, Any]]:

@@ -47,20 +47,10 @@ async def _placement(session, repo_id):
 
 @pytest.fixture
 async def wiki(async_session):
-    """A small persisted wiki: overview, one layer, one module, two files."""
+    """A small persisted wiki: overview, one module, two files."""
     repo = await insert_repo(async_session)
     rid = repo.id
-    # Two layers, spine ordered opposite to the alphabet, so reading the
-    # spine off the stored overview is distinguishable from not reading it.
-    await _add(
-        async_session,
-        rid,
-        "repo_overview",
-        "demo",
-        layer_order_ids=["layer:service", "layer:api"],
-    )
-    await _add(async_session, rid, "layer_page", "layer:service")
-    await _add(async_session, rid, "layer_page", "layer:api")
+    await _add(async_session, rid, "repo_overview", "demo")
     await _add(
         async_session,
         rid,
@@ -80,15 +70,8 @@ class TestRebuild:
     async def test_it_places_pages(self, async_session, wiki):
         placed = await _placement(async_session, wiki)
         assert placed["file_page:src/ingest/a.py"][0] == "module_page:src/ingest"
-        assert placed["module_page:src/ingest"][0] == "layer_page:layer:service"
-        assert placed["layer_page:layer:service"][0] == "repo_overview:demo"
+        assert placed["module_page:src/ingest"][0] == "repo_overview:demo"
         assert placed["repo_overview:demo"][0] is None
-
-    async def test_it_reads_the_layer_spine_off_the_stored_overview(self, async_session, wiki):
-        """`layer:api` sorts first alphabetically; the stored spine puts
-        `layer:service` first, so this fails if the spine is not read."""
-        placed = await _placement(async_session, wiki)
-        assert placed["layer_page:layer:service"][1] < placed["layer_page:layer:api"][1]
 
     async def test_a_second_rebuild_changes_nothing(self, async_session, wiki):
         before = await _placement(async_session, wiki)
@@ -96,6 +79,61 @@ class TestRebuild:
         await async_session.commit()
         assert changed == 0
         assert await _placement(async_session, wiki) == before
+
+
+class TestLayerMetadata:
+    @pytest.mark.parametrize("page_type", ["module_page", "scc_page"])
+    @pytest.mark.parametrize(
+        "stored_layer",
+        [
+            {},
+            {"layer_id": "layer:api", "layer_name": "API"},
+            {"layer_id": "layer:service", "layer_name": "Old service name"},
+        ],
+        ids=["missing", "stale-layer", "stale-name"],
+    )
+    async def test_layer_only_changes_are_persisted_once(
+        self, async_session, wiki, page_type, stored_layer
+    ):
+        paths = ["src/ingest/a.py", "src/ingest/b.py"]
+        for path in paths:
+            file = await async_session.get(Page, f"file_page:{path}")
+            file_metadata = json.loads(file.metadata_json)
+            file_metadata["layer_name"] = "Services"
+            file.metadata_json = json.dumps(file_metadata)
+        if page_type == "scc_page":
+            await _add(async_session, wiki, page_type, "cycle", files=paths)
+        await rebuild_page_tree(async_session, wiki)
+        await async_session.commit()
+
+        target = "src/ingest" if page_type == "module_page" else "cycle"
+        page = await async_session.get(Page, f"{page_type}:{target}")
+        metadata = {
+            "file_paths": paths,
+            "concept_order": 4,
+            "custom": {"labels": ["keep", 7], "enabled": True},
+            **stored_layer,
+        }
+        page.metadata_json = json.dumps(metadata)
+        await async_session.commit()
+        placement = await _placement(async_session, wiki)
+
+        changed = await rebuild_page_tree(async_session, wiki)
+        await async_session.commit()
+
+        assert changed == 1
+        assert await _placement(async_session, wiki) == placement
+        stored = await async_session.scalar(select(Page.metadata_json).where(Page.id == page.id))
+        assert json.loads(stored) == {
+            **metadata,
+            "layer_id": "layer:service",
+            "layer_name": "Services",
+        }
+        assert await rebuild_page_tree(async_session, wiki) == 0
+        await async_session.commit()
+        assert await async_session.scalar(
+            select(Page.metadata_json).where(Page.id == page.id)
+        ) == stored
 
 
 class TestUpdateDoesNotFlattenTheTree:
@@ -199,4 +237,4 @@ class TestAddRemoveRename:
         await async_session.commit()
 
         placed = await _placement(async_session, wiki)
-        assert placed["file_page:src/ingest/a.py"][0] == "layer_page:layer:service"
+        assert placed["file_page:src/ingest/a.py"][0] == "repo_overview:demo"

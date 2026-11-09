@@ -164,13 +164,25 @@ async def _search_one_repo(
         async with get_session(ctx.session_factory) as session:
             paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
     if plan.mode == "hybrid":
-        c = await _search_single_repo(ctx, plan.query, plan.limit, plan.page_type, plan.kind)
+        # With an exact name hit in hand, a vector store still loading is not
+        # waited for (up to 30 s): its pages only add context to that answer.
+        exact = _has_exact_symbol(_identifier_candidates(plan.query, plan.mode, plan.names), s)
+        semantic = not exact or _vector_store_loaded(ctx)
+        c = await _search_single_repo(
+            ctx, plan.query, plan.limit, plan.page_type, plan.kind, semantic=semantic
+        )
         for item in c:
             item["type"] = "page"
         await attach_hit_symbols(ctx, plan.query, c)
     for rows in (s, f, c):
         _tag_repo(rows, ctx, plan.multi)
     return s, f, paths, c
+
+
+def _vector_store_loaded(ctx: Any) -> bool:
+    """Whether the vector store finished loading (one that does not track it is)."""
+    ready = getattr(ctx, "vector_store_ready", None)
+    return ready is None or ready.is_set()
 
 
 def _merge_pools(answered: list[tuple[Any, Any]], limit: int) -> _Pools:
@@ -242,6 +254,32 @@ def _select_results(
     if plan.mode == "path":
         return pools.files[: plan.limit], 0
     return _hybrid_mode_results(plan, pools, exact), 0
+
+
+def _named_directory(query: str, paths: list[str]) -> str | None:
+    """The one indexed directory a path query names (``src/utils``, ``utils``), else None."""
+    q = query.strip().replace("\\", "/").strip("/")
+    if not q or "*" in q or "?" in q:
+        return None
+    found: set[str] = set()
+    for p in paths:
+        if p.startswith(f"{q}/"):
+            found.add(q)
+        elif (i := p.find(f"/{q}/")) >= 0:
+            found.add(p[: i + 1 + len(q)])
+    if q in found:
+        return q
+    return found.pop() if len(found) == 1 else None
+
+
+def _directory_action(plan: _SearchPlan, pools: _Pools) -> list[str]:
+    """The get_context call listing a directory's files, for a path query naming one."""
+    if plan.mode != "path" or plan.multi:
+        return []
+    folder = _named_directory(plan.query, pools.indexed_paths)
+    if folder is None:
+        return []
+    return [f'get_context(targets=["{folder}"], include=["files"]): its files and their tests']
 
 
 async def _single_repository(contexts: list[Any], multi: bool) -> Any:
@@ -380,6 +418,8 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
+    if actions := _directory_action(plan, pools):
+        response["next_actions"] = actions
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands

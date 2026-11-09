@@ -16,6 +16,7 @@ enrichment. All three are prompting, and this path has no model.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -46,19 +47,26 @@ def deterministic_embedder_name(cfg: dict) -> str:
     return resolved if resolved in ("mock", "ollama") else "mock"
 
 
-def load_prior_page_ids(repo_path: Path) -> dict:
-    """Every page id already in the wiki, mapped to a placeholder.
+def load_prior_page_ids(
+    repo_path: Path,
+    page_types: Iterable[str] | None = None,
+    *,
+    content_paths: Iterable[str] = (),
+) -> dict:
+    """Every page id already in the wiki (of *page_types*, when given), mapped to a placeholder.
 
     Interlinking and related-pages resolve references against this, so a
     re-rendered page can still link to the pages this run did not touch.
-    Only the ids are read: the full ``load_prior_pages`` pulls every page's
-    content, and nothing here needs the bodies since template pages never go
-    through the content-reuse gate.
+    Bodies are read only for the pages of *content_paths*, the files this run
+    re-renders: a page that comes out byte-identical keeps its stored vector.
+    The full ``load_prior_pages`` would pull every page's content.
     """
-    return run_async(_load_prior_page_ids(repo_path))
+    return run_async(_load_prior_page_ids(repo_path, page_types, set(content_paths)))
 
 
-async def _load_prior_page_ids(repo_path: Path) -> dict:
+async def _load_prior_page_ids(
+    repo_path: Path, page_types: Iterable[str] | None, content_paths: set[str]
+) -> dict:
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import create_engine, create_session_factory, get_session
 
@@ -69,12 +77,31 @@ async def _load_prior_page_ids(repo_path: Path) -> dict:
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
-            rows = await session.execute(sa_select(Page.id))
-            return dict.fromkeys((r[0] for r in rows), None)
+            query = sa_select(Page.id, Page.target_path)
+            if page_types is not None:
+                query = query.where(Page.page_type.in_(tuple(page_types)))
+            rows = (await session.execute(query)).all()
+            prior: dict = dict.fromkeys((r[0] for r in rows), None)
+            wanted = [pid for pid, tp in rows if (tp or "").split("::", 1)[0] in content_paths]
+            prior.update(await _prior_bodies(session, repo_path, wanted))
+            return prior
     except Exception:
         return {}
     finally:
         await engine.dispose()
+
+
+async def _prior_bodies(session: Any, repo_path: Path, page_ids: list[str]) -> dict:
+    """Stored bodies of *page_ids*. Best effort: without them every page re-embeds."""
+    if not page_ids:
+        return {}
+    from repowise.core.persistence.crud import get_repository_by_path, load_prior_pages
+
+    try:
+        repo = await get_repository_by_path(session, str(repo_path))
+        return {} if repo is None else await load_prior_pages(session, repo.id, page_ids=page_ids)
+    except Exception:
+        return {}
 
 
 def regenerate_deterministic_pages(
@@ -93,6 +120,7 @@ def regenerate_deterministic_pages(
     prior_page_ids: dict | None = None,
     full_scope: bool = False,
     stats_out: dict[str, int] | None = None,
+    embed_during_generation: bool = True,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -121,6 +149,7 @@ def regenerate_deterministic_pages(
         degrade_label="Template page refresh",
         full_scope=full_scope,
         stats_out=stats_out,
+        embed_during_generation=embed_during_generation,
     )
 
 
@@ -190,6 +219,7 @@ def _render_pages(
     only_page_ids: set[str] | None = None,
     vector_store: Any = None,
     stats_out: dict[str, int] | None = None,
+    embed_during_generation: bool = True,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
@@ -199,6 +229,10 @@ def _render_pages(
     ``stats_out["embed_failed_pages"]`` accumulates the pages whose vectors
     failed to land, so the caller can fail the run instead of reporting a
     healthy semantic index.
+
+    A configuration-driven rebuild embeds the finalized pages at persistence.
+    It disables generation-time embedding to avoid embedding the same pages
+    twice while retaining the post-generation links in the final vectors.
     """
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.providers.llm.template import TemplateProvider
@@ -238,7 +272,9 @@ def _render_pages(
         # path, which is the one place in this command that avoids it.
         resolved_vector_store = vector_store
         embedder_name = deterministic_embedder_name(cfg)
-        if resolved_vector_store is None and embedder_name != "mock":
+        if not embed_during_generation:
+            resolved_vector_store = None
+        elif resolved_vector_store is None and embedder_name != "mock":
             from repowise.cli.providers import build_embedder, build_vector_store
 
             try:
@@ -531,6 +567,40 @@ async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
         await engine.dispose()
 
 
+def with_stored_git_meta(repo_path: Path, git_meta_map: dict, paths: list[str]) -> dict | None:
+    """*git_meta_map* plus the stored git rows of the *paths* it lacks.
+
+    An update re-indexes git for the changed files only, but re-renders their
+    neighbours too. Without their stored rows those pages lose every
+    history-driven section. Fresh rows win over stored ones. ``None`` when the
+    store could not be read: rendering then would strip history it holds.
+    """
+    missing = [p for p in dict.fromkeys(paths) if p not in git_meta_map]
+    if not missing:
+        return git_meta_map
+    stored = run_async(_load_git_meta(repo_path, missing))
+    return None if stored is None else {**stored, **git_meta_map}
+
+
+async def _load_git_meta(repo_path: Path, paths: list[str]) -> dict[str, dict] | None:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.pipeline.resume.rehydrate import stored_git_meta_for
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            return None if repo is None else await stored_git_meta_for(session, repo.id, paths)
+    except (SQLAlchemyError, OSError):
+        return None
+    finally:
+        await engine.dispose()
+
+
 def load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
     """``defining file path -> render keys`` for the wiki's symbol spotlights.
 
@@ -597,10 +667,12 @@ def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[i
     """``(model_pages, structural_pages)`` that budget-skipped files decay.
 
     ``rows`` are ``(page_type, target_path, metadata_json)``. Mirrors the
-    ``none`` cascade the persist step applies: each file's page, the module and
-    SCC pages that cover it, and the repo-wide pages.
+    ``none`` cascade the persist step applies: each file's page, the module,
+    flow and SCC pages that cover it, and the repo-wide pages.
     """
     import json
+
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
     skipped = set(skipped_paths)
     model = structural = 0
@@ -616,7 +688,7 @@ def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[i
                 continue
             members = meta.get("file_paths") or meta.get("files") or []
             if skipped.intersection(members):
-                if page_type == "module_page":
+                if page_type in MODEL_WRITTEN_PAGE_TYPES:
                     model += 1
                 else:
                     structural += 1
@@ -646,7 +718,7 @@ async def _load_cascade_overflow_split(
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
                     Page.page_type.in_(
-                        ["file_page", "module_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                        ["file_page", "module_page", "flow_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
                     ),
                     Page.freshness_status != "tombstone",
                 )

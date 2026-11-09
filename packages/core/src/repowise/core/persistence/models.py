@@ -293,6 +293,46 @@ class PageVersion(Base):
     )
 
 
+class PageArchive(Base):
+    """A complete retired page record, excluded from live retrieval.
+
+    A structural page id can be reused after retirement. Each retirement has
+    its own identity, so the next incarnation never claims the old history.
+    The JSON snapshot preserves every column without a second page schema.
+    """
+
+    __tablename__ = "page_archive"
+    __table_args__ = (
+        Index("ix_page_archive_repo_page", "repository_id", "page_id"),
+        Index("ix_page_archive_repo_retired", "repository_id", "retired_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    page_id: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PageVersionArchive(Base):
+    """A retired version, owned by one specific page retirement."""
+
+    __tablename__ = "page_version_archive"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    archive_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("page_archive.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GraphNode(Base):
     __tablename__ = "graph_nodes"
 
@@ -1568,14 +1608,26 @@ class DecisionCandidateMeta(Base):
     )
 
 
+#: ``DecisionAlias.reason`` values. ``merged``: the id's record was folded into
+#: another. ``rekeyed``: the same record moved to its derived id.
+MERGED_REASON = "merged"
+REKEYED_REASON = "rekeyed"
+#: A pre-fix ``supersede_decision`` pointer at the successor. Nothing writes it
+#: now and readers skip it.
+SUPERSEDED_REASON = "superseded"
+
+
 class DecisionAlias(Base):
     """A retired decision id that still resolves to a live record.
 
-    Merging a candidate into a decision, and superseding one decision with
-    another, both leave an id in circulation: in a manifest someone committed,
-    in an agent's notes, in a link. The alias keeps it resolving instead of
-    failing to find anything, which is what makes merge and supersede safe to
-    perform.
+    Merging a candidate into a decision, and moving a record onto its derived
+    id, both leave an id in circulation: in a manifest someone committed, in an
+    agent's notes, in a link. The alias keeps it resolving instead of failing to
+    find anything, which is what makes merge and the move safe to perform.
+
+    Superseding writes none: the superseded record keeps its id, and the
+    successor lives in ``DecisionRecord.superseded_by`` and a ``supersedes``
+    edge. Rows with reason ``superseded`` predate that; readers skip them.
     """
 
     __tablename__ = "decision_aliases"
@@ -1593,7 +1645,7 @@ class DecisionAlias(Base):
         nullable=False,
         index=True,
     )
-    reason: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, default=MERGED_REASON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

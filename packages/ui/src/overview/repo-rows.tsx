@@ -1,8 +1,9 @@
 import * as React from "react";
 import type { RepoIndexStatus } from "@repowise-dev/types/repos";
-import { formatNumber, formatRelativeTime } from "../lib/format";
+import { formatNumber } from "../lib/format";
 import { healthMark } from "../health/tokens";
 import { RepoAvatar } from "./repo-avatar";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface RepoRow {
   id: string;
@@ -100,7 +101,7 @@ function figuresFor(repo: RepoRow): string[] {
  * the ribbon above it.
  *
  * Health leads the right-hand column because it is the figure that decides
- * which repo you open. It is a health mark on the shared three bands, so a
+ * which repo you open. It is a health mark on the shared five bands, so a
  * repo reads the same word and colour here as on the system map.
  */
 export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
@@ -151,7 +152,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                     {repo.updatedAt && (
                       <span className="text-[var(--color-text-tertiary)]">
                         {figures.length > 0 ? " · " : " "}
-                        Synced {formatRelativeTime(repo.updatedAt)}
+                        Synced <RelativeTime date={repo.updatedAt} />
                       </span>
                     )}
                   </p>

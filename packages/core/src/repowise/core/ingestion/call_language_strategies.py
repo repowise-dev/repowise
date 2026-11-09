@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .call_inheritance import _EXTERNAL_PREFIX
 from .call_receiver_typing import (
     _BODY_TYPE_CACHE_ENTRIES,
     _FUNCTION_KINDS,
@@ -117,10 +118,12 @@ _JVM_STRATEGIES = _LanguageCallStrategies(
 # `obj->m()` is looked for in the caller's own file, in what it includes, and
 # then in the global pair index. `c` shares this object and is excluded a layer
 # up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
-# method for the pair index to hold.
+# method for the pair index to hold. A field a base class declares types a
+# receiver as an own one does (``lexer_.ReadToken()`` in a derived parser).
 _CPP_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
     member_fallback=_TYPED_RECEIVER,
+    inherited_fields=True,
 )
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language
@@ -151,7 +154,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # A chained call keeps no bare-name fallback: ``.send()`` on a result the
     # return type does not type is not the repo's ``send``.
     "kotlin": replace(
-        _JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+        _JVM_STRATEGIES,
+        member=("_resolve_kotlin_labelled_this", *_JVM_STRATEGIES.member),
+        member_fallback=_TYPED_RECEIVER,
+        chain_bare_fallback=False,
+        inherited_typed_receiver=True,
     ),
     "csharp": _LanguageCallStrategies(
         free_fallback=("_resolve_csharp_constructed_type",),
@@ -171,13 +178,27 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
     ),
-    # TypeScript's typed fallback also walks a dotted receiver's fields.
-    "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Rust types a local or parameter only; a `self.field` receiver is not
-    # walked, since Rust has no `_CHAIN_SELF` row.
+    # TypeScript's typed fallback also walks a dotted receiver's fields. A chained
+    # call is typed by its inner call's return type or not at all:
+    # ``db.selectFrom(t).execute()`` on a library builder is not the repo's ``execute``.
+    "typescript": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+    ),
+    # JavaScript has no return types to type the inner call with, so a chain binds nothing.
+    "javascript": _LanguageCallStrategies(chain_bare_fallback=False),
+    # Rust types a local or parameter, and walks a `self.field` receiver
+    # through the struct's field declarations.
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
+    # Pascal types a field, parameter or local (``FToast: TToast``); a typed
+    # receiver whose class lacks the method answers with the ancestor that
+    # declares it, and a field may be declared by an ancestor too.
+    "pascal": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER,
+        inherited_typed_receiver=True,
+        inherited_fields=True,
+    ),
     # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).
     "apex": _LanguageCallStrategies(
         free=("_resolve_apex_namespace_type",),
@@ -403,10 +424,11 @@ class LanguageStrategiesMixin:
         shares the name. A bare ``count(..)`` in a function outside every class
         cannot reach a member function either: with no ``this`` and no
         qualifier, only a free function or a ``using namespace`` import answers.
-        A constructor is still reached (``Slice(s)``). A caller named in
-        capitals is a macro body (``TEST_F``), which may sit inside a class,
-        and a caller that is not a function may be a class whose member bodies
-        the parse folded in, so both are left alone.
+        Nor can one in a member function of a class that neither is, derives
+        from nor nests in the callee's class. A constructor is still reached
+        (``Slice(s)``). A caller named in capitals is a macro body (``TEST_F``),
+        which may sit inside a class, and a caller that is not a function may
+        be a class whose member bodies the parse folded in, so both are left alone.
         """
         if self._language_of(file_path) not in ("c", "cpp"):
             return False
@@ -417,7 +439,70 @@ class LanguageStrategiesMixin:
             return False
         callee = self._symbols_by_id.get(callee_id)
         caller = self._symbols_by_id.get(call.caller_symbol_id or "")
-        return _is_free_function(caller) and self._is_cpp_member_function(callee)
+        if not self._is_cpp_member_function(callee):
+            return False
+        assert callee is not None
+        if _is_free_function(caller):
+            return True
+        # C has no member functions: a C "member" caller is a macro the parse misread.
+        if self._language_of(file_path) != "cpp" or not _is_member_function(caller):
+            return False
+        return not self._cpp_class_reaches(
+            file_path, caller, bare_type_name(callee.parent_name or "")
+        )
+
+    def _cpp_class_reaches(self, file_path: str, caller: Symbol | None, owner: str) -> bool:
+        """May a bare call in member *caller* name a member of class *owner*?
+
+        Yes when the caller's class is *owner*, derives from it or nests in it,
+        and whenever that class or a base on its way up is unsettled.
+        """
+        assert caller is not None
+        _, class_id = self._field_owner(file_path, caller.id, "cpp")
+        if getattr(self._symbols_by_id.get(class_id), "kind", None) not in _TYPE_KINDS:
+            return True
+        ancestors = self._ancestors_of(class_id)
+        names = set(self._cpp_scope_names(class_id))
+        names.update(self._symbols_by_id[a].name for a in ancestors)
+        for type_id in (class_id, *ancestors):
+            bases = self._declared_bases(type_id)
+            if bases is None:
+                return True
+            names.update(bare_type_name(base.removeprefix(_EXTERNAL_PREFIX)) for base in bases)
+        return owner in names
+
+    def _cpp_scope_names(self, class_id: str) -> Iterator[str]:
+        """The bare names of *class_id* and every class it nests in."""
+        scope = class_id
+        while "::" in scope:
+            yield bare_type_name(scope)
+            scope = outer_scope(scope)
+
+    def _cpp_free_rival(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """The one free function of the call's name the caller's file or its includes declare.
+
+        Asked when the flat tiers answered an unqualified call with a member it
+        cannot reach, since that member may have hidden a free one there.
+        Ceiling: namespaces are recorded on no symbol, so a free function in a
+        namespace the caller never opens still answers, as in the flat tiers.
+        """
+        if call.scope_name:
+            return None
+        found = [
+            sym_id
+            for path in self._cpp_include_closure(file_path)
+            if (sym_id := self._file_top_level.get(path, {}).get(call.target_name))
+            and getattr(self._symbols_by_id.get(sym_id), "kind", None) == "function"
+        ]
+        settled = self._collapse_declarations(found)
+        if len(settled) != 1 or caller_id in settled:
+            return None
+        sym_id = settled.pop()
+        if self._symbol_paths_by_id.get(sym_id) == file_path:
+            return ResolvedCall(caller_id, sym_id, 0.95, call.line, "same_file")
+        return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
 
     def _is_cpp_member_function(self, symbol: Symbol | None) -> bool:
         """Is *symbol* a member function a bare call from outside its class cannot reach?
@@ -428,19 +513,23 @@ class LanguageStrategiesMixin:
         only a body inside its class, or one whose own line writes
         ``Parent::name``: a macro before a C return type
         (``INLINE rtree_t\\nrtree_read(..)``) can parse as a member of that type.
+        Nor a ``#define`` written inside a class body, which has no scope.
         """
         if not _is_member_function(symbol):
             return False
         assert symbol is not None
         parent = bare_type_name(symbol.parent_name or "")
-        if not self._declared_types_named(parent):
+        declared = self._declared_types_named(parent)
+        if not declared:
             return False
         path = self._symbol_paths_by_id.get(symbol.id, "")
         lines = self._text_of(path).splitlines()
         head = lines[symbol.start_line - 1] if 0 < symbol.start_line <= len(lines) else ""
-        if _FRIEND.search(head):
+        if _FRIEND.search(head) or head.lstrip().startswith("#"):
             return False
-        span = self._spans_for(path).get(self._only_type_in(path, parent) or "")
+        # A class template is two symbols under one id: its template head and the class.
+        owners = {identity[0] for owner_path, identity, _ in declared if owner_path == path}
+        span = self._spans_for(path).get(owners.pop()) if len(owners) == 1 else None
         return f"::{symbol.name}" in head or (
             span is not None and span[0] <= symbol.start_line <= span[1]
         )
@@ -671,6 +760,54 @@ class LanguageStrategiesMixin:
         if parent is not None and symbol.name != parent and symbol.kind not in _TYPE_KINDS:
             sym_id = self._file_top_level.get(sibling, {}).get(name)
         return None if sym_id == caller_id else sym_id
+
+    def _resolve_kotlin_labelled_this(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``this@X.m()``: ``X`` labels the enclosing class or extension function whose ``this`` is meant.
+
+        The innermost enclosing symbol named ``X`` answers. A class's own
+        member wins, else the one its ancestors declare; an extension
+        function's ``this`` is its receiver type. A lambda label names no
+        symbol, so its call is left unresolved.
+        """
+        receiver = call.receiver_name or ""
+        if not receiver.startswith("this@"):
+            return None
+        label = receiver[len("this@") :]
+        scope = caller_id
+        while "::" in scope:
+            symbol = self._symbols_by_id.get(scope)
+            if symbol is not None and symbol.name == label:
+                return self._labelled_this_call(file_path, call, caller_id, symbol)
+            scope = outer_scope(scope)
+        return None
+
+    def _labelled_this_call(
+        self, file_path: str, call: CallSite, caller_id: str, labelled: Symbol
+    ) -> ResolvedCall | None:
+        """The member *call* names on the ``this`` of *labelled*, a class or an extension."""
+        if labelled.kind in _TYPE_KINDS:
+            sym_id = self._declares(labelled.id, call.target_name)
+            origin = "self_scope"
+            if sym_id is None:
+                sym_id = self._ancestor_method(
+                    labelled.id, call.target_name, caller_id, class_chain_first=True
+                )
+                origin = "self_inherited"
+            if sym_id is None or self._refuses_recursion(sym_id, caller_id, call):
+                return None
+            return ResolvedCall(caller_id, sym_id, 0.93, call.line, origin)
+        if labelled.kind in _FUNCTION_KINDS and labelled.extension_receiver:
+            found = self._typed_receiver_target(
+                file_path, call, caller_id, labelled.extension_receiver
+            )
+            if found is not None:
+                return self._body_typed_call(caller_id, found[0], found[1], call.line)
+        return None
 
     def _resolve_jvm_receiver_same_package(
         self,
@@ -973,6 +1110,28 @@ class LanguageStrategiesMixin:
             return None
         type_id, origin, confidence = found
         return self._csharp_type_call(type_id, caller_id, call, origin, confidence)
+
+    def _csharp_constructed_type_is_ambiguous(self, file_path: str, call: CallSite) -> bool:
+        """Whether ``new Name<T>(..)`` sees multiple types at its first lookup level."""
+        name = call.target_name
+        if call.receiver_name or name not in self._csharp_type_names:
+            return False
+        arity = self._constructed_arity(file_path, call)
+        if arity is None:
+            return False
+        aliases, levels = self._csharp_lookup(file_path)
+        if name in aliases:
+            return False
+        types = [
+            (namespace, type_id)
+            for namespace, type_id, type_arity in self._csharp_constructible_types(name)
+            if type_arity == arity
+        ]
+        for level, _origin, _confidence in levels:
+            visible = [type_id for namespace, type_id in types if namespace in level]
+            if visible:
+                return len(visible) > 1
+        return False
 
     def _constructed_arity(self, file_path: str, call: CallSite) -> int | None:
         """How many type arguments *call*'s line writes after ``new Name``, None for no ``new``.

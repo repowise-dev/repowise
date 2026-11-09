@@ -12,8 +12,13 @@ work happens here, so this works on hosted backends without a checkout.
 
 from __future__ import annotations
 
+import gc
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.server.deps import get_db_session, verify_api_key
@@ -28,9 +33,6 @@ from repowise.server.schemas import (
     C4RelationResponse,
     C4SystemResponse,
     ZoomMapResponse,
-    ZoomMetricsResponse,
-    ZoomNodeResponse,
-    ZoomRelationResponse,
 )
 from repowise.server.services import c4_builder
 from repowise.server.services.c4_builder.mermaid import (
@@ -263,66 +265,104 @@ async def get_zoom_map(
         None, description="Node id to scope the served subtree to (lazy drill-down)"
     ),
     session: AsyncSession = Depends(get_db_session),
-) -> ZoomMapResponse:
+) -> Response:
     """The continuous-zoom containment tree (system -> layer -> ... -> file).
 
     Derived on demand from the persisted graph, like the C4 views. ``focus`` +
     ``max_depth`` let the canvas fetch deeper subtrees lazily for large repos.
+
+    The body is the built model's own JSON: ``response_model`` documents the
+    shape, and returning a ``Response`` keeps FastAPI from validating and
+    encoding ~25k models a second time on versions without its direct-dump path.
     """
-    zoom = await build_zoom_map(session, repo_id, max_depth=max_depth, focus=focus)
-    return _zoom_response(zoom)
+    with _cyclic_gc_paused():
+        zoom = await build_zoom_map(session, repo_id, max_depth=max_depth, focus=focus)
+        body = _zoom_response(zoom).model_dump_json()
+    return Response(content=body, media_type="application/json")
+
+
+_gc_pause_lock = threading.Lock()
+_gc_pause_held = False
+
+
+@contextmanager
+def _cyclic_gc_paused() -> Iterator[None]:
+    """Hold off cyclic garbage collection while a zoom map is built and encoded.
+
+    The build allocates enough container objects to trigger several full
+    collections, each of which walks the whole long-lived server heap; on a
+    7k-file repository that walk was a third of the request. Reference counting
+    still frees everything acyclic; cycles made meanwhile wait for the next
+    collection. The request that disabled the collector is the one that
+    restores it: an overlapping request runs inside that pause but never
+    extends it, so a stream of requests cannot keep the collector off for
+    longer than one build. A collector that was already off stays off.
+    """
+    global _gc_pause_held
+    with _gc_pause_lock:
+        owner = not _gc_pause_held and gc.isenabled()
+        if owner:
+            gc.disable()
+            _gc_pause_held = True
+    try:
+        yield
+    finally:
+        if owner:
+            with _gc_pause_lock:
+                _gc_pause_held = False
+                gc.enable()
 
 
 def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
-    return ZoomMapResponse(
-        root_id=zoom.root_id,
-        project_name=zoom.project_name,
-        total_files=zoom.total_files,
-        unclaimed_files=zoom.unclaimed_files,
-        max_depth=zoom.max_depth,
-        truncated=zoom.truncated,
-        nodes=[
-            ZoomNodeResponse(
-                id=n.id,
-                parent_id=n.parent_id,
-                level=n.level,
-                kind=n.kind,
-                name=n.name,
-                path=n.path,
-                children=list(n.children),
-                importance=round(n.importance, 4),
-                sibling_rank=n.sibling_rank,
-                metrics=ZoomMetricsResponse(
-                    file_count=n.metrics.file_count,
-                    descendant_count=n.metrics.descendant_count,
-                    hotspot_count=n.metrics.hotspot_count,
-                    dead_count=n.metrics.dead_count,
-                    entry_point_count=n.metrics.entry_point_count,
-                    on_flow_count=n.metrics.on_flow_count,
-                ),
-                summary=n.summary,
-                language=n.language,
-                page_id=n.page_id,
-                health_score=(round(n.health_score, 2) if n.health_score is not None else None),
-                is_entry_point=n.is_entry_point,
-                is_hotspot=n.is_hotspot,
-                is_dead=n.is_dead,
-                is_test=n.is_test,
-                on_flow=n.on_flow,
-            )
-            # Stable order so the response is deterministic regardless of the
-            # builder's internal insertion order.
-            for n in sorted(zoom.nodes.values(), key=lambda node: node.id)
-        ],
-        relations=[
-            ZoomRelationResponse(
-                parent_id=r.parent_id,
-                source_id=r.source_id,
-                target_id=r.target_id,
-                label=r.label,
-                edge_count=r.edge_count,
-                coupling=r.coupling,
-            )
-            for r in zoom.relations
-        ],
+    """One validation pass over plain data instead of a model per node.
+
+    The relations, externals, containers and metrics are read straight off the
+    builder's dataclasses (their fields match the response models one to one);
+    only a node needs a dict, for the rounding. Building ~25k models one by one
+    from Python cost more than the rest of the response put together.
+    """
+    return ZoomMapResponse.model_validate(
+        {
+            "root_id": zoom.root_id,
+            "project_name": zoom.project_name,
+            "total_files": zoom.total_files,
+            "unclaimed_files": zoom.unclaimed_files,
+            "max_depth": zoom.max_depth,
+            "truncated": zoom.truncated,
+            "nodes": [
+                {
+                    "id": n.id,
+                    "parent_id": n.parent_id,
+                    "level": n.level,
+                    "kind": n.kind,
+                    "name": n.name,
+                    "path": n.path,
+                    "children": n.children,
+                    "importance": round(n.importance, 4),
+                    "sibling_rank": n.sibling_rank,
+                    "metrics": n.metrics,
+                    "summary": n.summary,
+                    "language": n.language,
+                    "page_id": n.page_id,
+                    "health_score": (
+                        round(n.health_score, 2) if n.health_score is not None else None
+                    ),
+                    "is_entry_point": n.is_entry_point,
+                    "is_hotspot": n.is_hotspot,
+                    "is_dead": n.is_dead,
+                    "is_test": n.is_test,
+                    "on_flow": n.on_flow,
+                    "technologies": n.technologies,
+                    "container_ids": n.container_ids,
+                }
+                # Stable order so the response is deterministic regardless of the
+                # builder's internal insertion order.
+                for n in sorted(zoom.nodes.values(), key=lambda node: node.id)
+            ],
+            "relations": zoom.relations,
+            "externals": zoom.externals,
+            "external_relations": zoom.external_relations,
+            "containers": zoom.containers,
+        },
+        from_attributes=True,
     )

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from repowise.core.analysis.health.grading import GOOD_MIN
+from repowise.core.code_origin import owes_a_test
 from repowise.core.persistence import crud
 
 FAILING_DESCRIPTION = f"score below {GOOD_MIN}, where green starts"
@@ -46,7 +47,10 @@ def metric_filter(
             return False
         if only_hotspots and m.file_path not in hotspot_set:
             return False
-        if only_untested and m.has_test_file:
+        # Untested means a test is owed and none pairs: the rule file_tests uses.
+        if only_untested and (
+            m.has_test_file or not owes_a_test(m.file_path, m.code_origin or "production")
+        ):
             return False
         # A file with no score (no health dialect for its language) is not failing.
         return not (only_failing and (m.score is None or m.score >= GOOD_MIN))

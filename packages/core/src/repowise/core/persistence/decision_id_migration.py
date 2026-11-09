@@ -22,6 +22,7 @@ derived and does nothing.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,8 +38,18 @@ from repowise.core.analysis.decisions.semantic_match import (
     upsert_decision_vectors,
 )
 
+from .crud.authority import accepted_decision_ids
+from .crud.decision_identity import (
+    can_fold_away,
+    duplicate_commits,
+    duplicate_text,
+    keeper_order,
+)
+from .crud.decision_lane_fold import RewordingIndex
 from .crud.decisions import derive_decision_id
 from .models import (
+    MERGED_REASON,
+    REKEYED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -50,17 +61,6 @@ from .models import (
 )
 
 logger = structlog.get_logger(__name__)
-
-#: Written on the alias left behind by a rewrite. Deliberately not "merged":
-#: ``resolve_decision_id`` follows a merge even when the aliased record still
-#: exists, which is right for a fold and wrong here, where the old id names the
-#: same decision rather than a different one that was folded into it.
-ALIAS_REASON = "rekeyed"
-
-#: Written on the alias left behind by a fold. ``merged`` is right here in a
-#: way it is not for a rekey: the old id names a record that no longer exists,
-#: because another record was the same decision.
-FOLD_REASON = "merged"
 
 #: ``(table, column)`` pairs a fold drops instead of repointing, with the
 #: reason. Everything else in :data:`_DEPENDENT_COLUMNS` moves to the keeper.
@@ -192,10 +192,22 @@ async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigr
         if derived.get(new_id) == new_id:
             keeper[new_id] = new_id
 
+    reworded = await _reworded_folds(session, repository_id, records, derived, flagged)
+
     rows: list[IdRowPlan] = []
     for rec in records:
         new_id = derived[rec.id]
-        if keeper[new_id] != rec.id:
+        if rec.id in reworded:
+            rows.append(
+                IdRowPlan(
+                    rec.id,
+                    reworded[rec.id],
+                    rec.title,
+                    "fold",
+                    f"same commit and decision text as {reworded[rec.id]}",
+                )
+            )
+        elif keeper[new_id] != rec.id:
             rows.append(
                 IdRowPlan(
                     rec.id,
@@ -211,6 +223,63 @@ async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigr
             rows.append(IdRowPlan(rec.id, new_id, rec.title, "rewrite"))
 
     return IdMigrationPlan(rows=rows, pinned_quotes=quotes)
+
+
+async def _reworded_folds(
+    session: AsyncSession,
+    repository_id: str,
+    records: list[DecisionRecord],
+    derived: dict[str, str],
+    flagged: set[str],
+) -> dict[str, str]:
+    """Records that reword another one mined from the same commit: ``{loser: keeper}``.
+
+    The store-side twin of the ingest check, for the copies stored before it
+    existed: one PR body re-mined on every update left a record per wording.
+
+    Only records whose id is already settled take part, either side: one that
+    moves or folds by identity this run is judged next run, from where it
+    lands. Chaining a second fold onto a move in the same pass is what the
+    parking dance above exists to avoid, and the repair runs every index.
+
+    A record a person accepted, set a status on, or reviewed as a candidate
+    is never folded away; it is the keeper its rewordings fold into. A flagged
+    bundle is neither.
+    """
+    # An id derived by one record only, and already held by it: nothing moves
+    # onto it or off it this run.
+    holders = Counter(derived.values())
+    settled = [
+        rec
+        for rec in records
+        if derived[rec.id] == rec.id and holders[rec.id] == 1 and rec.id not in flagged
+    ]
+    if not settled:
+        return {}
+    accepted = await accepted_decision_ids(session, repository_id)
+    reviewed = set(
+        (
+            await session.execute(
+                select(DecisionCandidateMeta.decision_id).where(
+                    DecisionCandidateMeta.repository_id == repository_id,
+                    DecisionCandidateMeta.review_state != "open",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    index = RewordingIndex()
+    folds: dict[str, str] = {}
+    for rec in keeper_order(settled, accepted):
+        commits, text = duplicate_commits(rec), duplicate_text(rec)
+        if can_fold_away(rec, accepted) and rec.id not in reviewed:
+            target = index.match(rec.source, commits, text)
+            if target is not None:
+                folds[rec.id] = target
+                continue
+        index.add(rec.id, rec.source, commits, text)
+    return folds
 
 
 def _json_list(raw: str | None) -> list[str]:
@@ -237,9 +306,7 @@ async def _flagged_ids(session: AsyncSession, repository_id: str) -> set[str]:
     return set(result.scalars().all())
 
 
-async def _pinned_quotes(
-    session: AsyncSession, records: list[DecisionRecord]
-) -> dict[str, str]:
+async def _pinned_quotes(session: AsyncSession, records: list[DecisionRecord]) -> dict[str, str]:
     """The quote each record's identity is keyed on.
 
     A record captured since the column exists carries its own, written once.
@@ -447,9 +514,7 @@ async def _drop_rows_the_keeper_already_has(
         if not name.endswith("decision_id"):
             continue
         await session.execute(
-            _sql_text(
-                f"DELETE FROM {table} WHERE {column} = :old_id AND {name} = :new_id"
-            ),
+            _sql_text(f"DELETE FROM {table} WHERE {column} = :old_id AND {name} = :new_id"),
             {"new_id": row.new_id, "old_id": row.old_id},
         )
 
@@ -585,10 +650,10 @@ async def apply_id_migration(
                 await _move(session, row.old_id, current[row.old_id], row.title, tables)
         for row in rewrites:
             await _move(session, current[row.old_id], row.new_id, row.title, tables)
-            await _write_alias(session, repository_id, row, ALIAS_REASON, tables)
+            await _write_alias(session, repository_id, row, REKEYED_REASON, tables)
         for row in folds:
             await _fold_one(session, current[row.old_id], row, tables)
-            await _write_alias(session, repository_id, row, FOLD_REASON, tables)
+            await _write_alias(session, repository_id, row, MERGED_REASON, tables)
         await session.flush()
     _detach_moved(session)
 

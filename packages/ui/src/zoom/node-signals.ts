@@ -1,9 +1,9 @@
 /**
  * What a card says about itself, in words. Pure, browser-free.
  *
- * A card carries two dots and nothing on its surface names either, so the role
- * dot is a single accent dot meaning "there is something here" and the band
- * colours are left to health. These are the words that say which roles.
+ * The card draws its roles as icons and its health as a coloured number; the
+ * hover card and the detail sheet say the same in words, and add on-flow,
+ * which nearly every file is and so never earns a mark on the card.
  *
  * Every applicable role is named, not the winner of a priority cascade: a box
  * that is both an entry point and a hotspot is both.
@@ -15,10 +15,10 @@ import type { ZoomKind, ZoomNode } from "./types";
 /**
  * Human label per node kind.
  *
- * One record, because three surfaces name the same five kinds: the card footer
- * the canvas draws, the hover tooltip over it, and the detail rail beside it. A
- * reader moving between them is looking at one node, so a divergence here would
- * read as three different things.
+ * One record, because two surfaces name the same five kinds: the hover tooltip
+ * over a card and the detail rail beside it. A reader moving between them is
+ * looking at one node, so a divergence here would read as two different
+ * things. The card itself shows the kind glyph, not the word.
  */
 export const KIND_LABEL: Record<ZoomKind, string> = {
   system: "System",
@@ -30,10 +30,10 @@ export const KIND_LABEL: Record<ZoomKind, string> = {
 
 /**
  * Every role that applies to a node, most notable first. Empty when the node
- * carries none, which is when the card draws no role dot at all.
+ * carries none.
  *
  * A container inherits a role from its subtree (`metrics.*_count`), matching
- * what the card's dot tests, so the words and the dot can never disagree.
+ * the counts in the card's footer, so the words and the icons never disagree.
  */
 export function nodeRoles(node: ZoomNode): string[] {
   const roles: string[] = [];
@@ -44,14 +44,9 @@ export function nodeRoles(node: ZoomNode): string[] {
   return roles;
 }
 
-/** True when the card should draw its role dot. */
-export function hasRole(node: ZoomNode): boolean {
-  return nodeRoles(node).length > 0;
-}
-
 /**
- * The health dot's band as a word, on the same `bandForScore` the dot itself
- * paints on, so the label never contradicts the mark it sits beside.
+ * The health score's band as a word, on the same `bandForScore` the card's
+ * corner number is coloured by, so the label never contradicts the colour.
  */
 export function healthBandLabel(score: number | null): string | null {
   if (score === null) return null;

@@ -165,7 +165,16 @@
 ; Imports (using directives)
 ; ---------------------------------------------------------------------------
 
+; The alias of ``using R = X.Y;`` is the ``name:`` field, not an imported
+; module, so a bare identifier only counts when it is not that field.
 (using_directive
+  !name
+  (identifier) @import.module
+) @import.statement
+
+(using_directive
+  name: (identifier)
+  .
   (identifier) @import.module
 ) @import.statement
 

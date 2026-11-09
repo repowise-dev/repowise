@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.pipeline.index_persistence import (
+    IndexWrite,
+    apply_index_persistence,
+    index_persistence,
+    publish_index_persistence,
+)
 from repowise.core.pipeline.phase_timing import PhaseTimings, timed
 from repowise.core.pipeline.step_runner import PersistRun, Step, run_steps
 
@@ -45,6 +51,11 @@ class IncrementalPersist(PersistRun):
     reconcile_full_scope: bool = False
     full_generation_page_ids: set[str] | None = None
     vector_store: Any | None = None
+    deferred_page_scope: str | None = None
+    deferred_page_paths: list[str] | None = None
+
+    traversed_paths: frozenset[str] | None = None
+    pruned_paths: set[str] = field(default_factory=set)
 
     session: Any = None
     repo_id: str = ""
@@ -82,6 +93,7 @@ async def reconcile_scope(ctx: IncrementalPersist) -> None:
             current_graph_paths,
             current_git_paths,
         )
+    ctx.traversed_paths = frozenset(current_graph_paths)
 
 
 async def reconcile_generation_scope(ctx: IncrementalPersist) -> None:
@@ -103,11 +115,13 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
         sweep_absent_cycle_pages,
         sweep_absent_symbol_spotlights,
         sweep_deselected_pages,
-        sweep_retired_pages,
+        sweep_store_hygiene,
     )
 
     with timed(ctx.timings, "persist.sweeps"):
-        ctx.swept_page_ids = await sweep_retired_pages(ctx.session, ctx.repo_id)
+        # File-keyed pages among these may carry embeddings, hence both lists.
+        hygiene = await sweep_store_hygiene(ctx.session, ctx.repo_id, ctx.parsed_files)
+        ctx.swept_page_ids = list(hygiene)
         # Same reasoning as the retirement sweep above: this path never
         # regenerates a cycle page, so asking the rebuilt graph whether the
         # cycle still exists is the only way a fixed cycle's page can ever be
@@ -120,7 +134,7 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             ctx.session, ctx.repo_id, ctx.graph_builder
         )
         # Unlike the pages above, these may carry embeddings.
-        ctx.deselected_page_ids = await sweep_deselected_pages(
+        deselected = await sweep_deselected_pages(
             ctx.session,
             ctx.repo_id,
             ctx.parsed_files,
@@ -128,7 +142,8 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             _generation_config(ctx.repo_path),
             ctx.git_meta_map,
         )
-        ctx.swept_page_ids += ctx.deselected_page_ids
+        ctx.swept_page_ids += deselected
+        ctx.deselected_page_ids = hygiene + deselected
 
 
 def _generation_config(repo_path: Any) -> Any:
@@ -162,6 +177,21 @@ async def rebuild_tree(ctx: IncrementalPersist) -> None:
         await rebuild_page_tree(ctx.session, ctx.repo_id)
 
 
+async def defer_pages(ctx: IncrementalPersist) -> None:
+    from repowise.core.pipeline.persist.tombstones import mark_deferred_pages
+
+    with timed(ctx.timings, "persist.stale_pages"):
+        await mark_deferred_pages(
+            ctx.session,
+            ctx.repo_id,
+            scope=ctx.deferred_page_scope,
+            repo_path=Path(ctx.repo_path),
+            paths=ctx.deferred_page_paths or (),
+            parsed_files=ctx.parsed_files,
+            graph_builder=ctx.graph_builder,
+        )
+
+
 async def persist_git(ctx: IncrementalPersist) -> None:
     with timed(ctx.timings, "persist.git"):
         from repowise.core.pipeline.persist import persist_git_refresh
@@ -173,7 +203,36 @@ async def persist_git(ctx: IncrementalPersist) -> None:
             ctx.git_decay_map,
             ctx.full_git_summary,
             keep_commit_health=not ctx.history_window_changed,
+            gone_paths=_deleted_paths(ctx),
         )
+
+
+def _deleted_paths(ctx: IncrementalPersist) -> set[str]:
+    """Paths this range deleted or renamed away that are gone from disk and git.
+
+    Keyed like ``git_metadata``: relative to the git root, which is not the
+    indexed directory when the index covers a subdirectory.
+    """
+    from repowise.core.pipeline.persist import _FileLiveness
+
+    if not ctx.repo_path:
+        return set()
+    liveness = _FileLiveness(ctx.repo_path, git_root_keyed=True)
+    top = liveness._git_toplevel()
+    try:
+        prefix = Path(ctx.repo_path).resolve().relative_to(top).as_posix() if top else ""
+    except ValueError:
+        return set()
+    candidates = {
+        f"{prefix}/{path}" if prefix else path
+        for fd in ctx.file_diffs or []
+        for path in (
+            fd.path if fd.status == "deleted" else None,
+            getattr(fd, "old_path", None) if fd.status == "renamed" else None,
+        )
+        if path
+    }
+    return {path for path in candidates if not liveness.is_live(path)}
 
 
 async def capture_commits(ctx: IncrementalPersist) -> None:
@@ -222,7 +281,11 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist import persist_graph_nodes
 
     with timed(ctx.timings, "persist.graph_nodes"):
-        await persist_graph_nodes(ctx.session, ctx.repo_id, ctx.graph_builder, timings=ctx.timings)
+        # This carries the fresh global metrics. The upsert gate compares the
+        # snapshot with stored rows and only writes nodes whose values changed.
+        await persist_graph_nodes(
+            ctx.session, ctx.repo_id, ctx.graph_builder, timings=ctx.timings
+        )
 
 
 async def persist_health(ctx: IncrementalPersist) -> None:
@@ -255,7 +318,7 @@ async def persist_security(ctx: IncrementalPersist) -> None:
 
 
 async def persist_edges(ctx: IncrementalPersist) -> None:
-    # Refresh graph_edges for the changed files. The full-init path was
+    # Bring graph_edges in line with the rebuilt graph. The full-init path was
     # historically the only writer of edges, so adjacency froze at the last
     # full index: new imports/calls stayed invisible and dropped ones lingered
     # as false paths. Phase E flow-path traversal reads adjacency straight
@@ -320,6 +383,20 @@ async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
         await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "git_archaeology")
 
 
+def _left_index(ctx: IncrementalPersist) -> set[str]:
+    """Documents the change detector dropped as no longer indexable, though on disk.
+
+    Only those: any other deleted path that still exists keeps its rows, as the
+    disk-and-git liveness rule intends.
+    """
+    traversed = set(getattr(ctx.graph_builder, "traversed_file_paths", None) or ())
+    return {
+        fd.path
+        for fd in ctx.file_diffs or []
+        if fd.status == "deleted" and getattr(fd, "unindexable", False)
+    } - traversed
+
+
 async def prune_deleted(ctx: IncrementalPersist) -> None:
     # Last in the session on purpose: everything above upserts, and the git
     # step indexes the changed *paths*, deleted ones included, so the prune
@@ -335,10 +412,55 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
             else {pf.file_info.path for pf in ctx.parsed_files or []}
         ),
         health_report=ctx.partial_health_report,
+        pruned=ctx.pruned_paths,
+        left_index=_left_index(ctx),
         skip=ctx.skip,
         log=ctx.log,
         degraded=ctx.degraded,
         timings=ctx.timings,
+    )
+
+
+async def refresh_git_rollups(ctx: IncrementalPersist) -> None:
+    # Repo-wide aggregates over rows this run rewrites, so they go after both
+    # writers. Fix attribution maps each fix's old line ranges onto
+    # wiki_symbols, which still held the last index's spans until the symbol
+    # step. The git step ranks the table without the files this range deleted;
+    # a row the prune removed on other evidence moves the ranks again, and the
+    # percentile-gated history markers with them.
+    from repowise.core.persistence.crud import recompute_git_percentiles
+    from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+    with timed(ctx.timings, "persist.git_rollups"):
+        if ctx.pruned_paths:
+            await recompute_git_percentiles(ctx.session, ctx.repo_id)
+        await apply_fix_rollups(ctx.session, ctx.repo_id)
+        if ctx.pruned_paths:
+            from .health import refresh_unchanged_history
+
+            try:
+                await refresh_unchanged_history(
+                    ctx.session, ctx.repo_id, ctx.repo_path, skip_paths=set()
+                )
+            except Exception as exc:
+                # Best-effort, as in the health step: the next update re-derives it.
+                ctx.log(f"[yellow]History refresh after the prune skipped: {exc}[/yellow]")
+
+
+async def persist_plugin_records(ctx: IncrementalPersist) -> None:
+    if not index_persistence.all():
+        return
+    await apply_index_persistence(
+        ctx.session,
+        ctx.repo_id,
+        IndexWrite(
+            "incremental",
+            ctx.parsed_files,
+            changed_paths=tuple(ctx.changed_paths),
+            deleted_paths=tuple(sorted(ctx.pruned_paths)),
+            traversed_paths=ctx.traversed_paths,
+            degraded=tuple(ctx.degraded or []),
+        ),
     )
 
 
@@ -359,7 +481,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
         reconcile_generation_scope,
         when=lambda ctx: ctx.full_generation_page_ids is not None,
     ),
-    Step("Retired page sweep", sweep_retired),
+    Step("Retired page sweep", sweep_retired, when=lambda ctx: ctx.deferred_page_scope is None),
     Step(
         "Tombstone marking",
         mark_tombstones,
@@ -407,6 +529,15 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step("Git rollups", refresh_git_rollups, when=_has_git_input),
+    Step(
+        "Deferred page staleness",
+        defer_pages,
+        when=lambda ctx: ctx.deferred_page_scope is not None,
+        guarded=False,
+    ),
+    # Unguarded and last: plugins see the final rows, and a raise rolls back the update.
+    Step("Plugin records", persist_plugin_records, guarded=False),
 )
 
 
@@ -534,6 +665,8 @@ async def persist_incremental_index(
     reconcile_full_scope: bool = False,
     full_generation_page_ids: set[str] | None = None,
     vector_store: Any | None = None,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
@@ -558,7 +691,8 @@ async def persist_incremental_index(
     The test for membership is "would widening the next run's diff base repair
     this, and would nothing else". Steps that re-derive the whole repo every
     run are deliberately absent (graph nodes, the sweeps, the page tree,
-    related pages, the knowledge graph, the deleted-file prune): they heal
+    related pages, the knowledge graph, the deleted-file prune, the git
+    rollups): they heal
     themselves on the next update, and marking them would let a permanently
     broken one pin the repair window open. So is the commit capture, which
     looks range-scoped and is not: it bounds its walk by the newest
@@ -588,12 +722,36 @@ async def persist_incremental_index(
         reconcile_full_scope=reconcile_full_scope,
         full_generation_page_ids=full_generation_page_ids,
         vector_store=vector_store,
+        deferred_page_scope=deferred_page_scope,
+        deferred_page_paths=deferred_page_paths,
         log=log or _noop_log,
-        degraded=degraded,
+        degraded=[] if degraded is None else degraded,
         failed_steps=failed_steps,
         timings=timings,
     )
     await _write(ctx)
+
+
+async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
+    """Save the graph the store now holds, for the next update to diff and seed from.
+
+    After the transaction commits and its engine is disposed. A failed save
+    only costs the next update a full reconcile. Skipped when the graph was
+    short: the files outside the change set kept their rows, so the graph no
+    longer describes the store, and a snapshot of it would hide that.
+    """
+    from repowise.core.pipeline.persist.graph import _graph_is_complete
+
+    from .feature import incremental_graph_enabled
+
+    if not incremental_graph_enabled() or ctx.graph_builder is None:
+        return
+    if not _graph_is_complete(ctx.graph_builder, ctx.parsed_files or []):
+        return
+    from .graph_seed import save_seed_edge_cache
+
+    with timed(ctx.timings, "persist.graph_seed_cache"):
+        await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
 
 
 async def _write(ctx: IncrementalPersist) -> None:
@@ -612,6 +770,7 @@ async def _write(ctx: IncrementalPersist) -> None:
     ctx.engine = create_engine(resolve_db_url(ctx.repo_path))
     if timings is not None:
         timings.start("persist")
+    persisted = False
     try:
         with timed(timings, "persist.open"):
             await init_db(ctx.engine)
@@ -638,7 +797,9 @@ async def _write(ctx: IncrementalPersist) -> None:
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         with timed(timings, "persist.commit_health"):
-            await refresh_commit_health_after_update(sf, ctx.repo_id, str(ctx.repo_path))
+            await refresh_commit_health_after_update(
+                sf, ctx.repo_id, str(ctx.repo_path), background=True
+            )
 
         from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
 
@@ -652,6 +813,7 @@ async def _write(ctx: IncrementalPersist) -> None:
         await run_steps(ctx, CLEANUP_STEPS)
         with timed(timings, "persist.planner_stats"):
             await refresh_planner_stats(ctx.engine)
+        persisted = True
 
         # Ceiling: retired non-file pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would
@@ -665,3 +827,8 @@ async def _write(ctx: IncrementalPersist) -> None:
         await ctx.engine.dispose()
         if timings is not None:
             timings.stop("persist")
+
+    if persisted:
+        await save_graph_snapshot(ctx)
+
+    await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))

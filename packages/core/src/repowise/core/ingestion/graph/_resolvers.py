@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
@@ -55,6 +56,7 @@ class ResolveMixin:
         self,
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
+        scope: frozenset[str] | None = None,
     ) -> None:
         """Resolve heritage relations and add EXTENDS/IMPLEMENTS edges."""
         from ..heritage_resolver import HeritageResolver
@@ -64,9 +66,7 @@ class ResolveMixin:
         )
         total_resolved = 0
 
-        files_with_heritage = [
-            (p, pf) for p, pf in self._parsed_files.items() if pf.heritage
-        ]
+        files_with_heritage = [(p, pf) for p, pf in self._scoped_items(scope) if pf.heritage]
         if progress:
             progress.on_phase_start("graph.heritage", len(files_with_heritage))
         for path, parsed in files_with_heritage:
@@ -85,6 +85,7 @@ class ResolveMixin:
                         existing = self._graph[rh.child_id][rh.parent_id]
                         if rh.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rh.confidence
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.heritage")
 
@@ -94,7 +95,9 @@ class ResolveMixin:
                 _phase_done("graph.heritage")
         log.info("Heritage edges resolved", total=total_resolved)
 
-    def _resolve_member_reads(self, progress: Any | None = None) -> None:
+    def _resolve_member_reads(
+        self, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Phase 1c: emit ``reads`` edges for C# property / member access.
 
         Runs after type-use resolution so the dead-code analyser sees
@@ -119,6 +122,8 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
+            if scope is not None:
+                cs_texts = {path: text for path, text in cs_texts.items() if path in scope}
             type_to_file = build_csharp_type_to_file(self._parsed_files)
             added = resolve_csharp_member_reads(self._graph, cs_texts, type_to_file)
             log.info("member_read_edges", language="csharp", added=added)
@@ -130,7 +135,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_jvm_same_package(self, ctx: Any, progress: Any | None = None) -> None:
+    def _resolve_jvm_same_package(
+        self, ctx: Any, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-package ``imports`` edges for JVM files.
 
         JVM languages reference same-package types without an import
@@ -158,6 +165,8 @@ class ResolveMixin:
         try:
             jvm_index = get_or_build_jvm_index(ctx)
             texts = collect_jvm_source_texts(self._parsed_files, self._source_map)
+            if scope is not None:
+                texts = {path: text for path, text in texts.items() if path in scope}
             added = resolve_jvm_same_package_refs(self._graph, jvm_index, texts)
             log.info("same_package_edges", added=added)
         except Exception as exc:
@@ -168,7 +177,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_dotnet_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
+    def _resolve_dotnet_same_namespace(
+        self, ctx: Any, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-namespace ``imports`` edges for C# and VB.NET files.
 
         Both languages reference same-namespace types with no import
@@ -208,7 +219,7 @@ class ResolveMixin:
                     self._parsed_files, self._source_map
                 )
                 added = resolve_csharp_same_namespace_refs(
-                    self._graph, index, cs_texts, repo
+                    self._graph, index, cs_texts, repo, set(scope) if scope is not None else None
                 )
                 if index is not None:
                     self._csharp_project_usings = _project_usings_by_file(index, cs_texts)
@@ -218,7 +229,7 @@ class ResolveMixin:
                     self._parsed_files, ("vbnet",), self._source_map
                 )
                 added = resolve_vbnet_same_namespace_refs(
-                    self._graph, index, vb_texts, repo
+                    self._graph, index, vb_texts, repo, set(scope) if scope is not None else None
                 )
                 log.info("same_namespace_edges", language="vbnet", added=added)
         except Exception as exc:
@@ -229,7 +240,11 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_ruby_spec_mirrors(self, progress: Any | None = None) -> None:
+    def _resolve_ruby_spec_mirrors(
+        self,
+        progress: Any | None = None,
+        scope: frozenset[str] | None = None,
+    ) -> None:
         """Link rspec files to their subjects by the directory-mirror convention.
 
         RSpec loads ``spec_helper`` through ``.rspec`` and resolves the
@@ -242,7 +257,7 @@ class ResolveMixin:
         ruby_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language == "ruby"
+            if pf.file_info.language == "ruby" and (scope is None or p in scope)
         ]
         if not ruby_files:
             return
@@ -444,7 +459,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_swift_same_module(self, ctx: Any, progress: Any | None = None) -> None:
+    def _resolve_swift_same_module(
+        self, ctx: Any, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-module ``imports`` edges for Swift files.
 
         Swift has no intra-module imports by design — every file in an
@@ -470,7 +487,9 @@ class ResolveMixin:
         try:
             swift_targets = get_or_build_swift_targets(ctx)
             texts = collect_swift_source_texts(self._parsed_files, self._source_map)
-            added = resolve_swift_same_module_refs(self._graph, swift_targets, texts)
+            added = resolve_swift_same_module_refs(
+                self._graph, swift_targets, texts, set(scope) if scope is not None else None
+            )
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
@@ -480,7 +499,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+    def _resolve_php_same_namespace(
+        self, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-namespace ``imports`` edges for PHP files.
 
         An unqualified class name resolves against the file's own namespace
@@ -498,7 +519,9 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
-            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            added = resolve_php_same_namespace_refs(
+                self._graph, self._parsed_files, texts, set(scope) if scope is not None else None
+            )
             log.info("same_namespace_edges", language="php", added=added)
         except Exception as exc:
             log.warning("php_same_namespace_failed", error=str(exc))
@@ -618,8 +641,14 @@ class ResolveMixin:
         self,
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
+        scope: frozenset[str] | None = None,
+        registrations: bool = True,
     ) -> None:
-        """Run three-tier call resolution and add CALLS edges to the graph."""
+        """Run three-tier call resolution and add CALLS edges to the graph.
+
+        *registrations* also links registering decorators to what they
+        decorate, over every file.
+        """
         from ..call_resolver import CallResolver
 
         resolver = CallResolver(
@@ -643,9 +672,7 @@ class ResolveMixin:
         total_resolved = 0
         total_referenced = 0
 
-        files_with_calls = [
-            (p, pf) for p, pf in self._parsed_files.items() if pf.calls
-        ]
+        files_with_calls = [(p, pf) for p, pf in self._scoped_items(scope) if pf.calls]
         if progress:
             progress.on_phase_start("graph.calls", len(files_with_calls))
         for path, parsed in files_with_calls:
@@ -705,6 +732,7 @@ class ResolveMixin:
                     existing["supplied_props"] = None
                 else:
                     existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.calls")
 
@@ -718,10 +746,13 @@ class ResolveMixin:
             non_invoking=total_referenced,
         )
 
-        self._add_reference_edges(resolver)
-        self._add_registration_edges(resolver)
+        self._add_reference_edges(resolver, scope)
+        if registrations:
+            # A body-only patch cannot change registrar identities or
+            # decorators, so it keeps the snapshot's registration edges.
+            self._add_registration_edges(resolver)
 
-    def _add_reference_edges(self, resolver: Any) -> None:
+    def _add_reference_edges(self, resolver: Any, scope: frozenset[str] | None = None) -> None:
         """Emit ``references`` edges for functions named but never called.
 
         Shares the ``CallResolver`` built for calls: resolving "which symbol
@@ -755,7 +786,7 @@ class ResolveMixin:
         earlier tiers cover.
         """
         total = 0
-        for path, parsed in self._parsed_files.items():
+        for path, parsed in self._scoped_items(scope):
             if not parsed.references:
                 continue
             bare = [r for r in parsed.references if not r.receiver_name]

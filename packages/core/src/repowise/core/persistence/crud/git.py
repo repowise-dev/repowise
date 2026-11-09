@@ -200,6 +200,22 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC)
 
 
+def git_metadata_dict(row: GitMetadata) -> dict:
+    """A stored row in the shape the git indexer hands analysis.
+
+    Keys are the column names the indexer writes; JSON columns stay as their
+    stored strings. Timestamps come back aware UTC like fresh ones: SQLite
+    returns them naive, and callers merge stored rows with fresh ones.
+    """
+    out: dict = {}
+    for col in row.__table__.columns:
+        if col.name in ("id", "repository_id"):
+            continue
+        value = getattr(row, col.name, None)
+        out[col.name] = _as_aware_utc(value) if isinstance(value, datetime) else value
+    return out
+
+
 async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) -> dict[str, dict]:
     """Return ``{file_path: {field: value}}`` for the dead-code scoring fields.
 
@@ -383,6 +399,10 @@ async def recompute_git_percentiles(
     if not rows:
         return 0
 
+    # Ties rank by path in code-point order, as the Python ranker sorts them;
+    # a Postgres locale collation would order the same paths differently.
+    bind = session.get_bind()
+    path_order = 'file_path COLLATE "C"' if bind.dialect.name == "postgresql" else "file_path"
     sql = """
 WITH ranked AS (
   SELECT id,
@@ -395,7 +415,7 @@ WITH ranked AS (
 ),
 entropy_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0), {path_order}) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
@@ -404,7 +424,7 @@ entropy_ranked AS (
 ),
 scatter_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0), {path_order}) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
@@ -435,7 +455,7 @@ SET churn_percentile = COALESCE(
 WHERE repository_id = :repo_id;
 """
     await session.execute(
-        text(sql),
+        text(sql.format(path_order=path_order)),
         {
             "repo_id": repository_id,
             "min_commits_90d": HOTSPOT_MIN_COMMITS_90D,
@@ -913,6 +933,38 @@ async def upsert_git_function_blame_bulk(
         insert_fn=_row_inserter(GitFunctionBlame, repository_id),
         batch_size=_BATCH_SIZE,
     )
+
+
+async def replace_git_function_blame_for_files(
+    session: AsyncSession,
+    repository_id: str,
+    rows: list[dict],
+) -> None:
+    """Upsert *rows*, then drop the other stored rows of the files they cover.
+
+    Rows key on the function's symbol id, so a re-blamed file whose function
+    moved or vanished kept the old id's row beside the new one, and every
+    repo-wide rollup over the table (``function_mod_p80``) counted it.
+    """
+    keep = {row.get("symbol_id", "") for row in rows}
+    paths = sorted({row.get("file_path", "") for row in rows} - {""})
+    stale: list[str] = []
+    for start in range(0, len(paths), _BATCH_SIZE):
+        stored = await session.execute(
+            select(GitFunctionBlame.id, GitFunctionBlame.symbol_id).where(
+                GitFunctionBlame.repository_id == repository_id,
+                GitFunctionBlame.file_path.in_(paths[start : start + _BATCH_SIZE]),
+            )
+        )
+        stale.extend(row_id for row_id, symbol_id in stored if symbol_id not in keep)
+    await _batch_delete_in(
+        session,
+        GitFunctionBlame,
+        GitFunctionBlame.id,
+        stale,
+        prefilter=(GitFunctionBlame.repository_id == repository_id,),
+    )
+    await upsert_git_function_blame_bulk(session, repository_id, rows)
 
 
 async def delete_git_function_blame(session: AsyncSession, repository_id: str) -> None:

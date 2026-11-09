@@ -164,34 +164,24 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
-    No ``targets``: a dashboard led by ``fix_first``, what to fix first;
-    targets rank files and findings.
-    Never recomputes: commit, then run ``repowise update``.
-    Every block and accepted value: docs/agent/MCP_TOOLS.md.
+    No ``targets``: a dashboard led by ``fix_first``. Never recomputes:
+    commit, then run ``repowise update``. Every block and accepted value:
+    docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``; misses land in ``unresolved``.
+        targets: file paths or ``module:<name>``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``|
-            ``semantics``|``recipe``|``what_if``, or a dimension incl. ``advisory``;
-            ``performance`` and ``refactoring`` add queues.
-        only: keys to keep; identity, totals, recovery survive.
-            ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
-            ``performance``/``defect``/``maintainability``/``advisory``
-            do not: they filter rows into ``unknown_only_keys``.
+            ``semantics``|``recipe``|``what_if``, or a dimension.
+        only: keys to keep. ``biomarkers``/``accuracy``/``refactoring``
+            alias their block; ``performance``/``defect``/``maintainability``
+            do not.
+        limit: rows per ranked list (default 20, 0 for none); cursor: offset.
+        fix_id/finding_id/plan_id/opportunity_id: expand one item by ``id``.
+        refactoring_*/performance_*: queue filters.
+        scope: ``production`` drops non-production code.
+        counts: ``code_shape`` drops the git-derived half of the score.
         repo: usually omitted.
-        limit: max rows per ranked list (default 20), ``0`` for none.
-        cursor: offset into a ranked list.
-        fix_id/finding_id/plan_id: stable ``id``: item or ``act_``, finding, plan.
-        opportunity_id: ``perf...``/``refop...``: the unit, its steps or
-            plan, evidence paged by ``only=["*_evidence"]``.
-        refactoring_view: ``diversified`` (default)|``canonical``|
-            ``file_spread``; _type/_confidence/_effort/_scope filter.
-        performance_view/_context/_boundary/_confidence/_actionability/_sort:
-            queue filters.
-        scope / counts: default ``all``/``everything``. ``production`` drops
-            non-production code; ``code_shape``, git-based score+findings.
-
     """
     started = perf_counter()
     conflict = _selector_conflict(

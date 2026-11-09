@@ -14,6 +14,8 @@ type Timestamp = string | Date;
  */
 export function parseDate(date: Timestamp): Date {
   if (date instanceof Date) return date;
+  // A date-only string already parses as UTC, and "2026-06-23Z" is invalid in Safari.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
   // No timezone suffix (`Z`/`z` or `+HH:MM`)? Treat the wall-clock as UTC.
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return new Date(`${date.trim()}Z`);
@@ -91,10 +93,28 @@ export function relativeTimeParts(date: string | Date): { unit: RelativeTimeUnit
   return { unit: "y", value: Math.floor(months / 12) };
 }
 
+/** Wording per bucket, `{value}` standing for the count. Plain strings, so a
+ *  server component can hand localised wording to a client one. */
+export type RelativeTimeWords = Record<RelativeTimeUnit, string>;
+
+export const RELATIVE_TIME_WORDS: RelativeTimeWords = {
+  now: "just now",
+  s: "{value}s ago",
+  m: "{value}m ago",
+  h: "{value}h ago",
+  d: "{value}d ago",
+  w: "{value}w ago",
+  mo: "{value}mo ago",
+  y: "{value}y ago",
+};
+
 /** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
-export function formatRelativeTime(date: string | Date): string {
+export function formatRelativeTime(
+  date: string | Date,
+  words: Partial<RelativeTimeWords> = RELATIVE_TIME_WORDS,
+): string {
   const { unit, value } = relativeTimeParts(date);
-  return unit === "now" ? "just now" : `${value}${unit} ago`;
+  return (words[unit] ?? RELATIVE_TIME_WORDS[unit]).replace("{value}", String(value));
 }
 
 /** Relative time that tolerates null/invalid input, returning `fallback`
@@ -109,9 +129,24 @@ export function formatRelativeTimeOrNull(
   return formatRelativeTime(d);
 }
 
-/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC) */
-export function formatDate(date: string | Date): string {
+/** What the absolute date formatters render for a missing or unparseable
+ *  date, the same mark `formatRelativeTimeOrNull` uses. */
+const NO_DATE = "—";
+
+/** `parseDate` for a value that may be absent: null for a missing or
+ *  unparseable one. `Intl.DateTimeFormat.format` throws a RangeError on an
+ *  Invalid Date, so a single bad row would otherwise take down a whole table. */
+export function parseDateOrNull(date: Timestamp | null | undefined): Date | null {
+  if (date == null || date === "") return null;
   const d = parseDate(date);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC).
+ *  A missing or unparseable date renders as "—". */
+export function formatDate(date: Timestamp | null | undefined): string {
+  const d = parseDateOrNull(date);
+  if (d == null) return NO_DATE;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -120,9 +155,11 @@ export function formatDate(date: string | Date): string {
   }).format(d);
 }
 
-/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC) */
-export function formatDateTime(date: string | Date): string {
-  const d = parseDate(date);
+/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC).
+ *  A missing or unparseable date renders as "—". */
+export function formatDateTime(date: Timestamp | null | undefined): string {
+  const d = parseDateOrNull(date);
+  if (d == null) return NO_DATE;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",

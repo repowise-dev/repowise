@@ -256,9 +256,23 @@ async def _captured_input(emb: OpenAIEmbedder, *, kind: str) -> list[str]:
         return _make_mock_response([[1.0] + [0.0] * (emb.dimensions - 1)])
 
     with patch("openai.OpenAI") as mock_client:
-        mock_client.return_value.embeddings.create.side_effect = fake_create
+        client = mock_client.return_value
+        client.embeddings.create.side_effect = fake_create
+        client.with_options.return_value = client
         await emb.embed(["hello"], kind=kind)
     return captured["input"]
+
+
+async def test_a_query_embed_skips_sdk_retries_and_a_document_embed_keeps_them():
+    """A query falls back to text search at once; an index write still retries."""
+    with patch("openai.OpenAI") as mock_client:
+        client = mock_client.return_value
+        client.embeddings.create.return_value = _make_mock_response([[1.0] + [0.0] * 1535])
+        emb = OpenAIEmbedder(api_key="k")
+        await emb.embed(["hello"], kind="query")
+        client.with_options.assert_called_once_with(max_retries=0)
+        await emb.embed(["hello"], kind="document")
+        client.with_options.assert_called_once()
 
 
 async def test_no_prefix_configured_leaves_the_request_byte_identical(monkeypatch):
@@ -299,6 +313,7 @@ async def test_prefix_applies_to_every_text_in_the_batch(monkeypatch):
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.side_effect = fake_create
+        mock_client.return_value.with_options.return_value = mock_client.return_value
         await emb.embed(["alpha", "beta"], kind="query")
 
     assert captured["input"] == ["query: alpha", "query: beta"]

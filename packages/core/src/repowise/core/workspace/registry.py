@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from repowise.core.git_head import CheckoutMatch, match_checkout
 
 _log = logging.getLogger("repowise.workspace.registry")
 
@@ -94,6 +97,7 @@ class RepoRegistry:
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
         # Serialises loads so concurrent callers can't overshoot the cap.
         self._load_lock = asyncio.Lock()
+        self._repo_ids: dict[str, str] = {}
         self._validate_public_identities()
 
     def _identity_key(self, value: str | Path) -> str:
@@ -188,8 +192,65 @@ class RepoRegistry:
                 return entry.alias
             if candidate.is_absolute() and candidate.resolve() == absolute:
                 return entry.alias
+        matched = self.match_checkout(repo)
+        if matched is not None:
+            return matched[0]
         available = self.get_all_aliases()
         raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
+
+    def match_checkout(self, repo: str) -> tuple[str, CheckoutMatch] | None:
+        """The alias an absolute path inside one of the repos names, with the match.
+
+        Covers a subdirectory and another git worktree of an indexed repo (see
+        :func:`~repowise.core.git_head.match_checkout`). The checkout that
+        holds the path wins over another worktree, then the deepest repo.
+        """
+        if not Path(repo).is_absolute():
+            return None
+        best: tuple[str, CheckoutMatch] | None = None
+        for entry in self._ws_config.repos:
+            found = match_checkout(repo, (self._workspace_root / entry.path).resolve())
+            if found is None:
+                continue
+            rank = (found.same_checkout, found.depth)
+            if best is None or rank > (best[1].same_checkout, best[1].depth):
+                best = (entry.alias, found)
+        return best
+
+    def repo_id(self, repo: str) -> str | None:
+        """The repository id behind any identity ``resolve_repo_param`` accepts.
+
+        The id of the one row the repo's own index holds, the rule the
+        single-repo server uses; None when it is unknown, unindexed or holds
+        several. Synchronous for per-call auth checks: one read-only SQLite
+        query per alias, then cached, without loading the repo's context.
+        """
+        try:
+            alias = self.resolve_repo_param(repo)
+        except ValueError:
+            return None
+        if not isinstance(alias, str):  # "all"
+            return None
+        cached = self._repo_ids.get(alias)
+        if cached is not None:
+            return cached
+        entry = self._ws_config.get_repo(alias)
+        if entry is None:
+            return None
+        db_path = repo_db_path((self._workspace_root / entry.path).resolve())
+        if not db_path.exists():
+            return None
+        try:
+            with contextlib.closing(
+                sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+            ) as conn:
+                rows = conn.execute("SELECT id FROM repositories LIMIT 2").fetchall()
+        except sqlite3.Error:
+            return None
+        if len(rows) != 1:
+            return None
+        self._repo_ids[alias] = rows[0][0]
+        return rows[0][0]
 
     async def get(self, alias: str) -> RepoContext:
         """Get the ``RepoContext`` for *alias*, loading lazily if needed."""
@@ -294,14 +355,20 @@ class RepoRegistry:
             if lance_dir.exists() and self._on_vector_store_error is not None:
                 self._on_vector_store_error(ctx.alias, exc)
 
+        from repowise.core.providers.embedding.base import warm_query_embedder
+
+        has_index = lance_dir.exists()
+        # Overlaps the import and open below; awaited before ready is set.
+        warmup = asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             try:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                if lance_dir.exists():
+                if has_index:
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
+                    await warmup
                     # Repoint both stores to the same LanceDB table.
                     # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
@@ -315,6 +382,7 @@ class RepoRegistry:
                 )
                 _report(exc)
         finally:
+            warmup.cancel()  # a no-op once awaited; stops it on a failed open
             # Only signal ready if this context is still the active one.
             # If it was evicted before we finished loading, a fresh context
             # will have its own event — setting the stale one would leave the

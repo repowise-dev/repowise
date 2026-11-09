@@ -23,6 +23,7 @@ from .decision_inject import (
     _edit_fix_history_notice,
     _session_decision_block,
 )
+from .fast_lookup import index_locked
 from .read_state import _load_session_state, _save_session_state
 
 _MCP_CONTEXT = (
@@ -47,10 +48,12 @@ def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> s
         return _MCP_CONTEXT
 
     # SessionStart: base context + relevance-ranked standing decisions.
-    try:
-        decisions = _session_decision_block(repo_path, session_id)
-    except Exception:
-        decisions = None
+    decisions = None
+    if not index_locked(repo_path):
+        try:
+            decisions = _session_decision_block(repo_path, session_id)
+        except Exception:
+            decisions = None
     return f"{_MCP_CONTEXT}\n{decisions}" if decisions else _MCP_CONTEXT
 
 
@@ -86,7 +89,7 @@ def _handle_post_edit_use(
             from repowise.core.fsutils import repo_relative
 
             rel = repo_relative(file_path, repo_path, resolve=True)
-            if rel is not None:
+            if rel is not None and not index_locked(repo_path):
                 state = _load_session_state(repo_path, session_id)
                 for emit in (
                     lambda: _edit_decision_notice(repo_path, rel, session_id, state),

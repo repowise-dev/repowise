@@ -433,14 +433,14 @@ def test_overview_context_no_builder_is_silent(sample_config, sample_repo_struct
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("template", ["repo_overview.j2", "stub/repo_overview.j2"])
+@pytest.mark.parametrize("template", ["stub/repo_overview.j2"])
 def test_rendered_overview_names_the_entry_point(
     sample_config, sample_repo_structure, flows, template
 ):
-    """Both templates were always correct — they read the context dict, whose
-    keys never changed. They rendered nothing because the list reaching them
-    was empty. Asserted on both so a future key rename fails here rather than
-    quietly emptying the section again."""
+    """The keyless template reads the context dict, and rendered nothing while
+    the list reaching it was empty. Asserted so a future key rename fails here
+    rather than quietly emptying the section again. The written page names its
+    operations from the walkthrough pages instead."""
     from repowise.core.generation.page_generator import PageGenerator
     from repowise.core.providers.llm.mock import MockProvider
 

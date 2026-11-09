@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 import structlog
@@ -24,6 +24,7 @@ from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
+    adopt_moved_repo_best_effort,
     clear_update_queued,
     console,
     consume_update_pending,
@@ -90,9 +91,19 @@ from .reporting import (
     render_header,
     show_full_completion,
 )
+from .stale_targets import (
+    can_regenerate_pages,
+    load_actionable_stale_targets,
+    structure_ids_to_render,
+)
+from .wiki_rebuild import record_wiki_rebuilt, resolve_wiki_rebuild
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+#: ``state.json`` key: the commit whose run last looked for files with no page.
+FILE_PAGE_FILL_KEY = "file_page_fill_commit"
+
 
 def _fail_on_embed_failure(
     repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
@@ -323,6 +334,21 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     ),
 )
 @click.option(
+    "--refresh-git",
+    is_flag=True,
+    default=False,
+    help=(
+        "Re-read Git history within the current index scope, even at an unchanged HEAD. "
+        "Requires --index-only --defer-docs."
+    ),
+)
+@click.option(
+    "--defer-docs",
+    is_flag=True,
+    default=False,
+    help="With --index-only, persist facts and mark docs stale without rendering or embedding.",
+)
+@click.option(
     "--working-tree",
     "include_working_tree",
     is_flag=True,
@@ -430,6 +456,8 @@ def update_command(
     verbose: bool = False,
     progress: str = "rich",
     include_working_tree: bool = False,
+    defer_docs: bool = False,
+    refresh_git: bool = False,
 ) -> None:
     """Incrementally update the index and pages for files changed since the last sync.
 
@@ -460,6 +488,8 @@ def update_command(
         verbose=verbose,
         progress=progress,
         include_working_tree=include_working_tree,
+        defer_docs=defer_docs,
+        refresh_git=refresh_git,
     )
 
 
@@ -503,9 +533,7 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print(
-        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
-    )
+    console.print(f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]")
     console.print(
         "  Documentation for the whole repository: written by the model after a cost "
         "preview, or built from code when no model is configured. Completed stages "
@@ -623,7 +651,7 @@ def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
 def _start_run(opts: UpdateOptions) -> UpdateRun:
     """Start the run clock and pick the progress output (rich or JSON events)."""
     # ``run`` is the denominator of every stage row; stages nest and overlap.
-    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings())
+    run = UpdateRun(start=time.monotonic(), timings=PhaseTimings(), defer_docs=opts.defer_docs)
     run.timings.start("run")
 
     if opts.progress == "json":
@@ -652,7 +680,11 @@ def _emit_done(
 ) -> UpdateOutcome:
     """Send the JSON ``done`` event (when one is wanted) and hand back *outcome*."""
     if run.emitter is not None:
-        extra = {} if degraded is None else {"degraded": degraded}
+        extra: dict[str, Any] = {} if degraded is None else {"degraded": degraded}
+        if run.defer_docs:
+            from repowise.cli.commands._page_freshness import stale_page_count
+
+            extra.update(docs_deferred=True, stale_pages=run_async(stale_page_count(run.repo_path)))
         run.emitter.done(
             ok=True,
             pages_generated=pages_generated,
@@ -692,15 +724,44 @@ def _resolve_target(opts: UpdateOptions):
     return target
 
 
+def _validate_update_options(opts: UpdateOptions) -> None:
+    if opts.refresh_git and opts.full:
+        raise reasoned_error(
+            "--refresh-git keeps the current index scope; use --full separately to upgrade it.",
+            reason="refresh_git_conflicts_with_full",
+        )
+    if opts.refresh_git and not (opts.index_only and opts.defer_docs):
+        raise reasoned_error(
+            "--refresh-git requires --index-only --defer-docs.",
+            reason="refresh_git_needs_deferred_index",
+        )
+    if opts.defer_docs and (
+        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
+    ):
+        raise reasoned_error(
+            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
+            reason="defer_docs_needs_index_only",
+        )
+
+
 def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.refresh_git:
+        raise reasoned_error(
+            "--refresh-git supports one repo at a time. Pass its path and --no-workspace.",
+            reason="refresh_git_needs_one_repo",
+        )
+    if opts.defer_docs:
+        raise reasoned_error(
+            "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
+            reason="defer_docs_needs_one_repo",
+        )
     if opts.full and opts.repo_alias:
         entry = target.ws_config.get_repo(opts.repo_alias)
         run.repo_path = (target.ws_root / entry.path).resolve()
         return _full_upgrade(opts, run)
     if opts.full:
         raise reasoned_error(
-            "--full upgrades one repo at a time. Run it inside that repo, or pass "
-            "--repo <alias>.",
+            "--full upgrades one repo at a time. Run it inside that repo, or pass --repo <alias>.",
             reason="full_needs_one_repo",
         )
     with _errors_reported(run):
@@ -797,23 +858,55 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )
     # ``or``, not a ``get`` default: ``last_docs_commit`` can be an explicit null.
-    run.base_ref = opts.since or (
+    base_ref = opts.since or (
         state.get("last_sync_commit")
         if run.index_only
         else state.get("last_docs_commit") or state.get("last_sync_commit")
     )
     run.head = get_head_commit(repo_path)
 
-    if run.base_ref is None:
+    if base_ref is None:
         _raise_no_sync_base(run)
+    run.base_ref = base_ref
 
     # Re-cover a range an earlier update failed to persist. Index-only only: the
     # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
 
+    _verify_sync_base(run)
 
-def _raise_no_sync_base(run: UpdateRun) -> None:
+
+def _verify_sync_base(run: UpdateRun) -> None:
+    """Refuse a base ref that git cannot resolve before diffing."""
+    from repowise.core.git_repo import Repo
+
+    try:
+        repo = Repo(run.repo_path, search_parent_directories=True)
+    except Exception:
+        return
+    try:
+        try:
+            _ = repo.commit(run.base_ref).committed_date
+        except Exception as exc:
+            _raise_missing_sync_base(run, exc)
+    finally:
+        repo.close()
+
+
+def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
+    message = (
+        f"Sync base '{run.base_ref}' is not in the git history of {run.repo_path}. "
+        "Run 'repowise update --since <reachable ref>' to diff from a reachable commit, "
+        "or 'repowise init' to rebuild the index."
+    )
+    if run.emitter is not None:
+        run.emitter.error(message)
+    raise reasoned_error(message, reason="missing_sync_base") from exc
+
+
+
+def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
     if upstream_ws is not None:
@@ -877,7 +970,12 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
     """Uncommitted work, when asked for; read before the "up to date" gate."""
     from repowise.core.ingestion import ChangeDetector
 
-    run.detector = detector = ChangeDetector(run.repo_path)
+    run.detector = detector = ChangeDetector(
+        run.repo_path,
+        exclude_patterns=run.cfg.get("exclude_patterns"),
+        include_submodules=bool(run.state.get("include_submodules", False)),
+        include_nested_repos=bool(run.state.get("include_nested_repos", False)),
+    )
     if not opts.include_working_tree:
         return
     run.working_tree_diffs = detector.get_working_tree_changes()
@@ -906,20 +1004,23 @@ def _repair_before_detection(opts: UpdateOptions, run: UpdateRun) -> None:
         bind_repo(Path(run.repo_path))
 
 
-def _assess_staleness(run: UpdateRun) -> None:
+def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     """Decide whether git, the analyzers or the store leave anything to do."""
     state = run.state
     run.analyzer_changed = health_analyzer_changed(state)
     # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
+    run.refresh_git = opts.refresh_git
     run.git_is_current = bool(
         run.head
         and run.head == run.base_ref
         and not run.config.changed
-        and not run.renderer_changed
+        and (not run.renderer_changed or opts.defer_docs)
+        and not run.wiki_rebuild
         and not run.working_tree_diffs
         and not run.analyzer_changed
         and not run.history_stale
+        and not run.refresh_git
     )
     # A store read, so only asked when the run would otherwise exit.
     run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
@@ -931,16 +1032,42 @@ def _assess_staleness(run: UpdateRun) -> None:
     run.scanner_changed = security_scanner_changed(state)
     if run.scanner_changed:
         console.print(
-            "[yellow]Security scanner changed since this index was scanned; "
-            "rescanning.[/yellow]"
+            "[yellow]Security scanner changed since this index was scanned; " "rescanning.[/yellow]"
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
-        from repowise.core.persistence import load_stale_update_targets
+        run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
+        run.fill_file_pages = _file_pages_to_fill(run, opts)
 
-        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(
-            run.repo_path
-        )
+
+def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
+    """Whether the stored scope omits file pages that a run at this commit has not tried.
+
+    Omitted pages a cap explains stay omitted. Tried once per commit, so a page
+    that cannot be built never turns every later update into a re-parse.
+    """
+    omitted = _stored_file_pages(run).get("omitted")
+    if not omitted or _file_page_cap_reached(run):
+        return False
+    if run.state.get(FILE_PAGE_FILL_KEY) == run.head:
+        return False
+    if not can_regenerate_pages(run, opts):
+        return False
+    console.print(f"[yellow]{omitted} eligible files have no page yet; rendering them.[/yellow]")
+    return True
+
+
+def _stored_file_pages(run: UpdateRun) -> dict:
+    from repowise.core.index_scope import resolve_index_scope
+
+    return resolve_index_scope(run.state, run.cfg)["file_pages"]
+
+
+def _file_page_cap_reached(run: UpdateRun) -> bool:
+    """Whether the stored scope already holds as many file pages as its cap allows."""
+    pages = _stored_file_pages(run)
+    cap = pages.get("effective_cap")
+    return cap is not None and (pages.get("generated") or 0) >= cap
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -965,6 +1092,8 @@ def _announce_rework(run: UpdateRun) -> None:
             else "[yellow]Git history rules changed since this index was built; "
             "re-reading the full history once.[/yellow]"
         )
+    if run.refresh_git:
+        console.print("[yellow]Re-reading Git history within the current index scope.[/yellow]")
 
 
 def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
@@ -976,6 +1105,17 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             "[dim]Documentation is built from code. "
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
         )
+    if run.stale_pages_deferred:
+        if opts.defer_docs and resolve_docs_mode(run.state) == "deterministic":
+            console.print(
+                f"[dim]{run.stale_pages_deferred} stale page(s) wait for documentation refresh: "
+                "[bold]repowise update --index-only[/bold].[/dim]"
+            )
+        else:
+            console.print(
+                f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
+                "[bold]repowise generate --stale[/bold].[/dim]"
+            )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
@@ -1014,6 +1154,10 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         log.debug("self_heal_skipped", reason="another update holds the lock")
         return
     try:
+        if opts.defer_docs and run.renderer_changed:
+            from .stale_targets import defer_renderer_pages
+
+            run_async(defer_renderer_pages(run))
         rescanned = run.scanner_changed and rescan_security_if_changed(
             repo_path, state, list(run.cfg.get("exclude_patterns") or [])
         )
@@ -1025,7 +1169,11 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
                     **state,
                     "config_fingerprint": run.config.curr_fingerprint,
                     "config_dependency_fingerprints": run.config.curr_dependency_fps,
-                    "renderer_fingerprint": run.curr_renderer_fp,
+                    "renderer_fingerprint": (
+                        state.get("renderer_fingerprint")
+                        if opts.defer_docs
+                        else run.curr_renderer_fp
+                    ),
                     "phase_timings": run.timings.totals,
                 },
             )
@@ -1038,34 +1186,43 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         release_update_lock(repo_path)
 
 
-def _detect_changes(run: UpdateRun) -> None:
+def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
     """The diffed files since the base, plus stale pages whose files are gone."""
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    with timed(run.timings, "detect_changes"):
-        run.file_diffs = merge_file_diffs(
-            run.detector.get_changed_files(run.base_ref, run.head or "HEAD"),
-            run.working_tree_diffs,
-        )
+    try:
+        with timed(run.timings, "detect_changes"):
+            changed = run.detector.get_changed_files(run.base_ref, run.head or "HEAD")
+    except Exception as exc:
+        release_update_lock(run.repo_path)
+        _raise_git_diff_failed(run, exc)
+    run.file_diffs = merge_file_diffs(changed, run.working_tree_diffs)
 
     # Loaded already when git is current; otherwise load now so old structural
     # debt is carried forward.
     if not run.git_is_current:
-        from repowise.core.persistence import load_stale_update_targets
-
-        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(
-            run.repo_path
-        )
+        run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
 
     # A stale page whose file is gone goes through the deletion path.
     if run.stale_db_paths:
         _tombstone_missing_stale_pages(run)
 
 
+def _raise_git_diff_failed(run: UpdateRun, exc: Exception) -> None:
+    message = (
+        f"Git diff from '{run.base_ref}' to '{run.head or 'HEAD'}' failed: {exc}. "
+        "Run 'repowise update --since <reachable ref>' or 'repowise init'."
+    )
+    if run.emitter is not None:
+        run.emitter.error(message)
+    raise reasoned_error(message, reason="git_diff_failed") from exc
+
+
 def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
     from repowise.core.ingestion.change_detector import FileDiff
 
-    present, absent = [], []
+    present: list[str] = []
+    absent: list[str] = []
     for path in run.stale_db_paths:
         (present if (run.repo_path / path).exists() else absent).append(path)
     run.stale_db_paths = present
@@ -1171,8 +1328,7 @@ def _assess_store_upgrade(opts: UpdateOptions, run: UpdateRun) -> None:
                 repo_path, verdict, emitter=run.emitter, dry_run=opts.dry_run
             )
             if verdict.actions and not opts.dry_run:
-                for action in verdict.actions:
-                    console.print(f"[dim]Upgrade: {action.reason}[/dim]")
+                _announce_upgrade_actions(verdict)
                 run_async(apply_upgrade(repo_path, verdict))
         # Interactive terminals only, so the post-commit hook never prints it.
         if console.is_terminal and run.emitter is None:
@@ -1181,16 +1337,28 @@ def _assess_store_upgrade(opts: UpdateOptions, run: UpdateRun) -> None:
         log.debug("store_upgrade_skipped", error=str(exc))
 
 
+def _announce_upgrade_actions(verdict) -> None:
+    """One line per automatic upgrade step; the wiki rebuild announced itself already."""
+    from repowise.core.upgrade import UpgradeActionKind
+
+    for action in verdict.actions:
+        if action.kind != UpgradeActionKind.REBUILD_WIKI:
+            console.print(f"[dim]Upgrade: {action.reason}[/dim]")
+
+
 def _nothing_to_do(run: UpdateRun) -> bool:
     return not (
         run.file_diffs
         or run.config.changed
         or run.renderer_changed
+        or run.wiki_rebuild
         or run.analyzer_changed
         or run.extraction_changed
         or run.history_stale
+        or run.refresh_git
         or run.stale_db_paths
         or run.stale_deterministic_ids
+        or run.fill_file_pages
     )
 
 
@@ -1206,7 +1374,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         "last_sync_commit": head,
         "config_fingerprint": run.config.curr_fingerprint,
         "config_dependency_fingerprints": run.config.curr_dependency_fps,
-        "renderer_fingerprint": run.curr_renderer_fp,
+        "renderer_fingerprint": (
+            state.get("renderer_fingerprint") if opts.defer_docs else run.curr_renderer_fp
+        ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
     # is: another base says nothing about the marker's range.
@@ -1231,7 +1401,11 @@ def _config_change_only(run: UpdateRun) -> bool:
     """A config edit with no commits to index; those fall through to the full path."""
     config = run.config
     return config.changed and not (
-        run.file_diffs or config.git_changed or config.generation_changed or run.history_stale
+        run.file_diffs
+        or config.git_changed
+        or run.full_generation
+        or run.history_stale
+        or run.refresh_git
     )
 
 
@@ -1299,10 +1473,23 @@ def _rebuild_index(run: UpdateRun) -> None:
         include_nested_repos=bool(run.state.get("include_nested_repos", False)),
         idle_decay_sink=None if run.working_tree_only else run.git_decay_map,
         # A full re-render quotes every file's history, as init does.
-        force_full_git=run.config.git_changed or run.history_stale or run.renderer_changed,
+        force_full_git=(
+            run.config.git_changed
+            or run.history_stale
+            or run.renderer_changed
+            or run.wiki_rebuild
+            or run.refresh_git
+        ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
     )
+    decision = getattr(run.graph_builder, "incremental_graph_decision", None)
+    if decision is not None:
+        # Persist the selected path and its reason alongside this run's phase
+        # timings so a fallback is visible after the console output is gone.
+        from repowise.core.pipeline.incremental.feature import stamp_graph_update
+
+        stamp_graph_update(run.state, decision)
 
 
 def _working_tree_only(run: UpdateRun) -> bool:
@@ -1313,11 +1500,12 @@ def _working_tree_only(run: UpdateRun) -> bool:
         and run.head == run.base_ref
         and not (
             run.config.health_changed
-            or run.config.generation_changed
+            or run.full_generation
             or run.renderer_changed
             or run.analyzer_changed
             or run.extraction_changed
             or run.history_stale
+            or run.refresh_git
         )
     )
 
@@ -1327,13 +1515,14 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     _stage(run, "plan_pages")
 
     run.timings.start("plan_pages")
-    run.cascade_budget = opts.cascade_budget
-    if run.cascade_budget is None:
+    cascade_budget = opts.cascade_budget
+    if cascade_budget is None:
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
-        run.cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
+        cascade_budget = compute_adaptive_budget(run.file_diffs, run.file_count)
         if opts.verbose:
-            console.print(f"Adaptive cascade budget: [cyan]{run.cascade_budget}[/cyan]")
+            console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
+    run.cascade_budget = cascade_budget
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -1348,12 +1537,53 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     # Pages an older renderer wrote: the cascade only reaches changed files.
     stale_renderer_paths = _stale_renderer_paths(run.repo_path, run.parsed_files)
     run.timings.stop("plan_pages")
-    _add_stale_pages(run, stale_renderer_paths)
+    from .stale_targets import stale_flow_pages
+
+    stale_flow_pages(run)
+    _add_stale_pages(run, stale_renderer_paths, _unpaged_file_paths(run))
     _widen_for_full_render(run)
     _report_page_plan(run)
 
 
-def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
+def _unpaged_file_paths(run: UpdateRun) -> list[str]:
+    """Eligible files with no file page yet; rendered with the changed files.
+
+    None while the cap is reached: the pages it leaves out are omitted on purpose.
+    """
+    from .persistence import file_paths_without_page
+
+    if _file_page_cap_reached(run) or not _may_lack_file_pages(run):
+        return []
+    missing = file_paths_without_page(
+        run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
+    )
+    # Recorded so an up-to-date run retries a fill once per commit, not forever.
+    run.state[FILE_PAGE_FILL_KEY] = run.head
+    if missing:
+        console.print(f"Files with no page yet: [cyan]{len(missing)}[/cyan]")
+    return missing
+
+
+def _may_lack_file_pages(run: UpdateRun) -> bool:
+    """Whether any eligible file can be without a page, so the lookup is worth its store read.
+
+    Either the stored scope counts some as omitted (or has no count yet), or
+    this run adds a path the plan does not render. Otherwise every eligible
+    file had a page at the last stamp. A file that turns eligible without a
+    diff is counted by the stamp after this run and filled by the next one.
+    """
+    omitted = _stored_file_pages(run).get("omitted")
+    if omitted is None or omitted:
+        return True
+    rendered = set(run.affected.regenerate)
+    return any(
+        fd.status in ("added", "renamed") and fd.path not in rendered for fd in run.file_diffs
+    )
+
+
+def _add_stale_pages(
+    run: UpdateRun, stale_renderer_paths: list[str], unpaged_paths: list[str]
+) -> None:
     if stale_renderer_paths:
         console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
     # Ceiling: a stale page whose file is no longer indexed is never re-rendered
@@ -1365,17 +1595,26 @@ def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
             "Reconciling stale repository structure: "
             f"[cyan]{len(run.stale_deterministic_ids)}[/cyan]"
         )
-    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths]))
+    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths, *unpaged_paths]))
     if stale_extra:
         run.affected.regenerate = list(dict.fromkeys([*run.affected.regenerate, *stale_extra]))
+        _drop_from_decay(run.affected, set(stale_extra))
+
+
+def _drop_from_decay(affected, rendered: set[str]) -> None:
+    """A page re-rendered this run is current; decaying it would mark it stale."""
+    # The budget overflow leads decay_only; keep its count in step.
+    overflow = affected.decay_only[: affected.stale_due_to_budget]
+    affected.stale_due_to_budget -= sum(p in rendered for p in overflow)
+    affected.decay_only = [p for p in affected.decay_only if p not in rendered]
 
 
 def _widen_for_full_render(run: UpdateRun) -> None:
     affected = run.affected
-    if run.config.generation_changed or run.renderer_changed:
-        # A generation-config or renderer change re-renders the full page set.
+    if run.full_generation or run.renderer_changed:
+        # A generation-config, renderer or upgrade rebuild re-renders the full page set.
         affected.regenerate = [pf.file_info.path for pf in run.parsed_files]
-    if run.renderer_changed and not run.config.generation_changed and not run.index_only:
+    if run.renderer_changed and not run.full_generation and not run.index_only:
         # A model wiki: model-written levels are only marked stale, for an opt-in
         # `generate --stale`.
         from .deterministic import load_cascade_overflow_split
@@ -1411,8 +1650,8 @@ def _report_page_plan(run: UpdateRun) -> None:
 
 def _analyze_changes(run: UpdateRun) -> None:
     """Partial health, dead code and doc drift over the changed files."""
-    # Unchanged files' pages need the complexity only the store still holds.
-    from .deterministic import hydrate_symbol_complexity
+    # Unchanged files' pages need the complexity and git rows only the store still holds.
+    from .deterministic import hydrate_symbol_complexity, with_stored_git_meta
 
     hydrate_symbol_complexity(
         run.repo_path,
@@ -1430,6 +1669,23 @@ def _analyze_changes(run: UpdateRun) -> None:
     drop_transient_git_signals(list(run.git_meta_map.values()))
     # No new commit: an empty map keeps the persist from walking for commits.
     run.persisted_git_meta = {} if run.working_tree_only else run.git_meta_map
+    run.render_git_meta = with_stored_git_meta(
+        run.repo_path, run.git_meta_map, run.affected.regenerate
+    )
+    if run.render_git_meta is None:
+        _keep_pages_without_git(run)
+
+
+def _keep_pages_without_git(run: UpdateRun) -> None:
+    """The store's git rows could not be read: leave the pages that need them as stored."""
+    # This run's own rows and changed files render; only neighbours wait.
+    current = set(run.git_meta_map) | {fd.path for fd in run.file_diffs}
+    kept = [p for p in run.affected.regenerate if p not in current]
+    run.affected.regenerate = [p for p in run.affected.regenerate if p in current]
+    run.render_git_meta = run.git_meta_map
+    message = f"Stored git history unreadable: {len(kept)} page(s) kept as they were"
+    console.print(f"[yellow]{message}[/yellow]")
+    run.degraded.append(message)
 
 
 def _run_partial_analyses(run: UpdateRun) -> None:
@@ -1481,7 +1737,9 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
         run.analyzer_changed
         or run.extraction_changed
         or run.renderer_changed
+        or run.wiki_rebuild
         or run.history_stale
+        or run.refresh_git
         or config.changed
     ):
         return False
@@ -1495,9 +1753,26 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     return all(map(_is_prose, rendered)) and not run.stale_deterministic_ids
 
 
+def _kg_shape_unchanged(run: UpdateRun, prior_fingerprint: str | None) -> bool:
+    """Whether the refresh will only patch the changed files' nodes (no rebuild)."""
+    from repowise.core.analysis.knowledge_graph import (
+        compute_kg_fingerprint,
+        should_skip_kg_rebuild,
+    )
+
+    try:
+        fingerprint = compute_kg_fingerprint(run.graph_builder)
+    except Exception:
+        return False
+    kg_path = run.repo_path / ".repowise" / "knowledge-graph.json"
+    return should_skip_kg_rebuild(prior_fingerprint, fingerprint, kg_path)
+
+
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
     """Rebuild the knowledge graph when its fingerprint moved (not before a commit)."""
     if not run.working_tree_only:
+        prior_fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint")
+        run.knowledge_graph_shape_unchanged = _kg_shape_unchanged(run, prior_fingerprint)
         with timed(run.timings, "knowledge_graph"):
             run.knowledge_graph_result = _refresh_knowledge_graph(
                 run.repo_path,
@@ -1506,7 +1781,8 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
                 run.repo_structure,
                 run.git_meta_map,
                 run.dead_code_report,
-                (run.state.get("knowledge_graph") or {}).get("fingerprint"),
+                prior_fingerprint,
+                [fd.path for fd in run.file_diffs],
             )
     if run.knowledge_graph_result is None:
         return
@@ -1521,7 +1797,7 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
                 "Configuration-driven knowledge-graph refresh failed; the previous "
                 "fingerprint was retained so the next update retries."
             ) from exc
-    elif run.renderer_changed:
+    elif run.renderer_changed or run.wiki_rebuild:
         # A file's layer comes from the KG.
         from repowise.cli.state_persistence import save_knowledge_graph_json
 
@@ -1540,13 +1816,18 @@ class _TemplatePages:
     render_stats: dict[str, int] = field(default_factory=dict)
     # False after a failed renderer-driven render: keep the old stamp and pages.
     renderer_render_ok: bool = True
+    docs_deferred: bool = False
 
 
 def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Index-only: re-render a template wiki (no model), persist, and finish."""
     docs_mode = resolve_docs_mode(run.state)
-    pages = _TemplatePages(docs_mode=docs_mode, renderer_render_ok=docs_mode != "llm")
-    if pages.docs_mode == "deterministic":
+    pages = _TemplatePages(
+        docs_mode=docs_mode,
+        renderer_render_ok=docs_mode != "llm" and not opts.defer_docs,
+        docs_deferred=opts.defer_docs,
+    )
+    if pages.docs_mode == "deterministic" and not opts.defer_docs:
         _render_template_pages(opts, run, pages)
     _stage(run, "persist")
     with _errors_reported(run):
@@ -1584,14 +1865,14 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
     )
 
     _stage(run, "generate")
-    prior_ids = load_prior_page_ids(run.repo_path)
-    full_scope = run.config.generation_changed or run.renderer_changed
+    prior_ids = load_prior_page_ids(run.repo_path, content_paths=run.affected.regenerate)
+    full_scope = run.full_generation or run.renderer_changed
 
     degraded = run.degraded
     degraded_before_render = len(degraded)
     with timed(run.timings, "render"):
         out.pages = _render_template_page_set(opts, run, out, prior_ids, full_scope)
-    out.renderer_render_ok = not run.renderer_changed or (
+    out.renderer_render_ok = not (run.renderer_changed or run.wiki_rebuild) or (
         bool(out.pages) and len(degraded) == degraded_before_render
     )
     if run.config.generation_changed and len(degraded) > degraded_before_render:
@@ -1626,13 +1907,14 @@ def _render_template_page_set(
         regenerate_deterministic_pages,
     )
 
+    assert run.config is not None
     pages = regenerate_deterministic_pages(
         repo_path=run.repo_path,
         parsed_files=run.parsed_files,
         source_map=run.source_map,
         graph_builder=run.graph_builder,
         repo_structure=run.repo_structure,
-        git_meta_map=run.git_meta_map,
+        git_meta_map=run.render_git_meta,
         regenerate_paths=run.affected.regenerate,
         cfg=run.cfg,
         concurrency=opts.concurrency,
@@ -1641,8 +1923,12 @@ def _render_template_page_set(
         prior_page_ids=prior_ids,
         full_scope=full_scope,
         stats_out=out.render_stats,
+        # Config persistence embeds the finalized pages and treats failure as
+        # fatal before stamping its fingerprint. Do not embed them twice.
+        embed_during_generation=not run.config.generation_changed,
     )
-    if run.stale_deterministic_ids and not full_scope:
+    structure_ids = set() if full_scope else structure_ids_to_render(run, prior_ids)
+    if structure_ids:
         pages.extend(
             regenerate_deterministic_page_ids(
                 repo_path=run.repo_path,
@@ -1650,8 +1936,8 @@ def _render_template_page_set(
                 source_map=run.source_map,
                 graph_builder=run.graph_builder,
                 repo_structure=run.repo_structure,
-                git_meta_map=run.git_meta_map,
-                page_ids=run.stale_deterministic_ids,
+                git_meta_map=run.render_git_meta,
+                page_ids=structure_ids,
                 cfg=run.cfg,
                 concurrency=opts.concurrency,
                 degraded=run.degraded,
@@ -1665,6 +1951,7 @@ def _render_template_page_set(
 
 def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
     config = run.config
+    assert config is not None
     template_wiki = pages.docs_mode == "deterministic"
     persisted_changed_paths = (
         [pf.file_info.path for pf in run.parsed_files]
@@ -1672,6 +1959,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         else [fd.path for fd in run.file_diffs]
     )
     config_vector_store = _config_vector_store(run, pages, template_wiki)
+    if template_wiki and pages.renderer_render_ok:
+        record_wiki_rebuilt(run)
     _persist_index_only_update(
         run.repo_path,
         run.graph_builder,
@@ -1689,7 +1978,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         source_map=run.source_map,
         degraded=run.degraded,
         # The repo's docs mode, not this run's page count.
-        template_wiki=template_wiki,
+        template_wiki=template_wiki and not pages.docs_deferred,
         pages_rendered=len(pages.pages),
         git_decay_map=run.git_decay_map,
         exclude_patterns=run.exclude_patterns,
@@ -1704,6 +1993,17 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         dependency_fingerprints=config.curr_dependency_fps,
         vector_store=config_vector_store,
         require_config_rebuild_success=config.rebuild_required,
+        deferred_page_scope=(
+            ("all" if run.full_generation else "template" if run.renderer_changed else "changed")
+            if pages.docs_deferred
+            else None
+        ),
+        deferred_page_paths=(
+            list(dict.fromkeys([*run.affected.regenerate, *run.affected.decay_only]))
+            if pages.docs_deferred
+            else None
+        ),
+        stamp_config=not (pages.docs_deferred and config.generation_changed),
         timings=run.timings,
     )
 
@@ -1711,6 +2011,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
 def _config_vector_store(run: UpdateRun, pages: _TemplatePages, template_wiki: bool):
     """The vector store a config-driven rebuild writes to, or None without one."""
     config = run.config
+    if pages.docs_deferred:
+        return None
     if not (config.traversal_changed or config.generation_changed):
         return None
     vector_store = _build_update_vector_store(
@@ -1729,9 +2031,9 @@ def _full_generation_page_ids(
 ) -> set[str] | None:
     """Page ids of a complete template render, which retires every page outside it."""
     full_render = run.config.generation_changed or (
-        run.renderer_changed and pages.renderer_render_ok
+        (run.renderer_changed or run.wiki_rebuild) and pages.renderer_render_ok
     )
-    if template_wiki and full_render:
+    if template_wiki and full_render and not pages.docs_deferred:
         return {page.page_id for page in pages.pages}
     return None
 
@@ -1808,6 +2110,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
 
     cfg = run.cfg
     generation_changed = run.config.generation_changed
+    full_generation = run.full_generation
     language = cfg.get("language", "en")
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
     config = GenerationConfig.from_repo_config(
@@ -1819,7 +2122,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         wiki_style=cfg.get("wiki_style", "comprehensive"),
         cache_enabled=not generation_changed,
         # Levels 3+ describe the whole repo; a changed-file slice would truncate them.
-        file_pages_only=not generation_changed,
+        file_pages_only=not full_generation,
     )
 
     # Prompts for a provider only in an interactive terminal.
@@ -1841,10 +2144,36 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     return DocsPass(config=config, provider=provider, cost_tracker=cost_tracker)
 
 
+def _apply_page_summaries(run: UpdateRun, docs: DocsPass) -> None:
+    """Same graph shape: the layers stand, so only this run's pages reach the KG.
+
+    No model call. The stored artifact stands in when the refresh moved no node,
+    and it is published only if a page changed a summary.
+    """
+    from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
+    from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
+
+    kg = run.knowledge_graph_result
+    if kg is None:
+        if not docs.generated_pages:
+            return
+        kg = KnowledgeGraphResult.from_file(run.repo_path / ".repowise" / "knowledge-graph.json")
+        if kg is None:
+            return
+        kg.fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint") or ""
+    before = [n.get("summary") for n in kg.nodes]
+    kg = finalize_knowledge_graph(kg, kg.layers, kg.tour, docs.generated_pages)
+    if run.knowledge_graph_result is not None or before != [n.get("summary") for n in kg.nodes]:
+        run.knowledge_graph_result = kg
+
+
 def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
     """Model enrichment of a refreshed KG (layer names, summaries), as init does."""
     # Also runs on a builder-version bump with an unchanged graph: restored layer
     # names were written against the old layers.
+    if run.knowledge_graph_shape_unchanged:
+        _apply_page_summaries(run, docs)
+        return
     kg = run.knowledge_graph_result
     if kg is None:
         return
@@ -1896,7 +2225,7 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             git_decay_map=run.git_decay_map,
             full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
             reconcile_full_scope=config.traversal_changed,
-            reconcile_full_generation=config.generation_changed,
+            reconcile_full_generation=run.full_generation,
             require_config_rebuild_success=config.rebuild_required,
             require_decision_persist_success=config.git_changed,
             history_window_changed=config.git_changed,
@@ -1916,7 +2245,11 @@ def _rescore_after_persist(run: UpdateRun) -> None:
     if health_changed or run.extraction_changed or full_rescore_due(run.state, run.head_ts):
         with timed(run.timings, "rescore"):
             rescored = run_decay_health_rescore(
-                run.repo_path, run.graph_builder, run.parsed_files, run.exclude_patterns
+                run.repo_path,
+                run.graph_builder,
+                run.parsed_files,
+                run.exclude_patterns,
+                timings=run.timings,
             )
     if rescored:
         # No timestamp (git unavailable): keep the existing stamp.
@@ -1955,6 +2288,7 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
         state["last_docs_commit"] = head
     # The DB total; regeneration upserts existing pages.
     state["total_pages"] = docs.db_total_pages
+    record_wiki_rebuilt(run, clean=not docs.failed_steps)
     state["config_fingerprint"] = config_fingerprint(repo_path)
     state["config_dependency_fingerprints"] = run.config.curr_dependency_fps
     state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
@@ -2086,6 +2420,8 @@ def run_update(
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
+    defer_docs: bool = False,
+    refresh_git: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2126,26 +2462,41 @@ def run_update(
         progress=progress,
         skip_cross_repo_hooks=skip_cross_repo_hooks,
         include_working_tree=include_working_tree,
+        defer_docs=defer_docs,
+        refresh_git=refresh_git,
     )
+    _validate_update_options(opts)
     run = _start_run(opts)
     target = _resolve_target(opts)
     if target.is_workspace:
         return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
-    run.repo_path = target.repo_path
-    assert run.repo_path is not None  # single mode always sets repo_path
+    repo_path = target.repo_path
+    assert repo_path is not None  # single mode always sets repo_path
+    run.repo_path = repo_path
     _prepare_repo(run.repo_path)
+    if not opts.dry_run:
+        # A moved or copied checkout still names its old path; adopt the store's
+        # only row before any write keys on the new one and adds a second row.
+        run_async(adopt_moved_repo_best_effort(run.repo_path))
 
     # --full reuses the persisted graph instead of diffing changed files.
     if opts.full:
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
     _check_config_and_renderer(run)
+    if not opts.defer_docs:
+        resolve_wiki_rebuild(opts, run)
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
-    _assess_staleness(run)
-    if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:
+    _assess_staleness(opts, run)
+    if opts.refresh_git and opts.dry_run:
+        console.print("[yellow]Dry run: Git history would be re-read. No changes made.[/yellow]")
+        return _emit_done(run, UpdateOutcome.DRY_RUN)
+    if run.git_is_current and not (
+        run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
+    ):
         return _already_up_to_date(opts, run)
 
     deferred = _acquire_update_lock(run)
@@ -2154,7 +2505,7 @@ def run_update(
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")
-    _detect_changes(run)
+    _detect_changes(opts, run)
     if _nothing_to_do(run):
         return _no_changed_files(opts, run)
 

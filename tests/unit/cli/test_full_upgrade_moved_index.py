@@ -110,7 +110,7 @@ def test_a_configured_database_is_not_rebound(
     moved_repo: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, repo_id = moved_repo
-    monkeypatch.setattr("repowise.core.persistence.get_configured_db_url", lambda: "sqlite://")
+    monkeypatch.setenv("REPOWISE_DB_URL", "sqlite://")
     monkeypatch.setattr("repowise.cli.helpers.get_db_url_for_repo", lambda _p: f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
 
     async def _open() -> str:

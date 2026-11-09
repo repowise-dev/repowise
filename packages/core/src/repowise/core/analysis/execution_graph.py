@@ -94,7 +94,7 @@ def _append_unique(
         adjacency.setdefault(source, []).append(target)
 
 
-def _line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
+def call_line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
     raw = attrs.get("call_lines")
     if raw is None:
         raw = (attrs.get("call_line"),)
@@ -207,7 +207,7 @@ class ExecutionGraphIndex:
             for source, target, data in graph_edges:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
-                lines = _line_values(attrs) if edge_type == "calls" else ()
+                lines = call_line_values(attrs) if edge_type == "calls" else ()
                 if lines:
                     lines = _split_spawned(
                         source,

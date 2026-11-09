@@ -55,6 +55,7 @@ from ._prepare import (
 )
 from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
+from ._sibling_hint import suggest_workspace
 from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
@@ -178,10 +179,12 @@ def _check_folder_coverage(
         "or OpenCode is used only with --provider; the cost confirmation is "
         "accepted; advanced options keep their defaults (standard run mode at "
         "any size, comprehensive style); the detected agents "
-        "are connected; the global repowise MCP entry is pointed here, with the "
-        "old and new target printed; the post-commit hook is installed and the "
-        "distill rewrite hook is not; and with --no-prose, documentation a "
-        "model wrote is replaced without asking."
+        "are connected; Claude Code gets a user-level repowise MCP entry in "
+        "~/.claude.json that names no repo and serves the repo Claude Code "
+        "starts in, added when absent and never moved off another repo it "
+        "serves; the post-commit hook and the distill rewrite hook are "
+        "installed; and with --no-prose, documentation a model wrote is "
+        "replaced without asking."
     ),
 )
 @click.option(
@@ -305,7 +308,9 @@ def _check_folder_coverage(
         "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
         "back as a pointer to the earlier read (`hooks.read_reread`). One "
         "consent, and this flag decides all four without a prompt. Default: "
-        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "on. Interactive runs ask; --yes and non-interactive runs install it "
+        "and print how to turn it off. A repo that opted out stays off, and "
+        "--no-editor-setup installs nothing. In workspace mode the verdict "
         "applies to every selected repo."
     ),
 )
@@ -330,7 +335,8 @@ def _check_folder_coverage(
         "Wire repowise into your editors. Covers both halves: the machine-wide "
         "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
         "hooks, the distill rewrite-hook offer) and the project-local files "
-        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        "(.claude/CLAUDE.md, .vscode/mcp.json, .mcp.json when no user-scope "
+        "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
         ".repowise/ is touched, and 'repowise mcp .' still prints the config "
@@ -397,8 +403,7 @@ def _check_folder_coverage(
     default=True,
     help=(
         "Generate the curated Onboarding collection (Project Overview, "
-        "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
-        "How It Works, Development Guide, Active Landscape). Default: on. "
+        "Getting Started, How It Works, Active Landscape). Default: on. "
         "Slots with insufficient signal are skipped automatically."
     ),
 )
@@ -554,6 +559,8 @@ def _run_init(opts: InitOptions) -> None:
     # redirect to it so the user doesn't have to specify the exact path.
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
+    if not opts.no_workspace:
+        suggest_workspace(repo_path)
 
     with init_in_progress(repo_path):
         _run_single_repo(opts, repo_path, start)

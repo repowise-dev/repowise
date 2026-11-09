@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -100,6 +102,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -113,6 +116,7 @@
     "exports": [
       "AssertionsTest"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -257,7 +261,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -729,6 +735,7 @@
       "WorkerInterface",
       "Priority"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -770,7 +777,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -825,6 +834,7 @@
       "greet",
       "sum"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -849,7 +859,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1048,6 +1060,7 @@
       "try_catch_finally",
       "loops_galore"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

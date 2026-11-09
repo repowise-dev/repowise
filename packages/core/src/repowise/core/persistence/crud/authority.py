@@ -58,6 +58,8 @@ from ..decision_graph import (
     upsert_decision_edge,
 )
 from ..models import (
+    MERGED_REASON,
+    SUPERSEDED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -173,6 +175,24 @@ async def latest_acceptance(
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def accepted_evidence(session: AsyncSession, decision_id: str) -> list[str]:
+    """The evidence the latest acceptance that named any rests on, or ``[]``.
+
+    Evidence given at ``confirm`` is stored on its acceptance row, not on the
+    record, so this is where a later action finds what the decision stands on.
+    """
+    rows = await session.scalars(
+        select(DecisionAcceptance.evidence_json)
+        .where(DecisionAcceptance.decision_id == decision_id)
+        .order_by(DecisionAcceptance.seq.desc())
+    )
+    for raw in rows:
+        evidence = [item for item in json.loads(raw or "[]") if isinstance(item, str) and item]
+        if evidence:
+            return evidence
+    return []
 
 
 async def is_accepted(session: AsyncSession, decision_id: str) -> bool:
@@ -453,12 +473,15 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
 async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | None:
     """Resolve an id that may be a retired alias to the live record's id.
 
-    Merging and superseding retire ids that are already in circulation — in a
+    Merging and re-keying retire ids that are already in circulation — in a
     committed manifest, in an agent's notes. Every id-taking entry point routes
     through here so those keep resolving instead of reading as deleted.
     """
     alias = await session.get(DecisionAlias, decision_id)
-    if alias is not None and alias.reason == "merged":
+    if alias is not None and alias.reason == SUPERSEDED_REASON:
+        # A pre-fix supersede pointer names the successor, not this id's record.
+        alias = None
+    if alias is not None and alias.reason == MERGED_REASON:
         # A merged candidate's row survives, because its evidence is worth
         # keeping, so the record still resolves by id. Following the alias is
         # what stops the same constraint being accepted a second time under the
@@ -557,6 +580,9 @@ async def record_acceptance(
         raise ValueError(f"Unknown acceptance action {action!r}.")
     if currency not in STORED_CURRENCIES:
         raise ValueError(f"Unknown stored currency {currency!r}.")
+    if evidence is None and not _record_evidence(record):
+        # What an earlier acceptance was given still stands behind the record.
+        evidence = await accepted_evidence(session, record.id) or None
 
     req = requirement(
         decision_fields(record),
@@ -817,8 +843,9 @@ async def supersede_decision(
     """Retire *record* in favour of *successor_id*, with an explicit edge.
 
     Similarity never reaches here: an edge is written because someone named the
-    successor. The retired id becomes an alias of the successor so references to
-    it keep resolving to the decision that now governs.
+    successor. No alias: the retired id still names this record, wherever the
+    id migration later moves it, and ``superseded_by`` plus the edge are where
+    the successor is read from.
     """
     successor = await session.get(DecisionRecord, successor_id)
     if successor is None:
@@ -847,7 +874,6 @@ async def supersede_decision(
         confidence=1.0,
         evidence=f"superseded by {accepter or artifact}",
     )
-    await _add_alias(session, record.id, successor.id, reason="superseded")
     return acceptance
 
 
@@ -890,7 +916,9 @@ async def merge_candidate(
         target,
         action="merged",
         currency="active",
-        evidence=_record_evidence(target) + _record_evidence(candidate),
+        # ``None``, not ``[]``, when neither record carries evidence: the target
+        # stands on what it was confirmed with, which lives on its acceptance row.
+        evidence=(_record_evidence(target) + _record_evidence(candidate)) or None,
         accepter=accepter,
         artifact=artifact,
         kind=kind,
@@ -899,7 +927,7 @@ async def merge_candidate(
         note=note or f"merged candidate {candidate.id}",
     )
     await _set_review_state(session, candidate, "merged", merged_into=target.id)
-    await _add_alias(session, candidate.id, target.id, reason="merged")
+    await _add_alias(session, candidate.id, target.id)
     return acceptance
 
 
@@ -1133,13 +1161,14 @@ def _sign_review(meta: DecisionCandidateMeta, accepter: str, kind: str, session_
     meta.dismissed_session = session_id or None
 
 
-async def _add_alias(
-    session: AsyncSession, alias_id: str, decision_id: str, *, reason: str
-) -> None:
+async def _add_alias(session: AsyncSession, alias_id: str, decision_id: str) -> None:
+    # Every caller is a merge: superseding writes no alias, and the id migration
+    # writes its own rows through ``_write_alias``.
+    #
     # An alias chain would leave a two-hop lookup nobody performs, so anything
-    # already pointing at the retired id is repointed at its successor first —
-    # for the update branch as much as the insert one, or A -> B followed by
-    # B -> C strands A at an id that no longer resolves.
+    # already pointing at the retired id is repointed at the record it merged
+    # into first — for the update branch as much as the insert one, or A -> B
+    # followed by B -> C strands A at an id that no longer resolves.
     stale = (
         (
             await session.execute(
@@ -1155,7 +1184,7 @@ async def _add_alias(
     existing = await session.get(DecisionAlias, alias_id)
     if existing is not None:
         existing.decision_id = decision_id
-        existing.reason = reason
+        existing.reason = MERGED_REASON
         await session.flush()
         return
     record = await session.get(DecisionRecord, decision_id)
@@ -1164,7 +1193,7 @@ async def _add_alias(
             alias_id=alias_id,
             repository_id=record.repository_id if record else "",
             decision_id=decision_id,
-            reason=reason,
+            reason=MERGED_REASON,
         )
     )
     await session.flush()

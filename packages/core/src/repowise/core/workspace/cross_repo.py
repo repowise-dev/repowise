@@ -45,8 +45,9 @@ CROSS_REPO_EDGES_FILENAME = "cross_repo_edges.json"
 # discards older versions so stale scores never reach consumers that assume
 # the new semantics (v2: strength became a bounded [0,1) session share;
 # v3: co-change rows gained bounded supporting evidence — authors, example
-# commit pairs, max time gap — issue #483).
-_OVERLAY_VERSION: int = 3
+# commit pairs, max time gap — issue #483; v4: package deps gained
+# ``reached_files``, the provider files the dependent's imports reach).
+_OVERLAY_VERSION: int = 4
 
 _DEFAULT_TIME_WINDOW_HOURS: int = 24
 _CROSS_REPO_COMMIT_LIMIT: int = 500
@@ -833,6 +834,9 @@ async def run_cross_repo_analysis(
         detect_package_dependencies_with_diagnostics,
         repo_paths,
     )
+    from .package_reach import attach_reached_files
+
+    await attach_reached_files(package_deps, repo_paths)
 
     # Build summaries
     repo_summaries = _build_repo_summaries(

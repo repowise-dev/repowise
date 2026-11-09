@@ -169,6 +169,23 @@ class TestGetChangedFilesNonGit:
         result = d.get_changed_files(base_ref="HEAD~5", until_ref="HEAD")
         assert result == []
 
+    def test_git_repo_raises_on_unknown_ref(self, tmp_path: Path) -> None:
+        import git as gitpython
+        import pytest
+
+        repo = gitpython.Repo.init(tmp_path)
+        with repo.config_writer() as cw:
+            cw.set_value("user", "name", "Test")
+            cw.set_value("user", "email", "test@example.com")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+        repo.index.add(["app.py"])
+        repo.index.commit("initial")
+        repo.close()
+
+        d = ChangeDetector(tmp_path)
+        with pytest.raises((gitpython.GitError, ValueError)):
+            d.get_changed_files(base_ref="0" * 40, until_ref="HEAD")
+
 
 # ---------------------------------------------------------------------------
 # get_affected_pages
@@ -337,7 +354,8 @@ class TestAffectedPagesPagerankParam:
         result = d.get_affected_pages(
             [self._diff("f0.py")], graph=g, cascade_budget=3, pagerank=pr
         )
-        assert result.regenerate == ["f5.py", "f4.py", "f0.py"]
+        # The changed file first, then importers by the supplied pagerank.
+        assert result.regenerate == ["f0.py", "f5.py", "f4.py"]
         assert set(result.decay_only) == {"f1.py", "f2.py", "f3.py"}
 
     def test_without_pagerank_falls_back_to_internal_computation(

@@ -1,5 +1,6 @@
 import * as React from "react";
-import { formatDateTime, formatRelativeTime } from "../lib/format";
+import { formatDateTime, RELATIVE_TIME_WORDS, type RelativeTimeWords } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface ChangeStat {
   /** Pre-formatted figure, e.g. "8" or "10+". */
@@ -11,13 +12,14 @@ export interface ChangeStat {
 export interface ChangeLineCopy {
   /** The lead-in. `relative` is the previous index's age, e.g. "2d ago". */
   since: (relative: string) => string;
-  /** Words the previous index's age, e.g. "2d ago". */
-  relativeTime: (iso: string) => string;
+  /** Words the previous index's age per bucket, e.g. "{value}d ago". Plain
+   *  strings, so the age is worked out from the viewer's clock. */
+  ago: Partial<RelativeTimeWords>;
 }
 
 export const CHANGE_LINE_COPY: ChangeLineCopy = {
   since: (relative) => `Since the previous index, ${relative}`,
-  relativeTime: formatRelativeTime,
+  ago: RELATIVE_TIME_WORDS,
 };
 
 export interface ChangeLineProps {
@@ -58,7 +60,7 @@ export function ChangeLine({ since, stats, copy }: ChangeLineProps) {
         className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
         title={formatDateTime(since)}
       >
-        {c.since(c.relativeTime(since))}
+        <RelativeTime date={since} template={c.since("{time}")} words={c.ago} />
       </span>
       {stats.map((s) => (
         <span key={s.label}>

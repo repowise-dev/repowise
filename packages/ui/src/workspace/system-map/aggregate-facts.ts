@@ -5,7 +5,8 @@
  * the same everywhere it appears. Pure, no React.
  */
 
-import { HEALTH_MARK_BANDS, healthMark, type HealthMarkBand } from "../../health/tokens";
+import { HEALTH_BAND_LABEL, HEALTH_BAND_ORDER, bandForScore, type HealthBand } from "@repowise-dev/types/health";
+import { healthBandColor } from "../../health/tokens";
 import { EDGE_KIND_ORDER, edgeKindStyle } from "./edge-kinds";
 import type { LinkSummary } from "./level-types";
 import { plural } from "./system-map-model";
@@ -23,37 +24,44 @@ export function groupSourceLabel(groupId: string, source: string | null | undefi
   return null;
 }
 
-export type HealthCounts = Record<HealthMarkBand, number> & { unscored: number };
+export type HealthCounts = Record<HealthBand, number> & { unscored: number };
 
 /** Services per canonical health band; `score10` is null for a service with no score. */
 export function healthCounts(scores: Iterable<number | null>): HealthCounts {
-  const out: HealthCounts = { healthy: 0, warning: 0, alert: 0, unscored: 0 };
+  const out: HealthCounts = { excellent: 0, good: 0, fair: 0, needs_work: 0, at_risk: 0, unscored: 0 };
   for (const s of scores) {
     if (s == null) out.unscored += 1;
-    else out[healthMark(s).band] += 1;
+    else out[bandForScore(s)] += 1;
   }
   return out;
 }
 
 export interface HealthException {
-  band: HealthMarkBand;
+  band: HealthBand;
   count: number;
   label: string;
   color: string;
 }
 
-/** The bands worth marking on a group: Alert, then Warning. Healthy is the quiet default. */
+/** Good and Excellent share the green and are the quiet default; the rest are marked. */
+const QUIET: ReadonlySet<HealthBand> = new Set(["good", "excellent"]);
+
+/** The bands worth marking on a group, worst first: At risk, Needs work, Fair. */
 export function healthExceptions(counts: HealthCounts): HealthException[] {
-  return HEALTH_MARK_BANDS.filter((b) => b.band !== "healthy" && counts[b.band] > 0)
-    .map((b) => ({ band: b.band, count: counts[b.band], label: b.label, color: b.color }))
-    .reverse();
+  return HEALTH_BAND_ORDER.filter((b) => !QUIET.has(b) && counts[b] > 0).map((b) => ({
+    band: b,
+    count: counts[b],
+    label: HEALTH_BAND_LABEL[b],
+    color: healthBandColor(b),
+  }));
 }
 
-/** "All healthy", "1 Alert, 2 Warning", or "No health scores" when none of the services has one. */
+/** "All Good or better", "1 At risk, 2 Fair", or "No health scores" when none of the services has one. */
 export function healthSummaryText(counts: HealthCounts): string {
   const exceptions = healthExceptions(counts);
   if (exceptions.length > 0) return exceptions.map((e) => `${e.count} ${e.label}`).join(", ");
-  if (counts.healthy > 0) return counts.unscored > 0 ? `${counts.healthy} Healthy, ${counts.unscored} unscored` : "All healthy";
+  const quiet = counts.good + counts.excellent;
+  if (quiet > 0) return counts.unscored > 0 ? `${quiet} Good or better, ${counts.unscored} unscored` : "All Good or better";
   return "No health scores";
 }
 

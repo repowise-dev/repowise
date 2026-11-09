@@ -11,6 +11,11 @@ from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_search as _pkg
+from repowise.server.mcp_server._answer_pipeline.leg_record import (
+    begin_leg_record,
+    degraded_legs,
+    retrieval_legs,
+)
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_repo,
@@ -21,6 +26,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates
 from repowise.server.mcp_server._query_shape import (
@@ -46,6 +52,7 @@ from .ranking import (
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _reserve_symbol_tail,
     _sort_demoting_noise,
@@ -53,7 +60,6 @@ from .ranking import (
 from .retrieval import _federated_search, _fused_retrieve, _per_repo
 from .serve import (
     _apply_freshness_boost,
-    _assign_confidence,
     _attach_paths,
     _drop_internal_ranking_fields,
     _grep_hint_for,
@@ -116,6 +122,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     async with get_session(ctx.session_factory) as session:
         page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
         path_index = await file_path_index(session, repo_id)
+        minor = await _minor_spotlights(session, output, query, repo_id)
     # Tombstoned pages document deleted/renamed files — never results.
     output = [item for item in output if item["page_id"] not in tombstoned]
     _attach_paths(output, page_info)
@@ -130,7 +137,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
     _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    _sort_demoting_noise(output, query, minor)
     return _dedup_decisions(output)
 
 
@@ -147,7 +154,6 @@ async def _concept_search(
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-    await _pkg._wait_for_vector_store(ctx)
 
     # Over-fetch: post-filters trim hits, and decision down-weighting needs file
     # pages inside the window to promote.
@@ -169,7 +175,6 @@ async def _concept_search(
     ranked = list(output)
     output = output[:limit]
     await attach_hit_symbols(ctx, query, output)
-    _assign_confidence(output, "relevance_score", "confidence_score")
 
     response: dict = {
         "results": output,
@@ -178,8 +183,11 @@ async def _concept_search(
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
     _pkg._lead_candidates(response, issue, limit)
-    if grep_hint and not output:
-        response["grep_hint"] = grep_hint
+    if not output:
+        if grep_hint:
+            response["grep_hint"] = grep_hint
+        else:
+            response["hint"] = _NO_HITS_RECOVERY_HINT
     return response, ctx
 
 
@@ -208,34 +216,21 @@ async def search_codebase(
 ) -> dict:
     """Find code by concept, symbol, or path — hybrid codebase search.
 
-    For questions (how/where/why), call get_answer instead: it runs this
-    retrieval internally and returns a cited answer. Use this for raw
-    ranked hits: enumerating matches, resolving an identifier to a symbol_id,
-    or scoping get_context.
-
-    mode="auto" routes by query shape: identifiers search symbols (symbol_id,
-    path, line bounds for get_symbol), paths resolve files (for get_context),
-    prose runs wiki-semantic search, and mixed queries run hybrid (symbol hits,
-    then file-backed pages only). Decision records rank below file pages
-    unless the query is why-shaped.
-
-    Rows naming a file carry `path`; concept pages add `symbols`
-    (name:line) the query matches; the top 3 add `matched_lines`
-    (line, text), sample lines sharing its words. `candidates` lists up to `limit`
-    distinct files to Read, best first. Identifier or literal queries also
-    return `lines` (path, line, kind, text; definitions first) read from live
-    files; when `complete` is true they are every match, so no grep is needed.
+    For a how/where/why question call get_answer. Use this to enumerate
+    matches, resolve an identifier to a symbol_id, or find files for
+    get_context. Identifier or literal queries return `lines` (path, line,
+    kind, text; definitions first) read from live files; when `complete` is
+    true they are every match, so no grep is needed. `candidates` lists
+    distinct files to Read, best first.
 
     Args:
         query: identifier, path, or natural language.
-        limit: max results (default 5); distinct files outside mode="symbol"
-            (same-file symbols in `symbols`).
-        page_type: file_page (per-file docs) or module_page (subsystem
-            pages); any stored page type filters.
-        kind: implementation | test | config | doc (concept/symbol modes).
+        limit: max results (default 5).
+        mode: auto (by query shape) | symbol | path | concept | hybrid.
+        kind: implementation | test | config | doc.
+        symbol_kind: function | class | method | ...
+        page_type: file_page | module_page.
         repo: alias, or "all" for workspace-wide.
-        mode: auto | concept | symbol | path | hybrid.
-        symbol_kind: filter symbol hits (function|class|method|...).
         pattern: alias for query.
     """
     ignored: list[dict[str, Any]] = []
@@ -250,6 +245,7 @@ async def search_codebase(
             "_meta": _build_meta(),
         }
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
     # skipped by the next and reported once.
     fed = Federation() if repo == "all" else None
@@ -265,16 +261,19 @@ async def search_codebase(
         _pkg._lead_candidates(structured, issue, limit)
         await attach_line_hits(structured, query, resolved_mode, names, repo)
         attach_ignored_arguments(structured, ignored)
-        return structured
+        return _flag_degraded_legs(_drop_echoed_candidates(structured))
 
     if fed is not None:
         # kind is filtered per repo before each repo's limit cut, so the fused
         # list is already kind-pure and full.
         federated = await _federated_search(query, limit, page_type, kind, fed)
-        if grep_hint and not federated.get("results"):
-            federated["grep_hint"] = grep_hint
+        if not federated.get("results"):
+            if grep_hint:
+                federated["grep_hint"] = grep_hint
+            else:
+                federated["hint"] = _NO_HITS_RECOVERY_HINT
         attach_ignored_arguments(federated, ignored)
-        return federated
+        return _flag_degraded_legs(_drop_echoed_candidates(federated))
 
     response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
     await attach_line_hits(response, query, resolved_mode, names, repo)
@@ -282,4 +281,23 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
     _serve_snippets(response["results"])
+    return _flag_degraded_legs(_drop_echoed_candidates(response))
+
+
+def _drop_echoed_candidates(response: dict) -> dict:
+    """Drop ``candidates`` that only repeat the result paths in result order."""
+    candidates = response.get("candidates")
+    if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
+        return response
+    rows = [r for r in response.get("results") or [] if isinstance(r, dict)]
+    paths = list(dict.fromkeys(r["path"] for r in rows if r.get("path")))
+    if [c["path"] for c in candidates] == paths:
+        del response["candidates"]
+    return response
+
+
+def _flag_degraded_legs(response: dict) -> dict:
+    """Name the retrieval legs this reply ran without, as get_answer does."""
+    if degraded := degraded_legs(retrieval_legs()):
+        response.setdefault("_meta", {})["retrieval_degraded"] = degraded
     return response

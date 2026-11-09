@@ -85,14 +85,11 @@ class SymbolSpotlightContext:
     decorators: list[str]
     is_async: bool
     complexity_estimate: int
-    # Files importing the module that defines the symbol. Import-level
-    # references, not call sites; the template says so where it lists them.
-    callers: list[str]
-    source_body: str | None = None
-    # Resolved calls *to* this symbol: [{"caller", "caller_file"}]. Where the
-    # call resolver reached a verdict this is what "where it is used" means,
-    # and ``callers`` is the fallback for the symbols it did not resolve.
+    # Resolved calls *to* this symbol from production code:
+    # [{"caller", "caller_file"}], most confident first.
     call_sites: list[dict] = field(default_factory=list)
+    # How many resolved calls come from test files; counted, not listed.
+    test_call_sites: int = 0
 
 
 @dataclass
@@ -119,8 +116,17 @@ class ModulePageContext:
     # A rollup page summarises a subsystem directory whose detail lives on the
     # child concept pages below it, rather than owning files of its own.
     is_rollup: bool = False
-    # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
+    # Pages for the parts below this one: [{"title", "path", "files", "summary",
+    # "names"}]; a thin layer with a single part is looked through.
     child_pages: list[dict] = field(default_factory=list)
+    # READMEs beside the module's code, nearest first: [{"path", "text"}].
+    readmes: list[dict] = field(default_factory=list)
+    # Test files that import the module: [{"file", "tests"}].
+    tests: list[dict] = field(default_factory=list)
+    # Commits in 90 days and where changes and bug fixes cluster.
+    git_activity: dict = field(default_factory=dict)
+    # The prose length the page is asked for, scaled by the module's size.
+    words: tuple[int, int] = (500, 800)
     # Sibling packages a package roll-up covers: [{"path", "files"}].
     packages: list[dict] = field(default_factory=list)
     # What the page's packages publish, computed from manifests and re-exports:
@@ -211,10 +217,10 @@ class RepoOverviewContext:
     # Phase 2: third-party dependencies + headline architectural decisions
     external_systems: list[dict] = field(default_factory=list)
     decision_records: list[dict] = field(default_factory=list)
-    # The repository's own headings and section openers, capped. Framing and
-    # vocabulary only: every path, count and package name on the page still
-    # comes from the structural fields above. See ``readme_digest``.
-    prose_digest: str = ""
+    # What the model writes the front page from: the README, commands,
+    # walkthroughs, parts and defined terms (``page_generator.front_page``).
+    # ``None`` on a keyless run, whose page renders from the fields above.
+    material: Any = None
     # Per-package file counts and observed languages, largest first. Counted
     # from the run's own parsed files rather than written by the model, so the
     # table they feed reads the same on every render. Empty when the repository

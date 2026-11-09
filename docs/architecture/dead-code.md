@@ -184,5 +184,7 @@ the file, attention, actions, related-work, graph, chat, export and report
 readers): it applies `cross_repo_cut` to each stored row, then the filters, and
 tiering reads the result. A file another repo's contract link points at gets
 confidence `* 0.3`. Cross-repo co-change partners, or an `unused_export` in a
-repo other repos depend on as a package, keep the confidence. Each adds a
+file another repo's package imports reach (`package_link_reaches` in
+`workspace/package_reach.py`, the rule get_risk's `affected_repos` also uses),
+keep the confidence. Each adds a
 `cross_repo_note` and withdraws `safe_to_delete`.

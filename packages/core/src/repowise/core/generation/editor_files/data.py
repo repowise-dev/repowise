@@ -134,7 +134,7 @@ class EditorFileData:
     repo_name: str
     indexed_at: str  # date only: "2026-03-28"
     indexed_commit: str  # short SHA of HEAD at index time, e.g. "a1b2c3d"
-    architecture_summary: str  # 2-4 sentences from repo_overview page
+    architecture_summary: str  # lead sentence of the repo_overview page
     key_modules: list[KeyModule] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
     tech_stack: list[TechStackItem] = field(default_factory=list)
@@ -226,6 +226,3 @@ class WorkspaceEditorFileData:
     package_deps: list[dict] = field(default_factory=list)  # package dep entries
     contract_links: list[dict] = field(default_factory=list)  # matched contract links
     contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}
-    # Rendered MCP tool table (single source: tool_table.py). Always the keyed
-    # table: member repos can differ in keyless state, and one keyed repo needs it.
-    tool_table_md: str = field(default_factory=lambda: _render_tool_table())

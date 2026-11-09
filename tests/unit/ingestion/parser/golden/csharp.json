@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -271,6 +273,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -296,6 +299,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -321,6 +325,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -346,6 +351,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -371,6 +377,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -382,6 +389,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -531,7 +539,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -606,6 +616,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -621,7 +632,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -637,7 +651,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -653,7 +670,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -669,7 +689,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -685,7 +708,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -701,7 +727,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -717,7 +746,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -733,7 +765,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -749,7 +784,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -765,7 +803,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -781,7 +822,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -797,7 +841,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -813,7 +860,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -829,7 +879,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -845,7 +898,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -861,7 +917,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -877,7 +936,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
         "argument_names": null
       },
       {
@@ -893,7 +955,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          null,
+          "int constant"
+        ],
         "argument_names": [
           "x",
           null
@@ -922,7 +987,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1291,6 +1358,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1315,7 +1383,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1413,6 +1483,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],

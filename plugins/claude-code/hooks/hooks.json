@@ -14,6 +14,19 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v repowise-rewrite >/dev/null 2>&1; then exec repowise-rewrite; fi",
+            "timeout": 5,
+            "statusMessage": "Distilling command output..."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*",

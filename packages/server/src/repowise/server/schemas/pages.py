@@ -6,7 +6,29 @@ import json
 
 from pydantic import BaseModel
 
+from repowise.core.generation.nav_titles import page_nav_title
 from repowise.server.schemas._datetime import UTCDateTime
+
+# Page types that are rows of the reading outline. The rest are reference
+# pages a tree names by their path, so they carry no navigation label.
+_OUTLINE_TYPES = frozenset(
+    {"repo_overview", "onboarding", "module_page", "flow_page", "architecture_diagram"}
+)
+
+
+def _nav_title(obj: object, metadata: dict | None) -> str | None:
+    """The label a navigation row shows for this page.
+
+    The name the page's own generation chose when it carries one; otherwise
+    derived from the stored title when the page is listed, so a wiki written
+    before either existed shows "CLI" instead of "Cli Overview" without a page
+    being regenerated.
+    """
+    page_type = getattr(obj, "page_type", "")
+    if page_type not in _OUTLINE_TYPES:
+        return None
+    stamp = metadata if metadata is not None else getattr(obj, "metadata_json", None)
+    return page_nav_title(page_type, getattr(obj, "title", "") or "", stamp)
 
 
 def _layer_stamp(obj: object, metadata: dict | None) -> tuple[str | None, str | None]:
@@ -68,11 +90,14 @@ def _is_chapter(obj: object, metadata: dict | None) -> bool:
     return bool(metadata.get("is_chapter"))
 
 
-def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
+def _summary_fields(
+    obj: object, metadata: dict | None = None, content_chars: int | None = None
+) -> dict:
     """The part of a page row that costs nothing to send.
 
     Shared by both response models so a field added to one can never go
-    missing from the other.
+    missing from the other. *content_chars* is the body's length when the
+    caller read it without the body.
     """
     layer_id, layer_name = _layer_stamp(obj, metadata)
     return dict(
@@ -80,6 +105,7 @@ def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
         repository_id=obj.repository_id,  # type: ignore[attr-defined]
         page_type=obj.page_type,  # type: ignore[attr-defined]
         title=obj.title,  # type: ignore[attr-defined]
+        nav_title=_nav_title(obj, metadata),
         target_path=obj.target_path,  # type: ignore[attr-defined]
         source_hash=obj.source_hash,  # type: ignore[attr-defined]
         model_name=obj.model_name,  # type: ignore[attr-defined]
@@ -91,7 +117,11 @@ def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
         version=obj.version,  # type: ignore[attr-defined]
         confidence=obj.confidence,  # type: ignore[attr-defined]
         freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
-        content_chars=len(obj.content or ""),  # type: ignore[attr-defined]
+        content_chars=(
+            len(obj.content or "")  # type: ignore[attr-defined]
+            if content_chars is None
+            else content_chars
+        ),
         layer_id=layer_id,
         layer_name=layer_name,
         is_chapter=_is_chapter(obj, metadata),
@@ -121,6 +151,10 @@ class PageSummaryResponse(BaseModel):
     repository_id: str
     page_type: str
     title: str
+    # What a navigation row calls the page: short, correctly cased, no
+    # "Overview" or path. ``None`` for reference pages, which are named by path.
+    # The page's own heading stays ``title``.
+    nav_title: str | None = None
     target_path: str
     source_hash: str
     model_name: str
@@ -155,6 +189,11 @@ class PageSummaryResponse(BaseModel):
     @classmethod
     def from_orm(cls, obj: object) -> PageSummaryResponse:
         return cls(**_summary_fields(obj))
+
+    @classmethod
+    def from_row(cls, row: object) -> PageSummaryResponse:
+        """From a ``crud.list_page_summaries`` row, which carries no body."""
+        return cls(**_summary_fields(row, content_chars=row.content_chars))  # type: ignore[attr-defined]
 
 
 class PageResponse(PageSummaryResponse):

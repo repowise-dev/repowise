@@ -41,7 +41,7 @@ def _render_card(name: str, card: dict) -> None:
     _print_cross_repo(card.get("cross_repo_impact") or {})
     _print_defects(card.get("defect_profile"))
     if card.get("test_gap"):
-        console.print("  [yellow]No test file matches this file's name.[/yellow]")
+        console.print("  [yellow]No test is shown to reach this file.[/yellow]")
     for signal in card.get("security_signals") or []:
         console.print(
             f"  [red]{escape(str(signal.get('severity', '')))}[/red] "

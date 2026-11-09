@@ -258,8 +258,10 @@ def subscription_estimate(
     return f"{quota}, about {minutes:,} min"
 
 
-def subscription_note(ready: tuple[str, ...], auth: CliAuth | None = None) -> str | None:
-    """One line naming the first ready subscription CLI and the command that uses it.
+def subscription_note(
+    ready: tuple[str, ...], command: str, auth: CliAuth | None = None
+) -> str | None:
+    """One line naming the first ready subscription CLI and *command* run with it.
 
     For a run that writes no documentation with a model: it never switches
     the run to the CLI, it says how to and how that CLI is billed. *auth* is
@@ -274,8 +276,8 @@ def subscription_note(ready: tuple[str, ...], auth: CliAuth | None = None) -> st
     auth = auth or agent_cli_auth(name)
     billing = auth.billing if auth is not None else PROVIDER_SPECS[name].note
     return (
-        f"{agent.display_name} is signed in ({billing}). Run [bold]repowise update "
-        f"--full --provider {name}[/bold] to have it write the documentation."
+        f"{agent.display_name} is signed in ({billing}). Run [bold]{command} "
+        f"--provider {name}[/bold] to have it write the documentation."
     )
 
 

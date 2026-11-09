@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.main import cli
 from repowise.core.persistence.database import init_db
-from repowise.core.persistence.models import DecisionRecord, Repository
+from repowise.core.persistence.models import (
+    SUPERSEDED_REASON,
+    DecisionAlias,
+    DecisionRecord,
+    Repository,
+)
 
 _REPO_ID = "decision-cli-repo"
 
@@ -336,7 +341,12 @@ def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> Non
     )
 
     assert result.exit_code == 1, result.output
-    assert json.loads(result.output)["error"].startswith("--title and --decision")
+    payload = json.loads(result.output)
+    assert payload["error"].startswith("--title and --decision")
+
+    guidance = payload.get("guidance", "")
+    assert "prompted" not in guidance
+    assert "--decision" in guidance
 
 
 def test_decision_add_help_lists_a_flag_per_field() -> None:
@@ -535,6 +545,52 @@ def test_decision_ambiguous_prefix_errors(indexed_repo: Path) -> None:
     result = CliRunner().invoke(cli, ["decision", "show", "ffff", str(indexed_repo)])
     assert result.exit_code != 0
     assert "ambiguous" in result.output.lower()
+
+
+def _seed_aliases(repo_root: Path, aliases: list[tuple[str, str, str]]) -> None:
+    """Add ``(alias_id, decision_id, reason)`` rows to a seeded ``wiki.db``."""
+
+    async def _build() -> None:
+        db_path = repo_root / ".repowise" / "wiki.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            for alias_id, decision_id, reason in aliases:
+                session.add(
+                    DecisionAlias(
+                        alias_id=alias_id,
+                        repository_id=_REPO_ID,
+                        decision_id=decision_id,
+                        reason=reason,
+                    )
+                )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
+def test_a_prefix_skips_a_pre_fix_supersede_pointer(indexed_repo: Path) -> None:
+    # #5331: a ``superseded`` alias names the successor, not the retired id's
+    # record, so resolving through it would show the wrong decision.
+    successor = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    _seed_wiki_db(indexed_repo, [{"id": successor, "title": "The successor"}])
+    _seed_aliases(
+        indexed_repo,
+        [
+            ("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", successor, SUPERSEDED_REASON),
+            ("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", successor, "merged"),
+        ],
+    )
+
+    merged = CliRunner().invoke(cli, ["decision", "show", "c3c3c3c3", str(indexed_repo)])
+    assert merged.exit_code == 0, merged.output
+    assert "The successor" in merged.output
+
+    pointer = CliRunner().invoke(cli, ["decision", "show", "b2b2b2b2", str(indexed_repo)])
+    assert pointer.exit_code != 0, pointer.output
+    assert "The successor" not in pointer.output
+    assert "not found" in pointer.output.lower()
 
 
 def test_decision_health_prints_summary(indexed_repo: Path) -> None:
@@ -1003,3 +1059,29 @@ def test_config_commands_do_not_need_an_index(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "No index found" not in result.output
+
+
+def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
+    indexed_repo: Path,
+) -> None:
+    """A decision drops only the actions view, and the write does not rebuild
+    it: the first reader stores it, so recording decisions stays fast."""
+    import sqlite3
+
+    from repowise.cli.commands._index_outcome import refresh_read_snapshots
+
+    _seed_wiki_db(
+        indexed_repo, [{"id": "d" * 32, "title": "Seeded", "status": "proposed"}]
+    )
+    assert refresh_read_snapshots(indexed_repo)
+    added = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--title", "Cache read views", "--decision", "Store them",
+         str(indexed_repo)],
+        input="",
+    )  # fmt: skip
+    assert added.exit_code == 0, added.output
+    with sqlite3.connect(indexed_repo / ".repowise" / "wiki.db") as conn:
+        kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
+    assert "actions" not in kinds
+    assert "fix_first" in kinds
