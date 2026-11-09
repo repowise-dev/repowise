@@ -9,6 +9,7 @@ from functools import cache
 from pathlib import Path
 
 import structlog
+from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 from tree_sitter import Language, Node, Parser
 
 from ..language_configs import LANGUAGE_CONFIGS
@@ -93,6 +94,57 @@ _RUNTIME_DOWNLOAD_PACKAGE = "tree_sitter_language_pack"
 # A pre-staged language-pack cache, for machines with no network.
 GRAMMAR_DIR_ENV = "REPOWISE_GRAMMAR_DIR"
 
+# A transient download failure (5xx, timeout, reset) is retried this many times
+# in all, about 3s of backoff, before the language is given up for the process.
+_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_WAIT = wait_exponential(multiplier=1, max=2)
+# "http status: 504" in the pack's DownloadError text; a 4xx other than these
+# will fail the same way on every attempt.
+_HTTP_STATUS = re.compile(r"status:?\s*(\d{3})", re.IGNORECASE)
+_RETRYABLE_4XX = frozenset({408, 429})
+
+
+def _is_transient_download_error(pack: object, exc: BaseException) -> bool:
+    """A network failure worth another attempt: not a 4xx, not a load error."""
+    if not isinstance(exc, getattr(pack, "DownloadError", ())):
+        return False
+    status = _HTTP_STATUS.search(str(exc))
+    if status is None:
+        return True  # connection reset, timeout, refused
+    code = int(status.group(1))
+    return code >= 500 or code in _RETRYABLE_4XX
+
+
+def _download_with_retry(pack: object, loader: str, *args: object) -> object:
+    """``pack.<loader>(*args)``, retrying transient download failures with backoff."""
+    retrying = Retrying(
+        stop=stop_after_attempt(_DOWNLOAD_ATTEMPTS),
+        wait=_DOWNLOAD_WAIT,
+        retry=retry_if_exception(lambda exc: _is_transient_download_error(pack, exc)),
+        reraise=True,
+    )
+    return retrying(getattr(pack, loader), *args)
+
+
+def runtime_grammar_warning(tag: str, reason: str, files: int) -> str:
+    """The one line a run shows for a runtime grammar that would not load."""
+    spec = _LANG_REGISTRY.get(tag)
+    name = spec.display_name if spec else tag
+    return (
+        f"{name} grammar unavailable: {files:,} files indexed without symbols ({reason}). "
+        "It downloads on first use; re-run with network access, or stage it with "
+        f"'repowise grammars fetch <dir>' and set {GRAMMAR_DIR_ENV} to that dir."
+    )
+
+
+def failed_runtime_grammars() -> list[tuple[str, str]]:
+    """``(tag, reason)`` for each runtime grammar this process tried and could not load."""
+    return sorted(
+        (tag, reason)
+        for tag, reason in _GRAMMAR_FAILURES.items()
+        if downloads_grammar_at_runtime(tag)
+    )
+
 
 def _load_language(tag: str) -> Language | None:
     """Load *tag*'s grammar alone, so a repo never loads one it has no files for."""
@@ -116,17 +168,29 @@ def _load_language(tag: str) -> Language | None:
     if not spec.grammar_package:
         return None
 
+    runtime = spec.grammar_package == _RUNTIME_DOWNLOAD_PACKAGE
     try:
         mod = __import__(spec.grammar_package)
-        if spec.grammar_package == _RUNTIME_DOWNLOAD_PACKAGE:
+        if runtime:
             _configure_grammar_dir(mod)
-        loaded = getattr(mod, spec.grammar_loader)(*spec.grammar_loader_args)
+            loaded = _download_with_retry(mod, spec.grammar_loader, *spec.grammar_loader_args)
+        else:
+            loaded = getattr(mod, spec.grammar_loader)(*spec.grammar_loader_args)
         # Standalone grammar wheels return a PyCapsule; shared grammar
         # packs may return the fully constructed Language directly.
         return loaded if isinstance(loaded, Language) else Language(loaded)
     except Exception as exc:
         _GRAMMAR_FAILURES[tag] = str(exc)
-        log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
+        if runtime:
+            # Once per process: the failure is cached, so no file retries it.
+            log.warning(
+                "runtime grammar unavailable",
+                language=tag,
+                reason=str(exc),
+                fix=f"repowise grammars fetch <dir>, then set {GRAMMAR_DIR_ENV}",
+            )
+        else:
+            log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
         return None
 
 
@@ -165,7 +229,7 @@ def fetch_runtime_grammars(cache_dir: str) -> list[tuple[str, bool, str]]:
             continue
         name = spec.grammar_loader_args[0] if spec.grammar_loader_args else spec.tag
         try:
-            getattr(pack, spec.grammar_loader)(name)
+            _download_with_retry(pack, spec.grammar_loader, name)
         except Exception as exc:
             # A cached file that will not load is still a failed fetch.
             results.append((spec.tag, False, str(exc) or type(exc).__name__))
