@@ -100,7 +100,12 @@ def _add_synthetic_edges(
     log: LogFn,
     timings: PhaseTimings | None,
 ) -> None:
-    """Add the framework-aware and dynamic-hint edges to a built graph."""
+    """Add the framework-aware and dynamic-hint edges to a built graph.
+
+    Sets ``graph_builder.synthetic_edges_complete`` to whether both passes ran,
+    so the edge write knows the graph is missing their edges this time.
+    """
+    graph_builder.synthetic_edges_complete = True
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
     # Best-effort, but not silent: the update path has to report the failure the
     # init path reports, or an index degrades differently depending on how it
@@ -114,6 +119,7 @@ def _add_synthetic_edges(
         if fw_count:
             log(f"Framework edges added: [cyan]{fw_count}[/cyan]")
     except Exception as fw_exc:
+        graph_builder.synthetic_edges_complete = False
         logger.warning("framework_edges_failed", error=str(fw_exc))
         log(
             f"[yellow]Framework edge detection skipped: {fw_exc}; framework-invoked "
@@ -139,6 +145,7 @@ def _add_synthetic_edges(
             log(f"Dynamic hint edges added: [cyan]{len(dynamic_edges)}[/cyan]")
 
     except Exception as exc:
+        graph_builder.synthetic_edges_complete = False
         logger.warning("dynamic_hints_extraction_failed", error=str(exc))
         log(
             f"[yellow]Dynamic hint extraction failed: {exc}. Dynamic edges"
