@@ -15,37 +15,18 @@ from repowise.cli.ui import load_dotenv
 def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, object] | None:
     if no_workspace:
         return None
-    # Deferred so ``--no-workspace`` and ``--help`` skip the config module and
-    # its yaml import entirely.
-    from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+    # Deferred so ``repowise mcp --help`` skips the server module. Same detection
+    # the server runs, so the banner names the repo that is actually served.
+    from repowise.server.mcp_server._server import _detect_workspace
 
-    workspace_root = find_workspace_root(path)
-    if workspace_root is None:
+    workspace_root, ws_config, repo_alias = _detect_workspace(str(path))
+    if ws_config is None:
         return None
-
-    try:
-        ws_config = WorkspaceConfig.load(workspace_root)
-    except Exception:
-        return None
-
-    aliases = ws_config.repo_aliases()
-    default = ws_config.get_primary()
-    default_alias = default.alias if default else (aliases[0] if aliases else None)
-    resolved_path = path.resolve()
-
-    for entry in ws_config.repos:
-        entry_path = (workspace_root / entry.path).resolve()
-        try:
-            resolved_path.relative_to(entry_path)
-        except ValueError:
-            continue
-        default_alias = entry.alias
-        break
 
     return {
         "workspace_root": workspace_root,
-        "default_repo": default_alias,
-        "aliases": aliases,
+        "default_repo": repo_alias,
+        "aliases": ws_config.repo_aliases(),
     }
 
 

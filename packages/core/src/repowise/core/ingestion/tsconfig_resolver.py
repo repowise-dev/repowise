@@ -29,6 +29,8 @@ from typing import Any
 
 import structlog
 
+from .models import TS_JS_LANGUAGES
+
 log = structlog.get_logger(__name__)
 
 # Extensions probed in TypeScript module resolution order. The SFC extensions
@@ -143,6 +145,10 @@ class TsconfigResolver:
         # source-file directory -> applicable ResolvedConfig (or None)
         self._file_config_cache: dict[Path, ResolvedConfig | None] = {}
 
+        # Every config file read, including ``extends`` and ``references``
+        # targets of any name: a graph patch must not treat their edits as inert.
+        self.read_paths: set[Path] = set()
+
         self._discover_configs()
         log.info(
             "tsconfig_resolver_ready",
@@ -249,7 +255,7 @@ class TsconfigResolver:
             return []
         visited = visited | {config.config_path}
 
-        data = self._parse_json_lenient(config.config_path)
+        data = self._read_config(config.config_path)
         references = data.get("references") if data else None
         if not isinstance(references, list):
             return []
@@ -302,7 +308,7 @@ class TsconfigResolver:
         """
         if config_path in visited:
             return None, None, None
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None, None, None
 
@@ -353,7 +359,7 @@ class TsconfigResolver:
             return None
         visited = visited | {config_path}
 
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None
 
@@ -594,6 +600,11 @@ class TsconfigResolver:
     # JSON parsing
     # ------------------------------------------------------------------
 
+    def _read_config(self, config_path: Path) -> dict[str, Any] | None:
+        """:meth:`_parse_json_lenient`, noting *config_path* in :attr:`read_paths`."""
+        self.read_paths.add(config_path)
+        return self._parse_json_lenient(config_path)
+
     @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
         """Parse JSON with comment and trailing-comma tolerance (common in tsconfig)."""
@@ -692,13 +703,11 @@ def wire_tsconfig_resolver(
 
     Needs to be called after add_file() but before build().
     """
-    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
-    # .svelte component's imports go through the same TS/JS resolver.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue", "astro"}
-
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()
-    if not any(pf.file_info.language in _ts_langs for pf in parsed_files):
+    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
+    # .svelte component's imports go through the same TS/JS resolver.
+    if not any(pf.file_info.language in TS_JS_LANGUAGES for pf in parsed_files):
         return
 
     try:

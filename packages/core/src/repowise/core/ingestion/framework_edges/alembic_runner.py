@@ -32,6 +32,7 @@ from ..languages.python_strings import live_text
 from ..resolvers import ResolverContext
 from ..source_text import source_bytes
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new
+from .scan_cache import scans_of
 from .test_path_strings import _CODE_EXTS
 
 if TYPE_CHECKING:
@@ -97,10 +98,18 @@ def _add_runner_edges(
     scripts = script_files(path_set)
     if not scripts:
         return 0
+    scans = scans_of(ctx)
     count = 0
     for path in sorted(p for p in path_set - set(scripts) if p.endswith(_CODE_EXTS)):
-        text = source_bytes(path, parsed_files[path].file_info.abs_path, ctx.source_map)
-        if not names_alembic(path, text):
+        parsed = parsed_files[path]
+        runs = scans.lookup(
+            "alembic",
+            parsed,
+            lambda path=path, parsed=parsed: names_alembic(
+                path, source_bytes(path, parsed.file_info.abs_path, ctx.source_map)
+            ),
+        )
+        if not runs:
             continue
         for target in scripts:
             if _add_edge_if_new(graph, path, target):

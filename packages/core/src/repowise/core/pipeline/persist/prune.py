@@ -348,6 +348,7 @@ async def prune_deleted_file_rows(
         DeadCodeFinding,
         DocDriftFinding,
         DocDriftReference,
+        GitFunctionBlame,
         GitMetadata,
         GraphEdge,
         GraphMetric,
@@ -470,6 +471,7 @@ async def prune_deleted_file_rows(
     # incremental run only indexes the changed files, so the same liveness
     # question is the only authority available here too.
     await _prune_table(GitMetadata, GitMetadata.file_path, "git_metadata", git_liveness)
+    await _prune_table(GitFunctionBlame, GitFunctionBlame.file_path, "git_function_blame")
 
     if pruned is not None:
         pruned.update(deleted)

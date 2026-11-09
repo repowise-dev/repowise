@@ -281,6 +281,7 @@ async def _incremental_repo_update(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=(state.get("knowledge_graph") or {}).get("fingerprint"),
+            changed_paths=[fd.path for fd in file_diffs],
             log=_log.info,
         )
 

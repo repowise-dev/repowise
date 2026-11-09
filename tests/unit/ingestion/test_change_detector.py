@@ -169,6 +169,23 @@ class TestGetChangedFilesNonGit:
         result = d.get_changed_files(base_ref="HEAD~5", until_ref="HEAD")
         assert result == []
 
+    def test_git_repo_raises_on_unknown_ref(self, tmp_path: Path) -> None:
+        import git as gitpython
+        import pytest
+
+        repo = gitpython.Repo.init(tmp_path)
+        with repo.config_writer() as cw:
+            cw.set_value("user", "name", "Test")
+            cw.set_value("user", "email", "test@example.com")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+        repo.index.add(["app.py"])
+        repo.index.commit("initial")
+        repo.close()
+
+        d = ChangeDetector(tmp_path)
+        with pytest.raises((gitpython.GitError, ValueError)):
+            d.get_changed_files(base_ref="0" * 40, until_ref="HEAD")
+
 
 # ---------------------------------------------------------------------------
 # get_affected_pages

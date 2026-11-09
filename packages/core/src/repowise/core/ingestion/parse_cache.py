@@ -120,6 +120,7 @@ class ParseCache:
         self._entries: dict[tuple[str, str], bytes] = {}
         self._fresh: dict[tuple[str, str], bytes] = {}
         self._by_path: dict[str, list[tuple[str, str]]] | None = None
+        self._loaded_paths: set[str] = set()
         self.hits = 0
         self.misses = 0
 
@@ -136,6 +137,7 @@ class ParseCache:
             ):
                 return
             self._entries = payload.get("files", {})
+            self._loaded_paths = {path for path, _hash in self._entries}
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unreadable / unsigned -> full parse
@@ -185,8 +187,8 @@ class ParseCache:
         return parsed
 
     def known_paths(self) -> set[str]:
-        """Paths of every entry loaded from disk plus this run's puts."""
-        return {path for path, _hash in self._entries}
+        """Paths of every entry loaded from disk: what the last run parsed."""
+        return set(self._loaded_paths)
 
     def previous_entry(self, path: str, *, exclude_hash: str) -> ParsedFile | None:
         """The one earlier parse of *path* whose content hash is not *exclude_hash*.

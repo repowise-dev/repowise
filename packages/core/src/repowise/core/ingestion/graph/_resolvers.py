@@ -642,8 +642,13 @@ class ResolveMixin:
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
         scope: frozenset[str] | None = None,
+        registrations: bool = True,
     ) -> None:
-        """Run three-tier call resolution and add CALLS edges to the graph."""
+        """Run three-tier call resolution and add CALLS edges to the graph.
+
+        *registrations* also links registering decorators to what they
+        decorate, over every file.
+        """
         from ..call_resolver import CallResolver
 
         resolver = CallResolver(
@@ -742,9 +747,9 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver, scope)
-        if scope is None:
-            # Surface-equivalent patching cannot change registrar identities or
-            # decorators; preserve the snapshot's registration edges.
+        if registrations:
+            # A body-only patch cannot change registrar identities or
+            # decorators, so it keeps the snapshot's registration edges.
             self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any, scope: frozenset[str] | None = None) -> None:
