@@ -618,12 +618,26 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         return
     console.print(
         f"created {len(result['created'])}  accepted {len(result['accepted'])}  "
-        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}"
+        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}  "
+        f"repaired {len(result['repaired'])}"
     )
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
+    _print_repairs(result["repaired"])
     if dry_run:
         console.print("[dim]Nothing was written.[/dim]")
+
+
+def _print_repairs(repaired: list[str], unplaced: list[str] | None = None) -> None:
+    """One line per supersede pointer the repair deletes, or leaves resolving to nothing."""
+    for alias_id in repaired:
+        console.print(
+            f"  [cyan]stale[/cyan] {alias_id[:8]}: supersede pointer, deleted unless a dry run"
+        )
+    for alias_id in unplaced or ():
+        console.print(
+            f"  [yellow]unplaced[/yellow] {alias_id[:8]}: record moved, resolves to nothing"
+        )
 
 
 # ---------------------------------------------------------------------------

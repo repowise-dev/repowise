@@ -41,6 +41,7 @@ from .crud.authority import (
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
+from .decision_id_migration import repair_superseded_aliases
 from .models import SUPERSEDED_REASON, DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
@@ -173,7 +174,7 @@ async def export_manifest(
 class ImportOutcome:
     """What reconciling the store against the manifest did."""
 
-    __slots__ = ("accepted", "created", "reaffirmed", "skipped", "unchanged")
+    __slots__ = ("accepted", "created", "reaffirmed", "repaired", "skipped", "unchanged")
 
     def __init__(self) -> None:
         self.created: list[str] = []
@@ -181,6 +182,8 @@ class ImportOutcome:
         self.reaffirmed: list[str] = []
         self.unchanged: list[str] = []
         self.skipped: list[tuple[str, str]] = []
+        #: The stale supersede pointers the repair deleted.
+        self.repaired: list[str] = []
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -189,6 +192,7 @@ class ImportOutcome:
             "reaffirmed": self.reaffirmed,
             "unchanged": self.unchanged,
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
+            "repaired": self.repaired,
         }
 
 
@@ -265,14 +269,14 @@ async def _alias_reasons(session: AsyncSession, ids: list[str]) -> dict[str, str
 
 @dataclass
 class _ImportTargets:
-    """Where each listed id lands in the store, resolved once before the loop."""
+    """Where each listed id lands in the store, resolved after the repair."""
 
     repository_id: str
     #: Each listed id's entry, the first where the file repeats an id.
     entries: dict[str, ManifestDecision]
-    #: Each listed id's record: a file written before the id migration lists
-    #: records under ids they no longer sit on, so two entries can reach one
-    #: record without either naming it.
+    #: Each listed id's record, after the repair: a file written before the id
+    #: migration lists records under ids they no longer sit on, so two entries
+    #: can reach one record without either naming it.
     targets: dict[str, str | None]
     #: Skipped entries still count: else a rival becomes the sole claimant and overwrites.
     claims: Counter[str]
@@ -429,6 +433,8 @@ async def import_manifest(
     outcome = ImportOutcome()
     entries, _ = load_manifest(repo_path)
     artifact = f".repowise/{MANIFEST_FILENAME}"
+    # Clears the inert supersede pointers, as the id migration does; placement reads past them.
+    outcome.repaired, _ = await repair_superseded_aliases(session, repository_id, apply=not dry_run)
     plan = await _resolve_targets(session, repository_id, entries)
 
     for entry in entries:
