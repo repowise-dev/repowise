@@ -1,13 +1,15 @@
 """An update from commit A to B leaves the store a fresh init at B writes.
 
 The fixture's A..B range edits, adds, removes and renames files, lands a bug
-fix, drops the only import of a package, and moves a function an unchanged
-file calls. Each table below is compared row for row, minus the columns an
-update deliberately carries forward; those are listed with the reason.
+fix, drops the only import of a package, moves a function an unchanged
+file calls, and adds a file under a directory the traverser skips. Each table
+below is compared row for row, minus the columns an update deliberately
+carries forward; those are listed with the reason.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -65,13 +67,7 @@ _A = {
         "        total += i\n"
         "    return total\n"
     ),
-    "src/app/caller.py": (
-        "from app.util import helper\n"
-        "\n"
-        "\n"
-        "def run(x):\n"
-        "    return helper(x)\n"
-    ),
+    "src/app/caller.py": ("from app.util import helper\n\n\ndef run(x):\n    return helper(x)\n"),
     "src/app/legacy.py": (
         "import xml.dom.minidom\n"
         "\n"
@@ -81,11 +77,7 @@ _A = {
     ),
     "src/app/names.py": "def label(x):\n    return str(x)\n",
     "tests/test_util.py": (
-        "from app.util import helper\n"
-        "\n"
-        "\n"
-        "def test_helper():\n"
-        "    assert helper(1) == 2\n"
+        "from app.util import helper\n\n\ndef test_helper():\n    assert helper(1) == 2\n"
     ),
     "pyproject.toml": "[project]\nname = 'parity'\n",
 }
@@ -140,6 +132,9 @@ def _advance(repo: Path) -> None:
         },
     )
     _commit(repo, "refactor: move helper")
+    # The traverser skips fixtures/ dirs; a full index still gives the file
+    # its git history.
+    _write(repo, {"src/app/fixtures/sample.py": "def sample():\n    return 1\n"})
     (repo / "src/app/legacy.py").unlink()
     _git(repo, "mv", "src/app/names.py", "src/app/labels.py")
     _commit(repo, "chore: drop legacy parser, rename names")
@@ -166,10 +161,16 @@ def _git_metadata(conn: sqlite3.Connection) -> list[tuple]:
     return _rows(conn, f"SELECT {', '.join(columns)} FROM git_metadata")
 
 
+def _kg_summaries(repo: Path) -> list[tuple]:
+    kg = json.loads((repo / ".repowise" / "knowledge-graph.json").read_text(encoding="utf-8"))
+    return sorted((n["id"], n.get("summary", "")) for n in kg["nodes"])
+
+
 def _store(repo: Path) -> dict[str, list[tuple]]:
     db = repo / ".repowise" / "wiki.db"
     with closing(sqlite3.connect(db)) as conn:
         return {
+            "kg_summaries": _kg_summaries(repo),
             "graph_nodes": _rows(
                 conn,
                 "SELECT node_id, node_type, community_id, community_meta_json, "
@@ -213,6 +214,8 @@ def test_update_store_matches_init_at_the_same_commit(
         "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
     )
     _invoke(runner, incremental, *_INIT)
+    util = "file:src/app/util.py"
+    stale_util = dict(_kg_summaries(incremental))[util]
 
     _advance(incremental)
     _invoke(runner, incremental, "update", *update_args, "--no-workspace", "--no-agents")
@@ -229,6 +232,51 @@ def test_update_store_matches_init_at_the_same_commit(
     assert ("src/app/caller.py::run", "src/app/helpers.py::helper", "calls") in {
         edge[:3] for edge in expected["graph_edges"]
     }, "fixture must move the call target of an unchanged file"
+    assert "helper" in stale_util and dict(expected["kg_summaries"])[util] != stale_util, (
+        "fixture must change a file's floor summary"
+    )
+    with closing(sqlite3.connect(control / ".repowise" / "wiki.db")) as conn:
+        assert conn.execute(
+            "SELECT commit_count_total FROM git_metadata WHERE file_path = ?",
+            ("src/app/fixtures/sample.py",),
+        ).fetchone() == (1,), "fixture must index a file the traverser skips"
     actual = _store(incremental)
     bad = [table for table, rows in expected.items() if actual[table] != rows]
     assert not bad, bad
+
+
+def _kg_graph(repo: Path) -> tuple[str, list[str]]:
+    kg = json.loads((repo / ".repowise" / "knowledge-graph.json").read_text(encoding="utf-8"))
+    nodes = sorted(json.dumps(n, sort_keys=True) for n in kg["nodes"] + kg["edges"])
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    return state["knowledge_graph"]["fingerprint"], nodes
+
+
+def test_same_shape_edit_refreshes_the_changed_file_nodes(tmp_path: Path, monkeypatch) -> None:
+    """An edit that keeps the graph's shape skips the KG rebuild; the changed
+    file's node still matches what a fresh init writes."""
+    incremental = tmp_path / "incremental" / "repo"
+    _seed(incremental)
+    runner = CliRunner()
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, incremental, *_INIT)
+    fingerprint, before = _kg_graph(incremental)
+
+    # Renamed in place: the same nodes, edges and communities, a new top symbol.
+    _write(incremental, {"src/app/names.py": "def title(x):\n    # renamed\n    return str(x)\n"})
+    _commit(incremental, "refactor: rename label")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    control = tmp_path / "control" / "repo"
+    shutil.copytree(incremental, control, ignore=shutil.ignore_patterns(".repowise"))
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{control / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, control, *_INIT)
+
+    expected_fingerprint, expected = _kg_graph(control)
+    assert expected_fingerprint == fingerprint, "fixture must keep the graph's shape"
+    assert expected != before, "fixture must move the changed file's node"
+    assert _kg_graph(incremental) == (fingerprint, expected)
