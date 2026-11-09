@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
+from itertools import pairwise
 
 import pytest
 from sqlalchemy import event, select
@@ -468,6 +469,130 @@ async def test_import_looks_up_each_new_id_once(async_engine, async_session, tmp
     assert len(lookups) == len(new_ids) + 1
 
 
+async def _superseded_the_pre_fix_way(session, tmp_path, *titles: str):
+    """Legacy ADRs titled *titles*, exported, migrated, then each superseded by
+    the next by a pre-fix version, which moved every alias on the superseded
+    record onto its successor. Returns the repo id, the legacy ids and the
+    records' ids, each in *titles* order."""
+    repo = await insert_repo(session)
+    old_ids = [c * 32 for c in "abcdef"[: len(titles)]]
+    for n, (old_id, title) in enumerate(zip(old_ids, titles, strict=True)):
+        rec = await legacy_adr(session, repo.id, legacy_id=old_id, title=title)
+        rec.evidence_file = f"docs/adr/{n:04d}.md"
+    await session.flush()
+    await export_manifest(session, repo.id, tmp_path)
+    await apply_id_migration(session, repo.id)
+    ids = [(await _by_title(session, repo.id, title)).id for title in titles]
+    for old, new in pairwise(ids):
+        rec = await session.get(DecisionRecord, old)
+        await supersede_decision(session, rec, successor_id=new, accepter="tester")
+        moved = await session.execute(select(DecisionAlias).where(DecisionAlias.decision_id == old))
+        for alias in moved.scalars():
+            alias.decision_id = new
+    await session.flush()
+    return repo.id, old_ids, ids
+
+
+def _only(tmp_path, *ids: str) -> None:
+    write_manifest(tmp_path, [e for e in load_manifest(tmp_path)[0] if e.id in ids])
+
+
+async def _wording(session, record_id: str) -> tuple[str, str, str | None]:
+    session.expire_all()
+    rec = await session.get(DecisionRecord, record_id)
+    return rec.title, rec.decision, rec.rationale
+
+
+async def test_import_skips_an_alias_moved_onto_a_successor_under_the_superseded_wording(
+    async_session, tmp_path
+):
+    """#5377: the known-limit row ``X_old -> S`` and a file listing only
+    ``X_old`` with X's wording. X still names S as its successor, so the entry
+    is X's, and S keeps its own wording."""
+    repo_id, (x_old, _), (x_id, s_id) = await _superseded_the_pre_fix_way(
+        async_session, tmp_path, "Old rule", "Successor rule"
+    )
+    assert await resolve_decision_id(async_session, x_old) == s_id
+    kept = await _wording(async_session, s_id)
+    _only(tmp_path, x_old)
+
+    outcome = await import_manifest(async_session, repo_id, tmp_path)
+
+    assert await _wording(async_session, s_id) == kept
+    assert dict(outcome.skipped) == {
+        x_old: f"its alias resolves to {s_id[:8]}, but it matches {x_id[:8]},"
+        f" which {s_id[:8]} superseded"
+    }
+    assert not outcome.reaffirmed
+
+
+async def test_import_follows_the_supersede_chain_to_the_wording_an_alias_carried(
+    async_session, tmp_path
+):
+    """X superseded by S, S by T, each move carrying ``X_old`` along: the entry
+    reaches T and matches X, two links back."""
+    repo_id, (x_old, _, _), (x_id, s_id, t_id) = await _superseded_the_pre_fix_way(
+        async_session, tmp_path, "Old rule", "Successor rule", "Newest rule"
+    )
+    assert await resolve_decision_id(async_session, x_old) == t_id
+    kept = await _wording(async_session, t_id)
+    _only(tmp_path, x_old)
+
+    outcome = await import_manifest(async_session, repo_id, tmp_path)
+
+    assert await _wording(async_session, t_id) == kept
+    assert dict(outcome.skipped) == {
+        x_old: f"its alias resolves to {t_id[:8]}, but it matches {x_id[:8]},"
+        f" which {t_id[:8]} replaced via {s_id[:8]}"
+    }
+
+
+async def test_import_applies_a_successors_own_entry_that_shares_its_predecessors_title(
+    async_session, tmp_path
+):
+    """S kept the title of the X it superseded and the file edits S's decision
+    under S's legacy id: a title S shares is not X's wording, so the edit applies."""
+    s_old, x_old = "a" * 32, "b" * 32
+    repo = await insert_repo(async_session)
+    await legacy_adr(async_session, repo.id, legacy_id=s_old, title="Rule")
+    x = await legacy_adr(async_session, repo.id, legacy_id=x_old, title="Old rule")
+    x.evidence_file = "docs/adr/0002.md"
+    await async_session.flush()
+    x.title, x.decision = "Rule", "Rule: the old way"
+    await async_session.flush()
+    await export_manifest(async_session, repo.id, tmp_path)
+    await apply_id_migration(async_session, repo.id)
+    s_id, x_id = [await resolve_decision_id(async_session, i) for i in (s_old, x_old)]
+    assert s_id not in (None, s_old, x_id)
+    x = await async_session.get(DecisionRecord, x_id)
+    await supersede_decision(async_session, x, successor_id=s_id, accepter="tester")
+    (entry,) = [e for e in load_manifest(tmp_path)[0] if e.id == s_old]
+    write_manifest(tmp_path, [replace(entry, decision="Rule: the new way")])
+
+    outcome = await import_manifest(async_session, repo.id, tmp_path)
+
+    assert outcome.reaffirmed == [s_old] and not outcome.skipped
+    assert (await _wording(async_session, s_id))[1] == "Rule: the new way"
+
+
+async def test_import_applies_an_own_id_entry_that_takes_its_predecessors_title(
+    async_session, tmp_path
+):
+    """An entry under S's own id retitled to the X it superseded: no alias was
+    followed, so it is S's edit, not X's wording, and it applies."""
+    repo_id, _, (_, s_id) = await _superseded_the_pre_fix_way(
+        async_session, tmp_path, "Old rule", "Successor rule"
+    )
+    await export_manifest(async_session, repo_id, tmp_path)
+    (entry,) = [e for e in load_manifest(tmp_path)[0] if e.id == s_id]
+    write_manifest(tmp_path, [replace(entry, title="Old rule")])
+
+    outcome = await import_manifest(async_session, repo_id, tmp_path)
+
+    assert outcome.reaffirmed == [s_id] and not outcome.skipped
+    assert (await _wording(async_session, s_id))[0] == "Old rule"
+
+
 async def test_import_skips_a_rekeyed_and_a_folded_alias_to_a_missing_record(
     async_session, tmp_path
 ):
@@ -488,3 +613,42 @@ async def test_import_skips_a_rekeyed_and_a_folded_alias_to_a_missing_record(
     rival = f"its alias resolves to {gone[:8]}, which another entry also reaches"
     assert dict(outcome.skipped) == {a: rival, b: rival}
     assert not outcome.created
+
+
+async def test_import_skips_the_superseded_decision_when_the_successor_kept_the_title(
+    async_session, tmp_path
+):
+    """S took X's title: X's decision text is the only clue the entry is X's."""
+    repo_id, (x_old, _), (x_id, s_id) = await _superseded_the_pre_fix_way(
+        async_session, tmp_path, "Old rule", "Successor rule"
+    )
+    (await async_session.get(DecisionRecord, s_id)).title = "Old rule"
+    await async_session.flush()
+    kept = await _wording(async_session, s_id)
+    _only(tmp_path, x_old)
+
+    outcome = await import_manifest(async_session, repo_id, tmp_path)
+
+    assert await _wording(async_session, s_id) == kept
+    assert dict(outcome.skipped) == {
+        x_old: f"its alias resolves to {s_id[:8]}, but it matches {x_id[:8]},"
+        f" which {s_id[:8]} superseded"
+    }
+
+
+@pytest.mark.timeout(30)
+async def test_import_ends_the_supersede_walk_on_a_cycle(async_session, tmp_path):
+    """S names X as its successor and X names S: the walk back from S stops."""
+    repo_id, (x_old, _), (x_id, s_id) = await _superseded_the_pre_fix_way(
+        async_session, tmp_path, "Old rule", "Successor rule"
+    )
+    (await async_session.get(DecisionRecord, s_id)).superseded_by = x_id
+    await async_session.flush()
+    _only(tmp_path, x_old)
+
+    outcome = await import_manifest(async_session, repo_id, tmp_path)
+
+    assert dict(outcome.skipped) == {
+        x_old: f"its alias resolves to {s_id[:8]}, but it matches {x_id[:8]},"
+        f" which {s_id[:8]} superseded"
+    }
