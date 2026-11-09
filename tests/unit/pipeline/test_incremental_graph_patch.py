@@ -1064,3 +1064,36 @@ def test_unparsed_previously_indexed_file_is_not_treated_as_removed(
 
     assert not patched.patch_plan.eligible
     assert patched.patch_plan.reason == "docs/notes.md: could not be parsed"
+
+
+@pytest.mark.parametrize(
+    ("edit", "doc"),
+    [
+        # Shares its stem only with prose, so the stem rule alone would patch.
+        pytest.param(_remove("pkg/README.md"), "pkg/README.md", id="remove-named-readme"),
+        # A unique stem the import never spells (``#notes``).
+        pytest.param(_add("pkg/CHANGES.md", "# Changes\n"), "pkg/CHANGES.md", id="add-named-doc"),
+    ],
+)
+def test_doc_a_manifest_names_falls_back(tmp_path: Path, edit: Any, doc: str) -> None:
+    """package.json maps ``#docs`` and ``#notes`` onto docs no import's text spells."""
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "README.md": "# Root\n",
+            "pkg/package.json": (
+                '{"name": "pkg", "imports": {"#docs": "./README.md", "#notes": "./CHANGES.md"}}\n'
+            ),
+            "pkg/README.md": "# Pkg\n",
+            "pkg/a.ts": "import docs from '#docs';\nimport notes from '#notes';\nexport const a = docs + notes;\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    assert ("pkg/a.ts", "pkg/README.md") in {(u, v) for u, v, _ in seed["edges"]}
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.reason == f"{doc}: a manifest names it"
+    _assert_equals_full(tree, patched, tmp_path)

@@ -92,6 +92,15 @@ def _add_parsed_files(
     return parsed_files, source_map, unparsed
 
 
+def _manifest_sources(file_bytes: list, merged: dict[int, Any]) -> dict[str, bytes]:
+    """The bytes of every parsed JSON file: the manifests that map imports to paths."""
+    return {
+        fi.path: source
+        for idx, (fi, source) in enumerate(file_bytes)
+        if (parsed := merged.get(idx)) is not None and parsed.file_info.language == "json"
+    }
+
+
 def _add_synthetic_edges(
     repo_path: Any,
     graph_builder: Any,
@@ -158,6 +167,7 @@ def _plan_graph_patch(
     to_parse: list[tuple[int, tuple, str]],
     changed_paths: set[str] | None,
     traversed_paths: set[str],
+    manifest_sources: dict[str, bytes],
 ) -> tuple[Any, dict[str, tuple] | None]:
     """Return the safe patch plan and restored-import cache, if eligible."""
     from .surface import PatchPlan, plan_patch
@@ -191,6 +201,7 @@ def _plan_graph_patch(
         changed=changed,
         traversed_paths=traversed_paths,
         seed_nodes=seed_edges.get("nodes", ()),
+        manifest_sources=manifest_sources,
     )
     if not patch_plan.eligible:
         return patch_plan, None
@@ -481,6 +492,7 @@ def _build_update_graph(
             to_parse=to_parse,
             changed_paths=changed_paths,
             traversed_paths=graph_builder.traversed_file_paths,
+            manifest_sources=_manifest_sources(file_bytes, merged),
         )
         graph_builder.patch_plan = patch_plan
         _build_graph_with_plan(

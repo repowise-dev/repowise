@@ -24,7 +24,7 @@ the full rebuild.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -249,6 +249,24 @@ def _stem_answers(
     return best, best if len(bucket) == 1 else None
 
 
+def _manifest_named_reason(moved: Collection[str], manifest_sources: Mapping[str, bytes]) -> str | None:
+    """Refuse a moved doc whose file name a JSON manifest spells.
+
+    JSON manifests map an import onto a path the import never spells
+    (package.json ``imports``/``exports``/``main``, tsconfig ``paths``), and
+    resolvers keep any file there, prose included. Resolvers probe only
+    source extensions, so a manifest reaches a doc only by its full file name.
+    YAML and TOML manifests (mkdocs nav, pyproject) map no import to a path.
+    """
+    if not moved:
+        return None
+    text = b"\0".join(manifest_sources.values()).decode("utf-8", errors="ignore").lower()
+    for path in sorted(moved):
+        if path.rsplit("/", 1)[-1].lower() in text:
+            return f"{path}: a manifest names it"
+    return None
+
+
 def _stale_seed_reason(added: Collection[str], seed_nodes: Iterable[tuple[str, Any]]) -> str | None:
     """An added path must be new to the seeded graph, or stale attributes merge onto it."""
     if not added:
@@ -351,13 +369,15 @@ def plan_patch(
     changed: dict[str, Any],
     traversed_paths: Collection[str] = (),
     seed_nodes: Iterable[tuple[str, Any]] = (),
+    manifest_sources: Mapping[str, bytes] | None = None,
 ) -> PatchPlan:
     """Plan a patch for the files whose content changed since the last index.
 
     *changed* maps each changed path to its fresh :class:`ParsedFile`;
     *parsed_files* is every file parsed in this run and *traversed_paths*
     every file the walk found. The parse cache stands in for the previous
-    run's manifest; *seed_nodes* are the snapshot's ``(node_id, attrs)`` rows.
+    run's manifest; *seed_nodes* are the snapshot's ``(node_id, attrs)`` rows;
+    *manifest_sources* holds the bytes of the parsed JSON manifests.
 
     An edit that only moved bodies (or documentation) is planned here in full.
     One that adds or removes source files or changes a file's surface comes
@@ -379,9 +399,11 @@ def plan_patch(
     surface_edits, inert_added, inert_removed = edits.surface, edits.inert_added, edits.inert_removed
     seed_nodes = list(seed_nodes)
     added = inert_added + [p for p, (before, _) in surface_edits.items() if before is None]
-    reason = _path_set_change_reason(
-        inert_added, inert_removed, parsed_files, previous_paths
-    ) or _stale_seed_reason(added, seed_nodes)
+    reason = (
+        _path_set_change_reason(inert_added, inert_removed, parsed_files, previous_paths)
+        or _manifest_named_reason(inert_added + inert_removed, manifest_sources or {})
+        or _stale_seed_reason(added, seed_nodes)
+    )
     if reason is not None:
         return PatchPlan(False, reason=reason)
     scope = tuple(sorted(changed))
