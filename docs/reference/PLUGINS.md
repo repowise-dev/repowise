@@ -40,6 +40,17 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Phase timings | `pipeline-hook` | Records when each index phase starts and ends and sends the timings to your metrics system |
 | Extract an unsupported document type | `document-extractors` | Converts a plugin-supported file type to Markdown for the existing ingestion path |
 
+## Community plugins
+
+Plugins built and maintained outside this repository. Each is owned by its
+author, so read its README for install steps and supported versions.
+
+| Plugin | Uses | What it does |
+|--------|------|--------------|
+| [repowise-markitdown-plugin](https://github.com/digimangos/repowise-markitdown-plugin) | `document-extractors` | Indexes PDFs through Microsoft's MarkItDown, with results cited by the original PDF path |
+
+To list yours, open a pull request that adds a row here.
+
 ## Build your first plugin
 
 1. Write a module with a `register()` function. repowise calls it once per
