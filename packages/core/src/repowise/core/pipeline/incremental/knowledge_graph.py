@@ -34,11 +34,16 @@ async def refresh_knowledge_graph(
     Files in ``changed_paths`` carry no summary: the prior one describes the
     old code, so they get the floor as a fresh index would.
 
-    Returns the refreshed result, or ``None`` when the graph fingerprint is
-    unchanged (the persisted artifact is already current) or the rebuild
-    failed (keep the prior artifact rather than export a broken one).
+    An unchanged fingerprint skips the rebuild, but an edit that keeps the
+    graph's shape still moves the changed files' own fields: those nodes are
+    patched on the prior artifact instead (:func:`_patch_changed_file_nodes`).
+
+    Returns the refreshed or patched result, or ``None`` when nothing moved
+    (the persisted artifact is already current) or the rebuild failed (keep
+    the prior artifact rather than export a broken one).
     """
     log = log or _noop_log
+    changed_paths = set(changed_paths)
     try:
         from repowise.core.analysis.knowledge_graph import (
             KnowledgeGraphResult,
@@ -50,7 +55,9 @@ async def refresh_knowledge_graph(
         kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
         new_fingerprint = compute_kg_fingerprint(graph_builder)
         if should_skip_kg_rebuild(prior_fingerprint, new_fingerprint, kg_json_path):
-            return None
+            return _patch_changed_file_nodes(
+                kg_json_path, parsed_files, changed_paths, new_fingerprint
+            )
 
         tech_stack: list[dict] = []
         try:
@@ -97,7 +104,7 @@ async def refresh_knowledge_graph(
         )
 
         if prior_kg is not None:
-            _carry_forward_kg_enrichment(kg, prior_kg, changed_paths=set(changed_paths))
+            _carry_forward_kg_enrichment(kg, prior_kg, changed_paths=changed_paths)
 
         # Summaries degrade to empty on failure, same as the init-path seam.
         import contextlib
@@ -113,6 +120,58 @@ async def refresh_knowledge_graph(
     except Exception as exc:
         log(f"[yellow]Knowledge-graph refresh skipped: {exc}[/yellow]")
         return None
+
+
+def _patch_changed_file_nodes(
+    kg_json_path: Path, parsed_files: list, changed_paths: set[str], fingerprint: str
+) -> Any | None:
+    """Refresh the changed files' nodes on the prior artifact; ``None`` if none moved.
+
+    Recomputes what the skeleton derives from the file alone (symbol and line
+    counts, complexity) and its summary floor. Graph-wide fields (pagerank,
+    community, layers, tour, edges, symbol nodes) stay as stored until the
+    next full rebuild: an unchanged shape means they rarely move, and
+    recomputing them costs the rebuild this skip exists to avoid. Cost scales
+    with the change, not the repo, beyond reading and writing the artifact.
+    """
+    changed = {
+        pf.file_info.path: pf
+        for pf in parsed_files
+        if getattr(pf, "file_info", None) and pf.file_info.path in changed_paths
+    }
+    if not changed:
+        return None
+
+    from repowise.core.analysis.kg_curation import apply_summary_floor
+    from repowise.core.analysis.knowledge_graph import (
+        KnowledgeGraphResult,
+        _classify_complexity,
+        _get_line_count,
+    )
+
+    kg = KnowledgeGraphResult.from_file(kg_json_path)
+    if kg is None:
+        return None
+    kg.fingerprint = fingerprint  # the artifact does not store it
+    patched: list[tuple[dict, dict]] = []
+    for node in kg.nodes or []:
+        pf = changed.get(node.get("filePath"))
+        if pf is None or not str(node.get("id", "")).startswith("file:"):
+            continue
+        line_count = _get_line_count(pf.file_info)
+        fields = {
+            "symbolCount": len(pf.symbols),
+            "lineCount": line_count,
+            "complexity": _classify_complexity(len(pf.symbols), line_count),
+            "summary": "",
+        }
+        before = dict(node)
+        node.update(fields)
+        patched.append((node, before))
+    apply_summary_floor(
+        KnowledgeGraphResult(nodes=[node for node, _ in patched]), list(changed.values())
+    )
+    return kg if any(node != before for node, before in patched) else None
 
 
 def _carry_forward_kg_enrichment(

@@ -243,3 +243,43 @@ def test_update_store_matches_init_at_the_same_commit(
     actual = _store(incremental)
     bad = [table for table, rows in expected.items() if actual[table] != rows]
     assert not bad, bad
+
+
+def _kg_file_nodes(repo: Path) -> tuple[str, list[tuple]]:
+    kg = json.loads((repo / ".repowise" / "knowledge-graph.json").read_text(encoding="utf-8"))
+    fields = ("summary", "symbolCount", "lineCount", "complexity")
+    nodes = sorted(
+        (n["id"], *(n.get(f) for f in fields)) for n in kg["nodes"] if n["id"].startswith("file:")
+    )
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    return state["knowledge_graph"]["fingerprint"], nodes
+
+
+def test_same_shape_edit_refreshes_the_changed_file_nodes(tmp_path: Path, monkeypatch) -> None:
+    """An edit that keeps the graph's shape skips the KG rebuild; the changed
+    file's node still matches what a fresh init writes."""
+    incremental = tmp_path / "incremental" / "repo"
+    _seed(incremental)
+    runner = CliRunner()
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, incremental, *_INIT)
+    fingerprint, before = _kg_file_nodes(incremental)
+
+    # Renamed in place: the same nodes, edges and communities, a new top symbol.
+    _write(incremental, {"src/app/names.py": "def title(x):\n    # renamed\n    return str(x)\n"})
+    _commit(incremental, "refactor: rename label")
+    _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+
+    control = tmp_path / "control" / "repo"
+    shutil.copytree(incremental, control, ignore=shutil.ignore_patterns(".repowise"))
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{control / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, control, *_INIT)
+
+    expected_fingerprint, expected = _kg_file_nodes(control)
+    assert expected_fingerprint == fingerprint, "fixture must keep the graph's shape"
+    assert expected != before, "fixture must move the changed file's node"
+    assert _kg_file_nodes(incremental) == (fingerprint, expected)

@@ -167,6 +167,56 @@ async def test_changed_file_gets_the_floor_not_its_prior_summary(tmp_path):
     assert summaries["file:src/b.py"] == "Rich page-derived summary for b."
 
 
+@pytest.mark.asyncio
+async def test_unchanged_shape_patches_only_the_changed_file_nodes(tmp_path):
+    """The rebuild is skipped, but a changed file's node gets its own fields
+    and floor again; other nodes and the layers stay as stored."""
+    repo = _repo()
+    fp = compute_kg_fingerprint(repo.builder)
+    _write_kg_json(
+        tmp_path,
+        {
+            "nodes": [
+                {"id": "file:src/a.py", "filePath": "src/a.py", "summary": "Defines old()."},
+                {"id": "file:src/b.py", "filePath": "src/b.py", "summary": "Kept for b."},
+            ],
+            "layers": [{"id": "layer:core", "name": "Core", "description": "Named."}],
+            "tour": [],
+        },
+    )
+
+    async def refresh(changed):
+        return await refresh_knowledge_graph(
+            tmp_path,
+            repo.parsed,
+            repo.builder,
+            repo.repo_structure,
+            {},
+            None,
+            prior_fingerprint=fp,
+            changed_paths=changed,
+        )
+
+    result = await refresh(["src/a.py"])
+
+    assert result is not None
+    assert result.fingerprint == fp
+    nodes = {n["id"]: n for n in result.nodes}
+    assert nodes["file:src/a.py"]["summary"] not in ("", "Defines old().")
+    assert "symbolCount" in nodes["file:src/a.py"]
+    assert nodes["file:src/b.py"] == {
+        "id": "file:src/b.py",
+        "filePath": "src/b.py",
+        "summary": "Kept for b.",
+    }
+    assert result.layers[0]["name"] == "Core"
+
+    # Once the artifact holds the patched node, the same change moves nothing.
+    _write_kg_json(tmp_path, result.to_dict())
+    assert await refresh(["src/a.py"]) is None
+    assert await refresh(["README.md"]) is None
+
+
 def test_carry_forward_layer_names_and_tour():
     kg = KnowledgeGraphResult(
         nodes=[{"id": "file:src/a.py", "summary": ""}],

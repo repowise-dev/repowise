@@ -1698,9 +1698,26 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     return all(map(_is_prose, rendered)) and not run.stale_deterministic_ids
 
 
+def _kg_shape_unchanged(run: UpdateRun, prior_fingerprint: str | None) -> bool:
+    """Whether the refresh will only patch the changed files' nodes (no rebuild)."""
+    from repowise.core.analysis.knowledge_graph import (
+        compute_kg_fingerprint,
+        should_skip_kg_rebuild,
+    )
+
+    try:
+        fingerprint = compute_kg_fingerprint(run.graph_builder)
+    except Exception:
+        return False
+    kg_path = run.repo_path / ".repowise" / "knowledge-graph.json"
+    return should_skip_kg_rebuild(prior_fingerprint, fingerprint, kg_path)
+
+
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
     """Rebuild the knowledge graph when its fingerprint moved (not before a commit)."""
     if not run.working_tree_only:
+        prior_fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint")
+        run.knowledge_graph_patched = _kg_shape_unchanged(run, prior_fingerprint)
         with timed(run.timings, "knowledge_graph"):
             run.knowledge_graph_result = _refresh_knowledge_graph(
                 run.repo_path,
@@ -1709,7 +1726,7 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
                 run.repo_structure,
                 run.git_meta_map,
                 run.dead_code_report,
-                (run.state.get("knowledge_graph") or {}).get("fingerprint"),
+                prior_fingerprint,
                 [fd.path for fd in run.file_diffs],
             )
     if run.knowledge_graph_result is None:
@@ -2078,6 +2095,15 @@ def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
     # names were written against the old layers.
     kg = run.knowledge_graph_result
     if kg is None:
+        return
+    if run.knowledge_graph_patched:
+        # Same graph shape: the layers stand, so only this run's page
+        # summaries are applied, with no model call.
+        from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
+
+        run.knowledge_graph_result = finalize_knowledge_graph(
+            kg, kg.layers, kg.tour, docs.generated_pages
+        )
         return
     try:
         from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
