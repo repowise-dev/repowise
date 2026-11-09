@@ -162,8 +162,12 @@ def _patch_changed_file_nodes(
     kg = KnowledgeGraphResult.from_file(kg_json_path)
     if kg is None:
         return None
-    paths = {pf.file_info.path for pf in changed}
     fresh = _changed_file_skeleton(changed, graph_builder, git_meta_map)
+    return _splice_changed_nodes(kg, fresh, {pf.file_info.path for pf in changed})
+
+
+def _splice_changed_nodes(kg: Any, fresh: Any, paths: set[str]) -> Any:
+    """Swap *paths*' nodes and symbol edges in *kg* for *fresh*'s (see the caller)."""
     old_nodes = [n for n in kg.nodes or [] if n.get("filePath") in paths]
     if _entry_status_moved(old_nodes, fresh.nodes):
         return _REBUILD
