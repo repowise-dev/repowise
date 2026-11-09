@@ -201,6 +201,14 @@ def _importers(repo: Path) -> list[str]:
     return [str(repo / "src" / "a.ts"), str(repo / "packages" / "lib" / "x.mts")]
 
 
+def _outcome(call, *args):
+    """The result, or the exception type: Python <3.13 raises on a symlink loop."""
+    try:
+        return call(*args)
+    except Exception as exc:
+        return type(exc)
+
+
 def test_link_fixtures_were_created(tmp_path: Path) -> None:
     """Say so when this machine cannot make links, rather than pass without them."""
     repo, _ = _build_repo(tmp_path)
@@ -216,10 +224,9 @@ def test_resolve_matches_resolving_every_candidate(tmp_path: Path) -> None:
     reference = _ResolveEveryCandidate(repo, path_set)
     for importer in _importers(repo):
         for specifier in _SPECIFIERS:
-            assert fast.resolve(specifier, importer) == reference.resolve(specifier, importer), (
-                specifier,
-                importer,
-            )
+            assert _outcome(fast.resolve, specifier, importer) == _outcome(
+                reference.resolve, specifier, importer
+            ), (specifier, importer)
 
 
 def test_every_candidate_probe_matches_path_resolve(tmp_path: Path) -> None:
@@ -249,8 +256,8 @@ def test_every_candidate_probe_matches_path_resolve(tmp_path: Path) -> None:
     names |= _short_names(repo / "src") | _short_names(repo / "packages" / "lib")
     for directory in directories:
         for name in sorted(names):
-            expected = fast._probe_slow(directory / name)
-            assert fast._probe(directory, name) == expected, (directory, name)
+            expected = _outcome(fast._probe_slow, directory / name)
+            assert _outcome(fast._probe, directory, name) == expected, (directory, name)
 
 
 def test_probes_resolve_directories_not_candidates(tmp_path: Path, monkeypatch) -> None:
