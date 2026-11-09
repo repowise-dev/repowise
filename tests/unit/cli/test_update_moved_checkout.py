@@ -10,6 +10,8 @@ store's only row first, by the same rule the CLI read side applies.
 from __future__ import annotations
 
 import shutil
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -133,6 +135,86 @@ async def test_missing_store_is_not_created(tmp_path):
 
     assert await adopt_moved_repo_best_effort(root) is False
     assert not (root / ".repowise").exists()
+
+
+async def _seed_overview(root: Path, name: str) -> None:
+    """The overview (with a version, a child and an FTS row) stored under *name*."""
+    from repowise.core.persistence.crud import upsert_page
+
+    engine = create_engine(get_db_url_for_repo(root))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = (await session.scalars(select(Repository))).one()
+            page = dict(
+                page_id=f"repo_overview:{name}",
+                repository_id=repo.id,
+                page_type="repo_overview",
+                title="Overview",
+                content="# overview",
+                target_path=name,
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+            )
+            await upsert_page(session, **page)
+            # Different bytes: an identical rewrite is the idempotent no-op
+            # branch and never spawns the version snapshot.
+            await upsert_page(session, **{**page, "content": "# overview, revised"})
+            await upsert_page(
+                session,
+                page_id="module_page:src",
+                repository_id=repo.id,
+                page_type="module_page",
+                title="src",
+                content="# src",
+                target_path="src",
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+                parent_page_id=f"repo_overview:{name}",
+            )
+    finally:
+        await engine.dispose()
+    with closing(sqlite3.connect(root / ".repowise" / "wiki.db")) as conn:
+        conn.execute(
+            "INSERT INTO page_fts(page_id, title, content, summary, target_path, vocabulary, digest)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (f"repo_overview:{name}", "Overview", "text", "summary", name, "", ""),
+        )
+        conn.commit()
+
+
+def _stored_state(root: Path) -> tuple[list[tuple[str, str | None]], list[str], list[tuple]]:
+    """``(page id, parent)`` pairs, version page ids and FTS rows of *root*'s store."""
+    with closing(sqlite3.connect(root / ".repowise" / "wiki.db")) as conn:
+        pages = conn.execute("SELECT id, parent_page_id FROM wiki_pages ORDER BY id").fetchall()
+        versions = sorted(r[0] for r in conn.execute("SELECT page_id FROM wiki_page_versions"))
+        fts = conn.execute("SELECT page_id, target_path FROM page_fts").fetchall()
+    return pages, versions, fts
+
+
+async def test_a_renamed_checkout_keeps_one_overview_under_the_new_id(tmp_path):
+    """#5366: adoption re-keys the repo-level pages; update then finds them.
+
+    The overview id is ``repo_overview:<folder>``. Without the re-key the
+    update builds ``repo_overview:moved``, misses the stored page and
+    regenerates it from scratch while the old id lingers behind.
+    """
+    orig, moved = tmp_path / "orig", tmp_path / "moved"
+    await _init_store(orig)
+    await _seed_overview(orig, "orig")
+    shutil.copytree(orig, moved)
+
+    assert await adopt_moved_repo_best_effort(moved) is True
+    await _update_style_upserts(moved)
+
+    pages, versions, fts = _stored_state(moved)
+    assert [pid for pid, _ in pages if pid.startswith("repo_overview:")] == ["repo_overview:moved"]
+    assert ("module_page:src", "repo_overview:moved") in pages
+    assert not any(pid.endswith(":orig") for pid, _ in pages)
+    assert versions == ["repo_overview:moved"]
+    assert fts == [("repo_overview:moved", "moved")]
+    assert len(await _rows(moved)) == 1
 
 
 def test_update_adopts_before_any_write_and_not_on_dry_run(tmp_path, monkeypatch):

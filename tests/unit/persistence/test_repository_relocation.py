@@ -55,6 +55,78 @@ async def _upsert(db_dir: Path, local_path: Path) -> str:
         await engine.dispose()
 
 
+async def _seed_repo_level_pages(db_dir: Path, repo_id: str, name: str) -> None:
+    """The repo-level pages a generation run stores under *name*, plus a child.
+
+    Each repo-level page is written twice so a ``wiki_page_versions`` row
+    exists too — the re-key has to carry it, not just the live page.
+    """
+    from repowise.core.persistence.crud import upsert_page
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_dir / '.repowise' / 'wiki.db'}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            for page_type in ("repo_overview", "architecture_diagram"):
+                page = dict(
+                    page_id=f"{page_type}:{name}",
+                    repository_id=repo_id,
+                    page_type=page_type,
+                    title=page_type,
+                    content="# page",
+                    target_path=name,
+                    source_hash="abc123",
+                    model_name="mock",
+                    provider_name="mock",
+                )
+                await upsert_page(session, **page)
+                # Different bytes: an identical rewrite is the idempotent
+                # no-op branch and never spawns the version snapshot.
+                await upsert_page(session, **{**page, "content": "# page, revised"})
+            await upsert_page(
+                session,
+                page_id="module_page:src",
+                repository_id=repo_id,
+                page_type="module_page",
+                title="src",
+                content="# src",
+                target_path="src",
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+                parent_page_id=f"repo_overview:{name}",
+            )
+    finally:
+        await engine.dispose()
+
+
+def _seed_fts(db_dir: Path, page_id: str, target: str) -> None:
+    with closing(sqlite3.connect(db_dir / ".repowise" / "wiki.db")) as conn:
+        conn.execute(
+            "INSERT INTO page_fts(page_id, title, content, summary, target_path, vocabulary, digest)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (page_id, "Overview", "text", "summary", target, "", ""),
+        )
+        conn.commit()
+
+
+def _pages(db_dir: Path) -> list[tuple[str, str, str | None]]:
+    """``(id, target_path, parent_page_id)`` for every stored page."""
+    with closing(sqlite3.connect(db_dir / ".repowise" / "wiki.db")) as conn:
+        return conn.execute(
+            "SELECT id, target_path, parent_page_id FROM wiki_pages ORDER BY id"
+        ).fetchall()
+
+
+def _version_page_ids(db_dir: Path) -> list[str]:
+    with closing(sqlite3.connect(db_dir / ".repowise" / "wiki.db")) as conn:
+        return sorted(r[0] for r in conn.execute("SELECT page_id FROM wiki_page_versions"))
+
+
+def _fts_rows(db_dir: Path) -> list[tuple[str, str]]:
+    with closing(sqlite3.connect(db_dir / ".repowise" / "wiki.db")) as conn:
+        return conn.execute("SELECT page_id, target_path FROM page_fts").fetchall()
+
+
 def _rows(db_dir: Path) -> list[tuple[str, str]]:
     with closing(sqlite3.connect(db_dir / ".repowise" / "wiki.db")) as conn:
         return conn.execute("SELECT id, local_path FROM repositories").fetchall()
@@ -97,6 +169,39 @@ async def test_copy_that_moved_on_still_repoints(tmp_path: Path) -> None:
 
     assert await _upsert(copy, copy) == repo_id
     assert len(_rows(copy)) == 1
+
+
+async def test_a_relocated_store_keeps_one_overview_under_the_new_name(tmp_path: Path) -> None:
+    """#5366: the overview id carries the folder name; a rename moves the page.
+
+    Generation looks the overview up as ``repo_overview:<folder>``. Left
+    under the old folder's id, the stored page is never found: a second
+    overview is generated under the new id while the old one lingers,
+    and the notes or links on it are lost.
+    """
+    old = _git_repo(tmp_path / "repo2")
+    repo_id = await _indexed(old)
+    await _seed_repo_level_pages(old, repo_id, "repo2")
+    _seed_fts(old, "repo_overview:repo2", "repo2")
+    copy = tmp_path / "checkout"
+    shutil.copytree(old, copy)
+
+    assert await _upsert(copy, copy) == repo_id
+
+    assert len(_rows(copy)) == 1
+    pages = _pages(copy)
+    overviews = [p for p in pages if p[0].startswith("repo_overview:")]
+    assert overviews == [("repo_overview:checkout", "checkout", None)]
+    assert ("architecture_diagram:checkout", "checkout", None) in pages
+    # The child still hangs off the overview, under its new id.
+    assert ("module_page:src", "src", "repo_overview:checkout") in pages
+    # Versions and the FTS row moved with the page; nothing stays behind.
+    assert _version_page_ids(copy) == [
+        "architecture_diagram:checkout",
+        "repo_overview:checkout",
+    ]
+    assert _fts_rows(copy) == [("repo_overview:checkout", "checkout")]
+    assert not any(p[0].endswith(":repo2") for p in pages)
 
 
 async def test_unrelated_checkout_at_old_path_keeps_rows_apart(tmp_path: Path) -> None:

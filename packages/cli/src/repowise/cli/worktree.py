@@ -141,27 +141,15 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
         )
         # A page id is ``<type>:<target_path>``, so the id moves with the target:
         # generation writes the new id, and a page left under the old one is
-        # never regenerated and never found by ``generate --page``.
+        # never regenerated and never found by ``generate --page``. The shared
+        # helper carries the pages with their versions, parents and FTS rows.
+        from repowise.core.persistence.crud import repo_level_page_rekey_statements
+
         has_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'page_fts'").fetchone()
-        for page_type in ("repo_overview", "architecture_diagram"):
-            old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
-            conn.execute(
-                "UPDATE wiki_pages SET id = ?, target_path = ? WHERE repository_id = ? AND id = ?",
-                (new_id, dest_repo.name, repo_id, old_id),
-            )
-            conn.execute(
-                "UPDATE wiki_page_versions SET page_id = ? WHERE page_id = ?", (new_id, old_id)
-            )
-            conn.execute(
-                "UPDATE wiki_pages SET parent_page_id = ? "
-                "WHERE repository_id = ? AND parent_page_id = ?",
-                (new_id, repo_id, old_id),
-            )
-            if has_fts:
-                conn.execute(
-                    "UPDATE page_fts SET page_id = ?, target_path = ? WHERE page_id = ?",
-                    (new_id, dest_repo.name, old_id),
-                )
+        for sql, params in repo_level_page_rekey_statements(
+            repo_id, old_name, dest_repo.name, has_page_fts=has_fts is not None
+        ):
+            conn.execute(sql, params)
         conn.commit()
 
 
