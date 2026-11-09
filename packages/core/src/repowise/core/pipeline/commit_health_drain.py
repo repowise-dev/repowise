@@ -31,9 +31,13 @@ WAIT_SECONDS = 3600.0
 POLL_SECONDS = 2.0
 
 
+def background_enabled() -> bool:
+    return os.environ.get(BACKGROUND_ENV, "1") != "0"
+
+
 def start_background_drain(repo_path: str, repo_id: str) -> None:
     """Start the drain detached; never raises, a missed drain is picked up by the next update."""
-    if os.environ.get(BACKGROUND_ENV, "1") == "0":
+    if not background_enabled():
         return
     from repowise.core.spawn import spawn_detached
 

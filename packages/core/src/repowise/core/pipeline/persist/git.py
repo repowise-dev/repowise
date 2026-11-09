@@ -133,13 +133,18 @@ async def replace_git_history(
         GitCommitFile,
         GitCommitHealthDelta,
         GitCommitHealthFinding,
+        GitCommitHealthScan,
         GitMetadata,
     )
 
     # Function blame describes the current source tree and is produced by the
     # health pass, not by persist_git. Preserve it across a history-window
     # replacement; scope reconciliation prunes entries for excluded files.
-    health = () if keep_commit_health else (GitCommitHealthDelta, GitCommitHealthFinding)
+    health = (
+        ()
+        if keep_commit_health
+        else (GitCommitHealthDelta, GitCommitHealthFinding, GitCommitHealthScan)
+    )
     for model in (FixEvent, GitCommit, GitCommitFile, *health, GitMetadata):
         await session.execute(delete(model).where(model.repository_id == repo_id))
     await persist_git(
