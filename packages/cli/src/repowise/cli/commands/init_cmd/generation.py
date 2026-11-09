@@ -104,6 +104,7 @@ def estimate_generation(
         skip_tests,
         skip_infra,
         kg_modules=kg_modules,
+        git_meta_map=result.git_meta_map,
     )
     est = estimate_cost(
         plans,
