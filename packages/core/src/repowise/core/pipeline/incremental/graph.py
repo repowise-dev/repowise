@@ -209,9 +209,7 @@ def _plan_graph_patch(
     if parse_cache is None:
         return PatchPlan(False, reason="no parse cache"), None
 
-    changed = {
-        fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
-    }
+    changed = _fresh_changes(parse_cache, merged, to_parse)
     unparsed = _unparsed_changes(parse_cache, parsed_files, changed, changed_paths, traversed_paths)
     if unparsed is None:
         return (
@@ -255,6 +253,26 @@ def _plan_graph_patch(
         seed_edges=seed_edges,
     )
     return _refreshed_for_non_source(patch_plan, bool(unparsed or cleared)), kept
+
+
+def _fresh_changes(
+    parse_cache: Any, merged: dict[int, Any], to_parse: list[tuple[int, tuple, str]]
+) -> dict[str, Any]:
+    """The parse-cache misses whose parse differs from the last run's, by path.
+
+    A file whose grammar is unavailable misses on every run so that it parses
+    properly once the grammar loads. While it still has none and its bytes
+    are those the last run saw, its parse is the last run's: not a change.
+    """
+    changed: dict[str, Any] = {}
+    for idx, (fi, _source), content_hash in to_parse:
+        parsed = merged.get(idx)
+        if parsed is None:
+            continue
+        if parsed.grammar_missing and parse_cache.was_unparsed(fi.path, content_hash):
+            continue
+        changed[fi.path] = parsed
+    return changed
 
 
 def _unparsed_changes(

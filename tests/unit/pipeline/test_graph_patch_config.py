@@ -65,6 +65,18 @@ _TREE = {
     "yarn.lock": "left-pad@^1.0.0:\n  version 1.0.0\n",
     ".gitignore": "dist/\n",
     "jest.e2e.json": '{"setupFiles": ["./src/index.ts"]}\n',
+    # Test data and parser grammar sources no graph step reads.
+    "cmd/testdata/eval.test": "eval instant at 1m up\n  up 1\n",
+    "cmd/parser/expr.y": "%token NUMBER\n%%\nexpr: NUMBER;\n",
+    "src/syntax/query.grammar": "@top Query { Number }\n@tokens { Number { @digit+ } }\n",
+    # ...though source, a workflow and a local action name them.
+    "cmd/gen.go": (
+        'package main\n\nimport _ "embed"\n\n//go:generate goyacc -o parser/expr.go parser/expr.y\n\n'
+        "//go:embed testdata/eval.test\nvar evalTest string\n"
+    ),
+    "src/syntax/load.ts": "import grammar from './query.grammar';\nexport const parser = grammar;\n",
+    ".github/actions/setup/action.yml": "runs:\n  using: composite\n  steps:\n    - run: ./scripts/test.sh\n      shell: bash\n",
+    "scripts/test.sh": "#!/bin/sh\nyarn jest src/fmt.ts\n",
 }
 
 
@@ -152,6 +164,21 @@ def _package(**changes: Any) -> str:
         pytest.param({"src/locales/en.json": '{"hi": "hi there"}\n'}, id="imported-data-json"),
         pytest.param({".github/workflows/ci.yml": "on: [push, pull_request]\n"}, id="ci-workflow"),
         pytest.param({"requirements.txt": "httpx==0.2\n"}, id="requirements-txt"),
+        pytest.param({"cmd/testdata/eval.test": "eval instant at 2m up\n  up 2\n"}, id="test-data"),
+        pytest.param({"cmd/parser/expr.y": "%token NUMBER STRING\n%%\nexpr: NUMBER | STRING;\n"}, id="yacc-grammar"),
+        pytest.param({"src/syntax/query.grammar": "@top Query { Number+ }\n"}, id="lezer-grammar"),
+        pytest.param(
+            {
+                ".github/workflows/ci.yml": (
+                    "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+                    "      - uses: ./.github/actions/setup\n      - run: ./scripts/test.sh src/fmt.ts\n"
+                )
+            },
+            id="ci-workflow-steps",
+        ),
+        pytest.param(
+            {".github/actions/setup/action.yml": "runs:\n  using: composite\n  steps: []\n"}, id="local-action"
+        ),
         pytest.param(
             {
                 "package.json": _package(version="2.0.0"),
@@ -201,6 +228,16 @@ def test_edits_no_graph_step_reads_are_patched(
         pytest.param({".gitignore": "dist/\nbuild/\n"}, ".gitignore: the graph build reads", id="gitignore"),
         pytest.param({"requirements-dev.txt": "pytest\n"}, "added or removed", id="unindexed-added"),
         pytest.param({"requirements.txt": None}, "added or removed", id="unindexed-removed"),
+        pytest.param(
+            {"cmd/testdata/eval.test": None, "cmd/testdata/eval2.test": "eval instant at 1m up\n"},
+            "added or removed",
+            id="test-data-renamed",
+        ),
+        pytest.param(
+            {".github/workflows/ci.yml": None, ".github/workflows/test.yml": "on: push\n"},
+            "file removed",
+            id="workflow-renamed",
+        ),
         pytest.param({"web/package.json": '{"name": "w"}\n'}, "web/package.json", id="manifest-added"),
         pytest.param({"go.mod": None}, "go.mod: a field", id="go-mod-removed"),
         # The test-runner handler reads any jest./vitest./vite./playwright. json.
@@ -288,6 +325,9 @@ def test_presence_read(path: str, read: bool) -> None:
         ("package-lock.json", True),
         ("Gemfile.lock", True),
         ("docs/logo.png", True),
+        ("promql/testdata/functions.test", True),
+        ("promql/parser/generated_parser.y", True),
+        ("lezer-promql/src/promql.grammar", True),
         # Live walks read unindexed source of known extensions.
         ("big/Generated.cs", False),
         ("app/models/user.rb", False),
@@ -384,3 +424,67 @@ def test_a_failed_save_leaves_no_older_record(tmp_path: Path, monkeypatch: pytes
     save_resolutions(index_dir, [], {}, {}, config_inputs={"files": {}, "stack": ["Go"]})
 
     assert load_config_inputs(index_dir) is None
+
+
+# --- files parsed without their grammar ---------------------------------------
+
+
+@pytest.fixture
+def no_go_grammar(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Parse in process with the Go grammar unavailable, as after a failed download."""
+    from repowise.core.ingestion import parser as parser_mod
+    from repowise.core.pipeline.phases import ingestion
+
+    real = parser_mod._get_language
+    monkeypatch.setattr(parser_mod, "_get_language", lambda tag: None if tag == "go" else real(tag))
+
+    def in_process(to_parse: list, **_kwargs: Any) -> list:
+        parser = parser_mod.ASTParser()
+        return [parser.parse_file(fi, source) for _idx, (fi, source), _hash in to_parse]
+
+    monkeypatch.setattr(ingestion, "parse_guarded", in_process)
+    return monkeypatch
+
+
+def test_unchanged_file_without_its_grammar_is_not_a_change(
+    no_go_grammar: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """It re-parses every run, but the same bytes still without a grammar are the last parse."""
+    tree = tmp_path / "repo"
+    _write(tree, _TREE)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    assert first._parsed_files["cmd/main.go"].grammar_missing
+
+    patched = _update(tree, _snapshot(first), {"src/fmt.ts": "export function fmt(s: string) { return s + '!'; }\n"})
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "cmd/main.go" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_grammar_that_loads_again_rebuilds(no_go_grammar: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A file that now parses with its grammar has a new parse: the graph is rebuilt."""
+    tree = tmp_path / "repo"
+    _write(tree, _TREE)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    no_go_grammar.undo()
+
+    patched = _update(tree, _snapshot(first), {"src/fmt.ts": "export function fmt(s: string) { return s + '!'; }\n"})
+
+    assert not patched.patch_plan.eligible
+    assert not patched._parsed_files["cmd/main.go"].grammar_missing
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_edited_file_without_its_grammar_falls_back(
+    no_go_grammar: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tree = tmp_path / "repo"
+    _write(tree, _TREE)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+
+    patched = _update(tree, _snapshot(first), {"cmd/main.go": "package main\n\nfunc main() {}\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "grammar unavailable" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
