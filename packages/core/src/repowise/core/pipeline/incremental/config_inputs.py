@@ -171,7 +171,7 @@ def _without(table: object, unread: frozenset[str]) -> object:
 
 def _pyproject(text: str, _path: Path, _root: Path) -> object:
     data = tomllib.loads(text)
-    out = dict(_without(data, _PYPROJECT_UNREAD_TOP))  # type: ignore[arg-type]
+    out = {k: v for k, v in data.items() if k not in _PYPROJECT_UNREAD_TOP}
     if "project" in out:
         out["project"] = _without(out["project"], _PYPROJECT_UNREAD_PROJECT)
     if "tool" in out:
@@ -292,6 +292,44 @@ def _unread_unindexed(path: str) -> bool:
     return language in (None, "unknown")
 
 
+def _unindexed_refusal(
+    unparsed: Collection[str], presence_changed: Collection[str] | None, views: list[str]
+) -> str | None:
+    """Why an unindexed change could reach the graph; manifests go to *views*."""
+    for path in sorted(unparsed):
+        if has_projection(path):
+            views.append(path)
+        elif presence_changed is None or path in presence_changed:
+            return f"{path}: an unindexed file was added or removed"
+        elif not _unread_unindexed(path):
+            return f"{path}: the graph build reads this file"
+    return None
+
+
+def _cleared_edits(
+    changed: dict[str, Any],
+    previous_parse: Callable[[str, Any], Any],
+    config_reads: Collection[str],
+    views: list[str],
+) -> set[str]:
+    """Indexed data files whose edit no step can see; manifests also go to *views*."""
+    from .surface import parse_is_empty
+
+    cleared: set[str] = set()
+    for path, parsed in changed.items():
+        if parsed.file_info.language not in DATA_LANGUAGES or not parse_is_empty(parsed):
+            continue
+        before = previous_parse(path, parsed)
+        if before is None or not parse_is_empty(before):
+            continue
+        if has_projection(path):
+            views.append(path)
+            cleared.add(path)
+        elif not presence_read(path) and path not in config_reads:
+            cleared.add(path)
+    return cleared
+
+
 def plan_non_source_changes(
     *,
     unparsed: Collection[str],
@@ -317,27 +355,10 @@ def plan_non_source_changes(
     *current* and *record* are :func:`record_inputs` for this tree and for
     the last build; when both exist they must match whatever changed.
     """
-    from .surface import parse_is_empty
-
     views: list[str] = []
-    for path in sorted(unparsed):
-        if has_projection(path):
-            views.append(path)
-        elif presence_changed is None or path in presence_changed:
-            return f"{path}: an unindexed file was added or removed", frozenset()
-        elif not _unread_unindexed(path):
-            return f"{path}: the graph build reads this file", frozenset()
-    cleared: set[str] = set()
-    for path, parsed in changed.items():
-        if parsed.file_info.language not in DATA_LANGUAGES or not parse_is_empty(parsed):
-            continue
-        before = previous_parse(path, parsed)
-        if before is None or not parse_is_empty(before):
-            continue
-        if has_projection(path):
-            views.append(path)
-            cleared.add(path)
-        elif not presence_read(path) and path not in config_reads:
-            cleared.add(path)
+    refusal = _unindexed_refusal(unparsed, presence_changed, views)
+    if refusal is not None:
+        return refusal, frozenset()
+    cleared = _cleared_edits(changed, previous_parse, config_reads, views)
     reason = inputs_refusal(current, record, views)
     return reason, (frozenset() if reason else frozenset(cleared))

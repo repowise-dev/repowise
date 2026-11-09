@@ -162,8 +162,6 @@ def _plan_graph_patch(
     current_inputs: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, tuple] | None]:
     """Return the safe patch plan and restored-import cache, if eligible."""
-    from dataclasses import replace
-
     from .resolution_cache import load_cache
     from .surface import PatchPlan, plan_patch
 
@@ -177,15 +175,8 @@ def _plan_graph_patch(
     changed = {
         fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
     }
-    detected_changes = set(changed) if changed_paths is None else changed_paths
-    # A deleted file has no parse; plan_patch decides whether its removal is safe.
-    if parse_cache is not None:
-        detected_changes = detected_changes - (
-            parse_cache.known_paths() - {pf.file_info.path for pf in parsed_files}
-        )
-    unparsed = detected_changes - set(changed)
-    known = parse_cache.known_paths() if parse_cache is not None else set()
-    if set(changed) - detected_changes or unparsed & (traversed_paths | known):
+    unparsed = _unparsed_changes(parse_cache, parsed_files, changed, changed_paths, traversed_paths)
+    if unparsed is None:
         return (
             PatchPlan(
                 False,
@@ -194,20 +185,16 @@ def _plan_graph_patch(
             None,
         )
     resolutions, record = load_cache(Path(repo_path) / ".repowise")
-    try:
-        refusal, cleared = _plan_non_source(
-            repo_path,
-            graph_builder,
-            unparsed,
-            changed,
-            parse_cache,
-            presence_changed,
-            current_inputs=current_inputs,
-            record=record,
-        )
-    except Exception as exc:  # a checker bug costs a full build, not the update
-        logger.warning("graph_patch_config_check_failed", error=str(exc))
-        refusal, cleared = f"config check failed: {exc}", frozenset()
+    refusal, cleared = _checked_non_source(
+        repo_path,
+        graph_builder,
+        unparsed,
+        changed,
+        parse_cache,
+        presence_changed,
+        current_inputs=current_inputs,
+        record=record,
+    )
     if refusal is not None:
         return PatchPlan(False, reason=refusal), None
 
@@ -229,12 +216,52 @@ def _plan_graph_patch(
         parsed_files=parsed_files,
         seed_edges=seed_edges,
     )
-    if patch_plan.eligible and (unparsed or cleared) and not patch_plan.refresh:
-        # Re-derive the framework and dynamic-hint edges over the whole graph
-        # rather than trusting seeded ones: a config reader the gate does not
-        # know of then costs a slower patch, not a stale edge.
-        patch_plan = replace(patch_plan, refresh=True)
-    return patch_plan, kept
+    return _refreshed_for_non_source(patch_plan, bool(unparsed or cleared)), kept
+
+
+def _unparsed_changes(
+    parse_cache: Any,
+    parsed_files: list[Any],
+    changed: dict[str, Any],
+    changed_paths: set[str] | None,
+    traversed_paths: set[str],
+) -> set[str] | None:
+    """Detected changes the walk did not index now or before; ``None`` on a mismatch.
+
+    A mismatch is a parse miss the diff did not report, or a detected change
+    to an indexed file that has no fresh parse.
+    """
+    known = parse_cache.known_paths()
+    detected = set(changed) if changed_paths is None else set(changed_paths)
+    # A deleted file has no parse; plan_patch decides whether its removal is safe.
+    detected -= known - {pf.file_info.path for pf in parsed_files}
+    unparsed = detected - set(changed)
+    if set(changed) - detected or unparsed & (traversed_paths | known):
+        return None
+    return unparsed
+
+
+def _checked_non_source(*args: Any, **kwargs: Any) -> tuple[str | None, frozenset[str]]:
+    """:func:`_plan_non_source`, where a checker bug costs a full build, not the update."""
+    try:
+        return _plan_non_source(*args, **kwargs)
+    except Exception as exc:
+        logger.warning("graph_patch_config_check_failed", error=str(exc))
+        return f"config check failed: {exc}", frozenset()
+
+
+def _refreshed_for_non_source(patch_plan: Any, non_source: bool) -> Any:
+    """*patch_plan*, refreshing when the update cleared config, data or unindexed files.
+
+    The framework and dynamic-hint edges are then re-derived over the whole
+    graph rather than trusted from the seed: a config reader the gate does
+    not know of costs a slower patch, not a stale edge.
+    """
+    from dataclasses import replace
+
+    if not (patch_plan.eligible and non_source) or patch_plan.refresh:
+        return patch_plan
+    return replace(patch_plan, refresh=True)
 
 
 def _plan_non_source(
