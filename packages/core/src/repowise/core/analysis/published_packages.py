@@ -296,10 +296,10 @@ def _pom(text: str) -> _Build:
 
 
 def _gradle(facts: BuildFacts, rel_dir: str) -> _Build:
-    from repowise.core.ingestion.resolvers.jvm_gradle import _detect_plugins
+    from repowise.core.ingestion.resolvers.jvm_gradle import detect_gradle_plugins
 
     root = Path(facts.repo_root or ".")
-    plugins = _detect_plugins(root / rel_dir)
+    plugins = detect_gradle_plugins(root / rel_dir)
     return _Build(
         name=PurePosixPath(rel_dir).name or root.name,
         deploys=any(p.startswith(_GRADLE_PUBLISHES) for p in plugins),
@@ -334,9 +334,9 @@ def jvm_published(facts: BuildFacts) -> dict[str, str | None]:
 
 def _python_distribution(data: dict[str, Any], names: frozenset[str]) -> str | None:
     """The distribution's name, unless the project says it ships none."""
-    from repowise.core.workspace.code_api import _table
+    from repowise.core.workspace.code_api import toml_table
 
-    name = _table(data, "project").get("name") or _table(data, "tool", "poetry").get("name")
+    name = toml_table(data, "project").get("name") or toml_table(data, "tool", "poetry").get("name")
     if not isinstance(name, str) or not name or _python_unpackaged(data, names):
         return None
     return name
@@ -344,13 +344,13 @@ def _python_distribution(data: dict[str, Any], names: frozenset[str]) -> str | N
 
 def _python_unpackaged(data: dict[str, Any], names: frozenset[str]) -> bool:
     """No build backend (an app's pyproject), an opt-out, or a Django site."""
-    from repowise.core.workspace.code_api import _table
+    from repowise.core.workspace.code_api import toml_table
 
-    classifiers = _table(data, "project").get("classifiers")
+    classifiers = toml_table(data, "project").get("classifiers")
     return (
-        not _table(data, "build-system")
-        or _table(data, "tool", "poetry").get("package-mode") is False
-        or _table(data, "tool", "uv").get("package") is False
+        not toml_table(data, "build-system")
+        or toml_table(data, "tool", "poetry").get("package-mode") is False
+        or toml_table(data, "tool", "uv").get("package") is False
         or (isinstance(classifiers, list) and "Private :: Do Not Upload" in classifiers)
         or "manage.py" in names
     )
@@ -361,10 +361,10 @@ def _python_package_dirs(
 ) -> list[str]:
     """The import packages a distribution ships: declared, else the module its
     name spells, in ``src/`` or beside the manifest."""
-    from repowise.core.workspace.code_api import _pypi_package_dirs
+    from repowise.core.workspace.code_api import pypi_package_dirs
 
     module = name.replace("-", "_").replace(".", "_")
-    candidates = _pypi_package_dirs(data) or [
+    candidates = pypi_package_dirs(data) or [
         f"src/{module}",
         module,
         f"src/{module.lower()}",
