@@ -5,10 +5,28 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.analysis.health.duplication import detect_clones
 from repowise.core.analysis.health.duplication.isolation import (
     detect_clones_with_isolation,
 )
+
+
+@pytest.fixture
+def shared_cache_key(monkeypatch):
+    """One cache-seal key for this process and the workers it spawns.
+
+    The key is cached per process, so a test that ran earlier on the same
+    worker can leave this process sealing with a key that the spawned child,
+    which reads the key afresh, does not share.
+    """
+    from repowise.core import cache_seal
+
+    monkeypatch.setenv("REPOWISE_CACHE_HMAC_KEY", "ab" * 32)
+    cache_seal.reset_key_cache_for_tests()
+    yield
+    cache_seal.reset_key_cache_for_tests()
 
 
 def _parsed(path: Path) -> SimpleNamespace:
@@ -154,7 +172,9 @@ def test_the_default_reader_still_isolates(tmp_path: Path, monkeypatch):
         assert report.pairs
 
 
-def test_an_update_splice_stays_in_process_and_matches_a_full_scan(tmp_path: Path, monkeypatch):
+def test_an_update_splice_stays_in_process_and_matches_a_full_scan(
+    tmp_path: Path, monkeypatch, shared_cache_key
+):
     """A small update splices the persisted index here, without a worker.
 
     The spawn costs seconds of interpreter start-up for a splice that reads a
@@ -222,7 +242,9 @@ def _two_clones(tmp_path: Path) -> list[SimpleNamespace]:
     return [_parsed(path) for path in paths]
 
 
-def test_an_update_without_a_spliceable_index_still_isolates(tmp_path: Path, monkeypatch):
+def test_an_update_without_a_spliceable_index_still_isolates(
+    tmp_path: Path, monkeypatch, shared_cache_key
+):
     """A token cache but no pair index: the splice misses here, and the full
     scan runs in the worker, told not to repeat the miss."""
     import repowise.core.analysis.health.duplication.isolation as isolation
@@ -245,7 +267,9 @@ def test_an_update_without_a_spliceable_index_still_isolates(tmp_path: Path, mon
     assert _key(report) == _key(detect_clones(parsed, window_tokens=20, min_lines=4))
 
 
-def test_a_token_cache_past_the_bound_splices_in_the_worker(tmp_path: Path, monkeypatch):
+def test_a_token_cache_past_the_bound_splices_in_the_worker(
+    tmp_path: Path, monkeypatch, shared_cache_key
+):
     """Past the size bound the load's retained pages cost more than the spawn."""
     import repowise.core.analysis.health.duplication.isolation as isolation
 
