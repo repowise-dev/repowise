@@ -916,7 +916,9 @@ async def merge_candidate(
         target,
         action="merged",
         currency="active",
-        evidence=_record_evidence(target) + _record_evidence(candidate),
+        # ``None``, not ``[]``, when neither record carries evidence: the target
+        # stands on what it was confirmed with, which lives on its acceptance row.
+        evidence=(_record_evidence(target) + _record_evidence(candidate)) or None,
         accepter=accepter,
         artifact=artifact,
         kind=kind,

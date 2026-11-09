@@ -154,6 +154,12 @@ def _shape(language: str, **kw) -> HelperShape:
             "let total = loadTotals(items, limit);",
         ),
         (
+            # Rendered as Svelte and Vue are.
+            _shape("astro", kind="function", out_declared=True, out_rebound=True),
+            "function loadTotals(items: T1, limit) {",
+            "let total = loadTotals(items, limit);",
+        ),
+        (
             _shape("go", receiver="s", receiver_decl="(s *S)", out_declared=True),
             "func (s *S) loadTotals(items T1, limit <type>) <type> {",
             "total := s.loadTotals(items, limit)",

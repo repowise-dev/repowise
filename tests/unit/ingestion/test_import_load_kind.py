@@ -23,7 +23,7 @@ from repowise.core.ingestion.parser import ASTParser
 
 
 def _info(path: str) -> FileInfo:
-    language = "python" if path.endswith(".py") else "typescript"
+    language = {"py": "python", "astro": "astro"}.get(path.rsplit(".", 1)[-1], "typescript")
     return FileInfo(
         path=path,
         abs_path=f"/repo/{path}",
@@ -138,6 +138,26 @@ const top = await import("./top.js");
 )
 def test_ts_import_load_kind(module: str, expected: tuple[bool, bool]) -> None:
     assert _kinds("src/a.ts", TS_SOURCE)[module] == expected
+
+
+ASTRO_SOURCE = """\
+---
+import type { Props } from "./props";
+const load = () => import("./lazy.js");
+---
+<p>hi</p>
+"""
+
+
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        ("./props", (True, False)),  # import type, as in a .ts file
+        ("./lazy.js", (False, True)),  # lazy loader in the frontmatter
+    ],
+)
+def test_astro_frontmatter_import_load_kind(module: str, expected: tuple[bool, bool]) -> None:
+    assert _kinds("src/pages/index.astro", ASTRO_SOURCE)[module] == expected
 
 
 @pytest.mark.parametrize(

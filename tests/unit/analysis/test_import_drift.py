@@ -44,6 +44,8 @@ def test_a_body_change_keeps_the_edges(path, before, after) -> None:
         ("m.ts", _TS, _TS.replace(b"a(1)", b'(await import("./c")).a(1)')),
         ("m.ts", _TS, _TS + b'vi.mock("./d");\n'),
         ("m.go", b"package m\n", b"package m\n\nfunc F() { G() }\n"),
+        # Astro is compared as text, so a markup-only import still moves the edges.
+        ("index.astro", b"<h1>Hi</h1>\n", b'<h1>Hi</h1>\n<script src="./x.ts"></script>\n'),
     ],
 )
 def test_an_import_or_a_module_name_moves_the_edges(path, before, after) -> None:

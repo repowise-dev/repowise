@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from tree_sitter import Node
 
+from ..models import TS_JS_LANGUAGES
 from .helpers import (
     clean_jsdoc,
     clean_string_literal,
@@ -288,12 +289,11 @@ def _block_doc_reader(
     return lambda root, src: _leading_block_doc(root, src, comment_kinds, skip_kinds)
 
 
-_JS_LIKE = ("typescript", "javascript", "svelte", "vue", "astro")
 _C_LIKE = ("cpp", "c", "objectivec")
 
 _MODULE_DOC: dict[str, Callable[[Node, str], str | None]] = {
     "python": _python_module_doc,
-    **dict.fromkeys(_JS_LIKE, _block_doc_reader(("comment",), ("comment",))),
+    **dict.fromkeys(TS_JS_LANGUAGES, _block_doc_reader(("comment",), ("comment",))),
     "go": _go_module_doc,
     "fsharp": _fsharp_module_doc,
     "rust": _rust_module_doc,
@@ -483,7 +483,7 @@ def _luau_symbol_doc(def_node: Node, src: str) -> str | None:
 
 _SYMBOL_DOC: dict[str, Callable[[Node, str], str | None]] = {
     "python": _python_symbol_doc,
-    **dict.fromkeys(_JS_LIKE, find_preceding_jsdoc),
+    **dict.fromkeys(TS_JS_LANGUAGES, find_preceding_jsdoc),
     "go": _go_symbol_doc,
     "fsharp": _fsharp_symbol_doc,
     "rust": _rust_symbol_doc,
