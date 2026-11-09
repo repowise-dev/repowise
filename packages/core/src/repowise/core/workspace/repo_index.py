@@ -324,12 +324,9 @@ class WorkspaceIndex:
                 self._repos[alias] = index
 
     async def close(self) -> None:
-        for repo in self._repos.values():
-            try:
-                await repo.close()
-            except Exception:
-                _log.warning("Error closing index for '%s'", repo.alias, exc_info=True)
+        repos = list(self._repos.values())
         self._repos.clear()
+        await _run_to_end(_close_indexes(repos))
 
 
 async def _close_index_db(session: AsyncSession, engine: Any) -> None:
@@ -368,12 +365,17 @@ async def _close_opened(tasks: list[asyncio.Task[RepoIndex | None]]) -> None:
     """gather settles every open before it re-raises a cancellation, so each
     index that opened is closed here and none finishes later with no owner.
     """
-    for result in await asyncio.gather(*tasks, return_exceptions=True):
-        if result is not None and not isinstance(result, BaseException):
-            try:
-                await result.close()
-            except Exception:
-                _log.warning("Error closing index for '%s'", result.alias, exc_info=True)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await _close_indexes([r for r in results if r is not None and not isinstance(r, BaseException)])
+
+
+async def _close_indexes(indexes: list[RepoIndex]) -> None:
+    """Close each index; one that fails is logged and the rest still close."""
+    for index in indexes:
+        try:
+            await index.close()
+        except Exception:
+            _log.warning("Error closing index for '%s'", index.alias, exc_info=True)
 
 
 async def checkout_repository(session: AsyncSession, repo_path: Path) -> Any:
