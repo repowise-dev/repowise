@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
-from .models import TS_JS_LANGUAGES, ParsedFile
+from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
 from .symbol_identity import symbol_id_path
 
 if TYPE_CHECKING:
@@ -69,10 +69,6 @@ _TYPE_USE_CONFIDENCE = 0.8
 
 _EMPTY_NAMES: frozenset[str] = frozenset()
 
-# The edges into symbol nodes a full build has when the type-ref pass runs:
-# ``add_file`` writes them, and import resolution only links files.
-_DECLARATION_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
-
 
 def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     """Map each node to the set of symbol names among its direct successors.
@@ -89,9 +85,10 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     names are excluded, matching the callers, which all skip falsy type
     names before lookup.
 
-    Only declaration edges count. A patch build starts from the last graph,
+    Only containment edges count: they are the only edges into symbols a full
+    build has when this pass runs. A patch build starts from the last graph,
     which also carries heritage, call and reference edges into symbols; read
-    here, a generic ``T: Trait`` bound made ``T`` a second owner of ``Trait``
+    here, an ``impl Trait for T`` edge made ``T`` a second owner of ``Trait``
     and the patch lost type-use edges a full build draws.
     """
     sym_name: dict[str, str] = {}
@@ -102,7 +99,7 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
                 sym_name[node] = name
     index: dict[str, set[str]] = {}
     for src, dst, edge_type in graph.edges(data="edge_type"):
-        if edge_type not in _DECLARATION_EDGE_TYPES:
+        if edge_type not in CONTAINMENT_EDGE_TYPES:
             continue
         name = sym_name.get(dst)
         if name is not None:
