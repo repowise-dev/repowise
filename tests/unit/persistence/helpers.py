@@ -70,3 +70,49 @@ async def accept(session, decision_id: str, *, accepter: str = "tester"):
     record = await session.get(DecisionRecord, decision_id)
     await accept_decision(session, record, accepter=accepter)
     return record
+
+
+async def legacy_adr(
+    session,
+    repo_id: str,
+    legacy_id: str = "8d34b37b" + "0" * 24,
+    title: str = "One user-pickable agent per plugin",
+):
+    """An accepted ADR on a random id, the way pre-derivation stores hold them."""
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+
+    rec = DecisionRecord(
+        id=legacy_id,
+        repository_id=repo_id,
+        title=title,
+        decision=f"{title}: do the thing",
+        source="adr",
+        evidence_file="docs/adr/0001.md",
+    )
+    session.add(rec)
+    await session.flush()
+    await accept_decision(
+        session,
+        rec,
+        accepter="tester",
+        reason="one agent keeps the picker short",
+        scope=["src/app.py"],
+        evidence=["deadbeef"],
+    )
+    return rec
+
+
+async def supersede_pointer(session, repo_id, alias_id, successor_id) -> None:
+    """The ``alias_id -> successor`` row a pre-fix supersede wrote."""
+    from repowise.core.persistence.models import SUPERSEDED_REASON, DecisionAlias
+
+    session.add(
+        DecisionAlias(
+            alias_id=alias_id,
+            repository_id=repo_id,
+            decision_id=successor_id,
+            reason=SUPERSEDED_REASON,
+        )
+    )
+    await session.flush()

@@ -125,12 +125,32 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
     return result
 
 
+def _canonical(graph: nx.Graph) -> nx.Graph:
+    """*graph* rebuilt with nodes, and each edge's endpoints, in sorted order."""
+    ordered = nx.Graph()
+    ordered.add_nodes_from(sorted(graph.nodes()))
+    ordered.add_edges_from(
+        sorted(
+            ((min(u, v), max(u, v), data) for u, v, data in graph.edges(data=True)),
+            key=lambda edge: edge[:2],
+        )
+    )
+    return ordered
+
+
 def _partition(graph: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
     Tries Leiden (graspologic_native) first, falls back to Louvain (networkx),
     then to directory-based grouping as a last resort.
+
+    Both algorithms depend on node and edge order even when seeded, so the
+    graph is rebuilt in sorted order first. Callers pass ``subgraph`` views,
+    and a view that keeps under half its parent's nodes iterates them in set
+    order, which changes with the process's hash seed: the same graph gave a
+    different partition on every run.
     """
+    graph = _canonical(graph)
     try:
         result = leiden_partition(graph, seed=42)  # determinism (matches louvain's seed)
         return result, "leiden"

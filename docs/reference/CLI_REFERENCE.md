@@ -234,6 +234,7 @@ repowise update --since v1.0.0 --working-tree
 repowise update --workspace --docs     # every stale repo, docs forced
 repowise update --repo backend         # one workspace repo
 repowise update --no-workspace --index-only --defer-docs   # facts now, docs later
+repowise update --no-workspace --index-only --defer-docs --refresh-git   # recover Git rows
 repowise update --full --provider anthropic   # fast index to full
 ```
 
@@ -249,6 +250,7 @@ repowise update --full --provider anthropic   # fast index to full
 | `--docs` / `--no-docs` | This run: `--docs` LLM-regenerates changed pages (even if indexed without docs); `--no-docs` = `--index-only`. | `docs_mode` in `.repowise/state.json` (from `init`) |
 | `--index-only` | Skip model regeneration; template wikis still render. In a workspace, applies to every stale repo. | off |
 | `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
+| `--refresh-git` | Re-read Git history at the current tier and commit cap, even at an unchanged HEAD. Requires `--index-only --defer-docs`; single repo only; not with `--full`. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
 | `--full` | Fast (`--mode fast`) index to full (below). Errors in workspace mode. | off |
 | `--workspace` / `-w` | All stale workspace repos plus cross-repo analysis; see notes. | auto-detect |
@@ -267,6 +269,7 @@ repowise update --full --provider anthropic   # fast index to full
 **Flag notes**
 
 - **`--working-tree`.** Uncommitted renames reach the graph. Off so hooks and plain runs stay commit-anchored. Workspace: uncommitted changes make a repo stale. `repowise watch` always does this.
+- **`--refresh-git`.** Requires `--index-only --defer-docs` to recover missing Git rows without rendering or embedding existing pages. It keeps the configured history scope and history-version stamp. The next ordinary update remains incremental. `--dry-run` previews the refresh without store writes. Use `--full` separately when the Git tier needs upgrading.
 - **`--defer-docs`.** Pass a repo path and `--no-workspace`. Existing page bodies and surviving vectors stay in place; deleted sources still follow the normal tombstone cleanup. Renderer changes mark every template page stale and retain the old renderer fingerprint. Generation config changes retain their old fingerprints until a rendering run completes. `status` reports `stale_pages`; the JSON `done` event also includes `docs_deferred: true` and `stale_pages` (null if the count is unreadable). Run `update --index-only` without this flag to render the pending template pages. Model-written stale pages still use `generate --stale`. This flag cannot be combined with `--docs` or `--full`, and does not force a Git history walk when its existing stamps say current.
 - **`--workspace`.** Each repo's `docs_mode` (`docs_enabled` beside it) plus `--docs` / `--no-docs` / `--index-only`
   picks docs or index-only. `--docs` needs each repo's provider and key (or `--provider`).
