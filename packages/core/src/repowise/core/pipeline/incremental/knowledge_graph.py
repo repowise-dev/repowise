@@ -172,13 +172,17 @@ def _splice_changed_nodes(kg: Any, fresh: Any, paths: set[str]) -> Any:
     if _entry_status_moved(old_nodes, fresh.nodes):
         return _REBUILD
     old_ids = {n.get("id") for n in old_nodes}
-    old_edges = [e for e in kg.edges or [] if _into_symbol(e, old_ids)]
-    new_edges = [e for e in fresh.edges if _into_symbol(e, {n["id"] for n in fresh.nodes})]
+    old_edges = _symbol_edges(kg.edges, old_ids)
+    new_edges = _symbol_edges(fresh.edges, {n.get("id") for n in fresh.nodes})
     if _same(old_nodes, fresh.nodes) and _same(old_edges, new_edges):
         return None
     kg.nodes = [n for n in kg.nodes or [] if n.get("filePath") not in paths] + fresh.nodes
     kg.edges = [e for e in kg.edges or [] if not _into_symbol(e, old_ids)] + new_edges
     return kg
+
+
+def _symbol_edges(edges: list[dict] | None, node_ids: set) -> list[dict]:
+    return [e for e in edges or [] if _into_symbol(e, node_ids)]
 
 
 def _changed_file_skeleton(changed: list, graph_builder: Any, git_meta_map: dict) -> Any:
