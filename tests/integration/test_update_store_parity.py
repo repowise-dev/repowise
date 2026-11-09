@@ -3,8 +3,8 @@
 The fixture's A..B range edits, adds, removes and renames files, lands a bug
 fix, drops the only import of a package, moves a function an unchanged
 file calls, and adds a file under a directory the traverser skips. Each table
-below is compared row for row, minus the columns an
-update deliberately carries forward; those are listed with the reason.
+below is compared row for row, minus the columns an update deliberately
+carries forward; those are listed with the reason.
 """
 
 from __future__ import annotations
