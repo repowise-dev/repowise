@@ -381,6 +381,69 @@ async def test_import_refuses_an_alias_onto_a_successor_listed_under_its_legacy_
     }
 
 
+async def test_import_applies_the_keepers_legacy_entry_and_skips_the_one_folded_into_it(
+    async_session, tmp_path
+):
+    """Two legacy decisions the migration folds into one record, both listed
+    by a pre-migration file: the entry under the keeper's re-keyed id applies,
+    the one folded into it is skipped, its wording is never written over the
+    keeper, and a second import of the same file reaffirms nothing."""
+    s_old, x_old = "a" * 32, "b" * 32
+    repo = await insert_repo(async_session)
+    a = await legacy_adr(async_session, repo.id, legacy_id=s_old, title="Rule worded one way")
+    b = await legacy_adr(async_session, repo.id, legacy_id=x_old, title="Rule worded another way")
+    for rec in (a, b):
+        rec.identity_quote = "the same sentence"
+        rec.affected_files_json = '["src/app.py"]'
+    await async_session.flush()
+    await export_manifest(async_session, repo.id, tmp_path)
+    await apply_id_migration(async_session, repo.id)
+    keeper = await resolve_decision_id(async_session, s_old)
+    assert keeper not in (None, s_old) and await resolve_decision_id(async_session, x_old) == keeper
+    kept_title = (await async_session.get(DecisionRecord, keeper)).title
+    reasons = {i: (await async_session.get(DecisionAlias, i)).reason for i in (s_old, x_old)}
+    (kept,) = [i for i, r in reasons.items() if r == REKEYED_REASON]
+    (folded,) = [i for i, r in reasons.items() if r == MERGED_REASON]
+
+    first = await import_manifest(async_session, repo.id, tmp_path)
+    second = await import_manifest(async_session, repo.id, tmp_path)
+
+    async_session.expire_all()
+    assert (await async_session.get(DecisionRecord, keeper)).title == kept_title
+    assert dict(first.skipped) == {
+        folded: f"folded into {keeper[:8]}, whose own entry the file lists"
+    }
+    assert first.unchanged == second.unchanged == [kept]
+    assert not first.reaffirmed and not second.reaffirmed
+
+
+async def test_a_dry_run_folds_like_the_import(async_session, tmp_path):
+    """A re-keyed and a folded id reach one record: the preview reports what
+    the import then does."""
+    repo = await insert_repo(async_session)
+    rec = await legacy_adr(async_session, repo.id)
+    await export_manifest(async_session, repo.id, tmp_path)
+    (entry,) = load_manifest(tmp_path)[0]
+    rec_id, rekeyed, folded = rec.id, "8" * 32, "f" * 32
+    for alias_id, why in ((rekeyed, REKEYED_REASON), (folded, MERGED_REASON)):
+        async_session.add(
+            DecisionAlias(alias_id=alias_id, repository_id=repo.id, decision_id=rec_id, reason=why)
+        )
+    await async_session.flush()
+    write_manifest(
+        tmp_path,
+        [replace(entry, id=rekeyed), replace(entry, id=folded, title="Other wording")],
+    )
+
+    preview = await import_manifest(async_session, repo.id, tmp_path, dry_run=True)
+    outcome = await import_manifest(async_session, repo.id, tmp_path)
+
+    assert dict(outcome.skipped) == {
+        folded: f"folded into {rec_id[:8]}, whose own entry the file lists"
+    }
+    assert preview.as_dict() == outcome.as_dict()
+
+
 async def _folded_into_keeper(session, tmp_path, repo_id: str, *alias_ids: str):
     """An accepted keeper with each alias id folded into it. Returns the keeper
     and its exported entry, to relist under the alias ids."""
@@ -547,6 +610,55 @@ async def test_import_follows_the_supersede_chain_to_the_wording_an_alias_carrie
     }
 
 
+async def test_import_folds_no_entry_onto_a_keeper_whose_re_keyed_claimant_it_superseded(
+    async_session, tmp_path
+):
+    """The known-limit row is the lone ``rekeyed`` claimant beside an id folded
+    into S, and the file does not list S: X's entry is X's, so nothing in the
+    file is S's own entry for the folded one to yield to."""
+    repo_id, (x_old, s_old), (_, s_id) = await _superseded_the_pre_fix_way(
+        async_session, tmp_path, "Old rule", "Successor rule"
+    )
+    folded = "f" * 32
+    async_session.add(
+        DecisionAlias(
+            alias_id=folded, repository_id=repo_id, decision_id=s_id, reason=MERGED_REASON
+        )
+    )
+    await async_session.flush()
+    entries = {e.id: e for e in load_manifest(tmp_path)[0]}
+    write_manifest(
+        tmp_path, [entries[x_old], replace(entries[s_old], id=folded, title="Folded rule")]
+    )
+    kept = await _wording(async_session, s_id)
+
+    outcome = await import_manifest(async_session, repo_id, tmp_path)
+
+    assert await _wording(async_session, s_id) == kept
+    skipped = dict(outcome.skipped)
+    assert skipped[x_old].endswith(f"which {s_id[:8]} superseded")
+    assert skipped[folded] == f"its alias resolves to {s_id[:8]}, which another entry also reaches"
+    assert not outcome.reaffirmed
+
+
+async def test_import_folds_neither_of_two_merged_claimants_without_a_re_keyed_one(
+    async_session, tmp_path
+):
+    """Two ids folded into one keeper, neither of them its re-keyed id: no
+    entry is the keeper's own, so neither is folded into the other."""
+    a, b = "a" * 32, "b" * 32
+    repo = await insert_repo(async_session)
+    keeper, entry = await _folded_into_keeper(async_session, tmp_path, repo.id, a, b)
+    keeper_id, kept_title = keeper.id, keeper.title
+    write_manifest(tmp_path, [replace(entry, id=a, title="One"), replace(entry, id=b, title="Two")])
+
+    outcome = await import_manifest(async_session, repo.id, tmp_path)
+
+    rival = f"its alias resolves to {keeper_id[:8]}, which another entry also reaches"
+    assert dict(outcome.skipped) == {a: rival, b: rival}
+    assert (await _wording(async_session, keeper_id))[0] == kept_title
+
+
 async def test_import_applies_a_successors_own_entry_that_shares_its_predecessors_title(
     async_session, tmp_path
 ):
@@ -596,8 +708,8 @@ async def test_import_applies_an_own_id_entry_that_takes_its_predecessors_title(
 async def test_import_skips_a_rekeyed_and_a_folded_alias_to_a_missing_record(
     async_session, tmp_path
 ):
-    """A re-keyed and a folded alias row left naming a deleted record: both
-    entries are skipped and neither is created."""
+    """A re-keyed and a folded alias row left naming a deleted record: no keeper
+    to fold into, so both entries are skipped and neither is created."""
     a, b, gone = "a" * 32, "b" * 32, "9" * 32
     repo = await insert_repo(async_session)
     _, entry = await _folded_into_keeper(async_session, tmp_path, repo.id)
