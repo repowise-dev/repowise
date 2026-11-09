@@ -262,6 +262,40 @@ def has_db_store(repo_path: str | Path | None = None) -> bool:
     return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
 
 
+def _postgres_positive_int(env_name: str, default: int) -> int:
+    """Reject invalid opt-in settings before opening a database connection."""
+    raw = os.environ.get(env_name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{env_name} must be a positive integer") from None
+    if value <= 0:
+        raise ValueError(f"{env_name} must be a positive integer")
+    return value
+
+
+def _postgres_connect_args() -> dict[str, Any]:
+    """Opt in to asyncpg timeouts and server-side TCP keepalive probes.
+
+    Poolers may reject these startup parameters, so send none by default.
+    This does not configure keepalive on the client's socket.
+    """
+    if os.environ.get("REPOWISE_POSTGRES_KEEPALIVE", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return {}
+    return {
+        "server_settings": {
+            "tcp_keepalives_idle": str(_postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_IDLE", 60)),
+            "tcp_keepalives_interval": str(
+                _postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_INTERVAL", 15)
+            ),
+            "tcp_keepalives_count": str(_postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_COUNT", 4)),
+        },
+        "command_timeout": _postgres_positive_int("REPOWISE_POSTGRES_COMMAND_TIMEOUT", 300),
+    }
+
+
 def create_engine(
     url: str | None = None,
     *,
@@ -273,6 +307,10 @@ def create_engine(
     short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
+
+    For asyncpg, ``REPOWISE_POSTGRES_KEEPALIVE=1`` enables server-side TCP
+    keepalive probes and a command timeout. See ``docs/reference/CONFIG.md``
+    for defaults, environment overrides, and pooler compatibility.
 
     Args:
         url:             Raw or async-prefixed database URL.  Defaults to SQLite.
@@ -331,6 +369,8 @@ def create_engine(
         # a short-lived engine's footprint at exactly one connection instead
         # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if db_url.startswith("postgresql+asyncpg://"):
+            kwargs["connect_args"] = _postgres_connect_args()
         if short_lived:
             kwargs["poolclass"] = NullPool
 

@@ -1088,6 +1088,7 @@ yields a client error instead of Repowise's "synthesis exceeded its budget".
 |----------|-------------|
 | `REPOWISE_DB_URL` | PostgreSQL instead of SQLite (e.g. `postgresql+asyncpg://...`) |
 | `REPOWISE_DATABASE_URL` | Legacy alias for `REPOWISE_DB_URL`, still honored |
+| `REPOWISE_POSTGRES_KEEPALIVE` | Opt in to asyncpg keepalive and command timeout settings (default off; [details](#postgresql)) |
 | `REPOWISE_HOST` | Default host for `repowise mcp` over HTTP/SSE (`127.0.0.1`); `repowise serve` sets it from `--host` |
 | `REPOWISE_PORT` | API server port (default `7337`) |
 | `REPOWISE_API_URL` | Frontend only: backend URL for the web UI (default `http://localhost:7337`) |
@@ -1192,6 +1193,50 @@ repowise init
 ```
 
 `REPOWISE_DATABASE_URL` is a still-honored alias. Alembic manages the schema.
+
+### Keepalive and command timeout (opt-in)
+
+For a direct PostgreSQL connection using asyncpg, enable session keepalive
+probes and a bounded wait for commands:
+
+```bash
+export REPOWISE_POSTGRES_KEEPALIVE=1
+# Optional overrides (seconds, except COUNT):
+export REPOWISE_POSTGRES_KEEPALIVES_IDLE=60
+export REPOWISE_POSTGRES_KEEPALIVES_INTERVAL=15
+export REPOWISE_POSTGRES_KEEPALIVES_COUNT=4
+export REPOWISE_POSTGRES_COMMAND_TIMEOUT=300
+```
+
+| Variable | Default when enabled | Meaning |
+|----------|----------------------|---------|
+| `REPOWISE_POSTGRES_KEEPALIVE` | Off unless set to `1`, `true`, `yes`, or `on` (case-insensitive) | Enables all four settings below |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | Seconds of inactivity before the server's first TCP keepalive probe |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | Seconds between subsequent probes |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | Unanswered probes before the server considers the peer dead |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | asyncpg's per-command timeout in seconds; raise it for legitimate long-running statements or bulk writes |
+
+Values must be positive integers; invalid values raise an error naming the
+variable when the engine is created. They are read for each new engine. With
+the switch off (including `0` or `false`), all four overrides are ignored and
+the existing behavior is preserved: server keepalive defaults and no added
+command timeout. SQLite and explicitly selected drivers other than asyncpg
+ignore these variables.
+
+The `tcp_keepalives_*` values are sent in asyncpg `server_settings` as startup
+parameters. **Leave this disabled for PgBouncer or hosted poolers unless the
+pooler supports these parameters** (for example, via PgBouncer's
+`ignore_startup_parameters`). A pooler may reject them, and ignoring them does
+not apply them to the backend; configure backend keepalive separately in that
+case. Repowise does not auto-detect poolers or retry without the parameters.
+
+The defaults let the server detect a dead TCP peer in roughly two minutes
+(`60 + 15 × 4` seconds, subject to OS support). They configure the **server's**
+probes, not the client's socket; a tunnel's peer may only be the tunnel
+endpoint, so SSH keepalive must be configured separately. The command timeout
+bounds an active command, not an idle session, and does not guarantee recovery
+of an interrupted transaction. `pool_pre_ping` still checks connections at
+checkout.
 
 ## Workspace config (`.repowise-workspace.yaml`)
 
