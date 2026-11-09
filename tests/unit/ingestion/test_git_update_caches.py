@@ -140,7 +140,7 @@ def _sampled(repo, cache_dir: Path | None) -> dict[str, list[tuple]]:
     return {p: [(r.sha, r.ts, r.added) for r in recs] for p, recs in sample.commits.items()}
 
 
-def test_skewed_commit_times_fall_back_to_a_fresh_walk(tmp_path) -> None:
+def test_skewed_commit_times_match_a_fresh_walk(tmp_path) -> None:
     """A child older than its parent puts git's walk out of time order."""
     import git as gitpython
 

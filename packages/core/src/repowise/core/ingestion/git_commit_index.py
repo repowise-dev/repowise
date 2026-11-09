@@ -8,6 +8,7 @@ rows newest first and files older commits under each file's current name (see
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -186,10 +187,11 @@ def _window_records(
     Git computes ``--numstat`` for every commit in the slice, and on a
     repository with wide or many commits that walk costs seconds however few
     commits are new. With *cache_dir* the last walk's records are kept beside
-    the index. A commit's record never changes, so the next call asks git only
-    for the slice's order (``%H``, no diff) and diffs just the commits the
-    cache lacks. The order comes from git itself, so the result is exactly the
-    fresh walk's, whatever the commit dates, rebases, force pushes or branch
+    the index. A commit's record depends only on the commit and on the few
+    repository settings :func:`_record_context` fingerprints, so the next call
+    asks git only for the slice's order (``%H``, no diff) and diffs just the
+    commits the cache lacks. The order comes from git itself, so the result is
+    the fresh walk's whatever the commit dates, rebases, force pushes or branch
     switches did in between. ``cache_writable=False`` reads the cache but
     leaves it as it was, for the commands that only read the repo.
 
@@ -203,40 +205,30 @@ def _window_records(
     cache_path = Path(cache_dir) / cache_name
     try:
         head = repo.head.commit.hexsha  # type: ignore[attr-defined]
+        context = _record_context(repo, head)
     except Exception:
         return _log_records(repo, *window)
 
     try:
-        cached = _cached_window_records(repo, cache_path, head, skip, depth)
+        cached = _cached_window_records(repo, cache_path, head, context, skip, depth)
     except Exception:
         cached = _CachedWindow(None, at_head=False)
     records = cached.records
     if records is None:
-        records = _log_records(repo, *window)
+        # The sha, not ``HEAD``: a HEAD moved meanwhile must not be cached under it.
+        records = _log_records(repo, head, *window)
     if cache_writable and not cached.at_head:
-        _write_window_cache(cache_path, head, skip, depth, records, bool(_shallow_commits(repo)))
+        key = {"head": head, "context": context, "skip": skip, "depth": depth}
+        _write_window_cache(cache_path, key, bool(_shallow_commits(repo)), records)
     return records
 
 
-def _write_window_cache(
-    cache_path: Path, head: str, skip: int, depth: int, records: list[str], shallow: bool
-) -> None:
+def _write_window_cache(cache_path: Path, key: dict, shallow: bool, records: list[str]) -> None:
     try:
         from repowise.core.fsutils import atomic_write_text
 
-        atomic_write_text(
-            cache_path,
-            json.dumps(
-                {
-                    "version": _WINDOW_CACHE_VERSION,
-                    "head": head,
-                    "skip": skip,
-                    "depth": depth,
-                    "shallow": shallow,
-                    "records": records,
-                }
-            ),
-        )
+        payload = {"version": _WINDOW_CACHE_VERSION, **key, "shallow": shallow}
+        atomic_write_text(cache_path, json.dumps({**payload, "records": records}))
     except Exception as exc:
         logger.debug("commit_window_cache_write_failed", error=str(exc))
 
@@ -250,7 +242,49 @@ def _log_records(repo: object, *revisions: str) -> list[str]:
     raw = repo.git.log(  # type: ignore[attr-defined]
         *revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
     )
-    return [rec for rec in raw.split(_RECORD_SEP) if rec.strip()]
+    # Without the trailing newline, which only the last record of a call lacks,
+    # a record reads the same whichever call it came from.
+    return [rec.rstrip("\n") for rec in raw.split(_RECORD_SEP) if rec.strip()]
+
+
+def _record_context(repo: object, head: str) -> str:
+    """A fingerprint of what, besides the commit, shapes a record's text.
+
+    ``%aN``/``%cN`` follow the ``.mailmap`` at HEAD, replace refs and grafts
+    change parents and diffs, and a few settings change the rendered paths or
+    the rename rows. A cache taken under another fingerprint is not reused.
+    """
+    git = repo.git  # type: ignore[attr-defined]
+    settings = r"^(mailmap\.|core\.quotepath$|diff\.renamelimit$|i18n\.logoutputencoding$)"
+    parts = [
+        _git_or_empty(git.rev_parse, "-q", "--verify", f"{head}:.mailmap"),
+        _git_or_empty(git.config, "--get-regexp", settings),
+        _git_or_empty(git.for_each_ref, "refs/replace"),
+        _read_or_empty(_git_dir(repo), "info", "grafts"),
+    ]
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _git_or_empty(command: Callable[..., str], *args: str) -> str:
+    """The command's output, or ``""`` when git exits non-zero (nothing set)."""
+    try:
+        return command(*args)
+    except Exception:
+        return ""
+
+
+def _git_dir(repo: object) -> str | None:
+    """The repository's shared git directory (a worktree's common dir)."""
+    return getattr(repo, "common_dir", None) or getattr(repo, "git_dir", None)
+
+
+def _read_or_empty(git_dir: str | None, *parts: str) -> str:
+    if not git_dir:
+        return ""
+    try:
+        return Path(git_dir, *parts).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 class _CachedWindow(NamedTuple):
@@ -259,44 +293,55 @@ class _CachedWindow(NamedTuple):
 
 
 def _cached_window_records(
-    repo: object, cache_path: Path, head: str, skip: int, depth: int
+    repo: object, cache_path: Path, head: str, context: str, skip: int, depth: int
 ) -> _CachedWindow:
     """The slice's records, taken from the cache wherever a commit's record is there.
 
     Raises on an unreadable cache; the caller treats that as a miss.
     """
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    if cached.get("version") != _WINDOW_CACHE_VERSION or not isinstance(
-        cached.get("records"), list
+    if (
+        cached.get("version") != _WINDOW_CACHE_VERSION
+        or cached.get("context") != context
+        or not isinstance(cached.get("records"), list)
     ):
         return _CachedWindow(None, at_head=False)
-    cached_records: list[str] = cached["records"]
-    if (
-        cached.get("head") == head
-        and cached.get("skip") == skip
-        and cached.get("depth") == depth
-        and not _shallow_commits(repo)
-    ):
-        return _CachedWindow(list(cached_records), at_head=True)
+    if _taken_at_head(repo, cached, head, skip, depth):
+        return _CachedWindow(list(cached["records"]), at_head=True)
 
-    order = _slice_order(repo, skip, depth)
-    pool = _reusable_records(repo, cached_records, cached.get("shallow") is not False)
+    order = _slice_order(repo, head, skip, depth)
+    pool = _reusable_records(repo, cached["records"], cached.get("shallow") is not False)
+    return _CachedWindow(_patched(repo, order, pool), at_head=False)
+
+
+def _taken_at_head(repo: object, cached: dict, head: str, skip: int, depth: int) -> bool:
+    """Whether the cache is this very slice, from a full clone that is still full."""
+    same_slice = (cached.get("head"), cached.get("skip"), cached.get("depth")) == (
+        head,
+        skip,
+        depth,
+    )
+    return same_slice and cached.get("shallow") is False and not _shallow_commits(repo)
+
+
+def _patched(repo: object, order: list[str], pool: dict[str, str]) -> list[str] | None:
+    """*order*'s records, diffing only the commits *pool* lacks; ``None`` to walk afresh."""
     missing = [sha for sha in order if sha not in pool]
     if len(missing) > _MAX_PATCHED_COMMITS:
-        return _CachedWindow(None, at_head=False)
+        return None
     for start in range(0, len(missing), _PATCH_CHUNK):
         chunk = missing[start : start + _PATCH_CHUNK]
         for record in _log_records(repo, "--no-walk=unsorted", *chunk):
             pool[_record_sha(record)] = record
     if any(sha not in pool for sha in order):
-        return _CachedWindow(None, at_head=False)
-    return _CachedWindow([pool[sha] for sha in order], at_head=False)
+        return None
+    return [pool[sha] for sha in order]
 
 
-def _slice_order(repo: object, skip: int, depth: int) -> list[str]:
+def _slice_order(repo: object, head: str, skip: int, depth: int) -> list[str]:
     """The slice's commit shas in the full walk's order: one cheap pass with no diff."""
     args = [f"--skip={skip}"] if skip else []
-    out = repo.git.log(*args, f"-{depth}", "--no-merges", "--format=%H")  # type: ignore[attr-defined]
+    out = repo.git.log(head, *args, f"-{depth}", "--no-merges", "--format=%H")  # type: ignore[attr-defined]
     return out.split()
 
 
@@ -320,13 +365,7 @@ def _reusable_records(repo: object, records: list[str], taken_shallow: bool) -> 
 
 def _shallow_commits(repo: object) -> set[str]:
     """The boundary commits of a shallow clone; empty for a full clone."""
-    git_dir = getattr(repo, "common_dir", None) or getattr(repo, "git_dir", None)
-    if not git_dir:
-        return set()
-    try:
-        return set((Path(git_dir) / "shallow").read_text(encoding="utf-8").split())
-    except OSError:
-        return set()
+    return set(_read_or_empty(_git_dir(repo), "shallow").split())
 
 
 def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commits: int) -> None:
@@ -819,6 +858,10 @@ class _SharedWalks:
     def walk_next(self, sample: HistorySample, per_file_limit: int, wanted: set[str]) -> bool:
         """Top up *sample* from the next deep region; ``False`` when that walk failed."""
         stats: dict[str, int | bool] = {}
+        # Ceiling: each walked region keeps its own file, and HEAD moving shifts
+        # every slice, so an update rewrites one file per region. Fine for the
+        # one or two regions most repositories reach; past that, one sha-keyed
+        # pool shared by every region would write each record once.
         region = (self.cursor - self._start) // self._step + 1
         deep = self._walk_deep(
             wanted,

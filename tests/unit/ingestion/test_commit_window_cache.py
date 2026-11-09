@@ -36,7 +36,7 @@ def _commit(repo, path: str, text: str, message: str, ts: int) -> str:
 
 def _flat(index) -> dict[str, list[tuple]]:
     return {
-        path: [(r.sha, r.ts, r.added, r.deleted, r.subject) for r in recs]
+        path: [(r.sha, r.ts, r.added, r.deleted, r.subject, r.author_name) for r in recs]
         for path, recs in index.items()
     }
 
@@ -176,8 +176,9 @@ def test_skewed_dates_still_reuse_the_cache(tmp_path: Path, monkeypatch) -> None
     new = _commit(repo, "a.py", "x = 9\n", "c4", base + 150)
 
     walks = _numstat_walks(monkeypatch)
-    assert _walk(repo, {"a.py"}, cache_dir) == _walk(repo, {"a.py"}, None)
-    assert walks[0] == ("--no-walk=unsorted", new)
+    warm = _walk(repo, {"a.py"}, cache_dir)
+    assert walks == [("--no-walk=unsorted", new)]
+    assert warm == _walk(repo, {"a.py"}, None)
 
 
 def test_a_force_push_diffs_only_the_rewritten_commits(tmp_path: Path, monkeypatch) -> None:
@@ -194,8 +195,9 @@ def test_a_force_push_diffs_only_the_rewritten_commits(tmp_path: Path, monkeypat
 
     walks = _numstat_walks(monkeypatch)
     files = {"a.py", "b.py"}
-    assert _walk(repo, files, cache_dir) == _walk(repo, files, None)
-    assert walks[0] == ("--no-walk=unsorted", rewritten)
+    warm = _walk(repo, files, cache_dir)
+    assert walks == [("--no-walk=unsorted", rewritten)]
+    assert warm == _walk(repo, files, None)
 
 
 def test_a_branch_switch_matches_a_fresh_walk(tmp_path: Path) -> None:
@@ -236,3 +238,37 @@ def test_deepening_a_shallow_clone_rediffs_its_old_boundary(tmp_path: Path) -> N
     assert deepened == _walk(clone, {"a.py"}, None)
     assert deepened != shallow
     clone.close()
+
+
+def test_unshallowing_at_the_same_head_drops_the_shallow_records(tmp_path: Path) -> None:
+    import git as gitpython
+
+    origin = _init(tmp_path / "origin")
+    for i in range(4):
+        _commit(origin, "a.py", "x = 1\n" * (i + 1), f"c{i}", 1_700_000_000 + i * 10)
+    clone_dir = tmp_path / "clone"
+    gitpython.Repo.clone_from(f"file://{tmp_path / 'origin'}", clone_dir, depth=2)
+    clone = gitpython.Repo(clone_dir)
+    cache_dir = clone_dir / ".repowise"
+    cache_dir.mkdir()
+    _walk(clone, {"a.py"}, cache_dir)
+
+    clone.git.fetch("--unshallow")
+    full = _walk(clone, {"a.py"}, cache_dir)
+    assert full == _walk(clone, {"a.py"}, None)
+    assert len(full["a.py"]) == 4
+    clone.close()
+
+
+def test_a_mailmap_change_is_not_served_from_the_cache(tmp_path: Path) -> None:
+    """``%aN`` follows the .mailmap at HEAD, so cached author names go stale."""
+    repo = _init(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    _commit(repo, "a.py", "x = 1\n", "c0", 1_700_000_000)
+    _walk(repo, {"a.py"}, cache_dir)
+    _commit(repo, ".mailmap", "Carol <alice@example.com>\n", "mailmap", 1_700_000_010)
+
+    warm = _walk(repo, {"a.py"}, cache_dir)
+    assert warm == _walk(repo, {"a.py"}, None)
+    assert warm["a.py"][0][-1] == "Carol"
