@@ -69,6 +69,10 @@ _TYPE_USE_CONFIDENCE = 0.8
 
 _EMPTY_NAMES: frozenset[str] = frozenset()
 
+# The edges into symbol nodes a full build has when the type-ref pass runs:
+# ``add_file`` writes them, and import resolution only links files.
+_DECLARATION_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
+
 
 def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     """Map each node to the set of symbol names among its direct successors.
@@ -84,6 +88,11 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     candidate's symbol-successor set cannot change mid-pass. Falsy symbol
     names are excluded, matching the callers, which all skip falsy type
     names before lookup.
+
+    Only declaration edges count. A patch build starts from the last graph,
+    which also carries heritage, call and reference edges into symbols; read
+    here, a generic ``T: Trait`` bound made ``T`` a second owner of ``Trait``
+    and the patch lost type-use edges a full build draws.
     """
     sym_name: dict[str, str] = {}
     for node, data in graph.nodes(data=True):
@@ -92,7 +101,9 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
             if name:
                 sym_name[node] = name
     index: dict[str, set[str]] = {}
-    for src, dst in graph.edges():
+    for src, dst, edge_type in graph.edges(data="edge_type"):
+        if edge_type not in _DECLARATION_EDGE_TYPES:
+            continue
         name = sym_name.get(dst)
         if name is not None:
             index.setdefault(src, set()).add(name)

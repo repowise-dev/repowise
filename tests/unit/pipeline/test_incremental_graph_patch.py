@@ -726,6 +726,33 @@ def test_supported_language_body_edit_matches_full_build(
     _assert_equals_full(tree, patched, tmp_path / f"{language}-oracle")
 
 
+def test_rust_trait_impl_does_not_hide_a_type_use_on_patch(tmp_path: Path) -> None:
+    """A seeded ``impl Trait for T`` edge must not make ``T`` a second owner of ``Trait``."""
+    tree = tmp_path / "rust"
+    user = "src/user.rs"
+    _write(
+        tree,
+        {
+            "Cargo.toml": "[package]\nname = \"poc\"\nversion = \"0.1.0\"\n",
+            "src/lib.rs": "pub mod errors;\npub mod user;\n",
+            "src/errors.rs": (
+                "pub trait ToErrorValue { fn show(&self) -> i32; }\n"
+                "impl<T: Copy> ToErrorValue for T { fn show(&self) -> i32 { 1 } }\n"
+            ),
+            user: "pub fn run(input: impl ToErrorValue) -> i32 { 1 }\n",
+        },
+    )
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert "ToErrorValue" in original.graph()[user]["src/errors.rs"]["imported_names"]
+    (tree / user).write_text("pub fn run(input: impl ToErrorValue) -> i32 { 2 }\n")
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == (user,)
+    _assert_equals_full(tree, patched, tmp_path / "rust-oracle")
+
+
 def test_ruby_spec_mirror_edge_survives_a_body_patch(tmp_path: Path) -> None:
     tree = tmp_path / "ruby"
     spec_path = "spec/lib/rack/protection/base_spec.rb"
