@@ -109,7 +109,11 @@ def presence_read(path: str) -> bool:
         return True
     if any(fnmatch.fnmatchcase(name, pattern) for pattern in _READ_GLOBS):
         return True
-    return bool(_READ_DIR_SEGMENTS.intersection(pure.parts[:-1]))
+    if _READ_DIR_SEGMENTS.intersection(pure.parts[:-1]):
+        return True
+    from repowise.core.ingestion.framework_edges.test_runner_setup import is_runner_config
+
+    return is_runner_config(path)
 
 
 # --- what the build reads from the manifests it does open --------------------
@@ -146,10 +150,17 @@ _PYPROJECT_UNREAD_TOOLS = frozenset(
 
 
 def _package_json(text: str, _path: Path, _root: Path) -> object:
+    from repowise.core.ingestion.framework_edges.test_runner_setup import (
+        leaves_its_directory,
+        setup_specs,
+    )
+
     data = json.loads(text)
     if isinstance(data, dict):
-        return {k: v for k, v in data.items() if k not in _NPM_UNREAD}
-    return data
+        data = {k: v for k, v in data.items() if k not in _NPM_UNREAD}
+    # The test-runner handler scans the raw text, at any depth.
+    raw = text.encode()
+    return [data, setup_specs(raw), leaves_its_directory(raw)]
 
 
 def _without(table: object, unread: frozenset[str]) -> object:
@@ -219,30 +230,39 @@ def stack_names(root: Path) -> list[str]:
     return sorted(item.name for item in detect_tech_stack(root))
 
 
-def record_inputs(root: Path, paths: Iterable[str]) -> dict[str, Any]:
-    """What this build read from its manifests, for the next patch to compare."""
+def record_inputs(root: Path, paths: Iterable[str]) -> dict[str, Any] | None:
+    """What the build reads from its manifests, for the next patch to compare.
+
+    Best effort: ``None`` (no record, so manifest edits fall back) on any error.
+    """
     root = Path(root)
-    files = {path: _digest(root, path) for path in sorted(set(paths)) if has_projection(path)}
-    return {"files": files, "stack": stack_names(root)}
+    try:
+        files = {path: _digest(root, path) for path in sorted(set(paths)) if has_projection(path)}
+        return {"files": files, "stack": stack_names(root)}
+    except Exception:
+        return None
 
 
-def config_refusal(root: Path, paths: Collection[str], record: dict[str, Any] | None) -> str | None:
-    """Why the build may read something else from these manifests, or ``None``."""
-    for path in sorted(paths):
-        reason = _view_changed(root, path, record)
-        if reason is not None:
-            return reason
-    if paths and (record or {}).get("stack") != stack_names(Path(root)):
+def inputs_refusal(
+    current: dict[str, Any] | None, record: dict[str, Any] | None, views: Collection[str]
+) -> str | None:
+    """Why the manifests now differ from what the last build read, or ``None``.
+
+    Every recorded manifest is compared, not just the changed ones: an edit
+    the update's diff missed (uncommitted, or before its base) must not be
+    taken as already seen.
+    """
+    if current is None or record is None:
+        return f"{min(views)}: no record of what the last build read from it" if views else None
+    before, now = record.get("files") or {}, current.get("files") or {}
+    for path in sorted(set(before) | set(now)):
+        if before.get(path, "absent") != now.get(path, "absent"):
+            return f"{path}: a field the graph build reads changed"
+    missing = sorted(set(views) - set(now))
+    if missing:
+        return f"{missing[0]}: no record of what the last build read from it"
+    if record.get("stack") != current.get("stack"):
         return "the detected tech stack changed"
-    return None
-
-
-def _view_changed(root: Path, path: str, record: dict[str, Any] | None) -> str | None:
-    files = (record or {}).get("files") or {}
-    if path not in files:
-        return f"{path}: no record of what the last build read from it"
-    if files[path] != _digest(Path(root), path):
-        return f"{path}: a field the graph build reads changed"
     return None
 
 
@@ -273,14 +293,14 @@ def _unread_unindexed(path: str) -> bool:
 
 
 def plan_non_source_changes(
-    root: Path,
     *,
     unparsed: Collection[str],
     changed: dict[str, Any],
     previous_parse: Callable[[str, Any], Any],
     presence_changed: Collection[str] | None,
     config_reads: Collection[str],
-    load_record: Callable[[], dict[str, Any] | None],
+    current: dict[str, Any] | None,
+    record: dict[str, Any] | None,
 ) -> tuple[str | None, frozenset[str]]:
     """``(refusal, cleared)`` for the non-source part of an update.
 
@@ -293,6 +313,9 @@ def plan_non_source_changes(
     no graph step can see: an empty parse before and after, and either no
     reader at all (not read by name, not in *config_reads*, the files the
     tsconfig resolver loaded) or an unchanged recorded view.
+
+    *current* and *record* are :func:`record_inputs` for this tree and for
+    the last build; when both exist they must match whatever changed.
     """
     from .surface import parse_is_empty
 
@@ -316,7 +339,5 @@ def plan_non_source_changes(
             cleared.add(path)
         elif not presence_read(path) and path not in config_reads:
             cleared.add(path)
-    if not views:
-        return None, frozenset(cleared)
-    reason = config_refusal(root, views, load_record())
+    reason = inputs_refusal(current, record, views)
     return reason, (frozenset() if reason else frozenset(cleared))

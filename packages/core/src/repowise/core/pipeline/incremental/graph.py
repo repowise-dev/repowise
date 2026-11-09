@@ -159,8 +159,12 @@ def _plan_graph_patch(
     changed_paths: set[str] | None,
     traversed_paths: set[str],
     presence_changed: set[str] | None = None,
+    current_inputs: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, tuple] | None]:
     """Return the safe patch plan and restored-import cache, if eligible."""
+    from dataclasses import replace
+
+    from .resolution_cache import load_cache
     from .surface import PatchPlan, plan_patch
 
     if not patch_requested:
@@ -189,9 +193,21 @@ def _plan_graph_patch(
             ),
             None,
         )
-    refusal, cleared = _plan_non_source(
-        repo_path, graph_builder, unparsed, changed, parse_cache, presence_changed
-    )
+    resolutions, record = load_cache(Path(repo_path) / ".repowise")
+    try:
+        refusal, cleared = _plan_non_source(
+            repo_path,
+            graph_builder,
+            unparsed,
+            changed,
+            parse_cache,
+            presence_changed,
+            current_inputs=current_inputs,
+            record=record,
+        )
+    except Exception as exc:  # a checker bug costs a full build, not the update
+        logger.warning("graph_patch_config_check_failed", error=str(exc))
+        refusal, cleared = f"config check failed: {exc}", frozenset()
     if refusal is not None:
         return PatchPlan(False, reason=refusal), None
 
@@ -206,9 +222,19 @@ def _plan_graph_patch(
     if not patch_plan.eligible:
         return patch_plan, None
 
-    return _plan_with_resolutions(
-        repo_path, graph_builder, patch_plan, parsed_files=parsed_files, seed_edges=seed_edges
+    patch_plan, kept = _plan_with_resolutions(
+        graph_builder,
+        patch_plan,
+        resolutions,
+        parsed_files=parsed_files,
+        seed_edges=seed_edges,
     )
+    if patch_plan.eligible and (unparsed or cleared) and not patch_plan.refresh:
+        # Re-derive the framework and dynamic-hint edges over the whole graph
+        # rather than trusting seeded ones: a config reader the gate does not
+        # know of then costs a slower patch, not a stale edge.
+        patch_plan = replace(patch_plan, refresh=True)
+    return patch_plan, kept
 
 
 def _plan_non_source(
@@ -218,10 +244,12 @@ def _plan_non_source(
     changed: dict[str, Any],
     parse_cache: Any,
     presence_changed: set[str] | None,
+    *,
+    current_inputs: dict[str, Any] | None,
+    record: dict[str, Any] | None,
 ) -> tuple[str | None, frozenset[str]]:
     """Check the update's config, data and unindexed files (:mod:`.config_inputs`)."""
     from .config_inputs import plan_non_source_changes
-    from .resolution_cache import load_config_inputs
 
     root = Path(repo_path)
     resolver = getattr(graph_builder, "_tsconfig_resolver", None)
@@ -232,7 +260,6 @@ def _plan_non_source(
         except ValueError:
             continue
     return plan_non_source_changes(
-        root,
         unparsed=unparsed,
         changed=changed,
         previous_parse=lambda path, parsed: parse_cache.previous_entry(
@@ -240,7 +267,8 @@ def _plan_non_source(
         ),
         presence_changed=presence_changed,
         config_reads=config_reads,
-        load_record=lambda: load_config_inputs(root / ".repowise"),
+        current=current_inputs,
+        record=record,
     )
 
 
@@ -291,9 +319,9 @@ def _refined_plan(
 
 
 def _plan_with_resolutions(
-    repo_path: Any,
     graph_builder: Any,
     patch_plan: Any,
+    resolutions: dict[str, tuple] | None,
     *,
     parsed_files: list[Any],
     seed_edges: Any,
@@ -302,10 +330,8 @@ def _plan_with_resolutions(
 
     A refreshing plan is then widened to every file its edit reaches.
     """
-    from .resolution_cache import covers, load_resolutions
+    from .resolution_cache import covers
     from .surface import PatchPlan
-
-    resolutions = load_resolutions(Path(repo_path) / ".repowise")
     if covers(resolutions, parsed_files, patch_plan.scope):
         patch_plan = _refined_plan(graph_builder, patch_plan, seed_edges, resolutions)
         return patch_plan, (resolutions if patch_plan.eligible else None)
@@ -500,6 +526,7 @@ def _build_update_graph(
     seed_edges: Any | None,
     changed_paths: set[str] | None,
     presence_changed: set[str] | None,
+    current_inputs: dict[str, Any] | None,
     timings: PhaseTimings | None,
     log: LogFn,
 ) -> tuple[list[Any], dict[str, bytes], int]:
@@ -532,6 +559,7 @@ def _build_update_graph(
             changed_paths=changed_paths,
             traversed_paths=graph_builder.traversed_file_paths,
             presence_changed=presence_changed,
+            current_inputs=current_inputs,
         )
         graph_builder.patch_plan = patch_plan
         _build_graph_with_plan(
@@ -610,6 +638,14 @@ pass reads the sources.
         timings=timings,
     )
 
+    # What the build is about to read from its manifests, taken before it reads
+    # them: an edit racing the build then leaves the record older, not newer.
+    current_inputs = None
+    if not read_only and (patch_requested or cache_resolutions):
+        from .config_inputs import record_inputs
+
+        current_inputs = record_inputs(Path(repo_path), walked)
+
     # Structural episodes, minus the formatter check: this path is the hot one
     # (every update, plus the config-triggered re-score), so it derives only
     # what the walk has already paid for and never spawns a subprocess.
@@ -654,12 +690,12 @@ pass reads the sources.
         seed_edges=seed_edges,
         changed_paths=changed_paths,
         presence_changed=presence_changed,
+        current_inputs=current_inputs,
         timings=timings,
         log=log,
     )
     skipped += unparsed
     if not read_only and cache_resolutions:
-        from .config_inputs import record_inputs
         from .resolution_cache import save_resolutions
 
         save_resolutions(
@@ -667,7 +703,7 @@ pass reads the sources.
             parsed_files,
             graph_builder.import_resolutions,
             source_map,
-            config_inputs=record_inputs(Path(repo_path), walked),
+            config_inputs=current_inputs,
         )
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
@@ -949,10 +985,12 @@ async def rebuild_graph_and_git(
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
             if path
         },
+        # Only a plain in-place edit proves the file existed before and after.
         presence_changed={
             path
             for fd in file_diffs
             if getattr(fd, "status", None) != "modified"
+            or getattr(fd, "old_path", None) not in (None, getattr(fd, "path", None))
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
             if path
         },

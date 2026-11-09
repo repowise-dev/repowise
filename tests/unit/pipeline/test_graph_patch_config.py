@@ -64,6 +64,7 @@ _TREE = {
     "requirements.txt": "httpx==0.1\n",
     "yarn.lock": "left-pad@^1.0.0:\n  version 1.0.0\n",
     ".gitignore": "dist/\n",
+    "jest.e2e.json": '{"setupFiles": ["./src/index.ts"]}\n',
 }
 
 
@@ -169,7 +170,8 @@ def test_edits_no_graph_step_reads_are_patched(
     patched = _update(tree, seed, edits)
 
     assert patched.patch_plan.eligible, patched.patch_plan.reason
-    assert not patched.patch_plan.refresh
+    # Framework and dynamic-hint edges are re-derived, never trusted from the seed.
+    assert patched.patch_plan.refresh
     _assert_equals_full(tree, patched, tmp_path / "full")
 
 
@@ -201,6 +203,8 @@ def test_edits_no_graph_step_reads_are_patched(
         pytest.param({"requirements.txt": None}, "added or removed", id="unindexed-removed"),
         pytest.param({"web/package.json": '{"name": "w"}\n'}, "web/package.json", id="manifest-added"),
         pytest.param({"go.mod": None}, "go.mod: a field", id="go-mod-removed"),
+        # The test-runner handler reads any jest./vitest./vite./playwright. json.
+        pytest.param({"jest.e2e.json": '{"setupFiles": ["./src/fmt.ts"]}\n'}, "json edits", id="runner-json"),
     ],
 )
 def test_edits_a_graph_step_reads_fall_back(
@@ -303,3 +307,80 @@ def test_digest_tracks_only_what_readers_read(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(_package(scripts={"build": "tsc"}))
     assert _digest(tmp_path, "package.json") != before
     assert _digest(tmp_path, "missing/package.json") is None
+
+
+def test_manifest_edit_the_diff_missed_falls_back(
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """A manifest edited outside the update's diff must not count as seen."""
+    tree, seed = indexed
+    (tree / "go.mod").write_text(_GO_MOD.replace("example.com/app", "example.com/other"))
+
+    patched = _update(tree, seed, {"src/fmt.ts": "export function fmt(s: string) { return s + '!'; }\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "go.mod: a field" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_package_json_raw_text_reader_is_part_of_the_view(tmp_path: Path) -> None:
+    """The test-runner handler scans package.json text, dropped fields included."""
+    web = {
+        "name": "web",
+        "jest": {"setupFiles": ["./setup.ts"]},
+        "devDependencies": {"left-pad": "^1.0.0", "@acme/root": "file:../.."},
+    }
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "package.json": json.dumps({"name": "mono", "private": True, "workspaces": ["packages/*"]}) + "\n",
+            "packages/web/package.json": json.dumps(web, indent=2) + "\n",
+            "packages/web/setup.ts": "export const ready = true;\n",
+            "packages/web/a.test.ts": "import { ready } from './setup';\ntest('a', () => ready);\n",
+            "other/b.test.ts": "test('b', () => 1);\n",
+        },
+    )
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    web["devDependencies"] = {"left-pad": "^1.0.0"}
+
+    patched = _update(tree, _snapshot(first), {"packages/web/package.json": json.dumps(web, indent=2) + "\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "a field" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_a_failing_config_check_falls_back(
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.pipeline.incremental import config_inputs
+
+    def boom(**_kwargs: Any) -> Any:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(config_inputs, "plan_non_source_changes", boom)
+    tree, seed = indexed
+
+    patched = _update(tree, seed, {"package.json": _package(version="1.0.1")})
+
+    assert not patched.patch_plan.eligible
+    assert "config check failed" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_a_failed_save_leaves_no_older_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.pipeline.incremental import resolution_cache
+
+    index_dir = tmp_path / ".repowise"
+    index_dir.mkdir()
+    save_resolutions(index_dir, [], {}, {}, config_inputs={"files": {}, "stack": []})
+    assert load_config_inputs(index_dir) is not None
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(resolution_cache, "dump_sealed_pickle", fail)
+    save_resolutions(index_dir, [], {}, {}, config_inputs={"files": {}, "stack": ["Go"]})
+
+    assert load_config_inputs(index_dir) is None

@@ -22,6 +22,7 @@ reaches every file that spells the field.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,9 @@ def save_resolutions(
         dump_sealed_pickle(Path(index_dir) / _FILENAME, payload, domain=_FILENAME)
     except Exception as exc:
         log.debug("resolved_imports_save_failed", error=str(exc))
+        # An older payload would pair its record with this build's snapshot.
+        with contextlib.suppress(OSError):
+            (Path(index_dir) / _FILENAME).unlink(missing_ok=True)
 
 
 def _load_payload(index_dir: Path) -> dict[str, Any] | None:
@@ -134,8 +138,15 @@ def load_resolutions(index_dir: Path) -> dict[str, tuple] | None:
 
 def load_config_inputs(index_dir: Path) -> dict[str, Any] | None:
     """What the last build read from its manifests, or ``None`` when unrecorded."""
+    return load_cache(index_dir)[1]
+
+
+def load_cache(index_dir: Path) -> tuple[dict[str, tuple] | None, dict[str, Any] | None]:
+    """``(resolutions, config inputs)`` from one read of the saved payload."""
     payload = _load_payload(index_dir)
-    return None if payload is None else payload.get("config_inputs")
+    if payload is None:
+        return None, None
+    return payload.get("files"), payload.get("config_inputs")
 
 
 def covers(saved: dict[str, tuple] | None, parsed_files: Iterable[Any], skip: Collection[str]) -> bool:
