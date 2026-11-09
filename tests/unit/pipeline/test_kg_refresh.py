@@ -57,6 +57,7 @@ async def test_skips_when_fingerprint_unchanged(tmp_path):
         {},
         None,
         prior_fingerprint=fp,
+        changed_paths=[],
     )
 
     assert result is None
@@ -75,6 +76,7 @@ async def test_rebuilds_when_fingerprint_changed(tmp_path):
         {},
         None,
         prior_fingerprint="0000000000000000",
+        changed_paths=[],
     )
 
     assert result is not None
@@ -95,6 +97,7 @@ async def test_rebuilds_when_no_prior_fingerprint(tmp_path):
         {},
         None,
         prior_fingerprint=None,
+        changed_paths=[],
     )
 
     assert result is not None
@@ -121,11 +124,47 @@ async def test_prior_summaries_carried_via_artifact(tmp_path):
         {},
         None,
         prior_fingerprint=None,
+        changed_paths=[],
     )
 
     assert result is not None
     node = next(n for n in result.nodes if n["id"] == "file:src/a.py")
     assert node["summary"] == "Rich page-derived summary for a."
+
+
+@pytest.mark.asyncio
+async def test_changed_file_gets_the_floor_not_its_prior_summary(tmp_path):
+    """A changed file's prior summary names its old code; it gets the floor a
+    fresh index would write, while unchanged files keep theirs."""
+    repo = _repo()
+    _write_kg_json(
+        tmp_path,
+        {
+            "nodes": [
+                {"id": "file:src/a.py", "summary": "Defines the old parser."},
+                {"id": "file:src/b.py", "summary": "Rich page-derived summary for b."},
+            ],
+            "layers": [],
+            "tour": [],
+        },
+    )
+
+    result = await refresh_knowledge_graph(
+        tmp_path,
+        repo.parsed,
+        repo.builder,
+        repo.repo_structure,
+        {},
+        None,
+        prior_fingerprint=None,
+        changed_paths=["src/a.py"],
+    )
+
+    assert result is not None
+    summaries = {n["id"]: n["summary"] for n in result.nodes}
+    assert summaries["file:src/a.py"]
+    assert summaries["file:src/a.py"] != "Defines the old parser."
+    assert summaries["file:src/b.py"] == "Rich page-derived summary for b."
 
 
 def test_carry_forward_layer_names_and_tour():

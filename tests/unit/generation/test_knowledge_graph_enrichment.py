@@ -372,15 +372,19 @@ class TestSummaryBackfill:
         core_node = next(n for n in kg.nodes if n["filePath"] == "src/core.py")
         assert core_node["summary"] == "Core business logic module"
 
-    def test_does_not_overwrite_existing(self):
+    def test_page_written_this_run_replaces_existing(self):
+        # The floor an index-only pass applied, or a summary carried from an
+        # older page, must not block the page just written.
         kg = _make_kg_skeleton(nodes=[
             {"id": "file:src/core.py", "type": "file", "filePath": "src/core.py", "summary": "Existing summary"},
+            {"id": "file:src/other.py", "type": "file", "filePath": "src/other.py", "summary": "Kept"},
         ])
         pages = [
             SimpleNamespace(target_path="src/core.py", summary="New summary"),
         ]
         _backfill_summaries(kg, pages)
-        assert kg.nodes[0]["summary"] == "Existing summary"
+        assert kg.nodes[0]["summary"] == "New summary"
+        assert kg.nodes[1]["summary"] == "Kept"
 
     def test_handles_no_pages(self):
         kg = _make_kg_skeleton()

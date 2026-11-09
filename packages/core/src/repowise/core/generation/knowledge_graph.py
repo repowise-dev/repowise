@@ -490,13 +490,14 @@ def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
 
     for node in kg_result.nodes:
         # Any file-level node (any presentation type — file/config/service/
-        # pipeline/schema/document). Only fill empties: a page summary is the
-        # richest source, and the deterministic curation floor is applied
-        # *after* this backfill so it never blocks a real page summary.
+        # pipeline/schema/document). A page written this run is the richest and
+        # newest source, so it replaces what the node holds: the floor an
+        # index-only init or update already applied, or a summary carried
+        # from an older page.
         if not str(node.get("id", "")).startswith("file:"):
             continue
         path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
-        if path in page_summaries and not node.get("summary"):
+        if path in page_summaries:
             node["summary"] = page_summaries[path]
 
 

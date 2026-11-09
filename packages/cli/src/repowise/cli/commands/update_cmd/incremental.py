@@ -155,6 +155,7 @@ def _refresh_knowledge_graph(
     git_meta_map: dict,
     dead_code_report: Any,
     prior_fingerprint: str | None,
+    changed_paths: list[str],
 ) -> Any | None:
     """Rebuild the KG skeleton + curation when the graph shape changed.
 
@@ -173,6 +174,7 @@ def _refresh_knowledge_graph(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=prior_fingerprint,
+            changed_paths=changed_paths,
             log=console.print,
         )
     )

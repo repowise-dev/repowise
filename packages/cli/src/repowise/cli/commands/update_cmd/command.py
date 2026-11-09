@@ -1710,6 +1710,7 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
                 run.git_meta_map,
                 run.dead_code_report,
                 (run.state.get("knowledge_graph") or {}).get("fingerprint"),
+                [fd.path for fd in run.file_diffs],
             )
     if run.knowledge_graph_result is None:
         return

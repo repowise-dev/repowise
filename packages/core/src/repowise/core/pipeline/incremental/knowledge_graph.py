@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ async def refresh_knowledge_graph(
     dead_code_report: Any,
     *,
     prior_fingerprint: str | None,
+    changed_paths: Iterable[str],
     log: LogFn | None = None,
 ) -> Any | None:
     """Rebuild the KG skeleton + curation when the graph shape changed.
@@ -29,6 +31,8 @@ async def refresh_knowledge_graph(
     forward the prior artifact's LLM-enriched layer names and node summaries
     by stable id — so index-only updates stay LLM-free without regressing
     enrichment. LLM re-enrichment stays with the caller (docs mode only).
+    Files in ``changed_paths`` carry no summary: the prior one describes the
+    old code, so they get the floor as a fresh index would.
 
     Returns the refreshed result, or ``None`` when the graph fingerprint is
     unchanged (the persisted artifact is already current) or the rebuild
@@ -93,7 +97,7 @@ async def refresh_knowledge_graph(
         )
 
         if prior_kg is not None:
-            _carry_forward_kg_enrichment(kg, prior_kg)
+            _carry_forward_kg_enrichment(kg, prior_kg, changed_paths=set(changed_paths))
 
         # Summaries degrade to empty on failure, same as the init-path seam.
         import contextlib
@@ -111,7 +115,9 @@ async def refresh_knowledge_graph(
         return None
 
 
-def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
+def _carry_forward_kg_enrichment(
+    kg: Any, prior_kg: Any, *, changed_paths: set[str] = frozenset()
+) -> None:
     """Adopt the prior artifact's LLM-enriched prose onto the rebuilt KG.
 
     Matching is by stable id, and only fields the deterministic passes left
@@ -119,6 +125,7 @@ def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
     descriptions exist only after LLM enrichment (curation names layers but
     leaves descriptions empty), so a non-empty prior description is the
     signal that the prior name/description pair is the enriched one.
+    A node summary is carried only for files outside ``changed_paths``.
     """
     prior_layers = {layer.get("id"): layer for layer in prior_kg.layers or []}
     for layer in kg.layers or []:
@@ -129,6 +136,8 @@ def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
 
     prior_summaries = {n.get("id"): n["summary"] for n in prior_kg.nodes or [] if n.get("summary")}
     for node in kg.nodes or []:
+        if node.get("filePath") in changed_paths:
+            continue
         if not node.get("summary"):
             prior_summary = prior_summaries.get(node.get("id"))
             if prior_summary:
