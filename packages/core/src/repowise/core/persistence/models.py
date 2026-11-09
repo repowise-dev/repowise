@@ -1608,14 +1608,26 @@ class DecisionCandidateMeta(Base):
     )
 
 
+#: ``DecisionAlias.reason`` values. ``merged``: the id's record was folded into
+#: another. ``rekeyed``: the same record moved to its derived id.
+MERGED_REASON = "merged"
+REKEYED_REASON = "rekeyed"
+#: A pre-fix ``supersede_decision`` pointer at the successor. Nothing writes it
+#: now and readers skip it.
+SUPERSEDED_REASON = "superseded"
+
+
 class DecisionAlias(Base):
     """A retired decision id that still resolves to a live record.
 
-    Merging a candidate into a decision, and superseding one decision with
-    another, both leave an id in circulation: in a manifest someone committed,
-    in an agent's notes, in a link. The alias keeps it resolving instead of
-    failing to find anything, which is what makes merge and supersede safe to
-    perform.
+    Merging a candidate into a decision, and moving a record onto its derived
+    id, both leave an id in circulation: in a manifest someone committed, in an
+    agent's notes, in a link. The alias keeps it resolving instead of failing to
+    find anything, which is what makes merge and the move safe to perform.
+
+    Superseding writes none: the superseded record keeps its id, and the
+    successor lives in ``DecisionRecord.superseded_by`` and a ``supersedes``
+    edge. Rows with reason ``superseded`` predate that; readers skip them.
     """
 
     __tablename__ = "decision_aliases"
@@ -1633,7 +1645,7 @@ class DecisionAlias(Base):
         nullable=False,
         index=True,
     )
-    reason: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, default=MERGED_REASON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
