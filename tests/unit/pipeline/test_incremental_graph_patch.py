@@ -109,7 +109,12 @@ def _seed_rows(graph_builder: Any) -> dict[str, list]:
 
     index_dir = Path(graph_builder._repo_path) / ".repowise"
     index_dir.mkdir(exist_ok=True)
-    save_resolutions(index_dir, graph_builder._parsed_files.values())
+    save_resolutions(
+        index_dir,
+        graph_builder._parsed_files.values(),
+        graph_builder.import_resolutions,
+        graph_builder._source_map,
+    )
     graph = graph_builder.graph()
     return {
         "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
@@ -905,11 +910,6 @@ def test_documentation_changes_are_patched_and_equal_a_full_rebuild(
 @pytest.mark.parametrize(
     ("edit", "reason"),
     [
-        # main.py calls orphan() by bare name: a new definer gives it a call edge.
-        pytest.param(_add("orphan.py", "def orphan():\n    return 2\n"), "orphan.py: file added", id="new-definer-of-bare-call"),
-        # view.ts imports './later', unresolved until this file exists.
-        pytest.param(_add("web/later.ts", "export const later = () => 1;\n"), "web/later.ts: file added", id="new-import-target"),
-        pytest.param(_remove("util.py"), "util.py: file removed", id="removed-import-target"),
         pytest.param(_remove("web/guide.md"), "web/guide.md: an import may resolve to it", id="removed-md-imported-by-code"),
         pytest.param(_add("docs/later.md", "# Later\n"), "docs/later.md: an import may resolve to it", id="added-md-named-by-import"),
         # Same stem as fmt.ts: stem-map lookups would see two candidates.
@@ -942,10 +942,34 @@ def test_changes_that_can_reach_other_files_fall_back(
     _assert_equals_full(tree, patched, tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("edit", "reached"),
+    [
+        # main.py calls orphan() by bare name: a new definer gives it a call edge.
+        pytest.param(_add("orphan.py", "def orphan():\n    return 2\n"), "main.py", id="new-definer-of-bare-call"),
+        # view.ts imports './later', unresolved until this file exists.
+        pytest.param(_add("web/later.ts", "export const later = () => 1;\n"), "web/view.ts", id="new-import-target"),
+        pytest.param(_remove("util.py"), "main.py", id="removed-import-target"),
+    ],
+)
+def test_source_adds_and_removes_re_resolve_the_files_they_reach(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reached: str
+) -> None:
+    tree, seed = docs_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    assert reached in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path)
+
+
 def test_new_definer_of_a_bare_call_changes_an_unchanged_files_edges(
     docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path
 ) -> None:
-    """Why an added source file is refused: it rewires a file the patch would not touch."""
+    """Why an added source file widens the scope: it rewires a file it never touched."""
     tree, seed = docs_indexed
     before = {(u, v) for u, v, *_ in _edges(_patched(tree, seed)) if u.startswith("main.py")}
     _write(tree, {"orphan.py": "def orphan():\n    return 2\n"})

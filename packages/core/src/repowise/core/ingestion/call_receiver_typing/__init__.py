@@ -220,6 +220,29 @@ def _enclosing_id(symbol_id: str) -> str:
     return symbol_id.rpartition("::")[0]
 
 
+def _fields_by_class(
+    declarations: tuple[Declaration, ...], symbols: Sequence[Symbol], language: str
+) -> dict[str, dict[str, str | None]]:
+    return types_by_class(
+        declarations,
+        {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
+        [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
+        language,
+    )
+
+
+def class_field_types(parsed: ParsedFile, text: str) -> dict[str, dict[str, str | None]]:
+    """``{class_id: {field: written type}}`` as a chained call reads another file's fields.
+
+    The same reading the resolver makes of a class's source when it types
+    ``obj.field.method()``, so a caller can tell whether an edit changed it.
+    """
+    language = parsed.file_info.language
+    if not _type_symbols(parsed.symbols):
+        return {}
+    return _fields_by_class(scan_declarations(text, language), parsed.symbols, language)
+
+
 def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
     """The types *symbols* declare, less an ``impl`` of a type declared beside it.
 
@@ -1737,13 +1760,7 @@ class ReceiverTypingMixin(
     ) -> dict[str, dict[str, str | None]]:
         """*declarations* grouped by the class in *file_path* each is a field of."""
         parsed = self._parsed_files.get(file_path)
-        symbols = parsed.symbols if parsed else ()
-        return types_by_class(
-            declarations,
-            {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
-            [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
-            language,
-        )
+        return _fields_by_class(declarations, parsed.symbols if parsed else (), language)
 
     def _bound_names_in(self, file_path: str, caller_id: str, language: str) -> frozenset[str]:
         """Every name the calling body binds, however it was bound."""

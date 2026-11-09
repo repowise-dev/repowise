@@ -7,9 +7,15 @@ resolve differently, and re-resolving just the edited file reproduces a full
 rebuild. This module classifies an edit by comparing the file's parse before
 and after, taken from the parse cache.
 
-A documentation file is the one kind of file that can also be added or
-removed: it gives the graph only its own file node, so the patch is exact as
-long as no other file could resolve to it (:func:`_path_set_change_reason`).
+A documentation file can also be added or removed: it gives the graph only
+its own file node, so the patch is exact as long as no other file could
+resolve to it (:func:`_path_set_change_reason`).
+
+An edit that does change what other files see (a source file added or
+removed, a changed surface) is planned as a *refreshing* patch in the
+languages of :data:`SURFACE_PATCH_LANGUAGES`: the planner records what the
+edit changed (:mod:`.surface_names`) and :mod:`.affected` widens the scope to
+every file that could resolve differently.
 
 The rule is deliberately conservative: anything it cannot prove falls back to
 the full rebuild.
@@ -19,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Collection, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # Body-only patching is enabled only for languages covered by the resolver
@@ -34,17 +40,34 @@ PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "
 _INERT_LANGUAGES = frozenset({"markdown", "asciidoc"})
 
 
+# Languages whose files may be added, removed or change their surface in a
+# patch. Each is covered by the patch-parity fixtures; expand together.
+SURFACE_PATCH_LANGUAGES = frozenset({"python", "typescript", "javascript"})
+
+
 @dataclass(frozen=True)
 class PatchPlan:
     """Whether to patch, which files to re-resolve, and why not when refusing.
 
     ``removed`` names deleted files whose seeded nodes the patch must drop.
+    ``refresh`` marks an edit that changed what other files can see: the
+    build re-runs its whole-graph passes, and the scope must first be widened
+    to every file the edit can reach, using ``names`` (identifiers the edit
+    added, removed or changed), ``stems`` (lowercased file-name words of added
+    or removed files), ``importers_of`` (files whose importers must be
+    re-resolved) and ``module_imports_changed`` (edited files whose ``*`` or
+    whole-module imports changed, so the names they pass on did).
     """
 
     eligible: bool
     scope: tuple[str, ...] = ()
     reason: str | None = None
     removed: tuple[str, ...] = ()
+    refresh: bool = False
+    names: frozenset[str] = frozenset()
+    stems: frozenset[str] = frozenset()
+    importers_of: tuple[str, ...] = ()
+    module_imports_changed: tuple[str, ...] = ()
 
 
 def is_inert(parsed: Any) -> bool:
@@ -147,7 +170,6 @@ def _path_set_change_reason(
     removed: Collection[str],
     parsed_files: Iterable[Any],
     previous_paths: Collection[str],
-    seed_nodes: Iterable[tuple[str, Any]],
 ) -> str | None:
     """Why adding or removing these inert files could change another file's graph.
 
@@ -155,8 +177,7 @@ def _path_set_change_reason(
     the stem map keyed by its last segment) and from the stem map's bucket
     sizes, which some type-reference passes read with no import at all. So a
     moved file is safe when no other file shares its stem and no import's text
-    contains its stem. An added path must also be new to the seeded graph, so
-    no stale node attribute is merged onto it.
+    contains its stem.
     """
     from repowise.core.ingestion.graph._stem import stem_key
 
@@ -176,11 +197,101 @@ def _path_set_change_reason(
             return f"{path}: another file shares its import stem"
         if stem and stem in import_text:
             return f"{path}: an import may resolve to it"
-    if added:
-        seeded = {node_id for node_id, _attrs in seed_nodes}
-        stale = next((path for path in sorted(added) if path in seeded), None)
-        if stale is not None:
-            return f"{stale}: already in the graph snapshot"
+    return None
+
+
+def _stale_seed_reason(added: Collection[str], seed_nodes: Iterable[tuple[str, Any]]) -> str | None:
+    """An added path must be new to the seeded graph, or stale attributes merge onto it."""
+    if not added:
+        return None
+    seeded = {node_id for node_id, _attrs in seed_nodes}
+    stale = next((path for path in sorted(added) if path in seeded), None)
+    return None if stale is None else f"{stale}: already in the graph snapshot"
+
+
+def _surface_patchable(parsed: Any) -> bool:
+    """Whether an added, removed or surface-changed file can be patched around."""
+    return parsed.file_info.language in SURFACE_PATCH_LANGUAGES and not getattr(
+        parsed, "grammar_missing", False
+    )
+
+
+def _removal_plan(
+    path: str, parse_cache: Any, traversed_paths: Collection[str]
+) -> tuple[Any | None, str | None]:
+    """The removed file's last parse, or why its removal cannot be patched."""
+    if path in traversed_paths:
+        return None, f"{path}: could not be parsed"
+    before = parse_cache.previous_entry(path, exclude_hash="")
+    if before is None or not (is_inert(before) or _surface_patchable(before)):
+        return None, f"{path}: file removed"
+    return before, None
+
+
+def _edit_plan(path: str, parsed: Any, parse_cache: Any) -> tuple[Any | None, bool, str | None]:
+    """``(before, surface_changed, refusal)`` for an edited, previously parsed file."""
+    before = parse_cache.previous_entry(path, exclude_hash=parsed.content_hash)
+    if before is not None and is_inert(before) and is_inert(parsed):
+        return before, False, None
+    language = parsed.file_info.language
+    if language not in PATCHABLE_LANGUAGES:
+        return None, False, f"{path}: {language} edits are not patched"
+    if getattr(parsed, "grammar_missing", False):
+        return None, False, f"{path}: parser grammar unavailable"
+    if before is None:
+        return None, False, f"{path}: new file or no earlier parse to compare"
+    if surface_fingerprint(before) == surface_fingerprint(parsed):
+        return before, False, None
+    if not (_surface_patchable(before) and _surface_patchable(parsed)):
+        return None, False, f"{path}: its dependency surface changed"
+    return before, True, None
+
+
+@dataclass
+class _EditSet:
+    """An update's edits, sorted by how the patch must treat them.
+
+    ``surface`` maps each added, removed or surface-changed path to its
+    ``(before, after)`` parse, ``None`` on the side where the file did not exist.
+    """
+
+    surface: dict[str, tuple[Any | None, Any | None]] = field(default_factory=dict)
+    inert_added: list[str] = field(default_factory=list)
+    inert_removed: list[str] = field(default_factory=list)
+
+
+def _classify_removals(
+    edits: _EditSet, removed: list[str], parse_cache: Any, traversed_paths: Collection[str]
+) -> str | None:
+    """File each removed path into *edits*; the reason to refuse, if any."""
+    for path in removed:
+        before, refusal = _removal_plan(path, parse_cache, traversed_paths)
+        if refusal is not None:
+            return refusal
+        if is_inert(before):
+            edits.inert_removed.append(path)
+        else:
+            edits.surface[path] = (before, None)
+    return None
+
+
+def _classify_changes(
+    edits: _EditSet, changed: dict[str, Any], previous_paths: Collection[str], parse_cache: Any
+) -> str | None:
+    """File each changed or added path into *edits*; the reason to refuse, if any."""
+    for path, parsed in sorted(changed.items()):
+        if path in previous_paths:
+            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache)
+            if refusal is not None:
+                return refusal
+            if surface_changed:
+                edits.surface[path] = (before, parsed)
+        elif is_inert(parsed):
+            edits.inert_added.append(path)
+        elif _surface_patchable(parsed):
+            edits.surface[path] = (None, parsed)
+        else:
+            return f"{path}: file added"
     return None
 
 
@@ -198,38 +309,48 @@ def plan_patch(
     *parsed_files* is every file parsed in this run and *traversed_paths*
     every file the walk found. The parse cache stands in for the previous
     run's manifest; *seed_nodes* are the snapshot's ``(node_id, attrs)`` rows.
+
+    An edit that only moved bodies (or documentation) is planned here in full.
+    One that adds or removes source files or changes a file's surface comes
+    back with ``refresh`` set and the changed files as a starting scope:
+    :func:`~.affected.expand_scope` adds every file the edit can reach before
+    the patch is accepted.
     """
     if parse_cache is None:
         return PatchPlan(False, reason="no parse cache")
     previous_paths = parse_cache.known_paths()
     current = {pf.file_info.path for pf in parsed_files}
     removed = sorted(previous_paths - current)
-    for path in removed:
-        if path in traversed_paths:
-            return PatchPlan(False, reason=f"{path}: could not be parsed")
-        before = parse_cache.previous_entry(path, exclude_hash="")
-        if before is None or not is_inert(before):
-            return PatchPlan(False, reason=f"{path}: file removed")
-    added: list[str] = []
-    for path, parsed in sorted(changed.items()):
-        if path not in previous_paths:
-            if not is_inert(parsed):
-                return PatchPlan(False, reason=f"{path}: file added")
-            added.append(path)
-            continue
-        before = parse_cache.previous_entry(path, exclude_hash=parsed.content_hash)
-        if before is not None and is_inert(before) and is_inert(parsed):
-            continue
-        language = parsed.file_info.language
-        if language not in PATCHABLE_LANGUAGES:
-            return PatchPlan(False, reason=f"{path}: {language} edits are not patched")
-        if getattr(parsed, "grammar_missing", False):
-            return PatchPlan(False, reason=f"{path}: parser grammar unavailable")
-        if before is None:
-            return PatchPlan(False, reason=f"{path}: new file or no earlier parse to compare")
-        if surface_fingerprint(before) != surface_fingerprint(parsed):
-            return PatchPlan(False, reason=f"{path}: its dependency surface changed")
-    reason = _path_set_change_reason(added, removed, parsed_files, previous_paths, seed_nodes)
+    edits = _EditSet()
+    refusal = _classify_removals(edits, removed, parse_cache, traversed_paths) or _classify_changes(
+        edits, changed, previous_paths, parse_cache
+    )
+    if refusal is not None:
+        return PatchPlan(False, reason=refusal)
+    surface_edits, inert_added, inert_removed = edits.surface, edits.inert_added, edits.inert_removed
+    seed_nodes = list(seed_nodes)
+    added = inert_added + [p for p, (before, _) in surface_edits.items() if before is None]
+    reason = _path_set_change_reason(
+        inert_added, inert_removed, parsed_files, previous_paths
+    ) or _stale_seed_reason(added, seed_nodes)
     if reason is not None:
         return PatchPlan(False, reason=reason)
-    return PatchPlan(True, scope=tuple(sorted(changed)), removed=tuple(removed))
+    scope = tuple(sorted(changed))
+    if not surface_edits:
+        return PatchPlan(True, scope=scope, removed=tuple(removed))
+    from .surface_names import path_set_reason, surface_keys
+
+    reason = path_set_reason(previous_paths, parsed_files, surface_edits)
+    if reason is not None:
+        return PatchPlan(False, reason=reason)
+    keys = surface_keys(surface_edits, parsed_files)
+    return PatchPlan(
+        True,
+        scope=scope,
+        removed=tuple(removed),
+        refresh=True,
+        names=keys.names,
+        stems=keys.stems,
+        importers_of=keys.importers_of,
+        module_imports_changed=keys.module_imports_changed,
+    )
