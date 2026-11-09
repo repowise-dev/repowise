@@ -152,3 +152,118 @@ def test_the_default_reader_still_isolates(tmp_path: Path, monkeypatch):
         )
         assert spawned, f"reader {reader!r} should still take the isolated path"
         assert report.pairs
+
+
+def test_an_update_splice_stays_in_process_and_matches_a_full_scan(tmp_path: Path, monkeypatch):
+    """A small update splices the persisted index here, without a worker.
+
+    The spawn costs seconds of interpreter start-up for a splice that reads a
+    few files; the report must still equal a from-scratch scan of the new tree.
+    """
+    import repowise.core.analysis.health.duplication.isolation as isolation
+
+    body = "\n".join(f"value_{index} = source_{index} + 1" for index in range(30))
+    files = [tmp_path / name for name in ("a.py", "b.py", "c.py")]
+    for path in files:
+        path.write_text(body)
+    parsed = [_parsed(path) for path in files]
+    cache_dir = tmp_path / ".repowise"
+    isolation.detect_clones_with_isolation(
+        parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir, isolation_file_threshold=0
+    )
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("a spliceable update must not spawn a worker")
+
+    monkeypatch.setattr(isolation.multiprocessing, "get_context", _fail)
+    files[2].write_text("unique = 0\n")
+    report = isolation.detect_clones_with_isolation(
+        parsed,
+        window_tokens=20,
+        min_lines=4,
+        cache_dir=cache_dir,
+        changed_files={"c.py"},
+        isolation_file_threshold=0,
+    )
+
+    assert report.diagnostics.get("incremental") is True
+    expected = detect_clones(parsed, window_tokens=20, min_lines=4)
+    assert _key(report) == _key(expected)
+    assert report.duplication_pct == expected.duplication_pct
+
+
+def _record_spawns(isolation, monkeypatch) -> list[bool]:
+    """The ``splice`` argument of every worker spawned, in order."""
+    real_get_context = isolation.multiprocessing.get_context
+    splice_args: list[bool] = []
+
+    def _recording_context(method):
+        context = real_get_context(method)
+
+        class _Context:
+            Pipe = staticmethod(context.Pipe)
+
+            @staticmethod
+            def Process(*, target, args, name):
+                splice_args.append(args[-1])
+                return context.Process(target=target, args=args, name=name)
+
+        return _Context()
+
+    monkeypatch.setattr(isolation.multiprocessing, "get_context", _recording_context)
+    return splice_args
+
+
+def _two_clones(tmp_path: Path) -> list[SimpleNamespace]:
+    body = "\n".join(f"value_{index} = source_{index} + 1" for index in range(30))
+    paths =[tmp_path / "a.py", tmp_path / "b.py"]
+    for path in paths:
+        path.write_text(body)
+    return [_parsed(path) for path in paths]
+
+
+def test_an_update_without_a_spliceable_index_still_isolates(tmp_path: Path, monkeypatch):
+    """A token cache but no pair index: the splice misses here, and the full
+    scan runs in the worker, told not to repeat the miss."""
+    import repowise.core.analysis.health.duplication.isolation as isolation
+
+    spawns = _record_spawns(isolation, monkeypatch)
+    parsed = _two_clones(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    cache_dir.mkdir()
+    (cache_dir / "duplication_cache.pkl").write_bytes(b"unreadable")
+
+    report = isolation.detect_clones_with_isolation(
+        parsed,
+        window_tokens=20,
+        min_lines=4,
+        cache_dir=cache_dir,
+        changed_files={"a.py"},
+        isolation_file_threshold=0,
+    )
+    assert spawns == [False]
+    assert _key(report) == _key(detect_clones(parsed, window_tokens=20, min_lines=4))
+
+
+def test_a_token_cache_past_the_bound_splices_in_the_worker(tmp_path: Path, monkeypatch):
+    """Past the size bound the load's retained pages cost more than the spawn."""
+    import repowise.core.analysis.health.duplication.isolation as isolation
+
+    parsed = _two_clones(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    isolation.detect_clones_with_isolation(
+        parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir, isolation_file_threshold=0
+    )
+    spawns = _record_spawns(isolation, monkeypatch)
+    monkeypatch.setattr(isolation, "_IN_PROCESS_SPLICE_MAX_CACHE_BYTES", 0)
+
+    report = isolation.detect_clones_with_isolation(
+        parsed,
+        window_tokens=20,
+        min_lines=4,
+        cache_dir=cache_dir,
+        changed_files={"a.py"},
+        isolation_file_threshold=0,
+    )
+    assert spawns == [True]
+    assert report.diagnostics.get("incremental") is True

@@ -243,6 +243,38 @@ def test_update_store_matches_init_at_the_same_commit(
     actual = _store(incremental)
     bad = [table for table, rows in expected.items() if actual[table] != rows]
     assert not bad, bad
+    _assert_centrality_matches(control, incremental)
+
+
+def _centrality(repo: Path) -> dict[str, dict[str, tuple]]:
+    with closing(sqlite3.connect(repo / ".repowise" / "wiki.db")) as conn:
+        return {
+            table: {
+                row[0]: row[1:]
+                for row in conn.execute(f"SELECT node_id, pagerank, betweenness FROM {table}")
+            }
+            for table in ("graph_nodes", "graph_metrics")
+        }
+
+
+def _assert_centrality_matches(control: Path, incremental: Path) -> None:
+    """Centrality equals init's within the persist gate's float tolerance.
+
+    The update writes these through the gate, which keeps a stored value that
+    differs from the fresh one by no more than ``_CENTRALITY_ATOL``.
+    """
+    from repowise.core.persistence.crud.graph import _CENTRALITY_ATOL
+
+    expected = _centrality(control)
+    actual = _centrality(incremental)
+    for table, rows in expected.items():
+        assert rows.keys() == actual[table].keys(), table
+        assert any(value[0] for value in rows.values()), f"{table} must carry pagerank"
+        for node_id, values in rows.items():
+            assert actual[table][node_id] == pytest.approx(values, rel=0, abs=_CENTRALITY_ATOL), (
+                table,
+                node_id,
+            )
 
 
 def _kg_graph(repo: Path) -> tuple[str, list[str]]:
