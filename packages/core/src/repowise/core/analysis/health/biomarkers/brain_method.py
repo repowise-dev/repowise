@@ -27,7 +27,7 @@ simple synchronous API).
 
 from __future__ import annotations
 
-from ..complexity.dispatch import judged_ccn
+from ..complexity.dispatch import judged_ccn, judged_leaves_out
 from ..models import Severity
 from .base import BiomarkerResult, FileContext, shape_details
 
@@ -86,7 +86,7 @@ class BrainMethodDetector:
             reason = f"Brain Method: {fn.name} is {code_lines} lines{besides}, CCN {judged}"
             if judged != fn.ccn:
                 details["judged_ccn"] = judged
-                reason += f" ({fn.ccn} counting every arm of its dispatch)"
+                reason += f" ({fn.ccn} counting {judged_leaves_out(fn)})"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
