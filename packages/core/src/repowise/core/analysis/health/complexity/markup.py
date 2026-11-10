@@ -544,8 +544,8 @@ _CHAIN_PARTS = _ARGUMENT_LISTS | {
 }
 #: Fragments of a literal argument's node kind: strings, numbers, booleans.
 _LITERAL_PARTS = ("string", "literal", "number", "integer", "float", "true", "false", "boolean")
-#: Ruby's block arguments (``do |x| ... end``), a callback by another name.
-_CALLBACK_KINDS = frozenset({"block", "do_block"})
+#: Ruby's blocks (``do |x| ... end``, ``&:name``), a callback by another name.
+_CALLBACK_KINDS = frozenset({"block", "do_block", "block_argument"})
 #: A builder chain has at least this many links, its own and those of the chains
 #: in its arguments (``app.arg(Arg::new("x").long("x"))`` has three).
 #: Syntax alone cannot tell a setting (``.long("x")``) from a transform

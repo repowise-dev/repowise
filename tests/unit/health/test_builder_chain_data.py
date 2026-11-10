@@ -216,3 +216,12 @@ def test_a_plain_call_with_many_arguments_is_no_chain() -> None:
         + '\n    " end");\n  return s;\n}\n'
     )
     assert _only_function("m.c", "c", source).markup_nloc == 0
+
+
+def test_a_ruby_chain_handed_a_symbol_proc_stays_code() -> None:
+    source = (
+        "def f(a, b)\n  if a\n    a += 1\n  end\n  if b\n    b += 1\n  end\n  items\n"
+        + _links('    .where("k{i}")')
+        + "\n    .map(&:name)\nend\n"
+    )
+    assert _only_function("m.rb", "ruby", source).markup_nloc == 0
