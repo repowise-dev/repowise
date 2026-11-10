@@ -49,6 +49,18 @@ long mixed(const char *u, const char *v) {
     }
     return mul;
 }
+
+void command(client *c) {
+    if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr, "help")) {
+        help(c);
+    } else if (!strcasecmp(c->argv[1]->ptr, "load") && c->argc >= 3) {
+        load(c);
+    } else if (!strcasecmp(c->argv[1]->ptr, "list") && c->argc == 2) {
+        list(c);
+    } else {
+        error(c);
+    }
+}
 """
 
 _DART = """
@@ -111,6 +123,10 @@ NSArray * pairs(NSString *key, id value) {
 
 def test_c_string_compare_chain_is_one_dispatch() -> None:
     assert _share("c", _C, "unit") >= DISPATCH_SHARE
+
+
+def test_c_subcommand_chain_is_keyed_on_the_shared_name() -> None:
+    assert _share("c", _C, "command") >= DISPATCH_SHARE
 
 
 def test_c_compare_chain_over_two_strings_is_not() -> None:

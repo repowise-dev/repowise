@@ -29,7 +29,6 @@ to a name is not: it is a unit of its own, with its own dispatch.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from typing import TYPE_CHECKING, NamedTuple
 
 from .ast_utils import is_named_block_lambda
@@ -229,25 +228,34 @@ def _condition(arm: Node) -> Node | None:
     )
 
 
-def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
-    """The one name a condition tests, ``None`` when it tests no single one."""
+def _subjects(node: Node | None, lmap: LanguageNodeMap) -> list[str]:
+    """Every name a condition tests, left side first."""
     node = _unwrap(node)
     if node is None:
-        return None
+        return []
     if (operand := _negated(node)) is not None:
-        return _subject(operand, lmap)
+        return _subjects(operand, lmap)
     if _is_boolean_operator(node, lmap):
-        # ``kind == "call" and lang == "ruby"`` dispatches on ``kind``: the
-        # first side that tests a name is the one the arm is keyed on.
-        return _subject(node.child_by_field_name("left"), lmap) or _subject(
+        return _subjects(node.child_by_field_name("left"), lmap) + _subjects(
             node.child_by_field_name("right"), lmap
         )
     if node.type in _COMPARISON_KINDS:
         named = node.named_children
         left = node.child_by_field_name("left") or (named[0] if named else None)
         right = node.child_by_field_name("right") or (named[-1] if named else None)
-        return _operand(left, lmap) or _operand(right, lmap)
-    return _call_subject(node, lmap)
+        subject = _operand(left, lmap) or _operand(right, lmap)
+    else:
+        subject = _call_subject(node, lmap)
+    return [subject] if subject is not None else []
+
+
+def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
+    """The name a condition is keyed on, ``None`` when it tests none.
+
+    ``kind == "call" and lang == "ruby"`` dispatches on ``kind``: the first
+    side that tests a name is the one the arm is keyed on.
+    """
+    return next(iter(_subjects(node, lmap)), None)
 
 
 def _chain_arms(node: Node) -> list[Node]:
@@ -266,11 +274,17 @@ def _chain_arms(node: Node) -> list[Node]:
 
 
 def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
-    """Whether every arm's condition tests the same single name."""
+    """Whether every arm's condition tests one same name.
+
+    ``argc == 2 && !strcmp(argv[1], "help")`` then ``!strcmp(argv[1], "load")
+    && argc >= 3`` are both keyed on ``argv[1]``, whichever side names it first.
+    """
     if len(arms) < _MIN_ARMS:
         return False
-    subjects = Counter(_subject(_condition(arm), lmap) for arm in arms)
-    return len(subjects) == 1 and None not in subjects
+    shared = set(_subjects(_condition(arms[0]), lmap))
+    for arm in arms[1:]:
+        shared &= set(_subjects(_condition(arm), lmap))
+    return bool(shared)
 
 
 def _is_chain_head(node: Node) -> bool:
