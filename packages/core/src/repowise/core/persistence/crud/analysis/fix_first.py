@@ -262,6 +262,12 @@ def scoring_findings(repo_id: str) -> Any:
     )
 
 
+def _shown(rows: list[Any]) -> list[Any]:
+    """*rows* of a type the queue may list."""
+    hidden = excluded_types()
+    return [r for r in rows if r.biomarker_type not in hidden]
+
+
 def queue_findings(repo_id: str) -> Any:
     """Open, scoring, code-health findings a surface may show."""
     return and_(
@@ -745,11 +751,14 @@ async def _store_judgements(
     await _write_changed(session, o, ((r, refactoring.get(r.opportunity_id)) for r in stored))
     eligible = {i for i, j in refactoring.items() if j.reason is None}
     planned = {r.file_path for r in stored if r.opportunity_id in eligible}
-    findings = await _judged_findings(session, repo_id)
+    # Hidden types are read so a lead's gain is priced with them, and are
+    # never judged: the queue never lists them.
+    scored = await _judged_findings(session, repo_id)
+    findings = _shown(scored)
     paths = {f.file_path for f in findings}
     judged = judge_findings(
         metrics=await _metrics(session, repo_id, None) if paths else [],
-        findings=findings,
+        findings=scored,
         plans=await _plans(session, repo_id, [], None) if paths else [],
         dead_code=await _dead_code(session, repo_id),
         hot_cuts=await _hot_cuts(session, repo_id),
@@ -787,6 +796,8 @@ async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
                 f.id,
                 f.file_path,
                 f.biomarker_type,
+                # A lead's gain rescores its file, which reads the severity.
+                f.severity,
                 f.function_name,
                 f.line_start,
                 f.line_end,
@@ -795,7 +806,7 @@ async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
                 f.status,
                 f.details_json,
                 *_queue_columns(f),
-            ).where(queue_findings(repo_id))
+            ).where(scoring_findings(repo_id))
         )
     )
 
@@ -909,10 +920,8 @@ async def _build(
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}
-    hidden = excluded_types()
-    changes, skipped = await _function_changes(
-        session, repository_id, [f for f in findings if f.biomarker_type not in hidden], refactoring
-    )
+    shown = _shown(findings)
+    changes, skipped = await _function_changes(session, repository_id, shown, refactoring)
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
         findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
@@ -926,7 +935,7 @@ async def _build(
         basis=await _basis(session, repository_id),
         hot_cuts=await _hot_cuts(session, repository_id),
         symbol_lines=await _symbol_lines(session, repository_id, performance),
-        validate=await _finding_validator(session, repository_id, findings) if verify else None,
+        validate=await _finding_validator(session, repository_id, shown) if verify else None,
         judged=judged,
         function_changes=changes,
         blame_skipped=skipped,
