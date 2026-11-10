@@ -7,7 +7,10 @@ or ``Err``. Two shapes provably cannot, so they are no finding:
   preceding ``&&`` operand (``x.is_some() && x.unwrap()``,
   ``!v.is_empty() && v.last().unwrap()``);
 - a ``write!`` / ``writeln!`` into a local ``String``: ``fmt::Write`` for
-  ``String`` never returns ``Err``.
+  ``String`` never returns ``Err``;
+- a constructor or parse of a literal (``Regex::new(r"\\d+")``,
+  ``"127.0.0.1:80".parse()``, ``NonZeroU8::new(7)``): the input is fixed in the
+  source, so the call panics on the first run or never, and a test catches it.
 
 A few more are true but idiomatic invariant assertions. They stay findings,
 labelled with the idiom so the biomarker can say so and not score them:
@@ -41,6 +44,10 @@ _NONEMPTY_GUARDS = ("!{v}.is_empty()", "{v}.len()>0", "{v}.len()!=0", "{v}.len()
 _STRING_WRITE_MACROS = frozenset({"write", "writeln"})
 _STRING_CTORS = ("String::new(", "String::with_capacity(", "String::from(")
 _STRING_TYPES = frozenset({"String", "&mutString"})
+
+_STRING_LITERALS = frozenset({"string_literal", "raw_string_literal"})
+# A decimal integer literal other than zero, with an optional type suffix.
+_NONZERO_INT = re.compile(r"^[0_]*[1-9][0-9_]*(?:[iu](?:8|16|32|64|128|size))?$")
 
 # Zero-argument receiver call -> idiom. ``read``/``write`` take no argument
 # only on ``RwLock``; ``io::Read::read(buf)`` and ``io::Write::write(buf)`` do.
@@ -234,12 +241,59 @@ def _writes_to_string(receiver: Node) -> bool:
     return scope is not None and _declares_string(scope, target)
 
 
+def _is_literal_parse(fn: Node) -> bool:
+    """``"lit".parse`` or ``"lit".parse::<T>``."""
+    if fn.type == "generic_function":
+        fn = fn.child_by_field_name("function")
+    return (
+        fn is not None
+        and fn.type == "field_expression"
+        and _text(fn.child_by_field_name("field")) == "parse"
+        and _text(fn.child_by_field_name("value")).startswith('"')
+    )
+
+
+def _is_literal_ctor(fn: Node, args: Node | None) -> bool:
+    """``Regex::new("lit")`` / ``Url::parse("lit")`` / ``NonZeroU8::new(7)``."""
+    named = args.named_children if args is not None else []
+    if fn.type != "scoped_identifier" or len(named) != 1:
+        return False
+    path = _text(fn).rsplit("::", 2)[-2:]
+    arg = named[0]
+    if path in (["Regex", "new"], ["Url", "parse"]):
+        return arg.type in _STRING_LITERALS
+    return (
+        path[0].startswith("NonZero")
+        and path[-1] == "new"
+        and arg.type == "integer_literal"
+        and bool(_NONZERO_INT.match(_text(arg)))
+    )
+
+
+def _has_literal_input(receiver: Node) -> bool:
+    """*receiver* builds its value from a literal alone (module docstring)."""
+    if receiver.type != "call_expression":
+        return False
+    fn = receiver.child_by_field_name("function")
+    args = receiver.child_by_field_name("arguments")
+    if fn is None:
+        return False
+    if _is_literal_parse(fn):
+        return args is not None and args.named_child_count == 0
+    return _is_literal_ctor(fn, args)
+
+
 def cannot_panic(call: Node) -> bool:
-    """True when the ``unwrap``/``expect`` *call* provably cannot panic."""
+    """True when the ``unwrap``/``expect`` *call* cannot panic, or can only on
+    a literal input that a first run would already have failed on."""
     receiver = method_call_parts(call)[1]
     if receiver is None:
         return False
-    return _writes_to_string(receiver) or _is_guarded(call, receiver)
+    return (
+        _writes_to_string(receiver)
+        or _has_literal_input(receiver)
+        or _is_guarded(call, receiver)
+    )
 
 
 def _sync_idiom(receiver: Node | None) -> str | None:

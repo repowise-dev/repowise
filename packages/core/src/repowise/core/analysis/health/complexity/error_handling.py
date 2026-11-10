@@ -275,6 +275,19 @@ def _eh_rust_in_test(node: Node) -> bool:
     return False
 
 
+def _eh_rust_in_main(node: Node) -> bool:
+    """True when *node*'s nearest enclosing function is a crate's top-level
+    ``fn main``: a panic there ends the program with its message, the same
+    exit a returned error would give."""
+    cur: Node | None = node.parent
+    while cur is not None and cur.type != "function_item":
+        cur = cur.parent
+    if cur is None or cur.parent is None or cur.parent.type != "source_file":
+        return False
+    name = cur.child_by_field_name("name")
+    return name is not None and _eh_text(name) == "main"
+
+
 def _eh_rust_hit(node: Node) -> bool:
     """True when *node* is an unwrap/expect call or a panic-family macro."""
     if node.type == "call_expression":
@@ -485,7 +498,7 @@ def _eh_visit(
         # A panic-family macro aborts unconditionally; unwrap/expect converts
         # a Result/Option into a panic. Different claims → different kinds.
         # ``.unwrap()`` inside a ``#[test]`` is the intended failure signal.
-        if not _eh_rust_in_test(node):
+        if not (_eh_rust_in_test(node) or _eh_rust_in_main(node)):
             _eh_rust_append(node, hits)
     elif language == "go" and _eh_go_hit(node):
         hits.append(ErrorHandlingHit("go_swallow", node.start_point[0] + 1))
