@@ -347,15 +347,15 @@ def _is_default_arm(arm: Node) -> bool:
     matched, not a decision of its own."""
     if arm.type in _DEFAULT_ARM_KINDS:
         return True
-    first = arm.children[0] if arm.children else None
-    if first is None:
+    if not arm.children:
         return False
+    first = arm.children[0]
+    if first.type == "switch_label":
+        first = first.children[0] if first.children else first
     if first.type in _DEFAULT_TOKENS:
         return True
-    if first.type == "switch_label":
-        return bool(first.children) and first.children[0].type == "default"
-    head = first if first.is_named else (arm.named_children or [None])[0]
-    return head is not None and head.text in _WILDCARD_TEXTS
+    head = first if first.is_named else (arm.named_children or [first])[0]
+    return head.text in _WILDCARD_TEXTS
 
 
 class _Arms(NamedTuple):
