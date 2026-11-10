@@ -238,6 +238,10 @@ class ClassComplexity:
     # implicit-receiver languages, so a service method using its one injected
     # repository is only visible here; Move Method reads it.
     field_readers: frozenset[str] = frozenset()
+    # The grammar node type of the declaration (``class``, ``module``, ...):
+    # a Ruby ``module`` is never instantiated, so it is a mixin or a function
+    # bag, not a class.
+    kind: str = ""
 
 
 @dataclass(frozen=True)
