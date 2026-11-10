@@ -149,11 +149,10 @@ def test_a_computing_argument_keeps_its_rows_code() -> None:
         '    .option("--a", "A")\n'
         '    .option("--b", compute(level))\n'
         '    .option("--c", "C", level + 1)\n'
-        "    .option(VERSION.trim())\n"
-        '    .option("--d", "D")'
+        "    .option(VERSION.trim())\n" + _links('    .option("--d{i}", "D")')
     )
-    # ``compute(level)``, ``level + 1`` and ``.trim()`` are code; ``--a`` and ``--d`` rows are data.
-    assert _js(links).markup_nloc == 2
+    # ``compute(level)``, ``level + 1`` and ``.trim()`` are code; ``--a`` and ``--d*`` rows are data.
+    assert _js(links).markup_nloc == 25
 
 
 def test_a_short_chain_is_left_alone() -> None:
@@ -176,3 +175,35 @@ def test_a_rust_option_chain_with_a_closure_stays_code() -> None:
         '    .and_then(|t| t.parse().ok())\n    .unwrap_or(4)\n}\n'
     )
     assert _only_function("m.rs", "rust", source).markup_nloc == 0
+
+
+_FLUENT = [
+    (
+        "m.js",
+        "javascript",
+        "function f(s) {\n",
+        '  return s.replace("a", "b").replace("c", "d")\n    .replace("e", "f")\n'
+        "    .trim()\n    .toLowerCase();\n}\n",
+    ),
+    (
+        "m.py",
+        "python",
+        "def f(df):\n",
+        '    return (df.groupby("a")\n        .agg("sum")\n        .rename(columns={"a": "b"})\n'
+        '        .sort_values("b")\n        .reset_index(drop=True))\n',
+    ),
+    (
+        "M.java",
+        "java",
+        "class M {\n  void f(String x) {\n",
+        '    assertThat(x)\n        .isEqualTo("a")\n        .hasSize(3)\n        .contains("b")\n'
+        '        .doesNotContain("c");\n  }\n}\n',
+    ),
+]
+
+
+@pytest.mark.parametrize(("path", "language", "head", "chain"), _FLUENT)
+def test_a_short_fluent_transform_or_assertion_stays_code(
+    path: str, language: str, head: str, chain: str
+) -> None:
+    assert _only_function(path, language, head + chain).markup_nloc == 0

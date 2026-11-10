@@ -546,8 +546,13 @@ _CHAIN_PARTS = _ARGUMENT_LISTS | {
 _LITERAL_PARTS = ("string", "literal", "number", "integer", "float", "true", "false", "boolean")
 #: Ruby's block arguments (``do |x| ... end``), a callback by another name.
 _CALLBACK_KINDS = frozenset({"block", "do_block"})
-#: A builder chain has at least this many calls, half or more with a literal argument.
-_MIN_CHAIN_LINKS = 4
+#: A builder chain makes at least this many calls, its own links and those of the
+#: chains in its arguments (``.arg(Arg::new("x").long("x"))`` makes three).
+#: Syntax alone cannot tell a setting (``.long("x")``) from a transform
+#: (``.replace("a", "b")``) or an assertion (``.contains("b")``); a short fluent
+#: chain is far more often the latter, so only a big chain counts. Naming the
+#: builder roots per framework would be the upgrade.
+_MIN_CHAIN_CALLS = 8
 
 
 def _call_arguments(call: Node) -> Node | None:
@@ -602,15 +607,30 @@ def _takes_callback(call: Node) -> bool:
     return False
 
 
-def _is_builder(links: list[Node], min_links: int) -> bool:
-    """At least *min_links* calls, half or more of them with a literal argument.
+def _call_count(top: Node) -> int:
+    """Calls made in *top*, callbacks left out."""
+    count = 0
+    stack = [top]
+    while stack:
+        node = stack.pop()
+        if any(part in node.type for part in _CODE_PARTS):
+            continue
+        count += node.type in CALL_KINDS
+        stack.extend(node.named_children)
+    return count
 
-    A chain of four or more that hands a link a callback transforms a value
-    (``pattern.substringAfter(":").removePrefix("/").also { ... }``); it is no builder.
+
+def _is_builder(links: list[Node], top_level: bool) -> bool:
+    """Half or more of the *links* take a literal argument.
+
+    A statement's chain must also be big, and hand no link a callback: one that
+    does transforms a value (``pattern.removePrefix("/").also { ... }``).
     """
-    if len(links) < min_links or 2 * sum(map(_has_literal_argument, links)) < len(links):
+    if not links or 2 * sum(map(_has_literal_argument, links)) < len(links):
         return False
-    return min_links < _MIN_CHAIN_LINKS or not any(map(_takes_callback, links))
+    if not top_level:
+        return True
+    return _call_count(links[0]) >= _MIN_CHAIN_CALLS and not any(map(_takes_callback, links))
 
 
 def _chain_node_is_code(node: Node, spine: set[int], data: set[int], code: set[int]) -> bool:
@@ -622,7 +642,7 @@ def _chain_node_is_code(node: Node, spine: set[int], data: set[int], code: set[i
     kind = node.type
     if kind in CALL_KINDS:
         if node.id not in spine:
-            return not _chain_rows(node, data, code, 1)
+            return not _chain_rows(node, data, code, top_level=False)
         if _call_arguments(node) is None:
             # ``.build()``: an action, not a setting.
             code.add(node.end_point[0])
@@ -630,10 +650,10 @@ def _chain_node_is_code(node: Node, spine: set[int], data: set[int], code: set[i
     return kind not in _CHAIN_PARTS and not _is_data_node(node)
 
 
-def _chain_rows(top: Node, data: set[int], code: set[int], min_links: int) -> bool:
+def _chain_rows(top: Node, data: set[int], code: set[int], *, top_level: bool) -> bool:
     """Sort a builder chain's token rows into *data* and *code*; ``False`` when *top* is none."""
     links = _chain_links(top)
-    if not _is_builder(links, min_links):
+    if not _is_builder(links, top_level):
         return False
     spine = {link.id for link in links}
     stack = [top]
@@ -660,7 +680,7 @@ def _builder_rows(chains: list[Node], source: bytes) -> set[int]:
     code: set[int] = set()
     covered_to = -1
     for top in sorted(chains, key=lambda node: (node.start_byte, -node.end_byte)):
-        if top.start_byte < covered_to or not _chain_rows(top, data, code, _MIN_CHAIN_LINKS):
+        if top.start_byte < covered_to or not _chain_rows(top, data, code, top_level=True):
             continue
         covered_to = top.end_byte
         code.add(top.start_point[0])
