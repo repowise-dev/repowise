@@ -159,3 +159,36 @@ f() {
 """
     # The ``a)`` arm and its ``if``; ``*)`` is the fallthrough.
     assert _ccn("shell", source) == 3
+
+
+def test_a_switch_without_a_subject_and_a_tangled_arm_is_an_if_chain() -> None:
+    kotlin = """fun f(x: Int, y: Boolean): Int = when {
+    x > 10 -> { if (y) 9 else 1 }
+    x > 5 -> 2
+    x > 0 -> 3
+    else -> 0
+}"""
+    go = """package p
+func f(x int, y bool) int {
+	switch {
+	case x > 10:
+		if y { return 9 }
+		return 1
+	case x > 5: return 2
+	case x > 0: return 3
+	default: return 0
+	}
+}"""
+    # Three conditions and the if, as ``if`` / ``else if`` / ``else if`` / ``else``.
+    assert _ccn("kotlin", kotlin) == 5
+    assert _ccn("go", go) == 5
+
+
+def test_a_guarded_wildcard_is_a_case() -> None:
+    source = """object O { def f(x: Int, y: Boolean): Int = x match {
+  case 1 => 1
+  case _ if y => 2
+  case _ => 0
+} }"""
+    # The simple case on the match, the guarded arm and its guard.
+    assert _ccn("scala", source) == 4

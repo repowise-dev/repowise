@@ -36,6 +36,7 @@ from .ast_utils import is_named_block_lambda
 from .cyclomatic import (
     _ELSE_IF_NODE_KINDS,
     _collect_case_children,
+    _has_subject,
     _is_boolean_operator,
     _is_elif_continuation,
     _walk_function_body,
@@ -195,17 +196,6 @@ def _is_chain_head(node: Node) -> bool:
 def _is_lone_if(node: Node) -> bool:
     """An ``if`` that neither continues nor is continued by an ``elif``."""
     return _is_chain_head(node) and len(_chain_arms(node)) == 1
-
-
-def _has_subject(node: Node) -> bool:
-    """A subjectless ``switch {}`` / ``when {}`` / ``case`` is an ``if`` chain."""
-    if node.type == "expression_switch_statement":
-        return node.child_by_field_name("value") is not None
-    if node.type == "when_expression":
-        return any(c.type == "when_subject" for c in node.children)
-    if node.type == "case" and any(c.type == "when" for c in node.children):
-        return node.child_by_field_name("value") is not None
-    return True
 
 
 class _Siblings(NamedTuple):

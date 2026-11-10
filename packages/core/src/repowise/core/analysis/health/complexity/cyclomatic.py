@@ -340,6 +340,8 @@ _DEFAULT_ARM_KINDS = frozenset({"switch_default", "default_case", "switch_statem
 _DEFAULT_TOKENS = frozenset({"default", "else", "default_keyword"})
 # A catch-all pattern: Rust / Scala / Python / C# ``_``, shell ``*)``.
 _WILDCARD_TEXTS = frozenset({b"_", b"*"})
+# A case guard, per grammar (Scala, Python, Swift).
+_GUARD_KINDS = frozenset({"guard", "if_clause", "where_clause"})
 
 
 def _is_default_arm(arm: Node) -> bool:
@@ -355,7 +357,22 @@ def _is_default_arm(arm: Node) -> bool:
     if first.type in _DEFAULT_TOKENS:
         return True
     head = first if first.is_named else (arm.named_children or [first])[0]
-    return head.text in _WILDCARD_TEXTS
+    # ``case _ if c`` / ``case _ where c`` decides on its guard: a case.
+    guarded = arm.child_by_field_name("guard") is not None or any(
+        c.type in _GUARD_KINDS for c in arm.named_children
+    )
+    return head.text in _WILDCARD_TEXTS and not guarded
+
+
+def _has_subject(node: Node) -> bool:
+    """A subjectless ``switch {}`` / ``when {}`` / ``case`` is an ``if`` chain."""
+    if node.type == "expression_switch_statement":
+        return node.child_by_field_name("value") is not None
+    if node.type == "when_expression":
+        return any(c.type == "when_subject" for c in node.children)
+    if node.type == "case" and any(c.type == "when" for c in node.children):
+        return node.child_by_field_name("value") is not None
+    return True
 
 
 class _Arms(NamedTuple):
@@ -376,23 +393,20 @@ def _split_arms(node: Node, lmap: LanguageNodeMap) -> _Arms:
     point together, on the switch. A case with control flow of its own counts
     one point, so one ``if`` in one arm leaves the other arms flat.
 
-    Python's ``match_statement`` keeps one point per case: ``match`` / ``case``
-    is pattern matching, the same decision as ``if`` / ``elif`` (a 3-arm
-    ``match`` would score 2 against the equivalent ``if`` / ``elif``'s 4).
+    A switch with no subject (``when { }``, Go ``switch { }``) is an ``if`` /
+    ``else if`` chain once any arm has control flow: then each case counts.
+    Python's ``match_statement`` always keeps one point per case: ``match`` /
+    ``case`` is pattern matching, the same decision as ``if`` / ``elif`` (a
+    3-arm ``match`` would score 2 against the equivalent ``if`` / ``elif``'s 4).
     """
     complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
-    flat: set[int] = set()
-    counted: set[int] = set()
-    point = False
-    for arm in _collect_case_children(node, lmap):
-        if _is_default_arm(arm):
-            flat.add(arm.id)
-        elif node.type == "match_statement" or _subtree_contains_complex(arm, complex_types):
-            counted.add(arm.id)
-        else:
-            flat.add(arm.id)
-            point = True
-    return _Arms(flat, counted, point)
+    cases = [arm for arm in _collect_case_children(node, lmap) if not _is_default_arm(arm)]
+    defaults = {arm.id for arm in _collect_case_children(node, lmap)} - {c.id for c in cases}
+    tangled = {c.id for c in cases if _subtree_contains_complex(c, complex_types)}
+    if node.type == "match_statement" or (tangled and not _has_subject(node)):
+        tangled = {c.id for c in cases}
+    simple = {c.id for c in cases} - tangled
+    return _Arms(defaults | simple, tangled, bool(simple))
 
 
 def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> bool:
