@@ -714,21 +714,26 @@ _OPERATOR_TEXTS = frozenset({b"&&", b"||", b"and", b"or"})
 _NOT_TEXTS = frozenset({b"!", b"not"})
 
 
+def _negated_operand(node: Node) -> Node | None:
+    """What a prefix ``!`` / ``not`` node negates, ``None`` for any other node."""
+    first = node.children[0] if node.children else None
+    if first is None or (first.text not in _NOT_TEXTS and first.type != "kNot"):
+        return None
+    named = node.named_children
+    return named[-1] if named and named[-1] != first else None
+
+
 def _strip(node: Node) -> tuple[Node, bool]:
     """*node* without grouping parentheses or a prefix ``!`` / ``not``, and
     whether a negation was stripped."""
     negated = False
     while True:
-        named = node.named_children
-        if node.type in _PAREN_KINDS and len(named) == 1:
-            node = named[0]
-            continue
-        first = node.children[0] if node.children else None
-        if first is not None and (first.text in _NOT_TEXTS or first.type == "kNot"):
-            if named and named[-1] != first:
-                node, negated = named[-1], True
-                continue
-        return node, negated
+        if node.type in _PAREN_KINDS and len(node.named_children) == 1:
+            node = node.named_children[0]
+        elif (operand := _negated_operand(node)) is not None:
+            node, negated = operand, True
+        else:
+            return node, negated
 
 
 def _is_operator(node: Node, lmap: LanguageNodeMap) -> bool:
