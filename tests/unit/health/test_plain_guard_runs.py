@@ -1,9 +1,10 @@
-"""A run of plain early-exit guards counts once in the CCN the complexity markers judge.
+"""Back-to-back plain early-exit guards count once in the CCN the complexity markers judge.
 
 ``if (!buf) return -1;``, Ruby ``return x if done`` and Swift
-``guard ok else { return }`` each check one precondition and leave. Several
-in a row read as one list of preconditions, not one decision each. Only a
-guard with one condition, no ``else`` and a body that leaves qualifies.
+``guard ok else { return }`` each check one precondition and leave. Three or
+more in a row, with only comments between, read as one list of
+preconditions, not one decision each. Only a guard with one condition, no
+``else`` and a body that leaves qualifies.
 """
 
 from __future__ import annotations
@@ -42,11 +43,10 @@ def filter_applies?(key, value, meta)
     # ids are matched by position
     return by_id?(value) if key == :ids
     return nested?(value) if Hash === value
+    raise ArgumentError, "no value" unless meta
+    next if meta.nil?
 
     meta_value = meta.fetch(key) { return false }
-
-    raise ArgumentError, "no value" unless meta_value
-    next if meta_value.nil?
     value === meta_value
   end
 end
@@ -60,18 +60,19 @@ def mixed(a, b)
     log(b)
   end
   return 4 unless b
+  return 5 if b.nil?
 end
 """
 
 
-def test_ruby_modifier_guard_runs_count_once() -> None:
+def test_ruby_modifier_guard_run_counts_once() -> None:
     fn = _fn("ruby", _RUBY, "filter_applies?")
-    # One run of five: a comment and a plain assignment do not end it.
+    # One run of five; a comment does not end it.
     assert fn.exit_guards == 4
     assert judged_ccn(fn) == fn.ccn - 4
 
 
-def test_ruby_two_conditions_or_an_else_are_not_guards() -> None:
+def test_ruby_two_conditions_an_else_or_a_pair_do_not_count() -> None:
     assert _fn("ruby", _RUBY, "mixed").exit_guards == 0
 
 
@@ -121,25 +122,34 @@ def test_swift_multi_condition_else_or_long_guards_do_not_count() -> None:
 _C = """
 int open_pipe(struct pipe *p, int fd) {
     int mode;
-    int err;
 
+    if (!p)
+        return EINVAL;
+    if (fd < 0)
+        return EBADF; /* checked before the loop sees it */
     if (exists(p->loop, fd))
         return EEXIST;
-
-    mode = fcntl(fd, F_GETFL);
-    if (mode == -1)
-        return errno; /* must be EBADF */
-
-    err = nonblock(fd, 1);
-    if (err)
-        return err;
     if (!p->ready) { log_it(p); return EAGAIN; }
 
+    mode = fcntl(fd, F_GETFL);
     if (mode != O_WRONLY)
         p->flags |= READABLE;
     if (mode != O_RDONLY)
         p->flags |= WRITABLE;
     return stream_open(p, fd);
+}
+
+int rotate(struct log *l) {
+    if (l->max == 0)
+        return 0;
+    l->files = list(l);
+    if (!l->files)
+        return -1;
+    if (l->max >= l->count)
+        return 0;
+    for (int i = l->max; i < l->count; i++)
+        drop(l, i);
+    return 0;
 }
 """
 
@@ -149,6 +159,11 @@ def test_c_plain_return_guard_run_counts_once() -> None:
     assert fn.ccn == 7
     assert fn.exit_guards == 3
     assert judged_ccn(fn) == 4
+
+
+def test_c_a_statement_between_guards_ends_the_run() -> None:
+    # The second guard checks what ``list`` returned: two runs of one and two.
+    assert _fn("c", _C, "rotate").exit_guards == 0
 
 
 _JS = """
@@ -162,6 +177,7 @@ function add(type, opts, fn) {
   if (!opts) return
   for (const t of list) {
     if (t.skip) continue
+    if (t.hidden) continue
     if (t.done) break
     use(t)
   }
@@ -171,9 +187,9 @@ function add(type, opts, fn) {
 
 def test_javascript_throw_and_loop_filter_runs_count_once() -> None:
     fn = _fn("javascript", _JS, "add")
-    # Three throws/returns in a row, then ``continue`` / ``break`` in the loop.
-    assert fn.exit_guards == 3
-    assert judged_ccn(fn) == fn.ccn - 3
+    # Three throws/returns in a row, then three ``continue`` / ``break`` in the loop.
+    assert fn.exit_guards == 4
+    assert judged_ccn(fn) == fn.ccn - 4
 
 
 _GUARDS = {

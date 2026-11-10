@@ -15,10 +15,10 @@ around the dispatch, or one of its arms, is complex on its own.
 
 Separately, a run of early-exit guards counts once in :func:`judged_ccn`:
 error guards (Go ``if err != nil { return err }``, C ``if (rc) goto
-cleanup;``, shell ``cmd || die``) and, where the language map opts in, plain
-precondition checks (``if (!buf) return -1;``, Ruby ``return x if done``,
-Swift ``guard ok else { return }``). When both cuts apply, the smaller
-reading wins.
+cleanup;``, shell ``cmd || die``) and, where the language map opts in, three
+or more back-to-back precondition checks (``if (!buf) return -1;``, Ruby
+``return x if done``, Swift ``guard ok else { return }``). When both cuts
+apply, the smaller reading wins.
 
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
@@ -476,13 +476,35 @@ def _is_plain_guard(node: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
-    """A one-point early exit, with nothing branching inside.
+    """A one-point early exit that hands an error up, with nothing branching inside."""
+    return (_is_exit_if(node, lmap) or _is_shell_exit(node)) and _points([node], lmap) == 1
 
-    It hands an error up (:func:`_is_exit_if`, :func:`_is_shell_exit`) or
-    checks a precondition and leaves (:func:`_is_plain_guard`).
+
+def _is_any_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An error guard, or a one-point precondition check that leaves."""
+    return _is_exit_guard(node, lmap) or (
+        _is_plain_guard(node, lmap) and _points([node], lmap) == 1
+    )
+
+
+def _consecutive_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
+    """Guards past the first of each back-to-back run of three or more.
+
+    Only comments may sit between them. A plain guard after a statement checks
+    what that statement did, so it starts a run of its own; two in a row are
+    one decision and an exit, not a list.
     """
-    shaped = _is_exit_if(node, lmap) or _is_shell_exit(node) or _is_plain_guard(node, lmap)
-    return shaped and _points([node], lmap) == 1
+    repeats = 0
+    run = 0
+    for child in [*children, None]:
+        if child is not None and "comment" in child.type:
+            continue
+        if child is not None and _is_any_guard(child, lmap):
+            run += 1
+            continue
+        repeats += run - 1 if run >= _MIN_ARMS else 0
+        run = 0
+    return repeats
 
 
 def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
@@ -504,13 +526,17 @@ def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
 
 
 def exit_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
-    """Decision points of error guards that repeat one already counted in their run."""
+    """Decision points of guards that repeat one already counted in their run.
+
+    Per sibling list, the error-guard reading or the back-to-back reading,
+    whichever is larger: both can cover the same guards.
+    """
     lambda_kinds = lmap.lambda_kinds
     total = 0
     stack: list[Node] = [body]
     while stack:
         children = [c for c in stack.pop().children if c.is_named]
-        total += _repeated_guards(children, lmap)
+        total += max(_repeated_guards(children, lmap), _consecutive_guards(children, lmap))
         stack.extend(
             c
             for c in children

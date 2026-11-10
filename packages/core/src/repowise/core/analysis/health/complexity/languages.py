@@ -391,7 +391,8 @@ class LanguageNodeMap:
     #   * ``plain_guard_kinds`` -- conditionals that, with one condition, no
     #     ``else`` and a body that only leaves (``if (!buf) return -1;``, Ruby
     #     ``return x if done``, Swift ``guard ok else { return }``), are a
-    #     precondition check. A run of them counts once in the judged CCN.
+    #     precondition check. Three or more back to back count once in the
+    #     judged CCN.
     #     Empty: only error guards count (Go ``if err != nil``, C ``goto``).
     plain_guard_kinds: frozenset[str] = frozenset()
 
