@@ -137,6 +137,16 @@ def test_pinned_embedding_model_rejected_when_embedder_mismatches(tmp_path):
     assert resolve.embedding_model_for("gemini", repo) is None
 
 
+def test_pinned_embedding_model_rejected_when_embedder_unspecified(tmp_path):
+    # An unbound embedding_model pin without an embedder key is ignored
+    repo = _repo(
+        tmp_path,
+        config="embedding_model: mongodb/voyage-code-4\n",
+    )
+    assert resolve.embedding_model_for("openrouter", repo) is None
+    assert resolve.embedding_model_for("gemini", repo) is None
+
+
 def test_resolve_embedding_model_honours_repo_pin(tmp_path):
     from repowise.cli.providers.embedders import resolve_embedding_model
 

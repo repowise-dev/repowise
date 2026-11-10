@@ -262,7 +262,13 @@ def embedding_model_for(name: str, repo_path: Path | str | None = None) -> str |
         pinned_model = cfg.get("embedding_model")
         if pinned_model and str(pinned_model).strip():
             pinned_backend = str(cfg.get("embedder") or "").strip().lower()
-            if pinned_backend and pinned_backend != name.strip().lower():
+            if not pinned_backend:
+                logger.warning(
+                    "Repo pins embedding_model %r without a pinned embedder; ignoring unbound pin.",
+                    pinned_model,
+                )
+                return None
+            if pinned_backend != name.strip().lower():
                 logger.warning(
                     "Repo pins embedding_model %r for embedder %r, but %r was resolved; ignoring pin.",
                     pinned_model,
