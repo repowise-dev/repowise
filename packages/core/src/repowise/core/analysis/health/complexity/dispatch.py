@@ -124,6 +124,8 @@ _RECEIVER_TESTS = frozenset(
     }
 )
 _NOT_OPERATORS = frozenset({"!", "not"})
+_ORDERING_OPERATORS = frozenset({"<", ">", "<=", ">="})
+_DART_OPERATOR_KINDS = frozenset({"equality_operator", "relational_operator", "type_test"})
 # A receiver that names a constant (``FormatNames.ISO8601.matches(input)``) is
 # the arm's key, so the test is on its argument.
 _CONSTANT_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -228,19 +230,26 @@ def _condition(arm: Node) -> Node | None:
     )
 
 
-def _subjects(node: Node | None, lmap: LanguageNodeMap) -> list[str]:
-    """Every name a condition tests, left side first."""
+def _tests(node: Node | None, lmap: LanguageNodeMap) -> list[tuple[str, bool]]:
+    """Every ``(name, by an ordering operator)`` a condition tests, left side first."""
     node = _unwrap(node)
     if node is None:
         return []
     if (operand := _negated(node)) is not None:
-        return _subjects(operand, lmap)
+        return _tests(operand, lmap)
     if _is_boolean_operator(node, lmap):
-        return _subjects(node.child_by_field_name("left"), lmap) + _subjects(
+        return _tests(node.child_by_field_name("left"), lmap) + _tests(
             node.child_by_field_name("right"), lmap
         )
     subject = _test_subject(node, lmap)
-    return [subject] if subject is not None else []
+    return [(subject, _is_ordering(node))] if subject is not None else []
+
+
+def _is_ordering(node: Node) -> bool:
+    """``len > 0``: a bound check, not a test of which value ``len`` is."""
+    return node.type in _COMPARISON_KINDS and any(
+        c.type in _ORDERING_OPERATORS for c in node.children
+    )
 
 
 def _test_subject(node: Node, lmap: LanguageNodeMap) -> str | None:
@@ -250,7 +259,24 @@ def _test_subject(node: Node, lmap: LanguageNodeMap) -> str | None:
     named = node.named_children
     left = node.child_by_field_name("left") or (named[0] if named else None)
     right = node.child_by_field_name("right") or (named[-1] if named else None)
+    split = next((i for i, c in enumerate(named) if c.type in _DART_OPERATOR_KINDS), 0)
+    if split > 1:
+        # Dart spells ``dep.source is X`` as ``dep``, a ``.source`` selector, then the test.
+        text = _SPACE_RE.sub(
+            "", "".join((c.text or b"").decode("utf-8", "replace") for c in named[:split])
+        )
+        return text if len(text) <= _MAX_SUBJECT_CHARS else None
     return _operand(left, lmap) or _operand(right, lmap)
+
+
+def _keys(node: Node | None, lmap: LanguageNodeMap) -> set[str]:
+    """The names an arm can be keyed on: those it tests for a value or a kind.
+
+    A bound check shared by every arm (``len > 0 && x == 1``) keys nothing; an
+    arm of bound checks alone (``x < 10``) keys on what it bounds.
+    """
+    tests = _tests(node, lmap)
+    return {n for n, ordering in tests if not ordering} or {n for n, _ in tests}
 
 
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
@@ -259,7 +285,7 @@ def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
     ``kind == "call" and lang == "ruby"`` dispatches on ``kind``: the first
     side that tests a name is the one the arm is keyed on.
     """
-    return next(iter(_subjects(node, lmap)), None)
+    return next((n for n, _ in _tests(node, lmap)), None)
 
 
 def _chain_arms(node: Node) -> list[Node]:
@@ -285,9 +311,9 @@ def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
     """
     if len(arms) < _MIN_ARMS:
         return False
-    shared = set(_subjects(_condition(arms[0]), lmap))
+    shared = _keys(_condition(arms[0]), lmap)
     for arm in arms[1:]:
-        shared &= set(_subjects(_condition(arm), lmap))
+        shared &= _keys(_condition(arm), lmap)
     return bool(shared)
 
 
