@@ -169,3 +169,51 @@ def test_finding_text_names_the_cut_that_applied() -> None:
     dispatch = SimpleNamespace(ccn=12, exit_guards=0, dispatch_share=1.0, dispatch_arm=0)
     assert judged_leaves_out(guards) == "every repeated error guard"
     assert judged_leaves_out(dispatch) == "every arm of its dispatch"
+
+
+_C_LABELS = """
+int retry(int fd) {
+    if (fd < 0) goto out;
+again:
+    if (busy(fd)) goto again;
+    return 0;
+out:
+    return -1;
+}
+"""
+
+
+def test_c_a_label_ends_the_run() -> None:
+    assert _fn("c", _C_LABELS, "retry").exit_guards == 0
+
+
+_SH_SUCCESS = """
+check() {
+  [ -n "$done" ] && exit 0
+  [ -f "$lock" ] && return
+  cached || exit 0
+  ready && return
+}
+"""
+
+
+def test_shell_success_exits_are_not_error_guards() -> None:
+    assert _fn("shell", _SH_SUCCESS, "check").exit_guards == 0
+
+
+_GO_STDERR = """
+package p
+
+func pipes(c *Cmd) {
+	if stderr != nil {
+		return
+	}
+	if stderr != nil {
+		return
+	}
+}
+"""
+
+
+def test_go_stderr_is_not_an_error_value() -> None:
+    assert _fn("go", _GO_STDERR, "pipes").exit_guards == 0

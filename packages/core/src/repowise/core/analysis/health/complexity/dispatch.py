@@ -313,9 +313,12 @@ def dispatch_points(body: Node, lmap: LanguageNodeMap) -> Dispatch:
 # An early exit that only hands an error up: Go ``if err != nil { return err }``,
 # C ``if (rc) goto cleanup;`` and shell ``cmd || die``. A run of them reads as
 # one error path, not as one decision each.
-_ERROR_NAME_RE = re.compile(r"err$", re.IGNORECASE)
+_ERROR_NAME_RE = re.compile(r"^(?!std)\w*err\d*$", re.IGNORECASE)
 _GOTO_KINDS = frozenset({"goto_statement"})
-_SHELL_EXIT_COMMANDS = frozenset({b"exit", b"return", b"die", b"fail", b"fatal", b"abort", b"bail"})
+# Jumps and labels end a run: a guard after one is on another path.
+_RUN_BREAK_KINDS = frozenset({"labeled_statement", "goto_statement"})
+_SHELL_EXITS = frozenset({b"exit", b"return"})
+_SHELL_ERROR_COMMANDS = frozenset({b"die", b"fail", b"fatal", b"abort", b"bail"})
 
 
 def _statements(node: Node | None, lmap: LanguageNodeMap) -> list[Node]:
@@ -358,14 +361,26 @@ def _is_exit_if(node: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def _is_shell_exit(node: Node) -> bool:
-    """``cmd || exit 1`` / ``[ -f x ] && die``: one operator, then an exit command."""
+    """``cmd || exit 1`` / ``[ -f x ] && die``: one operator, then a failing exit.
+
+    ``exit 0`` and ``cmd && return`` leave on success: an early finish, not an error.
+    """
     if node.type != "list" or len(node.named_children) != 2:
         return False
     last = node.named_children[-1]
     if last.type == "compound_statement" and last.named_children:
         last = last.named_children[-1]
     name = last.child_by_field_name("name") if last.type == "command" else None
-    return name is not None and name.text in _SHELL_EXIT_COMMANDS
+    if name is None:
+        return False
+    if name.text in _SHELL_ERROR_COMMANDS:
+        return True
+    if name.text not in _SHELL_EXITS:
+        return False
+    status = last.children_by_field_name("argument")
+    if status:
+        return status[0].text != b"0"
+    return any(c.type == "||" for c in node.children)
 
 
 def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
@@ -377,15 +392,16 @@ def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
     """Error guards among *children* past the first of their run.
 
     Statements without a decision point (``x, err := f()``) may sit between
-    the guards of one run; anything that branches ends it.
+    the guards of one run; anything that branches, jumps or is a label ends it.
     """
+    breaks = _RUN_BREAK_KINDS | lmap.return_kinds | lmap.break_kinds | lmap.continue_kinds
     repeats = 0
     in_run = False
     for child in children:
         if _is_exit_guard(child, lmap):
             repeats += in_run
             in_run = True
-        elif _points([child], lmap) > 0:
+        elif child.type in breaks or _points([child], lmap) > 0:
             in_run = False
     return repeats
 
