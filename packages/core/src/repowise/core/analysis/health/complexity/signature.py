@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .ast_utils import _dart_signature_sibling, _parameter_nodes
+from .ast_utils import _dart_signature_sibling, _parameter_nodes, param_arity
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -288,14 +288,6 @@ def _is_scalar(type_node: Node, scalars: frozenset[str]) -> bool:
     return bool(words) and all(w in scalars for w in words)
 
 
-def _arity(param: Node) -> int:
-    """Names one parameter node declares. Pascal declares ``A, B: Integer`` as
-    one node, and ``_count_parameters`` counts its names."""
-    if param.type != "declArg":
-        return 1
-    return sum(1 for c in param.children if c.type == "identifier")
-
-
 def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int, int]:
     """``(typed, scalar)``: parameters of *params* that declare a type, and the
     ones among them declared as a scalar or a string. ``(0, 0)`` for a language
@@ -308,7 +300,7 @@ def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int,
             continue
         if _is_bound(param, lmap):
             continue
-        arity = _arity(param)
+        arity = param_arity(param)
         typed += arity
         if _is_scalar(type_node, lmap.scalar_type_names):
             scalar += arity
@@ -367,5 +359,5 @@ def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
     if not lmap.bound_param_markers or params is None:
         return 0
     return sum(
-        _arity(p) for p in params.named_children if p.type not in _NON_PARAMS and _is_bound(p, lmap)
+        param_arity(p) for p in params.named_children if p.type not in _NON_PARAMS and _is_bound(p, lmap)
     )

@@ -55,3 +55,13 @@ def test_go_new_functions_are_constructors() -> None:
 )
 def test_ruby_and_php_constructors(path: str, language: str, source: str, name: str) -> None:
     assert _ctor_flags(path, language, source) == {name: True}
+
+
+def test_go_grouped_parameters_count_every_name() -> None:
+    [fn] = walk_file_complexity(
+        "config.go",
+        "go",
+        b"package x\nfunc NewConfig(name, version, commit, date string, debug bool, dir string) *C { return nil }\n",
+    )
+    # Six names in four declarations: the constructor grace must not hide them.
+    assert (fn.param_count, fn.typed_param_count, fn.primitive_param_count) == (6, 6, 6)
