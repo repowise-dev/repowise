@@ -245,11 +245,13 @@ def _is_literal_parse(fn: Node) -> bool:
     """``"lit".parse`` or ``"lit".parse::<T>``."""
     if fn.type == "generic_function":
         fn = fn.child_by_field_name("function")
+    if fn is None or fn.type != "field_expression":
+        return False
+    value = fn.child_by_field_name("value")
     return (
-        fn is not None
-        and fn.type == "field_expression"
-        and _text(fn.child_by_field_name("field")) == "parse"
-        and _text(fn.child_by_field_name("value")).startswith('"')
+        _text(fn.child_by_field_name("field")) == "parse"
+        and value is not None
+        and value.type in _STRING_LITERALS
     )
 
 

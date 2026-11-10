@@ -60,6 +60,8 @@ def test_unwrap_on_a_literal_input_is_no_hit(body: str) -> None:
         "let re = Regex::new(pattern).unwrap();",
         'let re = Regex::new(&format!("{}x", p)).unwrap();',
         "let addr: SocketAddr = s.parse().unwrap();",
+        'let n = "8".repeat(width).parse::<u8>().unwrap();',
+        'let h = "host".replace(x, y).parse::<Uri>().unwrap();',
         "let n = NonZeroU8::new(0).unwrap();",
         "let n = NonZeroU8::new(k).unwrap();",
     ],
