@@ -297,12 +297,12 @@ def _local_supertypes(cls: Node, lmap: LanguageNodeMap) -> list[Node]:
     pending = [t for t in own if t.type == cls.type] + found
     seen = {t.id for t in pending}
     while pending:
-        for base in _supertype_names(pending.pop(), lmap):
-            for decl in types.get(base, ()):
-                if decl.id not in seen:
-                    seen.add(decl.id)
-                    found.append(decl)
-                    pending.append(decl)
+        bases = (d for name in _supertype_names(pending.pop(), lmap) for d in types.get(name, ()))
+        for decl in bases:
+            if decl.id not in seen:
+                seen.add(decl.id)
+                found.append(decl)
+                pending.append(decl)
     return found
 
 
