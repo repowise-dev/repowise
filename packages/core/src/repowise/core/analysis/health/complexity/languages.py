@@ -387,6 +387,14 @@ class LanguageNodeMap:
     #     function; at module level the node keeps the entry it always had.
     local_value: Callable[[Node], object] | None = None
 
+    # -- Early-exit guards (``complexity/dispatch.py``) -----------------------
+    #   * ``plain_guard_kinds`` -- conditionals that, with one condition, no
+    #     ``else`` and a body that only leaves (``if (!buf) return -1;``, Ruby
+    #     ``return x if done``, Swift ``guard ok else { return }``), are a
+    #     precondition check. A run of them counts once in the judged CCN.
+    #     Empty: only error guards count (Go ``if err != nil``, C ``goto``).
+    plain_guard_kinds: frozenset[str] = frozenset()
+
 
 
 # Scalar type names C and C++ share, Win32's typedefs included because C/C++ on
@@ -445,6 +453,7 @@ _PY = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment"}),
     augmented_assign_kinds=frozenset({"augmented_assignment"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"block"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"raise_statement"}),
@@ -509,6 +518,7 @@ _TS = LanguageNodeMap(
     augmented_assign_kinds=frozenset({"augmented_assignment_expression"}),
     local_decl_kinds=frozenset({"lexical_declaration", "variable_declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"statement_block"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
@@ -647,6 +657,7 @@ _JAVA = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment_expression"}),
     local_decl_kinds=frozenset({"local_variable_declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"block"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
@@ -888,6 +899,7 @@ _SWIFT = LanguageNodeMap(
     # kinds either: XCTest has no vocabulary row, so the test-quality markers
     # do not read Swift.
     call_kinds=frozenset({"call_expression"}),
+    plain_guard_kinds=frozenset({"if_statement", "guard_statement"}),
 )
 
 _DART = LanguageNodeMap(
@@ -995,6 +1007,7 @@ _CPP = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment_expression"}),
     local_decl_kinds=frozenset({"declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
     # ``co_return`` / ``co_yield`` leave a coroutine like ``return`` / ``yield``.
     return_kinds=frozenset({"return_statement", "co_return_statement"}),
@@ -1029,6 +1042,7 @@ _C = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment_expression"}),
     local_decl_kinds=frozenset({"declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset(),
@@ -1116,6 +1130,7 @@ _CSHARP = LanguageNodeMap(
         {"local_declaration_statement", "using_statement", "variable_declaration"}
     ),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"block"}),
     return_kinds=frozenset({"return_statement", "yield_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
@@ -1283,6 +1298,7 @@ _RUBY = LanguageNodeMap(
     # ``subshell`` is a backtick command — its own node type, mapped so the
     # perf dialect can classify it as a subprocess sink.
     call_kinds=frozenset({"call", "subshell"}),
+    plain_guard_kinds=frozenset({"if", "unless", "if_modifier", "unless_modifier"}),
     # Ruby has no async syntax; ``blocking_sync_in_async`` is n/a.
 )
 
@@ -1546,6 +1562,7 @@ _PHP = LanguageNodeMap(
     augmented_assign_kinds=frozenset({"augmented_assignment_expression"}),
     local_decl_kinds=frozenset({"function_static_declaration", "static_variable_declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"throw_expression", "throw_statement"}),

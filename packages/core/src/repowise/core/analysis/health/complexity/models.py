@@ -128,9 +128,10 @@ class FunctionComplexity:
     # CCN points inside that dispatch's heaviest arm, its own case point not
     # counted: a switch of one-line cases has 0.
     dispatch_arm: int = 0
-    # CCN points of error guards (Go ``if err != nil { return err }``, C
-    # ``if (rc) goto cleanup;``, shell ``cmd || die``) past the first of each
-    # run. The complexity markers count a run once. ``complexity/dispatch.py``.
+    # CCN points of early-exit guards (Go ``if err != nil { return err }``, C
+    # ``if (rc) goto cleanup;``, shell ``cmd || die``, plain ``if (!x)
+    # return;``) past the first of each run. The complexity markers count a
+    # run once. ``complexity/dispatch.py``.
     exit_guards: int = 0
     # Calls on the terminal (print, prompt, console, stdout) over all calls in
     # the body, nested bodies included, to two decimals. ``complexity/terminal.py``.
