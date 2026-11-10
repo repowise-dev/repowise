@@ -22,6 +22,7 @@ _FUNC_DEF_RE = re.compile(
     r"^\s*(?:static\s+|extern\s+|inline\s+)*[\w\*\s]+\s+([a-z_]\w*)\s*\([^;]*\)\s*\{",
     re.MULTILINE,
 )
+_STATIC_RE = re.compile(r"\s*(?:extern\s+|inline\s+)*static\b")
 
 
 class CDynamicHints(DynamicHintExtractor):
@@ -33,6 +34,7 @@ class CDynamicHints(DynamicHintExtractor):
         edges: list[DynamicEdge] = []
 
         func_to_files: dict[str, list[str]] = {}
+        local_to: dict[str, set[str]] = {}
         sources: list[tuple[Path, str]] = []
         repo_root_resolved = repo_root.resolve()
         for ext in (".c", ".h"):
@@ -50,7 +52,11 @@ class CDynamicHints(DynamicHintExtractor):
                 rel = rel_path.as_posix()
                 sources.append((src, text))
                 for match in _FUNC_DEF_RE.finditer(text):
-                    func_to_files.setdefault(match.group(1), []).append(rel)
+                    local_to.setdefault(match.group(1), set()).add(rel)
+                    # A ``static`` function in a .c file has internal linkage:
+                    # no other file can name it.
+                    if not (ext == ".c" and _STATIC_RE.match(match.group(0))):
+                        func_to_files.setdefault(match.group(1), []).append(rel)
 
         for src, text in sources:
             try:
@@ -64,7 +70,8 @@ class CDynamicHints(DynamicHintExtractor):
                 # Right-hand side must be a known function name to count as
                 # a function-pointer assignment (filters out variable copies).
                 name = match.group(2)
-                if name in func_to_files:
+                # A file that defines the name binds the reference there.
+                if name in func_to_files and rel not in local_to[name]:
                     for target in func_to_files[name]:
                         key = (target, "fn_ptr")
                         if key in seen or target == rel:
