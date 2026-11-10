@@ -239,14 +239,18 @@ def _subjects(node: Node | None, lmap: LanguageNodeMap) -> list[str]:
         return _subjects(node.child_by_field_name("left"), lmap) + _subjects(
             node.child_by_field_name("right"), lmap
         )
-    if node.type in _COMPARISON_KINDS:
-        named = node.named_children
-        left = node.child_by_field_name("left") or (named[0] if named else None)
-        right = node.child_by_field_name("right") or (named[-1] if named else None)
-        subject = _operand(left, lmap) or _operand(right, lmap)
-    else:
-        subject = _call_subject(node, lmap)
+    subject = _test_subject(node, lmap)
     return [subject] if subject is not None else []
+
+
+def _test_subject(node: Node, lmap: LanguageNodeMap) -> str | None:
+    """The name one comparison or predicate call tests."""
+    if node.type not in _COMPARISON_KINDS:
+        return _call_subject(node, lmap)
+    named = node.named_children
+    left = node.child_by_field_name("left") or (named[0] if named else None)
+    right = node.child_by_field_name("right") or (named[-1] if named else None)
+    return _operand(left, lmap) or _operand(right, lmap)
 
 
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
