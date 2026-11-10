@@ -5,8 +5,8 @@ SwiftUI ``body``, a Compose ``@Composable`` and a Flutter ``build()``. An attrib
 data (``style={{ color: "red" }}``, ``title={label}``) is markup too, and so is a
 component's ``const`` data literal used only there. In every language, the
 continuation lines of a multi-line string (a text block, heredoc, raw or
-template string) are data. A call, an operator, a function or control flow
-keeps a line code.
+template string) are data, and so is a switch arm that only returns or assigns
+a literal. A call, an operator, a function or control flow keeps a line code.
 """
 
 from __future__ import annotations
@@ -285,6 +285,7 @@ _DATA_NAMES = frozenset(
         "dimensions",
         "array_rank_specifier",
         "minus_operator",  # Dart's `-` in `-1`, under a `prefix_operator`
+        "template_substitution",  # the `${...}` slot; what it holds is judged on its own
     }
 )
 #: A sign on a number (``-1``) or Swift's implicit member (``.leading``) keeps
@@ -326,18 +327,22 @@ def _literal_token_rows(literal: Node, data: set[int], code: set[int]) -> None:
             data.update(_rows(node))
 
 
-def _edge_rows_with_code(literal: Node, source: bytes) -> list[int]:
+def _edge_rows_with_code(
+    literal: Node, source: bytes, end: int | None = None, last: int | None = None
+) -> list[int]:
     """The literal's first and last rows when a token outside it shares them.
 
     A trailing ``,`` or ``;`` closes the literal and leaves its last row data.
+    *end* and *last* override the node's end byte and row.
     """
-    start, end = literal.start_byte, literal.end_byte
+    start = literal.start_byte
+    end = literal.end_byte if end is None else end
     line_end = source.find(b"\n", end)
     rows = []
     if source[source.rfind(b"\n", 0, start) + 1 : start].strip():
         rows.append(literal.start_point[0])
     if source[end : line_end if line_end >= 0 else len(source)].strip(b" \t\r,;"):
-        rows.append(literal.end_point[0])
+        rows.append(literal.end_point[0] if last is None else last)
     return rows
 
 
@@ -356,6 +361,119 @@ def _string_rows(literals: list[Node], source: bytes) -> set[int]:
         covered_to = literal.end_byte
         _literal_token_rows(literal, data, code)
         code.update(_edge_rows_with_code(literal, source))
+    return data - code
+
+
+#: Arms of a switch / when / match across grammars. ``file_scan`` collects them.
+ARM_KINDS = frozenset(
+    {
+        "switch_case",
+        "switch_default",
+        "when_entry",
+        "match_arm",
+        "expression_case",
+        "default_case",
+        "switch_block_statement_group",
+        "switch_rule",
+        "switch_section",
+        "switch_expression_arm",
+        "case_clause",
+        "switch_entry",
+        "case_statement",
+        "default_statement",
+        "match_conditional_expression",
+        "match_default_expression",
+        "when",
+        "switch_statement_case",
+        "switch_statement_default",
+        "switch_expression_case",
+    }
+)
+#: An arm's plumbing: its label or pattern and the blocks around its body.
+_ARM_STRUCTURE = frozenset(
+    {
+        "switch_label",
+        "constant_pattern",
+        "case_pattern",
+        "match_pattern",
+        "switch_pattern",
+        "pattern",
+        "match_condition_list",
+        "expression_list",
+        "discard",
+        "wildcard",
+        "default_keyword",
+        "dotted_name",
+        "qualified",
+        "qualified_identifier",
+        "class_constant_access_expression",
+        "case_builtin",
+        "break_builtin",
+        "break_statement",
+        "statement_list",
+        "statements",
+        "block",
+        "statement_block",
+        "compound_statement",
+        "control_structure_body",
+        "then",
+        "expression_statement",
+        "directly_assignable_expression",
+        "assignable_expression",
+    }
+)
+#: The statement that carries an arm's value; an arm holds at most one.
+_ARM_VALUE = frozenset(
+    {
+        "return_statement",
+        "return_expression",
+        "control_transfer_statement",
+        "yield_statement",
+        "assignment_expression",
+        "assignment",
+        "assignment_statement",
+    }
+)
+
+
+def _arm_is_data(arm: Node) -> bool:
+    """An arm that only returns, yields or assigns literal data (``case "a": return `x ${y}`;``).
+
+    A call, an operator, control flow, a ``throw`` or a second effect keeps it code.
+    """
+    values = 0
+    stack = list(arm.named_children)
+    while stack:
+        node = stack.pop()
+        kind = node.type
+        if "comment" in kind:
+            continue
+        if kind in _ARM_VALUE:
+            if node.children[0].type == "throw":
+                return False
+            values += bool(node.named_children)
+            if values > 1:
+                return False
+        elif kind not in _ARM_STRUCTURE and not _is_data_node(node):
+            return False
+        stack.extend(node.named_children)
+    return True
+
+
+def _arm_rows(arms: list[Node], source: bytes) -> set[int]:
+    """Rows of the *arms* that only return or assign literal data: a message table."""
+    data: set[int] = set()
+    code: set[int] = set()
+    for arm in arms:
+        # Ruby's ``when`` keyword shares its arm's node kind.
+        if not arm.is_named or not _arm_is_data(arm):
+            continue
+        # Go and Swift arms end after the whitespace that leads to the next arm.
+        text = arm.text
+        trailing = len(text) - len(text.rstrip())
+        last = arm.end_point[0] - text.count(b"\n", len(text) - trailing)
+        data.update(range(arm.start_point[0], last + 1))
+        code.update(_edge_rows_with_code(arm, source, arm.end_byte - trailing, last))
     return data - code
 
 
@@ -538,12 +656,19 @@ def _ui_rows(root: Node, grammar_tag: str, source: bytes) -> set[int]:
     return markup - code
 
 
-def markup_rows(root: Node, grammar_tag: str, source: bytes, literals: list[Node]) -> list[int]:
+def markup_rows(
+    root: Node, grammar_tag: str, source: bytes, literals: list[Node], arms: list[Node]
+) -> list[int]:
     """Sorted 0-indexed non-blank rows whose every token is markup or literal data.
 
-    *literals* are the file's multi-line literals (strings, tables) outside docstrings.
+    *literals* are the file's multi-line literals (strings, tables) outside docstrings;
+    *arms* its switch / when / match arms.
     """
-    rows = _string_rows(literals, source) | _ui_rows(root, grammar_tag, source)
+    rows = (
+        _string_rows(literals, source)
+        | _ui_rows(root, grammar_tag, source)
+        | _arm_rows(arms, source)
+    )
     if grammar_tag in _JSX_GRAMMARS and (b"/>" in source or b"</" in source):
         markup, code = _token_rows(root)
         rows |= markup - code
