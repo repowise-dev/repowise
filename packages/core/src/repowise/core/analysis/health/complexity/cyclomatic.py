@@ -766,15 +766,43 @@ def _chain_operands(node: Node, lmap: LanguageNodeMap, top: bool = True) -> list
     return out
 
 
+# Names every operand of a method can share without testing one value.
+_RECEIVER_NAMES = frozenset({b"self", b"this", b"super", b"nil", b"null", b"true", b"false"})
+_CALLEE_FIELDS = ("function", "method", "name")
+_MEMBER_FIELDS = ("property", "attribute", "field", "name", "selector")
+
+
+def _callee_ids(node: Node) -> set[int]:
+    """Ids of the names *node* calls (``strcmp``, ``s.startsWith``'s ``startsWith``)."""
+    ids: set[int] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        stack.extend(cur.children)
+        if cur.child_by_field_name("arguments") is None and cur.type != "message_expression":
+            continue
+        callee = next(filter(None, map(cur.child_by_field_name, _CALLEE_FIELDS)), None)
+        if callee is None:
+            continue
+        ids.add(callee.id)
+        member = next(filter(None, map(callee.child_by_field_name, _MEMBER_FIELDS)), None)
+        if member is not None:
+            ids.add(member.id)
+    return ids
+
+
 def _names(node: Node) -> set[bytes]:
-    """The name tokens *node* mentions."""
+    """The value names *node* tests: not the functions it calls, not ``self``."""
+    called = _callee_ids(node)
     found: set[bytes] = set()
     stack = [node]
     while stack:
         cur = stack.pop()
-        if cur.text is not None and ("identifier" in cur.type or cur.type in _NAME_KINDS):
-            found.add(cur.text)
         stack.extend(cur.children)
+        if cur.id in called or cur.text is None or cur.text in _RECEIVER_NAMES:
+            continue
+        if "identifier" in cur.type or cur.type in _NAME_KINDS:
+            found.add(cur.text)
     return found
 
 

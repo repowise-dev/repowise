@@ -67,6 +67,17 @@ def test_negated_lists_stay_flat(language: str, source: str) -> None:
         ),
         # A negated sub-chain is De Morgan, not a list.
         ("javascript", "function f(a, b, c) { if (a && b && !(c && d)) { go(); } }"),
+        # Only the function is shared; the values tested differ.
+        (
+            "c",
+            'int f(void) { if (!strcmp(a, "x") || !strcmp(b, "y") || !strcmp(c, "z")) return 1;'
+            " return 0; }",
+        ),
+        # Only the receiver is shared.
+        (
+            "javascript",
+            "function f() { if (!this.a(x) && this.b(y) && !this.c(z)) { go(); } }",
+        ),
         # Mixed operators.
         ("python", "def f(a, b, c):\n    if not a and (b or not c) and d:\n        go()\n"),
     ],
