@@ -487,6 +487,34 @@ def test_tokenize_file_drops_the_java_package_declaration():
     assert toks[0].start_line == 3
 
 
+@pytest.mark.parametrize(
+    ("language", "path", "source", "first_line"),
+    [
+        # Ruby loads, but not a method that happens to be named require.
+        ("ruby", "a.rb", b"require 'json'\nrequire_relative 'a/b'\nautoload :X, 'x'\nfoo.require 'x'\n", 4),
+        ("shell", "a.sh", b"source ./lib.sh\n. ./env.sh\necho hi\n", 3),
+        ("kotlin", "A.kt", b"package a.b.c\n\nimport x.y\nfun f() = 1\n", 4),
+        ("csharp", "A.cs", b"namespace A.B;\nusing X;\nclass C {}\n", 3),
+        ("php", "a.php", b"<?php\nnamespace App\Http;\nuse Foo\Bar;\nclass C {}\n", 1),
+    ],
+)
+def test_tokenize_file_drops_import_like_headers(
+    language: str, path: str, source: bytes, first_line: int
+):
+    lines = {t.start_line for t in tokenize_file(language, source, path)}
+    assert min(lines) == first_line
+    if language == "php":  # the ``<?php`` tag stays; the namespace line does not
+        assert 2 not in lines and 3 not in lines
+
+
+def test_tokenize_file_keeps_a_block_namespace_body():
+    # The block form wraps the code: skipping it would drop the whole file.
+    php = tokenize_file("php", b"<?php\nnamespace B {\n  function f() { return 1; }\n}\n", "a.php")
+    assert "function" in [t.kind for t in php]
+    cs = tokenize_file("csharp", b"namespace A {\n  class C {}\n}\n", "A.cs")
+    assert "class" in [t.kind for t in cs]
+
+
 def test_tokenize_file_drops_ts_imports_and_reexports_but_keeps_local_exports():
     source = (
         b'import { a, b } from "./x";\n'
