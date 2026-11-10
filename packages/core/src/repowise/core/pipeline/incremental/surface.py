@@ -7,9 +7,10 @@ resolve differently, and re-resolving just the edited file reproduces a full
 rebuild. This module classifies an edit by comparing the file's parse before
 and after, taken from the parse cache.
 
-A documentation file can also be added or removed: it gives the graph only
-its own file node, so the patch is exact as long as no other file could
-resolve to it (:func:`_path_set_change_reason`).
+A documentation file can also be added or removed: it gives the graph its
+own file node and ``documents`` edges every build re-derives for every doc,
+so the patch is exact as long as no other file could resolve to it
+(:func:`_path_set_change_reason`).
 
 An edit that does change what other files see (a source file added or
 removed, a changed surface) is planned as a *refreshing* patch in the
@@ -32,7 +33,9 @@ from typing import Any
 # convergence fixtures. Expand this set together with those fixtures.
 PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift"})
 
-# Prose no parser extracts from and no build pass reads. ``.mdx`` is excluded
+# Prose no parser extracts from. Its only edges are ``documents`` links, which
+# the builder re-derives for every doc on every build and no resolver reads
+# back, so a doc edit cannot change how another file resolves. ``.mdx`` is excluded
 # because the TypeScript warmup reads its imports from disk. Config and data
 # files stay out: resolvers and warmups read manifests by name from disk
 # (package.json, tsconfig, pyproject, pubspec, ...). Upgrade path: admit a
@@ -71,7 +74,11 @@ class PatchPlan:
 
 
 def is_inert(parsed: Any) -> bool:
-    """Whether *parsed* gives the graph nothing but its own file node."""
+    """Whether *parsed* gives other files nothing to resolve against.
+
+    Its file node plus ``documents`` out-edges, which every build re-derives
+    globally and no resolver reads back.
+    """
     return (
         parsed.file_info.language in _INERT_LANGUAGES
         and not parsed.file_info.path.lower().endswith(".mdx")
