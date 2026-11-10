@@ -40,6 +40,7 @@ without that mapping count explicit receivers only; (2) flat
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -334,6 +335,8 @@ class LanguageNodeMap:
     # function named like its type, nothing fixes its signatures, and no
     # parameter counts as a scalar, so a typed signature there never fires.
     #   * ``ctor_kinds`` / ``ctor_names`` -- a constructor by node or by name.
+    #     ``ctor_name_pattern`` -- a constructor by naming convention (Go
+    #     ``NewServer``, Rust ``from_parts``), matched against the whole name.
     #   * ``fixed_signature_markers`` -- modifier, annotation, attribute or
     #     decorator words saying the parameter list belongs to another
     #     declaration: an override, a native or generated binding, a
@@ -355,6 +358,7 @@ class LanguageNodeMap:
     #     word once qualifiers, pointers, nullability and brackets are gone.
     ctor_kinds: frozenset[str] = frozenset()
     ctor_names: frozenset[str] = frozenset()
+    ctor_name_pattern: re.Pattern[str] | None = None
     fixed_signature_markers: frozenset[str] = frozenset()
     bound_param_markers: frozenset[str] = frozenset()
     explicit_impl_kinds: frozenset[str] = frozenset()
@@ -521,6 +525,7 @@ _TS = LanguageNodeMap(
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
 
 _GO = LanguageNodeMap(
+    ctor_name_pattern=re.compile(r"New(?:[A-Z]\w*)?"),
     scalar_type_names=frozenset(
         {
             "string", "bool", "byte", "rune", "int", "int8", "int16", "int32", "int64",
@@ -713,6 +718,7 @@ _APEX = LanguageNodeMap(
 )
 
 _RUST = LanguageNodeMap(
+    ctor_name_pattern=re.compile(r"new|from_\w+"),
     trait_impl_kinds=frozenset({"impl_item"}),
     scalar_type_names=frozenset(
         {
@@ -1224,6 +1230,7 @@ _SCALA = LanguageNodeMap(
 
 
 _RUBY = LanguageNodeMap(
+    ctor_names=frozenset({"initialize"}),
     # NB (grammar-wide): tree-sitter-ruby names keyword tokens after their
     # parent node (an ``if`` node contains an unnamed ``if`` token of type
     # ``"if"``); the walkers' ``is_named`` guards keep those tokens from
@@ -1511,6 +1518,7 @@ _OBJC = LanguageNodeMap(
 
 
 _PHP = LanguageNodeMap(
+    ctor_names=frozenset({"__construct"}),
     bodyless=_no_body_field,
     function_kinds=frozenset({"function_definition", "method_declaration"}),
     lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),

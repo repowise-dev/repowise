@@ -6,8 +6,9 @@ names, C#'s public-API rule) lives on ``LanguageNodeMap``; this module only
 reads the tree with it.
 
 - **constructor**: a constructor node or conventional constructor name of the
-  language, or a function named like its enclosing type, which is how C++ and
-  Java spell one (``Foo::Foo`` out of line).
+  language (Ruby ``initialize``, PHP ``__construct``, Go ``NewServer``, Rust
+  ``new`` and ``from_parts``), or a function named like its enclosing type,
+  which is how C++ and Java spell one (``Foo::Foo`` out of line).
 - **signature fixed elsewhere**: the parameter list is set by something other
   than this declaration, so "group these parameters" is advice nobody can take
   here. Read from the declaration's modifier, annotation, attribute and
@@ -120,6 +121,8 @@ def _enclosing_type_name(fn_node: Node) -> str | None:
 
 def is_constructor(fn_node: Node, name: str, lmap: LanguageNodeMap) -> bool:
     if fn_node.type in lmap.ctor_kinds or name in lmap.ctor_names:
+        return True
+    if lmap.ctor_name_pattern is not None and lmap.ctor_name_pattern.fullmatch(name):
         return True
     # Dart: the kind is on the signature beside the body (``A.named`` is one).
     sig = _dart_signature_sibling(fn_node) if fn_node.type == "function_body" else None
