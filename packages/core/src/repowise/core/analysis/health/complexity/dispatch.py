@@ -427,15 +427,34 @@ def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
 # ``if (x.F != null) o.F = x.F;``. One short statement that uses the value its
 # condition tested. A run of them maps fields across, one step, not one
 # decision per field.
-_COPY_STATEMENT_KINDS = frozenset({"expression_statement"})
+# Go and F# write an assignment as a statement of its own, Rust a block's last
+# expression without the ``;``, F# a call as a bare application.
+_ASSIGNMENT_KINDS = frozenset(
+    {"assignment", "assignment_expression", "assignment_statement", "mutate_expression"}
+)
+_COPY_STATEMENT_KINDS = _ASSIGNMENT_KINDS | {
+    "expression_statement",
+    "call_expression",
+    "application_expression",
+}
 # A statement wrapped over more lines is doing more than one copy (a builder
 # call, a map literal), so it is a decision of its own.
 _MAX_COPY_LINES = 2
-
-
-def _is_null(node: Node) -> bool:
-    kind = node.type.lower()
-    return any(m in kind for m in ("null", "nil", "none"))
+# A name or field tested for truth: Go ``if config.DryRun``, F# ``if x.LoadUserProfile``.
+_ACCESS_KINDS = frozenset(
+    {
+        "identifier",
+        "selector_expression",
+        "attribute",
+        "field_expression",
+        "field_access",
+        "member_access_expression",
+        "member_expression",
+        "long_identifier_or_op",
+    }
+)
+_CONJUNCTIONS = frozenset({b"&&", b"and"})
+_WORD_RE = re.compile(r"\w+")
 
 
 def _call_values(call: Node) -> list[Node]:
@@ -453,20 +472,87 @@ def _call_values(call: Node) -> list[Node]:
     return [receiver] if not args and receiver is not None else []
 
 
+def _negated(node: Node) -> Node | None:
+    """The operand of F# ``not (isNull x)``, else ``None``.
+
+    A negated test in other languages (``if (!ok(x)) fail(x)``) handles an
+    absent value; it is no setter.
+    """
+    named = node.named_children
+    if node.type == "application_expression" and len(named) == 2 and named[0].text == b"not":
+        return named[1]
+    return None
+
+
+def _is_null(node: Node) -> bool:
+    kind = node.type.lower()
+    return any(m in kind for m in ("null", "nil", "none"))
+
+
+def _compared_values(comparison: Node) -> list[Node]:
+    """``x != null`` tests ``x``; Python ``"k" in opts`` tests ``opts``.
+
+    A bound (``if (start < 0) start = 0``) is arithmetic, not presence.
+    """
+    sides = comparison.named_children
+    if len(sides) != 2:
+        return []
+    if any(c.type == "in" for c in comparison.children):
+        return [sides[1]]
+    return [s for s in sides if not _is_null(s)] if sum(map(_is_null, sides)) == 1 else []
+
+
+def _bound_names(let: Node) -> list[Node]:
+    """Rust ``if let Some(v) = opt`` tests what it binds, ``v``."""
+    pattern = let.child_by_field_name("pattern")
+    if pattern is None:
+        return []
+    names = pattern.named_children[1:] if pattern.type == "tuple_struct_pattern" else [pattern]
+    return [n for n in names if n.type == "identifier"]
+
+
 def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
     """What a presence test tests: a one-argument call's argument (a
-    no-argument call's receiver), or the non-null side of a null comparison.
+    no-argument call's receiver), the non-null side of a null comparison, a
+    let-binding's names, or a bare field tested for truth (``if cfg.DryRun``).
     Anything else tests nothing here."""
     condition = _unwrap(condition)
+    if condition is not None and condition.type == "paren_expression":
+        condition = _unwrap(condition.named_children[0]) if condition.named_children else None
     if condition is None:
         return []
+    negated = _negated(condition)
+    if negated is not None:
+        return _tested_values(negated, lmap)
+    if condition.type == "let_condition":
+        return _bound_names(condition)
+    if condition.type == "application_expression":
+        # F# ``isNull x.Domain``: function, then its one argument.
+        return condition.named_children[1:] if len(condition.named_children) == 2 else []
     if condition.type in lmap.call_kinds:
         return _call_values(condition)
     if condition.type in _COMPARISON_KINDS:
+        return _compared_values(condition)
+    return [condition] if condition.type in _ACCESS_KINDS else []
+
+
+def _presence_tests(condition: Node | None, lmap: LanguageNodeMap) -> list[list[Node]]:
+    """The values each presence test in *condition* tests, one list per test.
+
+    ``a.getX() == null && b.getX() != null`` is two tests. Empty when any part
+    of the condition is something else (an ``||``, a bound, a computation).
+    """
+    condition = _unwrap(condition)
+    if condition is None:
+        return []
+    if _is_boolean_operator(condition, lmap):
+        if not any(c.text in _CONJUNCTIONS for c in condition.children if not c.is_named):
+            return []
         sides = condition.named_children
-        if len(sides) == 2 and sum(map(_is_null, sides)) == 1:
-            return [s for s in sides if not _is_null(s)]
-    return []
+        left, right = (_presence_tests(s, lmap) for s in (sides[0], sides[-1]))
+        return left + right if left and right and len(sides) == 2 else []
+    values = _tested_values(condition, lmap)
+    return [values] if values else []
 
 
 def _reads(statement: Node, value: Node) -> bool:
@@ -488,24 +574,60 @@ def _reads(statement: Node, value: Node) -> bool:
     return False
 
 
-def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
-    """A one-point ``if`` with no ``else`` whose one statement copies the tested value."""
-    if node.type not in lmap.if_kinds or node.child_by_field_name("alternative") is not None:
+def _sets_mirror(statement: Node, value: Node) -> bool:
+    """Whether *statement* assigns a target whose last name is *value*'s:
+    ``if config.DryRun { tx.DryRun = true }``, ``if x is None: x = {}``."""
+    if statement.type == "expression_statement" and statement.named_child_count == 1:
+        statement = statement.named_children[0]
+    if statement.type not in _ASSIGNMENT_KINDS or not statement.named_children:
         return False
-    body = _statements(node.child_by_field_name("consequence"), lmap)
+    target = _WORD_RE.findall((statement.named_children[0].text or b"").decode("utf-8", "replace"))
+    tested = _WORD_RE.findall((value.text or b"").decode("utf-8", "replace"))
+    return bool(target and tested) and target[-1] == tested[-1]
+
+
+def _lone_if(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """*node* as an ``if`` with no ``else``, through Rust's statement wrapper."""
+    if node.type == "expression_statement" and node.named_child_count == 1:
+        node = node.named_children[0]
+    if node.type not in lmap.if_kinds:
+        return None
+    if node.child_by_field_name("alternative") or node.child_by_field_name("else"):
+        return None
+    return node
+
+
+def _copy_statement(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """An ``if``'s body when it is one short statement (F# names it ``then``)."""
+    branch = node.child_by_field_name("consequence") or node.child_by_field_name("then")
+    body = _statements(branch, lmap)
     if len(body) != 1 or body[0].type not in _COPY_STATEMENT_KINDS:
-        return False
+        return None
     if body[0].end_point[0] - body[0].start_point[0] >= _MAX_COPY_LINES:
+        return None
+    return body[0]
+
+
+def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An ``if`` with no ``else`` whose condition only tests presence and whose
+    one statement copies a tested value, or sets the field it is named after."""
+    found = _lone_if(node, lmap)
+    statement = _copy_statement(found, lmap) if found is not None else None
+    if found is None or statement is None:
+        return False
+    condition = found.child_by_field_name("condition") or found.child_by_field_name("guard")
+    tests = _presence_tests(condition, lmap)
+    if not tests or len(tests) != _points([found], lmap):
         return False
     # A literal (``-1``, ``"k"``) is no value of its own to copy.
-    values = [v for v in _tested_values(node.child_by_field_name("condition"), lmap) if _name(v)]
-    return any(_reads(body[0], v) for v in values) and _points([node], lmap) == 1
+    values = [v for test in tests for v in test if _name(v)]
+    return any(_reads(statement, v) or _sets_mirror(statement, v) for v in values)
 
 
 def _repeated_guards(
     children: list[Node], lmap: LanguageNodeMap, is_guard: Callable[[Node, LanguageNodeMap], bool]
 ) -> int:
-    """Guards among *children* past the first of their run.
+    """Decision points of the guards among *children* past the first of their run.
 
     Statements without a decision point (``x, err := f()``) may sit between
     the guards of one run; anything that branches, jumps or is a label ends it.
@@ -515,7 +637,8 @@ def _repeated_guards(
     in_run = False
     for child in children:
         if is_guard(child, lmap):
-            repeats += in_run
+            # A guarded fill tests two values (``a == null && b != null``).
+            repeats += _points([child], lmap) if in_run else 0
             in_run = True
         elif child.type in breaks or _points([child], lmap) > 0:
             in_run = False
@@ -532,6 +655,18 @@ def copy_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
     return _guard_repeats(body, lmap, _is_copy_guard)
 
 
+def _run_children(node: Node) -> list[Node]:
+    """*node*'s named children, with F#'s right-nested ``sequential_expression``
+    spliced flat so the statements of one body read as siblings."""
+    children: list[Node] = []
+    for child in node.named_children:
+        if child.type == "sequential_expression":
+            children.extend(_run_children(child))
+        else:
+            children.append(child)
+    return children
+
+
 def _guard_repeats(
     body: Node, lmap: LanguageNodeMap, is_guard: Callable[[Node, LanguageNodeMap], bool]
 ) -> int:
@@ -539,7 +674,7 @@ def _guard_repeats(
     total = 0
     stack: list[Node] = [body]
     while stack:
-        children = [c for c in stack.pop().children if c.is_named]
+        children = _run_children(stack.pop())
         total += _repeated_guards(children, lmap, is_guard)
         stack.extend(
             c
