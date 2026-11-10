@@ -35,7 +35,7 @@ def _finding_kinds(path: str, source: bytes, origin: str | None = None) -> list[
     return [f.details["kind"] for f in ErrorHandlingDetector().detect(ctx)]
 
 
-_LIB = b"pub fn f(p: &str) -> u32 {\n    let n = p.parse::<u32>().unwrap();\n    panic!(\"x\");\n}\n"
+_LIB = b'pub fn f(p: &str) -> u32 {\n    let n = p.parse::<u32>().unwrap();\n    panic!("x");\n}\n'
 
 
 @pytest.mark.parametrize(
@@ -73,7 +73,7 @@ def test_unwrap_on_a_runtime_input_stays_a_hit(body: str) -> None:
 def test_top_level_main_is_no_hit() -> None:
     src = (
         b"fn main() {\n    let cfg = load().unwrap();\n"
-        b"    let f = |x: &str| x.parse::<u8>().unwrap();\n    panic!(\"bye\");\n}\n"
+        b'    let f = |x: &str| x.parse::<u8>().unwrap();\n    panic!("bye");\n}\n'
     )
     assert _kinds(src) == []
 
