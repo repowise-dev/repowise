@@ -54,7 +54,7 @@ class FileScan:
     #: ``perf.io_boundaries.collect_io_names`` for the file, or ``{}`` when
     #: the scan was not asked for it.
     io_names: dict[str, str]
-    #: String literals spanning more than one line, outside docstrings, for
+    #: Literals (strings, tables) spanning more than one line, outside docstrings, for
     #: ``markup.markup_rows`` to count their continuation lines as data.
     literals: list[Node]
 

@@ -162,9 +162,10 @@ def _token_rows(root: Node) -> tuple[set[int], set[int]]:
     return markup, code
 
 
-#: Node kinds of a string literal across grammars: plain, raw, verbatim, template
-#: and interpolated strings, text blocks and heredocs. ``file_scan`` collects the
-#: multi-line ones outside docstrings.
+#: Node kinds of a literal across grammars: plain, raw, verbatim, template and
+#: interpolated strings, text blocks and heredocs; then initializer lists, arrays,
+#: maps, sets, tuples and struct literals. ``file_scan`` collects the multi-line
+#: ones outside docstrings.
 LITERAL_KINDS = frozenset(
     {
         "string",
@@ -183,6 +184,26 @@ LITERAL_KINDS = frozenset(
         "heredoc_body",
         "nowdoc",
         "sigil",
+        "initializer_list",
+        "array_initializer",
+        "initializer_expression",
+        "collection_expression",
+        "literal_value",
+        "array_expression",
+        "tuple_expression",
+        "struct_expression",
+        "list",
+        "dictionary",
+        "set",
+        "tuple",
+        "array",
+        "object",
+        "hash",
+        "array_literal",
+        "dictionary_literal",
+        "array_creation_expression",
+        "list_literal",
+        "set_or_map_literal",
     }
 )
 #: Name fragments of the nodes literal data is built from: text, names, numbers.
@@ -201,6 +222,8 @@ _DATA_PARTS = (
     "integer",
     "float",
     "expansion",
+    "symbol",
+    "character",
 )
 #: A function literal is code whatever its name says.
 _CODE_PARTS = ("func", "lambda", "closure")
@@ -223,8 +246,48 @@ _DATA_NAMES = frozenset(
         "field_access",
         "member_access_expression",
         "parenthesized_expression",
+        "boolean",
+        # The pieces of a table: elements, keys, designators and element types.
+        "initializer_list",
+        "initializer_pair",
+        "field_designator",
+        "subscript_designator",
+        "array_initializer",
+        "initializer_expression",
+        "implicit_array_creation_expression",
+        "collection_expression",
+        "collection_element",
+        "expression_element",
+        "literal_value",
+        "literal_element",
+        "keyed_element",
+        "array_expression",
+        "tuple_expression",
+        "struct_expression",
+        "field_initializer_list",
+        "field_initializer",
+        "list",
+        "dictionary",
+        "set",
+        "tuple",
+        "pair",
+        "array",
+        "object",
+        "hash",
+        "array_creation_expression",
+        "array_element_initializer",
+        "generic_name",
+        "type_argument_list",
+        "type_arguments",
+        "template_argument_list",
+        "type_descriptor",
+        "dimensions",
+        "array_rank_specifier",
+        "minus_operator",  # Dart's `-` in `-1`, under a `prefix_operator`
     }
 )
+#: A sign on a number (``-1``) keeps it data; any other operator is code.
+_SIGNS = frozenset({b"-", b"+"})
 
 
 def _rows(node: Node) -> range:
@@ -232,10 +295,12 @@ def _rows(node: Node) -> range:
 
 
 def _is_data_node(node: Node) -> bool:
-    """A literal's text, a name, a number or member access: no call, operator or function."""
+    """A literal's text, a name, a number, a table or member access: no call, operator or function."""
     kind = node.type
-    if kind in _DATA_NAMES:
+    if kind in _DATA_NAMES or kind.endswith("_type"):
         return True
+    if "unary" in kind or "prefix" in kind:
+        return node.children[0].text in _SIGNS
     if any(part in kind for part in _CODE_PARTS):
         return False
     return any(part in kind for part in _DATA_PARTS)
@@ -275,7 +340,7 @@ def _edge_rows_with_code(literal: Node, source: bytes) -> list[int]:
 
 
 def _string_rows(literals: list[Node], source: bytes) -> set[int]:
-    """Rows inside the multi-line *literals* that hold nothing but the literal's data.
+    """Rows inside the multi-line *literals* that hold nothing but literal data.
 
     The row that opens a literal stays code when code precedes it there
     (``q = \"\"\"``), so a long text block costs its statement one line.
@@ -295,7 +360,7 @@ def _string_rows(literals: list[Node], source: bytes) -> set[int]:
 def markup_rows(root: Node, grammar_tag: str, source: bytes, literals: list[Node]) -> list[int]:
     """Sorted 0-indexed non-blank rows whose every token is markup or literal data.
 
-    *literals* are the file's multi-line string literals outside docstrings.
+    *literals* are the file's multi-line literals (strings, tables) outside docstrings.
     """
     rows = _string_rows(literals, source)
     if grammar_tag in _JSX_GRAMMARS and (b"/>" in source or b"</" in source):
