@@ -14,7 +14,7 @@ import pytest
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.complexity.dispatch import judged_ccn, judged_leaves_out
 
-_EXT = {"apex": "cls", "java": "java", "csharp": "cs"}
+_EXT = {"apex": "cls", "java": "java", "csharp": "cs", "python": "py", "c": "c"}
 
 
 def _fn(language: str, source: str, name: str):
@@ -87,3 +87,38 @@ def test_finding_text_names_the_copies():
     )
     assert judged_ccn(copies) == 8
     assert judged_leaves_out(copies) == "every repeated guarded copy"
+
+
+_PY = """
+def set_cookie(c, path=None, domain=None, secure=None, comment=None):
+    if path is not None:
+        c["path"] = path
+    if domain is not None:
+        c["domain"] = domain
+    if secure is not None:
+        c["secure"] = secure
+    if comment is not None:
+        c["comment"] = comment
+"""
+
+
+def test_python_none_checked_copies_count_once():
+    fn = _fn("python", _PY, "set_cookie")
+    assert fn.ccn == 5
+    assert fn.copy_guards == 3
+    assert judged_ccn(fn) == 2
+
+
+_C = """
+void extract(lua_State *lua, info *e) {
+    if (lua_isstring(lua, -1)) e->source = sdsnew(lua_tostring(lua, -1));
+    lua_pop(lua, 1);
+    if (lua_isnumber(lua, -1)) e->line = sdsnew(lua_tostring(lua, -1));
+}
+"""
+
+
+def test_a_shared_handle_is_not_a_tested_value():
+    """``lua_isstring(lua, -1)`` tests no one value: ``lua`` and ``-1`` are shared."""
+    fn = _fn("c", _C, "extract")
+    assert fn.copy_guards == 0

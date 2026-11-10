@@ -439,16 +439,24 @@ def _is_null(node: Node) -> bool:
 
 
 def _call_values(call: Node) -> list[Node]:
-    """A call's arguments, else its receiver: ``m.containsKey(k)`` tests ``k``."""
+    """A one-argument call's argument, else a no-argument call's receiver:
+    ``m.containsKey(k)`` tests ``k``, ``x.isPresent()`` tests ``x``.
+
+    A call with more arguments (``lua_isstring(L, -1)``) shares a handle with
+    whatever it guards, so it names no single tested value.
+    """
     _, receiver, args = _call_parts(call)
-    # C# wraps each argument in an ``argument`` node.
-    args = [a.named_children[0] if a.type == "argument" and a.named_children else a for a in args]
-    return args or ([receiver] if receiver is not None else [])
+    if len(args) == 1:
+        # C# wraps each argument in an ``argument`` node.
+        arg = args[0]
+        return [arg.named_children[0] if arg.type == "argument" and arg.named_children else arg]
+    return [receiver] if not args and receiver is not None else []
 
 
 def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
-    """What a presence test tests: a call's arguments (else its receiver), or
-    the non-null side of a null comparison. Anything else tests nothing here."""
+    """What a presence test tests: a one-argument call's argument (a
+    no-argument call's receiver), or the non-null side of a null comparison.
+    Anything else tests nothing here."""
     condition = _unwrap(condition)
     if condition is None:
         return []
@@ -489,7 +497,8 @@ def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
         return False
     if body[0].end_point[0] - body[0].start_point[0] >= _MAX_COPY_LINES:
         return False
-    values = _tested_values(node.child_by_field_name("condition"), lmap)
+    # A literal (``-1``, ``"k"``) is no value of its own to copy.
+    values = [v for v in _tested_values(node.child_by_field_name("condition"), lmap) if _name(v)]
     return any(_reads(body[0], v) for v in values) and _points([node], lmap) == 1
 
 
