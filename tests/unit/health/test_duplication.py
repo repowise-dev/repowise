@@ -495,7 +495,7 @@ def test_tokenize_file_drops_the_java_package_declaration():
         ("shell", "a.sh", b"source ./lib.sh\n. ./env.sh\necho hi\n", 3),
         ("kotlin", "A.kt", b"package a.b.c\n\nimport x.y\nfun f() = 1\n", 4),
         ("csharp", "A.cs", b"namespace A.B;\nusing X;\nclass C {}\n", 3),
-        ("php", "a.php", b"<?php\nnamespace App\Http;\nuse Foo\Bar;\nclass C {}\n", 1),
+        ("php", "a.php", b"<?php\nnamespace App\\Http;\nuse Foo\\Bar;\nclass C {}\n", 1),
     ],
 )
 def test_tokenize_file_drops_import_like_headers(
