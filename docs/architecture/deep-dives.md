@@ -44,7 +44,8 @@ entry points, API contracts, never-flag paths (`__init__.py`, config files,
 migrations, shell scripts), bundler-alias shims and the package-granular
 languages, and otherwise asks whether any *dependency* edge points at the file.
 That last part is not a raw `in_degree`: a co-change edge ("these two files were
-committed together"), a file's own symbols and a self-import are all excluded.
+committed together"), a `documents` edge (a doc links to the file), a file's own
+symbols and a self-import are all excluded.
 
 **Why an import edge alone isn't enough:**
 
@@ -936,7 +937,8 @@ But propagating changes through the entire dependency graph could trigger hundre
 ```
 Input:
   file_diffs: list of changed files with their old/new parsed versions
-  graph: dependency graph (directed, import edges)
+  graph: dependency graph (directed, import edges; `documents` edges dropped,
+         so a doc linking to a changed file is not regenerated for it)
   cascade_budget: max pages to fully regenerate (adaptive, hard cap 50)
 
 Output:

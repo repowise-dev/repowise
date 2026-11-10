@@ -87,7 +87,8 @@ Per file:
 2. **Symbol complexity** (`_populate_symbol_complexity`): `max(ccn)` into
    `Symbol.complexity_estimate` for the `ContextAssembler` ranker.
 3. **Evaluate** (`FileEvaluator.evaluate`): a `FileContext` (nloc, `has_test_file`,
-   module, metrics, `git_meta`, in-degree as `dependents_count`, the repo p80 in-degree,
+   module, metrics, `git_meta`, in-degree as `dependents_count` (`co_changes` and
+   `documents` edges not counted), the repo p80 in-degree,
    coverage, the clone slice), then `detect_all()`, `score_file()` and per-finding
    impacts.
 
