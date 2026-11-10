@@ -99,3 +99,17 @@ def test_the_engine_scores_with_the_files_language(tmp_path: Path):
     marked = [f for f in report.findings if f.biomarker_type == "complex_method"]
     assert marked and all(f.dimension == ADVISORY_DIMENSION for f in marked)
     assert all(f.health_impact == 0.0 for f in marked)
+
+
+@pytest.mark.parametrize(
+    ("row", "advisory"),
+    [
+        ({"biomarker_type": "complex_method", "dimension": "advisory"}, True),
+        ({"biomarker_type": "complex_method", "dimension": "defect"}, False),
+        ({"biomarker_type": "complex_method"}, False),
+        ({"biomarker_type": "brain_method", "dimension": "defect"}, True),
+    ],
+)
+def test_a_stored_row_is_advisory_by_its_dimension_or_its_marker(row, advisory):
+    """Surfaces read stored rows, which carry no language: the dimension does."""
+    assert finding_is_advisory(row) is advisory

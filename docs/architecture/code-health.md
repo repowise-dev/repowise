@@ -336,8 +336,9 @@ language because it does not transfer:
 A marker can also be advisory in some languages only: `scoring._ADVISORY_BY_LANGUAGE`
 maps a marker to the languages where it is listed but never scored, for a cell whose
 measured precision falls short there alone. Within those languages it behaves like an
-advisory marker, and its stored findings carry the `advisory` dimension. The table is
-empty; each entry is added with its numbers here.
+advisory marker, and its stored findings carry the `advisory` dimension, so an entry
+takes effect on a repository's next re-score. The table is empty; each entry is added
+with its numbers here.
 
 ### 5.5 Worked example: the dispatch rule
 
