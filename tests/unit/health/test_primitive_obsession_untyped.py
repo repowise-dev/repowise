@@ -32,8 +32,9 @@ def test_php_reads_its_declared_types() -> None:
         "<?php\n"
         "function services(IOInterface $io, Config $config, Downloader $dl, string $dir, ?Cache $cache) {}\n"
         "function raw(bool $a, ?string $b, int|string $c, float $d, $e) {}\n"
+        "function shout(String $a, String $b, INT $c, Bool $d, Config $e) {}\n"
     )
-    assert _flagged("src/a.php", "php", source) == {"raw"}
+    assert _flagged("src/a.php", "php", source) == {"raw", "shout"}
 
 
 @pytest.mark.parametrize(
