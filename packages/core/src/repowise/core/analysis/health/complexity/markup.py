@@ -6,7 +6,8 @@ data (``style={{ color: "red" }}``, ``title={label}``) is markup too, and so is 
 component's ``const`` data literal used only there. In every language, the
 continuation lines of a multi-line string (a text block, heredoc, raw or
 template string) are data, and so is a switch arm that only returns or assigns
-a literal. A call, an operator, a function or control flow keeps a line code.
+a literal, and the continuation rows of a builder chain whose calls mostly take
+literal arguments. A call, an operator, a function or control flow keeps a line code.
 """
 
 from __future__ import annotations
@@ -509,6 +510,139 @@ def _arm_rows(arms: list[Node], source: bytes) -> set[int]:
     return data - code
 
 
+#: A call node across grammars. ``file_scan`` collects the multi-line ones that
+#: end a method chain (their parent is no member access or call).
+CALL_KINDS = frozenset(
+    {
+        "call_expression",
+        "method_invocation",
+        "call",
+        "invocation_expression",
+        "member_call_expression",
+    }
+)
+#: The member access between two links of a chain (``a.b``), across grammars.
+CHAIN_MEMBER_KINDS = frozenset(
+    {
+        "field_expression",
+        "member_expression",
+        "navigation_expression",
+        "selector_expression",
+        "attribute",
+        "member_access_expression",
+    }
+)
+#: A call's argument list, across grammars.
+_ARGUMENT_LISTS = frozenset({"arguments", "argument_list", "value_arguments", "call_suffix"})
+#: A chain's plumbing besides calls and member access: arguments and their labels.
+_CHAIN_PARTS = _ARGUMENT_LISTS | {
+    "argument",
+    "value_argument",
+    "keyword_argument",
+    "named_argument",
+    "constant",
+}
+#: Fragments of a literal argument's node kind: strings, numbers, booleans.
+_LITERAL_PARTS = ("string", "literal", "number", "integer", "float", "true", "false", "boolean")
+#: A builder chain has at least this many calls, half or more with a literal argument.
+_MIN_CHAIN_LINKS = 4
+
+
+def _call_arguments(call: Node) -> Node | None:
+    """*call*'s argument list when it holds an argument, else ``None``."""
+    last = call.named_children[-1] if call.named_children else None
+    if last is None or last.type not in _ARGUMENT_LISTS or not last.named_children:
+        return None
+    return last
+
+
+def _chain_links(top: Node) -> list[Node]:
+    """The calls of the method chain *top* ends: ``c``, ``b`` and ``a`` for ``a(1).b(2).c(3)``."""
+    links = []
+    node: Node | None = top
+    while node is not None and node.type in CALL_KINDS:
+        links.append(node)
+        callee = node.named_children[0] if node.named_children else None
+        if callee is not None and callee.type in CHAIN_MEMBER_KINDS:
+            callee = callee.named_children[0] if callee.named_children else None
+        node = callee
+    return links
+
+
+def _has_literal_argument(call: Node) -> bool:
+    arguments = _call_arguments(call)
+    stack = [arguments] if arguments is not None else []
+    while stack:
+        node = stack.pop()
+        kind = node.type
+        if any(part in kind for part in _CODE_PARTS):
+            continue
+        if any(part in kind for part in _LITERAL_PARTS):
+            return True
+        stack.extend(node.named_children)
+    return False
+
+
+def _is_builder(links: list[Node], min_links: int) -> bool:
+    """At least *min_links* calls, half or more of them with a literal argument."""
+    return len(links) >= min_links and 2 * sum(map(_has_literal_argument, links)) >= len(links)
+
+
+def _chain_node_is_code(node: Node, spine: set[int], data: set[int], code: set[int]) -> bool:
+    """Judge one named node of a builder chain; ``True`` when its rows are code.
+
+    A call off the chain's spine (an argument) is judged as a chain of its own,
+    so ``Arg::new("x").long("x")`` is data and ``compute(level)`` is code.
+    """
+    kind = node.type
+    if kind in CALL_KINDS:
+        if node.id not in spine:
+            return not _chain_rows(node, data, code, 1)
+        if _call_arguments(node) is None:
+            # ``.build()``: an action, not a setting.
+            code.add(node.end_point[0])
+        return False
+    return kind not in _CHAIN_PARTS and not _is_data_node(node)
+
+
+def _chain_rows(top: Node, data: set[int], code: set[int], min_links: int) -> bool:
+    """Sort a builder chain's token rows into *data* and *code*; ``False`` when *top* is none."""
+    links = _chain_links(top)
+    if not _is_builder(links, min_links):
+        return False
+    spine = {link.id for link in links}
+    stack = [top]
+    while stack:
+        node = stack.pop()
+        if "comment" in node.type:
+            continue
+        if node.is_named and _chain_node_is_code(node, spine, data, code):
+            code.update(_rows(node))
+        elif node.children:
+            stack.extend(node.children)
+        elif node.start_byte < node.end_byte:
+            data.update(_rows(node))
+    return True
+
+
+def _builder_rows(chains: list[Node], source: bytes) -> set[int]:
+    """Continuation rows of the builder *chains*: setting after setting with literal values.
+
+    ``Command::new("app").arg(Arg::new("x").long("x").help("..."))...`` declares a
+    command line; its first row stays code, as a long string's does.
+    """
+    data: set[int] = set()
+    code: set[int] = set()
+    covered_to = -1
+    for top in sorted(chains, key=lambda node: (node.start_byte, -node.end_byte)):
+        if top.start_byte < covered_to or not _chain_rows(top, data, code, _MIN_CHAIN_LINKS):
+            continue
+        covered_to = top.end_byte
+        code.add(top.start_point[0])
+        code.update(_edge_rows_with_code(top, source))
+    return data - code
+
+
 #: Grammars with a UI tree builder, and bytes a file holds when it may have one:
 #: SwiftUI ``some View`` / ``@ViewBuilder``, Compose ``@Composable``, Flutter ``Widget``.
 _UI_MARKERS = {
@@ -689,17 +823,24 @@ def _ui_rows(root: Node, grammar_tag: str, source: bytes) -> set[int]:
 
 
 def markup_rows(
-    root: Node, grammar_tag: str, source: bytes, literals: list[Node], arms: list[Node]
+    root: Node,
+    grammar_tag: str,
+    source: bytes,
+    literals: list[Node],
+    arms: list[Node],
+    chains: list[Node],
 ) -> list[int]:
     """Sorted 0-indexed non-blank rows whose every token is markup or literal data.
 
     *literals* are the file's multi-line literals (strings, tables) outside docstrings;
-    *arms* its switch / when / match arms.
+    *arms* its switch / when / match arms; *chains* the calls ending its multi-line
+    method chains.
     """
     rows = (
         _string_rows(literals, source)
         | _ui_rows(root, grammar_tag, source)
         | _arm_rows(arms, source)
+        | _builder_rows(chains, source)
     )
     if grammar_tag in _JSX_GRAMMARS and (b"/>" in source or b"</" in source):
         markup, code = _token_rows(root)

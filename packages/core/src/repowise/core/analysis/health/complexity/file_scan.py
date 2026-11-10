@@ -20,7 +20,7 @@ from ..perf.io_boundaries import _finish_io_names, _io_visit
 from .ast_utils import _UNIT_LAMBDA_KINDS
 from .error_handling import _eh_node_kinds, _eh_rust_attr_is_test, _eh_visit
 from .languages import LanguageNodeMap
-from .markup import ARM_KINDS, LITERAL_KINDS
+from .markup import ARM_KINDS, CALL_KINDS, CHAIN_MEMBER_KINDS, LITERAL_KINDS
 from .models import ErrorHandlingHit
 from .nloc import CodeLineIndex, _source_lines, is_docstring_stmt
 
@@ -60,6 +60,9 @@ class FileScan:
     #: Switch / when / match arms, for ``markup.markup_rows`` to count the
     #: literal-only ones as data.
     arms: list[Node]
+    #: Multi-line calls that end a method chain, for ``markup.markup_rows`` to
+    #: count a builder chain's continuation rows as data.
+    chains: list[Node]
 
 
 def _rust_item_is_test(node: Node) -> bool:
@@ -111,6 +114,7 @@ def scan_file(
     function_nodes: list[Node] = []
     literals: list[Node] = []
     arms: list[Node] = []
+    chains: list[Node] = []
     rust_ranges: list[tuple[int, int]] = []
     io_bound: dict[str, str] = {}
     io_rebound: set[str] = set()
@@ -159,6 +163,13 @@ def scan_file(
             literals.append(node)
         elif t in ARM_KINDS:
             arms.append(node)
+        elif (
+            t in CALL_KINDS
+            and node.end_point[0] > node.start_point[0]
+            and node.parent.type not in CHAIN_MEMBER_KINDS
+            and node.parent.type not in CALL_KINDS
+        ):
+            chains.append(node)
 
         children = node.children
         if children:
@@ -200,4 +211,5 @@ def scan_file(
         io_names=_finish_io_names(io_bound, io_rebound),
         literals=literals,
         arms=arms,
+        chains=chains,
     )
