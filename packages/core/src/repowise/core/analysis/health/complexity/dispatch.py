@@ -466,6 +466,9 @@ def _call_values(call: Node) -> list[Node]:
     A call with more arguments (``lua_isstring(L, -1)``) shares a handle with
     whatever it guards, so it names no single tested value.
     """
+    if call.type == "application_expression":
+        # F# ``isNull x.Domain``: function, then its one argument.
+        return call.named_children[1:] if len(call.named_children) == 2 else []
     _, receiver, args = _call_parts(call)
     if len(args) == 1:
         # C# wraps each argument in an ``argument`` node.
@@ -525,21 +528,19 @@ def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
     Anything else tests nothing here."""
     condition = _unwrap(condition)
     if condition is not None and condition.type == "paren_expression":
-        condition = _unwrap(condition.named_children[0]) if condition.named_children else None
+        # F# parenthesises without a wrapper of its own.
+        return _tested_values(condition.named_children[0], lmap) if condition.named_children else []
     if condition is None:
         return []
     negated = _negated(condition)
     if negated is not None:
         return _tested_values(negated, lmap)
-    if condition.type == "let_condition":
-        return _bound_names(condition)
-    if condition.type == "application_expression":
-        # F# ``isNull x.Domain``: function, then its one argument.
-        return condition.named_children[1:] if len(condition.named_children) == 2 else []
     if condition.type in lmap.call_kinds:
         return _call_values(condition)
     if condition.type in _COMPARISON_KINDS:
         return _compared_values(condition)
+    if condition.type == "let_condition":
+        return _bound_names(condition)
     return [condition] if condition.type in _ACCESS_KINDS else []
 
 
@@ -636,19 +637,28 @@ def _copy_statement(node: Node, lmap: LanguageNodeMap) -> Node | None:
     return body[0]
 
 
-def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
-    """An ``if`` with no ``else`` whose condition only tests presence and whose
-    one statement copies a tested value, or sets the field it is named after."""
+def _guard_parts(node: Node, lmap: LanguageNodeMap) -> tuple[Node, Node, list[Node]] | None:
+    """``(condition, statement, tested values)`` of an ``if`` with no ``else``,
+    one short statement and nothing but presence tests in its condition."""
     found = _lone_if(node, lmap)
     statement = _copy_statement(found, lmap) if found is not None else None
     if found is None or statement is None:
-        return False
+        return None
     condition = found.child_by_field_name("condition") or found.child_by_field_name("guard")
     tests = _presence_tests(condition, lmap)
     if not tests or len(tests) != _points([found], lmap):
-        return False
+        return None
     # A literal (``-1``, ``"k"``) is no value of its own to copy.
-    values = [v for test in tests for v in test if _name(v)]
+    return condition, statement, [v for test in tests for v in test if _name(v)]
+
+
+def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An ``if`` with no ``else`` whose condition only tests presence and whose
+    one statement copies a tested value, or sets the field it is named after."""
+    parts = _guard_parts(node, lmap)
+    if parts is None:
+        return False
+    condition, statement, values = parts
     target = _plain_target(statement)
     if target is not None and _name(target) in {_name(v) for v in values}:
         # ``if x is None: x = {}`` fills a default; ``if flag: flag = False``
