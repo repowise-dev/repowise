@@ -13,6 +13,10 @@ outside its one dispatch plus those of its heaviest arm, and its nesting less
 the levels the dispatch opens. A per-case handler is flagged when the code
 around the dispatch, or one of its arms, is complex on its own.
 
+Separately, a run of error guards (Go ``if err != nil { return err }``, C
+``if (rc) goto cleanup;``, shell ``cmd || die``) counts once in
+:func:`judged_ccn`; when both cuts apply, the smaller reading wins.
+
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
 path). It counts the same nodes :mod:`.cyclomatic` charged, so a flat switch
@@ -348,6 +352,26 @@ def _tests_error(node: Node) -> bool:
     )
 
 
+def _jumps_forward(goto: Node, lmap: LanguageNodeMap) -> bool:
+    """A ``goto`` to a label further down its function (``goto cleanup``).
+
+    One that jumps back (``goto again``) is a loop, not an exit.
+    """
+    target = goto.named_children[-1].text if goto.named_children else None
+    scope: Node | None = goto
+    while scope is not None and scope.type not in lmap.function_kinds:
+        scope = scope.parent
+    stack = [scope] if scope is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type == "labeled_statement":
+            label = node.child_by_field_name("label")
+            if label is not None and label.text == target:
+                return node.start_byte > goto.start_byte
+        stack.extend(node.named_children)
+    return False
+
+
 def _is_exit_if(node: Node, lmap: LanguageNodeMap) -> bool:
     """An ``if`` with no ``else`` whose body ends in a ``goto`` or an error ``return``."""
     if node.type not in lmap.if_kinds or node.child_by_field_name("alternative") is not None:
@@ -356,7 +380,7 @@ def _is_exit_if(node: Node, lmap: LanguageNodeMap) -> bool:
     if not body:
         return False
     if body[-1].type in _GOTO_KINDS:
-        return True
+        return _jumps_forward(body[-1], lmap)
     return body[-1].type in lmap.return_kinds and _tests_error(node)
 
 

@@ -217,3 +217,37 @@ func pipes(c *Cmd) {
 
 def test_go_stderr_is_not_an_error_value() -> None:
     assert _fn("go", _GO_STDERR, "pipes").exit_guards == 0
+
+
+_GO_GOTO = """
+package p
+
+func spin(x, y, z bool) {
+again:
+	if x {
+		goto again
+	}
+	if y {
+		goto again
+	}
+	if z {
+		goto again
+	}
+}
+
+func cleanup(x, y, z bool) {
+	if x {
+		goto out
+	}
+	if y {
+		goto out
+	}
+out:
+	return
+}
+"""
+
+
+def test_a_backward_goto_is_a_loop_not_a_guard() -> None:
+    assert _fn("go", _GO_GOTO, "spin").exit_guards == 0
+    assert _fn("go", _GO_GOTO, "cleanup").exit_guards == 1
