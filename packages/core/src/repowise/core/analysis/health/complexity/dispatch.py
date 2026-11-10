@@ -603,12 +603,20 @@ def _sets_mirror(target: Node | None, value: Node) -> bool:
     return bool(names and tested) and names[-1] == tested[-1]
 
 
-def _is_fill(condition: Node | None) -> bool:
-    """``x == null`` / ``x is None``: the test before filling in a default."""
-    condition = _unwrap(condition)
-    return condition is not None and any(
-        c.text in _EQUALITY for c in condition.children if not c.is_named
-    )
+def _is_fill(condition: Node | None, target: str | None) -> bool:
+    """Whether *condition* has ``target == null`` / ``target is None`` among
+    its ``&&`` operands: the test before filling in a default."""
+    stack = [condition]
+    while stack:
+        node = _unwrap(stack.pop())
+        if node is None:
+            continue
+        tokens = [c.text for c in node.children if not c.is_named]
+        if any(t in _CONJUNCTIONS for t in tokens):
+            stack.extend(node.named_children)
+        elif any(t in _EQUALITY for t in tokens) and target in map(_name, node.named_children):
+            return True
+    return False
 
 
 def _lone_if(node: Node, lmap: LanguageNodeMap) -> Node | None:
@@ -660,10 +668,10 @@ def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
         return False
     condition, statement, values = parts
     target = _plain_target(statement)
-    if target is not None and _name(target) in {_name(v) for v in values}:
+    if target is not None and _name(target) in set(map(_name, values)):
         # ``if x is None: x = {}`` fills a default; ``if flag: flag = False``
         # or ``if z: z = z + 1`` decides what the value becomes.
-        return _is_fill(condition)
+        return _is_fill(condition, _name(target))
     return any(_reads(statement, v) or _sets_mirror(target, v) for v in values)
 
 

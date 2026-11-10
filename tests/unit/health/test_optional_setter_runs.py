@@ -216,3 +216,19 @@ def test_fsharp_optional_property_copies_count_once():
     assert fn.ccn == 4
     assert fn.copy_guards == 2
     assert judged_ccn(fn) == 2
+
+
+_PY_FILLS = """
+def merge(self, base):
+    if self.timeout is None and base.timeout is not None:
+        self.timeout = base.timeout
+    if self.retries is None and base.retries is not None:
+        self.retries = base.retries
+"""
+
+
+def test_python_two_test_null_fills_count_once():
+    fn = _fn("python", _PY_FILLS, "merge")
+    assert fn.ccn == 5
+    assert fn.copy_guards == 2
+    assert judged_ccn(fn) == 3
