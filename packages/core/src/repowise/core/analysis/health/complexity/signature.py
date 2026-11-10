@@ -308,7 +308,9 @@ def _local_supertypes(cls: Node, lmap: LanguageNodeMap) -> list[Node]:
 
 def _file_types(node: Node, lmap: LanguageNodeMap) -> dict[str, list[Node]]:
     """Type declarations of *node*'s file by simple name, function bodies
-    left unread."""
+    left unread. Scopes are not resolved: two nested types sharing a simple
+    name read as one, which can only leave a finding out. Walked once per
+    method; a per-file memo is the upgrade if large files make it show."""
     root = node
     while root.parent is not None:
         root = root.parent
