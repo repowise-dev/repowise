@@ -78,7 +78,7 @@ class ResumeLedger:
                         store,
                         repository_id=self._repo_id,
                         phases=[str(resume_phase) for resume_phase in ResumePhase],
-                        keep_ids=self._job_ids.values(),
+                        keep_ids=set(self._job_ids.values()),
                     )
                 job = await store.create_job(repository_id=self._repo_id, phase=str(phase))
                 await store.update_state(job.id, JobState.RUNNING)
