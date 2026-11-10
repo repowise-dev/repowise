@@ -485,12 +485,11 @@ def _ends_in_a_value(arm: Node) -> bool:
 
 def _is_condition_arm(arm: Node) -> bool:
     """A Kotlin ``when`` with no subject: its arms are an ``if`` chain, not a table."""
-    parent = arm.parent
-    return (
-        arm.type == "when_entry"
-        and parent is not None
-        and not any(child.type == "when_subject" for child in parent.named_children)
-    )
+    if arm.type != "when_entry" or arm.parent is None:
+        return False
+    # The subject, when there is one, comes first.
+    first = arm.parent.named_child(0)
+    return first is None or first.type != "when_subject"
 
 
 def _arm_rows(arms: list[Node], source: bytes) -> set[int]:
