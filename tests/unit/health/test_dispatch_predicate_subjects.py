@@ -62,6 +62,18 @@ void command(client *c) {
     }
 }
 
+void escape(int c) {
+    if (c == ' ') {
+        plus();
+    } else if (c == '%') {
+        percent();
+    } else if (c > 127 || lookup(c) != -1) {
+        encode(c);
+    } else {
+        keep(c);
+    }
+}
+
 long guarded(const char *u, long len, long x, long y, long z) {
     if (len > 0 && x == 1) {
         return 1;
@@ -146,8 +158,9 @@ def test_c_string_compare_chain_is_one_dispatch() -> None:
     assert _share("c", _C, "unit") >= DISPATCH_SHARE
 
 
-def test_c_subcommand_chain_is_keyed_on_the_shared_name() -> None:
-    assert _share("c", _C, "command") >= DISPATCH_SHARE
+@pytest.mark.parametrize("name", ["command", "escape"])
+def test_c_chain_is_keyed_on_the_shared_name(name: str) -> None:
+    assert _share("c", _C, name) >= DISPATCH_SHARE
 
 
 @pytest.mark.parametrize("name", ["mixed", "guarded"])

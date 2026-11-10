@@ -269,16 +269,6 @@ def _test_subject(node: Node, lmap: LanguageNodeMap) -> str | None:
     return _operand(left, lmap) or _operand(right, lmap)
 
 
-def _keys(node: Node | None, lmap: LanguageNodeMap) -> set[str]:
-    """The names an arm can be keyed on: those it tests for a value or a kind.
-
-    A bound check shared by every arm (``len > 0 && x == 1``) keys nothing; an
-    arm of bound checks alone (``x < 10``) keys on what it bounds.
-    """
-    tests = _tests(node, lmap)
-    return {n for n, ordering in tests if not ordering} or {n for n, _ in tests}
-
-
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
     """The name a condition is keyed on, ``None`` when it tests none.
 
@@ -308,13 +298,15 @@ def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
 
     ``argc == 2 && !strcmp(argv[1], "help")`` then ``!strcmp(argv[1], "load")
     && argc >= 3`` are both keyed on ``argv[1]``, whichever side names it first.
+    A name only bound-checked (``len > 0 && x == 1``) keys the chain when no
+    arm tests any value or kind (``x < 10``, ``x < 20``, ...).
     """
     if len(arms) < _MIN_ARMS:
         return False
-    shared = _keys(_condition(arms[0]), lmap)
-    for arm in arms[1:]:
-        shared &= _keys(_condition(arm), lmap)
-    return bool(shared)
+    tests = [_tests(_condition(arm), lmap) for arm in arms]
+    shared = set.intersection(*({n for n, _ in t} for t in tests))
+    valued = {n for t in tests for n, ordering in t if not ordering}
+    return bool(shared & valued) if valued else bool(shared)
 
 
 def _is_chain_head(node: Node) -> bool:
