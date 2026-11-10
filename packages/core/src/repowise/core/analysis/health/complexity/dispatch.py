@@ -577,7 +577,9 @@ def judged_leaves_out(fn: FunctionComplexity) -> str:
     unguarded = fn.ccn - fn.exit_guards - fn.copy_guards
     if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < unguarded:
         return "every arm of its dispatch"
-    if fn.copy_guards > fn.exit_guards:
+    if fn.copy_guards and fn.exit_guards:
+        return "every repeated error guard and guarded copy"
+    if fn.copy_guards:
         return "every repeated guarded copy"
     return "every repeated error guard"
 
