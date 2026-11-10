@@ -21,8 +21,8 @@ These narrowings keep the finding to signatures someone can actually fix:
   scalars or strings. A wide list of rich domain types is already the value
   objects this smell asks for. Untyped parameters are left out of that
   majority, and a wholly untyped signature (unannotated Python, Ruby or
-  JavaScript) is judged on the count alone, JavaScript with two more
-  parameters allowed (``_UNTYPED_GRACE``).
+  JavaScript) is judged on the count alone, JavaScript (a Vue or Svelte
+  ``<script>`` included) with two more parameters allowed (``_UNTYPED_GRACE``).
 - A parameter a framework binds by annotation (``@PathVariable``) is the
   route's or the data format's, so only the remaining ones are counted.
 - A keyword-only parameter is left out too: every call site names it, so it
@@ -52,7 +52,9 @@ _MIN_FILE_NLOC = 60  # see the module docstring
 # context, a logger). A wholly untyped JavaScript signature is held to two
 # more parameters. Ruby keeps the plain threshold: its wide untyped lists
 # were mostly raw values once rest parameters and constructors are set aside.
-_UNTYPED_GRACE = {"javascript": 2, "jsx": 2}
+# A Vue or Svelte ``<script>`` is JavaScript unless it says ``lang="ts"``, and
+# a wholly untyped signature there is that JavaScript.
+_UNTYPED_GRACE = {"javascript": 2, "jsx": 2, "vue": 2, "svelte": 2}
 
 
 class PrimitiveObsessionDetector:
