@@ -132,6 +132,13 @@ def expand_cascade(
     for path in seed_files:
         containers.update(deps.containers_of(path))
     repo_wide = set(deps.repo_wide_ids)
+    # Repo-wide pages summarize the rest of the wiki, not each other. When every
+    # seed is itself repo-wide (e.g. ``generate --stale`` after a previous run
+    # marked them), no summarized content changed, so regenerating one must not
+    # mark the others stale: that turned the overview and onboarding pages into
+    # a loop where each run re-staled the pages the previous run had just fixed.
+    if seed_ids and seed_ids <= repo_wide:
+        repo_wide = set()
 
     if mode == "full":
         generate = seed_ids | containers | repo_wide
