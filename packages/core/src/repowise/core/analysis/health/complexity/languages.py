@@ -1511,6 +1511,8 @@ _OBJC = LanguageNodeMap(
 
 
 _PHP = LanguageNodeMap(
+    # ``?string`` and ``int|string`` read as their members.
+    scalar_type_names=frozenset({"int", "float", "string", "bool", "true", "false"}),
     bodyless=_no_body_field,
     function_kinds=frozenset({"function_definition", "method_declaration"}),
     lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),
