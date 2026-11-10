@@ -36,10 +36,30 @@ RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
 #: Python handler types that catch every ordinary exception; only the second
 #: also catches the interpreter's exit signals.
 PY_CATCH_ALL = ("Exception", "BaseException")
-# Cancellation is a stop signal, not an error: dropping it after cancelling a
-# task is deliberate, so a handler catching only these is not swallowing.
-_CANCEL_TYPES = {
-    "python": frozenset({"CancelledError"}),
+# Exceptions an empty handler may drop on purpose, so a handler catching only
+# these is not swallowing. Cancellation is a stop signal, not an error:
+# dropping it after cancelling a task is deliberate. The other Python types
+# each name one expected outcome, the ``contextlib.suppress`` idiom: an
+# optional import, a delete/remove/kill that finds nothing there, a mkdir that
+# finds the folder there, an exhausted iterator, a non-blocking call with
+# nothing ready, a reader that closed the pipe, a Ctrl-C ending a run quietly.
+_EXPECTED_TYPES = {
+    "python": frozenset(
+        {
+            "CancelledError",
+            "ImportError",
+            "ModuleNotFoundError",
+            "KeyError",
+            "FileNotFoundError",
+            "FileExistsError",
+            "ProcessLookupError",
+            "StopIteration",
+            "StopAsyncIteration",
+            "BlockingIOError",
+            "BrokenPipeError",
+            "KeyboardInterrupt",
+        }
+    ),
     "csharp": frozenset({"OperationCanceledException", "TaskCanceledException"}),
 }
 # A docstring or comment that states the handler's fallback: "best-effort",
@@ -171,9 +191,10 @@ def _eh_caught_types(clause: Node, language: str) -> list[Node]:
     return types
 
 
-def _eh_catches_only_cancellation(clause: Node, language: str) -> bool:
-    """``except asyncio.CancelledError`` / C# ``catch (OperationCanceledException)``."""
-    names = _CANCEL_TYPES.get(language)
+def _eh_catches_only_expected(clause: Node, language: str) -> bool:
+    """``except asyncio.CancelledError`` / ``except (ImportError, KeyError)`` /
+    C# ``catch (OperationCanceledException)``."""
+    names = _EXPECTED_TYPES.get(language)
     if names is None:
         return False
     types = _eh_caught_types(clause, language)
@@ -438,10 +459,10 @@ def _eh_broad_except_hit(
 
 def _eh_swallow_expected(node: Node, language: str) -> bool:
     """An empty handler that is the intended landing spot: a Java/Apex test's
-    expected throw, or a caught cancellation."""
+    expected throw, or a caught cancellation or other expected outcome."""
     if language in ("java", "apex"):
         return _eh_java_try_ends_in_fail(node, language)
-    return _eh_catches_only_cancellation(node, language)
+    return _eh_catches_only_expected(node, language)
 
 
 def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> None:
