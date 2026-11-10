@@ -429,19 +429,24 @@ _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
 # waits on corpus precision data for the remaining advisory markers.
 # ---------------------------------------------------------------------------
 
-# Per-biomarker weight on the performance dimension. ``io_in_loop`` is the
-# gate-cleared core (measured 79% precision, Phase 0) and carries full weight;
-# ``string_concat_in_loop`` and ``blocking_sync_in_async`` ride the same pass
-# at a reduced advisory weight pending their own spot-check (see
-# MARKER_BACKLOG.md). Unknown biomarkers fall back to 1.0.
+# Per-biomarker weight on the performance dimension; 0.0 lists a finding
+# without deducting. Unknown biomarkers fall back to 1.0.
 _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
-    "io_in_loop": 1.0,
+    # Listed, never scored (0.0). A blind study of 705 findings on 64 repositories
+    # judged these worth acting on: io_in_loop 1 of 50, lock_in_loop 0 of 26,
+    # string_concat_in_loop 1 of 25, membership_test_against_list_in_loop 1 of 11,
+    # list_insert_zero_in_loop 0 of 3, nested_loop_with_io 0 of 3. The code is
+    # real, but on a cold path (setup, once per connection, the error path) that
+    # the detectors cannot tell from a hot one. They keep the ``performance``
+    # home, not ``advisory``: the performance queue and the call-path closure
+    # select findings by that home.
+    "io_in_loop": 0.0,
+    "lock_in_loop": 0.0,
+    "string_concat_in_loop": 0.0,
+    "membership_test_against_list_in_loop": 0.0,
+    "list_insert_zero_in_loop": 0.0,
+    "nested_loop_with_io": 0.0,
     "blocking_sync_in_async": 0.7,
-    # PROMOTED 0.5 -> 0.7 (Phase-7d): the reset-per-iteration guard lifted Python
-    # precision to 100% (26/26 on the headroom corpus) by dropping the dominant
-    # FP class (an accumulator re-initialized each iteration is bounded, not
-    # O(n^2)). Clears the 70% bar with comfortable n.
-    "string_concat_in_loop": 0.7,
     # Phase 7a markers. Ship at advisory weight pending each one's Phase-0 gate
     # (MARKER_BACKLOG.md); promote to full weight where corpus precision >= 70%.
     # resource_construction is the highest-confidence (classified constructor),
@@ -453,25 +458,19 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "regex_compile_in_loop": 0.6,
     "defer_in_loop": 0.6,
     "resource_construction_in_loop": 0.7,
-    "lock_in_loop": 0.5,
-    # PROMOTED 0.5 -> 0.7 (Phase-7c): 100% precision across corpora (7a 22/22 +
-    # headroom Python 12/12 = 34/34; list-vs-set gate holds). Clears the 70% bar.
-    "membership_test_against_list_in_loop": 0.7,
     "serial_await_in_loop": 0.4,
     # Phase 7b markers. Ship at advisory weight pending each one's Phase-0 gate
-    # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). nested_loop_with_io rides with
-    # io_in_loop (nesting-confident); blocking_io_under_lock is high-confidence
-    # by construction (a sink under a held lock); the centrality-gated pair are
-    # advisory (the gate is precision, but the algorithmic cost is context-bound).
-    "nested_loop_with_io": 0.5,
+    # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). blocking_io_under_lock is
+    # high-confidence by construction (a sink under a held lock); the
+    # centrality-gated pair are advisory (the gate is precision, but the
+    # algorithmic cost is context-bound).
     "blocking_io_under_lock": 0.6,
     "hot_path_sync_io": 0.5,
     "nested_loop_quadratic": 0.4,
     # Phase 7d language-specific markers. Ship advisory pending each one's gate
-    # (MARKER_BACKLOG.md / PHASE7D); the two O(n^2)-by-construction Python ones
-    # (front-insert / pd.concat) carry slightly more weight than the moderate-
-    # precision json_parse / goroutine-spawn ones.
-    "list_insert_zero_in_loop": 0.6,
+    # (MARKER_BACKLOG.md / PHASE7D); pd.concat (O(n^2) by construction) carries
+    # slightly more weight than the moderate-precision json_parse /
+    # goroutine-spawn ones.
     "pd_concat_in_loop": 0.6,
     # ``iterrows`` is a documented pandas anti-pattern, high-precision by the
     # distinctive method name; advisory pending corpus volume (no pandas in the
