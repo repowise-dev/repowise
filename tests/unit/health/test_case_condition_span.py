@@ -14,7 +14,9 @@ def _conditions(language: str, source: str) -> list[tuple[str, int]]:
     if not fcx.functions:
         pytest.skip(f"{language} grammar unavailable")
     return sorted(
-        (c.enclosing_construct, c.operator_count) for fn in fcx.functions for c in fn.complex_conditions
+        (c.enclosing_construct, c.operator_count)
+        for fn in fcx.functions
+        for c in fn.complex_conditions
     )
 
 
