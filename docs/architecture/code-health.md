@@ -337,8 +337,19 @@ A marker can also be advisory in some languages only: `scoring._ADVISORY_BY_LANG
 maps a marker to the languages where it is listed but never scored, for a cell whose
 measured precision falls short there alone. Within those languages it behaves like an
 advisory marker, and its stored findings carry the `advisory` dimension, so an entry
-takes effect on a repository's next re-score. The table is empty; each entry is added
-with its numbers here.
+takes effect on a repository's next re-score. Only markers without defect signal are
+listed; `complex_method`, `nested_complexity` and `large_method` keep their weight in
+every language. An entry is a cell judged under 80% worth acting on with at least 5
+findings decided (TP / (TP + FP), unsure left out), from its latest blind judging:
+
+| marker | language: worth acting on / decided |
+|---|---|
+| `primitive_obsession` | c 0/5, cpp 0/7, csharp 4/8, java 5/7, javascript 0/5, php 2/5, python 0/8, rust 2/6, scala 3/5, swift 0/5, typescript 4/8 |
+| `complex_conditional` | c 2/5, cpp 3/8, csharp 2/8, dart 1/5, fsharp 3/5, go 3/8, java 3/8, javascript 2/5, kotlin 2/8, objectivec 3/5, php 3/5, python 3/8, ruby 2/5, rust 1/8, typescript 1/8 |
+| `god_class` | csharp 3/8, kotlin 1/5, python 3/6, scala 3/5, typescript 2/7 |
+
+Languages are file tags: `.tsx` files are `typescript`, `.jsx` files `javascript`; Vue,
+Svelte, Astro and Razor files keep their own tags and are not listed.
 
 ### 5.5 Worked example: the dispatch rule
 
