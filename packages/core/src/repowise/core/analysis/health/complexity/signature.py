@@ -214,8 +214,12 @@ def _is_delegate_callback(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     name = _field_text(fn_node, "name") or ""
     if type_node is None or _is_scalar(type_node, lmap.scalar_type_names):
         return False
-    caller = _text(type_node).rstrip("?!")
-    # ``UITableView`` is ``tableView``, ``URLSession`` is ``urlSession``.
+    return _named_after(name, _text(type_node).rstrip("?!"))
+
+
+def _named_after(name: str, caller: str) -> bool:
+    """*name* starts with the word for *caller*: ``UITableView`` is
+    ``tableView``, ``URLSession`` is ``urlSession``."""
     stems = {_lower_camel(caller), _lower_camel(_TYPE_PREFIX_RE.sub("", caller, count=1))}
     return any(
         name.startswith(stem) and (len(name) == len(stem) or name[len(stem)].isupper())
