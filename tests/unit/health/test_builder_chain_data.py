@@ -159,3 +159,20 @@ def test_a_computing_argument_keeps_its_rows_code() -> None:
 def test_a_short_chain_is_left_alone() -> None:
     links = '    .option("--a", "A")\n    .option("--b", "B")'
     assert _js(links).markup_nloc == 0
+
+
+def test_a_transform_chain_with_a_callback_stays_code() -> None:
+    source = (
+        "fun f(a: Int, p: String): String {\n  if (a > 0) { println(a) }\n  if (a > 2) { println(a) }\n"
+        '  return p\n    .replace("\\\\", "/")\n    .substringAfter(":")\n    .removePrefix("/")\n'
+        '    .prefixIfNot("**/")\n    .also { log(it) }\n}\n'
+    )
+    assert _only_function("M.kt", "kotlin", source).markup_nloc == 0
+
+
+def test_a_rust_option_chain_with_a_closure_stays_code() -> None:
+    source = (
+        "fn f(m: &Matches) -> u32 {\n  m\n    .get_one::<String>(\"tabs\")\n    .map(String::from)\n"
+        '    .and_then(|t| t.parse().ok())\n    .unwrap_or(4)\n}\n'
+    )
+    assert _only_function("m.rs", "rust", source).markup_nloc == 0

@@ -544,6 +544,8 @@ _CHAIN_PARTS = _ARGUMENT_LISTS | {
 }
 #: Fragments of a literal argument's node kind: strings, numbers, booleans.
 _LITERAL_PARTS = ("string", "literal", "number", "integer", "float", "true", "false", "boolean")
+#: Ruby's block arguments (``do |x| ... end``), a callback by another name.
+_CALLBACK_KINDS = frozenset({"block", "do_block"})
 #: A builder chain has at least this many calls, half or more with a literal argument.
 _MIN_CHAIN_LINKS = 4
 
@@ -583,9 +585,32 @@ def _has_literal_argument(call: Node) -> bool:
     return False
 
 
+def _takes_callback(call: Node) -> bool:
+    """Whether *call* is handed a function (``.map(|x| ...)``, ``.also { ... }``) itself.
+
+    Arguments of a nested call are that call's business.
+    """
+    stack = list(call.named_children[1:])
+    while stack:
+        node = stack.pop()
+        kind = node.type
+        if kind in CALL_KINDS:
+            continue
+        if kind in _CALLBACK_KINDS or any(part in kind for part in _CODE_PARTS):
+            return True
+        stack.extend(node.named_children)
+    return False
+
+
 def _is_builder(links: list[Node], min_links: int) -> bool:
-    """At least *min_links* calls, half or more of them with a literal argument."""
-    return len(links) >= min_links and 2 * sum(map(_has_literal_argument, links)) >= len(links)
+    """At least *min_links* calls, half or more of them with a literal argument.
+
+    A chain of four or more that hands a link a callback transforms a value
+    (``pattern.substringAfter(":").removePrefix("/").also { ... }``); it is no builder.
+    """
+    if len(links) < min_links or 2 * sum(map(_has_literal_argument, links)) < len(links):
+        return False
+    return min_links < _MIN_CHAIN_LINKS or not any(map(_takes_callback, links))
 
 
 def _chain_node_is_code(node: Node, spine: set[int], data: set[int], code: set[int]) -> bool:
