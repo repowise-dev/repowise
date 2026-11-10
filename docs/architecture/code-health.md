@@ -333,6 +333,12 @@ language because it does not transfer:
 - The four `apex_*` markers: every finding on 13 Salesforce repos hand-read, none
   wrong; no defect corpus covers Apex yet.
 
+A marker can also be advisory in some languages only: `scoring._ADVISORY_BY_LANGUAGE`
+maps a marker to the languages where it is listed but never scored, for a cell whose
+measured precision falls short there alone. Within those languages it behaves like an
+advisory marker, and its stored findings carry the `advisory` dimension. The table is
+empty; each entry is added with its numbers here.
+
 ### 5.5 Worked example: the dispatch rule
 
 `nested_complexity` adds a level per `if` / `for` / `while` / `try` / `switch`; a `case`
