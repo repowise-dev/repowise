@@ -257,16 +257,22 @@ def _test_subject(node: Node, lmap: LanguageNodeMap) -> str | None:
     if node.type not in _COMPARISON_KINDS:
         return _call_subject(node, lmap)
     named = node.named_children
+    if (selected := _selector_operand(named)) is not None:
+        return selected
     left = node.child_by_field_name("left") or (named[0] if named else None)
     right = node.child_by_field_name("right") or (named[-1] if named else None)
-    split = next((i for i, c in enumerate(named) if c.type in _DART_OPERATOR_KINDS), 0)
-    if split > 1:
-        # Dart spells ``dep.source is X`` as ``dep``, a ``.source`` selector, then the test.
-        text = _SPACE_RE.sub(
-            "", "".join((c.text or b"").decode("utf-8", "replace") for c in named[:split])
-        )
-        return text if len(text) <= _MAX_SUBJECT_CHARS else None
     return _operand(left, lmap) or _operand(right, lmap)
+
+
+def _selector_operand(named: list[Node]) -> str | None:
+    """Dart spells ``dep.source is X`` as ``dep``, a ``.source`` selector, then the test."""
+    split = next((i for i, c in enumerate(named) if c.type in _DART_OPERATOR_KINDS), 0)
+    if split < 2:
+        return None
+    text = _SPACE_RE.sub(
+        "", "".join((c.text or b"").decode("utf-8", "replace") for c in named[:split])
+    )
+    return text if len(text) <= _MAX_SUBJECT_CHARS else None
 
 
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
