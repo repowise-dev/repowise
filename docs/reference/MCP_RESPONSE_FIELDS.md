@@ -655,7 +655,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 - **Metric row:** `score` (defect, headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, `structure_deduction`, `history_deduction`, `withheld_deduction`, `history: "short"` (under 5 commits, so most history markers cannot fire).
 - Score = 10 minus structure and history deductions, floored at 1.0; history is 0.0 under `counts="code_shape"`. Deficit and gap fields share score points x NLOC and compare only with each other.
 - `primary_biomarker` prefers a discrete finding over `coverage_gradient`. `details.actions` (agent prompt, silencing rule) appear only with `finding_id=...`.
-- Each finding has a `dimension`. `advisory` findings (`assertion_free_test`, `mock_saturated_test`, `hidden_coupling`, `brain_method`, `untested_complexity`) never deduct and need `include=["advisory"]`. `mode: "targets"` is not split by test.
+- Each finding has a `dimension`. `advisory` findings (`assertion_free_test`, `mock_saturated_test`, `hidden_coupling`, `brain_method`, `repeated_nesting`, `low_cohesion`, `dry_violation`, `error_handling`, `untested_complexity`, the `apex_*` markers, `cobol_unstructured_flow`) never deduct and need `include=["advisory"]`. `mode: "targets"` is not split by test.
 
 ### Held-back findings
 

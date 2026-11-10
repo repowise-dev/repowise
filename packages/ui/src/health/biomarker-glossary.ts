@@ -110,7 +110,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.dry_violation,
     category: "duplication",
     description:
-      "Code blocks duplicated across files. Ranked by co-change frequency — clones that move together are most worth consolidating.",
+      "Code blocks duplicated across files. Ranked by co-change frequency — clones that move together are most worth consolidating. Advisory: it costs this file no points.",
   },
   untested_hotspot: {
     label: BIOMARKER_LABELS.untested_hotspot,
@@ -176,7 +176,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.low_cohesion,
     category: "structural_complexity",
     description:
-      "A class whose methods split into multiple disconnected groups (LCOM4 > 1). The groups share a namespace but not a responsibility — usually two classes living in one.",
+      "A class whose methods split into multiple disconnected groups (LCOM4 > 1). The groups share a namespace but not a responsibility — usually two classes living in one. Advisory: it costs this file no points.",
   },
   god_class: {
     label: BIOMARKER_LABELS.god_class,
@@ -242,7 +242,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.error_handling,
     category: "error_handling",
     description:
-      "Swallowed exceptions, bare excepts, unsafe unwraps, or discarded error returns. An advisory maintainability flag — failures here vanish silently.",
+      "Swallowed exceptions, bare excepts, unsafe unwraps, or discarded error returns. Failures here vanish silently. Advisory: it costs this file no points.",
   },
   ungoverned_hotspot: {
     label: BIOMARKER_LABELS.ungoverned_hotspot,
@@ -482,6 +482,9 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "hidden_coupling",
   "brain_method",
   "repeated_nesting",
+  "low_cohesion",
+  "dry_violation",
+  "error_handling",
   "untested_complexity",
   "apex_soql_injection",
   "apex_missing_sharing",
@@ -503,10 +506,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
  * omit it, so the two can never disagree on a fresh response.
  */
 export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
-  "low_cohesion",
   "primitive_obsession",
-  "dry_violation",
-  "error_handling",
   "sql_high_complexity",
   "sql_select_star",
   "sql_update_delete_without_where",

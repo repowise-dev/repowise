@@ -113,11 +113,11 @@ divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 23 | `defect` (9 of them also `maintainability`) |
+| Defect-scoring | 20 | `defect` (6 of them also `maintainability`) |
 | Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing: the finding surfaces, the score is untouched |
-| Advisory | 11 | nothing: measured by construction, out of impact-ranked lists unless requested |
+| Advisory | 14 | nothing: measured by construction, out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. An unlisted biomarker defaults into
 `defect`, so every `sql_*` and performance name is listed explicitly: an omission would
@@ -130,7 +130,7 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `id` | Category | Flags | Threshold | Scoring |
 |---|---|---|---|---|
 | `brain_method` | Structural | A long, complex, central function | NLOC 70, judged CCN 9, file dependents ≥ min(8, max(repo p80, 3)); high at CCN 14 or NLOC 120; critical at CCN 20 and NLOC 150 | Advisory |
-| `low_cohesion` | Structural | A class split into unrelated method groups | LCOM4 2 and 5 methods; high at LCOM4 3 or 20 methods; critical at LCOM4 4 and 15 methods | 0.5; maint 1.0 |
+| `low_cohesion` | Structural | A class split into unrelated method groups | LCOM4 2 and 5 methods; high at LCOM4 3 or 20 methods; critical at LCOM4 4 and 15 methods | Advisory |
 | `god_class` | Structural | A large class hiding a brain method | 200 NLOC, 15 methods, one method at NLOC 70 and CCN 9; high at 300 NLOC or 20 methods; critical at 400 and 25 | 1.13; maint 1.0 |
 | `nested_complexity` | Structural | Deep nesting in a function | Judged depth 4; high at 5; critical at 7 | 1.34; maint 1.0 |
 | `repeated_nesting` | Structural | Several blocks at one nesting depth | 3 bumps (low) and judged CCN 5; medium at 4 bumps, high at 5 | Advisory |
@@ -138,8 +138,8 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `complex_method` | Size | High cyclomatic complexity | Judged CCN 9; high 15; critical 25 | 1.21; maint 1.0 |
 | `large_method` | Size | A long function | 60 code lines (low) and judged CCN 3; medium 90, high 120, critical 200 | 1.25; maint 1.0 |
 | `primitive_obsession` | Size | A long list of scalar parameters | 5 parameters (constructors 7), over half the typed ones primitive, file at 60 NLOC, not a test (low); medium at threshold + 2, high at + 4 | 0.5; maint 1.0 |
-| `dry_violation` | Duplication | A cross-file clone | File duplication 8% and a clone of 6 lines (low); medium with active co-change (3) or 25% duplication; high with both | 0.5; maint 1.0; hidden by default |
-| `error_handling` | Error handling | Swallowed or catch-all handler, Rust `unwrap`/panic, discarded Go error | Low, one per occurrence | 0.5; maint 1.0 |
+| `dry_violation` | Duplication | A cross-file clone | File duplication 8% and a clone of 6 lines (low); medium with active co-change (3) or 25% duplication; high with both | Advisory; hidden by default |
+| `error_handling` | Error handling | Swallowed or catch-all handler, Rust `unwrap`/panic, discarded Go error | Low, one per occurrence | Advisory |
 | `untested_hotspot` | Test coverage | A depended-on hotspot with weak test evidence | Hotspot, 4 dependents, coverage under 40% (no report: no paired or reaching test); high at ≤ 15% or 10 dependents; critical at both | 1.3 |
 | `coverage_gap` | Test coverage | A large uncovered surface (needs a report) | Under 30% with 50 coverable lines (high at 100 uncovered); under 60% with 25 uncovered is low | 1.0 |
 | `untested_complexity` | Test coverage | A complex function tests barely run | CRAP 30; high 50 and critical 100 on measured coverage only | Advisory |
@@ -328,6 +328,9 @@ language because it does not transfer:
   dropping it left defect AUC unchanged on the 66-repo corpus.
 - `repeated_nesting`: 29% in a blind study (7 of 24 findings), mostly short functions
   with a few simple loops; dropping it with four other weak markers cost 0.004 defect AUC.
+- `low_cohesion`, `dry_violation`, `error_handling`: 18% (7 of 39), 11% (7 of 64) and
+  11% (6 of 54) worth acting on in a blind study of 705 findings on 64 repositories;
+  defect AUC as a flag 0.527, 0.498 and 0.579.
 - `untested_complexity`: complexity and coverage already deduct elsewhere
   ([user guide](../layers/TEST_INTELLIGENCE.md#untested-complexity)).
 - The four `apex_*` markers: every finding on 13 Salesforce repos hand-read, none
@@ -376,10 +379,8 @@ NLOC as a control fits each marker's lift beyond size, and only the constants sh
   `ownership_risk`, `nested_complexity` (strongest structural).
 - **Prior weights kept:** `untested_hotspot`, `churn_risk`, `code_age_volatility`, which
   are coverage-dependent or rare, so the corpus could not fairly measure them.
-- **Floored at 0.5:** `developer_congestion`, `dry_violation`, `low_cohesion`,
-  `primitive_obsession` fire widely but proved weak under
-  leakage-free scoring; `knowledge_loss` is de-rated to 0.4, the weakest.
-  `error_handling` is not fitted.
+- **Floored at 0.5:** `developer_congestion` and `primitive_obsession` fire widely but
+  proved weak under leakage-free scoring; `knowledge_loss` is de-rated to 0.4, the weakest.
 
 Maintainability uses an independent expert-set table (floored smells at full weight) and
 performance its own bounded category; the three share one kernel and never feed each
