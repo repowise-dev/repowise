@@ -546,8 +546,8 @@ _CHAIN_PARTS = _ARGUMENT_LISTS | {
 _LITERAL_PARTS = ("string", "literal", "number", "integer", "float", "true", "false", "boolean")
 #: Ruby's block arguments (``do |x| ... end``), a callback by another name.
 _CALLBACK_KINDS = frozenset({"block", "do_block"})
-#: A builder chain makes at least this many calls, its own links and those of the
-#: chains in its arguments (``.arg(Arg::new("x").long("x"))`` makes three).
+#: A builder chain has at least this many links, its own and those of the chains
+#: in its arguments (``app.arg(Arg::new("x").long("x"))`` has three).
 #: Syntax alone cannot tell a setting (``.long("x")``) from a transform
 #: (``.replace("a", "b")``) or an assertion (``.contains("b")``); a short fluent
 #: chain is far more often the latter, so only a big chain counts. Naming the
@@ -608,16 +608,36 @@ def _takes_callback(call: Node) -> bool:
 
 
 def _call_count(top: Node) -> int:
-    """Calls made in *top*, callbacks left out."""
-    count = 0
-    stack = [top]
+    """Links of *top*'s chain and of the chains of two or more links in its arguments.
+
+    Plain calls (``fmt(s, "a=%d", a)``, ``Select(Ident(x))``) are no chain; callbacks
+    are left out.
+    """
+    links = _chain_links(top)
+    count = len(links)
+    stack = [arg for link in links for arg in link.named_children[1:]]
     while stack:
         node = stack.pop()
         if any(part in node.type for part in _CODE_PARTS):
             continue
-        count += node.type in CALL_KINDS
+        if node.type in CALL_KINDS:
+            nested = _chain_links(node)
+            if len(nested) >= 2:
+                count += len(nested)
+            stack.extend(arg for link in nested for arg in link.named_children[1:])
+            continue
         stack.extend(node.named_children)
     return count
+
+
+def _is_method_call(call: Node) -> bool:
+    """``a.b(...)``, not ``b(...)`` or ``A::b(...)``.
+
+    Java, Ruby and PHP name the receiver as a field of the call itself.
+    """
+    if call.named_children and call.named_children[0].type in CHAIN_MEMBER_KINDS:
+        return True
+    return (call.child_by_field_name("object") or call.child_by_field_name("receiver")) is not None
 
 
 def _is_builder(links: list[Node], top_level: bool) -> bool:
@@ -630,7 +650,11 @@ def _is_builder(links: list[Node], top_level: bool) -> bool:
         return False
     if not top_level:
         return True
-    return _call_count(links[0]) >= _MIN_CHAIN_CALLS and not any(map(_takes_callback, links))
+    return (
+        _is_method_call(links[0])
+        and _call_count(links[0]) >= _MIN_CHAIN_CALLS
+        and not any(map(_takes_callback, links))
+    )
 
 
 def _chain_node_is_code(node: Node, spine: set[int], data: set[int], code: set[int]) -> bool:

@@ -207,3 +207,12 @@ def test_a_short_fluent_transform_or_assertion_stays_code(
     path: str, language: str, head: str, chain: str
 ) -> None:
     assert _only_function(path, language, head + chain).markup_nloc == 0
+
+
+def test_a_plain_call_with_many_arguments_is_no_chain() -> None:
+    source = (
+        "char *f(char *s, struct c *c) {\n  s = catfmt(s,\n"
+        + _links('    " k{i}=%d", get(c, {i}),')
+        + '\n    " end");\n  return s;\n}\n'
+    )
+    assert _only_function("m.c", "c", source).markup_nloc == 0
