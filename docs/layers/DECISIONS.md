@@ -224,9 +224,12 @@ agents still propose and withdraw.
 Accepted decisions belong to the repository, so they live in a file you
 commit. `repowise decision export` writes the store to
 `.repowise/decisions.yaml` and `repowise decision import` reads it back. Each
-entry holds the id, title, decision, reason, scope, currency, source, and when
-and by whom it was accepted. On `import` the file wins, and candidates and
-episodes stay out of it. Format, merge and ordering rules:
+entry holds the id, title, decision, reason, scope, currency, source, when
+and by whom it was accepted, and a `base_token` for the exported content.
+On `import`, edits apply unless the store has changed since that export;
+conflicting entries are skipped and listed in the summary. `import --force`
+overrides this token check, and older files without tokens keep their previous
+behaviour. Candidates and episodes stay out of the file. Format, merge and ordering rules:
 [architecture/decisions.md](../architecture/decisions.md#tracked-manifest).
 
 ### Capture policy

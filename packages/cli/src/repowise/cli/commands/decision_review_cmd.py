@@ -590,12 +590,19 @@ def export_command(path: str | None, force: bool, fmt: str) -> None:
 @click.command("import")
 @click.argument("path", required=False, default=None)
 @click.option("--dry-run", is_flag=True, default=False, help="Report without writing.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-accept entries even if the store changed since export.",
+)
 @format_option()
-def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
+def import_command(path: str | None, dry_run: bool, force: bool, fmt: str) -> None:
     """Reconcile the store to ``.repowise/decisions.yaml``.
 
-    The file wins: it is what a colleague's commit changes, and the store is the
-    copy. Entries missing a reason or a scope are skipped rather than guessed at.
+    Conflicting edits are skipped if the store changed since export; --force
+    overrides this token check. Older files without tokens keep their previous
+    behaviour. Entries missing a reason or a scope are skipped rather than guessed at.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -612,7 +619,7 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
                 repo_id = await _repository_id(session, repo_path)
                 try:
                     outcome = await import_manifest(
-                        session, repo_id, repo_path, dry_run=dry_run
+                        session, repo_id, repo_path, dry_run=dry_run, force=force
                     )
                 except ManifestConflictError as exc:
                     emit_refusal("manifest_unreadable", str(exc), fmt)

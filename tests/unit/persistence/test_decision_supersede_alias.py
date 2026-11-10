@@ -167,7 +167,8 @@ async def test_the_export_does_not_list_a_superseded_id_as_an_alias(async_sessio
     assert entries[old.id].superseded_by == successor.id
 
 
-async def test_import_refuses_an_alias_onto_a_record_the_file_lists(async_session, tmp_path):
+@pytest.mark.parametrize("force", [False, True])
+async def test_import_refuses_an_alias_onto_a_record_the_file_lists(async_session, tmp_path, force):
     """Whatever wrote the alias, it must not carry one entry over another."""
     repo = await insert_repo(async_session)
     successor = await _successor(async_session, repo.id)
@@ -191,7 +192,7 @@ async def test_import_refuses_an_alias_onto_a_record_the_file_lists(async_sessio
         ],
     )
 
-    outcome = await import_manifest(async_session, repo.id, tmp_path)
+    outcome = await import_manifest(async_session, repo.id, tmp_path, force=force)
 
     assert outcome.skipped == [
         (retired, f"its alias resolves to {successor.id[:8]}, which the file lists")
@@ -381,8 +382,9 @@ async def test_import_refuses_an_alias_onto_a_successor_listed_under_its_legacy_
     }
 
 
+@pytest.mark.parametrize("force", [False, True])
 async def test_import_applies_the_keepers_legacy_entry_and_skips_the_one_folded_into_it(
-    async_session, tmp_path
+    async_session, tmp_path, force
 ):
     """Two legacy decisions the migration folds into one record, both listed
     by a pre-migration file: the entry under the keeper's re-keyed id applies,
@@ -405,8 +407,8 @@ async def test_import_applies_the_keepers_legacy_entry_and_skips_the_one_folded_
     (kept,) = [i for i, r in reasons.items() if r == REKEYED_REASON]
     (folded,) = [i for i, r in reasons.items() if r == MERGED_REASON]
 
-    first = await import_manifest(async_session, repo.id, tmp_path)
-    second = await import_manifest(async_session, repo.id, tmp_path)
+    first = await import_manifest(async_session, repo.id, tmp_path, force=force)
+    second = await import_manifest(async_session, repo.id, tmp_path, force=force)
 
     async_session.expire_all()
     assert (await async_session.get(DecisionRecord, keeper)).title == kept_title
@@ -566,8 +568,9 @@ async def _wording(session, record_id: str) -> tuple[str, str, str | None]:
     return rec.title, rec.decision, rec.rationale
 
 
+@pytest.mark.parametrize("force", [False, True])
 async def test_import_skips_an_alias_moved_onto_a_successor_under_the_superseded_wording(
-    async_session, tmp_path
+    async_session, tmp_path, force
 ):
     """#5377: the known-limit row ``X_old -> S`` and a file listing only
     ``X_old`` with X's wording. X still names S as its successor, so the entry
@@ -579,7 +582,7 @@ async def test_import_skips_an_alias_moved_onto_a_successor_under_the_superseded
     kept = await _wording(async_session, s_id)
     _only(tmp_path, x_old)
 
-    outcome = await import_manifest(async_session, repo_id, tmp_path)
+    outcome = await import_manifest(async_session, repo_id, tmp_path, force=force)
 
     assert await _wording(async_session, s_id) == kept
     assert dict(outcome.skipped) == {

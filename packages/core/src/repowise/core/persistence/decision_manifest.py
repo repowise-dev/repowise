@@ -9,6 +9,7 @@ records the file itself as the acceptance artifact.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from dataclasses import dataclass
@@ -42,7 +43,13 @@ from .crud.authority import (
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
 from .decision_id_migration import repair_superseded_aliases
-from .models import REKEYED_REASON, SUPERSEDED_REASON, DecisionAlias, DecisionRecord
+from .models import (
+    REKEYED_REASON,
+    SUPERSEDED_REASON,
+    DecisionAcceptance,
+    DecisionAlias,
+    DecisionRecord,
+)
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
 
@@ -163,6 +170,7 @@ async def export_manifest(
                 evidence=_json_list(acceptance.evidence_json),
                 superseded_by=rec.superseded_by or "",
                 aliases=await _aliases_for(session, rec.id),
+                base_token=_base_token(rec, acceptance),
             )
         )
     changed = write_manifest(
@@ -194,6 +202,24 @@ class ImportOutcome:
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
             "repaired": self.repaired,
         }
+
+
+def _base_token(record: DecisionRecord, acceptance: DecisionAcceptance) -> str:
+    """Hash the accepted content compared by ``_differs``, independent of the store.
+
+    Acceptance ids and provenance vary across clones. A canonical content hash
+    also stays stable when an unchanged decision is reaffirmed.
+    """
+    content = {
+        "title": record.title,
+        "decision": record.decision,
+        "reason": (acceptance.reason or "").strip(),
+        "scope": sorted(_json_list(acceptance.scope_json)),
+        "currency": acceptance.currency,
+        "kind": record.kind,
+    }
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _differs(
@@ -482,6 +508,7 @@ async def import_manifest(
     repo_path: Path | str,
     *,
     dry_run: bool = False,
+    force: bool = False,
 ) -> ImportOutcome:
     """Reconcile the store to ``decisions.yaml``.
 
@@ -490,9 +517,11 @@ async def import_manifest(
     version controlled and reviewable, which is the only reason a non-human
     accepter is allowed at all, and an entry the file does not present as
     accepted is skipped rather than guessed at. An entry that differs from the
-    store is re-accepted from the file, because the difference is somebody's
-    commit; an entry the file no longer holds is left alone, since a missing
-    line is as likely a bad merge as a deliberate removal.
+    store is re-accepted from the file unless its base token shows the store
+    changed since export. ``force`` bypasses this token check, and entries
+    without tokens retain the previous behaviour. An entry the file no longer
+    holds is left alone, since a missing line is as likely a bad merge as a
+    deliberate removal.
     """
     outcome = ImportOutcome()
     entries, _ = load_manifest(repo_path)
@@ -512,6 +541,15 @@ async def import_manifest(
             if acceptance is not None:
                 if not _differs(entry, record, acceptance):
                     outcome.unchanged.append(entry.id)
+                    continue
+                if (
+                    not force
+                    and entry.base_token
+                    and entry.base_token != _base_token(record, acceptance)
+                ):
+                    outcome.skipped.append(
+                        (entry.id, "changed in the store since this file was exported")
+                    )
                     continue
                 # The file changed: a colleague edited the reason, corrected
                 # the scope, or withdrew the decision. Their edit is the
