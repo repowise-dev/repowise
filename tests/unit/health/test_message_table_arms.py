@@ -186,8 +186,7 @@ def test_a_guarded_kotlin_when_stays_code() -> None:
         "fun f(a: Int): String {\n  if (a > 0) { println(a) }\n  if (a > 2) { println(a) }\n"
         "  return when {\n" + _arms('    a > {i} ->\n      "over {i}"') + '\n    else -> ""\n  }\n}\n'
     )
-    # Only ``else -> ""`` is data.
-    assert _only_function("M.kt", "kotlin", source).markup_nloc == 1
+    assert _only_function("M.kt", "kotlin", source).markup_nloc == 0
 
 
 def test_only_the_literal_arms_of_a_mixed_switch_are_data() -> None:
@@ -208,3 +207,37 @@ def test_an_arm_sharing_a_row_with_code_keeps_that_row_code() -> None:
     )
     # ``switch (code) { case 1:`` and ``return "two"; }`` share their rows with code.
     assert _only_function("m.js", "javascript", source).markup_nloc == 2
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "arm"),
+    [
+        ("m.ts", "typescript", "    case {i}:\n      break;"),
+        ("M.swift", "swift", "  case .c{i}:\n    break"),
+    ],
+)
+def test_a_no_op_arm_is_not_data(path: str, language: str, arm: str) -> None:
+    head = (
+        "function f(code: number) {\n  switch (code) {\n"
+        if language == "typescript"
+        else "func f(code: Code) {\n  switch code {\n"
+    )
+    source = head + _arms(arm) + "\n  }\n}\n"
+    assert _only_function(path, language, source).markup_nloc == 0
+
+
+def test_a_fall_through_label_is_not_data() -> None:
+    source = (
+        "const char *f(int code) {\n  switch (code) {\n  case 1:\n  case 2:\n    log(code);\n"
+        '    return "two";\n  case 3:\n    return "three";\n  }\n}\n'
+    )
+    # Only ``case 3`` and its return; ``case 1:`` falls through to code.
+    assert _only_function("m.c", "c", source).markup_nloc == 2
+
+
+def test_a_subjectless_kotlin_when_is_a_condition_chain() -> None:
+    source = (
+        "fun f(a: Node): Node {\n  return when {\n    a.isLeaf -> {\n      a\n    }\n"
+        "    a.isRoot -> {\n      a.first\n    }\n    else -> a\n  }\n}\n"
+    )
+    assert _only_function("M.kt", "kotlin", source).markup_nloc == 0

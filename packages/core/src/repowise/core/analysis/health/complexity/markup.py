@@ -389,6 +389,21 @@ ARM_KINDS = frozenset(
         "switch_expression_case",
     }
 )
+#: Arms whose body is an expression (``1 => "one"``); a statement arm with no
+#: return or assignment falls through to the next arm and holds no data.
+_EXPRESSION_ARMS = frozenset(
+    {
+        "when_entry",
+        "match_arm",
+        "switch_rule",
+        "switch_expression_arm",
+        "case_clause",
+        "match_conditional_expression",
+        "match_default_expression",
+        "when",
+        "switch_expression_case",
+    }
+)
 #: An arm's plumbing: its label or pattern and the blocks around its body.
 _ARM_STRUCTURE = frozenset(
     {
@@ -457,7 +472,25 @@ def _arm_is_data(arm: Node) -> bool:
         elif kind not in _ARM_STRUCTURE and not _is_data_node(node):
             return False
         stack.extend(node.named_children)
-    return True
+    return values == 1 or (arm.type in _EXPRESSION_ARMS and _ends_in_a_value(arm))
+
+
+def _ends_in_a_value(arm: Node) -> bool:
+    """Whether an expression arm ends in a value (``1 => "one"``), not a no-op (``{}``)."""
+    last = arm.named_children[-1] if arm.named_children else None
+    while last is not None and last.type in _ARM_STRUCTURE and last.named_children:
+        last = last.named_children[-1]
+    return last is not None and _is_data_node(last)
+
+
+def _is_condition_arm(arm: Node) -> bool:
+    """A Kotlin ``when`` with no subject: its arms are an ``if`` chain, not a table."""
+    parent = arm.parent
+    return (
+        arm.type == "when_entry"
+        and parent is not None
+        and not any(child.type == "when_subject" for child in parent.named_children)
+    )
 
 
 def _arm_rows(arms: list[Node], source: bytes) -> set[int]:
@@ -466,7 +499,7 @@ def _arm_rows(arms: list[Node], source: bytes) -> set[int]:
     code: set[int] = set()
     for arm in arms:
         # Ruby's ``when`` keyword shares its arm's node kind.
-        if not arm.is_named or not _arm_is_data(arm):
+        if not arm.is_named or _is_condition_arm(arm) or not _arm_is_data(arm):
             continue
         # Go and Swift arms end after the whitespace that leads to the next arm.
         text = arm.text
