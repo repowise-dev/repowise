@@ -145,7 +145,7 @@ class FunctionComplexity:
     # function symbol by the health writer. ``dataflow.slice.function_facts``;
     # None means not computed (a language with no map, or a failed read).
     facts: FunctionFacts | None = None
-    # Of ``nloc``, the lines holding only JSX markup. ``complexity/markup.py``.
+    # Of ``nloc``, the lines holding only JSX markup or literal data. ``complexity/markup.py``.
     markup_nloc: int = 0
 
     def __post_init__(self) -> None:

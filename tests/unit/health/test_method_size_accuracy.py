@@ -230,7 +230,7 @@ def test_brain_method_does_not_count_jsx_markup_lines() -> None:
     assert BrainMethodDetector().detect(_central(_fn(nloc=100, ccn=12, markup_nloc=40))) == []
     [finding] = BrainMethodDetector().detect(_central(_fn(nloc=120, ccn=12, markup_nloc=40)))
     assert finding.reason == (
-        "Brain Method: tokenize is 80 lines besides 40 of JSX markup, CCN 12, "
+        "Brain Method: tokenize is 80 lines besides 40 of markup and data, CCN 12, "
         "in a file imported by 10 others"
     )
     assert finding.details["markup_nloc"] == 40
