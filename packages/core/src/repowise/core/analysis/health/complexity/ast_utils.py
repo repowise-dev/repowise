@@ -617,7 +617,13 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
         header = fn_node.child_by_field_name("header")
         if header is not None:
             return header.child_by_field_name("args")
-    return None
+    # Swift: the declaration holds its parameters; a subscript's are on the
+    # ``subscript_declaration`` around its ``computed_property`` body.
+    holder = fn_node.parent if fn_node.type == "computed_property" else fn_node
+    return holder if holder is not None and holder.type in _SWIFT_PARAMETER_HOLDERS else None
+
+
+_SWIFT_PARAMETER_HOLDERS = frozenset({"function_declaration", "init_declaration", "subscript_declaration"})
 
 
 def _declarator_parameter_list(fn_node: Node) -> Node | None:
@@ -637,6 +643,9 @@ def _declarator_parameter_list(fn_node: Node) -> Node | None:
 
 def _parameter_nodes(params: Node) -> Iterator[Node]:
     """Declared parameters, excluding comments and grammar-only siblings."""
+    if params.type in _SWIFT_PARAMETER_HOLDERS:
+        yield from (c for c in params.children if c.type == "parameter")
+        return
     if params.type == "function_value_parameters":
         # Kotlin defaults and modifiers (e.g. ``vararg``) are siblings of
         # the parameters, not children of them.
