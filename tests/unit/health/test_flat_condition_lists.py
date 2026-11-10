@@ -73,6 +73,12 @@ def test_negated_lists_stay_flat(language: str, source: str) -> None:
             'int f(void) { if (!strcmp(a, "x") || !strcmp(b, "y") || !strcmp(c, "z")) return 1;'
             " return 0; }",
         ),
+        # Only a member name is shared; the objects differ.
+        (
+            "c",
+            "int f(struct n *a, struct n *b, struct n *c) {"
+            " if (a->kind == 1 && !b->kind && c->kind == 2) return 1; return 0; }",
+        ),
         # Only the receiver is shared.
         (
             "javascript",

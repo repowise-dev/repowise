@@ -791,6 +791,17 @@ def _callee_ids(node: Node) -> set[int]:
     return ids
 
 
+def _is_member_name(node: Node) -> bool:
+    """The member part of a member read (``kind`` in ``a->kind``), not its base."""
+    parent = node.parent
+    if parent is None or parent.type not in _FLAG_KINDS:
+        return False
+    return any(
+        (member := parent.child_by_field_name(f)) is not None and member.id == node.id
+        for f in _MEMBER_FIELDS
+    )
+
+
 def _names(node: Node) -> set[bytes]:
     """The value names *node* tests: not the functions it calls, not ``self``."""
     called = _callee_ids(node)
@@ -800,6 +811,9 @@ def _names(node: Node) -> set[bytes]:
         cur = stack.pop()
         stack.extend(cur.children)
         if cur.id in called or cur.text is None or cur.text in _RECEIVER_NAMES:
+            continue
+        if _is_member_name(cur):
+            # ``a->kind`` and ``b->kind`` test different values.
             continue
         if "identifier" in cur.type or cur.type in _NAME_KINDS:
             found.add(cur.text)
