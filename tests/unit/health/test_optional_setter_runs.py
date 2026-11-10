@@ -47,6 +47,12 @@ fn decides(req: Request, init: Init) {
     if let Some(t) = req.timeout {
         init.reset();
     }
+    if let Err(e) = check(req) {
+        return Err(e);
+    }
+    if let Err(e) = send(req) {
+        return Err(e);
+    }
 }
 """
 
@@ -58,7 +64,7 @@ def test_rust_if_let_setters_count_once():
     assert judged_ccn(fn) == 3
 
 
-def test_rust_if_let_whose_body_ignores_the_binding_is_a_decision():
+def test_rust_if_let_that_ignores_the_binding_or_returns_an_error_is_a_decision():
     fn = _fn("rust", _RUST, "decides")
     assert fn.copy_guards == 0
 
@@ -132,6 +138,10 @@ def decides(options, other=None):
         options["ciphers"] = DEFAULT
     if not options:
         reset()
+    if other:
+        other = None
+    if options:
+        options = options + 1
 """
 
 
@@ -142,7 +152,7 @@ def test_python_none_fills_and_membership_setters_count_once():
     assert judged_ccn(fn) == 2
 
 
-def test_python_fill_of_another_name_is_a_decision():
+def test_python_fills_of_another_name_and_self_updates_are_decisions():
     fn = _fn("python", _PY, "decides")
     assert fn.copy_guards == 0
 

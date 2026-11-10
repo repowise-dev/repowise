@@ -455,6 +455,8 @@ _ACCESS_KINDS = frozenset(
 )
 _CONJUNCTIONS = frozenset({b"&&", b"and"})
 _WORD_RE = re.compile(r"\w+")
+_PLAIN_ASSIGN = frozenset({b"=", b"<-"})
+_EQUALITY = frozenset({b"==", b"===", b"is"})
 
 
 def _call_values(call: Node) -> list[Node]:
@@ -503,12 +505,17 @@ def _compared_values(comparison: Node) -> list[Node]:
 
 
 def _bound_names(let: Node) -> list[Node]:
-    """Rust ``if let Some(v) = opt`` tests what it binds, ``v``."""
+    """Rust ``if let Some(v) = opt`` tests what it binds, ``v``.
+
+    ``if let Err(e) = f()`` handles a failure; it tests no optional value.
+    """
     pattern = let.child_by_field_name("pattern")
-    if pattern is None:
+    if pattern is None or pattern.type != "tuple_struct_pattern":
         return []
-    names = pattern.named_children[1:] if pattern.type == "tuple_struct_pattern" else [pattern]
-    return [n for n in names if n.type == "identifier"]
+    names = pattern.named_children
+    if not names or names[0].text != b"Some":
+        return []
+    return [n for n in names[1:] if n.type == "identifier"]
 
 
 def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
@@ -574,16 +581,33 @@ def _reads(statement: Node, value: Node) -> bool:
     return False
 
 
-def _sets_mirror(statement: Node, value: Node) -> bool:
-    """Whether *statement* assigns a target whose last name is *value*'s:
-    ``if config.DryRun { tx.DryRun = true }``, ``if x is None: x = {}``."""
+def _plain_target(statement: Node) -> Node | None:
+    """The target of a plain ``=`` / ``<-`` assignment, ``None`` for anything
+    else (a call, a compound ``|=`` that transforms the value)."""
     if statement.type == "expression_statement" and statement.named_child_count == 1:
         statement = statement.named_children[0]
     if statement.type not in _ASSIGNMENT_KINDS or not statement.named_children:
+        return None
+    plain = any(c.text in _PLAIN_ASSIGN for c in statement.children if not c.is_named)
+    return statement.named_children[0] if plain else None
+
+
+def _sets_mirror(target: Node | None, value: Node) -> bool:
+    """Whether *target* is another object's field named like *value*:
+    ``if config.DryRun { tx.DryRun = true }``."""
+    if target is None or _name(target) == _name(value):
         return False
-    target = _WORD_RE.findall((statement.named_children[0].text or b"").decode("utf-8", "replace"))
+    names = _WORD_RE.findall((target.text or b"").decode("utf-8", "replace"))
     tested = _WORD_RE.findall((value.text or b"").decode("utf-8", "replace"))
-    return bool(target and tested) and target[-1] == tested[-1]
+    return bool(names and tested) and names[-1] == tested[-1]
+
+
+def _is_fill(condition: Node | None) -> bool:
+    """``x == null`` / ``x is None``: the test before filling in a default."""
+    condition = _unwrap(condition)
+    return condition is not None and any(
+        c.text in _EQUALITY for c in condition.children if not c.is_named
+    )
 
 
 def _lone_if(node: Node, lmap: LanguageNodeMap) -> Node | None:
@@ -603,6 +627,10 @@ def _copy_statement(node: Node, lmap: LanguageNodeMap) -> Node | None:
     body = _statements(branch, lmap)
     if len(body) != 1 or body[0].type not in _COPY_STATEMENT_KINDS:
         return None
+    inner = body[0].named_children[0] if body[0].named_child_count == 1 else body[0]
+    if inner.type in lmap.return_kinds | lmap.break_kinds | lmap.continue_kinds:
+        # Rust wraps ``return Err(e);`` in an expression statement.
+        return None
     if body[0].end_point[0] - body[0].start_point[0] >= _MAX_COPY_LINES:
         return None
     return body[0]
@@ -621,7 +649,12 @@ def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
         return False
     # A literal (``-1``, ``"k"``) is no value of its own to copy.
     values = [v for test in tests for v in test if _name(v)]
-    return any(_reads(statement, v) or _sets_mirror(statement, v) for v in values)
+    target = _plain_target(statement)
+    if target is not None and _name(target) in {_name(v) for v in values}:
+        # ``if x is None: x = {}`` fills a default; ``if flag: flag = False``
+        # or ``if z: z = z + 1`` decides what the value becomes.
+        return _is_fill(condition)
+    return any(_reads(statement, v) or _sets_mirror(target, v) for v in values)
 
 
 def _repeated_guards(
