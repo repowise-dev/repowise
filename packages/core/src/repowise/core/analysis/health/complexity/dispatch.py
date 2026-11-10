@@ -352,16 +352,20 @@ def _tests_error(node: Node) -> bool:
     )
 
 
+def _enclosing_function(node: Node, lmap: LanguageNodeMap) -> Node:
+    """The function holding *node*, or the tree's root outside one."""
+    while node.parent is not None and node.type not in lmap.function_kinds:
+        node = node.parent
+    return node
+
+
 def _jumps_forward(goto: Node, lmap: LanguageNodeMap) -> bool:
     """A ``goto`` to a label further down its function (``goto cleanup``).
 
     One that jumps back (``goto again``) is a loop, not an exit.
     """
     target = goto.named_children[-1].text if goto.named_children else None
-    scope: Node | None = goto
-    while scope is not None and scope.type not in lmap.function_kinds:
-        scope = scope.parent
-    stack = [scope] if scope is not None else []
+    stack = [_enclosing_function(goto, lmap)]
     while stack:
         node = stack.pop()
         if node.type == "labeled_statement":
@@ -397,11 +401,14 @@ def _is_shell_exit(node: Node) -> bool:
     name = last.child_by_field_name("name") if last.type == "command" else None
     if name is None:
         return False
-    if name.text in _SHELL_ERROR_COMMANDS:
-        return True
+    return name.text in _SHELL_ERROR_COMMANDS or _exits_failing(node, last, name)
+
+
+def _exits_failing(node: Node, command: Node, name: Node) -> bool:
+    """``exit`` / ``return`` with a non-zero status, or bare after ``||`` (the failed one)."""
     if name.text not in _SHELL_EXITS:
         return False
-    status = last.children_by_field_name("argument")
+    status = command.children_by_field_name("argument")
     if status:
         return status[0].text != b"0"
     return any(c.type == "||" for c in node.children)
