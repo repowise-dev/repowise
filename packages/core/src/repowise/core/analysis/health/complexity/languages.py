@@ -888,6 +888,9 @@ _SWIFT = LanguageNodeMap(
         {
             "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32",
             "UInt64", "Float", "Double", "CGFloat", "Bool", "String", "Substring", "Character",
+            # C types as Swift imports them.
+            "CInt", "CUnsignedInt", "CLong", "CUnsignedLong", "CShort", "CChar", "CBool",
+            "CFloat", "CDouble",
         }
     ),
     # No assertion kinds: XCTest has no vocabulary row, so the test-quality

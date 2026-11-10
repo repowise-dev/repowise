@@ -21,7 +21,7 @@ _FILLER = FunctionComplexity("filler", 900, 990, ccn=1, max_nesting=0, cognitive
 _PATH = "Sources/App/Copy.swift"
 
 _SOURCE = """
-final class Copier {
+final class Copier: NSObject, URLSessionDelegate {
     func copy(
         from source: FilePath,
         to destination: FilePath,
@@ -38,6 +38,9 @@ final class Copier {
     @objc func onTimer(a: Int, b: Int, c: Int, d: Int, e: Int) {}
     func string(_ string: String, a: Int, b: Int, c: Int, d: Int) {}
     func request(_ session: URLSession, a: Int, b: Int, c: Int, d: Int) {}
+}
+struct Plain {
+    func data(_ data: Data, a: Int, b: Int, c: Int, d: Int) {}
 }
 """
 
@@ -72,5 +75,6 @@ def test_only_raw_swift_signatures_are_flagged() -> None:
     # ``copy`` passes paths and closures; ``urlSession``, ``tableView`` and
     # ``onTimer`` belong to a protocol; ``init`` has the constructor grace.
     # A callback name repeating a scalar (``string``) or another type
-    # (``request``) is no delegate callback.
-    assert flagged == {"pad", "box", "subscript", "string", "request"}
+    # (``request``) is no delegate callback, nor is one on a type that
+    # conforms to nothing (``Plain.data``).
+    assert flagged == {"pad", "box", "subscript", "string", "request", "data"}

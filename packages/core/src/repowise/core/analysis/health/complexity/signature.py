@@ -202,7 +202,10 @@ def _is_delegate_callback(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     """A Swift delegate or data source callback, which Cocoa names after the
     object calling it, passed first and unlabelled (``func urlSession(_
     session: URLSession, task: ...)``, ``func tableView(_ tableView:
-    UITableView, ...)``). The protocol it implements owns the signature."""
+    UITableView, ...)``). The protocol it implements owns the signature, and
+    its type says so: an extension, or a type with a supertype clause."""
+    if not _conforms_to_something(fn_node):
+        return False
     first = next((c for c in fn_node.children if c.type == "parameter"), None)
     label = first.child_by_field_name("external_name") if first is not None else None
     if label is None or _text(label) != "_":
@@ -221,6 +224,17 @@ def _is_delegate_callback(fn_node: Node, lmap: LanguageNodeMap) -> bool:
 
 
 _TYPE_PREFIX_RE = re.compile(r"^[A-Z]{2,3}(?=[A-Z][a-z])")
+
+
+def _conforms_to_something(fn_node: Node) -> bool:
+    body = fn_node.parent
+    decl = body.parent if body is not None else None
+    if decl is None or decl.type != "class_declaration":
+        return False
+    kind = decl.child_by_field_name("declaration_kind")
+    return (kind is not None and _text(kind) == "extension") or any(
+        c.type == "inheritance_specifier" for c in decl.children
+    )
 
 
 def _lower_camel(type_name: str) -> str:
