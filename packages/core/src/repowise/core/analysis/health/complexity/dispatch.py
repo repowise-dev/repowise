@@ -73,14 +73,58 @@ _COMPARISON_KINDS = frozenset(
         "is_pattern_expression",
         "check_expression",
         "equality_expression",
+        "type_test_expression",
     }
 )
-# Calls that test their first argument's type or value.
-_TYPE_TEST_FUNCTIONS = frozenset({"isinstance", "issubclass", "type", "hasattr"})
-# Methods that test their receiver.
-_RECEIVER_TESTS = frozenset(
-    {"equals", "equalsignorecase", "matches", "is_a?", "kind_of?", "instance_of?", "startswith"}
+# Calls that test their first non-literal argument's type or value: Python's
+# type tests, C's string compares (``!strcasecmp(u, "kb")``), PHP's ``is_*``.
+_TYPE_TEST_FUNCTIONS = frozenset(
+    {
+        "isinstance",
+        "issubclass",
+        "type",
+        "hasattr",
+        "strcmp",
+        "strncmp",
+        "strcasecmp",
+        "strncasecmp",
+        "memcmp",
+        "wcscmp",
+        "gettype",
+        "get_class",
+        "is_null",
+        "is_scalar",
+        "is_object",
+        "is_array",
+        "is_string",
+        "is_int",
+        "is_integer",
+        "is_float",
+        "is_bool",
+        "is_numeric",
+        "is_callable",
+        "is_iterable",
+        "is_resource",
+    }
 )
+# Methods that test their receiver (``[value isKindOfClass:...]`` too).
+_RECEIVER_TESTS = frozenset(
+    {
+        "equals",
+        "equalsignorecase",
+        "matches",
+        "is_a?",
+        "kind_of?",
+        "instance_of?",
+        "startswith",
+        "hasprefix",
+        "iskindofclass",
+        "ismemberofclass",
+        "isequal",
+        "isequaltostring",
+    }
+)
+_NOT_OPERATORS = frozenset({"!", "not"})
 # A receiver that names a constant (``FormatNames.ISO8601.matches(input)``) is
 # the arm's key, so the test is on its argument.
 _CONSTANT_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -106,6 +150,9 @@ def _name(node: Node | None) -> str | None:
     if node.type == "unary_expression" and node.child_by_field_name("argument") is not None:
         # ``typeof x`` tests ``x``.
         return _name(node.child_by_field_name("argument"))
+    if node.type == "pointer_expression" and node.children and node.children[0].type == "*":
+        # ``*u == '\0'`` tests the string ``u`` as ``strcasecmp(u, "b")`` does.
+        return _name(node.child_by_field_name("argument"))
     kind = node.type.lower()
     if kind in ("none", "true", "false") or any(m in kind for m in _LITERAL_MARKERS):
         return None
@@ -128,7 +175,8 @@ def _call_parts(node: Node) -> tuple[str, Node | None, list[Node]]:
     name = (name_node.text or b"").decode("utf-8", errors="replace") if name_node else ""
     args_node = node.child_by_field_name("arguments")
     args = list(args_node.named_children) if args_node is not None else []
-    return name.rsplit(".", 1)[-1].lower(), receiver, args
+    # ``strings.HasPrefix`` and PHP's ``\is_object`` name the function last.
+    return re.split(r"[.\\]", name)[-1].lower(), receiver, args
 
 
 def _receiver_test_subject(receiver: Node | None, args: list[Node]) -> str | None:
@@ -139,11 +187,55 @@ def _receiver_test_subject(receiver: Node | None, args: list[Node]) -> str | Non
     return subject or (_name(args[0]) if args else None)
 
 
+def _call_subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
+    """The name a predicate call tests (``isinstance(x, A)``, ``s.equals(t)``), else ``None``."""
+    if node is None or node.type not in lmap.call_kinds:
+        return None
+    name, receiver, args = _call_parts(node)
+    if name in _TYPE_TEST_FUNCTIONS and receiver is None:
+        return next((s for a in args if (s := _name(a)) is not None), None)
+    if name in _RECEIVER_TESTS:
+        return _receiver_test_subject(receiver, args)
+    return None
+
+
+def _operand(node: Node | None, lmap: LanguageNodeMap) -> str | None:
+    """A compared side's subject: ``strcmp(u, "k") == 0`` compares ``u``."""
+    node = _unwrap(node)
+    return _call_subject(node, lmap) or _name(node)
+
+
+def _negated(node: Node) -> Node | None:
+    """The operand of ``!x`` / ``not x``, ``None`` for any other node."""
+    first = node.children[0] if node.children else None
+    if first is None or first.type not in _NOT_OPERATORS or len(node.named_children) != 1:
+        return None
+    return node.named_children[0]
+
+
+def _condition(arm: Node) -> Node | None:
+    """An ``if`` arm's test; Dart's grammar names no field, so the node inside its parentheses."""
+    cond = arm.child_by_field_name("condition")
+    if cond is not None:
+        return cond
+    kids = arm.children
+    return next(
+        (
+            kids[i + 1]
+            for i in range(len(kids) - 2)
+            if kids[i].type == "(" and kids[i + 2].type == ")"
+        ),
+        None,
+    )
+
+
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
     """The one name a condition tests, ``None`` when it tests no single one."""
     node = _unwrap(node)
     if node is None:
         return None
+    if (operand := _negated(node)) is not None:
+        return _subject(operand, lmap)
     if _is_boolean_operator(node, lmap):
         # ``kind == "call" and lang == "ruby"`` dispatches on ``kind``: the
         # first side that tests a name is the one the arm is keyed on.
@@ -154,14 +246,8 @@ def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
         named = node.named_children
         left = node.child_by_field_name("left") or (named[0] if named else None)
         right = node.child_by_field_name("right") or (named[-1] if named else None)
-        return _name(left) or _name(right)
-    if node.type in lmap.call_kinds:
-        name, receiver, args = _call_parts(node)
-        if name in _TYPE_TEST_FUNCTIONS and receiver is None and args:
-            return _name(args[0])
-        if name in _RECEIVER_TESTS:
-            return _receiver_test_subject(receiver, args)
-    return None
+        return _operand(left, lmap) or _operand(right, lmap)
+    return _call_subject(node, lmap)
 
 
 def _chain_arms(node: Node) -> list[Node]:
@@ -183,7 +269,7 @@ def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
     """Whether every arm's condition tests the same single name."""
     if len(arms) < _MIN_ARMS:
         return False
-    subjects = Counter(_subject(arm.child_by_field_name("condition"), lmap) for arm in arms)
+    subjects = Counter(_subject(_condition(arm), lmap) for arm in arms)
     return len(subjects) == 1 and None not in subjects
 
 
@@ -229,9 +315,7 @@ def _points(nodes: list[Node], lmap: LanguageNodeMap) -> int:
 def _if_arm_points(node: Node, lmap: LanguageNodeMap) -> int:
     """Decision points in one ``if`` arm's body, not its condition or ``else``."""
     skip = {
-        c.id
-        for c in (node.child_by_field_name("condition"), node.child_by_field_name("alternative"))
-        if c is not None
+        c.id for c in (_condition(node), node.child_by_field_name("alternative")) if c is not None
     }
     body = [
         c
@@ -258,9 +342,7 @@ def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]
     subject: str | None = None
     for child in [*children, None]:
         this = (
-            _subject(child.child_by_field_name("condition"), lmap)
-            if child is not None and _is_lone_if(child)
-            else None
+            _subject(_condition(child), lmap) if child is not None and _is_lone_if(child) else None
         )
         if this is not None and this == subject:
             run.append(child)  # type: ignore[arg-type]
