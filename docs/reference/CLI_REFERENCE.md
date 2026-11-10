@@ -918,7 +918,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 |------|--------------|---------|
 | `--file <path>` | One file in depth (relative path). | |
 | `--module <prefix>` | Files under this path prefix. | all |
-| `--scope` | `all` or `production`: files every figure covers (`production` scores lower with no defect: tests score higher). | `all` |
+| `--scope` | `all` or `production`: files every figure covers (`production` leaves out tests, tooling, build, vendored, generated and docs example files, which tend to score higher, so it scores lower with no defect). | `all` |
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
