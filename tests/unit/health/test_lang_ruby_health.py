@@ -123,6 +123,8 @@ def test_rack_methods() -> None:
     metrics = {
         f.name: (f.ccn, f.max_nesting, f.nloc, f.param_count)
         for f in _walk(_RACK).functions
+        # ``@credentials ||= ...`` scores 1; whether ``||=`` is a decision is an
+        # open choice, so that method is left out.
         if f.name != "credentials"
     }
     assert metrics == {
