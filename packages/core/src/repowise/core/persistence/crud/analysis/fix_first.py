@@ -250,15 +250,22 @@ async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
     return {"analyzed_commit": row.analyzed_commit, "health_analyzed_at": row.updated_at.isoformat()}
 
 
-def queue_findings(repo_id: str) -> Any:
-    """Open, scoring, code-health findings a surface may show."""
+def scoring_findings(repo_id: str) -> Any:
+    """Open, scoring, code-health findings, of any type: what a file's score
+    counted, so what pricing a fix must rescore it with."""
     f = HealthFinding
     return and_(
         f.repository_id == repo_id,
         f.status == "open",
         f.health_impact > 0,
         or_(f.dimension.is_(None), f.dimension != "performance"),
-        f.biomarker_type.not_in(excluded_types()),
+    )
+
+
+def queue_findings(repo_id: str) -> Any:
+    """Open, scoring, code-health findings a surface may show."""
+    return and_(
+        scoring_findings(repo_id), HealthFinding.biomarker_type.not_in(excluded_types())
     )
 
 
@@ -295,7 +302,9 @@ async def _finding_files(session: AsyncSession, repo_id: str) -> tuple[set[str],
 async def _findings(
     session: AsyncSession, repo_id: str, full: set[str], planned: set[str], functions: set[str]
 ) -> list[Any]:
-    """Every eligible finding in ``full``; in ``planned`` only what an item quotes.
+    """Every scoring finding in ``full``, hidden types too (a fix's gain
+    rescores the file with them; the builder keeps them off the queue); in
+    ``planned`` only what an item quotes.
 
     A file with a plan that becomes an item needs its history markers (the
     item's context) and the findings on the function the plan changes (its
@@ -323,7 +332,7 @@ async def _findings(
     rows = await _rows_in(
         session,
         full,
-        lambda piece: select(*columns).where(queue_findings(repo_id), f.file_path.in_(piece)),
+        lambda piece: select(*columns).where(scoring_findings(repo_id), f.file_path.in_(piece)),
     )
     # The function names grow with the plans, so they are matched here rather
     # than bound beside the paths.
@@ -900,7 +909,10 @@ async def _build(
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}
-    changes, skipped = await _function_changes(session, repository_id, findings, refactoring)
+    hidden = excluded_types()
+    changes, skipped = await _function_changes(
+        session, repository_id, [f for f in findings if f.biomarker_type not in hidden], refactoring
+    )
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
         findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],

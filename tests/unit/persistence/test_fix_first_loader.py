@@ -418,3 +418,21 @@ async def test_an_unverified_read_skips_the_test_lookup(async_session, monkeypat
         i.id for i in (await load_fix_first(async_session, rid, limit=None)).items
     ]
     assert calls == 1
+
+
+async def test_loader_reads_hidden_findings_to_price_a_fix(async_session) -> None:
+    # A hidden type still counted in the file's score, so the gain of a fix
+    # there is priced with it; the queue itself never lists it.
+    from repowise.core.persistence.crud.analysis.fix_first import _findings
+
+    rid = await seed_fix_first(async_session)
+    async_session.add(HealthFinding(
+        repository_id=rid, file_path="src/plain.py", biomarker_type="unused_internal",
+        severity="medium", function_name="helper", health_impact=0.4,
+        public_id="finding_u1", dimension="defect", details_json="{}",
+    ))
+    await async_session.flush()
+    rows = await _findings(async_session, rid, {"src/plain.py"}, set(), set())
+    assert "unused_internal" in {r.biomarker_type for r in rows}
+    loaded = await load_fix_first(async_session, rid)
+    assert all("helper" not in item.title for item in loaded.items)
