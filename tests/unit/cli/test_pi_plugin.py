@@ -85,6 +85,62 @@ def test_package_manifest_declares_the_extension() -> None:
     assert manifest["pi"]["extensions"] == ["./repowise.ts"]
 
 
+def test_package_manifest_declares_pi_package_discovery() -> None:
+    """Gallery keyword plus skills/prompts, per Pi's package guide (#5307).
+
+    Conventional directories are discovered without a manifest, so the
+    directories must exist as the generator's targets — not just be
+    named in the manifest.
+    """
+    manifest = json.loads((PLUGIN_ROOT / "package.json").read_text(encoding="utf-8"))
+    assert manifest["keywords"] == ["pi-package"]
+    assert manifest["pi"]["skills"] == ["./skills"]
+    assert manifest["pi"]["prompts"] == ["./prompts/*.md"]
+    assert (PLUGIN_ROOT / "skills").is_dir()
+    assert (PLUGIN_ROOT / "prompts").is_dir()
+
+
+def test_replacement_keeps_additional_context() -> None:
+    """`updatedToolOutput` replaces the result but keeps the context note.
+
+    The context block is kept ahead of the replacement — the two fields
+    are not alternatives (a stale-read flag alongside a served skeleton).
+    Only the note is kept: the original content stays dropped, or a
+    skeleton/digest replacement would ship the full output it exists to
+    condense (review finding, #5315).
+    """
+    assert "...(contextBlock ? [contextBlock] : [])," in EXTENSION
+    assert '{ type: "text", text: replacement } satisfies TextBlock,' in EXTENSION
+    # The old return dropped the note along with the original content.
+    assert 'return { content: [{ type: "text", text: replacement }' not in EXTENSION
+
+
+def test_empty_context_answer_marks_the_session() -> None:
+    """An answered helper marks the session even when it says nothing.
+
+    The session gate must be recorded as soon as the helper answers,
+    and a failed helper must not be recorded — otherwise the first case
+    re-spawns the helper every turn and the second suppresses context
+    for the rest of the session (review finding, #5315).
+    """
+    assert "if (!result.answered) return;" in EXTENSION
+    assert "injectedSessionId = sessionId;" in EXTENSION
+    # The assignment must come before the empty-context early return.
+    assert EXTENSION.index("injectedSessionId = sessionId;") < EXTENSION.index(
+        'if (typeof context !== "string" || !context) return;'
+    )
+
+
+def test_missing_cwd_does_not_disable_the_helper() -> None:
+    """ENOENT from a missing cwd must not mark the CLI as missing.
+
+    Node raises ENOENT for a nonexistent cwd as well as a missing
+    binary, so the `missing` set is touched only when the directory
+    actually exists (review finding, #5315).
+    """
+    assert 'if (error.code === "ENOENT" && existsSync(cwd)) missing.add(cli);' in EXTENSION
+
+
 def test_lens_limitation_is_documented_not_hidden() -> None:
     assert "Claude Code-only" in README
     assert "Claude Code-only" in EXTENSION

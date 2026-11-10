@@ -27,7 +27,11 @@
  * Graceful degradation: a missing helper (not on PATH) disables that
  * surface for the session — the turn never breaks, the tool runs
  * unchanged, and no error reaches the transcript. A helper that exits
- * non-zero or times out is the same as one that said nothing.
+ * non-zero or times out is the same as one that said nothing, except at
+ * session start: an answered helper — even with no context — marks the
+ * session so it is not re-spawned every turn, while a failed one is
+ * retried on the next turn. A missing `cwd` never marks a helper
+ * missing: only a binary that cannot be found on PATH does.
  *
  * Lens UI: NOT ported. `lens.js` is built on the Claude Code SDK UI
  * surface and Pi's equivalent is its TUI component API — a port is its
@@ -45,6 +49,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -115,10 +120,20 @@ function parseHookOutput(raw: string): HookSpecificOutput | null {
 }
 
 /**
+ * Outcome of one helper invocation. `answered` means the helper ran and
+ * exited 0 — even if it said nothing. A spawn error, a non-zero exit, or
+ * a timeout is `failed`, and the caller retries it on the next turn
+ * rather than treating silence as an answer.
+ */
+type HelperResult =
+  | { answered: true; output: HookSpecificOutput | null }
+  | { answered: false };
+
+/**
  * Run a helper CLI with a JSON payload on stdin, returning its parsed
- * `hookSpecificOutput` — or null when the helper is absent, timed out,
- * failed, or said nothing. Null is never an error: the caller treats it
- * as "run the tool unchanged".
+ * `hookSpecificOutput`. An `answered` result with a null output means the
+ * helper ran but said nothing — the caller treats that as "run the tool
+ * unchanged", never as an error.
  */
 async function runHelper(
   cli: string,
@@ -127,11 +142,11 @@ async function runHelper(
   timeoutMs: number,
   cwd: string,
   missing: Set<string>,
-): Promise<HookSpecificOutput | null> {
-  if (missing.has(cli)) return null;
-  const stdout = await new Promise<string | null>((resolve) => {
+): Promise<HelperResult> {
+  if (missing.has(cli)) return { answered: false };
+  return new Promise<HelperResult>((resolve) => {
     let done = false;
-    const finish = (value: string | null): void => {
+    const finish = (value: HelperResult): void => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -140,25 +155,31 @@ async function runHelper(
     const child = spawn(cli, args, { cwd, windowsHide: true });
     const timer = setTimeout(() => {
       child.kill();
-      finish(null);
+      finish({ answered: false });
     }, timeoutMs);
     let out = "";
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf-8");
     });
     child.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") missing.add(cli);
-      finish(null);
+      // Node reports ENOENT for a missing binary AND for a missing cwd.
+      // Only a missing binary disables the helper: a bad cwd must not
+      // poison the session, so the set is touched only when the
+      // directory actually exists.
+      if (error.code === "ENOENT" && existsSync(cwd)) missing.add(cli);
+      finish({ answered: false });
     });
     child.on("close", (code) => {
-      finish(code === 0 && out.trim() ? out : null);
+      if (code !== 0) {
+        finish({ answered: false });
+        return;
+      }
+      finish({ answered: true, output: out.trim() ? parseHookOutput(out) : null });
     });
-    child.stdin.on("error", () => finish(null));
+    child.stdin.on("error", () => finish({ answered: false }));
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
   });
-  if (!stdout || !stdout.trim()) return null;
-  return parseHookOutput(stdout);
 }
 
 /**
@@ -238,7 +259,7 @@ export default function (pi: ExtensionAPI): void {
     if (event.messageType !== "user") return;
     const sessionId = ctx.sessionManager.getSessionId();
     if (injectedSessionId === sessionId) return;
-    const output = await runHelper(
+    const result = await runHelper(
       AUGMENT_CLI,
       ["--client", "pi"],
       { hook_event_name: "SessionStart", cwd: ctx.cwd, session_id: sessionId },
@@ -246,9 +267,13 @@ export default function (pi: ExtensionAPI): void {
       ctx.cwd,
       missingHelpers,
     );
-    const context = output?.additionalContext;
-    if (typeof context !== "string" || !context) return;
+    // A failed helper is retried next turn; an answered one — even with
+    // no context — marks the session, so an empty answer does not
+    // re-spawn the helper on every user prompt.
+    if (!result.answered) return;
     injectedSessionId = sessionId;
+    const context = result.output?.additionalContext;
+    if (typeof context !== "string" || !context) return;
     return {
       message: {
         customType: "repowise-context",
@@ -264,7 +289,7 @@ export default function (pi: ExtensionAPI): void {
     }
     const command = event.input.command;
     if (typeof command !== "string" || !command.trim()) return;
-    const output = await runHelper(
+    const result = await runHelper(
       REWRITE_CLI,
       ["--agent", "pi"],
       {
@@ -278,6 +303,7 @@ export default function (pi: ExtensionAPI): void {
       ctx.cwd,
       missingHelpers,
     );
+    const output = result.answered ? result.output : null;
     const updated = (output as { updatedInput?: unknown } | null)?.updatedInput;
     if (!isRecord(updated)) return;
     const rewritten = updated.command;
@@ -309,7 +335,7 @@ export default function (pi: ExtensionAPI): void {
       is_error: event.isError,
     };
     if (event.isError) payload.error = textOf(content);
-    const output = await runHelper(
+    const result = await runHelper(
       AUGMENT_CLI,
       ["--client", "pi"],
       payload,
@@ -317,12 +343,15 @@ export default function (pi: ExtensionAPI): void {
       ctx.cwd,
       missingHelpers,
     );
+    const output = result.answered ? result.output : null;
     if (!output) return;
 
     const current = Array.isArray(content) ? [...content] : [];
     let changed = false;
+    let contextBlock: TextBlock | null = null;
     if (typeof output.additionalContext === "string" && output.additionalContext) {
-      current.push({ type: "text", text: output.additionalContext } satisfies TextBlock);
+      contextBlock = { type: "text", text: output.additionalContext };
+      current.push(contextBlock);
       changed = true;
     }
     if (output.updatedToolOutput !== undefined) {
@@ -332,7 +361,18 @@ export default function (pi: ExtensionAPI): void {
           : JSON.stringify(output.updatedToolOutput);
       // Replacing the content drops the structured content, per Pi's
       // `tool_result` contract — the replacement is the whole result now.
-      return { content: [{ type: "text", text: replacement } satisfies TextBlock] };
+      // The context note is a separate block, so it is kept ahead of the
+      // replacement: in Claude Code the two fields are not alternatives,
+      // and the Read surface can legitimately want both (a stale-read
+      // flag alongside a served skeleton). Only the note is kept — the
+      // original content stays dropped, or a skeleton/digest replacement
+      // would ship the full output it exists to condense.
+      return {
+        content: [
+          ...(contextBlock ? [contextBlock] : []),
+          { type: "text", text: replacement } satisfies TextBlock,
+        ],
+      };
     }
     if (changed) return { content: current };
     return undefined;

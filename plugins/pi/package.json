@@ -1,1 +1,1 @@
-{"description":"Repowise for Pi: session context, Bash distillation, decision capture, and failure rescue through Pi's extension API.","license":"AGPL-3.0","name":"repowise-pi","pi":{"extensions":["./repowise.ts"]},"private":true,"version":"0.60.1"}
+{"description":"Repowise for Pi: session context, Bash distillation, decision capture, and failure rescue through Pi's extension API.","keywords":["pi-package"],"license":"AGPL-3.0","name":"repowise-pi","pi":{"extensions":["./repowise.ts"],"prompts":["./prompts/*.md"],"skills":["./skills"]},"private":true,"version":"0.60.1"}
