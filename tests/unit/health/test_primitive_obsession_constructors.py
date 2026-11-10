@@ -65,3 +65,22 @@ def test_go_grouped_parameters_count_every_name() -> None:
     )
     # Six names in four declarations: the constructor grace must not hide them.
     assert (fn.param_count, fn.typed_param_count, fn.primitive_param_count) == (6, 6, 6)
+
+
+def test_only_go_grouped_declarations_count_several_names() -> None:
+    from tree_sitter_language_pack import get_parser
+
+    from repowise.core.analysis.health.complexity.ast_utils import param_arity
+
+    # A Swift parameter carries two ``name`` fields: its label and local name.
+    tree = get_parser("swift").parse(b"func f(from a: Int, to b: Int) {}\n")
+    params = [n for n in _walk(tree.root_node) if n.type == "parameter"]
+    assert len(params) == 2
+    assert [len(p.children_by_field_name("name")) for p in params] == [2, 2]
+    assert [param_arity(p) for p in params] == [1, 1]
+
+
+def _walk(node):
+    yield node
+    for child in node.children:
+        yield from _walk(child)

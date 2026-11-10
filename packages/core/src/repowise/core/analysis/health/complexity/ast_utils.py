@@ -713,7 +713,12 @@ def param_arity(param: Node) -> int:
     if param.type == "declArg":
         # The trailing ``type`` child is a different node type and never matches.
         return sum(1 for c in param.children if c.type == "identifier")
-    return max(1, len(param.children_by_field_name("name")))
+    if param.type == "parameter_declaration":
+        # Go's grouped names; C and C++ declarations carry no ``name`` field.
+        return max(1, len(param.children_by_field_name("name")))
+    # Other grammars give one parameter several ``name`` fields (a Swift
+    # argument label and its local name): still one parameter.
+    return 1
 
 
 def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:
