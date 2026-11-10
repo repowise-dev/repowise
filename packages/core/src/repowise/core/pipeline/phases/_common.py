@@ -34,7 +34,10 @@ def limit_to_top_pagerank(
     try:
         import networkx as nx
 
-        ranks = nx.pagerank(graph_builder.graph())
+        from ...ingestion.graph._metrics import without_documentation_edges
+
+        # Doc links are not importance; ranking with them lifts every file a README names.
+        ranks = nx.pagerank(without_documentation_edges(graph_builder.graph()))
     except Exception:
         ranks = {}
     return sorted(

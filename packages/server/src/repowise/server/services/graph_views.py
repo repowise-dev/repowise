@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ids import is_external
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.support_paths import FilePopulation, file_population
@@ -246,8 +247,13 @@ async def build_architecture_graph(
     arch_nodes.sort(key=lambda a: -a.member_count)
     kept_communities = {a.community_id for a in arch_nodes}
 
-    # Collapse cross-community edges
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # Collapse cross-community edges; a doc linking across is not coupling.
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
+        )
+    )
     edge_counts: dict[tuple[int, int], int] = {}
     for e in edge_result.scalars():
         src_c = node_to_community.get(e.source_node_id)
@@ -299,6 +305,7 @@ async def neighbour_edge_counts(
             select(GraphEdge.target_node_id).where(
                 GraphEdge.repository_id == repo_id,
                 GraphEdge.source_node_id.in_(chunk),
+                GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
             )
         )
         for (target,) in rows.all():
@@ -367,6 +374,8 @@ async def build_community_slice(
                     GraphEdge.source_node_id.in_(chunk),
                     GraphEdge.target_node_id.in_(chunk),
                 ),
+                # The UI has no legend for doc links yet.
+                GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
             )
         )
         # Dedup across chunks: an edge whose endpoints fall in different chunks

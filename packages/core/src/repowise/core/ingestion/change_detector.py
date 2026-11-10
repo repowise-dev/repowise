@@ -512,6 +512,11 @@ class ChangeDetector:
                 decay_only=[],
             )
 
+        from .graph._metrics import without_documentation_edges
+
+        # A doc linking to a changed file is not its importer: no cascade, no rank.
+        graph = without_documentation_edges(graph)
+
         # 1-hop cascade: files that import changed files
         one_hop: set[str] = set()
         for changed in directly_changed:

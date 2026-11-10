@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.persistence.crud import indexed_file
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.deps import get_db_session
@@ -116,8 +117,13 @@ async def module_graph(
             )
         )
 
-    # Build inter-module edges from file-level edges
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # Build inter-module edges from file-level edges; a doc link is not a module dependency.
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
+        )
+    )
     edges = edge_result.scalars().all()
 
     edge_counts: dict[tuple[str, str], int] = {}
