@@ -654,12 +654,23 @@ def _parameter_nodes(params: Node) -> Iterator[Node]:
             yield child
 
 
+# Rest parameters: Python ``*args`` / ``**kwargs``, Ruby ``*args`` /
+# ``**opts`` / ``&block``, JavaScript and TypeScript ``...rest``.
+_REST_PARAMETERS = frozenset(
+    {
+        "list_splat_pattern", "dictionary_splat_pattern", "splat_parameter",
+        "hash_splat_parameter", "block_parameter", "rest_pattern",
+    }
+)
+
+
 def is_rest_parameter(param: Node) -> bool:
-    """Python ``*args`` / ``**kwargs``: they collect what is left over, and no
-    call site has to fill them."""
-    # ``*args: int`` wraps the splat in a ``typed_parameter``.
-    first = param.named_children[0] if param.type == "typed_parameter" else param
-    return first.type in ("list_splat_pattern", "dictionary_splat_pattern")
+    """A rest parameter collects what is left over, so no call site has to
+    fill it, and it is no parameter of the signature."""
+    # ``*args: int`` / ``...rest: T[]`` wrap the rest pattern in a typed node.
+    typed = param.type in ("typed_parameter", "required_parameter") and param.named_child_count
+    first = param.named_children[0] if typed else param
+    return first.type in _REST_PARAMETERS
 
 
 def _is_void_parameter(node: Node) -> bool:

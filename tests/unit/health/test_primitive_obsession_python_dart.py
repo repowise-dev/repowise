@@ -1,7 +1,8 @@
-"""primitive_obsession in Python and Dart: what a call site actually passes.
+"""primitive_obsession in Python, Ruby, JavaScript and Dart: what a call site passes.
 
-Python's ``*args`` / ``**kwargs`` collect what is left over and are no
-parameters. Dart ``{named}`` parameters are named at every call site, its
+Rest parameters (Python ``*args`` / ``**kwargs``, Ruby ``*args`` / ``**opts``
+/ ``&block``, JavaScript ``...rest``) collect what is left over and are no
+parameters. Ruby ``key:`` parameters are named at every call site. Dart ``{named}`` parameters are named at every call site, its
 ``[optional]`` ones are positional, and an ``@override`` member keeps the
 signature of the member it overrides.
 """
@@ -48,3 +49,16 @@ def test_dart_optional_and_named_parameters_are_each_counted() -> None:
     assert (fns["draw"].param_count, fns["draw"].keyword_only_param_count) == (5, 0)
     assert (fns["named"].param_count, fns["named"].keyword_only_param_count) == (5, 4)
     assert fns["named"].primitive_param_count == 5
+
+
+def test_ruby_rest_and_keyword_parameters() -> None:
+    [fn] = walk_file_complexity(
+        "lib/a.rb", "ruby", b"def f(a, b = 1, *args, c:, d: 2, **opts, &blk)\nend\n"
+    )
+    # ``*args``, ``**opts`` and ``&blk`` collect the rest; ``c:`` and ``d:`` are named.
+    assert (fn.param_count, fn.keyword_only_param_count) == (4, 2)
+
+
+def test_javascript_rest_parameter_is_not_counted() -> None:
+    [fn] = walk_file_complexity("src/a.js", "javascript", b"function f(a, b = 1, {c, d}, ...rest) {}\n")
+    assert fn.param_count == 3

@@ -356,16 +356,21 @@ def _bound_by_call(param: Node, lmap: LanguageNodeMap) -> bool:
 
 def keyword_only_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
     """Python parameters after a bare ``*`` or ``*args`` (``**kwargs`` is no
-    parameter, ``_count_parameters`` leaves it out), and Dart ``{named}`` ones.
+    parameter, ``_count_parameters`` leaves it out), Ruby ``key:`` and Dart
+    ``{named}`` ones.
     A framework-bound one is left out: ``bound_param_count`` has it."""
     if params is None:
         return 0
     count = _dart_named_count(params)
     seen_star = False
     for param in _parameter_nodes(params):
-        if seen_star:
+        if seen_star or param.type == "keyword_parameter":
+            # Ruby ``key:`` parameters are named at every call site too.
             count += not (_is_bound(param, lmap) or is_rest_parameter(param))
-        elif param.type == "keyword_separator" or is_rest_parameter(param):
+        elif param.type == "keyword_separator" or (
+            # Python's ``*args``; a Ruby splat leaves later parameters positional.
+            param.type in ("list_splat_pattern", "typed_parameter") and is_rest_parameter(param)
+        ):
             seen_star = True
     return count
 
