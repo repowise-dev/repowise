@@ -15,7 +15,9 @@ around the dispatch, or one of its arms, is complex on its own.
 
 Separately, a run of error guards (Go ``if err != nil { return err }``, C
 ``if (rc) goto cleanup;``, shell ``cmd || die``) counts once in
-:func:`judged_ccn`; when both cuts apply, the smaller reading wins.
+:func:`judged_ccn`, and so does a run of guarded copies
+(``if (m.containsKey(k)) o.f = m.get(k);``); when both cuts apply, the
+smaller reading wins.
 
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
@@ -46,6 +48,8 @@ from .cyclomatic import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from tree_sitter import Node
 
     from .languages import LanguageNodeMap
@@ -419,8 +423,77 @@ def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
     return (_is_exit_if(node, lmap) or _is_shell_exit(node)) and _points([node], lmap) == 1
 
 
-def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
-    """Error guards among *children* past the first of their run.
+# A guarded copy: ``if (m.containsKey(k)) o.f = m.get(k);`` or
+# ``if (x.F != null) o.F = x.F;``. One short statement that uses the value its
+# condition tested. A run of them maps fields across, one step, not one
+# decision per field.
+_COPY_STATEMENT_KINDS = frozenset({"expression_statement"})
+# A statement wrapped over more lines is doing more than one copy (a builder
+# call, a map literal), so it is a decision of its own.
+_MAX_COPY_LINES = 2
+
+
+def _is_null(node: Node) -> bool:
+    kind = node.type.lower()
+    return any(m in kind for m in ("null", "nil", "none"))
+
+
+def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
+    """What a presence test tests: a call's arguments (else its receiver), or
+    the non-null side of a null comparison. Anything else tests nothing here."""
+    condition = _unwrap(condition)
+    if condition is None:
+        return []
+    if condition.type in lmap.call_kinds:
+        _, receiver, args = _call_parts(condition)
+        # C# wraps each argument in an ``argument`` node.
+        args = [
+            a.named_children[0] if a.type == "argument" and a.named_children else a for a in args
+        ]
+        return args or ([receiver] if receiver is not None else [])
+    if condition.type in _COMPARISON_KINDS:
+        sides = condition.named_children
+        if len(sides) == 2 and sum(map(_is_null, sides)) == 1:
+            return [s for s in sides if not _is_null(s)]
+    return []
+
+
+def _reads(statement: Node, value: Node) -> bool:
+    """Whether *statement* reads an expression spelled like *value*.
+
+    One the statement starts with is its target (``prev.next = next``, a
+    null-guarded write through ``prev``), not the value being copied.
+    """
+    stack = [statement]
+    while stack:
+        cur = stack.pop()
+        if (
+            cur.type == value.type
+            and cur.text == value.text
+            and cur.start_byte != statement.start_byte
+        ):
+            return True
+        stack.extend(cur.named_children)
+    return False
+
+
+def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """A one-point ``if`` with no ``else`` whose one statement copies the tested value."""
+    if node.type not in lmap.if_kinds or node.child_by_field_name("alternative") is not None:
+        return False
+    body = _statements(node.child_by_field_name("consequence"), lmap)
+    if len(body) != 1 or body[0].type not in _COPY_STATEMENT_KINDS:
+        return False
+    if body[0].end_point[0] - body[0].start_point[0] >= _MAX_COPY_LINES:
+        return False
+    values = _tested_values(node.child_by_field_name("condition"), lmap)
+    return any(_reads(body[0], v) for v in values) and _points([node], lmap) == 1
+
+
+def _repeated_guards(
+    children: list[Node], lmap: LanguageNodeMap, is_guard: Callable[[Node, LanguageNodeMap], bool]
+) -> int:
+    """Guards among *children* past the first of their run.
 
     Statements without a decision point (``x, err := f()``) may sit between
     the guards of one run; anything that branches, jumps or is a label ends it.
@@ -429,7 +502,7 @@ def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
     repeats = 0
     in_run = False
     for child in children:
-        if _is_exit_guard(child, lmap):
+        if is_guard(child, lmap):
             repeats += in_run
             in_run = True
         elif child.type in breaks or _points([child], lmap) > 0:
@@ -439,12 +512,23 @@ def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
 
 def exit_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
     """Decision points of error guards that repeat one already counted in their run."""
+    return _guard_repeats(body, lmap, _is_exit_guard)
+
+
+def copy_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
+    """Decision points of guarded copies that repeat one already counted in their run."""
+    return _guard_repeats(body, lmap, _is_copy_guard)
+
+
+def _guard_repeats(
+    body: Node, lmap: LanguageNodeMap, is_guard: Callable[[Node, LanguageNodeMap], bool]
+) -> int:
     lambda_kinds = lmap.lambda_kinds
     total = 0
     stack: list[Node] = [body]
     while stack:
         children = [c for c in stack.pop().children if c.is_named]
-        total += _repeated_guards(children, lmap)
+        total += _repeated_guards(children, lmap, is_guard)
         stack.extend(
             c
             for c in children
@@ -466,11 +550,11 @@ def judged_ccn(fn: FunctionComplexity) -> int:
     outside the dispatch plus its heaviest arm's: a switch of one-line cases
     reads as the code around it, one with a tangled arm as that arm.
 
-    A run of error guards counts once either way. The two cuts can cover the
-    same guards (three ``if err != nil`` in a row are a dispatch on ``err``
-    too), so the smaller reading wins rather than both applying.
+    A run of error guards, or of guarded copies, counts once either way. The
+    cuts can cover the same guards (three ``if err != nil`` in a row are a
+    dispatch on ``err`` too), so the smaller reading wins rather than both applying.
     """
-    unguarded = fn.ccn - fn.exit_guards
+    unguarded = fn.ccn - fn.exit_guards - fn.copy_guards
     if fn.dispatch_share < DISPATCH_SHARE:
         return unguarded
     return min(unguarded, fn.ccn - round(fn.dispatch_share * (fn.ccn - 1)) + fn.dispatch_arm)
@@ -478,8 +562,11 @@ def judged_ccn(fn: FunctionComplexity) -> int:
 
 def judged_leaves_out(fn: FunctionComplexity) -> str:
     """What :func:`judged_ccn` did not count, for a finding's text."""
-    if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < fn.ccn - fn.exit_guards:
+    unguarded = fn.ccn - fn.exit_guards - fn.copy_guards
+    if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < unguarded:
         return "every arm of its dispatch"
+    if fn.copy_guards > fn.exit_guards:
+        return "every repeated guarded copy"
     return "every repeated error guard"
 
 

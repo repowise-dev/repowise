@@ -132,6 +132,8 @@ class FunctionComplexity:
     # ``if (rc) goto cleanup;``, shell ``cmd || die``) past the first of each
     # run. The complexity markers count a run once. ``complexity/dispatch.py``.
     exit_guards: int = 0
+    # The same for guarded copies (``if (m.containsKey(k)) o.f = m.get(k);``).
+    copy_guards: int = 0
     # Calls on the terminal (print, prompt, console, stdout) over all calls in
     # the body, nested bodies included, to two decimals. ``complexity/terminal.py``.
     terminal_share: float = 0.0
