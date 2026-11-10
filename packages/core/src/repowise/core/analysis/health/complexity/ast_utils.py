@@ -645,9 +645,21 @@ def _parameter_nodes(params: Node) -> Iterator[Node]:
     for child in params.children:
         if is_comment(child) or _is_void_parameter(child):
             continue
+        if child.type == "optional_formal_parameters":
+            # Dart wraps its ``[optional]`` and ``{named}`` parameters in one node.
+            yield from (c for c in child.named_children if c.type == "formal_parameter")
+            continue
         # C++ represents a bare variadic parameter as an unnamed token.
         if child.is_named or child.type == "...":
             yield child
+
+
+def is_rest_parameter(param: Node) -> bool:
+    """Python ``*args`` / ``**kwargs``: they collect what is left over, and no
+    call site has to fill them."""
+    # ``*args: int`` wraps the splat in a ``typed_parameter``.
+    first = param.named_children[0] if param.type == "typed_parameter" else param
+    return first.type in ("list_splat_pattern", "dictionary_splat_pattern")
 
 
 def _is_void_parameter(node: Node) -> bool:
@@ -682,7 +694,8 @@ def _receiver_parameter(params: Node) -> Node | None:
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
-    Counts declared parameters, excluding receivers, comments and separators.
+    Counts declared parameters, excluding receivers, comments, separators and
+    Python's ``*args`` / ``**kwargs``.
     Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
     params = _parameter_list(fn_node)
@@ -701,7 +714,7 @@ def _count_parameters(fn_node: Node) -> int:
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity.
-        if child.type in ("keyword_separator", "positional_separator"):
+        if child.type in ("keyword_separator", "positional_separator") or is_rest_parameter(child):
             continue
         if child.type == "declArg":
             # Pascal groups same-typed parameters under one ``declArg``

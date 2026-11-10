@@ -20,8 +20,10 @@ reads the tree with it.
 - **bound parameters**: parameters whose own annotation says a framework fills
   them (``@PathVariable``), read the same way as a declaration's markers. They
   stay in the declared count and leave the typed and scalar ones.
-- **keyword-only parameters**: Python parameters after ``*`` or ``*args``.
-  Every call site names them, so they carry no argument-order hazard.
+- **keyword-only parameters**: Python parameters after ``*`` or ``*args``,
+  and Dart ``{named}`` parameters. Every call site names them, so they carry
+  no argument-order hazard. Python's ``*args`` / ``**kwargs`` are no
+  parameters at all: they collect what is left over.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .ast_utils import _dart_signature_sibling, _parameter_nodes
+from .ast_utils import _dart_signature_sibling, _parameter_nodes, is_rest_parameter
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -104,7 +106,21 @@ def _declaration_markers(fn_node: Node, lmap: LanguageNodeMap) -> set[str]:
     # Python keeps decorators on a wrapper beside the definition.
     if fn_node.parent is not None and fn_node.parent.type in lmap.decorated_definition_kinds:
         words |= _marker_words(fn_node.parent)
+    if fn_node.type == "function_body":
+        words |= _leaf_words(_dart_annotations(fn_node))
     return words
+
+
+def _dart_annotations(body: Node) -> list[Node]:
+    """Dart keeps a member's ``@override`` as a sibling before its signature,
+    which is itself the sibling before the body."""
+    found: list[Node] = []
+    sig = body.prev_named_sibling
+    node = sig.prev_named_sibling if sig is not None else None
+    while node is not None and node.type == "annotation":
+        found.append(node)
+        node = node.prev_named_sibling
+    return found
 
 
 def _enclosing_type_name(fn_node: Node) -> str | None:
@@ -303,7 +319,7 @@ def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int,
     for param in _parameter_nodes(params):
         if param.type in _NON_PARAMS or (type_node := _param_type(param)) is None:
             continue
-        if _is_bound(param, lmap):
+        if _is_bound(param, lmap) or is_rest_parameter(param):
             continue
         arity = _arity(param)
         typed += arity
@@ -339,24 +355,27 @@ def _bound_by_call(param: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def keyword_only_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
-    """Python parameters after a bare ``*`` or ``*args``, ``**kwargs`` included.
+    """Python parameters after a bare ``*`` or ``*args`` (``**kwargs`` is no
+    parameter, ``_count_parameters`` leaves it out), and Dart ``{named}`` ones.
     A framework-bound one is left out: ``bound_param_count`` has it."""
     if params is None:
         return 0
-    count = 0
+    count = _dart_named_count(params)
     seen_star = False
     for param in _parameter_nodes(params):
         if seen_star:
-            count += not _is_bound(param, lmap)
-        elif param.type == "keyword_separator" or _is_args_splat(param):
+            count += not (_is_bound(param, lmap) or is_rest_parameter(param))
+        elif param.type == "keyword_separator" or is_rest_parameter(param):
             seen_star = True
     return count
 
 
-def _is_args_splat(param: Node) -> bool:
-    # ``*args: int`` wraps the splat in a ``typed_parameter``.
-    first = param.named_children[0] if param.type == "typed_parameter" else param
-    return first.type == "list_splat_pattern"
+def _dart_named_count(params: Node) -> int:
+    """Dart parameters inside ``{...}``: every call site names them."""
+    group = next((c for c in params.children if c.type == "optional_formal_parameters"), None)
+    if group is None or group.child(0) is None or group.child(0).type != "{":
+        return 0
+    return sum(1 for c in group.named_children if c.type == "formal_parameter")
 
 
 def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:

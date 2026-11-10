@@ -339,7 +339,7 @@ def test_python_cli_marker_in_a_string_argument_fixes_nothing():
     ("signature", "keyword_only"),
     [
         (f"a, *, {FIVE}", 5),
-        (f"a, *args: int, {FIVE}, **kw", 6),
+        (f"a, *args: int, {FIVE}, **kw", 5),  # ``**kw`` is no parameter
         (f"a, *args, {FIVE}", 5),
         (f"{FIVE}, **kw", 0),
         (f"a, /, {FIVE}", 0),
