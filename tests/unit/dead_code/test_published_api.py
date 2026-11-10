@@ -222,6 +222,105 @@ def test_a_python_app_is_left_alone(tmp_path: Path) -> None:
     assert _demoted(tmp_path, "python", "app/views.py") == [False]
 
 
+_FLIT_PYPROJECT = (
+    '[build-system]\nrequires = ["flit_core>=3.4"]\nbuild-backend = "flit_core.buildapi"\n'
+    '[project]\nname = "acme-providers-ftp"\n'
+    '[tool.flit.module]\nname = "acme.providers.ftp"\n'
+)
+
+_UV_BUILD_PYPROJECT = (
+    '[build-system]\nrequires = ["uv_build"]\nbuild-backend = "uv_build"\n'
+    '[project]\nname = "acme-providers-ftp"\n'
+    '[tool.uv.build-backend]\nmodule-name = "acme.providers.ftp"\n'
+)
+
+
+def test_a_flit_namespace_module_publishes_its_package(tmp_path: Path) -> None:
+    """flit ships the module it names; the distribution name spells no such dir."""
+    _write(
+        tmp_path,
+        {
+            "providers/ftp/pyproject.toml": _FLIT_PYPROJECT,
+            "providers/ftp/src/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(
+        tmp_path, "python", "providers/ftp/src/acme/providers/ftp/sensors/ftp.py"
+    ) == [True]
+
+
+def test_a_flit_module_beside_the_manifest_publishes(tmp_path: Path) -> None:
+    """flit also allows the module next to the pyproject, with no ``src/``."""
+    _write(
+        tmp_path,
+        {"pyproject.toml": _FLIT_PYPROJECT, "acme/providers/ftp/sensors/ftp.py": ""},
+    )
+    assert _demoted(tmp_path, "python", "acme/providers/ftp/sensors/ftp.py") == [True]
+
+
+def test_a_uv_build_module_name_publishes_its_package(tmp_path: Path) -> None:
+    """uv_build's ``module-name`` defaults to a ``src/`` layout."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": _UV_BUILD_PYPROJECT,
+            "src/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "src/acme/providers/ftp/sensors/ftp.py") == [True]
+
+
+def test_a_uv_build_module_root_is_honoured(tmp_path: Path) -> None:
+    """``module-root`` moves the same module off the default ``src/``."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["uv_build"]\nbuild-backend = "uv_build"\n'
+                '[project]\nname = "acme-providers-ftp"\n'
+                '[tool.uv.build-backend]\nmodule-name = "acme.providers.ftp"\n'
+                'module-root = "lib"\n'
+            ),
+            "lib/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "lib/acme/providers/ftp/sensors/ftp.py") == [True]
+
+
+def test_declared_dirs_that_do_not_exist_fall_back_to_the_name(tmp_path: Path) -> None:
+    """A stale ``packages`` list must not leave the project unpublished."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["setuptools"]\n'
+                '[project]\nname = "my-lib"\n'
+                '[tool.setuptools]\npackages = ["my_lib_gone"]\n'
+            ),
+            "src/my_lib/api.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "src/my_lib/api.py") == [True]
+
+
+def test_a_private_flit_project_stays_unpublished(tmp_path: Path) -> None:
+    """``Private :: Do Not Upload`` outranks a declared flit module."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["flit_core>=3.4"]\n'
+                'build-backend = "flit_core.buildapi"\n'
+                '[project]\nname = "acme-providers-ftp"\n'
+                'classifiers = ["Private :: Do Not Upload"]\n'
+                '[tool.flit.module]\nname = "acme.providers.ftp"\n'
+            ),
+            "src/acme/providers/ftp/sensors/ftp.py": "",
+        },
+    )
+    assert _demoted(tmp_path, "python", "src/acme/providers/ftp/sensors/ftp.py") == [False]
+
+
 def test_an_npm_package_publishes_unless_private(tmp_path: Path) -> None:
     _write(
         tmp_path,
