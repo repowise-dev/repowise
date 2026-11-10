@@ -22,9 +22,15 @@ if TYPE_CHECKING:
 
 def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
     """True if this node represents a logical ``&&`` / ``||`` operator."""
-    logical = lmap.logical_operator
+    if not _is_operator_token(node, lmap):
+        return False
+    return lmap.logical_operator is None or bool(lmap.logical_operator(node))
+
+
+def _is_operator_token(node: Node, lmap: LanguageNodeMap) -> bool:
+    """True if this node carries an ``&&`` / ``||`` / ``and`` / ``or`` operator."""
     if node.type in lmap.boolean_operator_kinds:
-        return logical is None or bool(logical(node))
+        return True
     if node.type in lmap.boolean_operator_text_kinds:
         # The operator child carries the literal token text.
         for child in node.children:
@@ -32,7 +38,7 @@ def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
                 continue
             tok = child.text
             if tok in (b"&&", b"||", b"and", b"or"):
-                return logical is None or bool(logical(node))
+                return True
     return (
         node.type in ("&&", "||")
         and node.parent is not None
