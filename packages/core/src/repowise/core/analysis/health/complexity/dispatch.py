@@ -438,6 +438,14 @@ def _is_null(node: Node) -> bool:
     return any(m in kind for m in ("null", "nil", "none"))
 
 
+def _call_values(call: Node) -> list[Node]:
+    """A call's arguments, else its receiver: ``m.containsKey(k)`` tests ``k``."""
+    _, receiver, args = _call_parts(call)
+    # C# wraps each argument in an ``argument`` node.
+    args = [a.named_children[0] if a.type == "argument" and a.named_children else a for a in args]
+    return args or ([receiver] if receiver is not None else [])
+
+
 def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
     """What a presence test tests: a call's arguments (else its receiver), or
     the non-null side of a null comparison. Anything else tests nothing here."""
@@ -445,12 +453,7 @@ def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
     if condition is None:
         return []
     if condition.type in lmap.call_kinds:
-        _, receiver, args = _call_parts(condition)
-        # C# wraps each argument in an ``argument`` node.
-        args = [
-            a.named_children[0] if a.type == "argument" and a.named_children else a for a in args
-        ]
-        return args or ([receiver] if receiver is not None else [])
+        return _call_values(condition)
     if condition.type in _COMPARISON_KINDS:
         sides = condition.named_children
         if len(sides) == 2 and sum(map(_is_null, sides)) == 1:
