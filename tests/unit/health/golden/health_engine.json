@@ -1702,7 +1702,7 @@
       {
         "file_path": "python/match.py",
         "score": 10.0,
-        "max_ccn": 5,
+        "max_ccn": 4,
         "max_nesting": 1,
         "nloc": 19,
         "has_test_file": false,
@@ -1873,7 +1873,7 @@
       {
         "file_path": "rust/flat_match.rs",
         "score": 10.0,
-        "max_ccn": 5,
+        "max_ccn": 4,
         "max_nesting": 2,
         "nloc": 31,
         "has_test_file": false,
