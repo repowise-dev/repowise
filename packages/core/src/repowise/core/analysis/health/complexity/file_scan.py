@@ -20,6 +20,7 @@ from ..perf.io_boundaries import _finish_io_names, _io_visit
 from .ast_utils import _UNIT_LAMBDA_KINDS
 from .error_handling import _eh_node_kinds, _eh_rust_attr_is_test, _eh_visit
 from .languages import LanguageNodeMap
+from .markup import LITERAL_KINDS
 from .models import ErrorHandlingHit
 from .nloc import CodeLineIndex, _source_lines, is_docstring_stmt
 
@@ -53,6 +54,9 @@ class FileScan:
     #: ``perf.io_boundaries.collect_io_names`` for the file, or ``{}`` when
     #: the scan was not asked for it.
     io_names: dict[str, str]
+    #: Literals (strings, tables) spanning more than one line, outside docstrings, for
+    #: ``markup.markup_rows`` to count their continuation lines as data.
+    literals: list[Node]
 
 
 def _rust_item_is_test(node: Node) -> bool:
@@ -102,6 +106,7 @@ def scan_file(
     hits: list[ErrorHandlingHit] = []
     class_nodes: list[Node] = []
     function_nodes: list[Node] = []
+    literals: list[Node] = []
     rust_ranges: list[tuple[int, int]] = []
     io_bound: dict[str, str] = {}
     io_rebound: set[str] = set()
@@ -142,6 +147,12 @@ def scan_file(
                 excluded.append((node.start_byte, node.end_byte))
         elif not ctx & _IN_COMMENT and "comment" in t:
             ctx |= _IN_COMMENT
+        if (
+            t in LITERAL_KINDS
+            and node.end_point[0] > node.start_point[0]
+            and not ctx & _IN_DOCSTRING
+        ):
+            literals.append(node)
 
         children = node.children
         if children:
@@ -181,4 +192,5 @@ def scan_file(
         function_nodes=function_nodes,
         rust_test_line_ranges=tuple(rust_ranges),
         io_names=_finish_io_names(io_bound, io_rebound),
+        literals=literals,
     )
