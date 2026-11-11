@@ -141,16 +141,29 @@ def _note(s: Setting, r: Resolved) -> str:
 @config_group.command(name="list")
 @click.option("--area", type=click.Choice(list(AREAS)), default=None, help="Only this area.")
 @click.option("--changed", "only_changed", is_flag=True, help="Only settings not at their default.")
+@click.option(
+    "--suggested",
+    is_flag=True,
+    help="Only settings worth changing in this repository, with why and the command.",
+)
 @click.option("--all", "include_internal", is_flag=True, help="Include debug and test settings.")
 @click.option("--path", default=None, help=_PATH_HELP)
 @format_option()
 def config_list(
-    area: str | None, only_changed: bool, include_internal: bool, path: str | None, fmt: str
+    area: str | None,
+    only_changed: bool,
+    suggested: bool,
+    include_internal: bool,
+    path: str | None,
+    fmt: str,
 ) -> None:
     """List settings by area, with their values and where each came from."""
     from repowise.core.settings import all_settings, settings_in
 
     root = _repo(path, fmt)
+    if suggested:
+        _list_suggested(root, area, path, fmt)
+        return
     pool = settings_in(area) if area else all_settings()
     settings = tuple(s for s in pool if include_internal or not s.internal)
     rows = [
@@ -185,6 +198,54 @@ def _print_list(rows: list[tuple[Setting, Resolved]]) -> None:
         f"\n[dim]{changed} changed from the default. "
         "`repowise config explain <key>` says what one does.[/dim]"
     )
+
+
+def suggested_line(count: int, path: str | None = None) -> str | None:
+    """The one line doctor, status and init print about suggestions; ``None`` for none."""
+    if not count:
+        return None
+    from repowise.cli.ui.result_panels import SUGGESTED_STEP
+
+    noun = "option fits" if count == 1 else "options fit"
+    return f"{count} {noun} this repo: {SUGGESTED_STEP}{_path_flag(path)}"
+
+
+def suggested_for(root: Path) -> list[Any]:
+    """:func:`~repowise.core.settings.suggest.suggestions`, or none when they fail.
+
+    For commands whose job is something else: a suggestion is never worth
+    failing ``doctor``, ``status`` or ``init`` over.
+    """
+    try:
+        from repowise.core.settings.suggest import suggestions
+
+        return suggestions(root)
+    except Exception:
+        return []
+
+
+def _list_suggested(root: Path, area: str | None, path: str | None, fmt: str) -> None:
+    from repowise.core.settings import get
+    from repowise.core.settings.suggest import suggestions
+
+    found = [s for s in suggestions(root) if area is None or get(s.key).area == area]
+    if fmt == "json":
+        emit_json({"repo": str(root), "suggestions": [s.to_dict() for s in found]})
+        return
+    if not found:
+        console.print("[dim]Every setting fits this repository as it is.[/dim]")
+        return
+    for s in found:
+        command = s.command
+        if command.startswith("repowise config set "):
+            command += _path_flag(path)
+        console.print(
+            f"\n[bold]{s.key}[/bold]: {escape(_text(s.current))} -> {escape(_text(s.value))}"
+        )
+        console.print(f"  {escape(s.reason)}")
+        console.print(f"  [dim]{escape(s.impact)}[/dim]")
+        console.print(f"  Run: [bold]{escape(command)}[/bold]")
+    console.print("")
 
 
 @config_group.command(name="get")

@@ -217,7 +217,7 @@ def test_json_rows_carry_id_level_and_fix(tmp_path: Path, no_mcp_launch) -> None
         doctor_command, [str(_git_repo(tmp_path)), "--no-workspace", "--format", "json"]
     )
     payload = json.loads(result.output[result.output.index("{") :])
-    assert set(payload) == {"ok", "checks"}
+    assert set(payload) == {"ok", "checks", "suggestions"}
     for c in payload["checks"]:
         assert set(c) == {"id", "name", "ok", "level", "detail", "fix"}
     by_id = {c["id"]: c for c in payload["checks"]}

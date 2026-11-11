@@ -181,6 +181,7 @@ def show_completion(
         top_hotspot=top_hotspot,
         discovery_records=stood_out.discovery_records,
         setup=setup,
+        suggested=_suggested_count(repo_path),
     )
     console.print()
     print_finish_panel(
@@ -206,6 +207,13 @@ def show_completion(
     if verbose:
         _show_generation_checks(result)
     return Completion(steps, stood_out, facts.model_upgrade)
+
+
+def _suggested_count(repo_path: Path) -> int:
+    """Settings that fit this repo, less the embedder: the panel's search line names it."""
+    from repowise.cli.commands.config_cmd import suggested_for
+
+    return sum(1 for s in suggested_for(repo_path) if s.key != "embedder")
 
 
 def _top_hotspot(result: Any) -> tuple[str, int] | None:

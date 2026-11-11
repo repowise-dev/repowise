@@ -22,7 +22,7 @@ from repowise.core.analysis.decisions.policy import (
     DecisionPolicy,
     resolve_policy,
 )
-from repowise.core.settings.model import Resolved, Setting, Source
+from repowise.core.settings.model import Proposal, Resolved, Setting, Source
 
 AREA = "decisions"
 _WRITER = "repowise.core.analysis.decisions.policy_store:write_setting"
@@ -38,6 +38,22 @@ _SWITCHES: dict[str, str] = {
 }
 
 _UPDATE_REASON = "update"
+
+
+def _suggest_mode(facts: Any) -> Proposal | None:
+    """Read-only, when the team tracks decisions this checkout has switched off."""
+    count = facts.tracked_decisions
+    if count < 1 or facts.values.get("decisions.mode") != "off":
+        return None
+    noun = "decision" if count == 1 else "decisions"
+    return Proposal(
+        "read_only",
+        f"This repository tracks {count:,} team {noun} in .repowise/decisions.yaml, "
+        "but decisions are off here, so agents never see them.",
+        "Agents are shown the accepted decisions that govern the files they touch. "
+        "Nothing is captured and no model is called.",
+        "quality",
+    )
 
 
 def _top(key: str, type_: Any, default: Any, description: str, **kw: Any) -> Setting:
@@ -65,6 +81,7 @@ def _settings() -> tuple[Setting, ...]:
             on_invalid="fallback",
             fallback="read_only",
             parser="repowise.core.settings.parsers:decisions_mode",
+            suggest_when=_suggest_mode,
         ),
         _top(
             "preset",
