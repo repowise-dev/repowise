@@ -401,13 +401,11 @@ def test_cli_partial_writers_refuse_a_broken_config(repo):
         (["mode", "read-only"], "decisions.mode", "read_only"),
         (["preset", "local_only"], "decisions.preset", "local_only"),
         (["session-start", "--on"], "decisions.session_start", "true"),
+        (["discovery", "--max-sessions", "3"], "decisions.discovery.max_sessions", "3"),
     ],
 )
-def test_decision_config_aliases_mean_what_config_set_means(tmp_path, monkeypatch, alias, key, value):
-    """Same policy either way. `decision config` writes the whole block, as it
-    always has; `config set` writes only the key."""
-    from repowise.core.analysis.decisions.policy_store import load_policy
-
+def test_decision_config_aliases_write_what_config_set_writes(tmp_path, monkeypatch, alias, key, value):
+    """One write path: the two spellings leave the same bytes."""
     a, b = tmp_path / "a", tmp_path / "b"
     for root in (a, b):
         (root / ".repowise").mkdir(parents=True)
@@ -419,7 +417,8 @@ def test_decision_config_aliases_mean_what_config_set_means(tmp_path, monkeypatc
     assert first.exit_code == 0, first.output
     second = runner.invoke(cli, ["config", "set", key, value, "--path", str(b), "--format", "json"])
     assert second.exit_code == 0, second.output
-    assert load_policy(a).policy == load_policy(b).policy
+    path = Path(".repowise", "config.yaml")
+    assert (a / path).read_bytes() == (b / path).read_bytes()
 
 
 def test_every_writer_and_parser_imports_with_the_one_signature():

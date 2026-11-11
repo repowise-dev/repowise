@@ -131,6 +131,12 @@ def write_setting(repo_path: Path | str, key: str, value: Any) -> None:
     config = load_repo_config(repo_path)
     target = resolve_policy(config).policy.with_setting(name, value)
     edited = _settle_update_mining(config, _edited_config(config, name, value), target)
+    if value is not None:
+        # A value the file need not state (a switch at its mode's default) is
+        # written by leaving the key out, as the whole-block writer does.
+        bare = _settle_update_mining(config, _edited_config(config, name, None), target)
+        if resolve_policy(bare).policy == target:
+            edited = bare
     if edited == config:
         return
     if resolve_policy(edited).policy == target:
@@ -181,11 +187,22 @@ def _edited_config(config: dict[str, Any], name: str, value: Any) -> dict[str, A
     if parts[0] == "mode" and value == "full":
         value = None  # the default mode is written by leaving it out
     _set_path(block, parts, value)
+    _short_source(block, parts)
     if block:
         edited["decisions"] = block
     else:
         edited.pop("decisions", None)
     return edited
+
+
+def _short_source(block: dict[str, Any], parts: list[str]) -> None:
+    """``sources.<k>: {enabled: x}`` back to the short ``sources.<k>: x``."""
+    sources = block.get("sources")
+    if parts[0] != "sources" or len(parts) < 2 or not isinstance(sources, dict):
+        return
+    entry = sources.get(parts[1])
+    if isinstance(entry, dict) and set(entry) == {"enabled"}:
+        sources[parts[1]] = entry["enabled"]
 
 
 def _set_path(node: dict[str, Any], parts: list[str], value: Any) -> None:
