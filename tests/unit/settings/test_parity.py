@@ -488,7 +488,11 @@ def test_capped_env_numbers_clamp_like_their_readers(monkeypatch, raw):
 
 def test_full_rescore_interval_reads_non_finite_values_the_registry_rejects(monkeypatch):
     """``max(0.0, float(raw))``: inf never rescores and nan reads as 0."""
+    from repowise.cli.commands.update_cmd import persistence
     from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
+
+    # The reader warns once per process; keep that flag as other tests expect it.
+    monkeypatch.setattr(persistence, "_FULL_RESCORE_WARNING_SENT", False)
 
     name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
     for raw, real in (("inf", float("inf")), ("nan", 0.0)):
@@ -499,7 +503,11 @@ def test_full_rescore_interval_reads_non_finite_values_the_registry_rejects(monk
 
 @pytest.mark.parametrize("raw", ["3", "-2", "0", "x"])
 def test_full_rescore_interval_clamps_at_zero(monkeypatch, raw):
+    from repowise.cli.commands.update_cmd import persistence
     from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
+
+    # The reader warns once per process; keep that flag as other tests expect it.
+    monkeypatch.setattr(persistence, "_FULL_RESCORE_WARNING_SENT", False)
 
     name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
     monkeypatch.setenv(name, raw)
