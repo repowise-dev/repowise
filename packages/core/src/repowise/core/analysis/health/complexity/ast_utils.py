@@ -762,7 +762,7 @@ def _count_parameters(fn_node: Node) -> int:
         argument_patterns = fn_node.children[1].children[1].children
 
         # loops over all the parameters and add one for every parameter, ignoring the punctuation like commas
-        return sum(1 for child in fn_node.children[1].children[1].children if child.type in VALID_PATTERN_TYPES)
+        return sum(1 for child in argument_patterns if child.type in VALID_PATTERN_TYPES)
 
 
     elif fn_node.type == "member_defn":  # member definition for OOP in F#, that can be tupled or curried
