@@ -69,6 +69,8 @@ class _Gate:
     remedy: str | None = None
     #: The repository asks for a person on every new decision.
     person_only: bool = False
+    #: Records may go up; false in ``read_only``, which only brings them down.
+    sends: bool = True
 
 
 def _gate(repo_path: Path, *, network: bool = True) -> _Gate:
@@ -83,7 +85,7 @@ def _gate(repo_path: Path, *, network: bool = True) -> _Gate:
         policy = load_policy(repo_path).policy
     except Exception:
         return _Gate(blocker="The decisions config could not be read.", code="config_unreadable")
-    if not policy.enabled:
+    if not policy.delivers:
         return _Gate(blocker="Decisions are off for this repo.", code="decisions_off")
     if not policy.sync:
         return _Gate(
@@ -91,7 +93,7 @@ def _gate(repo_path: Path, *, network: bool = True) -> _Gate:
             code="sync_off",
             remedy="Turn it on with `repowise decision config sync --on`.",
         )
-    gate = _Gate(person_only=policy.require_approval)
+    gate = _Gate(person_only=policy.require_approval, sends=policy.sends)
     if not network:
         return gate
     if os.environ.get("REPOWISE_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -328,7 +330,9 @@ def _sync_once(repo_path: Path, gate: _Gate) -> str | None:
         return f"Decision sync skipped: {snapshot.error}"
     sent = _load_sent(repo_path)
 
-    items = run_async(_in_store(repo_path, lambda s, rid: _collect(s, rid, sent)))
+    items = (
+        run_async(_in_store(repo_path, lambda s, rid: _collect(s, rid, sent))) if gate.sends else []
+    )
     sendable = [i for i in items if i.result == "would_push"][:_UPDATE_PUSH_MAX]
     pushed = 0
     stopped = None
@@ -403,6 +407,13 @@ def push_command(path: str | None, dry_run: bool, fmt: str) -> None:
         gate = _gate(repo_path)
         if gate.blocker:
             _refuse_gate(gate, fmt)
+        if not gate.sends:
+            emit_refusal(
+                "read_only",
+                "Decisions are read-only for this repo: they come down, nothing goes up.",
+                fmt,
+                remedy="Full capture: `repowise decision config mode full`.",
+            )
     if dry_run or not sendable:
         # A record skipped is skipped on every run until it changes, so a run
         # with nothing else to send reports the reasons and is not a failure.

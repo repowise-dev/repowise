@@ -176,3 +176,16 @@ def test_the_startup_line_is_none_for_an_unreadable_store(tmp_path):
     (tmp_path / ".repowise" / "wiki.db").write_bytes(b"not a database")
 
     assert decisions_line(str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_no_pointer_when_decisions_are_off(session, factory, repo_id, tmp_path):
+    await _accept(session, repo_id, "Tokens expire after one hour", [_FILE])
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: 'off'\n", encoding="utf-8"
+    )
+    ctx = SimpleNamespace(session_factory=factory, alias=None, path=tmp_path)
+
+    assert await why_pointer(ctx, [_FILE]) is None
+    assert decisions_line(str(tmp_path)) is None

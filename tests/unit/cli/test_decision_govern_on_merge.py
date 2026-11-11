@@ -292,3 +292,16 @@ def test_a_dismissed_agent_decision_stays_dismissed_when_it_lands(repo: Path) ->
     _squash(repo)
 
     assert accept_landed_decisions(repo) == 0
+
+
+@pytest.mark.parametrize("mode", ["read-only", "off"])
+def test_a_landing_grants_nothing_outside_full(repo: Path, mode: str) -> None:
+    decision_id, _ = _branch_decision(repo)
+    _squash(repo)
+    assert _run(repo, "config", "mode", mode).exit_code == 0
+
+    assert accept_landed_decisions(repo) == 0
+    assert _signature(repo, decision_id) is None
+
+    assert _run(repo, "config", "mode", "full").exit_code == 0
+    assert accept_landed_decisions(repo) == 1

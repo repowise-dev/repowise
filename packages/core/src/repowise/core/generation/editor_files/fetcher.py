@@ -129,8 +129,11 @@ class EditorFileDataFetcher:
         stored_commit = ((repo.head_commit or "")[:7]) if repo else ""
         # The date likewise is the index's sync time, never the render time.
         synced_at = crud.index_synced_at(repo)
+        from repowise.core.analysis.decisions.policy_store import layer_mode
+
+        mode = layer_mode(self._repo_path)
         decisions_in_force, pinned = (
-            await self._get_decisions() if "decisions" in s else (False, [])
+            await self._get_decisions() if "decisions" in s and mode != "off" else (False, [])
         )
 
         return EditorFileData(
@@ -146,6 +149,7 @@ class EditorFileDataFetcher:
             hotspots=await self._get_hotspots() if "hotspots" in s else [],
             decisions=pinned,
             decisions_in_force=decisions_in_force,
+            record_decisions=mode == "full",
             build_commands=detect_build_commands(self._repo_path) if "commands" in s else {},
             avg_confidence=await self._get_avg_confidence(),
             code_health=(

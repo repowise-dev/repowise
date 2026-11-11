@@ -766,7 +766,7 @@ def _render_status(report: dict) -> None:
     counts = Table(title="\nRecords", show_header=False, box=None, pad_edge=False, show_edge=False)
     counts.add_column("Metric", style="cyan")
     counts.add_column("Value", justify="right")
-    counts.add_row("Governing", str(lanes["governing"]))
+    counts.add_row("In force", str(lanes["governing"]))
     counts.add_row("Active", str(lanes["active"]))
     counts.add_row("Needs review", str(lanes["needs_review"]))
     counts.add_row("Uncheckable", str(lanes["uncheckable"]))

@@ -9,6 +9,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _is_path,
     _is_workspace_mode,
+    _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
     resolve_enum_argument,
@@ -69,6 +70,8 @@ async def get_why(
     ]
     if reference:
         id, repo = _reference_coordinates(reference, id, repo)
+    if await _layer_off(repo):
+        return dict(_OFF)
     result = await _dispatch(query, targets, repo, id, reference, history)
     attach_ignored_arguments(result, ignored)
     return result
@@ -76,6 +79,22 @@ async def get_why(
 
 #: ``include`` blocks; path mode serves its constraints alone without one.
 _INCLUDE = ("history",)
+
+#: The whole answer under ``decisions.mode: off``.
+_OFF = {"decisions": "off", "note": "Decisions are off for this repository."}
+
+
+async def _layer_off(repo: str | None) -> bool:
+    """Whether ``decisions.mode`` is off for *repo*. ``repo="all"`` is per repository."""
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    if repo == "all":
+        return False
+    try:
+        ctx = await _resolve_repo_context(repo)
+    except Exception:  # the mode resolves the repo again and reports it
+        return False
+    return layer_mode(getattr(ctx, "path", None)) == "off"
 
 
 async def _dispatch(

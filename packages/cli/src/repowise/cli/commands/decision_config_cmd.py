@@ -16,6 +16,7 @@ from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.analysis.decisions.policy import (
     DISCOVERY_BOUNDS,
+    MODES,
     PRESET_NAMES,
     SOURCE_SPECS,
     DecisionPolicy,
@@ -121,10 +122,12 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         )
         return
 
-    header = "on" if policy.enabled else "off"
+    header = "on" if policy.captures else "off"
     llm = "on" if policy.llm else "off"
+    mode = policy.mode.replace("_", "-")
     console.print(
-        f"\n  Decision capture [bold]{header}[/bold]  ·  "
+        f"\n  Mode [bold]{mode}[/bold]  ·  "
+        f"Decision capture [bold]{header}[/bold]  ·  "
         f"LLM extraction [bold]{llm}[/bold]  ·  preset [bold]{policy.preset_name()}[/bold]"
     )
     if not provider_available:
@@ -182,10 +185,10 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [dim]Capture prompt: on. After a commit that states a choice, the "
             "agent is asked once a session to record it.[/dim]"
         )
-        if not policy.enabled:
+        if not policy.commit_prompt:
             console.print(
-                "  [yellow]  ...but decision capture is off for this repository, "
-                "so it stays silent. `decision config enable` to use it.[/yellow]"
+                "  [yellow]  ...but decisions are off or read-only for this repository, "
+                "so it stays silent.[/yellow]"
             )
         elif not claude_code_capture_hook_installed():
             if not _claude_code_settings_path().is_file():
@@ -257,7 +260,7 @@ def _switch_changes(
 
 
 def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]:
-    changes = _switch_changes(before, after, ("enabled", "llm"))
+    changes = _switch_changes(before, after, ("mode", "enabled", "llm"))
     for key in _TOGGLABLE:
         old, new = before.sources.get(key), after.sources.get(key)
         if old == new:
@@ -350,10 +353,32 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             update_mining=current.update_mining,
             session_start=current.session_start,
             upkeep_prompt=current.upkeep_prompt,
+            mode=current.mode,
         ),
         fmt,
         dry_run,
     )
+
+
+@config_group.command("mode")
+@click.argument("name", type=click.Choice([m.replace("_", "-") for m in MODES]))
+@click.argument("path", required=False, default=None)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_mode(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
+    """Set the one switch for the decisions layer: off, read-only or full.
+
+    full (the default) records and shows decisions. read-only shows the
+    decisions this repository already holds and records nothing: no mining,
+    no prompt to record, no agent putting a decision in force, nothing sent
+    to repowise.dev. off shows nothing and records nothing. Setting a mode
+    resets the finer switches to its defaults; set one afterwards to differ.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_mode(name.replace("-", "_")), fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------

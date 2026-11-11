@@ -1352,3 +1352,39 @@ def test_an_edit_to_a_governed_file_gets_exactly_one_short_notice(tmp_path):
         "[repowise] src/core/auth.py is governed by a standing decision: Use JWT auth "
         "because session cookies broke the mobile clients."
     ]
+
+
+# ---------------------------------------------------------------------------
+# decisions.mode
+# ---------------------------------------------------------------------------
+
+
+def _set_mode(root: Path, mode: str, extra: str = "") -> None:
+    (root / ".repowise" / "config.yaml").write_text(
+        f"decisions:\n  mode: {mode}\n{extra}", encoding="utf-8"
+    )
+
+
+async def test_off_silences_the_edit_notice(tmp_path):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _set_mode(tmp_path, "off")
+
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
+
+
+async def test_read_only_keeps_the_edit_notice(tmp_path):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _set_mode(tmp_path, "read_only")
+
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {})
+
+    assert notice is not None and "Use JWT auth" in notice
+
+
+@pytest.mark.parametrize(("mode", "on"), [("off", False), ("read_only", True), ("full", True)])
+def test_session_start_follows_the_mode(tmp_path, monkeypatch, mode, on):
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", _SESSION_START_ENABLED)
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    _set_mode(tmp_path, mode, "  session_start: true\n")
+
+    assert decision_inject._session_start_enabled(tmp_path) is on

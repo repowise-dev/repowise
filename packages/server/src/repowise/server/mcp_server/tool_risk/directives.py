@@ -409,7 +409,11 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
     """Governing decisions over *changed_files* that are stale, superseded, or
     contradicted. Bounded to 5 entries. Never raises (returns what it has).
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
     governance_risk: list[dict[str, Any]] = []
+    if layer_mode(getattr(ctx, "path", None)) == "off":
+        return governance_risk
     try:
         async with get_session(ctx.session_factory) as _gr_session:
             _gr_repo = await _get_repo(_gr_session)

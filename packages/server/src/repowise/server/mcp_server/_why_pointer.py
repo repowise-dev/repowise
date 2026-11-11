@@ -59,9 +59,11 @@ async def why_pointer(ctx: Any, paths: Iterable[str]) -> str | None:
     One query when no accepted record names a target, the usual case; the
     governing read (currency per record) runs only when one does.
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
     files = list(dict.fromkeys(str(p).split("::", 1)[0] for p in paths if p))
     session_factory = getattr(ctx, "session_factory", None)
-    if not files or session_factory is None:
+    if not files or session_factory is None or layer_mode(getattr(ctx, "path", None)) == "off":
         return None
     try:
         async with get_session(session_factory) as session:
@@ -141,9 +143,11 @@ def decisions_line(repo_path: str | None) -> str | None:
     once the server runs. ``None`` when there is no index or it cannot be read,
     so a store error never reads as "no decisions".
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
     if not repo_path or get_configured_db_url() is not None:
         return None
-    if not get_repo_db_path(repo_path).exists():
+    if layer_mode(repo_path) == "off" or not get_repo_db_path(repo_path).exists():
         return None
     if _loop_running():
         return None  # built from async code: no blocking read on its loop

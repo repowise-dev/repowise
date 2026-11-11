@@ -413,3 +413,47 @@ def test_upkeep_prompt_writes_and_installs_its_shell_entry(repo: Path, monkeypat
     assert result.exit_code == 0, result.output
     assert "upkeep_prompt" not in _config(repo)["decisions"]
     assert calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("name", "stored"), [("off", "off"), ("read-only", "read_only")])
+def test_mode_writes_one_key(repo: Path, name: str, stored: str):
+    result = _run("decision", "config", "mode", name, str(repo), "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    block = _config(repo)["decisions"]
+    assert block["mode"] == stored
+    assert "capture_prompt" not in block and "agent_acceptance" not in block
+    assert json.loads(result.output)["policy"]["mode"] == stored
+
+
+def test_mode_full_leaves_no_mode_key_and_resets_switches(repo: Path):
+    _write(repo, "decisions:\n  mode: read_only\n  upkeep_prompt: true\n")
+
+    result = _run("decision", "config", "mode", "full", str(repo))
+
+    assert result.exit_code == 0, result.output
+    block = _config(repo)["decisions"]
+    assert "mode" not in block
+    assert "upkeep_prompt" not in block
+
+
+def test_a_preset_keeps_the_mode(repo: Path):
+    _write(repo, "decisions:\n  mode: read_only\n")
+
+    result = _run("decision", "config", "preset", "balanced", str(repo))
+
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["mode"] == "read_only"
+
+
+def test_mode_dry_run_names_the_change(repo: Path):
+    result = _run("decision", "config", "mode", "off", str(repo), "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "mode: full -> off" in result.output
+    assert not (repo / ".repowise" / "config.yaml").exists()

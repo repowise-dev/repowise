@@ -143,6 +143,8 @@ class EditorFileData:
     decisions: list[DecisionSummary] = field(default_factory=list)
     #: Whether any decision is in force, which is what earns the pointer line.
     decisions_in_force: bool = False
+    #: Whether agents are asked to record decisions here (``decisions.mode: full``).
+    record_decisions: bool = True
     build_commands: dict[str, str] = field(default_factory=dict)
     avg_confidence: float = 0.0
     code_health: CodeHealthBlock | None = None

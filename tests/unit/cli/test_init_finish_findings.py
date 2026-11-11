@@ -296,3 +296,27 @@ def test_a_failed_candidate_count_drops_the_row_and_is_null(
     assert completion.stood_out.as_summary()["decision_candidates"] is None
     # Only an error a store cannot explain is logged as a bug.
     assert logged == (["decision_candidate_count_failed"] if logged_as_bug else [])
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("'off'", {}),
+        ("read_only", {"decision_candidates": 3}),
+        ("full", {"decision_candidates": 3, "discovery_records": 2}),
+    ],
+)
+def test_the_mode_decides_the_decisions_row_and_the_discover_step(
+    monkeypatch, tmp_path, mode, expected
+):
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        f"decisions:\n  mode: {mode}\n", encoding="utf-8"
+    )
+
+    async def counts(_repo):
+        return {"decision_candidates": 3, "discovery_records": 2}
+
+    monkeypatch.setattr(reporting, "_count_decisions", counts)
+
+    assert reporting._decision_counts(tmp_path) == expected

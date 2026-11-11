@@ -101,8 +101,8 @@ def _notice(tool_input: dict, tool_output: object, cwd: str, session_id: str) ->
         return None
     repo_path, policy, sha, message = commit
     lines = [
-        _capture_prompt(repo_path, session_id, sha, message) if _capture_on(policy) else None,
-        _upkeep_prompt(repo_path, session_id, sha) if policy.upkeep_prompt else None,
+        _capture_prompt(repo_path, session_id, sha, message) if policy.commit_prompt else None,
+        _upkeep_prompt(repo_path, session_id, sha) if policy.commit_upkeep else None,
     ]
     return "\n".join(line for line in lines if line) or None
 
@@ -132,7 +132,7 @@ def _fresh_commit(
     # Checked before any git call: an opted-out repository should pay one
     # config read and nothing else.
     policy = _policy(repo_path)
-    if not (_capture_on(policy) or policy.upkeep_prompt):
+    if not (policy.commit_prompt or policy.commit_upkeep):
         return None
     # ``.repowise`` marks the indexed repository, not the git one. This tree
     # nests other repositories inside it, and a commit made in one of those
@@ -293,17 +293,6 @@ def _policy(repo_path: Path):
     from repowise.core.analysis.decisions.policy_store import load_policy
 
     return load_policy(repo_path).policy
-
-
-def _capture_on(policy) -> bool:
-    """Whether the capture prompt is on. On is the default.
-
-    ``decisions.enabled`` gates it too. That flag is the master switch for
-    capture and ``preset off`` is how a repository says it wants none, so a
-    prompt that survived it would be the one part of the layer nobody could
-    turn off without knowing this switch by name.
-    """
-    return bool(policy.enabled and policy.capture_prompt)
 
 
 def _git_root(path: str) -> str | None:

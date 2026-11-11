@@ -810,3 +810,20 @@ async def test_model_written_module_keeps_its_opening_sentence(session, repo, tm
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.key_modules[0].purpose == "billing covers 6 python files, exposing 5 public symbols"
+
+
+@pytest.mark.parametrize(
+    ("mode", "pointer", "record"),
+    [("'off'", False, False), ("read_only", True, False), ("full", True, True)],
+)
+async def test_the_mode_decides_the_pointer_and_the_record_line(
+    session, repo, tmp_path, mode, pointer, record
+):
+    await _add_decision(session, repo.id, "Use JWT", status="active")
+    await session.commit()
+    _write_config(tmp_path, f"decisions:\n  mode: {mode}\n")
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.decisions_in_force is pointer
+    assert data.record_decisions is record

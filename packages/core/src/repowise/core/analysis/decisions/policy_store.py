@@ -21,7 +21,7 @@ from .policy import (
     resolve_policy,
 )
 
-__all__ = ["PolicyConflictError", "load_policy", "policy_etag", "write_policy"]
+__all__ = ["PolicyConflictError", "layer_mode", "load_policy", "policy_etag", "write_policy"]
 
 
 class PolicyConflictError(RuntimeError):
@@ -31,6 +31,22 @@ class PolicyConflictError(RuntimeError):
 def load_policy(repo_path: Path | str) -> PolicyResolution:
     """Resolve the policy for a repo, warnings included."""
     return resolve_policy(load_repo_config(repo_path))
+
+
+def layer_mode(repo_path: Path | str | None) -> str:
+    """``decisions.mode`` for *repo_path*: ``off``, ``read_only`` or ``full``.
+
+    For the read surfaces (hooks, MCP tools, generated agent files), which must
+    never fail over a setting: no path or an unreadable config reads as
+    ``full``, the behaviour of a repository that never set one, and
+    ``decision config show`` reports the problem.
+    """
+    if not repo_path:
+        return "full"
+    try:
+        return load_policy(repo_path).policy.mode
+    except Exception:
+        return "full"
 
 
 def policy_etag(policy: DecisionPolicy) -> str:
