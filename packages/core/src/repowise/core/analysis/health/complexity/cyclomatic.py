@@ -90,6 +90,9 @@ _FLAT_BRANCH_KINDS = frozenset(
         "guard",
         # Swift ``for x in xs where c`` / ``catch E where c``.
         "where_clause",
+        # Swift ``guard c else { return }``: an early exit, the code after it
+        # stays at the same level.
+        "guard_statement",
         "if_modifier",
         "unless_modifier",
         "while_modifier",

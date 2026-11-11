@@ -17,7 +17,8 @@ languages that don't expose class nodes.
 One part of a split class is not judged as the whole: a C# ``partial``
 class with hand-written parts in other files, or a Python ``*Mixin`` without
 ``__init__``, or a Ruby ``module`` without ``initialize`` (a mixin, concern or
-``module_function`` bag). A ``partial`` class alone in the repo (its other part is source
+``module_function`` bag). Nor is a Rust ``impl Trait for T``: the trait fixes
+its method set. A ``partial`` class alone in the repo (its other part is source
 generated) is the whole hand-written class and is still judged.
 """
 
@@ -45,8 +46,9 @@ def _is_stateless_module(cls: ClassComplexity) -> bool:
 
 def _not_judged(cls: ClassComplexity, ctx: FileContext) -> bool:
     """A split partial part, a stateless mixin or a stateless Ruby module
-    already is the per-concern split this finding asks for."""
-    if cls.name in ctx.split_partial_types:
+    already is the per-concern split this finding asks for; a trait impl's
+    methods are the trait's."""
+    if cls.contract_impl or cls.name in ctx.split_partial_types:
         return True
     if ctx.language == "python":
         return _is_stateless_mixin(cls)
