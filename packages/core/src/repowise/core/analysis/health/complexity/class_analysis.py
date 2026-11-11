@@ -83,17 +83,35 @@ def cohesion_applies(file_path: str, language: str) -> bool:
     return not (implicit and is_test_related_path(file_path, language))
 
 
+# F# type definitions keep their name on a ``type_name`` child rather than a
+# ``name`` field, so ``_class_name`` reads it specially (mirrors ``_FSHARP.class_kinds``).
+_FSHARP_TYPE_KINDS = frozenset(
+    {"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}
+)
+
+
 def _class_name(node: Node) -> str:
     """Best-effort class/impl name.
 
     Tries the ``name`` field (most class grammars), then ``type`` (Rust's
-    ``impl T`` exposes the implemented type there), then the generic
-    identifier scan.
+    ``impl T`` exposes the implemented type there), then F#'s ``type_name``
+    child, then the generic identifier scan.
     """
     for field_name in ("name", "type"):
         child = node.child_by_field_name(field_name)
         if child is not None and child.text is not None:
             return child.text.decode("utf-8", errors="replace")
+    # F# record / union / enum / class types carry no ``name`` field: the name
+    # sits under a ``type_name`` child node (``type CharList = ...`` →
+    # ``CharList``). Read its leading identifier, skipping any generic
+    # parameters, so the finding names the type instead of ``<anonymous>``.
+    if node.type in _FSHARP_TYPE_KINDS:
+        for child in node.children:
+            if child.type != "type_name":
+                continue
+            for leaf in child.children:
+                if leaf.type == "identifier" and leaf.text is not None:
+                    return leaf.text.decode("utf-8", errors="replace")
     return _find_name(node)
 
 

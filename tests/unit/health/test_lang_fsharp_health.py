@@ -89,10 +89,26 @@ def test_parameters() -> None:
     assert params == {"getCookiesAndManageCookieContainer": 6, "NormalizeVersion": 1}
 
 
-@pytest.mark.skip(reason="an F# type is named <anonymous>: its type_name is not read")
 def test_type_name() -> None:
     [cls] = _walk(_HTML_PARSER).classes
     assert cls.name == "CharList"
+
+
+@pytest.mark.parametrize(
+    ("type_defn", "expected"),
+    [
+        ("type CharList =\n    { mutable Contents: int }", "CharList"),  # record
+        ("type Counter() =\n    member x.M() = 1", "Counter"),  # class
+        ("type Color =\n    | Red\n    | Green", "Color"),  # union
+        ("type Weekday =\n    | Mon = 1\n    | Tue = 2", "Weekday"),  # enum
+    ],
+)
+def test_type_kind_names(type_defn: str, expected: str) -> None:
+    # A trailing module-level function keeps ``_walk`` from skipping the
+    # member-less kinds (it skips a file with no functions).
+    source = f"module M\n{type_defn}\n\nlet f x = x\n"
+    [cls] = _walk(source).classes
+    assert cls.name == expected
 
 
 @pytest.mark.skip(reason="elif_expression is not a branch kind, so else if adds no CCN")
