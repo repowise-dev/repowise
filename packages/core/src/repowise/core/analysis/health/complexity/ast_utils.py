@@ -764,16 +764,22 @@ def _count_parameters(fn_node: Node) -> int:
         # nodes but carry no arity.
         if child.type in ("keyword_separator", "positional_separator") or is_rest_parameter(child):
             continue
-        if child.type == "declArg":
-            # Pascal groups same-typed parameters under one ``declArg``
-            # (``A, B, C: Boolean``) -- one node, three names -- so counting
-            # the node itself would undercount; count its direct
-            # ``identifier`` children instead (the trailing ``type`` child
-            # is a different node type and never matches).
-            count += sum(1 for gc in child.children if gc.type == "identifier")
-            continue
-        count += 1
+        count += param_arity(child)
     return count
+
+
+def param_arity(param: Node) -> int:
+    """Names one parameter node declares. Pascal (``A, B, C: Boolean``) and Go
+    (``a, b int``) declare several same-typed names in one node."""
+    if param.type == "declArg":
+        # The trailing ``type`` child is a different node type and never matches.
+        return sum(1 for c in param.children if c.type == "identifier")
+    if param.type == "parameter_declaration":
+        # Go's grouped names; C and C++ declarations carry no ``name`` field.
+        return max(1, len(param.children_by_field_name("name")))
+    # Other grammars give one parameter several ``name`` fields (a Swift
+    # argument label and its local name): still one parameter.
+    return 1
 
 
 def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:
