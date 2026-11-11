@@ -101,7 +101,9 @@ class SkippedSourceFile(NamedTuple):
 
     path: str
     size_kb: int
-    reason: str  # "over_max_size" | "minified" | "unreadable" | "extracted_over_max_size"
+    # "over_max_size" | "minified" | "unreadable" | "extracted_over_max_size"
+    # | "no_parser_over_max_size"
+    reason: str
 
 
 class _DirIgnore(NamedTuple):
@@ -157,23 +159,24 @@ class TraversalStats:
     skipped_source_files: list[SkippedSourceFile] = field(default_factory=list)
     """Parseable source files dropped on size — the subset worth naming.
 
-    Mirrors :attr:`nested_repo_paths`: capped at
-    :data:`_MAX_SKIPPED_SOURCE_PATHS` so a pathological tree cannot grow this
-    without bound, while ``skipped_oversized`` stays exact.
+    Uncapped, like :attr:`generated_files`: one short record per dropped file,
+    and the skipped-files report has to name every one of them.
     """
-    skipped_source_files_truncated: bool = False
-    """True once the cap above dropped a name, so a reader can say "at least"."""
+    oversized_unparsed_files: list[SkippedSourceFile] = field(default_factory=list)
+    """Files with no parser dropped on size (fixtures, dumps, media).
+
+    Kept off :attr:`skipped_source_files`: those are named on the console and
+    read by dead-code analysis, and a 40 MB fixture belongs in neither. Only
+    the skipped-files report lists these.
+    """
     unknown_language_files: list[SkippedSourceFile] = field(default_factory=list)
     """Reference-bearing files dropped for having no language spec.
 
-    Kept apart from :attr:`skipped_source_files` rather than folded into it,
-    for two reasons that both cut the same way. That list is capped at 50 and
-    these run to hundreds per repo, so sharing it would truncate the size-skip
-    records instantly and destroy the signal they exist for; and it is rendered
-    to the user file by file during ingestion, where naming every unparsed
-    `.rst` would bury the one dropped entry point it was built to surface.
-    So this list is fed to the dead-code analyzer and deliberately not to that
-    report.
+    Kept apart from :attr:`skipped_source_files` rather than folded into it:
+    that list is rendered to the user file by file during ingestion, where
+    naming every unparsed `.rst` would bury the one dropped entry point it was
+    built to surface. So this list is fed to the dead-code analyzer and
+    deliberately not to that report.
     """
     unknown_language_files_truncated: bool = False
     """True once the cap above dropped a name, so a reader can say "at least"."""
@@ -210,9 +213,6 @@ REPOWISE_IGNORE_FILENAME = ".repowiseIgnore"
 
 #: Cap on the nested-repo names retained in :class:`TraversalStats`.
 _MAX_NESTED_REPO_PATHS = 50
-
-#: Cap on the skipped-source records retained in :class:`TraversalStats`.
-_MAX_SKIPPED_SOURCE_PATHS = 50
 
 #: Cap on the unknown-language records retained in :class:`TraversalStats`.
 #: Larger than the one above because this list is machine-read, not printed.
@@ -801,12 +801,18 @@ class FileTraverser:
             return False
         with self._count_lock:
             self.stats.skipped_oversized += 1
-            if reason.is_source and not self._record_skipped_source(
-                self.stats.skipped_source_files,
-                _MAX_SKIPPED_SOURCE_PATHS,
-                SkippedSourceFile(rel_str, size_bytes // 1024, reason.reason),
-            ):
-                self.stats.skipped_source_files_truncated = True
+            records = (
+                self.stats.skipped_source_files
+                if reason.is_source
+                else self.stats.oversized_unparsed_files
+            )
+            records.append(
+                SkippedSourceFile(
+                    rel_str,
+                    size_bytes // 1024,
+                    reason.reason if reason.is_source else "no_parser_over_max_size",
+                )
+            )
         log.debug(
             "Skipping oversized file",
             path=rel_str,

@@ -193,19 +193,35 @@ async def _record_structural_episodes(
         logger.debug("structural_episodes_skipped", exc_info=True)
 
 
-def _skipped_source_line(skipped_source: Any) -> str:
-    """One "Not indexed" line naming a skipped file and why."""
+def _skipped_reason(skipped_source: Any) -> str:
+    """Why a skipped file was left out, in words."""
     # Local import: this module defers its ingestion imports so the phase
     # can be loaded without building the language registry.
     from repowise.core.ingestion.traverser import _SOURCE_MAX_FILE_SIZE_BYTES
 
     ceiling_kb = _SOURCE_MAX_FILE_SIZE_BYTES // 1024
-    detail = {
+    return {
         "minified": "looks minified",
         "unreadable": "could not be read",
         "extracted_over_max_size": f"extracted Markdown over the {ceiling_kb:,} KB limit",
+        "no_parser_over_max_size": "over the size limit for files without a parser",
     }.get(skipped_source.reason, f"over the {ceiling_kb:,} KB limit")
-    return f"  Not indexed: {skipped_source.path} ({skipped_source.size_kb:,} KB, {detail})"
+
+
+def _skipped_source_line(skipped_source: Any) -> str:
+    """One "Not indexed" line naming a skipped file and why."""
+    return (
+        f"  Not indexed: {skipped_source.path} "
+        f"({skipped_source.size_kb:,} KB, {_skipped_reason(skipped_source)})"
+    )
+
+
+# Source files named on the console before the rest are left to the report.
+_SKIPPED_SOURCES_SHOWN = 20
+
+#: Every file left out on size or as generated, one per line, rewritten by each
+#: full walk. The console names a few; this names them all.
+SKIPPED_FILES_REPORT = Path(".repowise") / "skipped_files.txt"
 
 
 def _emit_skipped_sources(progress: ProgressCallback | None, skipped_sources: list[Any]) -> None:
@@ -213,6 +229,36 @@ def _emit_skipped_sources(progress: ProgressCallback | None, skipped_sources: li
         return
     for skipped_source in skipped_sources:
         progress.on_message("notice", _skipped_source_line(skipped_source))
+
+
+def _skipped_report_rows(stats: Any) -> list[str]:
+    rows = [
+        f"{record.path}\t{record.size_kb:,} KB\t{_skipped_reason(record)}"
+        for record in (
+            *getattr(stats, "skipped_source_files", ()),
+            *getattr(stats, "oversized_unparsed_files", ()),
+        )
+    ]
+    rows.extend(f"{path}\t\tgenerated" for path in getattr(stats, "generated_files", ()))
+    return sorted(rows)
+
+
+def write_skipped_files_report(repo_path: Path, stats: Any) -> None:
+    """Write :data:`SKIPPED_FILES_REPORT`, or remove a stale one when nothing was skipped.
+
+    Best effort: a read-only ``.repowise`` costs the report, never the run.
+    """
+    target = Path(repo_path) / SKIPPED_FILES_REPORT
+    rows = _skipped_report_rows(stats)
+    try:
+        if not rows:
+            target.unlink(missing_ok=True)
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        header = "# Files repowise did not index: path, size, reason (tab-separated)"
+        target.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+    except OSError:
+        logger.warning("skipped_files_report_not_written", path=str(target), exc_info=True)
 
 
 def _emit_traversal_summary(
@@ -240,9 +286,13 @@ def _emit_traversal_summary(
     # with its CLI, gateway and web server missing and nothing saying so
     # (#1237). Blobs stay in the aggregate — only files with a real parser
     # earn a name here.
-    _emit_skipped_sources(progress, getattr(stats, "skipped_source_files", []))
-    if getattr(stats, "skipped_source_files_truncated", False):
-        progress.on_message("notice", "  ...and more source files skipped on size")
+    sources = getattr(stats, "skipped_source_files", [])
+    _emit_skipped_sources(progress, sources[:_SKIPPED_SOURCES_SHOWN])
+    if _skipped_report_rows(stats):
+        more = len(sources) - _SKIPPED_SOURCES_SHOWN
+        lead = f"...and {more:,} more source files. " if more > 0 else ""
+        report = SKIPPED_FILES_REPORT.as_posix()
+        progress.on_message("notice", f"  {lead}Every skipped file and why: {report}")
 
     if stats.lang_counts:
         ranked = sorted(stats.lang_counts.items(), key=lambda item: -item[1])
@@ -423,14 +473,10 @@ def drop_skipped_documents(file_infos: list[Any], stats: Any, skipped: list[Any]
     """
     if not skipped:
         return
-    from repowise.core.ingestion.traverser import _MAX_SKIPPED_SOURCE_PATHS
-
     dropped = {record.path for record in skipped}
     file_infos[:] = [fi for fi in file_infos if fi.path not in dropped]
     if stats is not None:
-        room = max(0, _MAX_SKIPPED_SOURCE_PATHS - len(stats.skipped_source_files))
-        stats.skipped_source_files.extend(skipped[:room])
-        stats.skipped_source_files_truncated |= len(skipped) > room
+        stats.skipped_source_files.extend(skipped)
 
 
 def _prepare_document_sources(
@@ -1022,6 +1068,8 @@ async def _run_ingestion(
         warn_on_fallback=True,
         stats=traverser.stats,
     )
+    # After the parse stage, which adds the documents it drops.
+    write_skipped_files_report(repo_path, traverser.stats)
     graph_builder = _new_graph_builder(repo_path, traverser, parsed_files, source_map, walk)
     _phase_done(progress, "parse")
 

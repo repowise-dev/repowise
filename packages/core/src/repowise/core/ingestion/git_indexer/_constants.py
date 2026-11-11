@@ -53,21 +53,17 @@ _MIN_MESSAGE_LEN = 12
 # stored as commit rows. Every default ``commit_limit`` reads this one value.
 _DEFAULT_COMMIT_LIMIT: int = 5000
 
-#: The deepest window ``commit_limit`` may ask for; a larger value reads as this.
-MAX_COMMIT_LIMIT: int = 10000
-
-
 def parse_commit_limit(raw: object) -> int:
     """A configured ``commit_limit`` as the window it gives, or ``ValueError``.
 
-    Above :data:`MAX_COMMIT_LIMIT` reads as the maximum, as ``init`` has always
-    clamped it; anything but a positive whole number is not a limit.
+    No upper bound: a window deeper than the history reads the whole history.
+    Anything but a positive whole number is not a limit.
     """
     if isinstance(raw, bool) or not isinstance(raw, int):
         raise ValueError("must be a whole number")
     if raw < 1:
         raise ValueError("must be at least 1")
-    return min(raw, MAX_COMMIT_LIMIT)
+    return raw
 
 
 def clamp_commit_limit(raw: object) -> int:

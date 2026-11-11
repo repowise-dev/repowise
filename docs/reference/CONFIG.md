@@ -80,7 +80,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
 | `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
 | `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
-| `commit_limit` | `5000` | 1-10000 | How many of the newest commits are analysed. Above 10000 reads as 10000. |  |
+| `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
 | `follow_renames` | `false` |  | Follow files across renames in git history. |  |
 | `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
 | `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |

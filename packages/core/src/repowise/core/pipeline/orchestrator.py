@@ -216,7 +216,7 @@ async def run_pipeline(
     repo_path:
         Path to an already-cloned repository on disk.
     commit_depth:
-        Maximum commits to analyse per file (1-10000). Default 5000.
+        Newest commits to analyse (at least 1). Default 5000.
     follow_renames:
         Use ``git log --follow`` to track files across renames.
     skip_tests:
@@ -276,7 +276,7 @@ async def run_pipeline(
         git_tier=mode.git_tier,
         progress=progress,
         checkpointer=checkpointer,
-        commit_depth=max(1, min(commit_depth, 10000)),
+        commit_depth=max(1, commit_depth),
         follow_renames=follow_renames,
         skip_tests=skip_tests,
         skip_infra=skip_infra,

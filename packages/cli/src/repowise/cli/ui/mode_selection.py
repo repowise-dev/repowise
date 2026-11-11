@@ -289,7 +289,7 @@ def _prompt_git(
         default=commit_limit or _DEFAULT_COMMIT_LIMIT,
         type=int,
     )
-    val = max(1, min(val, 10000))
+    val = max(1, val)
     result["commit_limit"] = val
 
     result["follow_renames"] = click.confirm(
