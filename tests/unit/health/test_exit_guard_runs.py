@@ -171,7 +171,7 @@ def test_finding_text_names_the_cut_that_applied() -> None:
     dispatch = SimpleNamespace(
         ccn=12, exit_guards=0, copy_guards=0, dispatch_share=1.0, dispatch_arm=0
     )
-    assert judged_leaves_out(guards) == "every repeated error guard"
+    assert judged_leaves_out(guards) == "every repeated early-exit guard"
     assert judged_leaves_out(dispatch) == "every arm of its dispatch"
 
 

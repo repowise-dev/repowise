@@ -197,7 +197,9 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
-    markup = markup_rows(tree.root_node, grammar_tag, source, scan.literals, scan.arms)
+    markup = markup_rows(
+        tree.root_node, grammar_tag, source, scan.literals, scan.arms, scan.chains
+    )
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
