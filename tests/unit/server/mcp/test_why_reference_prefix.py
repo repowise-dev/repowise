@@ -96,3 +96,34 @@ async def test_why_reference_resolves_alias_prefix(session, setup_mcp) -> None:
     assert result["resolved"] is True
     assert len(result["decisions"]) == 1
     assert result["decisions"][0]["id"] == live_id
+
+
+@pytest.mark.asyncio
+async def test_why_reference_ignores_superseded_alias_prefix(session, setup_mcp) -> None:
+    live_id = "5f6e7d8c9b0a1234567890abcdef1234"
+    superseded_id = "11223344556677889900aabbccddeeff"
+    session.add(
+        DecisionRecord(
+            id=live_id,
+            repository_id=setup_mcp,
+            title="Consolidated architecture",
+            status="proposed",
+            context="ctx",
+            decision="dec",
+            rationale="why",
+            affected_files_json="[]",
+        )
+    )
+    session.add(
+        DecisionAlias(
+            alias_id=superseded_id,
+            repository_id=setup_mcp,
+            decision_id=live_id,
+            reason="superseded",
+        )
+    )
+    await session.commit()
+
+    result = await get_why(id="11223344")
+    assert result["resolved"] is False
+    assert result["decisions"] == []

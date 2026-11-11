@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from repowise.core.persistence.crud.authority import resolve_decision_id
+from repowise.core.persistence.crud.authority import (
+    AmbiguousDecisionIdError,
+    resolve_decision_id,
+    resolve_decision_id_prefix,
+)
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -110,47 +114,15 @@ async def _resolve_reference_id(
     if len(matching_records) > 1:
         return reference_id, matching_records
 
-    # 4. Prefix match on DecisionRecord in DB
-    from sqlalchemy import select
-
-    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
-    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
-
-    pattern = f"{escape_like(reference_id)}%"
-    stmt = (
-        select(DecisionRecord.id)
-        .where(DecisionRecord.id.like(pattern, escape=LIKE_ESCAPE))
-        .limit(10)
-    )
-    db_records = sorted([row[0] for row in (await session.execute(stmt)).all()])
-    if len(db_records) == 1:
-        return db_records[0], []
-    if len(db_records) > 1:
-        return reference_id, db_records
-
-    # 5. Prefix match on DecisionAlias
-    alias_stmt = (
-        select(DecisionAlias.decision_id, DecisionAlias.alias_id)
-        .where(DecisionAlias.alias_id.like(pattern, escape=LIKE_ESCAPE))
-        .limit(10)
-    )
-    aliases = (await session.execute(alias_stmt)).all()
-    if len(aliases) == 1:
-        target_id = aliases[0][0]
-        live_target = await resolve_decision_id(session, target_id) or target_id
-        return live_target, []
-    if len(aliases) > 1:
-        return reference_id, sorted({a[1] for a in aliases})
+    # 4. Prefix match via shared persistence helper (handles DecisionRecord & non-superseded DecisionAlias)
+    try:
+        full_id = await resolve_decision_id_prefix(session, reference_id)
+        if full_id is not None:
+            return full_id, []
+    except AmbiguousDecisionIdError as exc:
+        return reference_id, exc.candidates
 
     return reference_id, []
-
-
-async def _follow_moved_decision_id(
-    session: Any, reference_id: str, records: list
-) -> str:
-    """The live id for a decision id that no longer names a live record."""
-    resolved_id, _ = await _resolve_reference_id(session, reference_id, records)
-    return resolved_id
 
 
 def _matching_evidence_refs(
@@ -172,16 +144,10 @@ def _matching_evidence_refs(
         if ref["id"] == reference_id
     }
     if not matches and reference_id.startswith("ev_"):
-        live_ref = _resolve_unattached_evidence_reference(
-            reference_id, ctx.alias, ctx.path
-        )
+        live_ref = _resolve_unattached_evidence_reference(reference_id, ctx.alias, ctx.path)
         if live_ref is not None:
             matching_refs[live_ref["id"]] = live_ref
-    if (
-        reference is not None
-        and matching_refs
-        and _evidence_reference_matches_id(reference)
-    ):
+    if reference is not None and matching_refs and _evidence_reference_matches_id(reference):
         matching_refs[reference_id] = dict(reference)
     return matching_refs
 

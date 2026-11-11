@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -66,11 +66,14 @@ from ..models import (
     DecisionRecord,
     _now_utc,
 )
+from ..sql import LIKE_ESCAPE, escape_like
 
 __all__ = [
     "ACCEPTED_SQL_PREDICATE",
+    "SUPERSEDED_REASON",
     "AcceptanceRefusedError",
     "AcceptanceSignature",
+    "AmbiguousDecisionIdError",
     "accept_decision",
     "accepted_decision_ids",
     "accepted_predicate",
@@ -94,6 +97,7 @@ __all__ = [
     "record_blockers",
     "request_split",
     "resolve_decision_id",
+    "resolve_decision_id_prefix",
     "return_to_review",
     "supersede_decision",
     "upsert_candidate_meta",
@@ -130,9 +134,11 @@ def accepted_predicate() -> Any:
     ``status == "active"`` — is how the same question came to have four
     different answers across the CLI, the MCP tools and two web surfaces.
     """
-    return select(DecisionAcceptance.id).where(
-        DecisionAcceptance.decision_id == DecisionRecord.id
-    ).exists()
+    return (
+        select(DecisionAcceptance.id)
+        .where(DecisionAcceptance.decision_id == DecisionRecord.id)
+        .exists()
+    )
 
 
 def candidate_predicate() -> Any:
@@ -155,14 +161,11 @@ def _not_retired() -> Any:
 #: sqlite3 and cannot import the ORM. Correlated on ``decision_records.id``, so
 #: it drops into an existing ``WHERE`` unchanged.
 ACCEPTED_SQL_PREDICATE = (
-    "EXISTS (SELECT 1 FROM decision_acceptances a "
-    "WHERE a.decision_id = decision_records.id)"
+    "EXISTS (SELECT 1 FROM decision_acceptances a WHERE a.decision_id = decision_records.id)"
 )
 
 
-async def latest_acceptance(
-    session: AsyncSession, decision_id: str
-) -> DecisionAcceptance | None:
+async def latest_acceptance(session: AsyncSession, decision_id: str) -> DecisionAcceptance | None:
     """The acceptance row that currently governs *decision_id*, if any.
 
     ``None`` means the record is a candidate. This is the one predicate that
@@ -321,7 +324,11 @@ def _named_files(raw: Any) -> list[str]:
         value = json.loads(raw or "[]")
     except (TypeError, ValueError):
         return []
-    return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
+    return (
+        [item for item in value if isinstance(item, str) and item]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def _record_currency(stored: str, record: DecisionRecord) -> str:
@@ -387,9 +394,7 @@ async def decision_signatures(
     return {r.id: rows[r.id] for r in records if r.id in rows}
 
 
-async def count_decisions_by_lane(
-    session: AsyncSession, repository_id: str
-) -> dict[str, int]:
+async def count_decisions_by_lane(session: AsyncSession, repository_id: str) -> dict[str, int]:
     """Records per review lane, as counts a surface can put on a tab.
 
     ``candidates`` plus the four currencies (``active``, ``needs_review``,
@@ -430,9 +435,7 @@ async def count_decisions_by_lane(
     stored = dict(
         (
             await session.execute(
-                select(
-                    DecisionAcceptance.decision_id, DecisionAcceptance.currency
-                ).join(
+                select(DecisionAcceptance.decision_id, DecisionAcceptance.currency).join(
                     latest_seq,
                     (DecisionAcceptance.decision_id == latest_seq.c.did)
                     & (DecisionAcceptance.seq == latest_seq.c.seq),
@@ -470,6 +473,40 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
     return _record_currency(acceptance.currency, record)
 
 
+SUPERSEDED_REASON: Final[str] = "superseded"
+
+
+class AmbiguousDecisionIdError(ValueError):
+    """A decision id prefix matches multiple live records or aliases."""
+
+    def __init__(self, prefix: str, candidates: list[str]) -> None:
+        self.prefix = prefix
+        self.candidates = candidates
+        super().__init__(f"Decision id prefix {prefix!r} is ambiguous; use more characters.")
+
+
+async def _match_prefix(
+    session: AsyncSession,
+    selected: Any,
+    matched: Any,
+    prefix: str,
+    *,
+    extra_filter: Any = None,
+) -> str | None:
+    """*selected* from the one row whose *matched* column starts with *prefix*."""
+    stmt = select(selected, matched).where(
+        matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE)
+    )
+    if extra_filter is not None:
+        stmt = stmt.where(extra_filter)
+    result = await session.execute(stmt.limit(10))
+    rows = result.all()
+    if len(rows) > 1:
+        candidates = sorted({row[1] for row in rows})
+        raise AmbiguousDecisionIdError(prefix, candidates)
+    return rows[0][0] if rows else None
+
+
 async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | None:
     """Resolve an id that may be a retired alias to the live record's id.
 
@@ -491,6 +528,33 @@ async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | 
     if await session.get(DecisionRecord, decision_id) is not None:
         return decision_id
     return alias.decision_id if alias is not None else None
+
+
+async def resolve_decision_id_prefix(session: AsyncSession, decision_id: str) -> str | None:
+    """Expand a (possibly truncated) decision id to the full stored id.
+
+    ``decision list`` prints 8-char prefixes, so every id-taking entry point
+    accepts a unique prefix. Returns None when nothing matches; raises
+    AmbiguousDecisionIdError on an ambiguous prefix.
+    """
+    full_id = await _match_prefix(session, DecisionRecord.id, DecisionRecord.id, decision_id)
+    if full_id is not None:
+        return full_id
+    # Merging and superseding retire ids that are already written down
+    # somewhere. Resolving through the alias keeps those working instead of
+    # reporting the decision as gone. Superseded aliases are excluded: they
+    # point to the successor, but queries for the retired id want the historical
+    # record, not its replacement.
+    alias_target = await _match_prefix(
+        session,
+        DecisionAlias.decision_id,
+        DecisionAlias.alias_id,
+        decision_id,
+        extra_filter=DecisionAlias.reason != SUPERSEDED_REASON,
+    )
+    if alias_target is not None:
+        return await resolve_decision_id(session, alias_target) or alias_target
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1112,13 +1176,17 @@ async def list_candidates(
             q = q.where(DecisionCandidateMeta.review_state == review_state)
     if lane is not None:
         q = q.where(DecisionCandidateMeta.lane == lane)
-    q = q.order_by(
-        # A candidate with no review row yet is unjudged, not lowest: it ranks
-        # with the ones the contract refused and confidence orders within.
-        func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
-        DecisionRecord.confidence.desc(),
-        DecisionRecord.created_at.desc(),
-    ).limit(limit).offset(offset)
+    q = (
+        q.order_by(
+            # A candidate with no review row yet is unjudged, not lowest: it ranks
+            # with the ones the contract refused and confidence orders within.
+            func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
+            DecisionRecord.confidence.desc(),
+            DecisionRecord.created_at.desc(),
+        )
+        .limit(limit)
+        .offset(offset)
+    )
     return [(rec, meta) for rec, meta in (await session.execute(q)).all()]
 
 
@@ -1170,11 +1238,7 @@ async def _add_alias(session: AsyncSession, alias_id: str, decision_id: str) -> 
     # into first — for the update branch as much as the insert one, or A -> B
     # followed by B -> C strands A at an id that no longer resolves.
     stale = (
-        (
-            await session.execute(
-                select(DecisionAlias).where(DecisionAlias.decision_id == alias_id)
-            )
-        )
+        (await session.execute(select(DecisionAlias).where(DecisionAlias.decision_id == alias_id)))
         .scalars()
         .all()
     )
