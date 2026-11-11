@@ -18,12 +18,22 @@ DEFAULT_MAX_MB = 50
 
 #: Valid values for ``distill.commands.permission``.
 VALID_PERMISSIONS = ("ask", "allow", "off")
+#: Spellings of ``distill.commands.permission`` that turn rewriting off.
+PERMISSION_OFF_ALIASES = ("off", "deny", "disable", "disabled", "none")
 #: Valid values for a per-family override (``deny`` blocks the command).
 VALID_FAMILY_PERMISSIONS = ("ask", "allow", "off", "deny")
 
 _KNOWN_TOP_KEYS = ("enabled", "commands", "omission_store")
 _KNOWN_COMMANDS_KEYS = ("enabled", "permission", "families", "disabled_filters")
 _KNOWN_STORE_KEYS = ("ttl_days", "max_mb")
+
+
+def parse_permission(raw: Any) -> Any:
+    """``distill.commands.permission`` with every off spelling (and a bare ``off``,
+    which YAML reads as false) read as ``off``; other values pass through."""
+    if raw is False or (isinstance(raw, str) and raw in PERMISSION_OFF_ALIASES):
+        return "off"
+    return raw
 
 
 def _is_flag(value: Any) -> bool:
@@ -81,7 +91,7 @@ def _validate_commands(commands: dict) -> list[str]:
     if "enabled" in commands and not _is_flag(commands["enabled"]):
         problems.append("distill.commands.enabled: must be true or false")
 
-    permission = commands.get("permission")
+    permission = parse_permission(commands.get("permission"))
     if permission is not None and permission not in VALID_PERMISSIONS:
         problems.append(
             f"distill.commands.permission: {permission!r} is not one of {VALID_PERMISSIONS}"
@@ -107,6 +117,8 @@ def _validate_commands(commands: dict) -> list[str]:
                     )
 
     disabled = commands.get("disabled_filters")
+    if isinstance(disabled, str):
+        disabled = [disabled]  # one bare name, as the readers take it
     if disabled is not None:
         if not isinstance(disabled, list):
             problems.append("distill.commands.disabled_filters: must be a list")

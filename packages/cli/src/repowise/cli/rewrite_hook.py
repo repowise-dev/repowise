@@ -554,6 +554,8 @@ def _classify_head(head_command: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _VALID_PERMISSIONS = ("ask", "allow")
+# ``repowise.core.distill.config.PERMISSION_OFF_ALIASES`` plus a bare YAML
+# ``off``; spelled here so importing the hook loads nothing from core.
 _OFF_VALUES = ("off", "deny", "disable", "disabled", "none", False)
 
 

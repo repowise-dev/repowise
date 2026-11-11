@@ -18,6 +18,7 @@ from repowise.core.distill.config import (
 from repowise.core.settings.model import Setting
 
 AREA = "distill"
+_PERMISSION_PARSER = "repowise.core.distill.config:parse_permission"
 
 _DESCRIPTIONS: dict[str, str] = {
     "enabled": "Distill noisy command output for this repo at all.",
@@ -54,6 +55,7 @@ def _settings() -> tuple[Setting, ...]:
                 description=_DESCRIPTIONS[key],
                 area=AREA,
                 choices=VALID_PERMISSIONS if key == "commands.permission" else (),
+                parser=_PERMISSION_PARSER if key == "commands.permission" else None,
                 # Positive, as the validator and the store reader both require.
                 minimum=0 if type_ == "float" else None,
                 exclusive_minimum=type_ == "float",

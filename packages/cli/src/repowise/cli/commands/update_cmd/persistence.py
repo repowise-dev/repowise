@@ -9,6 +9,7 @@ state-file updates and console reporting stay here.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import time
 from pathlib import Path
@@ -1229,7 +1230,10 @@ def _full_rescore_interval_days() -> float:
     raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
     if raw:
         try:
-            return max(0.0, float(raw))
+            days = float(raw)
+            if math.isnan(days) or days == math.inf:
+                raise ValueError(raw)
+            return max(0.0, days)
         except ValueError:
             if not _FULL_RESCORE_WARNING_SENT:
                 _FULL_RESCORE_WARNING_SENT = True

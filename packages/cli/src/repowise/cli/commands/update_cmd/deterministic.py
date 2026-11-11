@@ -40,7 +40,8 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     from repowise.core.providers.llm.resolve import repo_getenv
 
     env_lookup = repo_getenv(repo_path)
-    chosen = cfg.get("embedder") or (env_lookup("REPOWISE_EMBEDDER") or "").strip()
+    # The variable beats the pin, as it does on every other path.
+    chosen = (env_lookup("REPOWISE_EMBEDDER") or "").strip() or cfg.get("embedder")
     if chosen:
         return str(chosen)
     # Nothing was chosen, so whatever resolve_embedder returns was inferred

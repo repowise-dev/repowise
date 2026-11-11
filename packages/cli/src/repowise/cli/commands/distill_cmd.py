@@ -313,6 +313,8 @@ def _load_distill_config(
     enabled = flag(cfg.get("enabled"), True)
     commands_cfg = cfg.get("commands") or {}
     raw_disabled = commands_cfg.get("disabled_filters") if isinstance(commands_cfg, dict) else None
+    if isinstance(raw_disabled, str):
+        raw_disabled = [raw_disabled]  # one bare name is a list of one
     disabled = tuple(str(name) for name in raw_disabled) if isinstance(raw_disabled, list) else ()
     return enabled, disabled, omission_store_settings(cfg)
 
