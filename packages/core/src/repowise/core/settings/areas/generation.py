@@ -19,10 +19,6 @@ _e = factory(AREA, scope="env")
 _FILE_SETTINGS_WRITER = "repowise.core.repo_config:save_file_settings"
 _LLM_WRITER = "repowise.core.providers.llm.resolve:save_repo_llm_selection"
 
-#: ``repowise.core.providers.embedding.registry._BUILTIN_EMBEDDERS``.
-EMBEDDERS: tuple[str, ...] = ("openai", "gemini", "ollama", "openrouter", "edenai", "mock")
-
-
 SETTINGS: tuple[Setting, ...] = (
     _s(
         "provider",

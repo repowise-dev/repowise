@@ -1,8 +1,8 @@
 """LLM provider endpoints and per-provider limits.
 
-The providers with a configurable endpoint are the ones whose spec names a
-base-URL variable; a parity test holds this list to ``PROVIDER_SPECS``, which
-is too heavy to import here.
+``<provider>.base_url`` is one entry for every provider whose spec names a
+base-URL variable. The names come from ``PROVIDER_SPECS`` when a concrete key
+is asked for, not at import: that table sits behind the provider SDK imports.
 """
 
 from __future__ import annotations
@@ -14,29 +14,26 @@ AREA = "providers"
 _s = factory(AREA)
 _e = factory(AREA, scope="env")
 
-#: ``name for name, spec in PROVIDER_SPECS.items() if spec.base_url_envs``.
-BASE_URL_PROVIDERS: tuple[str, ...] = (
-    "gemini",
-    "anthropic",
-    "openai",
-    "deepseek",
-    "kimi",
-    "edenai",
-    "ollama",
-    "litellm",
-)
+
+def base_url_providers() -> tuple[str, ...]:
+    """Providers whose endpoint can be set: the ones whose spec names a base-URL variable."""
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    return tuple(name for name, spec in PROVIDER_SPECS.items() if spec.base_url_envs)
+
 
 SETTINGS: tuple[Setting, ...] = (
-    *(
-        _s(
-            f"{name}.base_url",
-            "str",
-            None,
-            f"Custom http(s) endpoint for {name}, such as a proxy or a local server.",
-            on_invalid="error",
-            writer="repowise.core.providers.llm.resolve:save_repo_llm_selection",
-        )
-        for name in BASE_URL_PROVIDERS
+    _s(
+        "<provider>.base_url",
+        "str",
+        None,
+        "Custom http(s) endpoint for a provider (openai.base_url and the like), "
+        "such as a proxy or a local server.",
+        members="repowise.core.settings.areas.providers:base_url_providers",
+        on_invalid="error",
+        # Where requests go, not what a page says, so update rebuilds nothing.
+        reload="immediate",
+        writer="repowise.core.providers.llm.resolve:save_repo_llm_selection",
     ),
     *(
         _e(

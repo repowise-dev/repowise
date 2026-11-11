@@ -135,6 +135,10 @@ class Setting:
     #: grammar such as ``mcp.tools``), raising when it cannot. The typed check
     #: then runs on its result. Imported only when used.
     parser: str | None = None
+    #: For a family keyed with one ``<placeholder>`` segment
+    #: (``<provider>.base_url``): ``"module:function"`` returning the names
+    #: that segment may take. Imported only when a concrete key is asked for.
+    members: str | None = None
     #: ``"module:function"`` that writes the value, for areas that own a
     #: writer (decisions, hook surfaces). ``None`` means a plain edit of
     #: :attr:`file`.
@@ -185,6 +189,8 @@ def _contradiction(s: Setting) -> str | None:
         return "bounds apply to int or float settings"
     if s.default_note and s.default is not None:
         return "a default described by a note is None"
+    if (s.members is not None) != ("<" in s.key and s.scope != "env"):
+        return "a <placeholder> key and members come together"
     if s.scope == "env" and not _keyed_by_env(s):
         return "an env-scoped setting is keyed by its variable"
     return None
