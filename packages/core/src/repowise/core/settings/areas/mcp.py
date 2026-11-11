@@ -7,6 +7,7 @@ from repowise.core.settings.model import FALSY, Setting
 
 AREA = "mcp"
 _s = factory(AREA)
+_e = factory(AREA, scope="env")
 
 #: ``get_answer`` switches, each ``(name, default, what it does)``. One that is
 #: on by default turns off with 0/false/no/off; one that is off turns on with
@@ -41,7 +42,7 @@ SETTINGS: tuple[Setting, ...] = (
         parser="repowise.core.registry.tool_selection:normalize_override",
         writer="repowise.server.mcp_server._tool_selection:set_tool_override",
     ),
-    _s(
+    _e(
         "REPOWISE_ANSWER_TIMEOUT_S",
         "float",
         None,
@@ -49,8 +50,9 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
         maximum=600,
+        out_of_range="clamp",
     ),
-    _s(
+    _e(
         "REPOWISE_EMBED_TIMEOUT_S",
         "float",
         8.0,
@@ -58,8 +60,9 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
         maximum=120,
+        out_of_range="clamp",
     ),
-    _s(
+    _e(
         "REPOWISE_VECTOR_SEARCH_TIMEOUT_S",
         "float",
         30.0,
@@ -67,17 +70,20 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
         maximum=120,
+        out_of_range="clamp",
     ),
-    _s(
+    _e(
         "REPOWISE_WORKSPACE_CONCURRENCY",
-        "int",
-        4,
+        # Read as a number and cut to a whole one, as its reader does.
+        "float",
+        4.0,
         "How many repos one workspace query asks at once.",
         minimum=0,
         exclusive_minimum=True,
         maximum=64,
+        out_of_range="clamp",
     ),
-    _s(
+    _e(
         "REPOWISE_WORKSPACE_REPO_TIMEOUT_S",
         "float",
         60.0,
@@ -85,8 +91,9 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
         maximum=300,
+        out_of_range="clamp",
     ),
-    _s(
+    _e(
         "REPOWISE_MCP_NO_WATCHDOG",
         "bool",
         False,
@@ -94,7 +101,7 @@ SETTINGS: tuple[Setting, ...] = (
         env_true=frozenset({"1", "true", "yes"}),
     ),
     *(
-        _s(
+        _e(
             f"REPOWISE_ANSWER_{name}",
             "bool",
             default,
@@ -104,7 +111,7 @@ SETTINGS: tuple[Setting, ...] = (
         )
         for name, default, description in _ANSWER_SWITCHES
     ),
-    _s(
+    _e(
         "REPOWISE_SYNTHESIS_MAX_TOKENS",
         "int",
         4096,
@@ -113,7 +120,7 @@ SETTINGS: tuple[Setting, ...] = (
         exclusive_minimum=True,
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_SEMANTIC_GRACE_S",
         "float",
         1.0,
@@ -121,18 +128,19 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
         maximum=120,
+        out_of_range="clamp",
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_FTS_DF_CEILING",
         "float",
         0.20,
         "Drop search terms found in more than this share of pages.",
         internal=True,
     ),
-    _s("REPOWISE_MCP_DEBUG_META", "bool", False, "Add timings to every MCP reply.", internal=True),
-    _s("REPOWISE_MCP_PRETTY_JSON", "bool", False, "Indent MCP replies.", internal=True),
-    _s(
+    _e("REPOWISE_MCP_DEBUG_META", "bool", False, "Add timings to every MCP reply.", internal=True),
+    _e("REPOWISE_MCP_PRETTY_JSON", "bool", False, "Indent MCP replies.", internal=True),
+    _e(
         "REPOWISE_MCP_INDEX_SCOPE",
         "str",
         None,

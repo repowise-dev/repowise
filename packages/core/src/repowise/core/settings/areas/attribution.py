@@ -1,8 +1,4 @@
-"""``attribution:`` and ``agent_provenance:``: which changes came from agents.
-
-``~/.repowise/config.yaml`` may hold the same ``attribution:`` keys; the
-stricter of the two applies.
-"""
+"""``attribution:`` and ``agent_provenance:``: which changes came from agents."""
 
 from __future__ import annotations
 
@@ -21,7 +17,8 @@ SETTINGS: tuple[Setting, ...] = (
         "bool",
         True,
         "Read public AI-authorship markers: bot authors, commit trailers and footers, "
-        "git-ai notes, Agent Trace files.",
+        "git-ai notes, Agent Trace files. The same key in ~/.repowise/config.yaml "
+        "can turn it off for every repo.",
         on_invalid="fallback",
         fallback=False,
     ),
@@ -30,11 +27,18 @@ SETTINGS: tuple[Setting, ...] = (
         "str",
         "off",
         "Record listed agents' edits as they write them: local keeps line hashes in "
-        ".repowise/attribution/, notes also writes git-ai notes on refs/notes/ai. "
-        "~/.repowise/config.yaml must allow it too.",
+        ".repowise/attribution/, notes also writes git-ai notes on refs/notes/ai. The "
+        "lower of this and the same key in ~/.repowise/config.yaml applies, so both "
+        "must turn it on; DO_NOT_TRACK turns it off.",
         choices=CAPTURE_LEVELS,
     ),
-    _s("attribution.agents", "list", [], "Agent target ids whose edits are recorded, such as claude-code or codex."),
+    _s(
+        "attribution.agents",
+        "list",
+        [],
+        "Agent target ids whose edits are recorded, such as claude-code or codex. "
+        "Only agents named both here and in ~/.repowise/config.yaml are recorded.",
+    ),
     _s(
         "agent_provenance.service_emails",
         "mapping",

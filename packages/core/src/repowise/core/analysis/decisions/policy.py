@@ -23,9 +23,11 @@ __all__ = [
     "DISCOVERY_BOUNDS",
     "INDEX_SOURCE_KEYS",
     "MODES",
+    "MODE_DEFAULTS",
     "PRESETS",
     "PRESET_NAMES",
     "SOURCE_SPECS",
+    "UNREADABLE_AS_ON",
     "DecisionPolicy",
     "DiscoveryBudget",
     "PolicyResolution",
@@ -357,7 +359,7 @@ class SourceRuntime:
 #: except under ``off``, which silences every delivery whatever they say.
 #: Switches are written to the config only when they differ from the mode's
 #: default, so an untouched config stays as short as the user left it.
-_MODE_DEFAULTS: dict[str, dict[str, bool]] = {
+MODE_DEFAULTS: dict[str, dict[str, bool]] = {
     "full": {
         "agent_acceptance": True,
         "capture_prompt": True,
@@ -375,7 +377,8 @@ _MODE_DEFAULTS: dict[str, dict[str, bool]] = {
         "upkeep_prompt": False,
     },
 }
-_MODE_DEFAULTS["off"] = _MODE_DEFAULTS["read_only"]
+MODE_DEFAULTS["off"] = MODE_DEFAULTS["read_only"]
+_MODE_DEFAULTS = MODE_DEFAULTS
 
 MODES: tuple[str, ...] = ("off", "read_only", "full")
 
@@ -837,7 +840,8 @@ def _as_bool(value: Any) -> bool | None:
 #: How a present but non-boolean switch reads (a quoted "no"): on for a gate,
 #: the reading that holds more back; off for every other switch, since each
 #: grants authority, spends an agent's tokens or sends data somewhere.
-_UNREADABLE_AS_ON: frozenset[str] = frozenset({"require_approval"})
+UNREADABLE_AS_ON: frozenset[str] = frozenset({"require_approval"})
+_UNREADABLE_AS_ON = UNREADABLE_AS_ON
 
 
 def _switch(raw: dict, key: str, default: bool, warnings: list[str]) -> bool:

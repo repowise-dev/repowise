@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 __all__ = [
     "FALSY",
+    "SCHEMA_VERSION",
     "TRUTHY",
     "Env",
     "Resolved",
@@ -29,6 +30,13 @@ Reload = Literal["immediate", "update", "reindex", "restart"]
 #: What a present but unusable value reads as: the default, an error, or
 #: :attr:`Setting.fallback` (a gate that reads an unreadable value as closed).
 OnInvalid = Literal["default", "error", "fallback"]
+#: What a number outside ``minimum``/``maximum`` reads as: unusable (handled by
+#: ``on_invalid``) or the nearest bound, for readers that cap.
+OutOfRange = Literal["reject", "clamp"]
+
+#: Bumped when a key is removed from, or changes type in, ``Setting.to_dict``
+#: or ``Resolved.to_dict``. Adding a key does not bump it.
+SCHEMA_VERSION = 1
 
 #: The common "is this env var on" spellings, compared after strip and lower.
 TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
@@ -108,6 +116,10 @@ class Setting:
     maximum: float | None = None
     #: ``minimum`` itself is not allowed ("a positive number" is 0, exclusive).
     exclusive_minimum: bool = False
+    out_of_range: OutOfRange = "reject"
+    #: How the default is decided when it is not one fixed value: detected
+    #: from the machine, or set by another setting. ``default`` is then ``None``.
+    default_note: str | None = None
     env: Env | None = None
     #: The file the key lives in when it is not the scope's usual one.
     file: str | None = None
@@ -118,9 +130,10 @@ class Setting:
     on_invalid: OnInvalid = "default"
     #: The value an unusable one reads as, when ``on_invalid="fallback"``.
     fallback: Any = None
-    #: ``"module:function"`` that parses a raw value the way its area does,
-    #: raising ``ValueError`` when it cannot. For grammars a type cannot say
-    #: (``mcp.tools``, ``folder_coverage``). Imported only when used.
+    #: ``"module:function"`` that turns a raw value into this setting's type
+    #: the way its reader does (folding case, reading a quoted number, a
+    #: grammar such as ``mcp.tools``), raising when it cannot. The typed check
+    #: then runs on its result. Imported only when used.
     parser: str | None = None
     #: ``"module:function"`` that writes the value, for areas that own a
     #: writer (decisions, hook surfaces). ``None`` means a plain edit of
@@ -138,9 +151,14 @@ class Setting:
             "float",
         ):
             raise ValueError(f"{self.key}: bounds apply to int or float settings")
+        if self.default_note and self.default is not None:
+            raise ValueError(f"{self.key}: a default described by a note is None")
         if self.scope == "env" and (
             self.env is None
-            or not (self.key == self.env.name or (self.env.prefix and self.key.startswith(self.env.name)))
+            or not (
+                self.key == self.env.name
+                or (self.env.prefix and self.key.startswith(self.env.name))
+            )
         ):
             raise ValueError(f"{self.key}: an env-scoped setting is keyed by its variable")
 
@@ -152,9 +170,11 @@ class Setting:
     def to_dict(self) -> dict[str, Any]:
         """A JSON-ready description, for listings, docs and the settings API."""
         return {
+            "schema_version": SCHEMA_VERSION,
             "key": self.key,
             "type": self.type,
             "default": _jsonable(self.default),
+            "default_note": self.default_note,
             "description": self.description,
             "area": self.area,
             "scope": self.scope,
@@ -163,6 +183,7 @@ class Setting:
             "minimum": self.minimum,
             "maximum": self.maximum,
             "exclusive_minimum": self.exclusive_minimum,
+            "out_of_range": self.out_of_range,
             "env": self.env.to_dict() if self.env else None,
             "internal": self.internal,
             "reload": self.reload,
@@ -183,6 +204,7 @@ class Resolved:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": SCHEMA_VERSION,
             "value": _jsonable(self.value),
             "source": self.source.value,
             "problem": self.problem,

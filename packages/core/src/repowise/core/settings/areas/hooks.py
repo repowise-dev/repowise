@@ -47,6 +47,7 @@ SETTINGS: tuple[Setting, ...] = (
         area=AREA,
         choices=("smart", "plus"),
         env=Env("REPOWISE_HOOK_READ_SKELETON_MODE", wins=True),
+        parser="repowise.core.settings.parsers:folded",
     ),
     Setting(
         key="REPOWISE_HOOK_UPDATED_OUTPUT",

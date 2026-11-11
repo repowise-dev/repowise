@@ -67,8 +67,8 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 <!-- BEGIN GENERATED settings:config-yaml (python scripts/gen_config_docs.py) -->
 | Key | Default | Values | What it does | Env var |
 |-----|---------|--------|--------------|---------|
-| `provider` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset picks one from the API keys present. | `REPOWISE_PROVIDER` (when the file is unset) |
-| `model` | unset |  | The model id to use with the provider. Unset uses the provider's default. | `REPOWISE_MODEL` (when the file is unset) |
+| `provider` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset: the saved global choice (provider_config.json), then REPOWISE_PROVIDER, then the first provider whose API key is present. | `REPOWISE_PROVIDER` (when the file is unset) |
+| `model` | unset |  | The model id to use with the provider. Unset: the saved global choice (provider_config.json), then REPOWISE_MODEL, then the provider's default model. | `REPOWISE_MODEL` (when the file is unset) |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks before writing. | `REPOWISE_REASONING` (wins over the file) |
 | `max_tokens` | `16384` | > 0 | Most output tokens for one generated page. |  |
 | `context_window` | unset | > 0 | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: no limit for hosted models, 16384 for a local server (Ollama reports its own num_ctx). |  |
@@ -77,7 +77,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `max_file_pages` | unset | >= 0 | Most per-file pages to write; 0 means every file. Unset lets the repo size decide. |  |
 | `folder_coverage` | `[]` |  | Least share of files per folder that get their own page, as "glob=0.5". |  |
 | `enable_onboarding` | `true` |  | Write the onboarding pages. |  |
-| `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` | Which embedding service powers semantic search. mock means none. | `REPOWISE_EMBEDDER` (wins over the file) |
+| `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
 | `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
 | `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
 | `commit_limit` | `5000` | 1-10000 | How many of the newest commits are analysed. |  |
@@ -429,13 +429,13 @@ decisions:
 | `preset` | unset | `default`, `off`, `local_only`, `balanced`, `full` | A named set of capture sources to start from. Unset reads as default. |
 | `enabled` | `true` |  | Master switch for automatic capture. Stored decisions and manual entry work either way. |
 | `llm` | `true` |  | Allow a model call while capturing decisions. Off keeps capture local. |
-| `agent_acceptance` | `true` |  | Let a coding agent accept a decision, signed as the agent's. |
-| `capture_prompt` | `true` |  | Ask the agent to record a decision when a commit states a choice. |
+| `agent_acceptance` | unset |  | Let a coding agent accept a decision, signed as the agent's. Unset: depends on decisions.mode: off under off, read_only; on under full. |
+| `capture_prompt` | unset |  | Ask the agent to record a decision when a commit states a choice. Unset: depends on decisions.mode: off under off, read_only; on under full. |
 | `require_approval` | `false` |  | Make every new decision wait for a person before it applies. |
 | `sync` | `false` |  | Send this repo's decisions to and from its copy on repowise.dev on update. |
 | `session_start` | `false` |  | Open each agent session with the decisions relevant to its work. |
 | `upkeep_prompt` | `false` |  | After a commit, ask the agent to settle the decisions it touched. |
-| `update_mining` | `false` |  | Let repowise update call a model to find decisions in new commits and PRs. |
+| `update_mining` | unset |  | Let repowise update call a model to find decisions in new commits and PRs. Unset: off, unless the decisions block names a preset or lists sources, which keeps an older setup mining. |
 | `discovery.max_sessions` | `12` | 1-24 | Most sessions read in one discovery pass. |
 | `discovery.max_input_tokens` | `30000` | 2000-60000 | Most input tokens one discovery pass may send. |
 | `harnesses` | `[claude_code]` |  | Which coding agents' local session transcripts may be read. |
@@ -471,21 +471,21 @@ Keys under `decisions.sources.`:
 <!-- BEGIN GENERATED settings:decisions-sources (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
 |-----|---------|--------------|
-| `inline_marker.enabled` | `true` | Capture from inline markers. WHY:/DECISION:/TRADEOFF: comment markers in source files. |
+| `inline_marker.enabled` | `true` | Capture from inline markers. WHY:/DECISION:/TRADEOFF: comment markers in source files. A preset may change the default. |
 | `inline_marker.llm` | `true` | Allow a model call when capturing from inline markers. |
-| `git_archaeology.enabled` | `true` | Capture from git archaeology. Commit messages carrying one of the decision verbs. |
+| `git_archaeology.enabled` | `true` | Capture from git archaeology. Commit messages carrying one of the decision verbs. A preset may change the default. |
 | `git_archaeology.llm` | `true` | Allow a model call when capturing from git archaeology. |
-| `adr.enabled` | `true` | Capture from ADR files. Nygard and MADR architecture decision records. |
+| `adr.enabled` | `true` | Capture from ADR files. Nygard and MADR architecture decision records. A preset may change the default. |
 | `adr.llm` | `true` | Allow a model call when capturing from ADR files. |
-| `pr.enabled` | `true` | Capture from pull request bodies. Squash-merge and PR bodies that read as a description. |
+| `pr.enabled` | `true` | Capture from pull request bodies. Squash-merge and PR bodies that read as a description. A preset may change the default. |
 | `pr.llm` | `true` | Allow a model call when capturing from pull request bodies. |
-| `comment.enabled` | `true` | Capture from comment archaeology. Rationale prose in comments on high-centrality files. |
+| `comment.enabled` | `true` | Capture from comment archaeology. Rationale prose in comments on high-centrality files. A preset may change the default. |
 | `comment.llm` | `true` | Allow a model call when capturing from comment archaeology. |
-| `session.enabled` | `false` | Capture from agent sessions. Durable choices mined from local coding-agent transcripts. |
+| `session.enabled` | `false` | Capture from agent sessions. Durable choices mined from local coding-agent transcripts. A preset may change the default. |
 | `session.llm` | `true` | Allow a model call when capturing from agent sessions. |
-| `session_discovery.enabled` | `false` | Capture from session discovery. One broad model pass over new transcript prose each update. |
+| `session_discovery.enabled` | `false` | Capture from session discovery. One broad model pass over new transcript prose each update. A preset may change the default. |
 | `session_discovery.llm` | `true` | Allow a model call when capturing from session discovery. |
-| `conventions.enabled` | `false` | Capture from conventions. Import patterns the graph proves: a wrapper most files reach a library through. |
+| `conventions.enabled` | `false` | Capture from conventions. Import patterns the graph proves: a wrapper most files reach a library through. A preset may change the default. |
 <!-- END GENERATED settings:decisions-sources -->
 
 - [Session mining](#session-mining) and [session discovery](#session-discovery)
@@ -839,9 +839,9 @@ Each pattern:
 <!-- BEGIN GENERATED settings:attribution (python scripts/gen_config_docs.py) -->
 | Key | Default | Values | What it does |
 |-----|---------|--------|--------------|
-| `enabled` | `true` |  | Read public AI-authorship markers: bot authors, commit trailers and footers, git-ai notes, Agent Trace files. |
-| `capture` | `off` | `off`, `local`, `notes` | Record listed agents' edits as they write them: local keeps line hashes in .repowise/attribution/, notes also writes git-ai notes on refs/notes/ai. ~/.repowise/config.yaml must allow it too. |
-| `agents` | `[]` |  | Agent target ids whose edits are recorded, such as claude-code or codex. |
+| `enabled` | `true` |  | Read public AI-authorship markers: bot authors, commit trailers and footers, git-ai notes, Agent Trace files. The same key in ~/.repowise/config.yaml can turn it off for every repo. |
+| `capture` | `off` | `off`, `local`, `notes` | Record listed agents' edits as they write them: local keeps line hashes in .repowise/attribution/, notes also writes git-ai notes on refs/notes/ai. The lower of this and the same key in ~/.repowise/config.yaml applies, so both must turn it on; DO_NOT_TRACK turns it off. |
+| `agents` | `[]` |  | Agent target ids whose edits are recorded, such as claude-code or codex. Only agents named both here and in ~/.repowise/config.yaml are recorded. |
 <!-- END GENERATED settings:attribution -->
 
 - `~/.repowise/config.yaml` may hold the same block for every repository; the
@@ -1320,10 +1320,10 @@ Keys resolve in order:
 <!-- BEGIN GENERATED settings:env-generation (python scripts/gen_config_docs.py) -->
 | Variable | Default | Values | What it does | Config key |
 |----------|---------|--------|--------------|------------|
-| `REPOWISE_PROVIDER` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset picks one from the API keys present. | `provider` (the file wins) |
-| `REPOWISE_MODEL` | unset |  | The model id to use with the provider. Unset uses the provider's default. | `model` (the file wins) |
+| `REPOWISE_PROVIDER` | unset |  | Which model service writes docs and answers (anthropic, openai, gemini, ollama, claude_cli and others). Unset: the saved global choice (provider_config.json), then REPOWISE_PROVIDER, then the first provider whose API key is present. | `provider` (the file wins) |
+| `REPOWISE_MODEL` | unset |  | The model id to use with the provider. Unset: the saved global choice (provider_config.json), then REPOWISE_MODEL, then the provider's default model. | `model` (the file wins) |
 | `REPOWISE_REASONING` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks before writing. | `reasoning` (this wins) |
-| `REPOWISE_EMBEDDER` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` | Which embedding service powers semantic search. mock means none. | `embedder` (this wins) |
+| `REPOWISE_EMBEDDER` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `embedder` (this wins) |
 | `REPOWISE_EMBEDDING_MODEL` | unset |  | The embedding model id. Unset uses the embedder's default. | `embedding_model` (this wins) |
 | `REPOWISE_DOC_MODEL` | unset |  | A different model just for get_answer write-ups. |  |
 | `REPOWISE_EMBEDDING_DIMS` | unset | > 0 | Force the embedding vector width. |  |
@@ -1362,10 +1362,10 @@ Keys resolve in order:
 <!-- BEGIN GENERATED settings:env-providers (python scripts/gen_config_docs.py) -->
 | Variable | Default | Values | What it does |
 |----------|---------|--------|--------------|
-| `REPOWISE_CLAUDE_CLI_CONCURRENCY` | `4` | >= 1 | How many Claude Code CLI calls run at once. |
-| `REPOWISE_CODEX_CLI_CONCURRENCY` | `4` | >= 1 | How many Codex CLI calls run at once. |
-| `REPOWISE_COPILOT_CLI_CONCURRENCY` | `4` | >= 1 | How many Copilot CLI calls run at once. |
-| `REPOWISE_OPENCODE_CONCURRENCY` | `4` | >= 1 | How many OpenCode CLI calls run at once. |
+| `REPOWISE_CLAUDE_CLI_CONCURRENCY` | `4` | >= 1 (clamped) | How many Claude Code CLI calls run at once. |
+| `REPOWISE_CODEX_CLI_CONCURRENCY` | `4` | >= 1 (clamped) | How many Codex CLI calls run at once. |
+| `REPOWISE_COPILOT_CLI_CONCURRENCY` | `4` | >= 1 (clamped) | How many Copilot CLI calls run at once. |
+| `REPOWISE_OPENCODE_CONCURRENCY` | `4` | >= 1 (clamped) | How many OpenCode CLI calls run at once. |
 | `REPOWISE_OLLAMA_NUM_CTX` | unset | > 0 | Context window for Ollama. Unset uses the model's own. |
 | `REPOWISE_CONFIG_DIR` | `~/.repowise` |  | Folder holding the saved global provider choice (provider_config.json). |
 <!-- END GENERATED settings:env-providers -->
@@ -1397,11 +1397,11 @@ faster.
 <!-- BEGIN GENERATED settings:env-mcp (python scripts/gen_config_docs.py) -->
 | Variable | Default | Values | What it does |
 |----------|---------|--------|--------------|
-| `REPOWISE_ANSWER_TIMEOUT_S` | unset | 0-600 | Seconds get_answer may spend writing one answer. Unset uses the provider's own. |
-| `REPOWISE_EMBED_TIMEOUT_S` | `8` | 0-120 | Seconds a get_answer question may wait to be embedded. |
-| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | `30` | 0-120 | Seconds one semantic search may take. |
-| `REPOWISE_WORKSPACE_CONCURRENCY` | `4` | 0-64 | How many repos one workspace query asks at once. |
-| `REPOWISE_WORKSPACE_REPO_TIMEOUT_S` | `60` | 0-300 | Seconds each repo gets in a workspace query. |
+| `REPOWISE_ANSWER_TIMEOUT_S` | unset | 0-600 (clamped) | Seconds get_answer may spend writing one answer. Unset uses the provider's own. |
+| `REPOWISE_EMBED_TIMEOUT_S` | `8` | 0-120 (clamped) | Seconds a get_answer question may wait to be embedded. |
+| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | `30` | 0-120 (clamped) | Seconds one semantic search may take. |
+| `REPOWISE_WORKSPACE_CONCURRENCY` | `4` | 0-64 (clamped) | How many repos one workspace query asks at once. |
+| `REPOWISE_WORKSPACE_REPO_TIMEOUT_S` | `60` | 0-300 (clamped) | Seconds each repo gets in a workspace query. |
 | `REPOWISE_MCP_NO_WATCHDOG` | off | `1`, `true`, `yes` | Keep the MCP server running when the app that started it exits. |
 <!-- END GENERATED settings:env-mcp -->
 
@@ -1466,7 +1466,7 @@ any truthy value turns it off (cross-tool convention).
 <!-- BEGIN GENERATED settings:env-account (python scripts/gen_config_docs.py) -->
 | Variable | Default | Values | What it does |
 |----------|---------|--------|--------------|
-| `REPOWISE_OFFLINE` | off | `1`, `on`, `true`, `yes` | Block repowise's own network calls: telemetry, publish, sign-in checks. |
+| `REPOWISE_OFFLINE` | off | `1`, `on`, `true`, `yes` | Block repowise's own network calls: telemetry, update checks, plan status, agent sign-in checks and decision sync. |
 | `REPOWISE_TELEMETRY_DISABLED` | off | `1`, `on`, `true`, `yes` | Turn off anonymous usage telemetry. |
 | `REPOWISE_TELEMETRY_DEBUG` | off | `1`, `on`, `true`, `yes` | Print the telemetry payload instead of sending it. |
 | `REPOWISE_NO_HINTS` | off | `1`, `on`, `true`, `yes` | Hide repowise.dev tips in the CLI and web UI. |

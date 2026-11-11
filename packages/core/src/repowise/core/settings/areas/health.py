@@ -7,6 +7,7 @@ from repowise.core.settings.model import Setting
 
 AREA = "health"
 _s = factory(AREA)
+_e = factory(AREA, scope="env")
 
 
 def _percent(key: str, description: str) -> Setting:
@@ -90,7 +91,7 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=1,
         maximum=365,
     ),
-    _s(
+    _e(
         "REPOWISE_COMMIT_HEALTH_BACKGROUND",
         "bool",
         True,
@@ -98,7 +99,7 @@ SETTINGS: tuple[Setting, ...] = (
         env_false=frozenset({"0"}),
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS",
         "float",
         300.0,
@@ -106,7 +107,7 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_COMMIT_HEALTH_COMMITS",
         "int",
         150,
@@ -114,7 +115,7 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_COMMIT_HEALTH_MAX_FILES",
         "int",
         300,
@@ -122,15 +123,16 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_FULL_RESCORE_INTERVAL_DAYS",
         "float",
         7.0,
         "Days between full health rescores on update.",
         minimum=0,
+        out_of_range="clamp",
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_GATE_SUMMARY_DIR",
         "str",
         None,

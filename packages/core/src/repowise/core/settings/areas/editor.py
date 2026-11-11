@@ -11,6 +11,7 @@ from repowise.core.settings.model import Setting
 
 AREA = "editor"
 _s = factory(AREA)
+_e = factory(AREA, scope="env")
 
 #: ``repowise.core.generation.editor_files.sections.DEFAULT_SECTIONS``, sorted.
 DEFAULT_SECTIONS: tuple[str, ...] = (
@@ -57,7 +58,7 @@ SETTINGS: tuple[Setting, ...] = (
         "plain names replace it. Extra: code_health, fix_first, commands, "
         "how_to_work_full, tools.",
     ),
-    _s(
+    _e(
         "REPOWISE_SKIP_EDITOR_SETUP",
         "bool",
         False,

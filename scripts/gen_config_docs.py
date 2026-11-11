@@ -175,15 +175,11 @@ def default_cell(s: Setting, *, as_env: bool = False) -> str:
 
 
 def values_cell(s: Setting, *, as_env: bool = False) -> str:
+    bounds = _bounds(s)
+    if bounds:
+        return f"{bounds} (clamped)" if s.out_of_range == "clamp" else bounds
     if s.choices:
         return ", ".join(_code(c) for c in s.choices)
-    low, high = s.minimum, s.maximum
-    if low is not None and high is not None:
-        return f"{_number(low)}-{_number(high)}"
-    if low is not None:
-        return f"{'>' if s.exclusive_minimum else '>='} {_number(low)}"
-    if high is not None:
-        return f"<= {_number(high)}"
     if as_env and s.type == "bool" and s.env is not None:
         if s.env.false_values is not None:
             spellings = sorted(v for v in s.env.false_values if v)
@@ -194,6 +190,22 @@ def values_cell(s: Setting, *, as_env: bool = False) -> str:
         truthy = s.env.true_values if s.env.true_values is not None else TRUTHY
         return ", ".join(_code(v) for v in sorted(truthy))
     return ""
+
+
+def _bounds(s: Setting) -> str:
+    low, high = s.minimum, s.maximum
+    if low is not None and high is not None:
+        return f"{_number(low)}-{_number(high)}"
+    if low is not None:
+        return f"{'>' if s.exclusive_minimum else '>='} {_number(low)}"
+    if high is not None:
+        return f"<= {_number(high)}"
+    return ""
+
+
+def description_cell(s: Setting) -> str:
+    """The description, followed by how the default is decided when it varies."""
+    return f"{s.description} {s.default_note}" if s.default_note else s.description
 
 
 def env_cell(s: Setting) -> str:
@@ -255,7 +267,7 @@ def render_block(block: Block, settings: Iterable[Setting]) -> list[str]:
                     _code(s.key if s.env.prefix else s.env.name),
                     default_cell(s, as_env=True),
                     values_cell(s, as_env=True),
-                    s.description,
+                    description_cell(s),
                     config_key_cell(s),
                 ]
                 for s in chosen
@@ -265,7 +277,7 @@ def render_block(block: Block, settings: Iterable[Setting]) -> list[str]:
     return _table(
         ["Key", "Default", "Values", "What it does", "Env var"],
         (
-            [_key_label(s, block), default_cell(s), values_cell(s), s.description, env_cell(s)]
+            [_key_label(s, block), default_cell(s), values_cell(s), description_cell(s), env_cell(s)]
             for s in chosen
         ),
     )

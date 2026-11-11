@@ -1,7 +1,7 @@
 """Every ``REPOWISE_*`` variable the code reads is a registered setting.
 
 Scans string literals (not comments or docstrings) in every package's Python
-source, and ``process.env`` reads and string literals in its TypeScript.
+``src`` tree, and ``process.env`` reads and string literals in its TypeScript.
 """
 
 from __future__ import annotations
@@ -43,22 +43,33 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
     return ids
 
 
-def _source_files(suffixes: tuple[str, ...]) -> list[Path]:
-    """Source files under ``packages/``, never descending into build or vendor dirs."""
+def _source_files(suffixes: tuple[str, ...]) -> list[tuple[Path, str]]:
+    """``(path, text)`` of each ``packages/*/src`` file naming a ``REPOWISE_`` string.
+
+    Only ``src`` trees, never build or vendor dirs, and the substring check
+    before any parse keeps the scan to a few seconds.
+    """
     found = []
-    for top, dirs, files in os.walk(PACKAGES):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
-        found += [Path(top, f) for f in files if f.endswith(suffixes)]
+    for src in PACKAGES.glob("*/src"):
+        for top, dirs, files in os.walk(src):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+            for name in files:
+                if not name.endswith(suffixes):
+                    continue
+                path = Path(top, name)
+                text = path.read_text(encoding="utf-8")
+                if "REPOWISE_" in text:
+                    found.append((path, text))
     return found
 
 
 @functools.cache
 def _python_reads() -> list[tuple[str, Path, int]]:
     hits = []
-    for path in _source_files((".py",)):
+    for path, text in _source_files((".py",)):
         if SETTINGS_DIR in path.parents:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = ast.parse(text)
         docstrings = _docstring_nodes(tree)
         for node in ast.walk(tree):
             if (
@@ -73,10 +84,10 @@ def _python_reads() -> list[tuple[str, Path, int]]:
 @functools.cache
 def _typescript_reads() -> list[tuple[str, Path, int]]:
     hits = []
-    for path in _source_files((".ts", ".tsx", ".js", ".mjs")):
+    for path, text in _source_files((".ts", ".tsx", ".js", ".mjs")):
         if path.name.endswith((".test.ts", ".test.tsx", ".d.ts")):
             continue
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for lineno, line in enumerate(text.splitlines(), 1):
             for match in TS_READ.finditer(line):
                 hits.append((match.group(1) or match.group(2), path, lineno))
     return hits

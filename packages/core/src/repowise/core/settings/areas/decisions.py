@@ -11,23 +11,23 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.analysis.decisions.policy import (
-    _MODE_DEFAULTS,
-    _UNREADABLE_AS_ON,
     DEFAULT_HARNESSES,
     DISCOVERY_BOUNDS,
+    MODE_DEFAULTS,
     MODES,
     PRESET_NAMES,
     PRESETS,
     SOURCE_SPECS,
+    UNREADABLE_AS_ON,
     DecisionPolicy,
     resolve_policy,
 )
-from repowise.core.settings.model import Setting
+from repowise.core.settings.model import Resolved, Setting, Source
 
 AREA = "decisions"
 _WRITER = "repowise.core.analysis.decisions.policy_store:write_policy"
 
-#: Plain-words descriptions for the switches ``_MODE_DEFAULTS`` lists.
+#: Plain-words descriptions for the switches ``MODE_DEFAULTS`` lists.
 _SWITCHES: dict[str, str] = {
     "agent_acceptance": "Let a coding agent accept a decision, signed as the agent's.",
     "capture_prompt": "Ask the agent to record a decision when a commit states a choice.",
@@ -70,6 +70,7 @@ def _settings() -> tuple[Setting, ...]:
             choices=MODES,
             on_invalid="fallback",
             fallback="read_only",
+            parser="repowise.core.settings.parsers:decisions_mode",
         ),
         _top(
             "preset",
@@ -95,14 +96,17 @@ def _settings() -> tuple[Setting, ...]:
             reload=_UPDATE_REASON,
         ),
     ]
-    for name, default in _MODE_DEFAULTS["full"].items():
-        unreadable_on = name in _UNREADABLE_AS_ON
+    for name, default in MODE_DEFAULTS["full"].items():
+        unreadable_on = name in UNREADABLE_AS_ON
+        by_mode = {mode: MODE_DEFAULTS[mode][name] for mode in MODES}
+        varies = len(set(by_mode.values())) > 1
         out.append(
             _top(
                 name,
                 "bool",
-                default,
+                None if varies else default,
                 _SWITCHES[name],
+                default_note=_mode_note(by_mode) if varies else None,
                 on_invalid="fallback" if unreadable_on != default else "default",
                 fallback=unreadable_on,
             )
@@ -111,8 +115,10 @@ def _settings() -> tuple[Setting, ...]:
         _top(
             "update_mining",
             "bool",
-            DecisionPolicy.__dataclass_fields__["update_mining"].default,
+            None,
             "Let repowise update call a model to find decisions in new commits and PRs.",
+            default_note="Unset: off, unless the decisions block names a preset or "
+            "lists sources, which keeps an older setup mining.",
             reload=_UPDATE_REASON,
         )
     )
@@ -147,7 +153,8 @@ def _settings() -> tuple[Setting, ...]:
                 f"sources.{spec.key}.enabled",
                 "bool",
                 spec.default_enabled,
-                f"Capture from {_label(spec)}. {spec.description}",
+                f"Capture from {_label(spec)}. {spec.description} "
+                "A preset may change the default.",
                 reload=_UPDATE_REASON,
             )
         )
@@ -174,13 +181,18 @@ def _settings() -> tuple[Setting, ...]:
     return tuple(out)
 
 
-SETTINGS: tuple[Setting, ...] = _settings()
 
 
-def resolve_setting(setting: Setting, config: dict[str, Any]) -> Any:
-    """The value ``resolve_policy`` gives *setting* for this config."""
-    policy = resolve_policy(config).policy
-    parts = setting.key.split(".")[1:]
+def _mode_note(by_mode: dict[str, bool]) -> str:
+    """``"Unset: on under decisions.mode full; off under read_only, off."``"""
+    groups: dict[bool, list[str]] = {}
+    for mode, value in by_mode.items():
+        groups.setdefault(value, []).append(mode)
+    parts = [f"{'on' if v else 'off'} under {', '.join(m)}" for v, m in groups.items()]
+    return f"Unset: depends on decisions.mode: {'; '.join(parts)}."
+
+
+def _value(policy: DecisionPolicy, config: dict[str, Any], parts: list[str]) -> Any:
     raw = config.get("decisions") if isinstance(config.get("decisions"), dict) else {}
     if parts[0] == "sources":
         return getattr(policy.sources[parts[1]], parts[2])
@@ -194,3 +206,49 @@ def resolve_setting(setting: Setting, config: dict[str, Any]) -> Any:
         value = raw.get("session_mining")
         return value if isinstance(value, bool) else None
     return getattr(policy, parts[0])
+
+
+def _named_in(warning: str, setting: Setting) -> bool:
+    """Whether a policy warning is about *setting*, its source or its block."""
+    parts = setting.key.split(".")
+    paths = {".".join(parts[:i]) for i in range(1, len(parts) + 1)}
+    return any(f"`{p}`" in warning or f"`{p}:`" in warning for p in paths)
+
+
+def resolve_setting(setting: Setting, config: dict[str, Any]) -> Resolved:
+    """What ``resolve_policy`` gives *setting* for this config, and from where.
+
+    The source is the file when the value differs from what an empty config
+    resolves to, or the key is written there; a preset or the mode set
+    through the file counts as the file. A warning ``resolve_policy`` raised
+    about this key is its problem.
+    """
+    parts = setting.key.split(".")[1:]
+    resolution = resolve_policy(config)
+    value = _value(resolution.policy, config, parts)
+    baseline = _value(resolve_policy({}).policy, {}, parts)
+    problems = [w for w in resolution.warnings if _named_in(w, setting)]
+    written = _written(config, parts)
+    from_file = written or value != baseline
+    if problems and setting.on_invalid != "fallback" and value == baseline:
+        from_file = False
+    return Resolved(
+        value,
+        Source.REPO_FILE if from_file else Source.DEFAULT,
+        "; ".join(problems) or None,
+    )
+
+
+def _written(config: dict[str, Any], parts: list[str]) -> bool:
+    node: Any = config.get("decisions")
+    for i, part in enumerate(parts):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+        # ``sources.pr: true`` is the short form of ``sources.pr.enabled: true``.
+        if isinstance(node, bool) and parts[i + 1 :] == ["enabled"]:
+            return True
+    return node is not None
+
+
+SETTINGS: tuple[Setting, ...] = _settings()
