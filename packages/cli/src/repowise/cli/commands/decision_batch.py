@@ -51,36 +51,15 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
     accepts a unique prefix. Returns None when nothing matches; raises on an
     ambiguous prefix.
     """
-    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
-
-    full_id = await _match_prefix(session, DecisionRecord.id, DecisionRecord.id, decision_id)
-    if full_id is not None:
-        return full_id
-    # Merging and superseding retire ids that are already written down
-    # somewhere. Resolving through the alias keeps those working instead of
-    # reporting the decision as gone.
-    return await _match_prefix(
-        session, DecisionAlias.decision_id, DecisionAlias.alias_id, decision_id
+    from repowise.core.persistence.crud.authority import (
+        AmbiguousDecisionIdError,
+        resolve_decision_id_prefix,
     )
 
-
-async def _match_prefix(session, selected, matched, prefix: str) -> str | None:
-    """*selected* from the one row whose *matched* column starts with *prefix*."""
-    from sqlalchemy import select
-
-    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
-
-    result = await session.execute(
-        select(selected)
-        .where(matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE))
-        .limit(2)
-    )
-    ids = [row[0] for row in result.all()]
-    if len(ids) > 1:
-        raise click.ClickException(
-            f"Decision id prefix {prefix!r} is ambiguous; use more characters."
-        )
-    return ids[0] if ids else None
+    try:
+        return await resolve_decision_id_prefix(session, decision_id)
+    except AmbiguousDecisionIdError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _emit_lifecycle(rec, decision_id: str, action: str, fmt: str, note: str = "") -> None:
@@ -280,6 +259,8 @@ def _print_batch(
         table.add_column(column)
     for result in results:
         outcome = "[green]ok[/green]" if result["ok"] else f"[red]{result['message']}[/red]"
+        if result.get("waits_for"):
+            outcome = f"[yellow]governs once it lands on {result['waits_for']}[/yellow]"
         table.add_row(result.get("id", result["given"])[:8], result.get("title", "")[:50], outcome)
     console.print(table)
     if preview:

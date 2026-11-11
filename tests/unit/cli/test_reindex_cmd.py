@@ -407,3 +407,68 @@ async def test_an_explicit_mock_still_means_mock(monkeypatch, tmp_path: Path) ->
 
     # No Abort and no Exit: reaches the normal empty-database path and returns.
     await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
+
+
+async def test_reindex_skips_tombstoned_pages(monkeypatch, tmp_path: Path) -> None:
+    """A tombstone is out of both indexes by design: update removes its vector
+    and doctor reports a leftover one as an orphan that ``--repair`` deletes.
+    Embedding it here meant reindex and ``doctor --repair`` undid each other on
+    every run."""
+    from sqlalchemy import text
+
+    from repowise.core.persistence.crud import upsert_page, upsert_repository
+    from repowise.core.persistence.database import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+    )
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}"
+    engine = create_engine(db_url)
+    await init_db(engine)
+    async with get_session(create_session_factory(engine)) as session:
+        repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+        for page_id in ("file_page:live.py", "file_page:gone.py"):
+            await upsert_page(
+                session,
+                page_id=page_id,
+                repository_id=repo.id,
+                page_type="file_page",
+                title=page_id,
+                content="a body long enough to be worth embedding " * 4,
+                target_path=page_id.split(":", 1)[1],
+                source_hash="h",
+                model_name="mock",
+                provider_name="mock",
+                input_tokens=1,
+                output_tokens=1,
+            )
+        await session.execute(
+            text("UPDATE wiki_pages SET freshness_status = 'tombstone' WHERE id = :id"),
+            {"id": "file_page:gone.py"},
+        )
+        await session.commit()
+    await engine.dispose()
+
+    class _RecordingStore:
+        def __init__(self) -> None:
+            self.ids: list[str] = []
+
+        async def embed_batch(self, items: list[Any]) -> None:
+            self.ids.extend(item[0] for item in items)
+
+        async def close(self) -> None:
+            return None
+
+    store = _RecordingStore()
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore",
+        lambda *a, **k: store,
+    )
+
+    await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)
+
+    assert store.ids == ["file_page:live.py"]

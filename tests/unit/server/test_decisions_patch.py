@@ -165,7 +165,7 @@ async def test_patch_decision_resolves_same_repo_successor_alias(
                 alias_id=retired_id,
                 repository_id=repo["id"],
                 decision_id=successor_id,
-                reason="superseded",
+                reason="rekeyed",
             )
         )
         await session.commit()

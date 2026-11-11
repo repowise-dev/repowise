@@ -586,6 +586,45 @@ async def test_echoed_title_is_not_repeated(tmp_path):
     assert "because" not in notice
 
 
+async def test_edit_notice_no_double_period_when_rationale_ends_a_sentence(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-cli",
+                "title": "Keep the CLI help text short",
+                "decision": "keep help short",
+                "rationale": "to ensure usability on narrow terminals.",
+                "links": [("src/cli.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/cli.py", "s1", {})
+    assert notice is not None
+    assert "because to ensure usability on narrow terminals" in notice
+    assert notice.endswith("terminals.")
+    assert not notice.endswith("..")
+
+
+async def test_edit_notice_no_period_after_clipped_rationale(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-embed",
+                "title": "Batch embed calls",
+                "decision": "batch embed calls",
+                "rationale": "provider rate limits " * 20,
+                "links": [("src/embed.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/embed.py", "s1", {})
+    assert notice is not None
+    assert notice.endswith("…")
+    assert not notice.endswith("….")
+
+
 async def test_edit_notice_respects_session_cap(tmp_path):
     await _build_wiki_db(tmp_path, [_AUTH_DECISION])
     state = {"decisions_shown": ["x", "y", "z"]}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from collections.abc import Sequence
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+
+_log = logging.getLogger("repowise.mcp.symbol")
 
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
@@ -51,6 +54,7 @@ def _resolve_omission_ref(
 
     record: dict | None = None
     found_in: str | None = None
+    lines_total: int | None = None
     for alias, db_path in candidates:
         try:
             if not db_path.exists():
@@ -58,6 +62,19 @@ def _resolve_omission_ref(
             store = OmissionStore(db_path)
             try:
                 record = store.get_record(ref, query=query)
+                if record is not None:
+                    found_in = alias
+                    if query is not None and not record.get("content"):
+                        try:
+                            raw = store.get(ref)
+                            if raw is not None:
+                                lines_total = len(raw.splitlines())
+                        except (OSError, sqlite3.Error):
+                            _log.warning(
+                                "get_symbol could not read omission ref %s for its line count",
+                                ref,
+                                exc_info=True,
+                            )
             finally:
                 store.close()
         except (OSError, sqlite3.Error):
@@ -65,7 +82,6 @@ def _resolve_omission_ref(
             # Recovery must never make get_symbol itself fail.
             continue
         if record is not None:
-            found_in = alias
             break
 
     if record is None:
@@ -99,5 +115,14 @@ def _resolve_omission_ref(
     if query is not None:
         response["query"] = query
         if not record.get("content"):
-            response["note"] = "No lines matched the query; omit query for the full content."
+            if lines_total is not None:
+                response["lines_total"] = lines_total
+                line_word = "line" if lines_total == 1 else "lines"
+                response["note"] = (
+                    f"No lines matched the query; omit query for the full content ({lines_total} {line_word})."
+                )
+            else:
+                response["note"] = (
+                    "No lines matched the query; omit query for the full content."
+                )
     return response
