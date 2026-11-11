@@ -212,7 +212,7 @@ def test_a_typed_const_data_literal_used_only_as_a_prop_is_markup(cast: str) -> 
     assert card.markup_nloc == 4
 
 
-def test_a_const_data_literal_read_by_logic_stays_code() -> None:
+def test_a_const_data_literal_read_by_logic_keeps_its_declaration_line_code() -> None:
     card = _code_rows(
         """export function Card({ kind }: Props) {
   const labels = {
@@ -223,7 +223,8 @@ def test_a_const_data_literal_read_by_logic_stays_code() -> None:
 }
 """
     )
-    assert card.markup_nloc == 0
+    # The table's rows are literal data; ``const labels = {`` and the return stay code.
+    assert card.markup_nloc == 3
 
 
 def test_brain_method_does_not_count_jsx_markup_lines() -> None:
