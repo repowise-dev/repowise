@@ -21,7 +21,6 @@ the orchestrator can swap individual layers without re-deriving the rest:
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 from typing import Any
@@ -160,11 +159,7 @@ async def fetch_relevant_decisions(
         )
         all_decisions = list(res.scalars().all())
         currencies = await decision_currencies(session, repo_id, all_decisions)
-        answering: list[str] = []
-        if question:
-            # Its own guard: a failure here must not cost the path lane below.
-            with contextlib.suppress(Exception):
-                answering = await _decisions_answering(session, repo_id, question, exclude_spec)
+        answering = await _decisions_answering(session, repo_id, question, exclude_spec)
     by_id = {d.id: d for d in all_decisions}
     answering = [by_id[i] for i in answering if i in by_id][:limit]
 
@@ -196,16 +191,26 @@ async def fetch_relevant_decisions(
 
 
 async def _decisions_answering(
-    session: Any, repo_id: str, question: str, exclude_spec: Any
+    session: Any, repo_id: str, question: str | None, exclude_spec: Any
 ) -> list[str]:
-    """Ids of the decisions in force that clear ``get_why``'s floor for *question*, best-first."""
+    """Ids of the decisions in force that clear ``get_why``'s floor for *question*, best-first.
+
+    Empty with no question, and on any failure: the path-overlap lane beside it
+    must not be lost to an error here.
+    """
     from repowise.core.persistence.crud.authority import accepted_decision_ids
     from repowise.server.mcp_server.tool_why.loading import _decision_corpus
     from repowise.server.mcp_server.tool_why.ranking import _score_keyword_matches
 
-    corpus = await _decision_corpus(session, repo_id, exclude_spec)
-    in_force = await accepted_decision_ids(session, repo_id, governing_only=True)
-    return [d.id for _, d in _score_keyword_matches(corpus, question, set()) if d.id in in_force]
+    if not question:
+        return []
+    try:
+        corpus = await _decision_corpus(session, repo_id, exclude_spec)
+        in_force = await accepted_decision_ids(session, repo_id, governing_only=True)
+        ranked = _score_keyword_matches(corpus, question, set())
+    except Exception:
+        return []
+    return [d.id for _, d in ranked if d.id in in_force]
 
 
 def _decision_to_dict(d: DecisionRecord, currency: str | None) -> dict:
