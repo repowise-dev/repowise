@@ -13,6 +13,22 @@ from repowise.core.analysis.decisions.scope import derive_decision_scope
 from repowise.server.schemas._datetime import UTCDateTime
 
 
+class DecisionRecentInfo(BaseModel):
+    """How a decision came into force, for the ``recent`` lane's rows."""
+
+    #: When it came into force.
+    at: str
+    #: Who: an agent slug, a person's name, or ``web``.
+    signer: str
+    #: ``agent`` or ``person``.
+    signer_kind: str
+    signer_session: str = ""
+    #: The commit it landed in, or the first commit it cites; ``""`` when none.
+    commit: str = ""
+    #: The branch it landed on, when its merge put it in force.
+    landed_on: str = ""
+
+
 class EvidencePreview(BaseModel):
     """The top-ranked evidence row, slimmed for list rows."""
 
@@ -77,6 +93,11 @@ class DecisionRecordResponse(BaseModel):
     # Why a record just created stayed a candidate, in the acceptance
     # contract's words. Set by the create route only.
     blockers: list[str] | None = None
+    # In force and held by a person as law: agents must ask before replacing
+    # it. ``None`` where the route did not read pins.
+    pinned: bool | None = None
+    # How it came into force. Set on the ``recent`` lane's rows only.
+    recent: DecisionRecentInfo | None = None
     # True when the stored ``decision`` is blank and ``decision`` carries the
     # title fallback. Acceptance reads the stored text, so a review surface
     # needs this to predict the "no decision text" refusal.
@@ -155,7 +176,7 @@ class DecisionAgentPromptResponse(BaseModel):
     ``agreements`` with none stored, and then a surface offers nothing.
     """
 
-    kind: Literal["discover", "add", "agreements"]
+    kind: Literal["discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"]
     text: str
     #: The records the prompt names, in its order.
     ids: list[str]
@@ -177,6 +198,12 @@ class DecisionLaneCountsResponse(BaseModel):
     history: int
     governing: int
     total: int
+    #: Accepted and not retired: ``active`` + ``needs_review`` + ``uncheckable``.
+    in_force: int | None = None
+    #: In force and pinned.
+    pinned: int | None = None
+    #: Put in force in the last week; overlaps ``in_force``.
+    recent: int | None = None
 
 
 class DecisionCreate(BaseModel):
@@ -193,6 +220,13 @@ class DecisionCreate(BaseModel):
     affected_files: list[str] = []
     affected_modules: list[str] = []
     tags: list[str] = []
+
+
+class DecisionPinUpdate(BaseModel):
+    """POST body for /decisions/{id}/pin and /unpin. Both fields optional."""
+
+    #: Why it is law, or why it no longer is.
+    reason: str | None = None
 
 
 class DecisionStatusUpdate(BaseModel):

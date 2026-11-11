@@ -356,12 +356,14 @@ editor_files:
 
 ## The `decisions:` block
 
-Decision capture: whether it runs, which sources, and whether any may call a
-model. One resolved policy backs the CLI, API and index pipeline. Every key is
-optional.
+The decisions layer: one `mode` for the whole layer, then which sources
+`init` mines, whether any may call a model, and the switches for each hook.
+One resolved policy backs the CLI, API, hooks, MCP tools and index pipeline.
+Every key is optional.
 
 ```yaml
 decisions:
+  mode: full
   preset: balanced
   sources:
     comment: false
@@ -373,6 +375,7 @@ decisions:
 
 | Key | Default | What it does |
 |-----|---------|--------------|
+| `mode` | `full` | `full`, `read_only` or `off`. See [below](#mode). |
 | `enabled` | `true` | Master switch for automatic capture. |
 | `llm` | `true` | Master switch for decision-extraction model calls. |
 | `preset` | none (`default`) | See [presets](#presets). |
@@ -389,10 +392,29 @@ decisions:
 | `harnesses` | `[claude_code]` | Whose transcripts the session lane reads; add `codex`. |
 | `agent_acceptance` | `true` | Whether an agent may grant a decision authority, signed as itself. |
 | `capture_prompt` | `true` | Ask the agent to record what it just committed. |
+| `require_approval` | `false` | A new decision waits for a person before it is in force. See [below](#require_approval). |
 | `sync` | `false` | Send and receive decisions with this repo on repowise.dev during `update`. |
 | `update_mining` | `false` | Let `repowise update` call the model for decisions. See [below](#update_mining). |
 | `session_start` | `false` | Open each agent session with the decisions relevant to its working set. See [below](#session_start). |
 | `upkeep_prompt` | `false` | After a commit that changes governed code, ask the agent to settle each decision. See [below](#upkeep_prompt). |
+
+### `mode`
+
+The one switch for the layer. Each position sets the defaults of the finer
+switches below; a switch you set explicitly wins over its mode's default,
+except under `off`.
+
+| Mode | Shows decisions | Records decisions | Defaults it sets |
+|------|-----------------|-------------------|------------------|
+| `full` | Yes | Yes | The defaults in the table above |
+| `read_only` | Yes: the edit notice, `get_why`, `get_answer`, the agent-file pointer and pins, pulls from repowise.dev | No: no mining, no capture prompt, no agent putting a decision in force, nothing sent to repowise.dev, no landing granting force | `capture_prompt`, `agent_acceptance` off |
+| `off` | No: every hook, MCP surface and the agent-file block stay silent; `get_why` answers that decisions are off | No | Everything off; explicit switches are ignored |
+
+`repowise decision config mode off|read-only|full` sets it and resets the
+finer switches to that mode's defaults; set one afterwards to differ. A bare
+`mode: off` in YAML reads as off, and an unknown value reads as `read_only`
+with a warning. Manual entry (`repowise decision add` by a person) works in
+every mode.
 
 ### Sources
 
@@ -453,13 +475,21 @@ Neither is about capture, and no preset changes them.
   one repository and leaves the per-install entry, which stays silent there.
   `--on` reinstalls the entry if it is missing.
 
+### `require_approval`
+
+Off by default: a decision an agent records comes into force when the commit
+it cites lands on the default branch. On, the landing grants nothing and an
+agent's own acceptance is refused; a person puts each new decision in force
+with `repowise decision confirm`. `repowise decision config approval --on`
+writes it. A value that is not a boolean reads as on.
+
 ### `sync`
 
 Off by default, and no preset changes it. On, and with this machine signed in
 (`repowise login`) and a GitHub `origin`, every `update` runs
 `decision push` then `decision pull` against the repo on repowise.dev. No
-model runs, and a failure prints one line without failing the update. A value
-that is not a boolean reads as off. `repowise decision config sync --on|--off`
+model runs, and a failure prints one line without failing the update. Under
+`mode: read_only` only `pull` runs. A value that is not a boolean reads as off. `repowise decision config sync --on|--off`
 writes it.
 
 ### `update_mining`
@@ -509,6 +539,7 @@ config upkeep-prompt --on` installs it if missing. Every firing is logged, and
 
 ```bash
 repowise decision config show          # the resolved policy, per source
+repowise decision config mode read-only  # off | read-only | full
 repowise decision config preset local_only
 repowise decision source set comment --off
 repowise decision source set adr --no-llm     # keep the parse, skip the model
@@ -528,8 +559,8 @@ with a stated reason, and failed approaches replaced by working ones.
 
 - Deterministic gates first, then one batched LLM structuring call per update;
   any field not quoting the transcript verbatim is dropped.
-- Mined decisions are candidates however often they recur; `repowise decision
-  confirm` makes one govern.
+- Mined records are background however often they recur; `repowise decision
+  confirm` puts one in force.
 - All local: transcripts are read on your machine, staging is
   `.repowise/sessions/sessions.db`, and only distilled decision text is stored.
 
@@ -545,7 +576,8 @@ source's read and needs it on.
   cited turns never touched is rejected and counted.
 - Scope is the files those turns' tools touched; the model may pick among them,
   not add.
-- Output is `proposed`; only `repowise decision confirm` makes it govern.
+- Output is background (`proposed`); only `repowise decision confirm` puts it
+  in force.
 - Prose over budget queues in `sessions.db` and goes oldest-first next update,
   never aged out unread. A provider failure retries it on the next two updates
   before dropping it.
@@ -557,7 +589,7 @@ confirmed (`active`) decision back to `proposed`.
 
 ## `.repowise/decisions.yaml`
 
-The committed record of accepted decisions; the rest of `.repowise/` can be
+The committed record of decisions in force; the rest of `.repowise/` can be
 deleted and rebuilt.
 
 - `repowise decision export` writes it and un-ignores it if a `.repowise/`

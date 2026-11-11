@@ -7,6 +7,8 @@
  * adapters fill defaults before passing data to components.
  */
 
+import type { DecisionRecentInfo } from "./generated/http.js";
+
 // ---------------------------------------------------------------------------
 // Shared vocabulary
 //
@@ -335,6 +337,13 @@ export interface DecisionRecord {
   /** Why a record just created stayed a candidate. Create endpoint only. */
   blockers?: string[] | null;
   /**
+   * In force and held by a person as law: an agent asks before replacing it.
+   * Absent on a backend that does not read pins.
+   */
+  pinned?: boolean | null;
+  /** How it came into force. Rows of the `recent` lane only. */
+  recent?: DecisionRecentInfo | null;
+  /**
    * True when the stored decision text is blank and `decision` carries the
    * title fallback. Acceptance reads the stored text, so this is what predicts
    * the "no decision text" refusal. Optional for back-compat.
@@ -485,9 +494,13 @@ export interface DecisionGraph {
  *
  * `governing` is the roll-up of `active` and `needs_review`, so it overlaps
  * the two and is meant for a caller asking "what binds", not for a tab row.
+ * `in_force` is every accepted record not retired, pinned first; `recent` is
+ * what came into force in the last week, newest first, and overlaps it.
  */
 export const DECISION_LANE_FILTERS = [
   "candidates",
+  "in_force",
+  "recent",
   "governing",
   "active",
   "needs_review",
@@ -497,8 +510,23 @@ export const DECISION_LANE_FILTERS = [
 
 export type DecisionLaneFilter = (typeof DECISION_LANE_FILTERS)[number];
 
-/** Which decision prompt for the reader's agent: the text `repowise decision discover` prints. */
-export type DecisionAgentPromptKind = "discover" | "add" | "agreements";
+/**
+ * Which decision prompt for the reader's agent. The first three are about the
+ * repository; the rest are about one record and need its id.
+ */
+export type DecisionAgentPromptKind =
+  | "discover"
+  | "add"
+  | "agreements"
+  | "review"
+  | "pin"
+  | "unpin"
+  | "veto"
+  | "edit";
+
+/** How a decision came into force: when, who, and the commit it landed in. */
+export type { DecisionRecentInfo } from "./generated/http.js";
+
 
 /** `GET .../decisions/agent-prompt?kind=`: the prompt served, its text and the records it names. */
 export type { DecisionAgentPromptResponse } from "./generated/http.js";
@@ -517,7 +545,23 @@ export interface DecisionLaneCounts {
   history: number;
   governing: number;
   total: number;
+  /** Accepted and not retired. Absent on a backend that predates it. */
+  in_force?: number | null;
+  /** In force and pinned. */
+  pinned?: number | null;
+  /** Put in force in the last week; overlaps `in_force`. */
+  recent?: number | null;
 }
+
+/**
+ * The decisions page's sections, in tab order: what is in force (pinned
+ * first), what came into force recently, the mined background, and history.
+ * `recent` overlaps `in_force` on purpose: it is the digest of the last week,
+ * not a partition.
+ */
+export const DECISION_SECTIONS = ["in_force", "recent", "candidates", "history"] as const;
+
+export type DecisionSection = (typeof DECISION_SECTIONS)[number];
 
 /**
  * The review lanes, in tab order. They partition a repository: every record is

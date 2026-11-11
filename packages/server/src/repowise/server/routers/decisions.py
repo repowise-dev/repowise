@@ -19,8 +19,9 @@ from repowise.core.analysis.decisions.lifecycle import (
 )
 from repowise.core.analysis.decisions.review_queue import ReviewSignals, review_queue_order
 from repowise.core.persistence import crud, decision_graph
+from repowise.core.persistence.crud.decision_digest import recent_decisions
 from repowise.core.persistence.crud.decision_health import decision_hotspot_files
-from repowise.core.persistence.models import DecisionEvidence
+from repowise.core.persistence.models import DecisionEvidence, DecisionRecord
 from repowise.core.sessions.deliveries import decision_deliveries
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._local_git import local_repo_path
@@ -38,6 +39,8 @@ from repowise.server.schemas import (
     DecisionLaneCountsResponse,
     DecisionLineageEntry,
     DecisionLineageResponse,
+    DecisionPinUpdate,
+    DecisionRecentInfo,
     DecisionRecordResponse,
     DecisionSettings,
     DecisionSettingsUpdate,
@@ -71,6 +74,7 @@ async def _one_with_signature(session, repo_id: str, rec) -> DecisionRecordRespo
     item.currency = await crud.current_currency(session, rec)
     signatures = await crud.decision_signatures(session, repo_id, [rec])
     _attach_signature(item, signatures.get(rec.id))
+    item.pinned = rec.id in await crud.pinned_decision_ids(session, repo_id)
     return item
 
 
@@ -85,6 +89,8 @@ def _in_lane(currency: str | None, lane: str) -> bool:
     """
     if lane == "candidates":
         return currency is None
+    if lane == "in_force":
+        return currency is not None and currency not in HISTORY_CURRENCIES
     if lane == "governing":
         return currency is not None and is_governing(currency)
     if lane == "history":
@@ -98,16 +104,37 @@ def _in_lane(currency: str | None, lane: str) -> bool:
 _LANE_SCAN_CAP = 500
 
 
-def _page_of_lane(decisions: list, currencies: dict, lane: str, page: slice) -> list:
-    """The records of *decisions* in *lane*, cut to *page*.
+async def _with_pinned(
+    session: AsyncSession, decisions: list, pinned: set[str], source: str | None
+) -> list:
+    """*decisions* plus any pinned record the scan window cut, so pinned rows always lead."""
+    missing = pinned - {d.id for d in decisions}
+    if not missing:
+        return decisions
+    q = select(DecisionRecord).where(DecisionRecord.id.in_(sorted(missing)))
+    if source:
+        q = q.where(DecisionRecord.source == source)
+    return [*decisions, *(await session.execute(q)).scalars()]
 
-    ``candidates`` was already paged in SQL. Every other lane was over-fetched
-    because its currency is derived, so its page is cut here.
+
+def _pinned_first(decisions: list, pinned: set[str]) -> list:
+    """*decisions* with the pinned ones first, each group in the order it came."""
+    return sorted(decisions, key=lambda d: d.id not in pinned)
+
+
+def _page_of_lane(
+    decisions: list, currencies: dict, lane: str, page: slice, pinned: set[str]
+) -> list:
+    """The records of *decisions* in *lane*, pinned first, cut to *page*.
+
+    ``candidates`` was already paged in SQL, and holds nothing pinned. Every
+    other lane was over-fetched because its currency is derived, so its page
+    is cut here.
     """
     in_lane = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
     if lane == "candidates":
         return in_lane
-    return in_lane[page]
+    return _pinned_first(in_lane, pinned)[page]
 
 
 def _scan_window(
@@ -127,12 +154,15 @@ def _scan_window(
     return limit, offset
 
 
-async def _review_page(session, repo_id: str, decisions: list, currencies: dict, lane, page: slice):
-    """*page* of *lane* in review order, with the hotspot files of every row read."""
+async def _review_page(
+    session, repo_id: str, decisions: list, currencies: dict, lane, page: slice, pinned: set[str]
+):
+    """*page* of *lane* in review order, pinned first, with every row's hotspot files read."""
     if lane is not None:
         decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
     hot = await decision_hotspot_files(session, repo_id, decisions)
-    return review_queue_order(decisions, lambda d: _review_signals(d, hot))[page], hot
+    ordered = review_queue_order(decisions, lambda d: _review_signals(d, hot))
+    return _pinned_first(ordered, pinned)[page], hot
 
 
 def _review_signals(record, hot: dict[str, list[str]]) -> ReviewSignals:
@@ -209,11 +239,14 @@ async def list_decisions(
     include_proposed: bool = Query(True),
     lane: str | None = Query(
         None,
-        pattern="^(candidates|governing|active|needs_review|uncheckable|history)$",
+        pattern="^(candidates|in_force|recent|governing|active|needs_review|uncheckable|history)$",
         description=(
-            "Review lane. candidates: never accepted. governing: accepted and "
-            "still binding. history: accepted and withdrawn. Applied after the "
-            "page is fetched, because the lane is a join and not a column."
+            "Review lane. candidates: never accepted (background). in_force: "
+            "accepted and not retired, pinned first. recent: put in force in the "
+            "last week, newest first (only ``source`` narrows it). governing: accepted "
+            "and still binding. "
+            "history: accepted and withdrawn. Applied after the page is fetched, "
+            "because the lane is a join and not a column."
         ),
     ),
     limit: int = Query(100, ge=1, le=500),
@@ -241,6 +274,8 @@ async def list_decisions(
     decision under the unreviewed proposals the indexer had just mined, so
     page one was entirely machine guesses.
     """
+    if lane == "recent":
+        return await _recent_page(session, repo_id, source, slice(offset, offset + limit))
     # Acceptance is a SQL predicate, but every lane except ``candidates`` also
     # filters on a derived currency, so those over-fetch the accepted set (small,
     # since each acceptance is a human action) and are paged after derivation.
@@ -262,22 +297,75 @@ async def list_decisions(
         offset=scan_offset,
         sort="priority" if review else sort,
     )
+    pinned = await crud.pinned_decision_ids(session, repo_id)
+    if lane == "in_force" and not (status or tag or module):
+        decisions = await _with_pinned(session, decisions, pinned, source)
     currencies = await crud.decision_currencies(session, repo_id, decisions)
     page = slice(offset, offset + limit)
     if review:
-        decisions, hot = await _review_page(session, repo_id, decisions, currencies, lane, page)
+        decisions, hot = await _review_page(
+            session, repo_id, decisions, currencies, lane, page, pinned
+        )
     else:
         if lane is not None:
-            decisions = _page_of_lane(decisions, currencies, lane, page)
+            decisions = _page_of_lane(decisions, currencies, lane, page, pinned)
         hot = await decision_hotspot_files(session, repo_id, decisions)
+    return await _list_items(session, repo_id, decisions, currencies, hot, pinned)
+
+
+async def _list_items(
+    session: AsyncSession,
+    repo_id: str,
+    decisions: list,
+    currencies: dict,
+    hot: dict[str, list[str]],
+    pinned: set[str],
+) -> list[DecisionRecordResponse]:
+    """List rows for *decisions*, each with its currency, signer, pin and evidence."""
     signatures = await crud.decision_signatures(session, repo_id, decisions)
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
     for item in items:
         item.currency = currencies.get(item.id)
         item.hotspot_files = hot.get(item.id, [])
+        item.pinned = item.id in pinned
         _attach_signature(item, signatures.get(item.id))
     await _attach_evidence(session, items)
     await _attach_deliveries(session, repo_id, items)
+    return items
+
+
+async def _recent_page(
+    session: AsyncSession, repo_id: str, source: str | None, page: slice
+) -> list[DecisionRecordResponse]:
+    """*page* of the decisions put in force in the last week, newest first.
+
+    Each row carries ``recent``: when, who, and the commit it landed in.
+    """
+    recent, _total = await recent_decisions(session, repo_id)
+    records = {
+        r.id: r
+        for r in (
+            await session.execute(
+                select(DecisionRecord).where(DecisionRecord.id.in_([r.id for r in recent]))
+            )
+        ).scalars()
+    }
+    rows = [r for r in recent if r.id in records and (not source or records[r.id].source == source)]
+    rows = rows[page]
+    decisions = [records[r.id] for r in rows]
+    currencies = await crud.decision_currencies(session, repo_id, decisions)
+    hot = await decision_hotspot_files(session, repo_id, decisions)
+    pinned = {r.id for r in rows if r.pinned}
+    items = await _list_items(session, repo_id, decisions, currencies, hot, pinned)
+    for item, row in zip(items, rows, strict=True):
+        item.recent = DecisionRecentInfo(
+            at=row.at,
+            signer=row.signer,
+            signer_kind=row.signer_kind,
+            signer_session=row.signer_session,
+            commit=row.commit,
+            landed_on=row.landed_on,
+        )
     return items
 
 
@@ -355,8 +443,13 @@ async def decision_lane_counts(
     Declared above ``/{decision_id}`` for the same reason ``/counts`` is:
     FastAPI matches in declaration order.
     """
+    counts = await crud.count_decisions_by_lane(session, repo_id)
+    _recent, recent_count = await recent_decisions(session, repo_id)
     return DecisionLaneCountsResponse(
-        **await crud.count_decisions_by_lane(session, repo_id)
+        **counts,
+        in_force=counts["active"] + counts["needs_review"] + counts["uncheckable"],
+        pinned=len(await crud.pinned_decision_ids(session, repo_id)),
+        recent=recent_count,
     )
 
 
@@ -366,19 +459,37 @@ async def decision_lane_counts(
 )
 async def decision_agent_prompt(
     repo_id: str,
-    kind: Literal["discover", "add", "agreements"] = Query("discover"),
+    kind: Literal[
+        "discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"
+    ] = Query("discover"),
+    decision_id: str | None = Query(
+        None, description="The record a review, pin, unpin, veto or edit prompt is about."
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> DecisionAgentPromptResponse:
-    """A prompt for the reader's agent, the text ``repowise decision discover`` prints.
+    """A prompt for the reader's agent, the text the CLI prints for the same pass.
 
     ``discover`` names the background records on the busiest files for the
     agent to check, put in force or dismiss; ``add`` has it record what nobody
-    wrote down; ``agreements`` moves working agreements into CLAUDE.md.
+    wrote down; ``agreements`` moves working agreements into CLAUDE.md. The
+    rest are about one record, named by ``decision_id``: ``review`` checks a
+    background record, ``pin`` / ``unpin`` mark one as law or not, ``veto``
+    takes one out of force and ``edit`` replaces it with a corrected one.
     Declared above ``/{decision_id}`` for the same reason ``/counts`` is.
     """
+    from repowise.core.agent_prompts.decisions import (
+        RECORD_PROMPT_KINDS,
+        decision_record_prompt,
+    )
     from repowise.core.persistence.crud.decision_discovery import decision_prompt_for
 
-    prompt = await decision_prompt_for(session, repo_id, kind)
+    if kind in RECORD_PROMPT_KINDS:
+        if not decision_id:
+            raise HTTPException(status_code=400, detail=f"kind={kind} needs a decision_id")
+        rec = await _decision_in_repo(session, repo_id, decision_id)
+        prompt = decision_record_prompt(kind, {"id": rec.id, "title": rec.title})
+    else:
+        prompt = await decision_prompt_for(session, repo_id, kind)
     return DecisionAgentPromptResponse(**prompt.as_dict())
 
 
@@ -773,6 +884,8 @@ async def _transition_status(
             accepter="web",
             kind="person",
             reason=reason,
+            # A person on the page: retiring a pinned decision is theirs to do.
+            force=True,
         )
     except crud.AcceptanceRefusedError as exc:
         raise HTTPException(
@@ -861,3 +974,53 @@ async def reaffirm_decision(
     except crud.AcceptanceRefusedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await _one_with_signature(session, repo_id, rec)
+
+
+async def _set_pin(
+    session: AsyncSession, repo_id: str, decision_id: str, pinned: bool, body: DecisionPinUpdate | None
+) -> DecisionRecordResponse:
+    rec = await _decision_in_repo(session, repo_id, decision_id)
+    try:
+        await crud.set_pinned(
+            session,
+            rec,
+            pinned,
+            accepter="web",
+            kind="person",
+            reason=(body.reason or "") if body else "",
+        )
+    except crud.AcceptanceRefusedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await _one_with_signature(session, repo_id, rec)
+
+
+@router.post(
+    "/api/repos/{repo_id}/decisions/{decision_id}/pin",
+    response_model=DecisionRecordResponse,
+)
+async def pin_decision(
+    repo_id: str,
+    decision_id: str,
+    body: DecisionPinUpdate | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionRecordResponse:
+    """Pin a decision in force, as a person on the web: it is law until unpinned.
+
+    An agent that tries to replace or retire a pinned decision is refused and
+    told to ask. 400 for a record not in force, or one already pinned.
+    """
+    return await _set_pin(session, repo_id, decision_id, True, body)
+
+
+@router.post(
+    "/api/repos/{repo_id}/decisions/{decision_id}/unpin",
+    response_model=DecisionRecordResponse,
+)
+async def unpin_decision(
+    repo_id: str,
+    decision_id: str,
+    body: DecisionPinUpdate | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionRecordResponse:
+    """Unpin a decision, as a person on the web. It stays in force. 400 if not pinned."""
+    return await _set_pin(session, repo_id, decision_id, False, body)

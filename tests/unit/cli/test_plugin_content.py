@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -78,7 +79,9 @@ def test_the_two_hosts_ship_the_same_skill_bodies() -> None:
         claude_body = claude.split("\n---\n\n", 1)[1]
         codex_body = codex.split("\n---\n\n", 1)[1]
         # ...but only where the hosts spell a slash command differently.
-        assert claude_body.replace("/repowise:", "@") == codex_body.replace(
+        # Not the PR decisions block's closing marker, which is the same text.
+        claude_cmds = re.sub(r"(?<!<!-- )/repowise:", "@", claude_body)
+        assert claude_cmds == codex_body.replace(
             "/prompts:repowise-", "@"
         ), f"{item.source.name}: the two hosts have different skill bodies"
 

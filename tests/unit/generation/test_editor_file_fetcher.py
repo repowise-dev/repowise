@@ -379,8 +379,8 @@ async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
 
 @pytest.fixture
 def pin_everything(monkeypatch):
-    """Nothing can be pinned yet; read every record in force as pinned."""
-    monkeypatch.setattr(fetcher_mod, "_pinned", lambda records: records)
+    """Read every record in force as pinned."""
+    monkeypatch.setattr(fetcher_mod, "_pinned", lambda records, _ids: records)
 
 
 async def test_decisions_in_force_earn_the_pointer_and_list_none_by_name(
@@ -827,3 +827,16 @@ async def test_the_mode_decides_the_pointer_and_the_record_line(
 
     assert data.decisions_in_force is pointer
     assert data.record_decisions is record
+
+
+async def test_a_pinned_decision_is_listed_by_name(session, repo, tmp_path):
+    from repowise.core.persistence.crud.authority import set_pinned
+
+    await _add_decision(session, repo.id, "Use JWT", status="active")
+    pinned = await _add_decision(session, repo.id, "Keep sqlite", status="active")
+    await set_pinned(session, pinned, True, accepter="Raghav", kind="person", reason="law")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.title for d in data.decisions] == ["Keep sqlite"]
