@@ -47,15 +47,22 @@ def is_managed_checkout(repo_path: Path | str) -> bool:
     return bool(resolve("managed_checkout", config).value)
 
 
-def _git(repo_path: Path | str, *args: str, timeout: int = _GIT_TIMEOUT_S) -> subprocess.CompletedProcess:
+def _git(
+    repo_path: Path | str,
+    *args: str,
+    timeout: int = _GIT_TIMEOUT_S,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     # Never wait on a credential prompt: the server has no one to answer it.
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", **(env or {})}
     try:
         return subprocess.run(
             ["git", *args],
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=env,
         )
@@ -63,6 +70,19 @@ def _git(repo_path: Path | str, *args: str, timeout: int = _GIT_TIMEOUT_S) -> su
         raise ManagedCheckoutError(f"git {args[0]} did not finish within {timeout}s") from None
     except OSError as exc:
         raise ManagedCheckoutError(f"could not run git: {exc}") from None
+
+
+def _remote_git(repo_path: Path | str, *args: str) -> subprocess.CompletedProcess:
+    """A git call that talks to the remote. SSH runs in batch mode, so an
+    unknown host key or a key passphrase fails at once instead of waiting,
+    unless the checkout or the environment already chose an SSH command."""
+    has_ssh_command = (
+        "GIT_SSH_COMMAND" in os.environ
+        or "GIT_SSH" in os.environ
+        or _git(repo_path, "config", "--get", "core.sshCommand").stdout.strip()
+    )
+    batch = {"GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
+    return _git(repo_path, *args, timeout=_FETCH_TIMEOUT_S, env=None if has_ssh_command else batch)
 
 
 def _reason(result: subprocess.CompletedProcess) -> str:
@@ -79,22 +99,22 @@ def _upstream(repo_path: Path | str) -> tuple[str, str, str]:
     branch = head.stdout.strip()
     remote = _git(repo_path, "config", "--get", f"branch.{branch}.remote").stdout.strip()
     merge = _git(repo_path, "config", "--get", f"branch.{branch}.merge").stdout.strip()
-    if not remote or not merge:
-        raise ManagedCheckoutError(f"branch {branch} has no upstream to fetch")
+    if not remote or not merge or remote == ".":
+        raise ManagedCheckoutError(f"branch {branch} has no remote upstream to fetch")
     return branch, remote, merge
 
 
 def remote_head(repo_path: Path | str) -> str:
     """The commit the tracked branch points at on its remote, read without fetching."""
     _branch, remote, merge = _upstream(repo_path)
-    result = _git(repo_path, "ls-remote", remote, merge, timeout=_FETCH_TIMEOUT_S)
+    result = _remote_git(repo_path, "ls-remote", remote, merge)
     if result.returncode != 0:
-        raise ManagedCheckoutError(f"could not read {remote}: {_reason(result)}")
+        raise ManagedCheckoutError(f"could not read {redact_secrets(remote)}: {_reason(result)}")
     for line in result.stdout.splitlines():
         sha, _, ref = line.partition("\t")
         if ref.strip() == merge:
             return sha.strip()
-    raise ManagedCheckoutError(f"{remote} has no {merge}")
+    raise ManagedCheckoutError(f"{redact_secrets(remote)} has no {merge}")
 
 
 def fast_forward(repo_path: Path | str) -> tuple[str, str]:
@@ -116,14 +136,19 @@ def fast_forward(repo_path: Path | str) -> tuple[str, str]:
             "the checkout has edited tracked files; a managed checkout must hold "
             "no local work, so it was not moved"
         )
-    fetched = _git(repo_path, "fetch", "--quiet", remote, merge, timeout=_FETCH_TIMEOUT_S)
+    shown = redact_secrets(remote)
+    fetched = _remote_git(repo_path, "fetch", "--quiet", remote, merge)
     if fetched.returncode != 0:
-        raise ManagedCheckoutError(f"could not fetch {remote}: {_reason(fetched)}")
-    if _git(repo_path, "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD").returncode != 0:
+        raise ManagedCheckoutError(f"could not fetch {shown}: {_reason(fetched)}")
+    # --is-ancestor exits 1 for "no"; any other failure is not an answer.
+    ancestor = _git(repo_path, "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD")
+    if ancestor.returncode == 1:
         raise ManagedCheckoutError(
-            f"branch {branch} has commits {remote} does not; a managed checkout "
+            f"branch {branch} has commits {shown} does not; a managed checkout "
             "must hold no local work, so it was not moved"
         )
+    if ancestor.returncode != 0:
+        raise ManagedCheckoutError(f"could not compare {branch} with {shown}: {_reason(ancestor)}")
     merged = _git(repo_path, "merge", "--ff-only", "--quiet", "FETCH_HEAD")
     if merged.returncode != 0:
         raise ManagedCheckoutError(f"could not fast-forward {branch}: {_reason(merged)}")

@@ -214,7 +214,13 @@ A managed checkout holds no local work. When it has edited tracked files, or
 commits the remote does not have, the sync is refused with that reason in the
 job's error and the server log (`managed_checkout_not_moved`); nothing is reset
 or discarded. A fetch that fails (network, credentials, a deleted branch) is
-refused the same way. In both cases the index stays at the last good commit.
+refused the same way, and the checkout and the index stay where they were. SSH
+runs in batch mode unless the clone sets `core.sshCommand`, so an unknown host
+key fails the fetch instead of waiting. A remote the poller cannot read is
+logged as `managed_checkout_remote_unreadable` and skipped.
+
+Until the cause is fixed, each poll after a push starts a sync that is refused
+again, so the job list shows the reason every 15 minutes.
 
 The setting lives in the clone's `.repowise/config.yaml`, which is not
 committed, so a teammate's working tree never inherits it. Leave it off for any

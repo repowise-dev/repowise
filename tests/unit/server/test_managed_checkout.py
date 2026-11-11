@@ -299,3 +299,48 @@ def test_only_an_explicit_setting_makes_a_checkout_managed(remote) -> None:
     assert not is_managed_checkout(checkout)
     save_repo_config(checkout, {"managed_checkout": True})
     assert is_managed_checkout(checkout)
+
+
+def test_a_credential_in_the_remote_url_never_reaches_the_reason(remote) -> None:
+    checkout = _checkout(remote, managed=True)
+    _git(checkout, "remote", "set-url", "origin", "https://user:sekret-token@127.0.0.1:1/x.git")
+    with pytest.raises(ManagedCheckoutError) as fetch_error:
+        fast_forward(checkout)
+    with pytest.raises(ManagedCheckoutError) as read_error:
+        remote_head(checkout)
+    for error in (fetch_error, read_error):
+        assert "could not" in str(error.value)
+        assert "sekret-token" not in str(error.value)
+
+
+def test_a_local_upstream_is_not_a_remote(remote) -> None:
+    checkout = _checkout(remote, managed=True)
+    _git(checkout, "config", "branch.main.remote", ".")
+    with pytest.raises(ManagedCheckoutError, match="no remote upstream"):
+        fast_forward(checkout)
+
+
+def _remote_call_env(checkout: Path) -> dict:
+    calls: list[dict] = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        calls.append({"cmd": cmd, "env": kwargs.get("env") or {}})
+        return real_run(cmd, **kwargs)
+
+    with patch("repowise.server.managed_checkout.subprocess.run", spy):
+        remote_head(checkout)
+    return next(c["env"] for c in calls if "ls-remote" in c["cmd"])
+
+
+def test_ssh_runs_in_batch_mode_unless_the_checkout_chose_a_command(remote, monkeypatch) -> None:
+    """An unknown host key or a passphrase fails the call instead of waiting on it."""
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    checkout = _checkout(remote, managed=True)
+    env = _remote_call_env(checkout)
+    assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+    _git(checkout, "config", "core.sshCommand", "ssh -i /srv/keys/deploy")
+    assert "GIT_SSH_COMMAND" not in _remote_call_env(checkout)
