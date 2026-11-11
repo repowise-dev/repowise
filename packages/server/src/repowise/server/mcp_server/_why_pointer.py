@@ -20,7 +20,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from repowise.core.analysis.next_call import render_call
-from repowise.core.persistence.crud.authority import governing_decisions_by_file
+from repowise.core.persistence.crud.authority import (
+    decision_currencies,
+    governing_decisions_by_file,
+)
 from repowise.core.persistence.database import (
     create_engine,
     get_configured_db_url,
@@ -45,7 +48,10 @@ _MAX_AREAS = 3
 
 
 async def why_pointer(ctx: Any, paths: Iterable[str]) -> str | None:
-    """``Decision "<title>" governs <file>: get_why(targets=[...])``, or ``None``.
+    """``Decision "<title>" governs <file name>: get_why(targets=[...])``, or ``None``.
+
+    ``, needs review`` follows the file name when the named decision's files
+    changed since it was accepted: it still binds, but may no longer hold.
 
     *ctx* is the served repository's context; *paths* are the call's targets,
     a ``path::Symbol`` target counting as its file. In a workspace the call
@@ -63,12 +69,22 @@ async def why_pointer(ctx: Any, paths: Iterable[str]) -> str | None:
                 return None
             repository = await _get_repo(session)
             by_file = await governing_decisions_by_file(session, repository.id)
+            governed = [f for f in files if by_file.get(f)]
+            if not governed:
+                return None
+            review = await _needs_review(session, repository.id, by_file[governed[0]][0][0])
     except (SQLAlchemyError, LookupError):
         return None
-    governed = [f for f in files if by_file.get(f)]
-    if not governed:
-        return None
-    return _pointer_line(by_file, governed, getattr(ctx, "alias", None))
+    return _pointer_line(by_file, governed, getattr(ctx, "alias", None), needs_review=review)
+
+
+async def _needs_review(session: Any, repository_id: str, decision_id: str) -> bool:
+    """Whether the decision a pointer names is at the ``needs_review`` currency."""
+    record = await session.get(DecisionRecord, decision_id)
+    if record is None:
+        return False
+    currencies = await decision_currencies(session, repository_id, [record])
+    return currencies.get(decision_id) == "needs_review"
 
 
 async def _named_by_an_accepted_record(session: Any, files: list[str]) -> bool:
@@ -100,7 +116,11 @@ async def attach_why_pointer(response: dict[str, Any], ctx: Any, paths: Iterable
 
 
 def _pointer_line(
-    by_file: dict[str, list[tuple[str, str]]], governed: list[str], alias: str | None
+    by_file: dict[str, list[tuple[str, str]]],
+    governed: list[str],
+    alias: str | None,
+    *,
+    needs_review: bool = False,
 ) -> str:
     first_id, title = by_file[governed[0]][0]
     others = {did for f in governed for did, _ in by_file[f]} - {first_id}
@@ -108,7 +128,10 @@ def _pointer_line(
     args: dict[str, Any] = {"targets": governed[:_MAX_POINTER_FILES]}
     if alias and _is_workspace_mode():
         args["repo"] = alias
-    return f'Decision "{title}"{more} governs {governed[0]}: {render_call("get_why", args)}'
+    # The file by name only: the call beside it carries the full path.
+    review = ", needs review" if needs_review else ""
+    name = posixpath.basename(governed[0]) or governed[0]
+    return f'Decision "{title}"{more} governs {name}{review}: {render_call("get_why", args)}'
 
 
 def decisions_line(repo_path: str | None) -> str | None:

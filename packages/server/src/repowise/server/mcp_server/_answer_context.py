@@ -128,22 +128,26 @@ async def fetch_relevant_decisions(
     repo_id: str,
     target_paths: list[str],
     *,
+    question: str | None = None,
+    exclude_spec: Any = None,
     limit: int = _MAX_DECISIONS_INJECTED,
 ) -> list[dict]:
-    """Return up to ``limit`` decisions touching any of ``target_paths``.
+    """Return up to ``limit`` decisions bearing on the question or its top hits.
 
-    Scans active+proposed decisions (skips deprecated/superseded — those are
-    historical and shouldn't drive a current answer). Ranks by overlap with
-    target_paths: a decision touching three of the top hits is more relevant
-    than one touching only the fifth. Ties broken by lane (an accepted decision
-    over a candidate) and confidence.
+    First the decisions in force that answer *question* itself, ranked as
+    ``get_why`` ranks a question (same corpus, same relevance floor), so a
+    recorded reason is found whichever files retrieval surfaced. Then those
+    touching ``target_paths``, ranked by overlap: a decision touching three of
+    the top hits is more relevant than one touching only the fifth, ties broken
+    by lane (an accepted decision over a candidate) and confidence. Only
+    active+proposed records: deprecated and superseded ones are history.
 
     Each row carries the lane, not the status column, because these rows are
     rendered into a model prompt. A candidate labelled ``active`` reads to the
     model as something the repository has settled on, which is exactly the
     claim nobody has made about it.
     """
-    if not target_paths:
+    if not target_paths and not question:
         return []
     targets_set = set(target_paths)
     async with get_session(ctx.session_factory) as session:
@@ -155,6 +159,13 @@ async def fetch_relevant_decisions(
         )
         all_decisions = list(res.scalars().all())
         currencies = await decision_currencies(session, repo_id, all_decisions)
+        answering = (
+            await _decisions_answering(session, repo_id, question, exclude_spec)
+            if question
+            else []
+        )
+    by_id = {d.id: d for d in all_decisions}
+    answering = [by_id[i] for i in answering if i in by_id][:limit]
 
     scored: list[tuple[int, float, DecisionRecord]] = []
     for d in all_decisions:
@@ -176,8 +187,22 @@ async def fetch_relevant_decisions(
         scored.append((-overlap, lane_rank, d))
 
     scored.sort(key=lambda t: (t[0], t[1], -(t[2].confidence or 0.0)))
-    selected = [d for _, _, d in scored[:limit]]
-    return [_decision_to_dict(d, currencies.get(d.id)) for d in selected]
+    chosen = {d.id for d in answering}
+    selected = answering + [d for _, _, d in scored if d.id not in chosen]
+    return [_decision_to_dict(d, currencies.get(d.id)) for d in selected[:limit]]
+
+
+async def _decisions_answering(
+    session: Any, repo_id: str, question: str, exclude_spec: Any
+) -> list[str]:
+    """Ids of the decisions in force that clear ``get_why``'s floor for *question*, best-first."""
+    from repowise.core.persistence.crud.authority import accepted_decision_ids
+    from repowise.server.mcp_server.tool_why.loading import _decision_corpus
+    from repowise.server.mcp_server.tool_why.ranking import _score_keyword_matches
+
+    corpus = await _decision_corpus(session, repo_id, exclude_spec)
+    in_force = await accepted_decision_ids(session, repo_id, governing_only=True)
+    return [d.id for _, d in _score_keyword_matches(corpus, question, set()) if d.id in in_force]
 
 
 def _decision_to_dict(d: DecisionRecord, currency: str | None) -> dict:
@@ -354,9 +379,14 @@ def build_context_block(
 
 def _format_decisions_block(decisions: list[dict]) -> str:
     """Pull the ADRs to the front of the prompt where the LLM grounds intent."""
-    lines = ["## Architectural decisions touching these files"]
+    lines = [
+        "## Recorded decisions bearing on this question",
+        "An accepted decision is the repository's recorded reason. When one "
+        "answers the question, lead with it and name it by its title.",
+    ]
     for i, d in enumerate(decisions, start=1):
-        lines.append(f"[D{i}] {d['title']} ({d['lane']})")
+        review = ", needs review" if d.get("currency") == "needs_review" else ""
+        lines.append(f"[D{i}] {d['title']} ({d['lane']}{review})")
         if d.get("decision"):
             lines.append(f"    decision: {d['decision']}")
         if d.get("rationale"):

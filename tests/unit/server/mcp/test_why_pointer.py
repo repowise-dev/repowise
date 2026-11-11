@@ -66,7 +66,24 @@ async def test_a_governed_target_gets_one_line_naming_the_decision_and_the_call(
 
     line = await why_pointer(_ctx(factory), [f"{_FILE}::AuthService", "src/other.py"])
 
-    assert line == f'Decision "Tokens expire after one hour" governs {_FILE}: get_why(targets=["{_FILE}"])'
+    assert line == 'Decision "Tokens expire after one hour" governs service.py: get_why(targets=["src/auth/service.py"])'
+
+
+@pytest.mark.asyncio
+async def test_the_line_says_when_the_decision_needs_review(
+    session, factory, repo_id, monkeypatch
+):
+    await _accept(session, repo_id, "Tokens expire after one hour", [_FILE])
+
+    async def needs_review(_session, _repo, records):
+        return {r.id: "needs_review" for r in records}
+
+    monkeypatch.setattr(_why_pointer, "decision_currencies", needs_review)
+
+    line = await why_pointer(_ctx(factory), [_FILE])
+
+    assert line is not None
+    assert 'governs service.py, needs review: get_why(' in line
 
 
 @pytest.mark.asyncio
