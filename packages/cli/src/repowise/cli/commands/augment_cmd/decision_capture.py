@@ -214,7 +214,8 @@ def _upkeep_prompt(repo_path: Path, session_id: str, sha: str) -> str | None:
         repo_path,
         session_id,
         _ledger_key("upkeep", "commit_notice", line),
-        node_id=sha,
+        # The records it named, so each one's delivery count includes this line.
+        node_id=" ".join(d["id"] for d in governing),
         surface="upkeep",
         category="commit_notice",
         chars=len(line),

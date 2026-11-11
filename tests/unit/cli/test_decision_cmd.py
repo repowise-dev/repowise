@@ -1204,3 +1204,68 @@ def test_a_person_with_no_title_is_still_asked_for_it(indexed_repo: Path) -> Non
 
     assert result.exit_code != 0
     assert "--title" in result.output
+
+
+def _ledger_rows(repo_root: Path, rows: list[tuple[str, str, str, str, float]]) -> None:
+    """``(session, key, node_id, surface, shown_at)`` hook-ledger rows, category edit_notice."""
+    from repowise.core.sessions.staging import SessionStagingStore
+
+    store = SessionStagingStore.open_default(repo_root)
+    try:
+        for session_id, key, node_id, surface, shown_at in rows:
+            store.add_settled_row(
+                session_id=session_id,
+                key=key,
+                node_id=node_id,
+                surface=surface,
+                category="edit_notice" if surface == "decision" else "served",
+                shown_at=shown_at,
+            )
+        store.commit()
+    finally:
+        store.close()
+
+
+def test_show_and_list_say_how_often_agents_were_shown_a_decision(indexed_repo: Path) -> None:
+    live, retired, quiet = "a" * 32, "e" * 32, "b" * 32
+    _seed_wiki_db(
+        indexed_repo,
+        [{"id": live, "title": "Prefer SQLite locally"}, {"id": quiet, "title": "Quiet one"}],
+    )
+    _seed_aliases(indexed_repo, [(retired, live, "rekeyed")])
+    _ledger_rows(
+        indexed_repo,
+        [
+            ("s1", retired, "src/app.py", "decision", 1_762_000_000.0),
+            ("s2", live, "src/app.py", "decision", 1_762_100_000.0),
+            ("mcp:c1", f"why:{live}", live, "why", 1_762_200_000.0),
+        ],
+    )
+
+    shown = CliRunner().invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo)])
+    assert shown.exit_code == 0, shown.output
+    assert "Shown to agents: 3 times, last 2025-11-03" in shown.output
+
+    data = json.loads(
+        CliRunner()
+        .invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo), "--format", "json"])
+        .output
+    )["decision"]
+    assert data["delivered_count"] == 3
+    assert data["last_delivered_at"].startswith("2025-11-03")
+
+    listed = {d["id"]: d for d in _list_json(indexed_repo)["decisions"]}
+    assert listed[live]["delivered_count"] == 3
+    # Recorded and never shown is a real zero.
+    assert (listed[quiet]["delivered_count"], listed[quiet]["last_delivered_at"]) == (0, None)
+
+
+def test_without_a_ledger_the_count_is_unknown_not_zero(indexed_repo: Path) -> None:
+    _seed_wiki_db(indexed_repo, [{"id": "a" * 32, "title": "Prefer SQLite locally"}])
+
+    shown = CliRunner().invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo)])
+    assert shown.exit_code == 0, shown.output
+    assert "Shown to agents" not in shown.output
+
+    listed = _list_json(indexed_repo)["decisions"][0]
+    assert (listed["delivered_count"], listed["last_delivered_at"]) == (None, None)

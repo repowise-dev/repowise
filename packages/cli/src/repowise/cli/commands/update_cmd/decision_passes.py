@@ -325,7 +325,7 @@ def _run_session_passes(
     # Second: the mining pass is what fills discovery's queue.
     _discover_session_decisions(opts, run, docs, policy, indexed_files)
     _apply_injection_feedback(opts, run, policy)
-    _classify_hook_efficacy(opts, run, policy)
+    _classify_hook_efficacy(opts, run)
 
 
 def _mine_session_decisions(
@@ -423,17 +423,26 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
     return res
 
 
-def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
-    """Classify hook firings by what the agent did next (reads transcripts)."""
-    # The session lane is the privacy boundary for reading transcripts, so this
-    # fails closed; `repowise hook backfill` fills the columns on demand.
-    try:
-        from repowise.core.sessions.efficacy import ingest_transcript_efficacy
+def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun) -> None:
+    """Classify hook firings by what the agent did next (reads transcripts).
 
-        if policy.source_enabled("session"):
-            classified = ingest_transcript_efficacy(
-                run.repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
-            )
+    ``hooks.measure`` is the privacy boundary for reading transcripts on
+    update, off by default, so this fails closed; ``repowise hook backfill``
+    fills the columns on demand either way. When on, it runs only while the
+    ledger holds a recent firing still waiting to be judged.
+    """
+    try:
+        from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
+        from repowise.core.sessions.efficacy import (
+            has_unsettled_firings,
+            ingest_transcript_efficacy,
+        )
+
+        if not hook_flag_enabled(run.repo_path, "measure"):
+            return
+        since = time.time() - _EFFICACY_LOOKBACK_SECONDS
+        if has_unsettled_firings(run.repo_path, since=since):
+            classified = ingest_transcript_efficacy(run.repo_path, since=since)
             if opts.verbose and classified:
                 console.print(f"Hook firings classified: [green]{sum(classified.values())}[/green]")
     except Exception as exc:

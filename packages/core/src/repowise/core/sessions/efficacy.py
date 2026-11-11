@@ -169,6 +169,9 @@ NO_ACTION_EXPECTED = frozenset(
         # ledgers also hold appended ``search``/``digest`` rows; those are still
         # scored normally, kept apart so a cost and a saving are never averaged.
         ("search", "digest_served"),
+        # A decision a ``get_why`` reply carried: the agent asked for it, so
+        # nothing is recommended and there is nothing to have acted on.
+        ("why", "served"),
     }
 )
 
@@ -813,6 +816,36 @@ def discover_transcripts(
         p for d in root.iterdir() if d.is_dir() and needle in d.name.lower()
         for p in d.glob("*.jsonl")
     )
+
+
+def has_unsettled_firings(repo_path: Path, *, since: float) -> bool:
+    """Whether the ledger holds a firing since *since* this module judges and has not.
+
+    Bounded by *since* because a firing whose transcript is gone stays unjudged
+    for good. Read-only, so a repository with no ledger pays one stat and
+    creates nothing.
+    """
+    import sqlite3
+
+    from repowise.core.sessions.staging import default_store_path
+
+    path = default_store_path(Path(repo_path))
+    if not path.is_file():
+        return False
+    marks = ",".join("?" * len(CLASSIFIED_SURFACES))
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=1)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM injections WHERE evaluated = 0 AND shown_at >= ? "
+                f"AND surface IN ({marks}) LIMIT 1",
+                (since, *CLASSIFIED_SURFACES),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def ingest_transcript_efficacy(
