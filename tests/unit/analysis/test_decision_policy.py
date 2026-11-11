@@ -819,3 +819,14 @@ def test_an_unreadable_session_start_reads_as_off():
 
     assert resolution.policy.session_start is False
     assert any("session_start" in w for w in resolution.warnings)
+
+
+
+def test_upkeep_prompt_is_off_unless_asked_for(tmp_path):
+    assert resolve_policy({}).policy.upkeep_prompt is False
+    assert resolve_policy({"decisions": {"upkeep_prompt": "yes"}}).policy.upkeep_prompt is False
+
+    write_policy(tmp_path, preset_policy("full").with_upkeep_prompt(True))
+    assert load_policy(tmp_path).policy.upkeep_prompt is True
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_upkeep_prompt(False))
+    assert "upkeep_prompt" not in load_repo_config(tmp_path)["decisions"]

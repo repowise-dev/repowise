@@ -28,7 +28,7 @@ unless the repository turns it on.
 - **show** — `repowise decision show <id>` — full record: rationale, evidence
   spans, status, and the supersession lineage.
 - **add** — an agent records a choice it reasoned out with
-  `repowise decision add --agent <slug> --title T --decision D --rationale R --affects <path> --evidence-commit <sha>`
+  `repowise decision add --agent <slug> --decision D --rationale R --affects <path> --evidence-commit <sha>`
   (e.g. `claude_code`, plus `--session <id>` if known), so the record is the
   agent's, not a person's. `--evidence-commit` ties it to the commit the choice
   was made in; an agent's record is accepted only with evidence, from this or

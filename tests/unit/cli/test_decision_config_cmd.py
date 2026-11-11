@@ -395,3 +395,21 @@ def test_session_start_writes_and_a_later_preset_keeps_it(repo: Path):
     result = _run("decision", "config", "session-start", "--off", str(repo))
     assert result.exit_code == 0, result.output
     assert "session_start" not in _config(repo)["decisions"]
+
+
+
+def test_upkeep_prompt_writes_and_installs_its_shell_entry(repo: Path, monkeypatch, tmp_path):
+    from repowise.cli.editor_integrations import claude_config
+
+    calls = []
+    monkeypatch.setattr(claude_config, "set_claude_code_capture_hook", calls.append)
+
+    result = _run("decision", "config", "upkeep-prompt", "--on", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["upkeep_prompt"] is True
+    assert calls == [True]
+
+    result = _run("decision", "config", "upkeep-prompt", "--off", str(repo))
+    assert result.exit_code == 0, result.output
+    assert "upkeep_prompt" not in _config(repo)["decisions"]
+    assert calls == [True]

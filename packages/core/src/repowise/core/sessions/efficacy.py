@@ -38,7 +38,18 @@ search        rescue_wide     same, scored apart (see below)
 search        digest          a file the digest ranked is touched
 search        digest_served   n/a, the hook already did it (see below)
 fix_history   edit_notice     a test is run, or the file's history is inspected
+upkeep        commit_notice   ``decision reaffirm`` or ``decision deprecate`` on
+                              a decision it named, anywhere later in the
+                              session (see below)
 ============= =============== ==================================================
+
+``upkeep``/``commit_notice`` is advice, the class of hook that has failed
+measurement before, so it ships off and is judged against a gate fixed before
+any firing: over at least 30 real firings, at least 30% followed in the same
+session by one of the commands it names, and a session's second firing acted
+on no less often than its first. "Same session" is the window, not the next
+:data:`ACTION_WINDOW` calls: settling a decision often waits until the work is
+done. :func:`firing_dose` computes the gate's numbers from ledger rows.
 
 ``rescue_wide`` is the same emitter under a different precondition (grep
 returned a few results and the best indexed symbol is in a file none of them
@@ -121,7 +132,11 @@ AMBIGUOUS = "ranged_read"
 #: Surfaces this module judges. ``decision`` rows key on decision-record ids
 #: and are judged by the decision miner; ``read_enrich`` is a silent KPI with
 #: no emission to act on.
-CLASSIFIED_SURFACES = ("read", "search", "fix_history", "wrong_path", "glob")
+CLASSIFIED_SURFACES = ("read", "search", "fix_history", "wrong_path", "glob", "upkeep")
+
+#: (surface, category) pairs judged against everything after the firing in its
+#: session rather than the next :data:`ACTION_WINDOW` tool calls.
+SESSION_WINDOW_CATEGORIES = frozenset({("upkeep", "commit_notice")})
 
 #: (surface, category) pairs that carry no recommended action, so an unacted
 #: firing is not a failure. Reported as a count, excluded from rates. The
@@ -333,6 +348,12 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ),
     # The paths ride on the continuation lines, which ``parse_emission``
     # already harvests, so this header captures the pattern and nothing else.
+    # The decision ids it names are read off the line by ``_UPKEEP_IDS``.
+    (
+        "upkeep",
+        "commit_notice",
+        re.compile(r"^\[repowise\] Commit [0-9a-f]+ changes code governed by "),
+    ),
     (
         "glob",
         "timeout_rescue",
@@ -347,6 +368,16 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 #: the emission rather than carried on :class:`Firing`, which has no field for
 #: "what this firing was steering the agent away from".
 _WRONG_PATH_ATTEMPTED = re.compile(r"^\[repowise\] (?P<attempted>\S+) is not in this tree\.")
+
+#: The decision ids an upkeep line names: each is followed by its quoted title.
+_UPKEEP_IDS = re.compile(r'\b([0-9a-f]{8}) "')
+
+#: The three settling commands, through ``repowise distill`` or not, with the
+#: ids they were given: a named id has to be an argument of that command, not
+#: just somewhere in the same call.
+_UPKEEP_CMD = re.compile(
+    r"\brepowise\s+(?:distill\s+)?decision\s+(reaffirm|deprecate)((?:\s+[0-9a-f]{8,})+)"
+)
 
 #: A path-shaped token, for harvesting the file lists that follow a triage
 #: header or ride inside a digest body. Both separators are accepted: triage
@@ -408,10 +439,7 @@ def parse_emission(text: str) -> list[Firing]:
                     break
                 block.append(follow)
             groups = m.groupdict()
-            targets = [t for t in (groups.get("target"), groups.get("symbol")) if t]
-            targets.extend(
-                p for p in _FILEISH.findall("\n".join(block[1:])) if p not in targets
-            )
+            targets = _firing_targets(surface, line, groups, block)
             out.append(
                 Firing(
                     surface=surface,
@@ -423,6 +451,17 @@ def parse_emission(text: str) -> list[Firing]:
             )
             break
     return out
+
+
+def _firing_targets(surface: str, line: str, groups: dict, block: list[str]) -> list[str]:
+    """What a firing pointed at: its captured target and symbol, then the paths
+    on its continuation lines. An upkeep line points at the decision ids it names.
+    """
+    if surface == "upkeep":
+        return _UPKEEP_IDS.findall(line)
+    targets = [t for t in (groups.get("target"), groups.get("symbol")) if t]
+    targets.extend(p for p in _FILEISH.findall("\n".join(block[1:])) if p not in targets)
+    return targets
 
 
 def _normalize(path: str) -> str:
@@ -458,12 +497,13 @@ def classify(firing: Firing, following: list[tuple[str, str]]) -> Firing:
     """Settle ``acted`` for one firing against the tool calls that followed.
 
     *following* is ``(tool_name, serialized_input)`` in transcript order. It is
-    clipped to :data:`ACTION_WINDOW` here rather than trusted from the caller —
+    clipped to :data:`ACTION_WINDOW` here, except for
+    :data:`SESSION_WINDOW_CATEGORIES`, rather than trusted from the caller —
     the window *is* the attribution claim, and silently widening it is how a
     hook gets credit for something forty tool calls of unrelated work later.
     Mutates and returns *firing* so callers can classify in place.
     """
-    following = following[:ACTION_WINDOW]
+    following = _in_window(firing, following)
     if (firing.surface, firing.category) in NO_ACTION_EXPECTED:
         firing.acted = None
         return firing
@@ -479,6 +519,7 @@ def classify(firing: Firing, following: list[tuple[str, str]]) -> Firing:
         ("search", "digest"): _acted_target,
         ("fix_history", "edit_notice"): _acted_fix_history,
         ("wrong_path", "rescue"): _acted_wrong_path,
+        ("upkeep", "commit_notice"): _acted_upkeep,
     }.get((firing.surface, firing.category))
     if judge is None:
         firing.acted = None
@@ -498,6 +539,13 @@ def classify(firing: Firing, following: list[tuple[str, str]]) -> Firing:
         return firing
     firing.acted = False
     return firing
+
+
+def _in_window(firing: Firing, following: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The calls *firing* may be credited with: the action window, or its session."""
+    if (firing.surface, firing.category) in SESSION_WINDOW_CATEGORIES:
+        return following
+    return following[:ACTION_WINDOW]
 
 
 def _acted_skeleton(firing: Firing, name: str, norm: str, raw: str) -> str:
@@ -593,6 +641,47 @@ def _acted_fix_history(firing: Firing, name: str, norm: str, raw: str) -> str:
     return ""
 
 
+def _acted_upkeep(firing: Firing, name: str, norm: str, raw: str) -> str:
+    """A settling command on a decision the line named; its verb is the evidence."""
+    if name not in ("Bash", "PowerShell"):
+        return ""
+    for m in _UPKEEP_CMD.finditer(raw):
+        given = m.group(2).split()
+        if any(arg.startswith(t) for arg in given for t in firing.targets):
+            return m.group(1)
+    return ""
+
+
+def firing_dose(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Firings and acted counts overall, and for each session's first and second.
+
+    *rows* are evaluated ledger rows of one category with ``session_id``,
+    ``shown_at`` and ``acted``; the caller picks the population (real sessions,
+    a cutoff). The second exposure is the measurement that separates a message
+    that lands from a base rate: a once-per-thing gate makes the headline rate
+    collapse towards sessions over firings.
+    """
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        # A row with no session cannot be ordered within one.
+        if row.get("session_id"):
+            by_session.setdefault(row["session_id"], []).append(row)
+    out = dict.fromkeys(
+        ("firings", "acted", "first", "first_acted", "second", "second_acted"), 0
+    )
+    for session_rows in by_session.values():
+        session_rows.sort(key=lambda r: r.get("shown_at") or 0.0)
+        for ordinal, row in enumerate(session_rows):
+            acted = int(bool(row.get("acted")))
+            out["firings"] += 1
+            out["acted"] += acted
+            if ordinal < 2:
+                key = "first" if ordinal == 0 else "second"
+                out[key] += 1
+                out[f"{key}_acted"] += acted
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Transcript replay
 # ---------------------------------------------------------------------------
@@ -624,11 +713,14 @@ def iter_transcript_firings(path: Path, *, window: int = ACTION_WINDOW) -> Itera
         following = [
             (name, raw) for (j, name, raw) in tool_uses if index < j <= index + window
         ][:window]
+        rest = [(name, raw) for (j, name, raw) in tool_uses if j > index]
         for firing in parse_emission(text):
+            pair = (firing.surface, firing.category)
+            calls = rest if pair in SESSION_WINDOW_CATEGORIES else following
             firing.ts = ts
             firing.duration_ms = duration_ms
             firing.session_id = session_id
-            yield classify(firing, following)
+            yield classify(firing, calls)
 
 
 def _hook_emission(line: str) -> tuple[str, float | None, int, str] | None:

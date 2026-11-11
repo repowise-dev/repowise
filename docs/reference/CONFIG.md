@@ -391,6 +391,7 @@ decisions:
 | `sync` | `false` | Send and receive decisions with this repo on repowise.dev during `update`. |
 | `update_mining` | `false` | Let `repowise update` call the model for decisions. See [below](#update_mining). |
 | `session_start` | `false` | Open each agent session with the decisions relevant to its working set. See [below](#session_start). |
+| `upkeep_prompt` | `false` | After a commit that changes governed code, ask the agent to settle each decision. See [below](#upkeep_prompt). |
 
 ### Sources
 
@@ -488,6 +489,20 @@ governed code pays nothing for decisions.
   files the session is likely to touch (changed, staged, on the branch, or
   edited last session), plus at most two labelled background records.
   `repowise decision config session-start --on`.
+
+### `upkeep_prompt`
+
+Off by default. On, a successful `git commit` that changes files governed by
+decisions in force gets one line naming up to three of them, each once per
+session, with the one command for each outcome:
+
+- still holds: `repowise decision reaffirm <id> --agent <slug>`
+- replaced by this change: `repowise decision deprecate <id> --superseded-by <new id> --agent <slug>`
+- knowingly broken: `repowise decision deprecate <id> --reason '<why>' --agent <slug>`
+
+It fires from the same shell entry as `capture_prompt`; `repowise decision
+config upkeep-prompt --on` installs it if missing. Every firing is logged, and
+`repowise hook stats` reports how often a session settled a decision it named.
 
 ### From the CLI
 

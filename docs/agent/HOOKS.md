@@ -172,7 +172,13 @@ declined, and zero indexed matches stays silent.
 force, it gets up to three of them, one line each with the rationale, once per
 session per decision and at most six per session. A decision governs the files
 its scope names, and every file under a directory its scope names, including a
-new one. A file with a repeated bug-fix history
+new one.
+
+**Commit-time upkeep.** With `decisions.upkeep_prompt: true` (off by default),
+a commit that changes governed files gets one line naming up to three of
+their decisions, each once per session, and the one command for each outcome:
+still holds (`decision reaffirm`), replaced, or knowingly broken (`decision
+deprecate`). It fires from the shell entry the capture prompt uses. A file with a repeated bug-fix history
 gets a one-line heads-up too (see [bug history](../layers/BUG_HISTORY.md)).
 
 Every injected decision id is recorded in `.repowise/sessions/sessions.db`. On

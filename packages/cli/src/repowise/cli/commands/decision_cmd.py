@@ -227,7 +227,11 @@ class _DecisionFields:
 
 @decision_group.command("add")
 @click.argument("path", required=False, default=None)
-@click.option("--title", default=None, help="Decision title (short).")
+@click.option(
+    "--title",
+    default=None,
+    help="Decision title (short). With --agent, defaults to the decision's first words.",
+)
 @click.option("--context", default=None, help="What forced this decision?")
 @click.option("--decision", "decision_text", default=None, help="What was chosen?")
 @click.option("--rationale", default=None, help="Why it was chosen.")
@@ -274,8 +278,9 @@ def decision_add(
 ) -> None:
     """Add a decision, interactively or from flags.
 
-    With both --title and --decision, records without prompting and prints the
-    new id, so a script or an agent can call it. Everything else is optional.
+    With --title and --decision, records without prompting and prints the new
+    id, so a script or an agent can call it. Everything else is optional. An
+    agent may leave out --title: it defaults to the decision's opening words.
 
     `--kind agreement` records a working agreement: a rule about how the work
     is conducted, which names no file and is not checked against the code.
@@ -294,6 +299,9 @@ def decision_add(
     so review can tell it from one a person typed. It needs the flags.
     """
     signer = _signer(agent, agent_session)
+    # A person running the command with a decision and no title is asked for
+    # the rest; an agent recording what it just did is not asked anything.
+    title = title or (_title_from(decision_text) if agent else None)
     non_interactive = bool(title and decision_text)
     if not non_interactive:
         _refuse_partial_flags(
@@ -334,6 +342,28 @@ def decision_add(
 
     warnings = _collect_add_warnings(repo_path, fields, stored.kind)
     _report_added(repo_path, stored, fmt, warnings=warnings, commits=evidence_commits)
+
+
+#: Longest derived title, in characters.
+_DERIVED_TITLE_CAP = 80
+
+
+def _title_from(decision_text: str | None) -> str | None:
+    """A short title from the decision itself: its opening words, cut at a word.
+
+    A title is how a decision is listed and how a re-add finds the record it
+    updates; it is not part of what puts a decision in force, so deriving it
+    costs the contract nothing and saves the agent a flag. The whole text, not
+    its first sentence, so two decisions share a derived title only when their
+    first :data:`_DERIVED_TITLE_CAP` characters do. Ceiling: two that do fold
+    into one record, as two equal hand-written titles always have.
+    """
+    text = " ".join((decision_text or "").split()).rstrip(".")
+    if not text.strip(".!?;:, "):
+        return None
+    if len(text) <= _DERIVED_TITLE_CAP:
+        return text
+    return text[:_DERIVED_TITLE_CAP].rsplit(" ", 1)[0].rstrip(",;:") + "…"
 
 
 def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
@@ -471,7 +501,7 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
             guidance = (
                 f"Pass {missing_str}, e.g. "
                 '`repowise decision add --title "<what>" --decision "<chosen>" '
-                "[--rationale ...] [--affects <path>]`."
+                "[--rationale ...] [--affects <path>]`; with --agent, --title may be left out."
             )
         else:
             guidance = (
@@ -482,7 +512,7 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
-                "decision without prompting.",
+                "decision without prompting (--decision alone with --agent).",
                 "guidance": guidance,
             },
             fmt,
