@@ -245,6 +245,8 @@ def test_a_gitlab_job_that_stopped_early_reads_as_could_not_evaluate(
 def test_the_gitlab_note_job_runs_after_the_gates_and_never_fails_the_pipeline() -> None:
     job = _gitlab_jobs()["repowise-note"]
     assert job["stage"] == ".post" and job["allow_failure"] is True
+    # Serialised per merge request: find-then-post must not race.
+    assert job["resource_group"] == "repowise-note-$CI_MERGE_REQUEST_IID"
     assert job["rules"] == [
         {
             "if": '$CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_GITLAB_TOKEN',

@@ -288,6 +288,9 @@ repowise-note:
   image: python:3.12
   stage: .post
   allow_failure: true
+  # One note job at a time per merge request, so two quick pushes cannot both
+  # find no note and post two.
+  resource_group: repowise-note-$CI_MERGE_REQUEST_IID
   variables:
     GIT_STRATEGY: none
   needs:
