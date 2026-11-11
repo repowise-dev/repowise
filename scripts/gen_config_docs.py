@@ -181,15 +181,21 @@ def values_cell(s: Setting, *, as_env: bool = False) -> str:
     if s.choices:
         return ", ".join(_code(c) for c in s.choices)
     if as_env and s.type == "bool" and s.env is not None:
-        if s.env.false_values is not None:
-            spellings = sorted(v for v in s.env.false_values if v)
-            lead = "on unless " if s.default else "on when set, unless "
-            return lead + ", ".join(_code(v) for v in spellings)
-        from repowise.core.settings import TRUTHY
-
-        truthy = s.env.true_values if s.env.true_values is not None else TRUTHY
-        return ", ".join(_code(v) for v in sorted(truthy))
+        return _bool_spellings(s)
     return ""
+
+
+def _bool_spellings(s: Setting) -> str:
+    """What turns a switch variable on, in the way its reader parses it."""
+    assert s.env is not None
+    if s.env.false_values is not None:
+        spellings = sorted(v for v in s.env.false_values if v)
+        lead = "on unless " if s.default else "on when set, unless "
+        return lead + ", ".join(_code(v) for v in spellings)
+    from repowise.core.settings import TRUTHY
+
+    truthy = s.env.true_values if s.env.true_values is not None else TRUTHY
+    return ", ".join(_code(v) for v in sorted(truthy))
 
 
 def _bounds(s: Setting) -> str:
@@ -289,19 +295,20 @@ def user_facing() -> tuple[Setting, ...]:
     return all_settings(include_internal=False)
 
 
-def rendered_blocks() -> dict[str, list[str]]:
-    """Every block's table lines, by block name.
+def _shown(s: Setting) -> bool:
+    """A file key needs a key table; an environment-only setting, a variable table."""
+    if any(b.claims(s) for b in BLOCKS if not b.env):
+        return True
+    return s.scope == "env" and any(b.claims(s) for b in BLOCKS if b.env)
 
-    Raises ``ValueError`` naming any user-facing setting no block shows, and
-    any block that came out empty.
+
+def rendered_blocks() -> dict[str, list[str]]:
+    """Every block's table lines, by block name; a block with no rows is left out.
+
+    Raises ``ValueError`` naming any user-facing setting no block shows.
     """
     settings = user_facing()
-    unclaimed = [
-        s.key
-        for s in settings
-        if not any(b.claims(s) for b in BLOCKS if not b.env)
-        and not (s.scope == "env" and any(b.claims(s) for b in BLOCKS if b.env))
-    ]
+    unclaimed = [s.key for s in settings if not _shown(s)]
     if unclaimed:
         raise ValueError(
             f"No table in CONFIG.md shows {', '.join(unclaimed)}. Add a block for it "
