@@ -478,13 +478,13 @@ async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path, pi
         assert "not a person" in gen.render_full(tmp_path, data), type(gen).__name__
 
 
-async def test_an_accepted_agreement_never_reaches_the_generated_block(
+async def test_an_accepted_agreement_stays_out_of_the_generated_block(
     session, repo, tmp_path, pin_everything
 ):
-    """A working agreement is a rule about how the work is done.
-
-    Those belong in the agent's own instruction files, written by a person,
-    not in a block generated from the store, even pinned.
+    """A working agreement is a rule about how the work is done, not a choice
+    about the code, so the generated block leaves it out even when accepted
+    and pinned. It stays stored. An accepted architectural decision beside it
+    is the control: the query still runs and still delivers.
     """
     agreement = DecisionRecord(
         repository_id=repo.id,
@@ -498,17 +498,30 @@ async def test_an_accepted_agreement_never_reaches_the_generated_block(
         evidence_file="agreement",
         staleness_score=0.0,
     )
-    session.add(agreement)
+    control = DecisionRecord(
+        repository_id=repo.id,
+        title="Keep the store local",
+        status="active",
+        rationale="no network on the hook path",
+        decision="the store is a local SQLite file",
+        source="cli",
+        affected_files_json='["src/store.py"]',
+        evidence_file="control",
+        staleness_score=0.0,
+    )
+    session.add_all([agreement, control])
     await session.flush()
     from repowise.core.persistence.crud.authority import accept_decision
 
     await accept_decision(session, agreement, accepter="tester")
+    await accept_decision(session, control, accepter="tester")
     await session.commit()
 
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
-    assert "Never use em dashes" not in [d.title for d in data.decisions]
-    assert data.decisions_in_force is False
+    titles = [d.title for d in data.decisions]
+    assert "Keep the store local" in titles
+    assert "Never use em dashes" not in titles
 
 
 async def test_fetch_avg_confidence(session, repo, tmp_path):
