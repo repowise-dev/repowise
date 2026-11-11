@@ -57,6 +57,17 @@ _MAX_CALLEE_PATH = 100
 _PLAIN_PATH = re.compile(r"[\w$#]+(?:\.[\w$#]+)*")
 
 
+VALID_PATTERN_TYPES = {
+    "long_identifier",
+    "repeat_pattern",
+    "typed_pattern",
+    "identifier_pattern",
+    "paren_pattern",
+    "tuple_pattern",
+    "list_pattern",
+    "array_pattern",
+}
+
 def is_comment(node: Node) -> bool:
     return "comment" in node.type
 
@@ -746,7 +757,47 @@ def _count_parameters(fn_node: Node) -> int:
     Python's ``*args`` / ``**kwargs``.
     Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
-    params = _parameter_list(fn_node)
+
+    if fn_node.type == "function_or_value_defn" and fn_node.children[1].type == "function_declaration_left":    # when it is 'let' and it is not value binding
+        argument_patterns = fn_node.children[1].children[1].children
+
+        print(f"DEBUG NODE {argument_patterns}")
+
+        # loops over all the parameters and add one for every parameter, ignoring the punctuation like commas
+        return sum(1 for child in fn_node.children[1].children[1].children if child.type in VALID_PATTERN_TYPES)
+
+
+    elif fn_node.type == "member_defn":  # member definition for OOP in F#, that can be tupled or curried
+        # it is for sure method not a property, as the walker only extracts the functions
+
+        params = fn_node.children[1].children   # elements next to 'member' keyword
+
+        if sum(1 for child in params if child.type in VALID_PATTERN_TYPES) == 1 and params[1].type == 'paren_pattern':
+            # then for sure this is tupled format for member methods
+            print(f"hi")
+
+            inside_paren = params[1].children
+
+            print(inside_paren)
+
+
+            if sum(1 for child in inside_paren if child.type in VALID_PATTERN_TYPES) == 1 and inside_paren[1].type == 'repeat_pattern':
+
+                # then it is comma-separated multi-parameter format ('repeat_pattern')
+                return sum(1 for child in inside_paren[1].children if child.type in VALID_PATTERN_TYPES)
+
+
+            return sum(1 for child in inside_paren if child.type in VALID_PATTERN_TYPES)
+            
+
+        else:
+            # then for sure this is curried format for member methods
+            # no 'repeat_pattern' in curried form as there is no commas
+            return sum(1 for child in params if child.type in VALID_PATTERN_TYPES)
+
+
+
+    params = _parameter_list(fn_node)   # AST for languages like F# does not have that node "parameter_list"
     if params is None:
         # Swift has no list node: each ``parameter`` is a child of the function,
         # and a subscript's are on the ``subscript_declaration`` around its body.
