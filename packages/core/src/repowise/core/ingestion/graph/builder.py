@@ -652,6 +652,7 @@ class GraphBuilder(
         # Reads only the graph and is cheap, so every build re-derives it: a
         # seeded edge cannot tell whether a call now holds its pair.
         self._resolve_override_dispatch(progress=progress)
+        self._resolve_document_edges()  # global: a scoped build can make a seeded doc's link resolve
 
         # Which symbols a package exports, read off the imports just resolved.
         try:
