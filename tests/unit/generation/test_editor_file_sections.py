@@ -262,7 +262,14 @@ def test_the_short_block_says_when_an_agent_record_governs(gen):
     # short block names that and sends no agent to confirm its own record.
     lean = gen.render(_full_data())
     assert "it comes into force when that commit merges" in lean
+    assert "Mined records are background" in lean
     assert "decision confirm" not in lean
+
+
+def test_the_full_block_keeps_the_promote_command(gen):
+    # Putting a background record in force stays documented where there is room.
+    full = gen.render(_full_data(sections=frozenset({"how_to_work_full"})))
+    assert "`repowise decision confirm <id> --agent <your slug>`" in full
 
 
 def test_the_record_command_carries_its_commit(gen):
