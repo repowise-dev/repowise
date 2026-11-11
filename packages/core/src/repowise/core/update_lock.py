@@ -165,6 +165,44 @@ def update_workspace_lock(workspace_root: Path) -> dict[str, Any] | None:
     return _try_acquire_lock_at(workspace_update_lock_path(workspace_root), None)
 
 
+def _workspace_root_for(repo_path: Path) -> Path | None:
+    """The workspace *repo_path* is a member of, or ``None`` when standalone."""
+    from repowise.core.workspace.config import find_workspace_root
+
+    return find_workspace_root(repo_path)
+
+
+def try_acquire_update_locks(
+    repo_path: Path,
+    target_commit: str | None,
+    *,
+    workspace_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Acquire the workspace guard (when the repo is a member) and the repo lock.
+
+    ``None`` means both were acquired. A repo-level ``repowise update`` — what
+    the post-commit hook spawns — used to take only the per-repo lock, so it
+    could run concurrently with a workspace-wide pass: two independent files
+    cannot provide mutual exclusion between the two entry points. Taking the
+    workspace guard first closes that, and the per-repo lock still serialises
+    two updates of the same member.
+
+    Returns the holder's payload when either guard is held by someone else, so
+    the caller can report who it lost to and defer. A losing run releases the
+    workspace guard again before returning, so it never leaves it behind.
+    """
+    if workspace_root is None:
+        workspace_root = _workspace_root_for(repo_path)
+    if workspace_root is not None:
+        holder = update_workspace_lock(workspace_root)
+        if holder is not None:
+            return holder
+    holder = try_acquire_update_lock(repo_path, target_commit)
+    if holder is not None and workspace_root is not None:
+        release_workspace_lock(workspace_root)
+    return holder
+
+
 def _release_lock_at(lock_path: Path) -> None:
     with contextlib.suppress(OSError):
         lock_path.unlink(missing_ok=True)
@@ -178,6 +216,15 @@ def release_update_lock(repo_path: Path) -> None:
 def release_workspace_lock(workspace_root: Path) -> None:
     """Remove the workspace-level update lock. Safe to call if it doesn't exist."""
     _release_lock_at(workspace_update_lock_path(workspace_root))
+
+
+def release_update_locks(repo_path: Path, *, workspace_root: Path | None = None) -> None:
+    """Release both guards taken by :func:`try_acquire_update_locks`."""
+    release_update_lock(repo_path)
+    if workspace_root is None:
+        workspace_root = _workspace_root_for(repo_path)
+    if workspace_root is not None:
+        release_workspace_lock(workspace_root)
 
 
 def _read_lock_at(lock_path: Path) -> dict[str, Any] | None:
