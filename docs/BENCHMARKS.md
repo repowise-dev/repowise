@@ -36,7 +36,7 @@ one local index, and most of it needs no model key.
 
 | Category | Tools teams use today | What repowise does | Evidence |
 |---|---|---|---|
-| Code health | CodeScene, SonarQube maintainability rating | 53 detectors score every file on defect risk, maintainability and performance, then rank what to fix first | [Measured](#5-code-health-predicts-defects): 2.3x CodeScene's recall of later defects at a fixed review budget |
+| Code health | CodeScene, SonarQube maintainability rating | 59 detectors score every file on defect risk, maintainability and performance, then rank what to fix first | [Measured](#5-code-health-predicts-defects): 2.3x CodeScene's recall of later defects at a fixed review budget |
 | Code graph and search for agents | Sourcegraph, CodeGraph, Serena | Call graph, hybrid search and answers served to agents over MCP | [Measured](#1-finding-the-right-files): retrieval, agent loop and graph accuracy against CodeGraph and Serena |
 | Change risk and test impact | Codecov gates, test-impact tools | Where a change ranks among the repository's recent commits, which tests to run, coverage gates, all in the GitHub Action | [Measured](#test-intelligence): test selection precision |
 | Dead code | Knip, vulture, ts-prune | Unreachable files, unused exports and unused packages, each with a confidence tier and its evidence, across languages | Capability |
@@ -242,7 +242,7 @@ well (AUC 0.742). The score's advantage is effort-aware ranking, Popt +0.134
 
 **Weights are fitted, not hand-set:** a size-controlled logistic fit on files
 scored before their bug window, so a detector earns weight only for defect lift
-beyond being large. Of the 53 detectors, 25 move the defect score; the others
+beyond being large. Of the 59 detectors, 23 move the defect score; the others
 feed the maintainability or performance score, or are advisory.
 
 Reports:

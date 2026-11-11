@@ -204,7 +204,7 @@ the code it governs, plus docs checked against the code.<br />
 | You ask | Repowise gives you |
 |---|---|
 | *What should we fix first?* | A ranked queue weighing impact against effort, using churn, fan-in, coverage and bug history. [Fix first](docs/layers/CODE_HEALTH.md#fix-first) |
-| *Where is the debt?* | A 1 to 10 score for every file from 53 deterministic detectors, split into defect risk, maintainability and performance, validated against real bug history. [Code health](docs/layers/CODE_HEALTH.md) |
+| *Where is the debt?* | A 1 to 10 score for every file from 59 deterministic detectors, split into defect risk, maintainability and performance, validated against real bug history. [Code health](docs/layers/CODE_HEALTH.md) |
 | *Why is this slow?* | N+1 queries, I/O in loops, blocking calls inside async code and quadratic loops, traced across function and file boundaries. [Performance](docs/layers/PERFORMANCE.md) |
 | *How do I break this up safely?* | Concrete refactoring plans: Extract Method, Extract Class, Move Method, Split File, Break Cycle, with the exact symbols that move and what moves with them. Ready to hand to an agent. [Refactoring](docs/layers/REFACTORING.md) |
 | *What can we delete?* | Unreachable files, unused exports and unused packages, each with a confidence tier and the evidence behind it. [Dead code](docs/layers/DEAD_CODE.md) |
@@ -322,7 +322,7 @@ after it landed. No forge API is called.
 
 ## Know exactly what to fix
 
-Every file gets a 1 to 10 score from **53 deterministic detectors**, read three ways:
+Every file gets a 1 to 10 score from **59 deterministic detectors**, read three ways:
 defect risk, maintainability and performance. Performance findings such as N+1
 queries and I/O in loops are traced across functions and files.
 
@@ -445,7 +445,7 @@ on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
 | | repowise | CodeScene |
 |---|---|---|
 | Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
-| Code health score (1-10) | ✅ 53 detectors, 25 scoring | ✅ 25-30 |
+| Code health score (1-10) | ✅ 59 detectors, 23 scoring | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |

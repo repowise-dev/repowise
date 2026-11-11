@@ -156,7 +156,7 @@ orchestrator (falls back to the top-level directory). The MCP tool
 - `duplication/` — Rabin–Karp over tree-sitter tokens. Co-change correlation
   via `git_meta_map[path]["co_change_partners_json"]`.
 - `biomarkers/` — one detector per file. Implements the `Biomarker`
-  Protocol from `biomarkers/base.py`. Twenty-six registered (see
+  Protocol from `biomarkers/base.py`. Fifty-nine registered (see
   `biomarkers/registry.py` and `biomarkers/README.md` for the full list),
   plus three governance findings written by a separate additive pass.
 - `grading.py` — the presentation "currency" layer over the score: the five
