@@ -388,7 +388,7 @@ async def test_planner_stats_skip_other_backends() -> None:
 
 
 def test_postgres_engine_configures_keepalives_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
 
     from repowise.core.persistence import database
 
@@ -398,22 +398,28 @@ def test_postgres_engine_configures_keepalives_by_default(monkeypatch: pytest.Mo
     monkeypatch.delenv("REPOWISE_PG_COMMAND_TIMEOUT", raising=False)
 
     with patch.object(database, "create_async_engine") as mock_create:
-        database.create_engine("postgresql://user:pass@localhost:5432/testdb")
-        assert mock_create.called
-        kwargs = mock_create.call_args.kwargs
-        connect_args = kwargs.get("connect_args", {})
-        assert connect_args.get("server_settings") == {
-            "tcp_keepalives_idle": "60",
-            "tcp_keepalives_interval": "15",
-            "tcp_keepalives_count": "4",
-        }
-        assert "command_timeout" not in connect_args
+        mock_engine = MagicMock()
+        mock_create.return_value = mock_engine
+        with patch.object(database.event, "listen") as mock_event_listen:
+            database.create_engine("postgresql://user:pass@localhost:5432/testdb")
+            assert mock_create.called
+            kwargs = mock_create.call_args.kwargs
+            connect_args = kwargs.get("connect_args", {})
+            assert connect_args.get("server_settings") == {
+                "tcp_keepalives_idle": "60",
+                "tcp_keepalives_interval": "15",
+                "tcp_keepalives_count": "4",
+            }
+            assert "command_timeout" not in connect_args
+            assert mock_event_listen.called
+            assert mock_event_listen.call_args[0][0] is mock_engine.sync_engine
+            assert mock_event_listen.call_args[0][1] == "connect"
 
 
 def test_postgres_engine_keepalives_and_command_timeout_configurable_via_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
 
     from repowise.core.persistence import database
 
@@ -423,14 +429,46 @@ def test_postgres_engine_keepalives_and_command_timeout_configurable_via_env(
     monkeypatch.setenv("REPOWISE_PG_COMMAND_TIMEOUT", "45")
 
     with patch.object(database, "create_async_engine") as mock_create:
-        database.create_engine("postgresql://user:pass@localhost:5432/testdb")
-        assert mock_create.called
-        kwargs = mock_create.call_args.kwargs
-        connect_args = kwargs.get("connect_args", {})
-        assert connect_args.get("server_settings") == {
-            "tcp_keepalives_idle": "120",
-            "tcp_keepalives_interval": "30",
-            "tcp_keepalives_count": "5",
-        }
-        assert connect_args.get("command_timeout") == 45
+        mock_engine = MagicMock()
+        mock_create.return_value = mock_engine
+        with patch.object(database.event, "listen"):
+            database.create_engine("postgresql://user:pass@localhost:5432/testdb")
+            assert mock_create.called
+            kwargs = mock_create.call_args.kwargs
+            connect_args = kwargs.get("connect_args", {})
+            assert connect_args.get("server_settings") == {
+                "tcp_keepalives_idle": "120",
+                "tcp_keepalives_interval": "30",
+                "tcp_keepalives_count": "5",
+            }
+            assert connect_args.get("command_timeout") == 45
+
+
+def test_postgres_socket_keepalives_applied_to_underlying_socket() -> None:
+    import socket
+    from unittest.mock import MagicMock
+
+    from repowise.core.persistence import database
+
+    listener = database._apply_postgres_socket_keepalives(idle=60, interval=15, count=4)
+
+    mock_socket = MagicMock()
+    mock_transport = MagicMock()
+    mock_transport.get_extra_info.return_value = mock_socket
+
+    mock_raw_conn = MagicMock()
+    mock_raw_conn._transport = mock_transport
+
+    mock_dbapi_conn = MagicMock()
+    mock_dbapi_conn._connection = mock_raw_conn
+
+    listener(mock_dbapi_conn, MagicMock())
+
+    mock_socket.setsockopt.assert_any_call(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        mock_socket.setsockopt.assert_any_call(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        mock_socket.setsockopt.assert_any_call(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15)
+    if hasattr(socket, "TCP_KEEPCNT"):
+        mock_socket.setsockopt.assert_any_call(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4)
 

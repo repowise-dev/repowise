@@ -14,6 +14,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import os
+import socket
 import sqlite3
 import warnings
 from collections.abc import AsyncGenerator, Callable
@@ -198,6 +199,42 @@ def _int_env(name: str, default: int | None = None) -> int | None:
         return default
 
 
+def _apply_postgres_socket_keepalives(
+    idle: int | None, interval: int | None, count: int | None
+) -> Callable[[object, object], None]:
+    """Configure TCP keepalive socket options on a newly opened PostgreSQL connection."""
+
+    def _listener(dbapi_connection: object, _connection_record: object) -> None:
+        raw_conn = getattr(dbapi_connection, "_connection", dbapi_connection)
+        transport = getattr(raw_conn, "_transport", None)
+        sock: socket.socket | None = None
+        if transport is not None:
+            sock = transport.get_extra_info("socket")
+        elif hasattr(raw_conn, "fileno"):
+            try:
+                fileno = raw_conn.fileno()
+                if isinstance(fileno, int) and fileno >= 0:
+                    sock = socket.fromfd(fileno, socket.AF_INET, socket.SOCK_STREAM)
+            except Exception:
+                sock = None
+
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                for opt_name, val in (
+                    ("TCP_KEEPIDLE", idle),
+                    ("TCP_KEEPINTVL", interval),
+                    ("TCP_KEEPCNT", count),
+                ):
+                    opt = getattr(socket, opt_name, None)
+                    if opt is not None and val is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, opt, val)
+            except OSError:
+                pass
+
+    return _listener
+
+
 
 def get_repo_db_path(repo_path: str | Path) -> Path:
     """Return the repo-local database path ``<repo>/.repowise/wiki.db``."""
@@ -376,13 +413,18 @@ def create_engine(
         if connect_args:
             kwargs["connect_args"] = connect_args
 
-
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
         # The ``connect`` event fires for the underlying DBAPI connection, so we
         # listen on the sync engine that backs the AsyncEngine.
         timeout = busy_timeout_ms if busy_timeout_ms is not None else _SQLITE_BUSY_TIMEOUT_MS
         event.listen(engine.sync_engine, "connect", _make_pragma_listener(timeout))
+    else:
+        event.listen(
+            engine.sync_engine,
+            "connect",
+            _apply_postgres_socket_keepalives(idle, interval, count),
+        )
     return engine
 
 
