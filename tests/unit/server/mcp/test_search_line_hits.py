@@ -859,3 +859,38 @@ def test_the_small_set_bound_is_inclusive(tmp_path):
     assert (len(rows), reasons) == (size, [])
     rows, reasons = _scan(tmp_path, {"a.py": size + 1})
     assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons
+
+
+def test_oversized_text_is_streamed_for_its_lines(tmp_path):
+    lines = [f"let row{i} = {i}" for i in range(200_000)]
+    lines[150_000] = 'let banner = "section1234"'
+    (tmp_path / "Big.swift").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert (tmp_path / "Big.swift").stat().st_size > _edit_sites._MAX_FILE_BYTES
+    rows, reasons = _line_hits.scan_literal(tmp_path, ["Big.swift"], "section1234", True)
+    assert rows == [
+        {"path": "Big.swift", "line": 150_001, "kind": "definition", "text": 'let banner = "section1234"'}
+    ]
+    assert reasons == []
+
+
+def test_text_past_the_stream_cap_is_reported_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(_line_hits, "_MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 200)
+    (tmp_path / "big.txt").write_text("x\n" * 150 + "token47\n", encoding="utf-8")
+    rows, reasons = _line_hits.scan_literal(tmp_path, ["big.txt"], "token47", True)
+    assert rows == [] and reasons == ["skipped as too large: big.txt"]
+    _, complete, unread = _line_hits.word_scan(tmp_path, "token47")
+    assert not complete and unread == ["skipped as too large: big.txt"]
+
+
+def test_a_stream_past_the_deadline_stops(tmp_path):
+    import re
+
+    path = tmp_path / "big.txt"
+    path.write_bytes(b"x\n" * 20_000 + b"token47\n")
+    pattern = re.compile("token47")
+    with open(path, "rb") as fh:
+        assert _line_hits._stream_matching_lines(fh, b"token47", pattern, 0.0) is None
+        assert _line_hits._stream_matching_lines(fh, b"token47", pattern, float("inf")) == [
+            (20_001, "token47")
+        ]

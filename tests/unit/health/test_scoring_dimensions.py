@@ -177,25 +177,24 @@ def _r(name: str, severity: Severity, *, deduction: float | None = None) -> Biom
 _FIXTURES: list[list[BiomarkerResult]] = [
     [],
     [_r("complex_method", Severity.CRITICAL) for _ in range(20)],
-    [_r("low_cohesion", Severity.CRITICAL), _r("nested_complexity", Severity.CRITICAL)],
+    [_r("god_class", Severity.CRITICAL), _r("nested_complexity", Severity.CRITICAL)],
     [
-        _r("low_cohesion", Severity.CRITICAL),
+        _r("primitive_obsession", Severity.CRITICAL),
         _r("nested_complexity", Severity.HIGH),
         _r("complex_method", Severity.MEDIUM),
         _r("untested_hotspot", Severity.HIGH),
         _r("knowledge_loss", Severity.LOW),
     ],
-    [_r("error_handling", Severity.LOW) for _ in range(10)],
+    [_r("duplicated_assertion_block", Severity.LOW) for _ in range(10)],
     [_r("developer_congestion", Severity.CRITICAL) for _ in range(3)],
     [
         _r("co_change_scatter", Severity.HIGH),
         _r("change_entropy", Severity.MEDIUM),
         _r("ownership_risk", Severity.HIGH),
-        _r("dry_violation", Severity.MEDIUM),
         _r("primitive_obsession", Severity.HIGH),
         _r("god_class", Severity.CRITICAL),
         _r("large_method", Severity.HIGH),
-        _r("low_cohesion", Severity.MEDIUM),
+        _r("god_class", Severity.MEDIUM),
     ],
     [_r("coverage_gradient", Severity.LOW, deduction=4.0 * 0.8)],
     [_r("some_unregistered_biomarker", Severity.HIGH)],
@@ -213,7 +212,7 @@ def test_defect_dimension_matches_legacy_golden():
 # the number a refactor is meant to move, so it needs a golden of its own: the
 # defect gate above cannot see a change here, and every pure code-shape marker
 # now counts toward it. A deliberate retune updates these; a surprise does not.
-_MAINTAINABILITY_GOLDEN: list[float] = [10.0, 8.0, 6.0, 6.1, 8.0, 10.0, 4.2, 10.0, 10.0]
+_MAINTAINABILITY_GOLDEN: list[float] = [10.0, 8.0, 6.0, 6.8, 10.0, 10.0, 4.9, 10.0, 10.0]
 
 
 def test_maintainability_dimension_matches_golden():
@@ -356,12 +355,12 @@ def test_perf_home_dimension():
 
 
 def test_floored_smell_is_full_weight_in_maintainability():
-    """low_cohesion is floored to 0.5 in defect but full (1.0) in maintainability."""
-    findings = [_r("low_cohesion", Severity.CRITICAL)]
+    """primitive_obsession is floored to 0.5 in defect but full (1.0) in maintainability."""
+    findings = [_r("primitive_obsession", Severity.CRITICAL)]
     scores, _ = score_file(findings)
-    # defect: 2.0 * 0.5 = 1.0, saturated to 0.938
-    assert round(scores["defect"], 3) == 9.062
-    # maintainability: 2.0 * 1.0 = 2.0 in structural_complexity (cap 4.0) -> 8.0
+    # defect: 2.0 * 0.5 = 1.0, saturated toward 3.09 x 1.5
+    assert round(scores["defect"], 3) == 9.101
+    # maintainability: 2.0 * 1.0 = 2.0 in size_and_complexity (cap 2.0) -> 8.0
     assert scores["maintainability"] == 8.0
 
 
@@ -385,8 +384,8 @@ def test_structural_dual_counts_toward_both_dimensions():
 def test_maintainability_accumulates_across_findings():
     """Two structural maintainability smells accumulate (under the 4.0 cap)."""
     findings = [
-        _r("low_cohesion", Severity.HIGH),  # 1.2 * 1.0
-        _r("low_cohesion", Severity.HIGH),  # 1.2 * 1.0
+        _r("god_class", Severity.HIGH),  # 1.2 * 1.0
+        _r("god_class", Severity.HIGH),  # 1.2 * 1.0
     ]
     scores, _ = score_file(findings)
     # structural_complexity maintainability: 1.2 + 1.2 = 2.4 (< 4.0 cap) -> 7.6
@@ -395,7 +394,7 @@ def test_maintainability_accumulates_across_findings():
 
 def test_maintainability_structural_cap_bounds_stream():
     """Many critical structural smells saturate the 4.0 maintainability cap."""
-    findings = [_r("low_cohesion", Severity.CRITICAL) for _ in range(10)]
+    findings = [_r("god_class", Severity.CRITICAL) for _ in range(10)]
     scores, _ = score_file(findings)
     # 10 * 2.0 = 20 raw -> clamped to the 4.0 structural cap -> 6.0
     assert scores["maintainability"] == 6.0
@@ -404,16 +403,16 @@ def test_maintainability_structural_cap_bounds_stream():
 def test_maintainability_categories_capped_independently():
     """Each maintainability category is bounded on its own budget."""
     findings = [
-        _r("low_cohesion", Severity.CRITICAL),  # structural, capped at 4.0
-        _r("low_cohesion", Severity.CRITICAL),
-        _r("low_cohesion", Severity.CRITICAL),
-        _r("dry_violation", Severity.CRITICAL),  # duplication, capped at 2.0
-        _r("dry_violation", Severity.CRITICAL),
-        _r("error_handling", Severity.CRITICAL),  # error_handling, capped at 2.0
-        _r("error_handling", Severity.CRITICAL),
+        _r("god_class", Severity.CRITICAL),  # structural, capped at 4.0
+        _r("god_class", Severity.CRITICAL),
+        _r("god_class", Severity.CRITICAL),
+        _r("primitive_obsession", Severity.CRITICAL),  # size_and_complexity, capped at 2.0
+        _r("primitive_obsession", Severity.CRITICAL),
+        _r("sql_high_complexity", Severity.CRITICAL),  # sql (0.7), capped at 2.0
+        _r("sql_high_complexity", Severity.CRITICAL),
     ]
     scores, _ = score_file(findings)
-    # structural 6.0->4.0 cap, duplication 4.0->2.0 cap, error_handling 4.0->2.0 cap
+    # structural 6.0->4.0 cap, size 4.0->2.0 cap, sql 2.8->2.0 cap
     # total = 4.0 + 2.0 + 2.0 = 8.0 -> 10 - 8 = 2.0
     assert scores["maintainability"] == 2.0
 
@@ -424,8 +423,15 @@ def test_maintainability_categories_capped_independently():
 
 
 def test_biomarker_home_dimension():
-    assert biomarker_dimension("low_cohesion") == "maintainability"
-    assert biomarker_dimension("error_handling") == "maintainability"
+    assert biomarker_dimension("primitive_obsession") == "maintainability"
+    assert biomarker_dimension("sql_select_star") == "maintainability"
+    # Listed, never scored.
+    assert biomarker_dimension("low_cohesion") == "advisory"
+    # Scored in its one language only (``_SCORED_ONLY_IN``).
+    assert biomarker_dimension("error_handling", "python") == "maintainability"
+    assert biomarker_dimension("error_handling", "go") == "advisory"
+    assert biomarker_dimension("dry_violation", "typescript") == "maintainability"
+    assert biomarker_dimension("dry_violation", "python") == "advisory"
     # Structural duals home to defect (their primary, calibrated role).
     assert biomarker_dimension("god_class") == "defect"
     # Calibrated predictors home to defect.
@@ -435,7 +441,7 @@ def test_biomarker_home_dimension():
 
 
 def test_attach_impacts_tags_finding_dimension():
-    results = [_r("low_cohesion", Severity.HIGH), _r("change_entropy", Severity.HIGH)]
+    results = [_r("primitive_obsession", Severity.HIGH), _r("change_entropy", Severity.HIGH)]
     _, deductions = score_file(results)
     findings = attach_impacts(results, deductions)
     assert findings[0].dimension == "maintainability"
