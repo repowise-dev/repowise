@@ -6,8 +6,9 @@ names, C#'s public-API rule) lives on ``LanguageNodeMap``; this module only
 reads the tree with it.
 
 - **constructor**: a constructor node or conventional constructor name of the
-  language, or a function named like its enclosing type, which is how C++ and
-  Java spell one (``Foo::Foo`` out of line).
+  language (Ruby ``initialize``, PHP ``__construct``, Go ``NewServer``, Rust
+  ``new`` and ``from_parts``), or a function named like its enclosing type,
+  which is how C++ and Java spell one (``Foo::Foo`` out of line).
 - **signature fixed elsewhere**: the parameter list is set by something other
   than this declaration, so "group these parameters" is advice nobody can take
   here. Read from the declaration's modifier, annotation, attribute and
@@ -39,6 +40,7 @@ from .ast_utils import (
     _inner_declarator,
     _parameter_nodes,
     is_rest_parameter,
+    param_arity,
 )
 
 if TYPE_CHECKING:
@@ -154,6 +156,8 @@ def _enclosing_type_name(fn_node: Node) -> str | None:
 
 def is_constructor(fn_node: Node, name: str, lmap: LanguageNodeMap) -> bool:
     if fn_node.type in lmap.ctor_kinds or name in lmap.ctor_names:
+        return True
+    if lmap.ctor_name_pattern is not None and lmap.ctor_name_pattern.fullmatch(name):
         return True
     # Dart: the kind is on the signature beside the body (``A.named`` is one).
     sig = _dart_signature_sibling(fn_node) if fn_node.type == "function_body" else None
@@ -382,14 +386,6 @@ def _is_scalar(type_node: Node, scalars: frozenset[str]) -> bool:
     return bool(words) and all(w in scalars for w in words)
 
 
-def _arity(param: Node) -> int:
-    """Names one parameter node declares. Pascal declares ``A, B: Integer`` as
-    one node, and ``_count_parameters`` counts its names."""
-    if param.type != "declArg":
-        return 1
-    return sum(1 for c in param.children if c.type == "identifier")
-
-
 def _indirection(param: Node, type_node: Node) -> str | None:
     """How a C or C++ parameter reaches its value, read off the declarator
     (``char *buf`` has type ``char``): ``None`` by value or by const
@@ -434,7 +430,7 @@ def _param_row(param: Node, type_node: Node, lmap: LanguageNodeMap) -> list:
     # one to an object (``client *c``) is that object.
     sized = held in ("text", "buffer") and (raw or _text(type_node) == "void")
     scalar = raw and held in (None, "text")
-    return [_arity(param), sized, scalar, held is None and _is_length(param, type_node)]
+    return [param_arity(param), sized, scalar, held is None and _is_length(param, type_node)]
 
 
 def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int, int]:
@@ -545,5 +541,7 @@ def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
     if not lmap.bound_param_markers or params is None:
         return 0
     return sum(
-        _arity(p) for p in params.named_children if p.type not in _NON_PARAMS and _is_bound(p, lmap)
+        param_arity(p)
+        for p in params.named_children
+        if p.type not in _NON_PARAMS and _is_bound(p, lmap)
     )
