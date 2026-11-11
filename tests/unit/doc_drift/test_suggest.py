@@ -69,12 +69,19 @@ def test_relative_link_is_suggested_in_the_form_the_document_wrote():
     tree = TREE | {"docs/api/__init__.md", "docs/api/intro.md"}
     idx = _index(tree)
     ref = DocReference(DriftKind.LINK, "api.md", "api.md", "docs/guide.md", 1, "ctx")
-    # Unanchored, so the resolver never reports it; the strategy still honours
-    # the relative join for anchored links written inside a subtree.
+    # Read from its own document (docs/api.md), so the resolver reports it.
     res = resolve(idx, ref)
-    assert res.verdict is DriftVerdict.UNCHECKABLE
-    missing = type(res)(ref, DriftVerdict.MISSING, "no-candidate", "path_no_candidate")
-    assert suggest_all([missing], idx) == [("api/", "package_split")]
+    assert res.verdict is DriftVerdict.MISSING
+    assert suggest_all([res], idx) == [("api/", "package_split")]
+
+
+def test_a_doc_relative_link_is_never_fixed_with_a_root_reading():
+    """Review r1 #1: ``api/`` at the root is ``../api/`` from ``docs/guide.md``."""
+    idx = _index(TREE | {"api/__init__.md", "api/intro.md", "src/api/__init__.py"})
+    res = _miss(idx, "api.md", kind=DriftKind.LINK)
+    assert suggest_all([res], idx) == [("", "")]
+    res = _miss(idx, "../src/api.py", kind=DriftKind.LINK)
+    assert suggest_all([res], idx) == [("../src/api/", "package_split")]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +113,8 @@ def test_rename_of_a_doc_relative_link_is_written_back_relative():
     res = type(resolve(idx, ref))(ref, DriftVerdict.MISSING, "no-candidate", "path_no_candidate")
     lookup = _Lookup({"packages/core/src/old.py": "packages/core/src/new.py"})
     assert suggest_all([res], idx, rename_lookup=lookup) == [("src/new.py", "git_rename")]
-    assert lookup.calls == [["packages/core/src/old.py", "src/old.py"]]
+    # A link has the one reading a renderer opens, never the root.
+    assert lookup.calls == [["packages/core/src/old.py"]]
 
 
 def test_moved_package_found_through_the_relative_form_is_written_relative():
@@ -171,7 +179,7 @@ def test_renamed_heading_suggests_the_close_slug_as_written():
     readme = "# Title\n\n## Quickstart in five minutes\n\n## Architecture\n"
     idx = _index(docs={"README.md": readme})
     frag = "quickstart-in-5-minutes"
-    res = _miss(idx, f"README.md#{frag}", DriftKind.ANCHOR, raw=f"../README.md#{frag}")
+    res = _miss(idx, f"../README.md#{frag}", DriftKind.ANCHOR)
     assert suggest_all([res], idx) == [
         ("../README.md#quickstart-in-five-minutes", "similar_heading")
     ]
@@ -188,7 +196,7 @@ def test_same_document_anchor_keeps_the_bare_fragment():
 def test_near_tie_between_headings_gets_nothing():
     readme = "## Setup step one\n\n## Setup step two\n"
     idx = _index(docs={"README.md": readme})
-    res = _miss(idx, "README.md#setup-step-c", DriftKind.ANCHOR)
+    res = _miss(idx, "../README.md#setup-step-c", DriftKind.ANCHOR)
     assert suggest_all([res], idx) == [("", "")]
 
 
