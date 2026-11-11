@@ -75,7 +75,7 @@ export { DECISION_LANES };
 
 const LANE_LABEL: Record<DecisionLane, string> = {
   active: DECISION_CURRENCY_LABELS.active,
-  candidates: "Candidates",
+  candidates: "Background",
   needs_review: DECISION_CURRENCY_LABELS.needs_review,
   uncheckable: DECISION_CURRENCY_LABELS.uncheckable,
   history: "History",
@@ -88,9 +88,9 @@ const LANE_LABEL: Record<DecisionLane, string> = {
  */
 const LANE_DESCRIPTION: Record<DecisionLane, string> = {
   active:
-    "Accepted decisions that still describe the code they name. These are the rules, and they are what an agent is given when it edits a governed file.",
+    "Decisions in force that still describe the code they name. These are the rules an agent is given when it edits a governed file.",
   candidates:
-    "Records the indexer inferred and nobody has accepted. They govern nothing and reach no agent. Read the evidence, then accept the ones that are real.",
+    "Mined from pull requests, commits, comments and sessions. Not in force: agents ask about them through get_why for the why behind the code. You can put one in force, or dismiss it.",
   needs_review:
     "Accepted decisions whose files have moved since. They still bind, and they are worth re-reading before you rely on one.",
   uncheckable:
@@ -102,16 +102,16 @@ const LANE_DESCRIPTION: Record<DecisionLane, string> = {
 /** An empty lane says what will fill it and what the reader can do next. */
 const LANE_EMPTY: Record<DecisionLane, string> = {
   active:
-    "Nothing here governs yet. Accept a candidate, or record a decision yourself, and it will appear here.",
+    "Nothing is in force yet. A decision an agent records comes into force when its commit merges.",
   candidates:
-    "No candidates are waiting. The indexer raises them from pull requests, commits, comments and your own sessions.",
+    "No background records.",
   needs_review: "No accepted decision has drifted from the code it names.",
   uncheckable: "Every accepted decision names the code it governs.",
   history: "Nothing has been retired yet.",
 };
 
-/** The candidates lane's agent action. Hosts use the same words wherever they offer it. */
-export const REVIEW_WITH_AGENT_LABEL = "Review with your agent";
+/** The background lane's agent action. Hosts use the same words wherever they offer it. */
+export const REVIEW_WITH_AGENT_LABEL = "Check with your agent";
 
 /** The agent action for recording decisions nobody wrote down yet. */
 export const ADD_WITH_AGENT_LABEL = "Add decisions with your agent";
@@ -392,9 +392,9 @@ export function DecisionReviewLanes({
  * between two rows as meaningful, and it is only an order.
  */
 function reviewOrderNote(lane: DecisionLane): string {
-  // Only candidates can be accepted, so only their note names that step.
+  // Only background records can be put in force, so only their note names that step.
   return lane === "candidates"
-    ? "Most in need of a look first: records that can be accepted as they stand, then those naming churn hotspots, then those whose files have changed most since they were recorded."
+    ? "Records that can be put in force as they stand come first, then those naming churn hotspots, then those whose files have changed most since they were recorded."
     : "Most in need of a look first: records naming churn hotspots, then those whose files have changed most since they were recorded.";
 }
 
@@ -437,7 +437,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       header: (
         <input
           type="checkbox"
-          aria-label="Select every candidate on this page"
+          aria-label="Select every record on this page"
           checked={sel.allSelected}
           disabled={sel.busy}
           onChange={sel.toggleAll}

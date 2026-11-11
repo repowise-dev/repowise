@@ -96,7 +96,7 @@ describe("lane structure", () => {
     const onLaneChange = vi.fn();
     renderLanes("active", { onLaneChange });
 
-    fireEvent.click(screen.getByRole("tab", { name: /Candidates/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Background/ }));
 
     expect(onLaneChange).toHaveBeenCalledWith("candidates");
   });
@@ -146,11 +146,11 @@ describe("a candidate is a review request, not an instruction", () => {
     expect(meta).not.toHaveClass("uppercase");
   });
 
-  it("says it governs nothing and nobody has accepted it", () => {
+  it("says background records are not in force and agents read them through get_why", () => {
     renderLanes("candidates");
 
-    expect(screen.getByText(/nobody has accepted/i)).toBeInTheDocument();
-    expect(screen.getByText(/govern nothing and reach no agent/i)).toBeInTheDocument();
+    expect(screen.getByText(/Not in force/)).toBeInTheDocument();
+    expect(screen.getByText(/through get_why/)).toBeInTheDocument();
   });
 
   it("offers the review verbs only in the candidates lane", () => {
@@ -358,7 +358,7 @@ describe("reviewing the candidates with an agent", () => {
     Object.assign(navigator, { clipboard: { writeText } });
     renderLanes("candidates", { reviewPrompt: () => "review them" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Review with your agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check with your agent" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("review them"));
   });
@@ -414,7 +414,7 @@ describe("the source filter is a second axis, not a second lane control", () => 
     });
 
     expect(screen.getByText(/clear the source filter/)).toBeInTheDocument();
-    expect(screen.queryByText(/No candidates are waiting/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No background records/)).not.toBeInTheDocument();
   });
 });
 
@@ -432,11 +432,11 @@ describe("the queue is a table with a drawer", () => {
 
   it("states the review order only when the host fetched in it", () => {
     const first = renderLanes("candidates");
-    expect(screen.queryByText(/Most in need of a look first/)).toBeNull();
+    expect(screen.queryByText(/put in force as they stand come first/)).toBeNull();
     first.unmount();
 
     renderLanes("candidates", { order: "review" });
-    expect(screen.getByText(/Most in need of a look first/)).toBeInTheDocument();
+    expect(screen.getByText(/put in force as they stand come first/)).toBeInTheDocument();
   });
 
   it("opens the record in a drawer and marks its hotspots", () => {
@@ -549,7 +549,7 @@ describe("dismissing a selection of candidates", () => {
     }));
     renderLanes("candidates", { decisions: two(), onDismissMany });
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select every candidate on this page" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select every record on this page" }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Dismiss 2" }));
     });
@@ -575,7 +575,7 @@ describe("dismissing a selection of candidates", () => {
     );
     const view = renderLanes("candidates", { decisions: two(), onDismissMany });
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select every candidate on this page" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select every record on this page" }));
     fireEvent.click(screen.getByRole("button", { name: "Dismiss 2" }));
     // The reader pages on before the run settles.
     view.rerender(
@@ -610,13 +610,13 @@ describe("empty and failed lanes", () => {
   it("says what will fill the lane", () => {
     renderLanes("candidates", { decisions: [] });
 
-    expect(screen.getByText(/No candidates are waiting/)).toBeInTheDocument();
+    expect(screen.getByText(/No background records/)).toBeInTheDocument();
   });
 
   it("says nothing while the first page is still loading", () => {
     renderLanes("candidates", { decisions: undefined, isLoading: true });
 
-    expect(screen.queryByText(/No candidates are waiting/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No background records/)).not.toBeInTheDocument();
   });
 
   it("offers a retry when the fetch failed", () => {
@@ -629,7 +629,7 @@ describe("empty and failed lanes", () => {
 
     // The error replaces the lane rather than sitting beside an empty state
     // that would read as "there is nothing here".
-    expect(screen.queryByText(/No candidates are waiting/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No background records/)).not.toBeInTheDocument();
     expect(screen.getByText(/Couldn't load this lane/)).toBeInTheDocument();
   });
 });

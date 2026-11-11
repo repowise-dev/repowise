@@ -125,6 +125,16 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [yellow]Approval: required. A new decision waits for a person, even "
             "after its commit lands.[/yellow]"
         )
+    if policy.update_mining:
+        console.print(
+            "  [dim]Update mining: on. Each update reads new pull requests and commits "
+            "with the model.[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]Update mining: off. History is read at init; updates make no "
+            "model calls for decisions. On: repowise decision config update-mining --on[/dim]"
+        )
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
@@ -230,7 +240,9 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
                 {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
             )
     changes += _switch_changes(
-        before, after, ("agent_acceptance", "require_approval", "capture_prompt")
+        before,
+        after,
+        ("agent_acceptance", "require_approval", "capture_prompt", "update_mining"),
     )
     if before.harnesses != after.harnesses:
         changes.append(
@@ -278,8 +290,8 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     # A preset names source membership. The harness list, the two agent
-    # switches and approval are not membership, so applying one leaves them as
-    # the caller set them.
+    # switches, approval and update mining are not membership, so applying one
+    # leaves them as the caller set them.
     current = _load(repo_path).policy
     _apply(
         repo_path,
@@ -289,6 +301,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             agent_acceptance=current.agent_acceptance,
             capture_prompt=current.capture_prompt,
             require_approval=current.require_approval,
+            update_mining=current.update_mining,
         ),
         fmt,
         dry_run,
@@ -386,6 +399,28 @@ def config_approval(path: str | None, enabled: bool | None, dry_run: bool, fmt: 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_require_approval(bool(enabled)), fmt, dry_run)
+
+
+@config_group.command("update-mining")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Mine new history on update."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_update_mining(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Let `repowise update` read new pull requests and commits with the model.
+
+    Off by default: init reads the history once, and an update keeps
+    decisions current without calling a model. On, each update also mines the
+    new range, structures new inline markers and checks whether a change
+    replaced a decision it touches, using the configured provider.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_update_mining(bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("capture-prompt")

@@ -361,3 +361,19 @@ def test_show_recommends_capture_prompt_when_settings_file_lacks_hook(
     assert result.exit_code == 0, result.output
     assert "Re-run `repowise decision config capture-prompt --on`." in result.output
     assert "Run `repowise init`" not in result.output
+
+
+def test_update_mining_writes_and_a_later_preset_keeps_it(repo: Path):
+    result = _run("decision", "config", "update-mining", "--on", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["update_mining"] is True
+
+    result = _run("decision", "config", "preset", "full", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["update_mining"] is True
+
+    result = _run("decision", "config", "update-mining", "--off", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["update_mining"] is False
+    shown = _run("decision", "config", "show", str(repo), "--format", "json")
+    assert json.loads(shown.output)["policy"]["update_mining"] is False

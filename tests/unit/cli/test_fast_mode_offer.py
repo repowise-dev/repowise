@@ -77,7 +77,6 @@ def test_next_steps_are_serve_and_at_most_two_more():
         {},
         {"dead_unreachable": 12, "dead_unused": 30},
         {"hotspot_count": 4, "top_hotspot": "a.py"},
-        {"decision_count": 9},
     ):
         steps = build_contextual_next_steps(**kwargs)
         assert steps[0][0] == "repowise serve"
@@ -86,12 +85,12 @@ def test_next_steps_are_serve_and_at_most_two_more():
 
 def test_next_steps_findings_rank_below_finishing_the_index():
     """A partial index is a worse problem than an unexplored finding."""
-    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40, decision_count=9)
+    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40)
     assert steps[1][0] == "repowise update --full"
 
     # With the index complete, the largest finding gets the row.
     found = build_contextual_next_steps(
-        dead_unreachable=12, dead_unused=30, decision_count=9
+        dead_unreachable=12, dead_unused=30
     )
     assert found[1][0] == "repowise dead-code"
 

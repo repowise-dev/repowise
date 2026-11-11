@@ -58,6 +58,6 @@ describe("decision agent prompts", () => {
       /repowise decision add --title "\.\.\." --decision "\.\.\." --rationale "\.\.\." --context "[^"]+" --affects <path> --evidence-commit <sha> --agent <slug>/,
     );
     expect(p).toContain("at most 10");
-    expect(p).toContain("lands as a candidate");
+    expect(p).toContain("comes into force when the commit it cites merges");
   });
 });

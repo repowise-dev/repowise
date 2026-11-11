@@ -167,9 +167,10 @@ def _hotspot_value(s: StoodOut) -> str:
 
 
 def _decisions_value(s: StoodOut) -> str:
+    # Mined records are background an agent asks about, not a list to work.
     count = s.decision_candidates or 0
-    noun = "candidate" if count == 1 else "candidates"
-    return f"{count:,} {noun} to review"
+    noun = "record" if count == 1 else "records"
+    return f"{count:,} background {noun} from history"
 
 
 def stood_out_lines(s: StoodOut) -> list[RenderableType]:
