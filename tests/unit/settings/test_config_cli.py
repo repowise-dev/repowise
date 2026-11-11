@@ -392,3 +392,15 @@ def test_init_saves_follow_renames(repo, flag, stored, written):
     )  # fmt: skip
     save_run_config(run)
     assert _config(repo).get("follow_renames") == written
+
+
+@pytest.mark.parametrize(
+    ("cfg", "limit", "renames"),
+    [({}, 5000, False), ({"commit_limit": 20000, "follow_renames": "true"}, 10000, True),
+     ({"commit_limit": "abc"}, 5000, False)],
+)  # fmt: skip
+def test_workspace_add_reads_the_primary_config_like_update(cfg, limit, renames):
+    from repowise.cli.commands.workspace_cmd._index import _added_repo_ctx
+
+    ctx = _added_repo_ctx(None, SimpleNamespace(), cfg, concurrency=1, save_key=False)
+    assert (ctx.resolved_commit_limit, ctx.follow_renames) == (limit, renames)
