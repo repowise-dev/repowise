@@ -20,8 +20,9 @@ These narrowings keep the finding to signatures someone can actually fix:
 - When parameters declare types, a majority of the typed ones must be
   scalars or strings. A wide list of rich domain types is already the value
   objects this smell asks for. Untyped parameters are left out of that
-  majority, and a wholly untyped signature (unannotated Python or JavaScript)
-  is judged on the count alone.
+  majority, and a wholly untyped signature (unannotated Python, Ruby or
+  JavaScript) is judged on the count alone, JavaScript (a Vue or Svelte
+  ``<script>`` included) with two more parameters allowed (``_UNTYPED_GRACE``).
 - A parameter a framework binds by annotation (``@PathVariable``) is the
   route's or the data format's, so only the remaining ones are counted.
 - A keyword-only parameter is left out too: every call site names it, so it
@@ -46,6 +47,14 @@ from .base import BiomarkerResult, FileContext
 _PARAM_THRESHOLD = 5
 _CTOR_GRACE = 2  # constructors get +2 free params before the smell trips
 _MIN_FILE_NLOC = 60  # see the module docstring
+# JavaScript declares no parameter types, so its signatures are judged on the
+# count alone, and its wide ones mostly pass objects (a request, a reply, a
+# context, a logger). A wholly untyped JavaScript signature is held to two
+# more parameters. Ruby keeps the plain threshold: its wide untyped lists
+# were mostly raw values once rest parameters and constructors are set aside.
+# A Vue or Svelte ``<script>`` is JavaScript unless it says ``lang="ts"``, and
+# a wholly untyped signature there is that JavaScript.
+_UNTYPED_GRACE = {"javascript": 2, "jsx": 2, "vue": 2, "svelte": 2}
 
 
 class PrimitiveObsessionDetector:
@@ -56,8 +65,9 @@ class PrimitiveObsessionDetector:
         if ctx.nloc < _MIN_FILE_NLOC or ctx.is_test_material:
             return []
         out: list[BiomarkerResult] = []
+        untyped_grace = _UNTYPED_GRACE.get(ctx.language, 0)
         for fn in ctx.all_functions:
-            threshold = _threshold(fn)
+            threshold = _threshold(fn, untyped_grace)
             if threshold is None:
                 continue
             primitive = fn.primitive_param_count
@@ -87,13 +97,15 @@ class PrimitiveObsessionDetector:
         return out
 
 
-def _threshold(fn: FunctionComplexity) -> int | None:
+def _threshold(fn: FunctionComplexity, untyped_grace: int = 0) -> int | None:
     """The parameter count *fn* is held to, or ``None`` when it does not qualify."""
     # A test case's parameters are fixtures the runner injects, not a
     # signature anyone calls.
     if fn.is_test_case or fn.signature_fixed:
         return None
     threshold = _PARAM_THRESHOLD + (_CTOR_GRACE if fn.is_constructor else 0)
+    if not fn.typed_param_count:
+        threshold += untyped_grace
     if _counted(fn) < threshold:
         return None
     typed = fn.typed_param_count
