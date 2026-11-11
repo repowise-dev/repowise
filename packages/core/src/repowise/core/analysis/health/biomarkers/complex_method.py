@@ -33,10 +33,12 @@ class ComplexMethodDetector:
             if severity is None:
                 continue
             details = {"ccn": fn.ccn, "cognitive": fn.cognitive, "nloc": fn.nloc}
-            reason = f"{fn.name} has cyclomatic complexity {judged}"
+            # Say what is measured, not a verdict: many paths often carry defect
+            # risk, but a flat guard run or a dispatch is not always worth a split.
+            reason = f"{fn.name} has {judged} independent paths (cyclomatic complexity)"
             if judged != fn.ccn:
                 details["judged_ccn"] = judged
-                reason += f" ({fn.ccn} counting {judged_leaves_out(fn)})"
+                reason += f", {fn.ccn} counting {judged_leaves_out(fn)}"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,

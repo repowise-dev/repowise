@@ -642,8 +642,16 @@ def _parameter_nodes(params: Node) -> Iterator[Node]:
         # the parameters, not children of them.
         yield from (c for c in params.named_children if c.type == "parameter")
         return
+    after_param = False
     for child in params.children:
         if is_comment(child) or _is_void_parameter(child):
+            continue
+        # A parse error right after a parameter, with no comma between, is the
+        # rest of that parameter: C++ SAL ``_In_ UINT* p`` splits into a
+        # declaration and an ERROR holding ``* p``.
+        continues = child.type == "ERROR" and after_param
+        after_param = child.type not in {",", ";", "("}
+        if continues:
             continue
         # C++ represents a bare variadic parameter as an unnamed token.
         if child.is_named or child.type == "...":
