@@ -18,6 +18,7 @@ an area declares no env var, which the registry enforces.
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from importlib import import_module
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,7 @@ __all__ = [
     "area_module",
     "area_resolver",
     "by_env",
+    "family_members",
     "get",
     "settings_in",
 ]
@@ -110,11 +112,38 @@ def all_settings(*, include_internal: bool = True) -> tuple[Setting, ...]:
 
 
 def get(key: str) -> Setting:
-    """The setting at *key*. Raises ``KeyError`` naming the key."""
-    try:
-        return _load()[key]
-    except KeyError:
-        raise KeyError(f"No setting named {key!r}") from None
+    """The setting at *key*, or a family member such as ``openai.base_url``.
+
+    Raises ``KeyError`` naming the key.
+    """
+    setting = _load().get(key) or _family_member(key)
+    if setting is None:
+        raise KeyError(f"No setting named {key!r}")
+    return setting
+
+
+def _family_member(key: str) -> Setting | None:
+    """*key* as a member of a ``<placeholder>`` family, keyed by its real name."""
+    parts = key.split(".")
+    for family in _load().values():
+        if family.members is None:
+            continue
+        pattern = family.key.split(".")
+        if len(pattern) != len(parts):
+            continue
+        slot = next(i for i, p in enumerate(pattern) if p.startswith("<"))
+        fixed = all(p == k for i, (p, k) in enumerate(zip(pattern, parts, strict=True)) if i != slot)
+        if fixed and parts[slot] in family_members(family):
+            return replace(family, key=key, members=None)
+    return None
+
+
+def family_members(setting: Setting) -> tuple[str, ...]:
+    """The names a ``<placeholder>`` family's slot may take; empty for a plain setting."""
+    if setting.members is None:
+        return ()
+    module_name, _, attr = setting.members.partition(":")
+    return tuple(getattr(import_module(module_name), attr)())
 
 
 def by_env(name: str) -> Setting | None:
