@@ -492,9 +492,11 @@ class CostTracker:
                 if group_by == "model":
                     group_col = LlmCost.model
                 elif group_by == "day":
-                    # Both backends support date(); a typed result avoids
-                    # relying on PostgreSQL's configurable date text format.
-                    group_col = sa.func.date(LlmCost.ts, type_=sa.Date)
+                    timestamp = LlmCost.ts
+                    # PostgreSQL's date(timestamptz) uses the session time zone.
+                    if session.get_bind().dialect.name == "postgresql":
+                        timestamp = sa.func.timezone("UTC", timestamp)
+                    group_col = sa.func.date(timestamp, type_=sa.Date)
                 else:
                     group_col = LlmCost.operation
 

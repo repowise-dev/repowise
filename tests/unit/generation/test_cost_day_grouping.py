@@ -1,6 +1,8 @@
 """Cost history queries must work on SQLite and compile portably for PostgreSQL."""
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -89,24 +91,21 @@ async def test_other_cost_groupings_remain_unchanged(surface, by, groups, cost_s
 
 
 @pytest.mark.parametrize("surface", ["tracker", "router"])
-async def test_daily_query_does_not_use_sqlite_only_strftime(surface, cost_sessions):
+async def test_postgresql_daily_query_groups_by_utc(surface, cost_sessions, monkeypatch):
+    dialect = postgresql.dialect()
     async with cost_sessions() as session:
         result = MagicMock()
         result.fetchall.return_value = []
         execute = AsyncMock(return_value=result)
-        session.execute = execute
-        if surface == "tracker":
-            # Keep the actual session context while capturing the generated statement.
-            from contextlib import asynccontextmanager
+        monkeypatch.setattr(session, "get_bind", lambda: SimpleNamespace(dialect=dialect))
+        monkeypatch.setattr(session, "execute", execute)
 
-            @asynccontextmanager
-            async def session_factory():
-                yield session
+        @asynccontextmanager
+        async def session_factory():
+            yield session
 
-            await CostTracker(session_factory, "repo").totals(group_by="day")
-        else:
-            await list_costs("repo", by="day", since=None, session=session)
+        await _totals(surface, session_factory)
         statement = execute.call_args.args[0]
-    sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
-    assert "strftime" not in sql.lower()
-    assert "date(" in sql.lower()
+
+    sql = str(statement.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
+    assert "GROUP BY date(timezone('UTC', llm_costs.ts))" in sql

@@ -85,7 +85,11 @@ async def list_costs(
     if by == "model":
         group_col = LlmCost.model
     elif by == "day":
-        group_col = sa.func.date(LlmCost.ts, type_=sa.Date)
+        timestamp = LlmCost.ts
+        # Match the UTC day boundaries used by the SQLite cost ledger.
+        if session.get_bind().dialect.name == "postgresql":
+            timestamp = sa.func.timezone("UTC", timestamp)
+        group_col = sa.func.date(timestamp, type_=sa.Date)
     else:
         # Default: operation
         group_col = LlmCost.operation
