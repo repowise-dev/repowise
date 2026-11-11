@@ -1,8 +1,8 @@
 """Long function — function bodies that exceed a healthy line budget.
 
-Counts lines of code, JSX markup lines excluded, once the judged CCN shows some
-branching: a long flat body (a data literal, a dispatch of one-line arms) is
-layout. ``complex_method`` covers short but tangled functions.
+Counts lines of code, JSX markup and literal data lines excluded, once the
+judged CCN shows some branching: a long flat body (a data literal, a dispatch
+of one-line arms) is layout. ``complex_method`` covers short but tangled functions.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from .base import BiomarkerResult, FileContext, shape_details
 
 
 def _reason(fn: FunctionComplexity, code_lines: int, span: int) -> str:
-    besides = f" besides {fn.markup_nloc} of JSX markup" if fn.markup_nloc else ""
+    besides = f" besides {fn.markup_nloc} of markup and data" if fn.markup_nloc else ""
     return f"{fn.name} is {code_lines} lines of code{besides} ({span} with blanks and comments)"
 
 

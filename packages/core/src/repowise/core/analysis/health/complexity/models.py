@@ -58,7 +58,7 @@ class FunctionComplexity:
     # (``@PathVariable``); they are in neither count above.
     bound_param_count: int = 0
     # Of ``param_count``, the ones every call site must pass by name (Python
-    # parameters after ``*`` or ``*args``).
+    # parameters after ``*`` or ``*args``, Dart ``{named}`` parameters).
     keyword_only_param_count: int = 0
     # Of ``param_count``, Kotlin and Scala ones with a default value, which
     # call sites leave out or pass by name.
@@ -131,6 +131,10 @@ class FunctionComplexity:
     # CCN points inside that dispatch's heaviest arm, its own case point not
     # counted: a switch of one-line cases has 0.
     dispatch_arm: int = 0
+    # CCN points of error guards (Go ``if err != nil { return err }``, C
+    # ``if (rc) goto cleanup;``, shell ``cmd || die``) past the first of each
+    # run. The complexity markers count a run once. ``complexity/dispatch.py``.
+    exit_guards: int = 0
     # Calls on the terminal (print, prompt, console, stdout) over all calls in
     # the body, nested bodies included, to two decimals. ``complexity/terminal.py``.
     terminal_share: float = 0.0
@@ -148,7 +152,7 @@ class FunctionComplexity:
     # function symbol by the health writer. ``dataflow.slice.function_facts``;
     # None means not computed (a language with no map, or a failed read).
     facts: FunctionFacts | None = None
-    # Of ``nloc``, the lines holding only JSX markup. ``complexity/markup.py``.
+    # Of ``nloc``, the lines holding only JSX markup or literal data. ``complexity/markup.py``.
     markup_nloc: int = 0
 
     def __post_init__(self) -> None:
@@ -241,6 +245,10 @@ class ClassComplexity:
     # implicit-receiver languages, so a service method using its one injected
     # repository is only visible here; Move Method reads it.
     field_readers: frozenset[str] = frozenset()
+    # The grammar node type of the declaration (``class``, ``module``, ...):
+    # a Ruby ``module`` is never instantiated, so it is a mixin or a function
+    # bag, not a class.
+    kind: str = ""
 
 
 @dataclass(frozen=True)
