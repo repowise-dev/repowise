@@ -84,7 +84,10 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
     if not config_path.exists():
         return {}
 
-    text = config_path.read_text(encoding="utf-8")
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RepoConfigError(f"Could not parse {config_path}: {exc}") from exc
     try:
         import yaml  # type: ignore[import-untyped]
 

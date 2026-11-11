@@ -198,7 +198,7 @@ def test_set_wiki_style_through_the_file_settings_writer(repo):
 def test_decisions_go_through_the_policy_writer(repo):
     out = _json(repo, "set", "decisions.mode", "read_only")
     assert out["after"]["value"] == "read_only"
-    also = {row["key"]: (row["from"], row["to"]) for row in out["also"]}
+    also = {row["key"]: (row["before"]["value"], row["after"]["value"]) for row in out["also"]}
     assert also["decisions.agent_acceptance"] == (True, False)
     assert _config(repo)["decisions"]["mode"] == "read_only"
     _json(repo, "set", "decisions.sync", "true")
@@ -247,8 +247,42 @@ def test_env_override_is_named(repo, monkeypatch):
     out = _json(repo, "set", "hooks.read_skeleton", "true")
     assert out["env_override"] == "REPOWISE_HOOK_READ_SKELETON"
     assert out["after"]["value"] is False
+    assert out["changed"] is True  # the file took it; the variable still decides
+    assert _config(repo) == {"hooks": {"read_skeleton": True}}
+    _json(repo, "reset", "hooks.read_skeleton")
     _, text = _run(repo, "set", "hooks.read_skeleton", "true")
-    assert "wins over the file" in text
+    assert "Saved, but REPOWISE_HOOK_READ_SKELETON" in text
+
+
+def test_undo_restores_the_file_value_under_an_env_override(repo, monkeypatch):
+    _write_config(repo, {"provider": "openai"})
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "gemini")
+    _write_config(repo, {"embedder": "openai"})
+    out = _json(repo, "set", "embedder", "ollama")
+    assert out["before"]["source"] == "env"
+    assert out["undo"] == [f"repowise config set embedder openai --path {shlex.quote(str(repo))}"]
+
+
+def test_a_config_that_is_not_utf8_is_refused(repo):
+    path = repo / ".repowise" / "config.yaml"
+    raw = b"provider: \xff\xfe\n"
+    path.write_bytes(raw)
+    for args in (("list",), ("set", "commit_limit", "300")):
+        assert _json(repo, *args)["error"] == "config_unreadable"
+    assert path.read_bytes() == raw
+
+
+def test_claude_md_opt_out_on_a_broken_config_warns_and_carries_on(repo):
+    from rich.console import Console
+
+    from repowise.cli.editor_integrations.claude import maybe_generate_claude_md
+
+    path = repo / ".repowise" / "config.yaml"
+    path.write_text(BROKEN, encoding="utf-8")
+    out = Console(record=True, width=200)
+    assert maybe_generate_claude_md(out, repo, no_claude_md=True) is None
+    assert "Nothing was saved" in out.export_text()
+    assert path.read_text(encoding="utf-8") == BROKEN
 
 
 # ---------------------------------------------------------------- broken config

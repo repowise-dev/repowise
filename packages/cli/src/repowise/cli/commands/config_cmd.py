@@ -308,10 +308,15 @@ def _cli_value(value: Any) -> str:
     return shlex.quote(str(value))
 
 
-def _undo(s: Setting, before: Resolved, path: str | None) -> str:
-    """The command that puts *s* back where *before* had it."""
-    if before.source in (Source.REPO_FILE, Source.USER_FILE):
-        return f"repowise config set {s.key} {_cli_value(before.value)}{_path_flag(path)}"
+def _undo(m: Any, path: str | None) -> str:
+    """The command that puts the file back where it was before the write.
+
+    Read from the file's own value, not the effective one: an environment
+    variable that decides the value says nothing about what the file held.
+    """
+    s, saved = m.setting, m.saved_before
+    if saved.source in (Source.REPO_FILE, Source.USER_FILE):
+        return f"repowise config set {s.key} {_cli_value(saved.value)}{_path_flag(path)}"
     return f"repowise config reset {s.key}{_path_flag(path)}"
 
 
@@ -342,10 +347,8 @@ def _write(action: str, key: str, value: str | None, path: str | None, fmt: str)
 
 def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) -> None:
     s = change.setting
-    moved = list(change.also)
-    if change.before.value != change.after.value:
-        moved.insert(0, (s, change.before, change.after))
-    undo = [_undo(m, before, path) for m, before, _ in moved]
+    moved = [m for m in (change.main, *change.also) if m.moved]
+    undo = [_undo(m, path) for m in moved]
     effect = f"{s.description} {_APPLIES[s.reload]}"
     override = s.env.name if change.after.source is Source.ENV and s.env else None
     if fmt == "json":
@@ -358,8 +361,12 @@ def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) ->
                 "before": _state(s, change.before),
                 "after": _state(s, change.after),
                 "also": [
-                    {"key": m.key, "from": b.to_dict()["value"], "to": a.to_dict()["value"]}
-                    for m, b, a in change.also
+                    {
+                        "key": m.setting.key,
+                        "before": _state(m.setting, m.before),
+                        "after": _state(m.setting, m.after),
+                    }
+                    for m in change.also
                 ],
                 "effect": effect,
                 "undo": undo,
@@ -378,17 +385,19 @@ def _print_report(
             f"[dim]{change.setting.key} is already {escape(_text(change.after.value))}; "
             "nothing changed.[/dim]"
         )
-    for m, before, after in moved:
+    for m in moved:
+        before, after = m.saved_before.value, m.saved_after.value
+        if m.before.value != m.after.value or not override:
+            before, after = m.before.value, m.after.value
         console.print(
-            f"[green]✓[/green] {m.key}: {escape(_text(before.value))} -> "
-            f"{escape(_text(after.value))}"
+            f"[green]✓[/green] {m.setting.key}: {escape(_text(before))} -> {escape(_text(after))}"
         )
     if change.changed:
         console.print(f"  [dim]{escape(effect)}[/dim]")
     if override:
         console.print(
-            f"  [yellow]{override} is set in this environment and wins over the file, "
-            "so it decides the value in use until it is unset.[/yellow]"
+            f"  [yellow]Saved, but {override} is set in this environment and wins over "
+            "the file until it is unset.[/yellow]"
         )
     for line in undo:
         console.print(f"  Undo: [bold]{escape(line)}[/bold]")
@@ -403,7 +412,7 @@ def config_set(key: str, value: str, path: str | None, fmt: str) -> None:
     """Change one setting; prints what changed, its effect, and the undo command.
 
     VALUE is read as the setting's type: true or false for a switch, a
-    number, a,b or [a, b] for a list.
+    number, a,b or [a, b] for a list (use [a, b] when an item holds a comma).
     """
     _write("set", key, value, path, fmt)
 

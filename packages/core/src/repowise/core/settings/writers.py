@@ -29,6 +29,7 @@ from repowise.core.settings.resolve import resolve, validate
 __all__ = [
     "Change",
     "EnvOnlyError",
+    "Moved",
     "current",
     "parse_text",
     "read_config",
@@ -43,22 +44,55 @@ class EnvOnlyError(SettingError):
 
 
 @dataclass(frozen=True, slots=True)
+class Moved:
+    """One setting a write moved: its effective value, and what its file says.
+
+    ``saved_before`` is the file's own reading with no environment, so an undo
+    restores the file even while an environment variable decides the value.
+    """
+
+    setting: Setting
+    before: Resolved
+    after: Resolved
+    saved_before: Resolved
+    saved_after: Resolved
+
+    @property
+    def moved(self) -> bool:
+        return (
+            self.before.value != self.after.value
+            or self.saved_before.value != self.saved_after.value
+            or self.saved_before.source != self.saved_after.source
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Change:
-    """What one ``set`` or ``reset`` did: the setting before and after.
+    """What one ``set`` or ``reset`` did to *setting*.
 
     ``also`` lists other settings in the same area the write moved with it
     (a decisions mode resets the switches under it; a new provider drops a
     model meant for the old one).
     """
 
-    setting: Setting
-    before: Resolved
-    after: Resolved
-    also: tuple[tuple[Setting, Resolved, Resolved], ...] = field(default=())
+    main: Moved
+    also: tuple[Moved, ...] = field(default=())
+
+    @property
+    def setting(self) -> Setting:
+        return self.main.setting
+
+    @property
+    def before(self) -> Resolved:
+        return self.main.before
+
+    @property
+    def after(self) -> Resolved:
+        return self.main.after
 
     @property
     def changed(self) -> bool:
-        return self.before.value != self.after.value or bool(self.also)
+        return self.main.moved or bool(self.also)
 
 
 def _file_path(root: Path, setting: Setting) -> Path:
@@ -137,24 +171,24 @@ def _writer(setting: Setting):
 def _write(root: Path, setting: Setting, value: Any) -> Change:
     neighbours = [s for s in registry.settings_in(setting.area) if s.scope != "env"]
 
-    def snapshot() -> dict[str, Resolved]:
+    def snapshot() -> dict[str, tuple[Resolved, Resolved]]:
         files: dict[str | None, dict[str, Any]] = {}
         out = {}
         for s in neighbours:
             if s.path not in files:
                 files[s.path] = read_config(root, s)
-            out[s.key] = resolve(s, files[s.path])
+            out[s.key] = (resolve(s, files[s.path]), resolve(s, files[s.path], environ={}))
         return out
 
     before = snapshot()
     _writer(setting)(root, setting.key, value)
     after = snapshot()
-    also = tuple(
-        (s, before[s.key], after[s.key])
+    moved = {
+        s.key: Moved(s, before[s.key][0], after[s.key][0], before[s.key][1], after[s.key][1])
         for s in neighbours
-        if s.key != setting.key and before[s.key].value != after[s.key].value
-    )
-    return Change(setting, before[setting.key], after[setting.key], also)
+    }
+    also = tuple(m for k, m in moved.items() if k != setting.key and m.moved)
+    return Change(moved[setting.key], also)
 
 
 def set_value(root: Path | str, key: str, raw: Any) -> Change:

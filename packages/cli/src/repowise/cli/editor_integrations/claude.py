@@ -159,9 +159,16 @@ def maybe_generate_claude_md(
 
     if no_claude_md:
         # Persist opt-out so 'repowise update' respects it.
+        import click
+
         from repowise.cli.editor_files import set_editor_file_enabled
 
-        set_editor_file_enabled(repo_path, "claude_md", False)
+        try:
+            set_editor_file_enabled(repo_path, "claude_md", False)
+        except click.ClickException as exc:
+            # Late in init: the index is built, so say the opt-out was not
+            # recorded rather than fail the run over it.
+            console_obj.print(f"[yellow]{exc.format_message()}[/yellow]")
         return None
     if not _claude_md_enabled(repo_path):
         return None

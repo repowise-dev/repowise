@@ -116,17 +116,22 @@ def _validate_commands(commands: dict) -> list[str]:
                         f"{VALID_FAMILY_PERMISSIONS}"
                     )
 
-    disabled = commands.get("disabled_filters")
+    problems.extend(_validate_disabled_filters(commands.get("disabled_filters"), known_filters))
+    return problems
+
+
+def _validate_disabled_filters(disabled: Any, known_filters: Any) -> list[str]:
+    if disabled is None:
+        return []
     if isinstance(disabled, str):
         disabled = [disabled]  # one bare name, as the readers take it
-    if disabled is not None:
-        if not isinstance(disabled, list):
-            problems.append("distill.commands.disabled_filters: must be a list")
-        else:
-            for name in disabled:
-                if name not in known_filters:
-                    problems.append(f"distill.commands.disabled_filters: unknown filter {name!r}")
-    return problems
+    if not isinstance(disabled, list):
+        return ["distill.commands.disabled_filters: must be a list"]
+    return [
+        f"distill.commands.disabled_filters: unknown filter {name!r}"
+        for name in disabled
+        if name not in known_filters
+    ]
 
 
 def _validate_store(store: dict) -> list[str]:

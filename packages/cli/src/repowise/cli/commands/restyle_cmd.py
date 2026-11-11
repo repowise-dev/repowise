@@ -24,6 +24,7 @@ from repowise.cli.helpers import (
     console,
     get_head_commit,
     load_config,
+    load_config_for_write,
     load_state,
     resolve_provider,
     resolve_reasoning,
@@ -191,6 +192,9 @@ def restyle_command(
         console.print("\nRun [bold]repowise restyle <style>[/bold] to switch and regenerate.")
         return
 
+    # Refused before any page is rewritten: the new style is saved at the end,
+    # and a config that does not parse cannot take it.
+    load_config_for_write(repo_path)
     style = style.strip().lower()
     if not is_known_style(style, repo_path):
         valid = ", ".join(s.name for s in list_styles(repo_path))
@@ -279,7 +283,6 @@ def restyle_command(
 
 def _remove_config_key(repo_path: Path, key: str) -> None:
     """Drop a single key from ``.repowise/config.yaml`` if present (keeps it tidy)."""
-    from repowise.cli.helpers import load_config_for_write
     from repowise.core.repo_config import save_repo_config
 
     existing = load_config_for_write(repo_path)
