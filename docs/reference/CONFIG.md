@@ -71,7 +71,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `model` | unset |  | The model id to use with the provider. Unset uses the provider's default. | `REPOWISE_MODEL` (when the file is unset) |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks before writing. | `REPOWISE_REASONING` (wins over the file) |
 | `max_tokens` | `16384` | > 0 | Most output tokens for one generated page. |  |
-| `context_window` | unset | > 0 | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: no limit for hosted models, 16384 for a local one. |  |
+| `context_window` | unset | > 0 | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: no limit for hosted models, 16384 for a local server (Ollama reports its own num_ctx). |  |
 | `wiki_style` | `comprehensive` |  | How the wiki reads: comprehensive, caveman, reference, tutorial, or a custom style under .repowise/styles/. |  |
 | `language` | `en` | `en`, `ru`, `es`, `fr`, `de`, `zh`, `ja`, `ko`, `it`, `pt`, `nl`, `pl`, `tr`, `ar`, `hi` | Language the docs are written in. |  |
 | `max_file_pages` | unset | >= 0 | Most per-file pages to write; 0 means every file. Unset lets the repo size decide. |  |
@@ -1470,7 +1470,7 @@ any truthy value turns it off (cross-tool convention).
 | `REPOWISE_TELEMETRY_DISABLED` | off | `1`, `on`, `true`, `yes` | Turn off anonymous usage telemetry. |
 | `REPOWISE_TELEMETRY_DEBUG` | off | `1`, `on`, `true`, `yes` | Print the telemetry payload instead of sending it. |
 | `REPOWISE_NO_HINTS` | off | `1`, `on`, `true`, `yes` | Hide repowise.dev tips in the CLI and web UI. |
-| `REPOWISE_NO_SAVE_KEY` | off | on unless `0`, `false`, `no` | Do not copy an API key into the repo's .repowise/.env. For CI and shared machines. |
+| `REPOWISE_NO_SAVE_KEY` | off | on when set, unless `0`, `false`, `no` | Do not copy an API key into the repo's .repowise/.env. For CI and shared machines. |
 <!-- END GENERATED settings:env-account -->
 
 `REPOWISE_OFFLINE` also turns off the PyPI release check and the `init` probe
@@ -1482,7 +1482,7 @@ those off too).
 <!-- BEGIN GENERATED settings:env-editor (python scripts/gen_config_docs.py) -->
 | Variable | Default | Values | What it does |
 |----------|---------|--------|--------------|
-| `REPOWISE_SKIP_EDITOR_SETUP` | off | on unless `0`, `false`, `no` | Do not register repowise in editors' and agents' global config. |
+| `REPOWISE_SKIP_EDITOR_SETUP` | off | on when set, unless `0`, `false`, `no` | Do not register repowise in editors' and agents' global config. |
 <!-- END GENERATED settings:env-editor -->
 
 `REPOWISE_SKIP_EDITOR_SETUP` makes `init` skip machine-wide editor config

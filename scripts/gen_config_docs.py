@@ -108,8 +108,11 @@ BLOCKS: tuple[Block, ...] = (
     _block("editor_files"),
     Block(
         "decisions",
-        lambda s: _in_file(s) and s.key.startswith("decisions.")
-        and not s.key.startswith("decisions.sources."),
+        lambda s: (
+            _in_file(s)
+            and s.key.startswith("decisions.")
+            and not s.key.startswith("decisions.sources.")
+        ),
         strip="decisions.",
     ),
     _block("decisions-sources", "decisions.sources."),
@@ -184,7 +187,8 @@ def values_cell(s: Setting, *, as_env: bool = False) -> str:
     if as_env and s.type == "bool" and s.env is not None:
         if s.env.false_values is not None:
             spellings = sorted(v for v in s.env.false_values if v)
-            return "on unless " + ", ".join(_code(v) for v in spellings)
+            lead = "on unless " if s.default else "on when set, unless "
+            return lead + ", ".join(_code(v) for v in spellings)
         from repowise.core.settings import TRUTHY
 
         truthy = s.env.true_values if s.env.true_values is not None else TRUTHY

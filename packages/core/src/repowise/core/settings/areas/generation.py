@@ -64,7 +64,8 @@ SETTINGS: tuple[Setting, ...] = (
         "int",
         None,
         "Tokens (prompt plus answer) the model runs with; page material shrinks to fit. "
-        "Unset: no limit for hosted models, 16384 for a local one.",
+        "Unset: no limit for hosted models, 16384 for a local server (Ollama reports "
+        "its own num_ctx).",
         minimum=0,
         exclusive_minimum=True,
         on_invalid="error",
