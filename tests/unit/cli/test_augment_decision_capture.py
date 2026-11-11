@@ -629,7 +629,8 @@ def _fake_commit(monkeypatch, root: Path, sha: str, files: list[str]) -> None:
         if "rev-parse" in args:
             return subprocess.CompletedProcess(args, 0, stdout=f"{root}\n", stderr="")
         if "diff-tree" in args:
-            return subprocess.CompletedProcess(args, 0, stdout="\n".join(files), stderr="")
+            out = "".join(f"{f}\0" for f in files)
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
         return subprocess.CompletedProcess(args, 0, stdout=f"{sha}\n{stamp}\nfix typo", stderr="")
 
     monkeypatch.setattr(decision_capture.subprocess, "run", _run)
@@ -734,7 +735,7 @@ def test_upkeep_rides_beside_the_capture_prompt(upkeep_repo: Path, monkeypatch) 
         if "rev-parse" in args:
             return subprocess.CompletedProcess(args, 0, stdout=f"{upkeep_repo}\n", stderr="")
         if "diff-tree" in args:
-            return subprocess.CompletedProcess(args, 0, stdout="src/auth.py", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="src/auth.py\0", stderr="")
         return subprocess.CompletedProcess(args, 0, stdout=f"{_SHA}\n{stamp}\n{_MESSAGE}", stderr="")
 
     monkeypatch.setattr(decision_capture.subprocess, "run", _run)
@@ -768,3 +769,27 @@ def test_the_capture_prompt_asks_for_one_short_command(repo: Path) -> None:
     assert "--title" not in command and "--format" not in command
     for flag in ("--agent", "--decision", "--rationale", "--affects", "--evidence-commit"):
         assert flag in command
+
+
+def test_a_non_ascii_path_comes_back_as_git_stores_it(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "café.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "src" / "plain.py").write_text("y = 2\n", encoding="utf-8")
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    # Git's default, pinned here so a global quotepath=false cannot hide a regression.
+    git("config", "core.quotepath", "true")
+    git("config", "commit.gpgsign", "false")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
+
+    assert sorted(decision_capture._commit_files(root)) == ["src/café.py", "src/plain.py"]

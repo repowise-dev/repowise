@@ -252,17 +252,22 @@ def _clip(text: str, cap: int) -> str:
 
 
 def _commit_files(repo_path: Path) -> list[str]:
-    """Repo-relative POSIX paths HEAD changed. ``--root`` covers a first commit."""
+    """Repo-relative POSIX paths HEAD changed. ``--root`` covers a first commit.
+
+    ``-z`` keeps git from quoting and octal-escaping a non-ASCII path, which
+    would then never match the path a decision is linked to.
+    """
     result = subprocess.run(
-        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "HEAD"],
+        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", "HEAD"],
         cwd=str(repo_path),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=5,
     )
     if result.returncode != 0:
         return []
-    return [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+    return [path for path in result.stdout.split("\0") if path]
 
 
 def _failed(tool_output: object) -> bool:
