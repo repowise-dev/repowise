@@ -620,11 +620,13 @@ def _load_commands_config(repo_root: str) -> tuple[bool, str, dict]:
     distill = data.get("distill")
     if not isinstance(distill, dict):
         return enabled, permission, families
-    if distill.get("enabled") is False:
+    from repowise.core.settings.model import flag
+
+    if not flag(distill.get("enabled"), True):
         enabled = False
     commands = distill.get("commands")
     if isinstance(commands, dict):
-        if commands.get("enabled") is False:
+        if not flag(commands.get("enabled"), True):
             enabled = False
         raw_permission = commands.get("permission")
         if raw_permission in _OFF_VALUES:

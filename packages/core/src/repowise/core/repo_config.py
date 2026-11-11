@@ -223,6 +223,22 @@ def save_file_settings(
     return {key: config[key] for key in FILE_SETTING_KEYS if config.get(key) is not None}
 
 
+def write_file_setting(repo_path: Path | str, key: str, value: Any) -> None:
+    """Write one :data:`FILE_SETTING_KEYS` value through :func:`save_file_settings`.
+
+    The settings-registry writer for these keys; ``None`` restores the default.
+    A style must be a built-in or one under ``.repowise/styles/``: generation
+    reads an unknown name as the default, so saving one would change nothing.
+    """
+    if key == "wiki_style" and value is not None:
+        from repowise.core.generation.styles import is_known_style, list_styles
+
+        if not is_known_style(value, repo_path):
+            names = ", ".join(spec.name for spec in list_styles(repo_path))
+            raise ValueError(f"wiki_style: no style named {value!r}; known: {names}")
+    save_file_settings(repo_path, {key: value}, {})
+
+
 def _set_file_setting(config: dict[str, Any], key: str, value: Any, default: Any) -> None:
     """Set *key* to *value* in *config*; the default (or ``None``) removes it."""
     value = default if value is None else value

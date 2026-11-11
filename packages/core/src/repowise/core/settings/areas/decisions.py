@@ -25,7 +25,7 @@ from repowise.core.analysis.decisions.policy import (
 from repowise.core.settings.model import Setting
 
 AREA = "decisions"
-_WRITER = "repowise.core.analysis.decisions.policy_store:write_policy"
+_WRITER = "repowise.core.analysis.decisions.policy_store:write_setting"
 
 #: Plain-words descriptions for the switches ``_MODE_DEFAULTS`` lists.
 _SWITCHES: dict[str, str] = {

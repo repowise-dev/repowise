@@ -26,6 +26,17 @@ _KNOWN_COMMANDS_KEYS = ("enabled", "permission", "families", "disabled_filters")
 _KNOWN_STORE_KEYS = ("ttl_days", "max_mb")
 
 
+def _is_flag(value: Any) -> bool:
+    """Whether the readers take *value* as on or off (see ``parse_flag``)."""
+    from repowise.core.settings.model import parse_flag
+
+    try:
+        parse_flag(value)
+    except ValueError:
+        return False
+    return True
+
+
 def validate_distill_config(distill: Any) -> list[str]:
     """Return a list of problems with a ``distill:`` config block.
 
@@ -42,7 +53,7 @@ def validate_distill_config(distill: Any) -> list[str]:
     for key in distill:
         if key not in _KNOWN_TOP_KEYS:
             problems.append(f"distill.{key}: unknown key")
-    if "enabled" in distill and not isinstance(distill["enabled"], bool):
+    if "enabled" in distill and not _is_flag(distill["enabled"]):
         problems.append("distill.enabled: must be true or false")
 
     commands = distill.get("commands")
@@ -67,7 +78,7 @@ def _validate_commands(commands: dict) -> list[str]:
     for key in commands:
         if key not in _KNOWN_COMMANDS_KEYS:
             problems.append(f"distill.commands.{key}: unknown key")
-    if "enabled" in commands and not isinstance(commands["enabled"], bool):
+    if "enabled" in commands and not _is_flag(commands["enabled"]):
         problems.append("distill.commands.enabled: must be true or false")
 
     permission = commands.get("permission")

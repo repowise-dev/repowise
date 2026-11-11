@@ -15,8 +15,7 @@ from repowise.core.settings.model import Env, Setting
 
 AREA = "generation"
 _s = factory(AREA)
-_FILE_SETTINGS_WRITER = "repowise.core.repo_config:save_file_settings"
-_LLM_WRITER = "repowise.core.providers.llm.resolve:save_repo_llm_selection"
+_FILE_SETTINGS_WRITER = "repowise.core.repo_config:write_file_setting"
 
 #: ``repowise.core.providers.embedding.registry._BUILTIN_EMBEDDERS``.
 EMBEDDERS: tuple[str, ...] = ("openai", "gemini", "ollama", "openrouter", "edenai", "mock")
@@ -30,7 +29,7 @@ SETTINGS: tuple[Setting, ...] = (
         "Which model service writes docs and answers (anthropic, openai, gemini, "
         "ollama, claude_cli and others). Unset picks one from the API keys present.",
         env=Env("REPOWISE_PROVIDER"),
-        writer=_LLM_WRITER,
+        writer="repowise.core.providers.llm.resolve:write_provider_setting",
     ),
     _s(
         "model",
@@ -38,7 +37,6 @@ SETTINGS: tuple[Setting, ...] = (
         None,
         "The model id to use with the provider. Unset uses the provider's default.",
         env=Env("REPOWISE_MODEL"),
-        writer=_LLM_WRITER,
     ),
     _s(
         "reasoning",

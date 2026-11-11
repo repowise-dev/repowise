@@ -75,7 +75,7 @@ def test_invalid_file_value_falls_to_the_next_layer_with_a_problem():
 def test_invalid_value_can_raise_or_read_as_a_fallback():
     with pytest.raises(SettingError, match="max_tokens"):
         resolve("max_tokens", {"max_tokens": -1}, environ={})
-    r = resolve("attribution.enabled", {"attribution": {"enabled": "yes"}}, environ={})
+    r = resolve("attribution.enabled", {"attribution": {"enabled": "maybe"}}, environ={})
     assert (r.value, r.source) == (False, Source.REPO_FILE)
     assert r.problem
 

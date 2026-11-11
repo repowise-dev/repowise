@@ -2,7 +2,9 @@
 
 Every command here reads and writes the one resolved policy in
 ``repowise.core.analysis.decisions.policy``, so the CLI cannot disagree with
-what the index pipeline and the server report.
+what the index pipeline and the server report. Each change goes through
+:meth:`DecisionPolicy.with_setting`, the same step ``repowise config set
+decisions.<key>`` takes, so the two spellings cannot drift apart.
 """
 
 from __future__ import annotations
@@ -335,33 +337,11 @@ def config_show(path: str | None, fmt: str) -> None:
 @format_option()
 def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     """Apply a named preset: default, off, local_only, balanced, full."""
-    from dataclasses import replace
-
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
-    from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    # A preset names source membership. The harness list, the two agent
-    # switches, approval, sync and update mining are not membership, so applying
-    # one leaves them as the caller set them.
     current = _load(repo_path).policy
-    _apply(
-        repo_path,
-        replace(
-            preset_policy(name),
-            harnesses=current.harnesses,
-            agent_acceptance=current.agent_acceptance,
-            capture_prompt=current.capture_prompt,
-            require_approval=current.require_approval,
-            sync=current.sync,
-            update_mining=current.update_mining,
-            session_start=current.session_start,
-            upkeep_prompt=current.upkeep_prompt,
-            mode=current.mode,
-        ),
-        fmt,
-        dry_run,
-    )
+    _apply(repo_path, current.with_setting("preset", name), fmt, dry_run)
 
 
 @config_group.command("mode")
@@ -382,7 +362,7 @@ def config_mode(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_mode(name.replace("-", "_")), fmt, dry_run)
+    _apply(repo_path, current.with_setting("mode", name.replace("-", "_")), fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +409,9 @@ def config_discovery(
         _emit(repo_path, _load(repo_path), fmt)
         return
     try:
-        policy = _load(repo_path).policy.with_discovery(**fields)
+        policy = _load(repo_path).policy
+        for field, value in fields.items():
+            policy = policy.with_setting(f"discovery.{field}", value)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _apply(repo_path, policy, fmt, dry_run)
@@ -453,7 +435,7 @@ def config_agent_acceptance(
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("agent_acceptance", bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("approval")
@@ -475,7 +457,7 @@ def config_approval(path: str | None, enabled: bool | None, dry_run: bool, fmt: 
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_require_approval(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("require_approval", bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("sync")
@@ -495,7 +477,7 @@ def config_sync(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_sync(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("sync", bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("update-mining")
@@ -517,7 +499,7 @@ def config_update_mining(path: str | None, enabled: bool | None, dry_run: bool, 
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_update_mining(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("update_mining", bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("session-start")
@@ -539,7 +521,7 @@ def config_session_start(path: str | None, enabled: bool | None, dry_run: bool, 
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_session_start(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("session_start", bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("upkeep-prompt")
@@ -563,7 +545,7 @@ def config_upkeep_prompt(path: str | None, enabled: bool | None, dry_run: bool, 
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_upkeep_prompt(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("upkeep_prompt", bool(enabled)), fmt, dry_run)
     if enabled and not dry_run:
         # Fired from the same per-install shell entry as the capture prompt.
         from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
@@ -596,7 +578,7 @@ def config_capture_prompt(
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("capture_prompt", bool(enabled)), fmt, dry_run)
     if dry_run:
         return
     # The flag is per repository; the hook it fires from is a per-install
@@ -678,8 +660,11 @@ def source_set(
         raise click.ClickException("Pass --on/--off or --llm/--no-llm.")
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_source(source, enabled=enabled, llm=llm), fmt, dry_run)
+    policy = _load(repo_path).policy
+    for field, value in (("enabled", enabled), ("llm", llm)):
+        if value is not None:
+            policy = policy.with_setting(f"sources.{source}.{field}", value)
+    _apply(repo_path, policy, fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -703,4 +688,4 @@ def llm_command(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
-    _apply(repo_path, current.with_llm(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, current.with_setting("llm", bool(enabled)), fmt, dry_run)

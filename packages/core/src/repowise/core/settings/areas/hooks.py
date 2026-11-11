@@ -11,7 +11,6 @@ from __future__ import annotations
 from repowise.core.settings.model import TRUTHY, Env, Setting
 
 AREA = "hooks"
-_WRITER = "repowise.cli._helpers.config:save_hook_surface_enabled"
 
 #: Every flag ``hook_flag_enabled`` is asked about. All are off when absent.
 _FLAGS: dict[str, str] = {
@@ -32,8 +31,18 @@ def _flag(name: str, description: str) -> Setting:
         description=description,
         area=AREA,
         env=Env(f"REPOWISE_HOOK_{name.upper()}", wins=True, true_values=TRUTHY),
-        writer=_WRITER,
     )
+
+
+_SKELETON_MODES = ("smart", "plus")
+
+
+def parse_skeleton_mode(raw: object) -> str:
+    """``hooks.read_skeleton_mode`` read as ``configured_mode`` reads it: any case, any spacing."""
+    mode = raw.strip().lower() if isinstance(raw, str) else None
+    if mode not in _SKELETON_MODES:
+        raise ValueError(f"must be one of {', '.join(_SKELETON_MODES)}")
+    return mode
 
 
 SETTINGS: tuple[Setting, ...] = (
@@ -45,8 +54,9 @@ SETTINGS: tuple[Setting, ...] = (
         description="What a served outline keeps: smart, or plus to keep all code "
         "outside function bodies.",
         area=AREA,
-        choices=("smart", "plus"),
+        choices=_SKELETON_MODES,
         env=Env("REPOWISE_HOOK_READ_SKELETON_MODE", wins=True),
+        parser="repowise.core.settings.areas.hooks:parse_skeleton_mode",
     ),
     Setting(
         key="REPOWISE_HOOK_UPDATED_OUTPUT",

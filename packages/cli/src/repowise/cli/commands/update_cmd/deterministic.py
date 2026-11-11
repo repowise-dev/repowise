@@ -23,6 +23,7 @@ from repowise.cli.helpers import console, run_async
 from repowise.core.persistence import (
     load_stale_structural_file_paths as load_stale_structural_file_paths,
 )
+from repowise.core.settings.model import flag
 
 
 def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) -> str:
@@ -260,7 +261,7 @@ def _render_pages(
             file_pages_only=not complete_context,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
-            enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+            enable_onboarding=flag(cfg.get("enable_onboarding"), True),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
         )
 

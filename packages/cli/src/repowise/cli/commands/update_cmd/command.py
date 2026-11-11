@@ -54,6 +54,7 @@ from repowise.core.ingestion.git_indexer import (
 )
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.settings.model import flag
 
 from .config_changes import classify_config_changes
 from .decision_passes import _run_decision_evolution as _run_decision_evolution
@@ -2136,7 +2137,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     generation_changed = run.config.generation_changed
     full_generation = run.full_generation
     language = cfg.get("language", "en")
-    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
+    enable_onboarding_cfg = flag(cfg.get("enable_onboarding"), True)
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=opts.concurrency,

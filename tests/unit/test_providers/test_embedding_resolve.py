@@ -251,6 +251,7 @@ def test_workspace_save_repo_config_preserves_pinned_embedding_model(tmp_path):
         embedder_name_resolved="ollama",
         exclude_patterns=[],
         resolved_commit_limit=50,
+        follow_renames=False,
         resolved_reasoning="medium",
         save_key=False,
         wiki_style="default",

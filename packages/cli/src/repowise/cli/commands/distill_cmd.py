@@ -308,7 +308,9 @@ def _load_distill_config(
     cfg = load_repo_config(repo_root).get("distill") or {}
     if not isinstance(cfg, dict):
         return True, (), omission_store_settings(None)
-    enabled = bool(cfg.get("enabled", True))
+    from repowise.core.settings.model import flag
+
+    enabled = flag(cfg.get("enabled"), True)
     commands_cfg = cfg.get("commands") or {}
     raw_disabled = commands_cfg.get("disabled_filters") if isinstance(commands_cfg, dict) else None
     disabled = tuple(str(name) for name in raw_disabled) if isinstance(raw_disabled, list) else ()

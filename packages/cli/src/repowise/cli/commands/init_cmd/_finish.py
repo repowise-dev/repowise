@@ -23,6 +23,7 @@ from repowise.cli.ui.glyphs import glyph
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.settings.model import flag
 
 from ._ingest import decision_llm_client
 from ._interactive import (
@@ -119,6 +120,13 @@ def save_run_config(run: InitRun) -> None:
 
     if opts.commit_limit is not None:
         save_config_partial(repo_path, commit_limit=run.resolved_commit_limit)
+
+    # Written only when the run's choice differs from the file's (#5367): a
+    # prompt answered with the default leaves the file alone.
+    if opts.follow_renames is not None and opts.follow_renames != flag(
+        run.config.get("follow_renames"), False
+    ):
+        save_config_partial(repo_path, follow_renames=opts.follow_renames)
 
 
 def register_clients(run: InitRun) -> None:

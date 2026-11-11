@@ -19,6 +19,8 @@ __all__ = [
     "Setting",
     "SettingError",
     "Source",
+    "flag",
+    "parse_flag",
 ]
 
 SettingType = Literal["bool", "int", "float", "str", "list", "mapping"]
@@ -34,6 +36,39 @@ OnInvalid = Literal["default", "error", "fallback"]
 TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 #: The common "is this env var off" spellings, compared after strip and lower.
 FALSY: frozenset[str] = frozenset({"0", "false", "no", "off"})
+
+
+
+def parse_flag(raw: Any) -> bool:
+    """A switch's value as a config file states it, or ``ValueError``.
+
+    A YAML bool, ``0`` or ``1``, or a quoted :data:`TRUTHY` / :data:`FALSY`
+    spelling: ``"false"`` is off, never on because the string is non-empty.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in TRUTHY:
+            return True
+        if text in FALSY:
+            return False
+    raise ValueError("must be true or false")
+
+
+def flag(raw: Any, default: bool) -> bool:
+    """:func:`parse_flag`, with *default* for an absent or unreadable value.
+
+    The one reading every config switch shares, so a hook, the CLI and the
+    settings listing cannot disagree about ``enabled: "false"`` or ``0``.
+    """
+    try:
+        return parse_flag(raw)
+    except ValueError:
+        return default
+
 
 #: The file each scope lives in, unless a setting names another.
 _SCOPE_FILES: dict[str, str | None] = {
@@ -122,9 +157,10 @@ class Setting:
     #: raising ``ValueError`` when it cannot. For grammars a type cannot say
     #: (``mcp.tools``, ``folder_coverage``). Imported only when used.
     parser: str | None = None
-    #: ``"module:function"`` that writes the value, for areas that own a
-    #: writer (decisions, hook surfaces). ``None`` means a plain edit of
-    #: :attr:`file`.
+    #: ``"module:function"`` called as ``writer(root, key, value)`` to write
+    #: an already-validated value, ``None`` meaning "back to the default", for
+    #: an area whose writes do more than set one key (decisions, the provider).
+    #: ``None`` here means :func:`repowise.core.settings.writers.write_file_value`.
     writer: str | None = None
     #: Whether this repository would benefit from a non-default value.
     #: Takes facts about the repository, returns a reason or ``None``.

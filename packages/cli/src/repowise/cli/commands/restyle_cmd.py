@@ -41,6 +41,7 @@ from repowise.core.generation.styles import (
     list_styles,
     resolve_style,
 )
+from repowise.core.settings.model import flag
 
 
 def _print_styles(current: str | None = None, repo_path: Path | str | None = None) -> None:
@@ -241,7 +242,7 @@ def restyle_command(
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+        enable_onboarding=flag(cfg.get("enable_onboarding"), True),
         wiki_style=style,
     )
 
@@ -278,20 +279,13 @@ def restyle_command(
 
 def _remove_config_key(repo_path: Path, key: str) -> None:
     """Drop a single key from ``.repowise/config.yaml`` if present (keeps it tidy)."""
-    import yaml
+    from repowise.cli.helpers import load_config_for_write
+    from repowise.core.repo_config import save_repo_config
 
-    from repowise.cli.helpers import CONFIG_FILENAME, get_repowise_dir
-
-    config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
-    if not config_path.exists():
-        return
-    existing = load_config(repo_path)
+    existing = load_config_for_write(repo_path)
     if key in existing:
         existing.pop(key)
-        config_path.write_text(
-            yaml.dump(existing, default_flow_style=False, sort_keys=False),
-            encoding="utf-8",
-        )
+        save_repo_config(repo_path, existing)
 
 
 @click.command("wiki-styles")

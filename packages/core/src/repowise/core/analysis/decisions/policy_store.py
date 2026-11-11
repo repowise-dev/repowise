@@ -21,7 +21,14 @@ from .policy import (
     resolve_policy,
 )
 
-__all__ = ["PolicyConflictError", "layer_mode", "load_policy", "policy_etag", "write_policy"]
+__all__ = [
+    "PolicyConflictError",
+    "layer_mode",
+    "load_policy",
+    "policy_etag",
+    "write_policy",
+    "write_setting",
+]
 
 
 class PolicyConflictError(RuntimeError):
@@ -107,3 +114,15 @@ def write_policy(
 
     save_repo_config(repo_path, merged)
     return resolve_policy(merged)
+
+
+def write_setting(repo_path: Path | str, key: str, value: Any) -> None:
+    """Write one ``decisions.*`` setting; ``None`` puts it back to its default.
+
+    The writer :mod:`repowise.core.settings` calls for this area: the change
+    goes through :meth:`DecisionPolicy.with_setting`, so it means what the
+    matching ``decision config`` command means (a new mode resets the switches
+    under it), and :func:`write_policy` writes the whole block back.
+    """
+    policy = load_policy(repo_path).policy
+    write_policy(repo_path, policy.with_setting(key.removeprefix("decisions."), value))

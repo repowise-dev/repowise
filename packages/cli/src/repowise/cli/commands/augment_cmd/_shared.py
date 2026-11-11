@@ -197,9 +197,15 @@ def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> b
     try:
         import yaml
 
+        from repowise.core.settings.model import parse_flag
+
         data = yaml.safe_load(text) or {}
         hooks = data.get("hooks")
-        return bool(isinstance(hooks, dict) and hooks.get(flag, default) is True)
+        value = hooks.get(flag) if isinstance(hooks, dict) else None
+        if value is None:
+            return default
+        # A value that is neither on nor off reads as off: these fail closed.
+        return parse_flag(value)
     except Exception:
         return False
 

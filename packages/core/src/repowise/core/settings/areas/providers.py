@@ -33,7 +33,7 @@ SETTINGS: tuple[Setting, ...] = (
             None,
             f"Custom http(s) endpoint for {name}, such as a proxy or a local server.",
             on_invalid="error",
-            writer="repowise.core.providers.llm.resolve:save_repo_llm_selection",
+            parser="repowise.core.providers.llm.resolve:validate_base_url",
         )
         for name in BASE_URL_PROVIDERS
     ),
