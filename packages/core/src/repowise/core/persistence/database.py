@@ -14,6 +14,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import os
+import socket
 import sqlite3
 import warnings
 from collections.abc import AsyncGenerator, Callable
@@ -178,6 +179,61 @@ __all__ = [
 DB_FILENAME = "wiki.db"
 REPOWISE_DIRNAME = ".repowise"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
+PG_KEEPALIVE_IDLE_ENV = "REPOWISE_PG_KEEPALIVES_IDLE"
+PG_KEEPALIVE_INTERVAL_ENV = "REPOWISE_PG_KEEPALIVES_INTERVAL"
+PG_KEEPALIVE_COUNT_ENV = "REPOWISE_PG_KEEPALIVES_COUNT"
+PG_COMMAND_TIMEOUT_ENV = "REPOWISE_PG_COMMAND_TIMEOUT"
+
+DEFAULT_PG_KEEPALIVES_IDLE = 60
+DEFAULT_PG_KEEPALIVES_INTERVAL = 15
+DEFAULT_PG_KEEPALIVES_COUNT = 4
+
+
+def _int_env(name: str, default: int | None = None) -> int | None:
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return default
+    try:
+        return int(val.strip())
+    except ValueError:
+        return default
+
+
+def _apply_postgres_socket_keepalives(
+    idle: int | None, interval: int | None, count: int | None
+) -> Callable[[object, object], None]:
+    """Configure TCP keepalive socket options on a newly opened PostgreSQL connection."""
+
+    def _listener(dbapi_connection: object, _connection_record: object) -> None:
+        raw_conn = getattr(dbapi_connection, "_connection", dbapi_connection)
+        transport = getattr(raw_conn, "_transport", None)
+        sock: socket.socket | None = None
+        if transport is not None:
+            sock = transport.get_extra_info("socket")
+        elif hasattr(raw_conn, "fileno"):
+            try:
+                fileno = raw_conn.fileno()
+                if isinstance(fileno, int) and fileno >= 0:
+                    sock = socket.fromfd(fileno, socket.AF_INET, socket.SOCK_STREAM)
+            except Exception:
+                sock = None
+
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                for opt_name, val in (
+                    ("TCP_KEEPIDLE", idle),
+                    ("TCP_KEEPINTVL", interval),
+                    ("TCP_KEEPCNT", count),
+                ):
+                    opt = getattr(socket, opt_name, None)
+                    if opt is not None and val is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, opt, val)
+            except OSError:
+                pass
+
+    return _listener
+
 
 
 def get_repo_db_path(repo_path: str | Path) -> Path:
@@ -334,12 +390,41 @@ def create_engine(
         if short_lived:
             kwargs["poolclass"] = NullPool
 
+        connect_args: dict[str, Any] = {}
+        server_settings: dict[str, str] = {}
+
+        idle = _int_env(PG_KEEPALIVE_IDLE_ENV, DEFAULT_PG_KEEPALIVES_IDLE)
+        interval = _int_env(PG_KEEPALIVE_INTERVAL_ENV, DEFAULT_PG_KEEPALIVES_INTERVAL)
+        count = _int_env(PG_KEEPALIVE_COUNT_ENV, DEFAULT_PG_KEEPALIVES_COUNT)
+        command_timeout = _int_env(PG_COMMAND_TIMEOUT_ENV, None)
+
+        if idle is not None:
+            server_settings["tcp_keepalives_idle"] = str(idle)
+        if interval is not None:
+            server_settings["tcp_keepalives_interval"] = str(interval)
+        if count is not None:
+            server_settings["tcp_keepalives_count"] = str(count)
+
+        if server_settings:
+            connect_args["server_settings"] = server_settings
+        if command_timeout is not None:
+            connect_args["command_timeout"] = command_timeout
+
+        if connect_args:
+            kwargs["connect_args"] = connect_args
+
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
         # The ``connect`` event fires for the underlying DBAPI connection, so we
         # listen on the sync engine that backs the AsyncEngine.
         timeout = busy_timeout_ms if busy_timeout_ms is not None else _SQLITE_BUSY_TIMEOUT_MS
         event.listen(engine.sync_engine, "connect", _make_pragma_listener(timeout))
+    else:
+        event.listen(
+            engine.sync_engine,
+            "connect",
+            _apply_postgres_socket_keepalives(idle, interval, count),
+        )
     return engine
 
 
