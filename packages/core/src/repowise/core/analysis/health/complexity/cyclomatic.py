@@ -701,7 +701,8 @@ def _compound_condition(node: Node, lmap: LanguageNodeMap) -> list[ConditionComp
     op_count = 0
     op_kinds: set[str] = set()
     negated = False
-    for sub in _condition_subtrees(node, lmap):
+    subtrees = _condition_subtrees(node, lmap)
+    for sub in subtrees:
         sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
         op_count += sub_count
         op_kinds |= sub_kinds
@@ -713,9 +714,167 @@ def _compound_condition(node: Node, lmap: LanguageNodeMap) -> list[ConditionComp
             line=node.start_point[0] + 1,
             operator_count=op_count,
             enclosing_construct=_enclosing_construct(node, lmap),
-            flat_chain=len(op_kinds) == 1 and not negated,
+            flat_chain=len(op_kinds) == 1
+            and (not negated or all(_is_flat_list(sub, lmap) for sub in subtrees)),
         )
     ]
+
+
+# Grouping parentheses (and C's ``if (...)`` clause), per grammar.
+_PAREN_KINDS = frozenset(
+    {"parenthesized_expression", "parenthesized_statements", "exprParens", "condition_clause"}
+)
+# Name tokens an operand can test, per grammar.
+_NAME_KINDS = frozenset({"name", "constant", "variable_name", "instance_variable"})
+# A bare flag: a name or a member read off one, with no call or comparison.
+_FLAG_KINDS = frozenset(
+    {
+        "member_expression",
+        "field_expression",
+        "field_access",
+        "navigation_expression",
+        "member_access_expression",
+        "selector_expression",
+        "attribute",
+    }
+)
+_OPERATOR_TEXTS = frozenset({b"&&", b"||", b"and", b"or"})
+_NOT_TEXTS = frozenset({b"!", b"not"})
+
+
+def _negated_operand(node: Node) -> Node | None:
+    """What a prefix ``!`` / ``not`` node negates, ``None`` for any other node."""
+    first = node.children[0] if node.children else None
+    if first is None or (first.text not in _NOT_TEXTS and first.type != "kNot"):
+        return None
+    named = node.named_children
+    return named[-1] if named and named[-1] != first else None
+
+
+def _strip(node: Node) -> tuple[Node, bool]:
+    """*node* without grouping parentheses or a prefix ``!`` / ``not``, and
+    whether a negation was stripped."""
+    negated = False
+    while True:
+        if node.type in _PAREN_KINDS and len(node.named_children) == 1:
+            node = node.named_children[0]
+        elif (operand := _negated_operand(node)) is not None:
+            node, negated = operand, True
+        else:
+            return node, negated
+
+
+def _is_operator(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An operator token, not an operand: ``&&`` / ``kAnd`` / Dart's operator node."""
+    return node.text in _OPERATOR_TEXTS or (node.child_count == 0 and _is_boolean_operator(node, lmap))
+
+
+def _chain_operands(node: Node, lmap: LanguageNodeMap, top: bool = True) -> list[Node] | None:
+    """The operands of a chain of boolean operators, each stripped.
+
+    ``None`` when a negation covers a sub-chain (``a && !(b && c)``): De Morgan,
+    not a list. One over the whole chain (``!(a || b)``) is "none of" the list.
+    """
+    node, negated = _strip(node)
+    is_chain = (_is_boolean_operator(node, lmap) and node.child_count > 0) or any(
+        _is_operator(c, lmap) for c in node.children
+    )
+    if not is_chain:
+        return [node]
+    if negated and not top:
+        return None
+    out: list[Node] = []
+    for child in node.named_children:
+        if _is_operator(child, lmap):
+            continue
+        operands = _chain_operands(child, lmap, top=False)
+        if operands is None:
+            return None
+        out.extend(operands)
+    return out
+
+
+# Names every operand of a method can share without testing one value.
+_RECEIVER_NAMES = frozenset({b"self", b"this", b"super", b"nil", b"null", b"true", b"false"})
+_CALLEE_FIELDS = ("function", "method", "name")
+_MEMBER_FIELDS = ("property", "attribute", "field", "name", "selector")
+
+
+def _callee_ids(node: Node) -> set[int]:
+    """Ids of the names *node* calls (``strcmp``, ``s.startsWith``'s ``startsWith``)."""
+    ids: set[int] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        stack.extend(cur.children)
+        if cur.child_by_field_name("arguments") is None and cur.type != "message_expression":
+            continue
+        callee = next(filter(None, map(cur.child_by_field_name, _CALLEE_FIELDS)), None)
+        if callee is None:
+            continue
+        ids.add(callee.id)
+        member = next(filter(None, map(callee.child_by_field_name, _MEMBER_FIELDS)), None)
+        if member is not None:
+            ids.add(member.id)
+    return ids
+
+
+def _is_member_name(node: Node) -> bool:
+    """The member part of a member read (``kind`` in ``a->kind``), not its base."""
+    parent = node.parent
+    if parent is None or parent.type not in _FLAG_KINDS:
+        return False
+    return any(
+        (member := parent.child_by_field_name(f)) is not None and member.id == node.id
+        for f in _MEMBER_FIELDS
+    )
+
+
+def _names(node: Node) -> set[bytes]:
+    """The value names *node* tests: not the functions it calls, not ``self``."""
+    called = _callee_ids(node)
+    found: set[bytes] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        stack.extend(cur.children)
+        if cur.id in called or cur.text is None or cur.text in _RECEIVER_NAMES:
+            continue
+        if _is_member_name(cur):
+            # ``a->kind`` and ``b->kind`` test different values.
+            continue
+        if "identifier" in cur.type or cur.type in _NAME_KINDS:
+            found.add(cur.text)
+    return found
+
+
+def _is_flag(node: Node) -> bool:
+    """A bare name, or a member read off one: ``ready``, ``self.done``."""
+    if "identifier" in node.type or node.type in _NAME_KINDS:
+        return True
+    return node.type in _FLAG_KINDS and all(_is_flag(c) for c in node.named_children)
+
+
+def _is_flat_list(condition: Node, lmap: LanguageNodeMap) -> bool:
+    """A one-operator chain that negates whole operands, never a sub-chain, and is
+    a list: every operand a bare flag (``!a || !b || c``), or every operand
+    testing one name (``!strcmp(name, ".") || !strcmp(name, "..")``).
+
+    ``!(a || b || c)`` over such a list is the same list ("none of").
+    """
+    operands = _chain_operands(condition, lmap)
+    if operands is None or len(operands) < 2:
+        return False
+    for operand in operands:
+        stack = [operand]
+        while stack:
+            cur = stack.pop()
+            if _is_boolean_operator(cur, lmap):
+                return False
+            stack.extend(cur.children)
+    if all(_is_flag(o) for o in operands):
+        return True
+    return bool(set.intersection(*(_names(o) for o in operands)))
 
 
 def _bare_on_handlers(try_node: Node) -> list[int]:
