@@ -192,8 +192,10 @@ async def _path_not_found(
     """
     hint = await asyncio.to_thread(missing_path_hint, str(repo_root or ""), path)
     moved = hint.get("moved_to") or []
-    if follow_moves and moved:
-        new_path = moved[0] if len(moved) == 1 else str(PurePosixPath(path).with_suffix(""))
+    new_path = moved[0] if len(moved) == 1 else str(PurePosixPath(path).with_suffix(""))
+    # A split is answered for its package only when every new file lives there.
+    split_ok = len(moved) < 2 or all(m.startswith(f"{new_path}/") for m in moved)
+    if follow_moves and moved and split_ok and new_path != path:
         result = await _why_path(new_path, repo, history=history, follow_moves=False)
         if "error" not in result:
             result["moved_from"] = path

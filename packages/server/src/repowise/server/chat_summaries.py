@@ -46,14 +46,18 @@ def _change_risk_summary(result: dict[str, Any]) -> str:
 
 def _why_path_summary(result: dict[str, Any]) -> str:
     decisions = result.get("decisions", [])
-    alignment = result.get("alignment", {})
-    score = alignment.get("score", "unknown")
-    origin = result.get("origin_story", {})
-    author = origin.get("primary_author", "unknown") if origin.get("available") else "unknown"
     # ``decisions`` is capped by the path-mode projection; report what
     # governs the file, not how many survived the cap.
     total = result.get("decisions_total", len(decisions))
-    return f"{total} decision(s), alignment: {score}, author: {author}"
+    parts = [f"{total} decision(s)"]
+    # Alignment and the origin story come only with the history; absent, not unknown.
+    score = (result.get("alignment") or {}).get("score")
+    if score is not None:
+        parts.append(f"alignment: {score}")
+    origin = result.get("origin_story") or {}
+    if origin.get("available") and origin.get("primary_author"):
+        parts.append(f"author: {origin['primary_author']}")
+    return ", ".join(parts)
 
 
 def _why_summary(result: dict[str, Any]) -> str:

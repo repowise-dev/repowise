@@ -242,3 +242,44 @@ async def _seed_background(session, rid: str, path: str, count: int) -> None:
             )
         )
     await session.flush()
+
+
+def test_a_rule_is_never_folded_under_a_mined_record_ranked_above_it():
+    from repowise.server.mcp_server.tool_why.ranking import _collapse_restatements
+
+    full = "f" * 40
+    mined, rule, later = _rec("mined", full), _rec("rule", full), _rec("later", full)
+
+    out = _collapse_restatements([mined, rule, later], in_force={"rule"})
+
+    assert [(d.id, folded) for d, folded in out] == [("mined", []), ("rule", ["later"])]
+
+
+@pytest.mark.asyncio
+async def test_a_split_is_followed_only_into_its_own_package(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
+
+    monkeypatch.setattr(
+        path_mode,
+        "missing_path_hint",
+        lambda root, path: {"removed_by_commit": "d" * 40, "moved_to": ["x/a.py", "y/b.py"]},
+    )
+
+    result = await get_why("src/auth.py")
+
+    assert "moved_from" not in result
+    assert result["removed_by_commit"] == "d" * 12
+
+
+def test_a_lean_path_summary_names_only_what_was_served():
+    from repowise.server.chat_summaries import _why_path_summary
+
+    assert _why_path_summary({"decisions": [{"id": "a"}]}) == "1 decision(s)"
+    assert _why_path_summary(
+        {
+            "decisions": [],
+            "alignment": {"score": "low"},
+            "origin_story": {"available": True, "primary_author": "Alice"},
+        }
+    ) == "0 decision(s), alignment: low, author: Alice"

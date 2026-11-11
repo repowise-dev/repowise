@@ -460,10 +460,10 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     ranked = [d for _, d in scored]
     collector = OmissionCollector("get_why", repo_root=ctx.path)
     resolved = await asyncio.to_thread(_resolved_commits, None, ranked, ctx.path)
-    collapsed = _collapse_restatements(ranked, resolved)
+    collapsed = _collapse_restatements(ranked, resolved, accepted or set())
     # The window's decision hits are not served: one that clears the floor is
     # already a keyword match (same corpus, same weights), so the only rows
-    # it could add are below the floor.
+    # it could add are the ones below the floor, a deliberate cut.
     _, doc_results = await _semantic_lanes(ctx, query)
     lineage_by_id = await _lineage_for_matches(
         ctx, [d for d, _ in collapsed], all_decisions

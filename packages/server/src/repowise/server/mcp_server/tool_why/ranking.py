@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from repowise.core.analysis.decisions.lifecycle import status_rank
@@ -83,7 +83,9 @@ def _evidence_key(
 
 
 def _collapse_restatements(
-    records: list, resolved_commits: Mapping[str, str] | None = None
+    records: list,
+    resolved_commits: Mapping[str, str] | None = None,
+    in_force: Collection[str] = (),
 ) -> list[tuple[Any, list[str]]]:
     """``(kept, folded_ids)`` per distinct decision, input order preserved.
 
@@ -91,13 +93,18 @@ def _collapse_restatements(
     evidence cannot be compared and are always kept. Mined records mostly cite
     abbreviated commits, which compare only once *resolved_commits* (from
     ``_resolved_commits``) maps them to the full sha git knows them by.
+
+    A record whose id is in *in_force* is never folded under one that is not:
+    a rule must not reach the reader as a restatement of a guess. It keeps its
+    own row, and absorbs the restatements ranked after it.
     """
     by_evidence: dict[tuple[object, ...], int] = {}
     out: list[tuple[Any, list[str]]] = []
     for d in records:
         key = _evidence_key(d, resolved_commits)
-        if key is not None and key in by_evidence:
-            out[by_evidence[key]][1].append(d.id)
+        kept = by_evidence.get(key) if key is not None else None
+        if kept is not None and (d.id not in in_force or out[kept][0].id in in_force):
+            out[kept][1].append(d.id)
             continue
         if key is not None:
             by_evidence[key] = len(out)
