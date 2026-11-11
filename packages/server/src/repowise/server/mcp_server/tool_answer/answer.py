@@ -577,9 +577,15 @@ async def _user_prompt(ask: _Ask, hits: list[dict], graph_callers) -> str:
     """The synthesis prompt; decisions (why questions) and prelude drop out when empty."""
     top_paths = [h["target_path"] for h in hits if h.get("target_path")]
     decisions: list[dict] = []
-    if _is_why_question(ask.question) and top_paths:
+    if _is_why_question(ask.question):
         with contextlib.suppress(Exception):
-            decisions = await _fetch_relevant_decisions(ask.ctx, ask.repo_id, top_paths)
+            decisions = await _fetch_relevant_decisions(
+                ask.ctx,
+                ask.repo_id,
+                top_paths,
+                question=ask.question,
+                exclude_spec=ask.exclude_spec,
+            )
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ask.ctx, ask.repo_id)
