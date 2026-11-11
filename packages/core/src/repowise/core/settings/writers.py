@@ -150,7 +150,10 @@ def parse_text(setting: Setting, text: str) -> Any:
         return text
 
 
-def _refuse_env_only(setting: Setting) -> None:
+def _refuse_unwritable(setting: Setting) -> None:
+    if setting.members is not None:
+        members = ", ".join(registry.family_members(setting))
+        raise ValueError(f"{setting.key} is a family: name one member in its place ({members})")
     if setting.scope != "env":
         return
     raise EnvOnlyError(
@@ -169,7 +172,12 @@ def _writer(setting: Setting):
 
 
 def _write(root: Path, setting: Setting, value: Any) -> Change:
-    neighbours = [s for s in registry.settings_in(setting.area) if s.scope != "env"]
+    # A family member (openai.base_url) is not listed in its area by name.
+    neighbours = [setting] + [
+        s
+        for s in registry.settings_in(setting.area)
+        if s.scope != "env" and s.members is None and s.key != setting.key
+    ]
 
     def snapshot() -> dict[str, tuple[Resolved, Resolved]]:
         files: dict[str | None, dict[str, Any]] = {}
@@ -199,7 +207,7 @@ def set_value(root: Path | str, key: str, raw: Any) -> Change:
     would change does not parse.
     """
     setting = registry.get(key)
-    _refuse_env_only(setting)
+    _refuse_unwritable(setting)
     if raw is None:
         raise ValueError(f"{key}: give a value, or use reset to go back to the default")
     try:
@@ -212,7 +220,7 @@ def set_value(root: Path | str, key: str, raw: Any) -> Change:
 def reset_value(root: Path | str, key: str) -> Change:
     """Put *key* back to its default by removing what its file says."""
     setting = registry.get(key)
-    _refuse_env_only(setting)
+    _refuse_unwritable(setting)
     return _write(Path(root), setting, None)
 
 

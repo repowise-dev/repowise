@@ -404,3 +404,14 @@ def test_workspace_add_reads_the_primary_config_like_update(cfg, limit, renames)
 
     ctx = _added_repo_ctx(None, SimpleNamespace(), cfg, concurrency=1, save_key=False)
     assert (ctx.resolved_commit_limit, ctx.follow_renames) == (limit, renames)
+
+
+def test_base_url_is_set_per_provider_and_the_family_is_refused(repo):
+    out = _json(repo, "set", "openai.base_url", "http://localhost:8080/v1")
+    assert out["_exit"] == 0
+    assert _config(repo) == {"openai": {"base_url": "http://localhost:8080/v1"}}
+    assert _json(repo, "set", "openai.base_url", "not a url")["error"] == "invalid_value"
+    _json(repo, "reset", "openai.base_url")
+    assert _config(repo) == {}
+    refused = _json(repo, "set", "<provider>.base_url", "http://x")
+    assert refused["error"] == "invalid_value" and "openai" in refused["message"]
