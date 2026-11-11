@@ -275,6 +275,12 @@ def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) ->
     _print_report(change, moved, report["effect"], report["env_override"], report["undo"])
 
 
+def _written(value: Any) -> Any:
+    from repowise.core.settings.resolve import MISSING
+
+    return None if value is MISSING else value
+
+
 def _print_report(
     change: Any, moved: list[Any], effect: str, override: str | None, undo: list[str]
 ) -> None:
@@ -284,9 +290,9 @@ def _print_report(
             "nothing changed.[/dim]"
         )
     for m in moved:
-        before, after = m.saved_before.value, m.saved_after.value
-        if m.before.value != m.after.value or not override:
-            before, after = m.before.value, m.after.value
+        before, after = m.before.value, m.after.value
+        if override and before == after:  # the file moved under the variable
+            before, after = _written(m.written_before), _written(m.written_after)
         console.print(
             f"[green]✓[/green] {m.setting.key}: {escape(_text(before))} -> {escape(_text(after))}"
         )

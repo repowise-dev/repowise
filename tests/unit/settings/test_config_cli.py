@@ -203,9 +203,78 @@ def test_decisions_go_through_the_policy_writer(repo):
     assert _config(repo)["decisions"]["mode"] == "read_only"
     _json(repo, "set", "decisions.sync", "true")
     assert _config(repo)["decisions"]["sync"] is True
-    _json(repo, "reset", "decisions.mode")
-    assert "mode" not in _config(repo)["decisions"]
+    _json(repo, "reset", "decisions.mode")  # a mode resets the switches under it
+    assert "decisions" not in _config(repo)
     assert _json(repo, "get", "decisions.sync")["value"] is False
+
+
+def test_a_mode_change_lists_only_what_moved_and_one_undo(repo):
+    out = _json(repo, "set", "decisions.mode", "read_only")
+    assert {row["key"] for row in out["also"]} == {
+        "decisions.agent_acceptance", "decisions.capture_prompt",
+    }  # fmt: skip
+    assert out["undo"] == [f"repowise config reset decisions.mode --path {shlex.quote(str(repo))}"]
+    assert _config(repo) == {"decisions": {"mode": "read_only"}}
+
+
+_BLOCK = {"provider": "openai", "decisions": {"sync": True, "sources": {"pr": False}}}
+
+
+@pytest.mark.parametrize("start", [{"provider": "openai"}, _BLOCK])
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("decisions.mode", "read_only"), ("decisions.mode", "off"), ("decisions.sync", "true"),
+     ("decisions.sources.session.enabled", "true"), ("decisions.discovery.max_sessions", "3"),
+     ("decisions.llm", "false"), ("commit_limit", "300"), ("hooks.read_skeleton", "true")],
+)  # fmt: skip
+def test_set_then_its_undo_returns_the_file_to_its_bytes(repo, start, key, value):
+    from repowise.core.repo_config import save_repo_config
+
+    save_repo_config(repo, start)
+    path = repo / ".repowise" / "config.yaml"
+    original = path.read_bytes()
+    out = _json(repo, "set", key, value)
+    assert out["_exit"] == 0
+    assert bool(out["undo"]) is out["changed"]
+    for line in out["undo"]:
+        args = shlex.split(line)[2:]  # drop "repowise config"
+        assert _run(repo, *args[: args.index("--path")])[0] == 0, line
+    if len(out["undo"]) > 1:
+        # Restoring a switch a mode had reset puts it back at the end of its block.
+        assert _config(repo) == start
+    else:
+        assert path.read_bytes() == original
+
+
+def test_set_then_reset_on_a_file_without_the_key_restores_its_bytes(repo):
+    from repowise.core.repo_config import save_repo_config
+
+    save_repo_config(repo, {"provider": "openai"})
+    path = repo / ".repowise" / "config.yaml"
+    original = path.read_bytes()
+    for key, value in (("decisions.mode", "read_only"), ("decisions.sources.session.enabled", "true")):
+        _json(repo, "set", key, value)
+        _json(repo, "reset", key)
+        assert path.read_bytes() == original, key
+
+
+@pytest.mark.parametrize("spelling", ["read-only", "read_only"])
+def test_both_mode_spellings_work_in_both_commands(tmp_path, monkeypatch, spelling):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root in (a, b):
+        (root / ".repowise").mkdir(parents=True)
+    monkeypatch.setattr(
+        "repowise.cli.commands.decision_config_cmd._provider_available", lambda _repo: False
+    )
+    runner = CliRunner()
+    first = runner.invoke(cli, ["decision", "config", "mode", spelling, str(a), "--format", "json"])
+    assert first.exit_code == 0, first.output
+    second = runner.invoke(
+        cli, ["config", "set", "decisions.mode", spelling, "--path", str(b), "--format", "json"]
+    )
+    assert second.exit_code == 0, second.output
+    assert json.loads(second.output)["after"]["value"] == "read_only"
+    assert _config(a)["decisions"]["mode"] == _config(b)["decisions"]["mode"] == "read_only"
 
 
 def test_decision_source_and_discovery_settings(repo):
@@ -332,9 +401,11 @@ def test_cli_partial_writers_refuse_a_broken_config(repo):
         (["mode", "read-only"], "decisions.mode", "read_only"),
         (["preset", "local_only"], "decisions.preset", "local_only"),
         (["session-start", "--on"], "decisions.session_start", "true"),
+        (["discovery", "--max-sessions", "3"], "decisions.discovery.max_sessions", "3"),
     ],
 )
 def test_decision_config_aliases_write_what_config_set_writes(tmp_path, monkeypatch, alias, key, value):
+    """One write path: the two spellings leave the same bytes."""
     a, b = tmp_path / "a", tmp_path / "b"
     for root in (a, b):
         (root / ".repowise").mkdir(parents=True)
@@ -346,7 +417,8 @@ def test_decision_config_aliases_write_what_config_set_writes(tmp_path, monkeypa
     assert first.exit_code == 0, first.output
     second = runner.invoke(cli, ["config", "set", key, value, "--path", str(b), "--format", "json"])
     assert second.exit_code == 0, second.output
-    assert _config(a) == _config(b)
+    path = Path(".repowise", "config.yaml")
+    assert (a / path).read_bytes() == (b / path).read_bytes()
 
 
 def test_every_writer_and_parser_imports_with_the_one_signature():
@@ -392,3 +464,26 @@ def test_init_saves_follow_renames(repo, flag, stored, written):
     )  # fmt: skip
     save_run_config(run)
     assert _config(repo).get("follow_renames") == written
+
+
+@pytest.mark.parametrize(
+    ("cfg", "limit", "renames"),
+    [({}, 5000, False), ({"commit_limit": 20000, "follow_renames": "true"}, 10000, True),
+     ({"commit_limit": "abc"}, 5000, False)],
+)  # fmt: skip
+def test_workspace_add_reads_the_primary_config_like_update(cfg, limit, renames):
+    from repowise.cli.commands.workspace_cmd._index import _added_repo_ctx
+
+    ctx = _added_repo_ctx(None, SimpleNamespace(), cfg, concurrency=1, save_key=False)
+    assert (ctx.resolved_commit_limit, ctx.follow_renames) == (limit, renames)
+
+
+def test_base_url_is_set_per_provider_and_the_family_is_refused(repo):
+    out = _json(repo, "set", "openai.base_url", "http://localhost:8080/v1")
+    assert out["_exit"] == 0
+    assert _config(repo) == {"openai": {"base_url": "http://localhost:8080/v1"}}
+    assert _json(repo, "set", "openai.base_url", "not a url")["error"] == "invalid_value"
+    _json(repo, "reset", "openai.base_url")
+    assert _config(repo) == {}
+    refused = _json(repo, "set", "<provider>.base_url", "http://x")
+    assert refused["error"] == "invalid_value" and "openai" in refused["message"]

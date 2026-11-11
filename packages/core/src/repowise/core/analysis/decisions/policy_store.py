@@ -6,6 +6,7 @@ only module in the layer that touches the filesystem.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any
 from repowise.core.repo_config import load_repo_config, save_repo_config
 
 from .policy import (
+    MODE_DEFAULTS,
     POLICY_CONFIG_KEYS,
     PRESETS,
     DecisionPolicy,
@@ -119,10 +121,104 @@ def write_policy(
 def write_setting(repo_path: Path | str, key: str, value: Any) -> None:
     """Write one ``decisions.*`` setting; ``None`` puts it back to its default.
 
-    The writer :mod:`repowise.core.settings` calls for this area: the change
-    goes through :meth:`DecisionPolicy.with_setting`, so it means what the
-    matching ``decision config`` command means (a new mode resets the switches
-    under it), and :func:`write_policy` writes the whole block back.
+    The writer :mod:`repowise.core.settings` calls for this area. The change
+    means what :meth:`DecisionPolicy.with_setting` says (a new mode resets the
+    switches under it), and only the keys it needs are written: a set followed
+    by a reset leaves the file as it was. When a small edit cannot say the
+    same policy, the whole block is written by :func:`write_policy` instead.
     """
-    policy = load_policy(repo_path).policy
-    write_policy(repo_path, policy.with_setting(key.removeprefix("decisions."), value))
+    name = key.removeprefix("decisions.")
+    config = load_repo_config(repo_path)
+    target = resolve_policy(config).policy.with_setting(name, value)
+    edited = _settle_update_mining(config, _edited_config(config, name, value), target)
+    if value is not None:
+        # A value the file need not state (a switch at its mode's default) is
+        # written by leaving the key out, as the whole-block writer does.
+        bare = _settle_update_mining(config, _edited_config(config, name, None), target)
+        if resolve_policy(bare).policy == target:
+            edited = bare
+    if edited == config:
+        return
+    if resolve_policy(edited).policy == target:
+        save_repo_config(repo_path, edited)
+    else:
+        write_policy(repo_path, target)
+
+
+def _settle_update_mining(
+    before: dict[str, Any], config: dict[str, Any], target: DecisionPolicy
+) -> dict[str, Any]:
+    """Pin or drop ``update_mining`` so the edited *config* still reads as *target*.
+
+    A block that gains ``sources`` without ``update_mining`` reads it as on
+    (the upgrade rule), so the edit states it; an edit that removes the last
+    source no longer needs it stated, so a reset drops it again.
+    """
+    had_sources = "sources" in (before.get("decisions") or {})
+    block = config.get("decisions")
+    if not isinstance(block, dict):
+        return config
+    if resolve_policy(config).policy.update_mining != target.update_mining:
+        return {**config, "decisions": {**block, "update_mining": target.update_mining}}
+    if had_sources and "sources" not in block and block.get("update_mining") is False:
+        trimmed = {k: v for k, v in block.items() if k != "update_mining"}
+        candidate = {**config, "decisions": trimmed} if trimmed else {
+            k: v for k, v in config.items() if k != "decisions"
+        }
+        if resolve_policy(candidate).policy == target:
+            return candidate
+    return config
+
+
+#: Keys a mode or a preset decides, dropped when one is set so they stop overriding it.
+_MODE_OWNED = tuple(MODE_DEFAULTS["full"])
+_PRESET_OWNED = ("enabled", "llm", "sources", "session_mining")
+
+
+def _edited_config(config: dict[str, Any], name: str, value: Any) -> dict[str, Any]:
+    """*config* with ``decisions.<name>`` set to *value*, or removed for ``None``."""
+    edited = copy.deepcopy(config)
+    raw = edited.get("decisions")
+    block: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    parts = name.split(".")
+    owned = {"mode": _MODE_OWNED, "preset": _PRESET_OWNED}.get(parts[0], ())
+    for owned_key in owned:
+        block.pop(owned_key, None)
+    if parts[0] == "mode" and value == "full":
+        value = None  # the default mode is written by leaving it out
+    _set_path(block, parts, value)
+    _short_source(block, parts)
+    if block:
+        edited["decisions"] = block
+    else:
+        edited.pop("decisions", None)
+    return edited
+
+
+def _short_source(block: dict[str, Any], parts: list[str]) -> None:
+    """``sources.<k>: {enabled: x}`` back to the short ``sources.<k>: x``."""
+    sources = block.get("sources")
+    if parts[0] != "sources" or len(parts) < 2 or not isinstance(sources, dict):
+        return
+    entry = sources.get(parts[1])
+    if isinstance(entry, dict) and set(entry) == {"enabled"}:
+        sources[parts[1]] = entry["enabled"]
+
+
+def _set_path(node: dict[str, Any], parts: list[str], value: Any) -> None:
+    head, *rest = parts
+    if not rest:
+        if value is None:
+            node.pop(head, None)
+        else:
+            node[head] = value
+        return
+    child = node.get(head)
+    if isinstance(child, bool):
+        child = {"enabled": child}  # ``sources.<k>: true`` is the short form
+    child = dict(child) if isinstance(child, dict) else {}
+    _set_path(child, rest, value)
+    if child:
+        node[head] = child
+    else:
+        node.pop(head, None)

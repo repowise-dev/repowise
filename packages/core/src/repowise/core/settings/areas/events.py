@@ -25,12 +25,12 @@ KINDS: tuple[tuple[str, bool, str], ...] = (
 )
 
 SETTINGS: tuple[Setting, ...] = (
-    _s("events.enabled", "bool", True, "Record what changed in each run."),
+    _s("events.enabled", "bool", True, "Snapshot components each index run and record what changed."),
     _s(
         "events.retention_days",
         "int",
         365,
-        "Days recorded runs are kept.",
+        "Days runs and their events are kept.",
         minimum=0,
         exclusive_minimum=True,
     ),

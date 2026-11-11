@@ -21,11 +21,11 @@ AREA = "distill"
 _PERMISSION_PARSER = "repowise.core.distill.config:parse_permission"
 
 _DESCRIPTIONS: dict[str, str] = {
-    "enabled": "Distill noisy command output for this repo at all.",
+    "enabled": "Master switch for distill in this repo.",
     "commands.enabled": "Let the agent hook rewrite noisy shell commands through repowise distill.",
     "commands.permission": "How a rewrite is approved: allow, ask each time, or off.",
     "commands.families": "Per output family: allow, ask, off or deny.",
-    "commands.disabled_filters": "Output filters never applied.",
+    "commands.disabled_filters": "Filters never applied, by name (for example logs).",
     "omission_store.ttl_days": "Days a dropped piece of output stays recoverable.",
     "omission_store.max_mb": "Size cap of the store of dropped output; oldest goes first.",
 }

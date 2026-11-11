@@ -18,10 +18,6 @@ _s = factory(AREA)
 _e = factory(AREA, scope="env")
 _FILE_SETTINGS_WRITER = "repowise.core.repo_config:write_file_setting"
 
-#: ``repowise.core.providers.embedding.registry._BUILTIN_EMBEDDERS``.
-EMBEDDERS: tuple[str, ...] = ("openai", "gemini", "ollama", "openrouter", "edenai", "mock")
-
-
 SETTINGS: tuple[Setting, ...] = (
     _s(
         "provider",
@@ -67,7 +63,9 @@ SETTINGS: tuple[Setting, ...] = (
         "context_window",
         "int",
         None,
-        "The model's context size in tokens. Unset asks the provider.",
+        "Tokens (prompt plus answer) the model runs with; page material shrinks to fit. "
+        "Unset: no limit for hosted models, 16384 for a local server (Ollama reports "
+        "its own num_ctx).",
         minimum=0,
         exclusive_minimum=True,
         on_invalid="error",
