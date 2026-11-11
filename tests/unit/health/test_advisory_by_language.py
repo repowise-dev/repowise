@@ -77,6 +77,39 @@ def test_a_table_entry_is_advisory_in_its_language_only(marker, listed, unlisted
     assert not finding_is_advisory(finding)
 
 
+def test_the_scored_only_table_is_registered_markers_in_known_languages():
+    from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
+
+    registered = {b.name for b in registered_biomarkers()}
+    for marker, languages in scoring._SCORED_ONLY_IN.items():
+        assert marker in registered and not scoring.is_advisory(marker)
+        assert marker not in scoring._ADVISORY_BY_LANGUAGE
+        assert languages and languages <= set(LANGUAGE_MAPS)
+
+
+@pytest.mark.parametrize(
+    ("marker", "scored", "advisory"),
+    [
+        ("dry_violation", "typescript", ("python", "go", "javascript", "java")),
+        ("error_handling", "python", ("typescript", "go", "rust", "java")),
+    ],
+)
+def test_a_scored_only_marker_scores_in_its_language_only(marker, scored, advisory):
+    results = [_result(marker)]
+    scores, deductions = score_file(results, scored)
+    assert scores["defect"] < 10.0 and deductions[0] > 0.0
+    (finding,) = attach_impacts(results, deductions, scored)
+    assert finding.dimension == "maintainability"
+    assert not finding_is_advisory(finding)
+
+    for language in advisory:
+        scores, deductions = score_file(results, language)
+        assert set(scores.values()) == {10.0} and deductions == [0.0]
+        (finding,) = attach_impacts(results, deductions, language)
+        assert finding.dimension == ADVISORY_DIMENSION
+        assert finding_is_advisory(finding)
+
+
 @pytest.mark.usefixtures("complex_method_advisory_in_python")
 def test_listed_language_scores_nothing_and_stores_advisory():
     results = [_result()]

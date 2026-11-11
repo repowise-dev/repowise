@@ -79,7 +79,7 @@ def test_history_cap_follows_the_saturated_structure():
 
 
 def test_maintainability_keeps_its_hard_caps():
-    findings = [_r("low_cohesion", Severity.CRITICAL, f"f{i}") for i in range(10)]
+    findings = [_r("god_class", Severity.CRITICAL, f"f{i}") for i in range(10)]
     assert score_file(findings)[0]["maintainability"] == 6.0
 
 
