@@ -12,9 +12,10 @@ discovering staleness mid-task:
 
 Deliberately no hotspot/health lines here: CLAUDE.md already carries those
 statically, and this block is re-billed every session; freshness is the only
-signal that must be live. The one addition is the relevance-ranked standing
-decisions block (see :mod:`.decision_inject`), which is also live by nature:
-it is scored against what this session is about to touch.
+signal that must be live. The one addition, when ``decisions.session_start``
+is on, is the relevance-ranked decisions block (see :mod:`.decision_inject`),
+which is also live by nature: it is scored against what this session is about
+to touch.
 
 Same operational rules as the rest of augment: stdlib + git subprocess only,
 any failure returns None, and a git failure never produces a false "current"

@@ -22,7 +22,7 @@ For the exact settings entries each install writes, see the
 |------|--------|--------------|----------|--------------|
 | **Post-commit auto-sync** | git | `repowise init` by default (`--no-hook` skips it), or `repowise hook install` | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
 | **Pre-commit security check** | git | `repowise hook install --security` (opt-in) | every `git commit` | Runs `repowise security check --staged` and blocks a commit that adds a finding at or above `high` ([details](../layers/SECURITY.md#before-a-commit---staged)) |
-| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line and the standing decisions relevant to this session |
+| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line, plus the decisions relevant to this session when `decisions.session_start` is on |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it comes into force when that commit merges |
@@ -96,14 +96,14 @@ the index is current right now. This hook adds a short block at session start:
   trust rule (a `stale_warning` fires only when a file a response served has
   changed).
 
-It also carries the **standing decisions** most relevant to this session.
-repowise scores active decisions against the likely working set (dirty and
-staged files, files changed on the branch vs `main`, the previous session's
-edited files, branch-name tokens), expanded one hop through imports and
-co-change partners. The top few land under a hard 400-token cap. If nothing
-clears the relevance floor, nothing is injected. Working agreements mined from
-your own corrections (for example "use the shared logger, not print") name no
-file, so they compete at a flat base relevance.
+With `decisions.session_start: true` (off by default, `repowise decision
+config session-start --on`) it also carries the decisions most relevant to
+this session. repowise scores decisions in force against the likely working
+set (dirty and staged files, files changed on the branch vs `main`, the
+previous session's edited files, branch-name tokens), expanded one hop through
+imports and co-change partners. The top few land under a hard 400-token cap.
+If nothing clears the relevance floor, nothing is injected. Off, a session
+pays nothing for decisions until it edits code one governs.
 
 ### PostToolUse: enrichment on tool calls
 
@@ -168,9 +168,11 @@ return nothing. A glob is a path query and the index holds every path, so
 repowise answers it from the index at that moment. Brace expansion (`{a,b}`) is
 declined, and zero indexed matches stays silent.
 
-**Edit-time notices.** When the agent edits a file governed by an architectural
-decision, it gets a one-line notice with the rationale, once per session per
-decision and under a per-session cap. A file with a repeated bug-fix history
+**Edit-time notices.** When the agent edits a file governed by decisions in
+force, it gets up to three of them, one line each with the rationale, once per
+session per decision and at most six per session. A decision governs the files
+its scope names, and every file under a directory its scope names, including a
+new one. A file with a repeated bug-fix history
 gets a one-line heads-up too (see [bug history](../layers/BUG_HISTORY.md)).
 
 Every injected decision id is recorded in `.repowise/sessions/sessions.db`. On
@@ -245,7 +247,8 @@ Codex support, the safety model and the per-repo config are in
 `~/.codex/config.toml` is untouched):
 
 - **SessionStart**: a short note reminding Codex to use the repowise MCP tools,
-  plus the same relevance-ranked standing decisions Claude Code receives.
+  plus the same relevance-ranked decisions Claude Code receives when
+  `decisions.session_start` is on.
 - **PostToolUse** (the shell tool, and `apply_patch` / `Edit` / `Write`): after
   a successful `git commit`, `merge`, `rebase`, `cherry-pick` or `pull`, compares
   `HEAD` with the last indexed commit and flags that context may be stale.

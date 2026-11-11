@@ -389,6 +389,7 @@ decisions:
 | `agent_acceptance` | `true` | Whether an agent may grant a decision authority, signed as itself. |
 | `capture_prompt` | `true` | Ask the agent to record what it just committed. |
 | `update_mining` | `false` | Let `repowise update` call the model for decisions. See [below](#update_mining). |
+| `session_start` | `false` | Open each agent session with the decisions relevant to its working set. See [below](#session_start). |
 
 ### Sources
 
@@ -466,6 +467,17 @@ their commit lands.
   CLI or API write.
 - While off, each source's mining pointer stays where it was; switching on
   mines the missed range, bounded by each miner's cap.
+
+### `session_start`
+
+Off by default: an agent sees a decision when it edits a file the decision
+governs, and `get_why` answers for any path, so a session that never touches
+governed code pays nothing for decisions.
+
+- On: the session start hook also lists up to six decisions in force over the
+  files the session is likely to touch (changed, staged, on the branch, or
+  edited last session), plus at most two labelled background records.
+  `repowise decision config session-start --on`.
 
 ### From the CLI
 

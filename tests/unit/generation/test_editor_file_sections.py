@@ -102,6 +102,7 @@ def _full_data(**kw) -> EditorFileData:
         "decisions": [
             DecisionSummary(title=f"Rule {i}", status="active", rationale="because") for i in range(4)
         ],
+        "decisions_in_force": True,
         "build_commands": {"test": "pytest"},
         "code_health": CodeHealthBlock(
             hotspot_health=6.0,
@@ -122,7 +123,7 @@ _HEADINGS = {
     "entry_points": "### Entry points",
     "hotspots": "### Files that need care",
     "health": "### Code health",
-    "decisions": "### Standing decisions",
+    "decisions": "### Decisions",
     "how_to_work": "### How to work in this repo",
     "tools": "### Tools",
     "commands": "### Commands",
@@ -149,8 +150,8 @@ def test_the_default_is_lean(gen):
     assert "### Commands" not in lean
     assert "Fix first" not in lean
     assert "hotspot health" not in lean
-    # Decision titles only, at most three.
-    assert "- Rule 2\n" in lean and "Rule 3" not in lean
+    # Pinned decisions by title only.
+    assert "- Rule 3\n" in lean
     assert "because" not in lean
 
 
@@ -201,8 +202,8 @@ def test_hotspot_rows_carry_a_date_not_an_age(gen):
 
 
 def test_zero_accepted_decisions_and_no_health_drop_their_sections(gen):
-    rendered = gen.render(_full_data(decisions=[], code_health=None))
-    assert "### Standing decisions" not in rendered
+    rendered = gen.render(_full_data(decisions=[], decisions_in_force=False, code_health=None))
+    assert "### Decisions" not in rendered
     assert "### Code health" not in rendered
     assert "\n\n\n" not in rendered
 
@@ -269,3 +270,12 @@ def test_the_record_command_carries_its_commit(gen):
     # copied add command names the commit and the same agent can then accept it.
     lean = gen.render(_full_data())
     assert "--affects <path> --evidence-commit <sha>`" in lean
+
+
+def test_with_nothing_pinned_the_decisions_block_is_one_pointer_line(gen):
+    rendered = gen.render(_full_data(decisions=[]))
+    block = rendered.split("### Decisions\n", 1)[1].split("\n\n", 1)[0]
+    assert block.strip() == (
+        'Recorded decisions govern some files: `get_why(targets=["<file>"])` '
+        "before changing how one works."
+    )
