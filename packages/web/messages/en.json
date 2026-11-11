@@ -1206,6 +1206,7 @@
       "promptDescription": "Your agent explains the setting, asks before changing it, and gives you the undo command.",
       "saveFailed": "Could not save",
       "unset": "unset",
+      "none": "(none)",
       "listPlaceholder": "a, b",
       "loading": "Loading settings…",
       "loadFailed": "Could not load settings.",

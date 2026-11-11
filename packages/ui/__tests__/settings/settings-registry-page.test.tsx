@@ -153,6 +153,27 @@ describe("SettingsRegistryPage", () => {
     expect(limit).toHaveValue(200);
   });
 
+  it("keeps the newest write when two answer out of order", async () => {
+    let releaseFirst: (c: RegistryChange) => void = () => {};
+    const onSet = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<RegistryChange>((resolve) => (releaseFirst = resolve)))
+      .mockImplementationOnce(async () => change("follow_renames", true));
+    renderPage({ onSet });
+    const toggle = within(row("follow_renames")).getByRole("switch");
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(onSet).toHaveBeenCalledTimes(2));
+    releaseFirst(change("follow_renames", false));
+    await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+    expect(within(row("follow_renames")).getByRole("switch")).toBeChecked();
+  });
+
+  it("names each control by its key alone", () => {
+    renderPage();
+    expect(screen.getByLabelText("commit_limit")).toHaveValue(200);
+  });
+
   it("resets a file value and applies the new state", async () => {
     const { onReset } = renderPage();
     fireEvent.click(screen.getByRole("button", { name: "Reset commit_limit to its default" }));

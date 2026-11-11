@@ -8,15 +8,16 @@ const SOURCE_WORDS: Record<string, string> = {
   user_file: "from the user config in ~/.repowise",
 };
 
-/** A setting value as `repowise config` prints it. */
-export function formatSettingValue(value: unknown): string {
-  if (value === null || value === undefined) return "unset";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (Array.isArray(value)) return value.length ? value.map(String).join(", ") : "(none)";
-  if (typeof value === "object") {
-    return Object.keys(value).length ? JSON.stringify(value) : "(none)";
-  }
-  return String(value);
+/** A setting value as `repowise config` prints it; a page passes its own words for the empty cases. */
+export function formatSettingValue(
+  value: unknown,
+  words: { unset: string; none: string } = { unset: "unset", none: "(none)" },
+): string {
+  if (value === null || value === undefined) return words.unset;
+  if (typeof value !== "object") return String(value);
+  const empty = Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0;
+  if (empty) return words.none;
+  return Array.isArray(value) ? value.map(String).join(", ") : JSON.stringify(value);
 }
 
 function ask(setting: RegistrySetting, suggestion: RegistrySuggestion | undefined): string {

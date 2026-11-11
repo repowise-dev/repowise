@@ -14,12 +14,12 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { SettingsRows, SETTINGS_MICRO_LABEL, useSaveState, SaveIndicator } from "./settings-primitives";
-import { buildSettingAiPrompt, formatSettingValue } from "./setting-prompt";
+import { buildSettingAiPrompt } from "./setting-prompt";
 import {
   DEFAULT_SETTINGS_REGISTRY_LABELS,
   type SettingsRegistryLabels,
 } from "./settings-registry-labels";
-import { SettingsRegistryRow } from "./settings-registry-row";
+import { displayValue, SettingsRegistryRow } from "./settings-registry-row";
 import type {
   RegistryArea,
   RegistryChange,
@@ -227,7 +227,7 @@ function SuggestionItem({
         <p className="flex flex-wrap items-center gap-x-2 text-sm">
           <span className="font-mono text-[13px] text-[var(--color-text-primary)]">{suggestion.key}</span>
           <span className="text-[var(--color-text-secondary)]">
-            {formatSettingValue(setting.value)} → {formatSettingValue(suggestion.suggested_value)}
+            {displayValue(setting.value, labels)} → {displayValue(suggestion.suggested_value, labels)}
           </span>
           <SaveIndicator state={state} error={error} />
         </p>

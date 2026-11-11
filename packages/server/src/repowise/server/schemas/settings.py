@@ -100,8 +100,11 @@ class SettingUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _one_of(self) -> SettingUpdate:
-        if self.reset == ("value" in self.model_fields_set):
-            raise ValueError("send a value, or reset: true, not both")
+        sent_value = "value" in self.model_fields_set
+        if self.reset and sent_value:
+            raise ValueError("send a value or reset: true, not both")
+        if not self.reset and not sent_value:
+            raise ValueError("send a value, or reset: true to go back to the default")
         return self
 
 

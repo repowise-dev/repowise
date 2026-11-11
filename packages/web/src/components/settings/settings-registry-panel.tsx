@@ -55,6 +55,7 @@ function useSettingsRegistryLabels(areas: string[]): Partial<SettingsRegistryLab
     promptDescription: t("promptDescription"),
     saveFailed: t("saveFailed"),
     unset: t("unset"),
+    none: t("none"),
     listPlaceholder: t("listPlaceholder"),
     // An area added to the registry before its translation shows its name.
     areaTitles: Object.fromEntries(

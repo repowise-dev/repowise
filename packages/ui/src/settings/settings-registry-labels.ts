@@ -30,6 +30,8 @@ export interface SettingsRegistryLabels {
   promptDescription: string;
   saveFailed: string;
   unset: string;
+  /** An empty list or mapping. */
+  none: string;
   listPlaceholder: string;
   /** Section titles by area; an area without one shows its name. */
   areaTitles: Record<string, string>;
@@ -68,6 +70,7 @@ export const DEFAULT_SETTINGS_REGISTRY_LABELS: SettingsRegistryLabels = {
     "Your agent explains the setting, asks before changing it, and gives you the undo command.",
   saveFailed: "Could not save",
   unset: "unset",
+  none: "(none)",
   listPlaceholder: "a, b",
   areaTitles: {
     account: "Account",

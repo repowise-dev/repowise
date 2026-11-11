@@ -1206,6 +1206,7 @@
       "promptDescription": "你的智能体会解释这项设置，修改前先征求你的同意，并告诉你撤销命令。",
       "saveFailed": "无法保存",
       "unset": "未设置",
+      "none": "（无）",
       "listPlaceholder": "a, b",
       "loading": "正在加载设置…",
       "loadFailed": "无法加载设置。",
