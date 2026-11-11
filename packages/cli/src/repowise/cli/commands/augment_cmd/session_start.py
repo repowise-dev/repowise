@@ -31,13 +31,15 @@ from pathlib import Path
 # asyncio, which every hook call would pay at import.
 from repowise.cli._helpers.git import as_commit_id
 
-from ._shared import _find_repo_root, emitting_build
+from ._shared import _checkout_root, _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
 from .decision_inject import _session_decision_block as _decision_block
 from .fast_lookup import index_locked
 
 
-def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
+def _session_decision_block(
+    repo_path: Path, session_id: str, checkout: Path | None = None
+) -> str | None:
     """The standing-decisions block, or None while another process locks the index.
 
     A locked index fails every decision query anyway, each after its own busy
@@ -45,7 +47,7 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
     """
     if index_locked(repo_path):
         return None
-    return _decision_block(repo_path, session_id)
+    return _decision_block(repo_path, session_id, checkout)
 
 #: The tools this block points a fresh session at. **Entry points only.**
 #:
@@ -74,7 +76,11 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     if not isinstance(last_sync, str) or not last_sync:
         return None
 
-    freshness = _freshness_block(repo_path, last_sync)
+    checkout = _checkout_root(Path(cwd), repo_path)
+    if checkout != repo_path:
+        freshness = _worktree_freshness_block(repo_path, checkout, last_sync)
+    else:
+        freshness = _freshness_block(repo_path, last_sync)
     if freshness is None:
         return None
     off_path = _distill_off_path_note()
@@ -84,7 +90,7 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
     try:
-        decisions = _session_decision_block(repo_path, session_id)
+        decisions = _session_decision_block(repo_path, session_id, checkout)
     except Exception:
         decisions = None
     return f"{freshness}\n{decisions}" if decisions else freshness
@@ -157,6 +163,27 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
         f"The MCP tools ({_CORE_TOOLS}) stay reliable: a response carries `stale_warning` "
         "only when a file it serves actually changed, and silence means current. "
         "Run `repowise update` to resync."
+    )
+
+
+def _worktree_freshness_block(repo_path: Path, checkout: Path, last_sync: str) -> str:
+    """The freshness paragraph for a worktree reading its main checkout's index.
+
+    The index describes *repo_path* at *last_sync*, not this branch, so the
+    paragraph says which files that holds for instead of advising an update:
+    `repowise update` here would build the worktree an index of its own.
+    """
+    tag = f"[repowise {emitting_build()}]"
+    head = _git_head(checkout)
+    base = f"{tag} This worktree reads the codebase index of {repo_path}, indexed at {last_sync[:8]}."
+    if head is None or head == last_sync:
+        return base
+    changed = _changed_file_count(checkout, last_sync, head)
+    drift = f"{changed} files differ" if changed is not None else "files may differ"
+    return (
+        f"{base} This worktree is at {head[:8]} ({drift}). The MCP tools ({_CORE_TOOLS}) "
+        "answer for the indexed version, so facts about files that differ describe "
+        "the main checkout's copy."
     )
 
 
