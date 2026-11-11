@@ -16,7 +16,8 @@ languages that don't expose class nodes.
 
 One part of a split class is not judged as the whole: a C# ``partial``
 class with hand-written parts in other files, or a Python ``*Mixin`` without
-``__init__``. A ``partial`` class alone in the repo (its other part is source
+``__init__``. Nor is a Rust ``impl Trait for T``: the trait fixes its method
+set. A ``partial`` class alone in the repo (its other part is source
 generated) is the whole hand-written class and is still judged.
 """
 
@@ -36,6 +37,16 @@ def _is_stateless_mixin(cls: ClassComplexity) -> bool:
     return cls.name.endswith("Mixin") and all(m.name != "__init__" for m in cls.methods)
 
 
+def _not_judged(cls: ClassComplexity, ctx: FileContext) -> bool:
+    """A split partial part or a stateless mixin already is the per-concern
+    split this finding asks for; a trait impl's methods are the trait's."""
+    return (
+        cls.contract_impl
+        or cls.name in ctx.split_partial_types
+        or (ctx.language == "python" and _is_stateless_mixin(cls))
+    )
+
+
 class GodClassDetector:
     name = "god_class"
     category = "structural_complexity"
@@ -46,11 +57,7 @@ class GodClassDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for cls in ctx.class_metrics:
-            # A split partial part or a stateless mixin already is the
-            # per-concern split this finding asks for.
-            if cls.name in ctx.split_partial_types or (
-                ctx.language == "python" and _is_stateless_mixin(cls)
-            ):
+            if _not_judged(cls, ctx):
                 continue
             if cls.total_nloc < self._NLOC_THRESHOLD:
                 continue
