@@ -286,7 +286,7 @@ Why code is shaped as it is: decision records, falling back to git archaeology a
 | `reference` | object | none | An evidence reference this tool emitted, unchanged |
 | `repo` | string | default repo | Or `"all"`, only with a `query` |
 
-Modes: a question searches decisions; a path (or `targets` alone) returns `decisions`, `candidates`, `history`, its origin story and `alignment`; `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots).
+Modes: a question searches decisions; a path (or `targets` alone) returns the rules in force (`decisions`), then at most two background records (`candidates`, labelled as not binding), and stops; `include=["history"]` adds the origin story, `alignment`, withdrawn records (`history`), git archaeology, rationale comments and episodes. A path that was renamed or split into a package is answered at its new location, with `moved_from` naming the old one. `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots).
 
 A directory's origin story (`scope: "directory"`) is built from the files under it: how many have history, the first and last commit dates, and their stored key commits, each listed once. Git history is stored per file, so it carries no commit count or owner for the directory.
 
