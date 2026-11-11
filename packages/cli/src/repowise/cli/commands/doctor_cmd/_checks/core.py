@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path as _DoctorPath
 
-from repowise.cli.helpers import db_configured, load_state, run_async
+from repowise.cli.helpers import db_configured, read_state, run_async
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext, open_store
@@ -218,15 +218,24 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
 
 
 def _state_row(ctx: CheckContext) -> DoctorCheck:
-    ctx.state = load_state(ctx.repo_path)
-    ctx.state_ok = bool(ctx.state)
+    result = read_state(ctx.repo_path)
+    ctx.state = result.state
+    ctx.state_ok = result.status == "ok"
+    if result.status == "ok":
+        detail = f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
+    elif result.status == "missing":
+        detail = "missing"
+    elif result.status == "empty":
+        detail = "Not found or empty"
+    else:
+        state_path = ctx.repowise_dir / "state.json"
+        detail = f"unreadable: {state_path}: {result.error}"
     return _check(
         "state.json",
         ctx.state_ok,
-        f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
-        if ctx.state_ok
-        else "Not found or empty",
+        detail,
         check_id="state-json",
+        fix=None if ctx.state_ok else "repowise init",
     )
 
 
