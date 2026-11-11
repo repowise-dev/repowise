@@ -13,6 +13,10 @@ outside its one dispatch plus those of its heaviest arm, and its nesting less
 the levels the dispatch opens. A per-case handler is flagged when the code
 around the dispatch, or one of its arms, is complex on its own.
 
+Separately, a run of error guards (Go ``if err != nil { return err }``, C
+``if (rc) goto cleanup;``, shell ``cmd || die``) counts once in
+:func:`judged_ccn`; when both cuts apply, the smaller reading wins.
+
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
 path). It counts the same nodes :mod:`.cyclomatic` charged, so a flat switch
@@ -36,6 +40,7 @@ from .ast_utils import is_named_block_lambda
 from .cyclomatic import (
     _ELSE_IF_NODE_KINDS,
     _collect_case_children,
+    _has_subject,
     _is_boolean_operator,
     _is_elif_continuation,
     _walk_function_body,
@@ -197,17 +202,6 @@ def _is_lone_if(node: Node) -> bool:
     return _is_chain_head(node) and len(_chain_arms(node)) == 1
 
 
-def _has_subject(node: Node) -> bool:
-    """A subjectless ``switch {}`` / ``when {}`` / ``case`` is an ``if`` chain."""
-    if node.type == "expression_switch_statement":
-        return node.child_by_field_name("value") is not None
-    if node.type == "when_expression":
-        return any(c.type == "when_subject" for c in node.children)
-    if node.type == "case" and any(c.type == "when" for c in node.children):
-        return node.child_by_field_name("value") is not None
-    return True
-
-
 class _Siblings(NamedTuple):
     """A stand-in body holding just the nodes of one dispatch, for the walker."""
 
@@ -310,6 +304,146 @@ def dispatch_points(body: Node, lmap: LanguageNodeMap) -> Dispatch:
     return best
 
 
+# An early exit that only hands an error up: Go ``if err != nil { return err }``,
+# C ``if (rc) goto cleanup;`` and shell ``cmd || die``. A run of them reads as
+# one error path, not as one decision each.
+_ERROR_NAME_RE = re.compile(r"^(?!std)\w*err\d*$", re.IGNORECASE)
+_GOTO_KINDS = frozenset({"goto_statement"})
+# Jumps and labels end a run: a guard after one is on another path.
+_RUN_BREAK_KINDS = frozenset({"labeled_statement", "goto_statement"})
+_SHELL_EXITS = frozenset({b"exit", b"return"})
+_SHELL_ERROR_COMMANDS = frozenset({b"die", b"fail", b"fatal", b"abort", b"bail"})
+
+
+def _statements(node: Node | None, lmap: LanguageNodeMap) -> list[Node]:
+    """A branch body's statements, through Go's ``block`` / ``statement_list``."""
+    while node is not None and node.type in lmap.block_kinds:
+        named = [c for c in node.named_children if "comment" not in c.type]
+        if len(named) != 1 or named[0].type not in lmap.block_kinds:
+            return named
+        node = named[0]
+    return [node] if node is not None else []
+
+
+def _tests_error(node: Node) -> bool:
+    """``<name>err != nil``: the condition Go writes before handing an error up."""
+    cond = _unwrap(node.child_by_field_name("condition"))
+    if cond is None or cond.type != "binary_expression":
+        return False
+    operator = cond.child_by_field_name("operator")
+    right = cond.child_by_field_name("right")
+    subject = _name(cond.child_by_field_name("left")) or ""
+    return (
+        operator is not None
+        and operator.text == b"!="
+        and right is not None
+        and right.type == "nil"
+        and _ERROR_NAME_RE.search(subject) is not None
+    )
+
+
+def _enclosing_function(node: Node, lmap: LanguageNodeMap) -> Node:
+    """The function holding *node*, or the tree's root outside one."""
+    while node.parent is not None and node.type not in lmap.function_kinds:
+        node = node.parent
+    return node
+
+
+def _jumps_forward(goto: Node, lmap: LanguageNodeMap) -> bool:
+    """A ``goto`` to a label further down its function (``goto cleanup``).
+
+    One that jumps back (``goto again``) is a loop, not an exit.
+    """
+    target = goto.named_children[-1].text if goto.named_children else None
+    stack = [_enclosing_function(goto, lmap)]
+    while stack:
+        node = stack.pop()
+        if node.type == "labeled_statement":
+            label = node.child_by_field_name("label")
+            if label is not None and label.text == target:
+                return node.start_byte > goto.start_byte
+        stack.extend(node.named_children)
+    return False
+
+
+def _is_exit_if(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An ``if`` with no ``else`` whose body ends in a ``goto`` or an error ``return``."""
+    if node.type not in lmap.if_kinds or node.child_by_field_name("alternative") is not None:
+        return False
+    body = _statements(node.child_by_field_name("consequence"), lmap)
+    if not body:
+        return False
+    if body[-1].type in _GOTO_KINDS:
+        return _jumps_forward(body[-1], lmap)
+    return body[-1].type in lmap.return_kinds and _tests_error(node)
+
+
+def _is_shell_exit(node: Node) -> bool:
+    """``cmd || exit 1`` / ``[ -f x ] && die``: one operator, then a failing exit.
+
+    ``exit 0`` and ``cmd && return`` leave on success: an early finish, not an error.
+    """
+    if node.type != "list" or len(node.named_children) != 2:
+        return False
+    last = node.named_children[-1]
+    if last.type == "compound_statement" and last.named_children:
+        last = last.named_children[-1]
+    name = last.child_by_field_name("name") if last.type == "command" else None
+    if name is None:
+        return False
+    return name.text in _SHELL_ERROR_COMMANDS or _exits_failing(node, last, name)
+
+
+def _exits_failing(node: Node, command: Node, name: Node) -> bool:
+    """``exit`` / ``return`` with a non-zero status, or bare after ``||`` (the failed one)."""
+    if name.text not in _SHELL_EXITS:
+        return False
+    status = command.children_by_field_name("argument")
+    if status:
+        return status[0].text != b"0"
+    return any(c.type == "||" for c in node.children)
+
+
+def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """A one-point early exit that hands an error up, with nothing branching inside."""
+    return (_is_exit_if(node, lmap) or _is_shell_exit(node)) and _points([node], lmap) == 1
+
+
+def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
+    """Error guards among *children* past the first of their run.
+
+    Statements without a decision point (``x, err := f()``) may sit between
+    the guards of one run; anything that branches, jumps or is a label ends it.
+    """
+    breaks = _RUN_BREAK_KINDS | lmap.return_kinds | lmap.break_kinds | lmap.continue_kinds
+    repeats = 0
+    in_run = False
+    for child in children:
+        if _is_exit_guard(child, lmap):
+            repeats += in_run
+            in_run = True
+        elif child.type in breaks or _points([child], lmap) > 0:
+            in_run = False
+    return repeats
+
+
+def exit_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
+    """Decision points of error guards that repeat one already counted in their run."""
+    lambda_kinds = lmap.lambda_kinds
+    total = 0
+    stack: list[Node] = [body]
+    while stack:
+        children = [c for c in stack.pop().children if c.is_named]
+        total += _repeated_guards(children, lmap)
+        stack.extend(
+            c
+            for c in children
+            if c.type not in lmap.function_kinds
+            and not (c.type in lambda_kinds and is_named_block_lambda(c, lmap))
+        )
+    return total
+
+
 def dispatch_share(points: int, ccn: int) -> float:
     """*points* as a fraction of the function's decision points, to two decimals."""
     return round(points / (ccn - 1), 2) if ccn > 1 and points > 0 else 0.0
@@ -321,10 +455,22 @@ def judged_ccn(fn: FunctionComplexity) -> int:
     Below :data:`DISPATCH_SHARE` that is its CCN. At or above it, the points
     outside the dispatch plus its heaviest arm's: a switch of one-line cases
     reads as the code around it, one with a tangled arm as that arm.
+
+    A run of error guards counts once either way. The two cuts can cover the
+    same guards (three ``if err != nil`` in a row are a dispatch on ``err``
+    too), so the smaller reading wins rather than both applying.
     """
+    unguarded = fn.ccn - fn.exit_guards
     if fn.dispatch_share < DISPATCH_SHARE:
-        return fn.ccn
-    return fn.ccn - round(fn.dispatch_share * (fn.ccn - 1)) + fn.dispatch_arm
+        return unguarded
+    return min(unguarded, fn.ccn - round(fn.dispatch_share * (fn.ccn - 1)) + fn.dispatch_arm)
+
+
+def judged_leaves_out(fn: FunctionComplexity) -> str:
+    """What :func:`judged_ccn` did not count, for a finding's text."""
+    if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < fn.ccn - fn.exit_guards:
+        return "every arm of its dispatch"
+    return "every repeated error guard"
 
 
 def judged_nesting(fn: FunctionComplexity) -> int:
