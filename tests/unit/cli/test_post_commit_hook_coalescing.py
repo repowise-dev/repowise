@@ -40,7 +40,16 @@ def fake_repowise(tmp_path: Path) -> Path:
     script = tmp_path / "install" / "bin" / "repowise"
     script.parent.mkdir(parents=True)
     script.write_text(
-        '#!/bin/sh\necho "$$" >> "$PWD/.repowise/ran"\nsleep "${FAKE_SLEEP:-0}"\n',
+        # Records the HEAD it was run against, so a test can tell which commits
+        # a run actually covered. FAKE_COMMIT lands one commit mid-run, which is
+        # the burst a coalescing guard must not drop (#5518).
+        "#!/bin/sh\n"
+        'echo "$(git rev-parse HEAD)" >> "$PWD/.repowise/ran"\n'
+        'if [ "${FAKE_COMMIT:-0}" = "1" ] && [ ! -f "$PWD/.repowise/committed" ]; then\n'
+        '  : > "$PWD/.repowise/committed"\n'
+        "  git -c user.email=t@t -c user.name=t commit -q --allow-empty -m mid-run\n"
+        "fi\n"
+        'sleep "${FAKE_SLEEP:-0}"\n',
         encoding="utf-8",
         newline="\n",
     )
@@ -145,3 +154,39 @@ def test_a_fresh_guard_is_respected(repo, fake_repowise, monkeypatch):
     _fire(hook, repo, env).wait()
     time.sleep(1.0)
     assert _ran(repo) == [], "a fresh guard was ignored, so the hook never coalesces"
+
+
+def test_a_commit_that_lands_mid_run_is_covered_before_release(repo, fake_repowise, monkeypatch):
+    """The guard must not drop the commit it was coalescing behind (#5518).
+
+    The running update read HEAD before this commit existed, so a guard that
+    simply exits on contention leaves it unindexed — and because the run also
+    clears .update.queued, the stale warning says nothing either.
+    """
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    # Install after that commit: an installed hook fires on it too, and with the
+    # real `repowise` still on PATH it would take the guard before the test ran.
+    hook = _install_hook(repo, monkeypatch)
+    env = {**_env(fake_repowise.parent, sleep_s=0), "FAKE_COMMIT": "1"}
+
+    _fire(hook, repo, env).wait()
+    assert _wait_until(lambda: len(_ran(repo)) >= 2, timeout=20), (
+        f"the mid-run commit was never indexed: {len(_ran(repo))} update run(s)"
+    )
+    heads = _ran(repo)
+    assert heads[0] != heads[-1], "the second run did not see the commit that landed mid-run"

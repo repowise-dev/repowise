@@ -105,20 +105,38 @@ _HOOK_SCRIPT = """\
     fi
     trap 'rmdir "$ROOT/.repowise/.update.lock.d" 2>/dev/null' EXIT
     cd "$ROOT" || exit 1
-    if command -v repowise >/dev/null 2>&1; then
-      repowise update >> "$LOG" 2>&1
-    elif [ -x "$ROOT/.venv/bin/repowise" ]; then
-      "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
-    elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
-      "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
-    fi
+    run_update() {
+      if command -v repowise >/dev/null 2>&1; then
+        repowise update >> "$LOG" 2>&1
+      elif [ -x "$ROOT/.venv/bin/repowise" ]; then
+        "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
+      elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
+        "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
+      fi
+    }
+    # A commit that lands while that run is in flight cannot take the guard, and
+    # the run has already read HEAD — so it would leave that commit unindexed
+    # and, because it also clears .update.queued, silence the stale warning that
+    # would have said so. Cover it before releasing (#5518).
+    before=$(git rev-parse HEAD 2>/dev/null) || before=""
+    run_update
+    passes=0
+    while [ "$passes" -lt 2 ]; do
+      passes=$((passes + 1))
+      after=$(git rev-parse HEAD 2>/dev/null) || after=""
+      if [ "$after" = "$before" ]; then
+        break
+      fi
+      before=$after
+      run_update
+    done
   ) &
 } >/dev/null 2>&1
 # repowise-hook-end
 """
 
-_PATH_LOOKUP = "    if command -v repowise >/dev/null 2>&1; then\n"
-_PINNED_RE = re.compile(r"^    if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
+_PATH_LOOKUP = "      if command -v repowise >/dev/null 2>&1; then\n"
+_PINNED_RE = re.compile(r"^      if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
 
 
 def _pinned_repowise() -> str:
@@ -138,7 +156,7 @@ def _hook_script() -> str:
     if "/" not in pinned and "\\" not in pinned:
         return _HOOK_SCRIPT
     quoted = "'" + pinned.replace("'", "'\"'\"'") + "'"
-    run = f'    if [ -x {quoted} ]; then\n      {quoted} update >> "$LOG" 2>&1\n    el'
+    run = f'      if [ -x {quoted} ]; then\n        {quoted} update >> "$LOG" 2>&1\n      el'
     return _HOOK_SCRIPT.replace(_PATH_LOOKUP, run + _PATH_LOOKUP.lstrip(), 1)
 
 
