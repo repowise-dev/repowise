@@ -285,7 +285,7 @@ def _prompt_git(
     from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
     val = click.prompt(
-        "  Max commits per file",
+        "  Newest commits to read",
         default=commit_limit or _DEFAULT_COMMIT_LIMIT,
         type=int,
     )

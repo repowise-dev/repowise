@@ -286,7 +286,7 @@ def _emit_traversal_summary(
     # with its CLI, gateway and web server missing and nothing saying so
     # (#1237). Blobs stay in the aggregate — only files with a real parser
     # earn a name here.
-    sources = getattr(stats, "skipped_source_files", [])
+    sources = sorted(getattr(stats, "skipped_source_files", []), key=lambda s: s.path)
     _emit_skipped_sources(progress, sources[:_SKIPPED_SOURCES_SHOWN])
     if _skipped_report_rows(stats):
         more = len(sources) - _SKIPPED_SOURCES_SHOWN

@@ -86,3 +86,17 @@ def test_few_skips_point_at_the_report_without_a_count(tmp_path: Path) -> None:
     ingestion_phase._emit_traversal_summary(progress, stats, included=1)
 
     assert progress.messages[-1] == "  Every skipped file and why: .repowise/skipped_files.txt"
+
+
+def test_unindexed_sources_read_in_path_order() -> None:
+    # Dead-code analysis reads these under a byte budget, so the order decides
+    # which files it reads; a walk's thread order must not.
+    stats = TraversalStats(
+        skipped_source_files=[
+            SkippedSourceFile("z.cpp", 3000, "over_max_size"),
+            SkippedSourceFile("a.cpp", 3000, "over_max_size"),
+        ],
+        oversized_unparsed_files=[SkippedSourceFile("dump.dat", 900, "no_parser_over_max_size")],
+    )
+
+    assert stats.unindexed_source_files() == [("a.cpp", "over_max_size"), ("z.cpp", "over_max_size")]

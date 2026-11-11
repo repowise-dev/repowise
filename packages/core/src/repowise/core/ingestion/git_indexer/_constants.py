@@ -53,6 +53,7 @@ _MIN_MESSAGE_LEN = 12
 # stored as commit rows. Every default ``commit_limit`` reads this one value.
 _DEFAULT_COMMIT_LIMIT: int = 5000
 
+
 def parse_commit_limit(raw: object) -> int:
     """A configured ``commit_limit`` as the window it gives, or ``ValueError``.
 

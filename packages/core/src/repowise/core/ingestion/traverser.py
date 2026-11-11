@@ -195,12 +195,15 @@ class TraversalStats:
         never read" (#1237). Generated files count too: they are skipped for
         being generated, not for naming nothing, so a header function called
         only from a jnigen ``.c`` is used. Sorted, so a read budget that runs
-        out skips the same generated files every run.
+        out skips the same files every run.
         """
         return [
             *(
                 (s.path, s.reason)
-                for s in (*self.skipped_source_files, *self.unknown_language_files)
+                for s in sorted(
+                    (*self.skipped_source_files, *self.unknown_language_files),
+                    key=lambda s: s.path,
+                )
             ),
             *((path, "generated") for path in sorted(self.generated_files)),
         ]
