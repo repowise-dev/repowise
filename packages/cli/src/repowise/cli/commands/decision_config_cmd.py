@@ -345,7 +345,11 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
 
 
 @config_group.command("mode")
-@click.argument("name", type=click.Choice([m.replace("_", "-") for m in MODES]))
+@click.argument(
+    "name",
+    # Both spellings, as `repowise config set decisions.mode` takes them.
+    type=click.Choice(sorted({*MODES, *(m.replace("_", "-") for m in MODES)})),
+)
 @click.argument("path", required=False, default=None)
 @click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
 @format_option()

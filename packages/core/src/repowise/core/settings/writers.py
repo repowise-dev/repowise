@@ -24,7 +24,7 @@ import yaml  # type: ignore[import-untyped]
 
 from repowise.core.settings import registry
 from repowise.core.settings.model import Resolved, Setting, SettingError
-from repowise.core.settings.resolve import resolve, validate
+from repowise.core.settings.resolve import lookup, resolve, validate
 
 __all__ = [
     "Change",
@@ -45,25 +45,23 @@ class EnvOnlyError(SettingError):
 
 @dataclass(frozen=True, slots=True)
 class Moved:
-    """One setting a write moved: its effective value, and what its file says.
+    """One setting around a write: its effective value, and what its file says.
 
-    ``saved_before`` is the file's own reading with no environment, so an undo
-    restores the file even while an environment variable decides the value.
+    ``written_before`` / ``written_after`` are the key as the file spells it,
+    :data:`MISSING` when absent, so an undo restores the file itself even
+    while an environment variable decides the value.
     """
 
     setting: Setting
     before: Resolved
     after: Resolved
-    saved_before: Resolved
-    saved_after: Resolved
+    written_before: Any
+    written_after: Any
 
     @property
     def moved(self) -> bool:
-        return (
-            self.before.value != self.after.value
-            or self.saved_before.value != self.saved_after.value
-            or self.saved_before.source != self.saved_after.source
-        )
+        """The value in use, or the file's own value, changed."""
+        return self.before.value != self.after.value or self.written_before != self.written_after
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,13 +177,13 @@ def _write(root: Path, setting: Setting, value: Any) -> Change:
         if s.scope != "env" and s.members is None and s.key != setting.key
     ]
 
-    def snapshot() -> dict[str, tuple[Resolved, Resolved]]:
+    def snapshot() -> dict[str, tuple[Resolved, Any]]:
         files: dict[str | None, dict[str, Any]] = {}
         out = {}
         for s in neighbours:
             if s.path not in files:
                 files[s.path] = read_config(root, s)
-            out[s.key] = (resolve(s, files[s.path]), resolve(s, files[s.path], environ={}))
+            out[s.key] = (resolve(s, files[s.path]), lookup(files[s.path], s.key))
         return out
 
     before = snapshot()
