@@ -20,8 +20,10 @@ reads the tree with it.
 - **bound parameters**: parameters whose own annotation says a framework fills
   them (``@PathVariable``), read the same way as a declaration's markers. They
   stay in the declared count and leave the typed and scalar ones.
-- **keyword-only parameters**: Python parameters after ``*`` or ``*args``.
-  Every call site names them, so they carry no argument-order hazard.
+- **keyword-only parameters**: Python parameters after ``*`` or ``*args``,
+  and Dart ``{named}`` parameters. Every call site names them, so they carry
+  no argument-order hazard. Python's ``*args`` / ``**kwargs`` are no
+  parameters at all: they collect what is left over.
 """
 
 from __future__ import annotations
@@ -30,7 +32,12 @@ import re
 from itertools import pairwise
 from typing import TYPE_CHECKING
 
-from .ast_utils import _dart_signature_sibling, _inner_declarator, _parameter_nodes
+from .ast_utils import (
+    _dart_signature_sibling,
+    _inner_declarator,
+    _parameter_nodes,
+    is_rest_parameter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -115,7 +122,21 @@ def _declaration_markers(fn_node: Node, lmap: LanguageNodeMap) -> set[str]:
     # Python keeps decorators on a wrapper beside the definition.
     if fn_node.parent is not None and fn_node.parent.type in lmap.decorated_definition_kinds:
         words |= _marker_words(fn_node.parent)
+    if fn_node.type == "function_body":
+        words |= _leaf_words(_dart_annotations(fn_node))
     return words
+
+
+def _dart_annotations(body: Node) -> list[Node]:
+    """Dart keeps a member's ``@override`` as a sibling before its signature,
+    which is itself the sibling before the body."""
+    found: list[Node] = []
+    sig = body.prev_named_sibling
+    node = sig.prev_named_sibling if sig is not None else None
+    while node is not None and node.type == "annotation":
+        found.append(node)
+        node = node.prev_named_sibling
+    return found
 
 
 def _enclosing_type_name(fn_node: Node) -> str | None:
@@ -183,6 +204,8 @@ def is_signature_fixed(fn_node: Node, lmap: LanguageNodeMap) -> bool:
         return True
     if any(c.type in lmap.explicit_impl_kinds for c in fn_node.children):
         return True
+    if _is_delegate_callback(fn_node, lmap):
+        return True
     return (
         _in_trait_impl(fn_node, lmap)
         or _is_public_api(fn_node, lmap)
@@ -205,6 +228,65 @@ def _in_fixed_abi(fn_node: Node, lmap: LanguageNodeMap) -> bool:
             return value is None or _text(value) != '"C++"'
         node = node.parent
     return False
+
+
+def _is_delegate_callback(fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """A Swift delegate or data source callback, which Cocoa names after the
+    object calling it, passed first and unlabelled (``func urlSession(_
+    session: URLSession, task: ...)``, ``func tableView(_ tableView:
+    UITableView, ...)``). The protocol it implements owns the signature, and
+    its type says so: an extension, or a type with a supertype clause."""
+    if not _conforms_to_something(fn_node):
+        return False
+    first = next((c for c in fn_node.children if c.type == "parameter"), None)
+    label = first.child_by_field_name("external_name") if first is not None else None
+    if label is None or _text(label) != "_":
+        return False
+    type_node = _param_type(first)
+    name = _field_text(fn_node, "name") or ""
+    if type_node is None or _is_scalar(type_node, lmap.scalar_type_names):
+        return False
+    return _named_after(name, _text(type_node).rstrip("?!"))
+
+
+def _named_after(name: str, caller: str) -> bool:
+    """*name* starts with the word for *caller*: ``UITableView`` is
+    ``tableView``, ``URLSession`` is ``urlSession``."""
+    stems = {_lower_camel(caller), _lower_camel(_TYPE_PREFIX_RE.sub("", caller, count=1))}
+    return any(
+        name.startswith(stem) and (len(name) == len(stem) or name[len(stem)].isupper())
+        for stem in stems
+    )
+
+
+_TYPE_PREFIX_RE = re.compile(r"^[A-Z]{2,3}(?=[A-Z][a-z])")
+
+
+def _conforms_to_something(fn_node: Node) -> bool:
+    body = fn_node.parent
+    decl = body.parent if body is not None else None
+    if decl is None or decl.type != "class_declaration":
+        return False
+    kind = decl.child_by_field_name("declaration_kind")
+    return (kind is not None and _text(kind) == "extension") or any(
+        c.type == "inheritance_specifier" for c in decl.children
+    )
+
+
+def _lower_camel(type_name: str) -> str:
+    """``URLSession`` -> ``urlSession``, ``TableView`` -> ``tableView``."""
+    run = len(type_name) - len(type_name.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    if 1 < run < len(type_name):
+        run -= 1  # the last capital starts the next word
+    return type_name[:run].lower() + type_name[run:]
+
+
+def _is_inout(type_node: Node) -> bool:
+    """A Swift ``inout`` parameter is the caller's variable, not a raw value."""
+    modifiers = type_node.prev_named_sibling
+    return modifiers is not None and modifiers.type == "parameter_modifiers" and (
+        "inout" in _text(modifiers).split()
+    )
 
 
 def _class_of_method(fn_node: Node, lmap: LanguageNodeMap) -> Node | None:
@@ -285,6 +367,8 @@ def _param_type(param: Node) -> Node | None:
 
 
 def _is_scalar(type_node: Node, scalars: frozenset[str]) -> bool:
+    if _is_inout(type_node):
+        return False
     text = _text(type_node)
     if "<" in text or "(" in text:
         return False
@@ -365,7 +449,7 @@ def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int,
     for param in _parameter_nodes(params):
         if param.type in _NON_PARAMS or (type_node := _param_type(param)) is None:
             continue
-        if not _is_bound(param, lmap):
+        if not (_is_bound(param, lmap) or is_rest_parameter(param)):
             rows.append(_param_row(param, type_node, lmap))
     _pair_lengths(rows)
     return sum(r[0] for r in rows), sum(r[0] for r in rows if r[2])
@@ -405,24 +489,32 @@ def _bound_by_call(param: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def keyword_only_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
-    """Python parameters after a bare ``*`` or ``*args``, ``**kwargs`` included.
+    """Python parameters after a bare ``*`` or ``*args`` (``**kwargs`` is no
+    parameter, ``_count_parameters`` leaves it out), Ruby ``key:`` and Dart
+    ``{named}`` ones.
     A framework-bound one is left out: ``bound_param_count`` has it."""
     if params is None:
         return 0
-    count = 0
+    count = _dart_named_count(params)
     seen_star = False
     for param in _parameter_nodes(params):
-        if seen_star:
-            count += not _is_bound(param, lmap)
-        elif param.type == "keyword_separator" or _is_args_splat(param):
+        if seen_star or param.type == "keyword_parameter":
+            # Ruby ``key:`` parameters are named at every call site too.
+            count += not (_is_bound(param, lmap) or is_rest_parameter(param))
+        elif param.type == "keyword_separator" or (
+            # Python's ``*args``; a Ruby splat leaves later parameters positional.
+            param.type in ("list_splat_pattern", "typed_parameter") and is_rest_parameter(param)
+        ):
             seen_star = True
     return count
 
 
-def _is_args_splat(param: Node) -> bool:
-    # ``*args: int`` wraps the splat in a ``typed_parameter``.
-    first = param.named_children[0] if param.type == "typed_parameter" else param
-    return first.type == "list_splat_pattern"
+def _dart_named_count(params: Node) -> int:
+    """Dart parameters inside ``{...}``: every call site names them."""
+    group = next((c for c in params.children if c.type == "optional_formal_parameters"), None)
+    if group is None or group.child(0) is None or group.child(0).type != "{":
+        return 0
+    return sum(1 for c in group.named_children if c.type == "formal_parameter")
 
 
 def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:

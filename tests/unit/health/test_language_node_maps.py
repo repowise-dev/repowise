@@ -159,7 +159,7 @@ int helper(int x) {
 }
 @end
 """,
-        {"pick": 6},
+        {"pick": 5},
     ),
 ]
 
@@ -303,7 +303,7 @@ _GO_CASES: list[tuple[str, str, dict[str, int]]] = [
         "\t\treturn 0\n"
         "\tdefault:\n\t\treturn -1\n"
         "\t}\n}\n",
-        {"pick": 4},
+        {"pick": 3},
     ),
 ]
 
@@ -346,7 +346,7 @@ def test_go_select_agrees_with_an_equivalent_switch() -> None:
         "\tdefault:\n\t\treturn -1\n"
         "\t}\n}\n"
     )
-    assert _rows("go", select, "go")["pick"] == _rows("go", switch, "go")["pick"] == 4
+    assert _rows("go", select, "go")["pick"] == _rows("go", switch, "go")["pick"] == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -373,7 +373,7 @@ function pick(x: number): number {
   }
 }
 """,
-        {"pick": 4},
+        {"pick": 3},
     ),
 ]
 
@@ -415,7 +415,7 @@ public class A {
   }
 }
 """
-    assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 4
+    assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 3
 
 
 # --------------------------------------------------------------------------- #

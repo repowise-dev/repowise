@@ -72,7 +72,7 @@ class BrainMethodDetector:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
             judged = judged_ccn(fn)
-            # JSX markup lines are layout, as in large_method.
+            # JSX markup and literal data lines are layout, as in large_method.
             code_lines = fn.nloc - fn.markup_nloc
             severity = self.severity_for(judged, code_lines)
             if severity is None:
@@ -82,7 +82,7 @@ class BrainMethodDetector:
                 details["markup_nloc"] = fn.markup_nloc
             # Severity was judged on the dispatch-flat number, so the reason
             # leads with it — the raw one stays in ``details["ccn"]``.
-            besides = f" besides {fn.markup_nloc} of JSX markup" if fn.markup_nloc else ""
+            besides = f" besides {fn.markup_nloc} of markup and data" if fn.markup_nloc else ""
             reason = f"Brain Method: {fn.name} is {code_lines} lines{besides}, CCN {judged}"
             if judged != fn.ccn:
                 details["judged_ccn"] = judged
