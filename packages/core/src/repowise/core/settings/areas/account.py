@@ -52,7 +52,6 @@ SETTINGS: tuple[Setting, ...] = (
         "REPOWISE_CHANGELOG",
         "str",
         None,
-        "A changelog file for 'what's new' to read instead of the bundled one.",
-        internal=True,
+        "A changelog file for the what's-new check to read instead of the bundled one.",
     ),
 )

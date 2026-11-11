@@ -77,6 +77,8 @@ def resolve(
                 return Resolved(s.fallback, source, problem)
             problems.append(problem)
             continue
+        if value is None:
+            continue
         return Resolved(value, source, "; ".join(problems) or None)
     return Resolved(s.default, Source.DEFAULT, "; ".join(problems) or None)
 
@@ -118,6 +120,9 @@ def validate(s: Setting, raw: Any, *, from_env: bool = False) -> Any:
             raw = parse(raw)
         except Exception as exc:  # a reader's own parser may raise anything
             raise ValueError(str(exc) or type(exc).__name__) from None
+        if raw is None:
+            # The reader's own "nothing here" (an empty tool list, a blank name).
+            return None
     elif from_env:
         raw = _from_text(s, raw)
     return _CHECKS[s.type](s, raw)
@@ -185,7 +190,7 @@ def _number(s: Setting, raw: Any) -> int | float:
     if low is not None and s.exclusive_minimum and raw <= low:
         raise ValueError(f"must be more than {_fmt(low)}")
     if s.out_of_range == "clamp":
-        raw = _clamp(raw, low, high)
+        raw = _clamp(s, raw, low, high)
     if raw in (float("inf"), float("-inf")):
         raise ValueError("must be a finite number")
     if low is not None and raw < low:
@@ -195,13 +200,12 @@ def _number(s: Setting, raw: Any) -> int | float:
     return raw
 
 
-def _clamp(raw: int | float, low: float | None, high: float | None) -> int | float:
-    """*raw* moved to the nearest bound it is past, keeping its type."""
-    if low is not None and raw < low:
-        return type(raw)(low)
-    if high is not None and raw > high:
-        return type(raw)(high)
-    return raw
+def _clamp(s: Setting, raw: int | float, low: float | None, high: float | None) -> int | float:
+    """*raw* moved to the nearest bound it is past, as the setting's type."""
+    bound = low if low is not None and raw < low else high if high is not None and raw > high else None
+    if bound is None:
+        return raw
+    return float(bound) if s.type == "float" else int(bound)
 
 
 def _fmt(bound: float) -> str:

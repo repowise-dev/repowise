@@ -160,3 +160,29 @@ def test_bool_coercing_readers_stay_strict_here():
     r = resolve("enable_onboarding", {"enable_onboarding": "false"}, environ={})
     assert (r.value, r.source) == (True, Source.DEFAULT)
     assert r.problem
+
+
+def test_clamp_never_passes_an_exclusive_minimum():
+    name = "REPOWISE_VECTOR_SEARCH_TIMEOUT_S"
+    for raw in ("0", "-5", "-inf"):
+        r = resolve(name, environ={name: raw})
+        assert (r.value, r.source) == (30.0, Source.DEFAULT), raw
+    assert resolve(name, environ={name: "1e999"}).value == 120.0
+    assert isinstance(resolve(name, environ={name: "500"}).value, float)
+
+
+def test_blank_folded_text_is_unset():
+    r = resolve("embedder", {"embedder": "  "}, environ={})
+    assert (r.value, r.source, r.problem) == (None, Source.DEFAULT, None)
+
+
+def test_max_file_pages_text_from_env_or_file():
+    assert resolve("max_file_pages", {"max_file_pages": 5.7}, environ={}).value == 5
+    assert resolve("max_file_pages", {"max_file_pages": "7"}, environ={}).value == 7
+
+
+def test_decisions_preset_and_legacy_warnings_attach_to_their_keys():
+    r = resolve("decisions.preset", {"decisions": {"preset": "bogus"}})
+    assert r.value is None and "bogus" in r.problem
+    cfg = {"decisions": {"preset": "off", "session_mining": True}}
+    assert "session_mining" in resolve("decisions.session_mining", cfg).problem

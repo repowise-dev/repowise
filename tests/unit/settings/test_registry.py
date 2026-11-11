@@ -130,6 +130,15 @@ def test_to_dict_shapes_are_pinned():
             assert isinstance(d[key], kind), (s.key, key)
         if s.type == "list" and d["default"] is not None:
             assert isinstance(d["default"], list), s.key
+    for s in settings.all_settings():
+        if s.env is not None:
+            assert s.to_dict()["env"].keys() == {"name", "wins", "prefix"}
+    assert {source.value for source in settings.Source} == {
+        "default",
+        "env",
+        "repo_file",
+        "user_file",
+    }
     r = settings.resolve("editor_files.sections", {}).to_dict()
     assert set(r) == set(RESOLVED_KEYS)
     assert isinstance(r["value"], list)

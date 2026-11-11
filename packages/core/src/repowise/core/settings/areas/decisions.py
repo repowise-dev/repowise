@@ -205,7 +205,10 @@ def _named_in(warning: str, setting: Setting) -> bool:
     """Whether a policy warning is about *setting*, its source or its block."""
     parts = setting.key.split(".")
     paths = {".".join(parts[:i]) for i in range(1, len(parts) + 1)}
-    return any(f"`{p}`" in warning or f"`{p}:`" in warning for p in paths)
+    if setting.key == "decisions.preset" and warning.startswith("Unknown preset"):
+        return True
+    # A warning about a block (`decisions.sources:`) belongs to every key in it.
+    return any(f"`{p}`" in warning or f"`{p}:" in warning for p in paths)
 
 
 def resolve_setting(setting: Setting, config: dict[str, Any]) -> Resolved:
