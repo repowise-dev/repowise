@@ -457,3 +457,29 @@ def test_mode_dry_run_names_the_change(repo: Path):
     assert result.exit_code == 0, result.output
     assert "mode: full -> off" in result.output
     assert not (repo / ".repowise" / "config.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("block", "line"),
+    [
+        ("  mode: read_only\n  sync: true\n", "Sync: pull only"),
+        ("  sync: true\n", "Sync: on"),
+        ("  enabled: false\n  mode: read_only\n  sync: true\n", None),
+        ("  enabled: false\n  sync: true\n", None),
+    ],
+)
+def test_sync_line_matches_what_sync_will_run(repo: Path, block: str, line: str | None):
+    """The sync line names a pull only when ``decision pull`` would run one."""
+    from repowise.core.analysis.decisions.policy_store import load_policy
+
+    _write(repo, "decisions:\n" + block)
+
+    result = _run("decision", "config", "show", str(repo))
+
+    assert result.exit_code == 0, result.output
+    if line is None:
+        assert "Sync:" not in result.output
+        assert not load_policy(repo).policy.pulls
+    else:
+        assert line in result.output
+        assert load_policy(repo).policy.pulls

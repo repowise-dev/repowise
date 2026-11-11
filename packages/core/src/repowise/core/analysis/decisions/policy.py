@@ -499,6 +499,11 @@ class DecisionPolicy:
         return self.mode != "off"
 
     @property
+    def pulls(self) -> bool:
+        """Whether ``update`` and ``decision pull`` may bring decisions down from repowise.dev."""
+        return self.sync and self.delivers and self.enabled
+
+    @property
     def sends(self) -> bool:
         """Whether ``update`` and ``decision push`` may send records to repowise.dev."""
         return self.sync and self.captures

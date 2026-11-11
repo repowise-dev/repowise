@@ -87,7 +87,7 @@ def _gate(repo_path: Path, *, network: bool = True) -> _Gate:
         return _Gate(blocker="The decisions config could not be read.", code="config_unreadable")
     if not (policy.delivers and policy.enabled):
         return _Gate(blocker="Decisions are off for this repo.", code="decisions_off")
-    if not policy.sync:
+    if not policy.pulls:
         return _Gate(
             blocker="Sync is off for this repo.",
             code="sync_off",

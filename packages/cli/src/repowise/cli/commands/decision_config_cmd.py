@@ -63,15 +63,14 @@ def _provider_available(repo_path: Path) -> bool:
 
 def _emit_sync(policy: DecisionPolicy) -> None:
     """One line when sync is on; nothing at all when it is off."""
-    if policy.sync and policy.delivers and not policy.sends:
-        console.print(
-            "  [dim]Sync: pull only. `update` brings down the decisions in force on "
-            "repowise.dev and sends nothing.[/dim]"
-        )
-    elif policy.sends:
+    # ``sends`` implies ``pulls``: one line, read from the predicates sync runs on.
+    if policy.pulls:
         console.print(
             "  [dim]Sync: on. `update` sends decisions recorded here to this repo on "
             "repowise.dev and brings down the ones in force there.[/dim]"
+            if policy.sends
+            else "  [dim]Sync: pull only. `update` brings down the decisions in force on "
+            "repowise.dev and sends nothing.[/dim]"
         )
 
 
