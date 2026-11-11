@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 #: Most records one discovery pass checks, so one run stays short enough to read.
 DISCOVERY_LIMIT = 20
@@ -289,7 +289,8 @@ def decision_record_prompt(kind: str, rec: Mapping[str, Any]) -> DecisionPrompt:
         text = render_edit(rec)
     else:
         raise ValueError(f"Unknown record prompt {kind!r}.")
-    return DecisionPrompt(kind, text, (rec["id"],))  # type: ignore[arg-type]
+    # Checked above: *kind* is one of the record kinds, all of which PromptKind names.
+    return DecisionPrompt(cast(PromptKind, kind), text, (rec["id"],))
 
 
 def decision_prompt(kind: str, records: Sequence[Mapping[str, Any]]) -> DecisionPrompt:

@@ -517,12 +517,11 @@ async def detect_supersessions_and_conflicts(
                 )
                 if edge is not None:
                     summary["supersedes"] += 1
-                    if (
-                        conf >= autoflip_confidence
-                        and older.status in ("active", "proposed")
-                        and await _retire(session, older, successor_id=newer.id)
-                    ):
-                        summary["flipped"] += 1
+                    if conf >= autoflip_confidence and older.status in ("active", "proposed"):
+                        # A pinned decision is left in force and not counted.
+                        summary["flipped"] += int(
+                            await _retire(session, older, successor_id=newer.id)
+                        )
             else:
                 # Two active decisions contradict, neither clearly reverses the
                 # other → a governance smell, surfaced in health.

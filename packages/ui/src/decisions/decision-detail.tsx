@@ -95,6 +95,69 @@ const DONE_COPY: Partial<Record<DecisionStatus, string>> = {
   deprecated: "Decision deprecated",
 };
 
+interface PinState {
+  pinned: boolean;
+  /** The host can pin: it passed `setPinned`. */
+  canPin: boolean;
+  toggle: () => void;
+}
+
+/**
+ * Whether the decision is pinned, and the toggle that asks the host to change
+ * it. Shares the page's busy flag, so a pin in flight disables the other verbs.
+ */
+function usePinState(
+  decision: DecisionRecord,
+  adapter: DecisionDetailAdapter,
+  setLoading: (loading: boolean) => void,
+): PinState {
+  const [pinned, setPinned] = React.useState(decision.pinned === true);
+  const toggle = async () => {
+    if (!adapter.setPinned) return;
+    setLoading(true);
+    try {
+      await adapter.setPinned(!pinned);
+      setPinned(!pinned);
+      toast.success(pinned ? "Decision unpinned" : "Decision pinned");
+    } catch (err) {
+      toast.error(toFriendlyMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return { pinned, canPin: adapter.setPinned !== undefined, toggle: () => void toggle() };
+}
+
+/** The header's pinned mark, on a decision in force only. */
+function ActivePinnedMark({ pinned, active }: { pinned: boolean; active: boolean }) {
+  return pinned && active ? <PinnedMark /> : null;
+}
+
+/** The host's agent prompts for a decision in force (change it, veto it, pin it). */
+function RecordPromptsSlot({ active, adapter }: { active: boolean; adapter: DecisionDetailAdapter }) {
+  return active ? <>{adapter.renderRecordPrompts?.()}</> : null;
+}
+
+/** Pin or Unpin, where the host can pin and the decision is in force. */
+function PinButton({ active, pin, loading }: { active: boolean; pin: PinState; loading: boolean }) {
+  if (!active || !pin.canPin) return null;
+  return (
+    <button
+      onClick={pin.toggle}
+      disabled={loading}
+      title={pin.pinned ? UNPIN_TITLE : PIN_TITLE}
+      className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
+    >
+      {pin.pinned ? UNPIN_LABEL : PIN_LABEL}
+    </button>
+  );
+}
+
+/** The sentence under the verbs that says what Pin does, where the host offers it. */
+function PinSentence({ show }: { show: boolean }) {
+  return show ? <> Pin holds it as law: an agent asks before replacing it.</> : null;
+}
+
 export interface DecisionDetailProps {
   decision: DecisionRecord;
   adapter: DecisionDetailAdapter;
@@ -104,8 +167,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   const Link: DecisionLinkComponent = adapter.LinkComponent ?? "a";
 
   const [status, setStatus] = React.useState<DecisionStatus>(decision.status);
-  const [pinned, setPinned] = React.useState(decision.pinned === true);
   const [loading, setLoading] = React.useState(false);
+  const pin = usePinState(decision, adapter, setLoading);
   const [pendingStatus, setPendingStatus] = React.useState<DecisionStatus | null>(null);
   const [linkedModules, setLinkedModules] = React.useState(decision.affected_modules);
   const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
@@ -311,20 +374,6 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
     }
   };
 
-  const togglePin = async () => {
-    if (!adapter.setPinned) return;
-    setLoading(true);
-    try {
-      await adapter.setPinned(!pinned);
-      setPinned(!pinned);
-      toast.success(pinned ? "Decision unpinned" : "Decision pinned");
-    } catch (err) {
-      toast.error(toFriendlyMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleStatusChange = (newStatus: DecisionStatus) => {
     if (CONFIRM_COPY[newStatus]) {
       setPendingStatus(newStatus);
@@ -373,7 +422,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <DecisionStatusMark status={status} />
-            {pinned && status === "active" && <PinnedMark />}
+            <ActivePinnedMark pinned={pin.pinned} active={status === "active"} />
             {/* Who accepted it is said beside Undo, below. */}
             <DecisionOrigin decision={{ ...decision, status }} accepter={false} />
             {decision.verification && (
@@ -412,7 +461,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               onClick={() => setPromptMode("verify")}
             />
           )}
-          {status === "active" && adapter.renderRecordPrompts?.()}
+          <RecordPromptsSlot active={status === "active"} adapter={adapter} />
           {status === "active" && (
             <AiPromptButton
               label="Enforce this decision"
@@ -610,16 +659,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               </button>
             </>
           )}
-          {status === "active" && adapter.setPinned && (
-            <button
-              onClick={() => void togglePin()}
-              disabled={loading}
-              title={pinned ? UNPIN_TITLE : PIN_TITLE}
-              className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
-            >
-              {pinned ? UNPIN_LABEL : PIN_LABEL}
-            </button>
-          )}
+          <PinButton active={status === "active"} pin={pin} loading={loading} />
           {status === "active" && (
             <>
               {/* Undo reverses the review where the host can, the same undo an
@@ -663,7 +703,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               : "Undo dismisses a decision accepted by mistake."}{" "}
             Deprecate retires one
             that no longer holds: it stays for history but stops guiding work.
-            {adapter.setPinned ? " Pin holds it as law: an agent asks before replacing it." : ""}{" "}
+            <PinSentence show={pin.canPin} />{" "}
             None of these changes any code.
           </p>
         )}
