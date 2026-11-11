@@ -18,6 +18,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -165,7 +166,11 @@ def isolated_platform(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(store, "_path", lambda: tmp_path / "platform.json")
     monkeypatch.setenv("DO_NOT_TRACK", "1")
     monkeypatch.delenv("REPOWISE_OFFLINE", raising=False)
-    monkeypatch.setattr(ds.time, "sleep", lambda s: pytest.fail("slept for real"))
+    # Only this module's waits are refused: patching ``time.sleep`` itself
+    # also breaks subprocess, which polls with it on POSIX while git runs.
+    monkeypatch.setattr(
+        ds, "time", SimpleNamespace(sleep=lambda s: pytest.fail("slept for real"), time=time.time)
+    )
 
 
 @pytest.fixture
@@ -710,8 +715,6 @@ def test_evidence_refs_keep_only_what_the_endpoint_accepts():
 
 
 def _rec(**over):
-    from types import SimpleNamespace
-
     fields = {
         "id": "7" * 32,
         "title": "Use JWT",
