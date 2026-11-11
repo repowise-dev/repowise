@@ -369,6 +369,10 @@ class DecisionPolicy:
     #: landing grants nothing and an agent's own acceptance is refused, so only
     #: a person puts a new decision in force.
     require_approval: bool = False
+    #: Whether this repo's decisions travel to and from its copy on
+    #: repowise.dev during ``update``. Off by default, and inert unless the
+    #: repository is also signed in and has a GitHub origin.
+    sync: bool = False
     #: Whether ``update`` may call a model for decisions: mining the PR bodies
     #: and commit messages of new history, structuring inline markers, and
     #: judging whether a change supersedes a decision it touches. Off by
@@ -528,12 +532,15 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
-        if not self.agent_acceptance:
-            block["agent_acceptance"] = False
-        if not self.capture_prompt:
-            block["capture_prompt"] = False
-        if self.require_approval:
-            block["require_approval"] = True
+        # Each switch is written only when it differs from its default.
+        for key, default in (
+            ("agent_acceptance", True),
+            ("capture_prompt", True),
+            ("require_approval", False),
+            ("sync", False),
+        ):
+            if getattr(self, key) != default:
+                block[key] = getattr(self, key)
         # Always written: this block always carries ``sources``, and a block
         # with ``sources`` and no key reads back as on (the upgrade rule), so
         # leaving it out would turn update mining on for a policy that has it off.
@@ -551,6 +558,7 @@ class DecisionPolicy:
             "agent_acceptance": self.agent_acceptance,
             "capture_prompt": self.capture_prompt,
             "require_approval": self.require_approval,
+            "sync": self.sync,
             "update_mining": self.update_mining,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
@@ -594,6 +602,9 @@ class DecisionPolicy:
 
     def with_require_approval(self, value: bool) -> DecisionPolicy:
         return replace(self, require_approval=value)
+
+    def with_sync(self, value: bool) -> DecisionPolicy:
+        return replace(self, sync=value)
 
     def with_update_mining(self, value: bool) -> DecisionPolicy:
         return replace(self, update_mining=value)
@@ -684,6 +695,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "agent_acceptance",
         "capture_prompt",
         "require_approval",
+        "sync",
         "update_mining",
     }
 )
@@ -733,6 +745,18 @@ def _default_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
         return False
     warnings.append(f"`decisions.{key}` is not a boolean; treating it as true.")
     return True
+
+
+def _strict_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+    """A switch that ships off and reads as off unless it is ``true``.
+
+    Unlike :func:`_default_off_switch`, a value that is not a boolean reads as
+    off: for a switch that sends data somewhere, off is what holds more back.
+    """
+    value = _as_bool(raw.get(key))
+    if value is None and key in raw:
+        warnings.append(f"`decisions.{key}` is not a boolean; treating it as false.")
+    return bool(value)
 
 
 def _resolve_update_mining(raw: dict, warnings: list[str]) -> bool:
@@ -885,6 +909,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
+    sync = _strict_off_switch(raw, "sync", warnings)
     update_mining = _resolve_update_mining(raw, warnings)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
@@ -900,6 +925,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             agent_acceptance=agent_acceptance,
             capture_prompt=capture_prompt,
             require_approval=require_approval,
+            sync=sync,
             update_mining=update_mining,
         ),
         warnings=tuple(warnings),

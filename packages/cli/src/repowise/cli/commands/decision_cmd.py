@@ -180,6 +180,7 @@ def _register_config_commands() -> None:
         status_command,
         unpin_command,
     )
+    from repowise.cli.commands.decision_sync_cmd import pull_command, push_command
 
     for command in (
         migrate_command,
@@ -193,6 +194,8 @@ def _register_config_commands() -> None:
         split_command,
         export_command,
         import_command,
+        push_command,
+        pull_command,
         status_command,
     ):
         decision_group.add_command(command)
