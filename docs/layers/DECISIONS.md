@@ -138,6 +138,12 @@ on every read. `superseded` and `dismissed` are set by a person.
   never proposes it again. Retired candidates (dismissed, deprecated,
   superseded) stay out of the candidate queue and the lane totals. A later extraction never walks an accepted decision
   back to `proposed`.
+- Pinned: a person can pin a decision in force (`repowise decision pin ID`, or
+  Pin on the Decisions page) to hold it as law. An agent that tries to replace or
+  retire a pinned decision is refused and told to ask a person; a person passes
+  `--force`, or unpins it first. `get_why` marks a pinned decision `pinned: true`
+  and lists it first. The pin is a row in the acceptance log; it never changes
+  who the decision reads as accepted by.
 - Supersession: `repowise decision deprecate ID --superseded-by ID2` records
   the successor, and `repowise update` marks a decision that a new commit
   reversed. These are the only sources of lineage; Repowise does not infer
@@ -339,6 +345,7 @@ unknown id.
 | `decision candidates` | What awaits review, and why each was raised |
 | `decision discover` | Prints a prompt for your agent: the background records on the busiest production files (at most 20) to check against the code, put in force with evidence, or dismiss. With none, it has the agent record the decisions behind those files. `--agreements` prints the prompt that moves working agreements into `CLAUDE.md`. The dashboard copies the same text |
 | `decision confirm ID...` | Accept. `--reason`, `--scope`, `--evidence` fill gaps; `--preview` writes nothing |
+| `decision pin ID...` / `unpin ID...` | Hold a decision in force as law, or stop. `--agent` signs as the agent a person asked |
 | `decision dismiss ID...` | Tombstone. On an accepted decision this also withdraws its authority |
 | `decision deprecate ID --superseded-by ID2` | Retire with an explicit successor |
 | `decision merge ID INTO_ID` | Fold a candidate into an accepted decision. The old id keeps resolving |
@@ -348,7 +355,7 @@ unknown id.
 | `decision push` / `pull` | Send to, and bring down from, this repo on repowise.dev. Needs `config sync --on`; `push --dry-run` needs nothing |
 | `decision migrate` | Classify records from older stores. Dry run unless `--apply` |
 | `decision health` | Counts, stale records, ungoverned hotspots |
-| `decision status` | What capture did, per source |
+| `decision status` | What capture did, per source, and the recent section: what came into force in the last 7 days, by whom, in which commit |
 | `decision config show` / `preset` / `discovery` / `agent-acceptance` / `capture-prompt` / `sync` / `update-mining` | Capture policy |
 | `decision source list` / `set SRC --on/--off [--llm/--no-llm]` | Per-source switches |
 | `decision llm --on/--off` | Master switch for model calls |

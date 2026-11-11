@@ -6,17 +6,18 @@ import Link from "next/link";
 import { toast } from "sonner";
 import {
   DecisionReviewLanes,
-  type DecisionLane,
+  type DecisionSection,
 } from "@repowise-dev/ui/decisions/decision-review-lanes";
-import type { DecisionRecord } from "@repowise-dev/types/decisions";
+import type { DecisionLaneCounts, DecisionRecord } from "@repowise-dev/types/decisions";
 import {
   getDecisionLaneCounts,
   listDecisions,
   patchDecision,
   reaffirmDecision,
+  setDecisionPinned,
 } from "@/lib/api/decisions";
 import { reviewEach } from "@repowise-dev/ui/decisions";
-import { useDecisionAgentPrompt } from "./add-decision-button";
+import { DecisionRecordPrompts, useDecisionAgentPrompt } from "./add-decision-button";
 import { useTranslations } from "next-intl";
 import { formatNumber, stripMarkdown } from "@repowise-dev/ui/lib/format";
 
@@ -25,8 +26,19 @@ interface Props {
   pageSize?: number;
 }
 
+/** Section badges from the lane counts. A count the server did not send stays unknown. */
+function sectionCounts(counts: DecisionLaneCounts): Partial<Record<DecisionSection, number>> {
+  const out: Partial<Record<DecisionSection, number>> = {
+    candidates: counts.candidates,
+    history: counts.history,
+  };
+  if (counts.in_force != null) out.in_force = counts.in_force;
+  if (counts.recent != null) out.recent = counts.recent;
+  return out;
+}
+
 /**
- * The host half of the review lanes: the per-lane fetch, the review writes,
+ * The host half of the decisions sections: the per-section fetch, the writes,
  * and the refresh.
  *
  * The lane is a server query parameter rather than a client-side filter of a
@@ -37,8 +49,8 @@ interface Props {
 export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   const t = useTranslations("decisions");
   // Opens on what is in force. Background records are context, not work, so
-  // the section never opens on them; the reader picks that lane.
-  const [lane, setLane] = React.useState<DecisionLane>("active");
+  // the page never opens on them; the reader picks that section.
+  const [lane, setLane] = React.useState<DecisionSection>("in_force");
   const [page, setPage] = React.useState(0);
   const [source, setSource] = React.useState("all");
   // The discovery pass, the same text `repowise decision discover` prints.
@@ -58,8 +70,10 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
     getDecisionLaneCounts(repoId),
   );
 
-  // `sort=review` ranks the whole lane by what most needs a person before the
-  // page is cut; see `review_queue_order` in core.
+  // Background is ranked by `sort=review` (what is worth a look first; see
+  // `review_queue_order` in core). In force comes pinned first, recent newest
+  // first, both ordered by the server.
+  const background = lane === "candidates";
   const { data, error, mutate, isLoading } = useSWR(
     [`/api/repos/${repoId}/decisions`, "lane", lane, source, page, pageSize],
     () =>
@@ -69,7 +83,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
         include_proposed: true,
         limit: pageSize,
         offset: page * pageSize,
-        sort: "review",
+        ...(background ? { sort: "review" as const } : {}),
       }),
   );
 
@@ -77,7 +91,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   // of Active, and leaving it put lands the reader on an empty lane.
   // Either control invalidates the offset: page 3 of Candidates is not page 3
   // of Active, and leaving it put lands the reader on an empty lane.
-  const changeLane = React.useCallback((next: DecisionLane) => {
+  const changeLane = React.useCallback((next: DecisionSection) => {
     setLane(next);
     setPage(0);
   }, []);
@@ -106,7 +120,8 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   // Only when the rows and the badge count the same set. Under a source filter
   // the lane count is the wrong denominator, so the range says what it loaded
   // and nothing more rather than "1-12 of 381".
-  const total = source === "all" ? counts?.[lane] : undefined;
+  const badges = counts ? sectionCounts(counts) : undefined;
+  const total = source === "all" ? badges?.[lane] : undefined;
   const first = page * pageSize + 1;
   const last = page * pageSize + rows.length;
   const hasNext =
@@ -117,14 +132,16 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
     <DecisionReviewLanes
       lane={lane}
       onLaneChange={changeLane}
-      order="review"
+      {...(background ? { order: "review" as const } : {})}
       decisions={data}
-      {...(counts ? { counts } : {})}
+      {...(badges ? { counts: badges } : {})}
       source={source}
       onSourceChange={changeSource}
       onAccept={(d, options) => void review(d, "accept", options?.reason)}
       onDismiss={(d) => void review(d, "dismiss")}
       onReaffirm={(d) => void review(d, "reaffirm")}
+      onPin={(d, pinned) => void review(d, pinned ? "pin" : "unpin")}
+      recordPrompts={(d) => <DecisionRecordPrompts repoId={repoId} decision={d} />}
       onDismissMany={dismissMany}
       {...(discover?.kind === "discover" ? { reviewPrompt: () => discover.text } : {})}
       pendingIds={pending}
@@ -165,9 +182,27 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
 }
 
 
+type ReviewVerb = "accept" | "dismiss" | "reaffirm" | "pin" | "unpin";
+
+/** The toast for each verb that went through, and for each that was refused. */
+const DONE = {
+  accept: "review.accepted",
+  dismiss: "review.dismissed",
+  reaffirm: "review.reaffirmed",
+  pin: "review.pinned",
+  unpin: "review.unpinned",
+} as const satisfies Record<ReviewVerb, string>;
+const FAILED = {
+  accept: "review.acceptFailed",
+  dismiss: "review.dismissFailed",
+  reaffirm: "review.reaffirmFailed",
+  pin: "review.pinFailed",
+  unpin: "review.unpinFailed",
+} as const satisfies Record<ReviewVerb, string>;
+
 /**
- * The review writes and their in-flight set: one record at a time for the
- * row and drawer verbs, a capped loop for a selection.
+ * The writes and their in-flight set: one record at a time for the row and
+ * drawer verbs, a capped loop for a selection.
  */
 function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
   const t = useTranslations("decisions");
@@ -176,24 +211,20 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
   // write was still running, so a second click double-wrote.
   const [pending, setPending] = React.useState<ReadonlySet<string>>(new Set());
   const review = React.useCallback(
-    async (d: DecisionRecord, verb: "accept" | "dismiss" | "reaffirm", reason?: string) => {
+    async (d: DecisionRecord, verb: ReviewVerb, reason?: string) => {
       setPending((prev) => new Set(prev).add(d.id));
       try {
         if (verb === "reaffirm") {
           await reaffirmDecision(repoId, d.id);
+        } else if (verb === "pin" || verb === "unpin") {
+          await setDecisionPinned(repoId, d.id, verb === "pin");
         } else {
           await patchDecision(repoId, d.id, {
             status: verb === "accept" ? "active" : "dismissed",
             ...(verb === "accept" && reason ? { reason } : {}),
           });
         }
-        toast.success(
-          verb === "accept"
-            ? t("review.accepted")
-            : verb === "dismiss"
-              ? t("review.dismissed")
-              : t("review.reaffirmed"),
-        );
+        toast.success(t(DONE[verb]));
         // Both, and in parallel: a review action moves a record between lanes,
         // so refreshing the rows without the badges leaves every tab count
         // contradicting the list under it.
@@ -207,13 +238,7 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
         const message = err instanceof Error ? err.message : null;
         toast.error(stripMarkdown(d.title), {
           description:
-            message === null
-              ? t("review.actionFailed")
-              : verb === "accept"
-                ? t("review.acceptFailed", { message })
-                : verb === "dismiss"
-                  ? t("review.dismissFailed", { message })
-                  : t("review.reaffirmFailed", { message }),
+            message === null ? t("review.actionFailed") : t(FAILED[verb], { message }),
         });
       } finally {
         setPending((prev) => {

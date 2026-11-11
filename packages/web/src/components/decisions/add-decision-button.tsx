@@ -18,6 +18,7 @@ import { ADD_WITH_AGENT_LABEL } from "@repowise-dev/ui/decisions/decision-review
 import type {
   DecisionAgentPromptKind,
   DecisionCreateInput,
+  DecisionRecord,
 } from "@repowise-dev/types/decisions";
 import { createDecision, getDecisionAgentPrompt } from "@/lib/api/decisions";
 import { useTranslations } from "next-intl";
@@ -90,10 +91,70 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
  * so after the agent's pass the copied list names what is still left. A failed
  * read shows no button rather than an error: the prompt is an extra, not the page.
  */
-export function useDecisionAgentPrompt(repoId: string, kind: DecisionAgentPromptKind) {
+export function useDecisionAgentPrompt(
+  repoId: string,
+  kind: DecisionAgentPromptKind | null,
+  decisionId?: string,
+) {
   const { data } = useSWR(
-    [`/api/repos/${repoId}/decisions/agent-prompt`, kind],
-    () => getDecisionAgentPrompt(repoId, kind),
+    kind ? [`/api/repos/${repoId}/decisions/agent-prompt`, kind, decisionId ?? ""] : null,
+    () => getDecisionAgentPrompt(repoId, kind!, decisionId),
   );
   return data;
+}
+
+type RecordPromptKind = "review" | "edit" | "veto" | "pin" | "unpin";
+
+/** The currencies of a decision that has left force. */
+const RETIRED_CURRENCIES: ReadonlySet<string> = new Set(["superseded", "dismissed", "stale"]);
+
+/**
+ * Which prompts a record gets, in button order: a background record the check;
+ * a decision in force change, veto, and pin or unpin; a retired or dismissed
+ * one none, since it was settled and checking it again would undo that.
+ */
+export function recordPromptKinds(
+  d: Pick<DecisionRecord, "currency" | "pinned" | "status">,
+): RecordPromptKind[] {
+  if (d.currency == null) return d.status === "proposed" ? ["review"] : [];
+  if (RETIRED_CURRENCIES.has(d.currency)) return [];
+  return ["edit", "veto", d.pinned ? "unpin" : "pin"];
+}
+
+/**
+ * One record's agent prompts, rendered by the server for its id. Each kind is
+ * its own fetch, so the buttons appear as their prompts arrive.
+ */
+export function DecisionRecordPrompts({
+  repoId,
+  decision: d,
+}: {
+  repoId: string;
+  decision: Pick<DecisionRecord, "id" | "currency" | "pinned" | "status">;
+}) {
+  return (
+    <>
+      {recordPromptKinds(d).map((kind) => (
+        <RecordPrompt key={kind} repoId={repoId} decisionId={d.id} kind={kind} />
+      ))}
+    </>
+  );
+}
+
+function RecordPrompt({
+  repoId,
+  decisionId,
+  kind,
+}: {
+  repoId: string;
+  decisionId: string;
+  kind: RecordPromptKind;
+}) {
+  const t = useTranslations("decisions");
+  const prompt = useDecisionAgentPrompt(repoId, kind, decisionId);
+  return (
+    <DecisionAgentPrompts
+      prompts={[prompt ? { text: prompt.text, label: t(`agent.${kind}`) } : null]}
+    />
+  );
 }

@@ -994,13 +994,15 @@ repowise decision discover              # a prompt for your agent: check the bac
 repowise decision discover --agreements # a prompt that moves working agreements into CLAUDE.md
 repowise decision confirm ID...         # accept: this makes them govern
 repowise decision reaffirm ID...        # renew an accepted decision after re-reading it
+repowise decision pin ID...             # hold a decision in force as law: agents ask before replacing it
+repowise decision unpin ID...           # it stays in force; agents may replace it again
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
 repowise decision merge ID INTO_ID      # fold into an accepted decision (--agent signs)
 repowise decision dedupe                # fold duplicate candidates (dry run unless --apply)
 repowise decision split ID              # flag as bundling two choices; never splits it
 repowise decision deprecate ID          # optionally naming its successor
 repowise decision health
-repowise decision status                # what capture did and cost
+repowise decision status                # what capture did and cost, and what came into force this week
 repowise decision export                # accepted decisions to .repowise/decisions.yaml
 repowise decision import                # reconcile the store to that file
 repowise decision push                  # decisions recorded here, to this repo on repowise.dev
@@ -1049,15 +1051,16 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--lane` | Extraction lane: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page review lanes. | all lanes |
 | `--limit` | Max listed. | `30` |
 
-**`confirm`, `reaffirm`, `dismiss`, `deprecate`, `merge`, `split`**
+**`confirm`, `reaffirm`, `pin`, `unpin`, `dismiss`, `deprecate`, `merge`, `split`**
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--reason TEXT` | `confirm`: rationale, or why a constraint needs none; corrects the record. `reaffirm`: why it still holds. `dismiss`, `deprecate`: why. `split`: what the two choices are. | |
+| `--reason TEXT` | `confirm`: rationale, or why a constraint needs none; corrects the record. `reaffirm`: why it still holds. `pin`, `unpin`, `dismiss`, `deprecate`: why. `split`: what the two choices are. | |
 | `--scope PATH` | `confirm`: file or module governed. Repeatable; replaces the proposed scope. | proposed scope |
 | `--evidence REF` | `confirm`, `reaffirm`: commit, file or link. Repeatable. | |
 | `--as NAME` | `confirm`: accepter other than git identity. | git identity |
 | `--superseded-by ID` | `deprecate`: lineage edge to the replacement; deprecated id keeps resolving. | |
+| `--force` | `dismiss`, `deprecate`: retire a pinned decision. A person's flag: refused with `--agent`. | off |
 | `--agent SLUG` | Sign as an agent (e.g. `claude_code`). Granting is refused only under `agent-acceptance --off`. | |
 | `--session ID` | Signing agent session. | |
 | `--yes` / `-y` | `dismiss`: skip the prompt (as does `--format json`). | off |
@@ -1065,6 +1068,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 
 - `confirm` accepts candidates; on an already accepted decision it refuses and points at `reaffirm`. `reaffirm` refuses a candidate.
 - `merge` needs an accepted target: confirm the target first, or merge the other way.
+- `pin` takes only a decision in force. A pinned decision is refused to `dismiss`, `deprecate` and `deprecate --superseded-by` from an agent, which is told to ask a person; a person passes `--force`, or unpins it first. Pinning never changes who the decision reads as accepted by.
 - A dismissed or deprecated candidate records its signer on its review row.
 - With `--format json`, every verb but `split` returns `{action, preview, results, succeeded, failed}`, even for one id.
 
@@ -1126,9 +1130,11 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
   `failed` and `results[]` (`given`, `id`, `title`, `ok`, then `action` / `status` or `error` / `blockers`, e.g. `"no
   scope: name the files or modules it governs"`).
 
-**`status`.** Policy, preset; per source: state, why no call, what it captured and when; five review lanes, backlog
-acceptable today versus blocked, its age; staging queues; decision-extraction model spend. No run ledger: spend is
-all-time with the last call named; a queue the store predates reads absent, not zero.
+**`status`.** Policy, preset; per source: state, why no call, what it captured and when; five review lanes and the
+pinned count, backlog acceptable today versus blocked, its age; staging queues; decision-extraction model spend; and
+**recent**: the decisions put in force in the last 7 days, newest first, each with who put it in force (an agent, or a
+person) and the commit it landed in (the table shows 10, `--format json` lists them all under `recent.decisions`). No
+run ledger: spend is all-time with the last call named; a queue the store predates reads absent, not zero.
 
 ```
 repowise decision status
