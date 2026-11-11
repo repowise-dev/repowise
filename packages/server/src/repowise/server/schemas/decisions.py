@@ -142,6 +142,21 @@ class DecisionCountsResponse(BaseModel):
     deprecated: int
 
 
+class DecisionAgentPromptResponse(BaseModel):
+    """A decision prompt for the reader's agent, as ``repowise decision discover`` prints it.
+
+    ``kind`` is the prompt served: ``discover`` asked with no background
+    records to check comes back as ``add``. ``text`` is empty only for
+    ``agreements`` with none stored, and then a surface offers nothing.
+    """
+
+    kind: Literal["discover", "add", "agreements"]
+    text: str
+    #: The records the prompt names, in its order.
+    ids: list[str]
+    count: int
+
+
 class DecisionLaneCountsResponse(BaseModel):
     """Records per review lane, from a scan of the acceptance join.
 

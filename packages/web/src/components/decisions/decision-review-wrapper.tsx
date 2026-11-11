@@ -16,7 +16,7 @@ import {
   reaffirmDecision,
 } from "@/lib/api/decisions";
 import { reviewEach } from "@repowise-dev/ui/decisions";
-import { buildReviewCandidatesPrompt } from "@/lib/decision-prompts";
+import { useDecisionAgentPrompt } from "./add-decision-button";
 import { useTranslations } from "next-intl";
 import { formatNumber, stripMarkdown } from "@repowise-dev/ui/lib/format";
 
@@ -41,6 +41,8 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   const [lane, setLane] = React.useState<DecisionLane>("active");
   const [page, setPage] = React.useState(0);
   const [source, setSource] = React.useState("all");
+  // The discovery pass, the same text `repowise decision discover` prints.
+  const discover = useDecisionAgentPrompt(repoId, "discover");
 
   // One aggregate over the acceptance join, not four page fetches. The badges
   // and the rows they label therefore come from the same question, and a lane
@@ -124,7 +126,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       onDismiss={(d) => void review(d, "dismiss")}
       onReaffirm={(d) => void review(d, "reaffirm")}
       onDismissMany={dismissMany}
-      reviewPrompt={buildReviewCandidatesPrompt}
+      {...(discover?.kind === "discover" ? { reviewPrompt: () => discover.text } : {})}
       pendingIds={pending}
       repoId={repoId}
       LinkComponent={Link}

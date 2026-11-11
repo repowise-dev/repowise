@@ -169,6 +169,7 @@ def _register_config_commands() -> None:
     from repowise.cli.commands.decision_review_cmd import (
         candidates_command,
         dedupe_command,
+        discover_command,
         export_command,
         import_command,
         merge_command,
@@ -177,16 +178,20 @@ def _register_config_commands() -> None:
         split_command,
         status_command,
     )
+    from repowise.cli.commands.decision_sync_cmd import pull_command, push_command
 
     for command in (
         migrate_command,
         candidates_command,
+        discover_command,
         reaffirm_command,
         merge_command,
         dedupe_command,
         split_command,
         export_command,
         import_command,
+        push_command,
+        pull_command,
         status_command,
     ):
         decision_group.add_command(command)

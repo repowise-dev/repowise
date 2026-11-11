@@ -43,6 +43,12 @@ unless the repository turns it on.
   a working agreement: a rule about how the work is conducted, which names no
   file and is not checked against the code. Bare `repowise decision add` is a
   guided interactive capture (~90s) for a person at a terminal.
+- **discover** — `repowise decision discover` prints a prompt: the background
+  records on the busiest production files (at most 20) to check against the
+  code, put in force signed as you with evidence, or dismiss. Follow it as
+  printed. With no background records it has you record the decisions behind
+  the busiest files instead. `--agreements` prints the prompt that moves stored
+  working agreements into CLAUDE.md, for a team that wants them there.
 - **candidates** — `repowise decision candidates --format json` — background
   records not in force, each with its id and the `blockers` that stop it being accepted.
 - **confirm** — `repowise decision confirm <id>... --agent <slug> --evidence <commit|file>`

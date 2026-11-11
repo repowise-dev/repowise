@@ -1,15 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildAddDecisionsPrompt,
-  buildReviewCandidatesPrompt,
-  buildReviewDecisionPrompt,
-} from "./decision-prompts";
+import { buildReviewDecisionPrompt } from "./decision-prompts";
 
-const prompts = () => [
-  buildReviewCandidatesPrompt(),
-  buildReviewDecisionPrompt({ id: "d1abc", title: "Use **SWR**\nfor fetching" }),
-  buildAddDecisionsPrompt(),
-];
+const prompts = () => [buildReviewDecisionPrompt({ id: "d1abc", title: "Use **SWR**\nfor fetching" })];
 
 describe("decision agent prompts", () => {
   it("stay short enough to paste", () => {
@@ -30,16 +22,6 @@ describe("decision agent prompts", () => {
     }
   });
 
-  it("review candidates from the full list with the CLI verbs, stopping at 20", () => {
-    const p = buildReviewCandidatesPrompt();
-    expect(p).toContain("repowise decision list --proposed --all --format json");
-    expect(p).toContain("skipping ids you already left");
-    expect(p).toContain("repowise decision show <id>");
-    expect(p).toContain('repowise decision confirm <id> --reason "');
-    expect(p).toMatch(/repowise decision dismiss <id> --reason "[^"]+" --agent <slug> --yes/);
-    expect(p).toContain("after 20 decisions");
-  });
-
   it("review one decision by its id, with its title as one plain line", () => {
     const p = buildReviewDecisionPrompt({ id: "d1abc", title: "Use **SWR**\nfor fetching" });
     expect(p).toContain('"Use SWR for fetching" (id d1abc)');
@@ -48,16 +30,5 @@ describe("decision agent prompts", () => {
     expect(p).toContain("repowise decision confirm d1abc --reason");
     expect(p).toContain("repowise decision dismiss d1abc --reason");
     expect(p).not.toContain("<id>");
-  });
-
-  it("add decisions from the ungoverned hotspots, with evidence, at most 10", () => {
-    const p = buildAddDecisionsPrompt();
-    expect(p).toContain("get_why MCP tool with no arguments");
-    expect(p).toContain("ungoverned_hotspots");
-    expect(p).toMatch(
-      /repowise decision add --title "\.\.\." --decision "\.\.\." --rationale "\.\.\." --context "[^"]+" --affects <path> --evidence-commit <sha> --agent <slug>/,
-    );
-    expect(p).toContain("at most 10");
-    expect(p).toContain("comes into force when the commit it cites merges");
   });
 });
