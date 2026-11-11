@@ -81,9 +81,9 @@ every switch, with where each value came from.
   what came into force in the last seven days and who signed, and what
   capture did.
 - **mode**: `repowise config set decisions.mode off|read_only|full` when the
-  user asks to turn decisions off or make them read-only; relay the undo
-  command it prints. `repowise config explain <key>` says what any other
-  decision switch does.
+  user asks to turn decisions off or make them read-only; it resets the finer
+  decision switches too, so relay what moved and the undo commands it prints.
+  `repowise config explain <key>` says what any other decision switch does.
 
 ## Notes
 

@@ -55,11 +55,14 @@ does, what it costs or saves, and when it takes effect.
 
 1. Ask the user first, naming the key, the new value and the effect. Never
    change a setting on your own initiative.
-2. `repowise config set <key> <value> --format json`. A switch takes
-   `true`/`false`, a list takes `a,b` or `[a, b]`.
-3. Relay `effect` and the `undo` command it prints. If `env_override` is set,
-   tell the user that environment variable wins over the file until it is
-   unset.
+2. `repowise config set <key> <value>`. A switch takes `true`/`false`, a
+   list takes `a,b` or `[a, b]`. The text output is short; `--format json`
+   repeats the before and after state of every setting the change moved.
+3. Relay the effect and the undo commands it prints. Some switches move
+   others with them (`decisions.mode` resets the finer decision switches):
+   name the settings that moved, not only the one you set. If it says an
+   environment variable wins over the file (`env_override` in JSON), tell the
+   user that variable decides until it is unset.
 
 `repowise config reset <key>` puts a setting back to its default. A refusal
 exits 1 with `{"error", "message", ...}`: `unknown_setting` (the message
