@@ -466,9 +466,7 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 llm_client=repo_provider,
                 cost_tracker=cost_tracker,
                 mode=(
-                    OrchestratorMode.FAST
-                    if ctx.run_mode == "fast"
-                    else OrchestratorMode.STANDARD
+                    OrchestratorMode.FAST if ctx.run_mode == "fast" else OrchestratorMode.STANDARD
                 ),
                 progress=callback,
                 existing_kg_fingerprint=_prev_kg_fp,
@@ -476,7 +474,9 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 generation_config=structural_generation_config(ctx.index_only),
             )
         )
-    console.print(f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols")
+    console.print(
+        f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
+    )
     # Persisted now: generation may not run for this repo, and flushes only its own.
     if cost_tracker is not None:
         flush_cost_tracker(cost_tracker)
@@ -540,7 +540,9 @@ def _generate_repo_with_model(
 
         docs.pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
         docs.docs_mode = "llm"
-        console.print(f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n")
+        console.print(
+            f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n"
+        )
     except CostGateDeclined:
         # Declining only meant "not at that price": fall back to the free
         # template renderer rather than leave the repo with no wiki.
@@ -730,7 +732,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
-            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved),
+            embedding_model=resolve_embedding_model(
+                ctx.embedder_name_resolved, repo_path=repo_path
+            ),
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
@@ -754,7 +758,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
-            embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
+            embedding_model=(
+                resolve_embedding_model(det_embedder, repo_path=repo_path) if det_embedder else None
+            ),
         )
 
 
@@ -1134,7 +1140,9 @@ def _workspace_config(pick: WorkspacePick, *, ask: bool, dry_run: bool) -> Any:
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]{glyph('ok')}[/] {verb} {config_path.name}")
         if excluded := keep_workspace_data_out(root):
-            console.print(f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]")
+            console.print(
+                f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]"
+            )
     console.print()
     return ws_config
 
@@ -1205,9 +1213,7 @@ def _offer_workspace_hooks(
         yes=yes,
         no_editor_setup=not editor_setup,
     )
-    warn_unresolved_hooks(
-        console, [r.path for r in selected], no_editor_setup=not editor_setup
-    )
+    warn_unresolved_hooks(console, [r.path for r in selected], no_editor_setup=not editor_setup)
 
 
 def _workspace_gaps(ctx: _WorkspaceCtx, totals: _WorkspaceTotals) -> list[str]:

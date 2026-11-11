@@ -156,3 +156,109 @@ def test_resolve_embedding_model_honours_repo_pin(tmp_path):
     )
     assert resolve_embedding_model("openrouter", repo) == "mongodb/voyage-code-4"
     assert resolve_embedding_model("gemini", repo) is None
+
+
+def test_init_persistence_preserves_config_only_pinned_embedding_model(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from repowise.cli.commands.init_cmd.persistence import save_full_state_and_config
+    from repowise.cli.helpers import load_config
+
+    repo = _repo(
+        tmp_path,
+        config="embedder: ollama\nembedding_model: qwen3-embedding:8b\n",
+    )
+    (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    def _fake_run_async(coro):
+        coro.close()
+        return 0
+
+    with (
+        patch("repowise.cli.commands.init_cmd.persistence.get_head_commit", return_value="abc1234"),
+        patch("repowise.cli.commands.init_cmd.persistence.record_decision_lanes"),
+        patch("repowise.cli.commands.init_cmd.persistence.apply_git_history_coverage_state"),
+        patch("repowise.cli.commands.init_cmd.persistence.run_async", side_effect=_fake_run_async),
+        patch("repowise.cli.commands.init_cmd.persistence.config_fingerprint", return_value="fp"),
+        patch(
+            "repowise.cli.commands.init_cmd.persistence.config_dependency_fingerprints",
+            return_value={},
+        ),
+    ):
+        save_full_state_and_config(
+            repo_path=repo,
+            result=SimpleNamespace(generated_pages=[]),
+            provider=SimpleNamespace(provider_name="ollama", model_name="qwen2.5-coder"),
+            phase_timings={},
+            embedder_name_resolved="ollama",
+            exclude_patterns=[],
+            commit_limit=None,
+            resolved_commit_limit=50,
+            resolved_reasoning="medium",
+            save_key=False,
+        )
+
+    cfg = load_config(repo)
+    assert cfg.get("embedding_model") == "qwen3-embedding:8b"
+
+
+def test_index_only_finish_preserves_config_only_pinned_embedding_model(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from repowise.cli.commands.init_cmd._finish import _save_index_only_state
+    from repowise.cli.helpers import load_config
+
+    repo = _repo(
+        tmp_path,
+        config="embedder: ollama\nembedding_model: qwen3-embedding:8b\n",
+    )
+    (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    run = SimpleNamespace(
+        repo_path=repo,
+        index_only_embedder="ollama",
+        exclude_patterns=[],
+        resolved_commit_limit=50,
+        opts=SimpleNamespace(commit_limit=None),
+        result=SimpleNamespace(),
+    )
+
+    with (
+        patch("repowise.cli.commands.init_cmd._finish.stamp_fresh_index"),
+        patch("repowise.cli.commands.init_cmd._finish.save_state"),
+    ):
+        _save_index_only_state(run, {})
+
+    cfg = load_config(repo)
+    assert cfg.get("embedding_model") == "qwen3-embedding:8b"
+
+
+def test_workspace_save_repo_config_preserves_pinned_embedding_model(tmp_path):
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd.workspace import _save_repo_config
+    from repowise.cli.helpers import load_config
+
+    repo = _repo(
+        tmp_path,
+        config="embedder: ollama\nembedding_model: qwen3-embedding:8b\n",
+    )
+
+    ctx = SimpleNamespace(
+        provider=SimpleNamespace(provider_name="ollama", model_name="qwen2.5-coder"),
+        embedder_name_resolved="ollama",
+        exclude_patterns=[],
+        resolved_commit_limit=50,
+        resolved_reasoning="medium",
+        save_key=False,
+        wiki_style="default",
+        language="en",
+    )
+    docs = SimpleNamespace(docs_mode="llm")
+
+    _save_repo_config(repo, ctx, docs)
+
+    cfg = load_config(repo)
+    assert cfg.get("embedding_model") == "qwen3-embedding:8b"
