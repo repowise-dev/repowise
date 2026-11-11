@@ -34,17 +34,6 @@ def _flag(name: str, description: str) -> Setting:
     )
 
 
-_SKELETON_MODES = ("smart", "plus")
-
-
-def parse_skeleton_mode(raw: object) -> str:
-    """``hooks.read_skeleton_mode`` read as ``configured_mode`` reads it: any case, any spacing."""
-    mode = raw.strip().lower() if isinstance(raw, str) else None
-    if mode not in _SKELETON_MODES:
-        raise ValueError(f"must be one of {', '.join(_SKELETON_MODES)}")
-    return mode
-
-
 SETTINGS: tuple[Setting, ...] = (
     *(_flag(name, description) for name, description in _FLAGS.items()),
     Setting(
@@ -54,9 +43,9 @@ SETTINGS: tuple[Setting, ...] = (
         description="What a served outline keeps: smart, or plus to keep all code "
         "outside function bodies.",
         area=AREA,
-        choices=_SKELETON_MODES,
+        choices=("smart", "plus"),
         env=Env("REPOWISE_HOOK_READ_SKELETON_MODE", wins=True),
-        parser="repowise.core.settings.areas.hooks:parse_skeleton_mode",
+        parser="repowise.core.settings.parsers:folded",
     ),
     Setting(
         key="REPOWISE_HOOK_UPDATED_OUTPUT",

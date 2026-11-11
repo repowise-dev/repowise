@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from repowise.core.settings.model import (
     FALSY,
+    SCHEMA_VERSION,
     TRUTHY,
     Env,
     Resolved,
@@ -23,6 +24,7 @@ from repowise.core.settings.resolve import resolve
 __all__ = [
     "AREAS",
     "FALSY",
+    "SCHEMA_VERSION",
     "TRUTHY",
     "Env",
     "Resolved",

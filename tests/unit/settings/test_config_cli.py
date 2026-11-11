@@ -19,7 +19,8 @@ from repowise.core.settings import all_settings
 _VIEW_KEYS = {
     "key", "type", "default", "description", "area", "scope", "file", "choices", "minimum",
     "maximum", "exclusive_minimum", "env", "internal", "reload",
-    "value", "source", "problem", "locked", "changed",
+    "value", "source", "problem", "locked", "changed", "schema_version", "default_note",
+    "out_of_range",
 }  # fmt: skip
 
 

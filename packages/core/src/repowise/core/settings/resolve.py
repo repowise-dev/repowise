@@ -58,15 +58,17 @@ def resolve(
     a setting declared ``on_invalid="error"``.
     """
     s = registry.get(setting) if isinstance(setting, str) else setting
-    area_resolve = getattr(registry.area_module(s.area), "resolve_setting", None)
+    area_resolve = registry.area_resolver(s.area)
     if area_resolve is not None:
-        present = s.scope != "env" and lookup(config, s.key) is not MISSING
-        return Resolved(
-            area_resolve(s, config or {}),
-            _FILE_SOURCE[s.scope] if present else Source.DEFAULT,
-        )
+        # The registry refuses an env-backed setting in such an area, so the
+        # file is the only layer the area has to weigh.
+        return area_resolve(s, config or {})
 
-    layers = _layers(s, config, os.environ if environ is None else environ)
+    return _first_usable(s, _layers(s, config, os.environ if environ is None else environ))
+
+
+def _first_usable(s: Setting, layers: list[tuple[Source, Any]]) -> Resolved:
+    """The first layer holding a usable value, else the default, with what was wrong."""
     problems: list[str] = []
     for source, raw in layers:
         try:
@@ -78,6 +80,8 @@ def resolve(
             if s.on_invalid == "fallback":
                 return Resolved(s.fallback, source, problem)
             problems.append(problem)
+            continue
+        if value is None:
             continue
         return Resolved(value, source, "; ".join(problems) or None)
     return Resolved(s.default, Source.DEFAULT, "; ".join(problems) or None)
@@ -107,12 +111,23 @@ def _layers(
 def validate(s: Setting, raw: Any, *, from_env: bool = False) -> Any:
     """*raw* as a value of *s*, or ``ValueError`` saying why it is not one.
 
-    Environment values arrive as text and are converted first.
+    Environment values arrive as text and are converted first. A setting's
+    parser runs before the typed check, and anything it raises is a problem
+    with the value, never a crash.
     """
+    if s.type == "list" and not isinstance(raw, (str, list, tuple)):
+        raise ValueError("must be a list")
     if s.parser is not None:
         module_name, _, attr = s.parser.partition(":")
-        return getattr(import_module(module_name), attr)(raw)
-    if from_env:
+        parse = getattr(import_module(module_name), attr)
+        try:
+            raw = parse(raw)
+        except Exception as exc:  # a reader's own parser may raise anything
+            raise ValueError(str(exc) or type(exc).__name__) from None
+        if raw is None:
+            # The reader's own "nothing here" (an empty tool list, a blank name).
+            return None
+    elif from_env:
         raw = _from_text(s, raw)
     return _CHECKS[s.type](s, raw)
 
@@ -167,19 +182,44 @@ def _from_text(s: Setting, text: str) -> Any:
 
 
 def _number(s: Setting, raw: Any) -> int | float:
+    number = _as_number(s, raw)
+    low = s.minimum
+    if low is not None and s.exclusive_minimum and number <= low:
+        raise ValueError(f"must be more than {_fmt(low)}")
+    if s.out_of_range == "clamp":
+        number = _clamp(s, number)
+    if number in (float("inf"), float("-inf")):
+        raise ValueError("must be a finite number")
+    _check_bounds(s, number)
+    return number
+
+
+def _as_number(s: Setting, raw: Any) -> int | float:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise ValueError("must be a number")
     if s.type == "int" and not isinstance(raw, int):
         raise ValueError("must be a whole number")
-    if raw != raw or raw in (float("inf"), float("-inf")):
+    if raw != raw:
         raise ValueError("must be a finite number")
-    if s.minimum is not None and s.exclusive_minimum and raw <= s.minimum:
-        raise ValueError(f"must be more than {_fmt(s.minimum)}")
-    if s.minimum is not None and raw < s.minimum:
-        raise ValueError(f"must be at least {_fmt(s.minimum)}")
-    if s.maximum is not None and raw > s.maximum:
-        raise ValueError(f"must be at most {_fmt(s.maximum)}")
     return raw
+
+
+def _check_bounds(s: Setting, number: int | float) -> None:
+    if s.minimum is not None and number < s.minimum:
+        raise ValueError(f"must be at least {_fmt(s.minimum)}")
+    if s.maximum is not None and number > s.maximum:
+        raise ValueError(f"must be at most {_fmt(s.maximum)}")
+
+
+def _clamp(s: Setting, number: int | float) -> int | float:
+    """*number* moved to the nearest bound it is past, as the setting's type."""
+    if s.minimum is not None and number < s.minimum:
+        bound = s.minimum
+    elif s.maximum is not None and number > s.maximum:
+        bound = s.maximum
+    else:
+        return number
+    return float(bound) if s.type == "float" else int(bound)
 
 
 def _fmt(bound: float) -> str:

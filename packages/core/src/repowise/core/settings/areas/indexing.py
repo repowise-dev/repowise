@@ -7,6 +7,7 @@ from repowise.core.settings.model import FALSY, Setting
 
 AREA = "indexing"
 _s = factory(AREA)
+_e = factory(AREA, scope="env")
 
 SETTINGS: tuple[Setting, ...] = (
     _s(
@@ -39,13 +40,13 @@ SETTINGS: tuple[Setting, ...] = (
         "Which forge a self-hosted git host is: host to github, gitlab, azure, "
         "bitbucket or generic.",
     ),
-    _s(
+    _e(
         "REPOWISE_FORGE_HOSTS",
         "str",
         "",
         "Comma-separated host=forge pairs, added to forges.hosts.",
     ),
-    _s(
+    _e(
         "REPOWISE_PARSE_WORKERS",
         "int",
         None,
@@ -53,14 +54,14 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
     ),
-    _s(
+    _e(
         "REPOWISE_PARSE_TIMEOUT_S",
         "float",
         60.0,
         "Seconds one file may take to parse; 0 turns the limit off.",
         minimum=0,
     ),
-    _s(
+    _e(
         "REPOWISE_PARSE_WORKER_MEMORY_MB",
         "float",
         2048.0,
@@ -68,7 +69,7 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_GIT_WORKERS",
         "int",
         None,
@@ -76,7 +77,7 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
     ),
-    _s(
+    _e(
         "REPOWISE_GIT_INDEX_TIMEOUT_S",
         "float",
         120.0,
@@ -84,33 +85,33 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
     ),
-    _s(
+    _e(
         "REPOWISE_GIT_SCOPE",
         "str",
         "module",
         "Set to repo to index the whole repository's history when indexing one module.",
     ),
-    _s(
+    _e(
         "REPOWISE_GIT_WINDOW_ANCHOR",
         "str",
         None,
-        "Measure recent-activity windows from today (now) instead of the latest commit.",
-        internal=True,
+        "Set to now to measure git windows (recent churn, prior defects, blame age) "
+        "from today instead of from the indexed commit's date.",
     ),
-    _s(
+    _e(
         "REPOWISE_GRAMMAR_DIR",
         "str",
         None,
         "Folder of pre-downloaded language grammars, for offline machines.",
     ),
-    _s(
+    _e(
         "REPOWISE_WORKTREE_FALLBACK",
         "bool",
         True,
         "Let a git worktree read its main checkout's index; 0 turns it off.",
         env_false=FALSY,
     ),
-    _s(
+    _e(
         "REPOWISE_INCREMENTAL_GRAPH",
         "bool",
         True,
@@ -118,15 +119,15 @@ SETTINGS: tuple[Setting, ...] = (
         env_false=frozenset({"0"}),
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_INDEX_INFORMATION_FLOOR",
         "int",
         0,
-        "Least amount of real text a page needs before it is embedded.",
+        "Least characters of real prose a wiki page needs to be found by semantic "
+        "search. Shorter pages stay readable, just not in that search. 0 is off.",
         minimum=0,
-        internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_KG_CURATION",
         "bool",
         True,
@@ -134,21 +135,21 @@ SETTINGS: tuple[Setting, ...] = (
         env_false=FALSY,
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_WORKSPACE_CEILING",
         "str",
         None,
         "Folder above which the workspace search stops walking.",
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_CACHE_HMAC_KEY",
         "str",
         None,
         "Fixed hex key that signs the local cache, for CI.",
         internal=True,
     ),
-    _s(
+    _e(
         "REPOWISE_CACHE_KEY_PATH",
         "str",
         None,

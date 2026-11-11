@@ -96,3 +96,75 @@ def test_loading_every_area_stays_light():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout.strip()
     assert out == ""
+
+
+SETTING_KEYS = {
+    "schema_version": int,
+    "key": str,
+    "type": str,
+    "default": object,
+    "default_note": (str, type(None)),
+    "description": str,
+    "area": str,
+    "scope": str,
+    "file": (str, type(None)),
+    "choices": list,
+    "minimum": (int, float, type(None)),
+    "maximum": (int, float, type(None)),
+    "exclusive_minimum": bool,
+    "out_of_range": str,
+    "env": (dict, type(None)),
+    "internal": bool,
+    "reload": str,
+}
+RESOLVED_KEYS = {"schema_version": int, "value": object, "source": str, "problem": (str, type(None)), "locked": bool}
+
+
+def test_to_dict_shapes_are_pinned():
+    """The settings API and docs read these; removing or retyping a key bumps SCHEMA_VERSION."""
+    assert settings.SCHEMA_VERSION == 1
+    for s in settings.all_settings():
+        d = s.to_dict()
+        assert set(d) == set(SETTING_KEYS), s.key
+        for key, kind in SETTING_KEYS.items():
+            assert isinstance(d[key], kind), (s.key, key)
+        if s.type == "list" and d["default"] is not None:
+            assert isinstance(d["default"], list), s.key
+    for s in settings.all_settings():
+        if s.env is not None:
+            assert s.to_dict()["env"].keys() == {"name", "wins", "prefix"}
+    assert {source.value for source in settings.Source} == {
+        "default",
+        "env",
+        "repo_file",
+        "user_file",
+    }
+    r = settings.resolve("editor_files.sections", {}).to_dict()
+    assert set(r) == set(RESOLVED_KEYS)
+    assert isinstance(r["value"], list)
+    r = settings.resolve("decisions.harnesses", {}).to_dict()
+    assert isinstance(r["value"], list)
+
+
+def test_an_area_with_its_own_resolver_cannot_declare_env(monkeypatch):
+    import types
+
+    fake = types.SimpleNamespace(
+        SETTINGS=(Setting("x.y", "bool", False, "X.", "fake", env=Env("REPOWISE_X")),),
+        resolve_setting=lambda s, c: None,
+    )
+    monkeypatch.setattr(registry, "AREAS", ("fake",))
+    monkeypatch.setattr(registry, "import_module", lambda name: fake)
+    with pytest.raises(ValueError, match="cannot declare an env var"):
+        registry._collect()
+
+
+def test_factory_scope_is_explicit():
+    from repowise.core.settings.areas._common import factory
+
+    env = factory("server", scope="env")("REPOWISE_X", "bool", False, "X.", env_true=frozenset({"y"}))
+    assert (env.scope, env.env.name, env.reload) == ("env", "REPOWISE_X", "restart")
+    with pytest.raises(ValueError, match="env-scoped"):
+        factory("server")("x", "bool", False, "X.", env_true=frozenset({"y"}))
+    repo = factory("indexing")("REPOWISE_LOOKS_LIKE_ENV", "str", None, "X.")
+    assert repo.scope == "repo" and repo.env is None

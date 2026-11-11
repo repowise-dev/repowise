@@ -15,6 +15,7 @@ from repowise.core.settings.model import Env, Setting
 
 AREA = "generation"
 _s = factory(AREA)
+_e = factory(AREA, scope="env")
 _FILE_SETTINGS_WRITER = "repowise.core.repo_config:write_file_setting"
 
 #: ``repowise.core.providers.embedding.registry._BUILTIN_EMBEDDERS``.
@@ -27,7 +28,9 @@ SETTINGS: tuple[Setting, ...] = (
         "str",
         None,
         "Which model service writes docs and answers (anthropic, openai, gemini, "
-        "ollama, claude_cli and others). Unset picks one from the API keys present.",
+        "ollama, claude_cli and others).",
+        default_note="Unset: the saved global choice (provider_config.json), then "
+        "REPOWISE_PROVIDER, then the first provider whose API key is present.",
         env=Env("REPOWISE_PROVIDER"),
         writer="repowise.core.providers.llm.resolve:write_provider_setting",
     ),
@@ -35,7 +38,9 @@ SETTINGS: tuple[Setting, ...] = (
         "model",
         "str",
         None,
-        "The model id to use with the provider. Unset uses the provider's default.",
+        "The model id to use with the provider.",
+        default_note="Unset: the saved global choice (provider_config.json), then "
+        "REPOWISE_MODEL, then the provider's default model.",
         env=Env("REPOWISE_MODEL"),
     ),
     _s(
@@ -53,6 +58,7 @@ SETTINGS: tuple[Setting, ...] = (
         "int",
         16384,
         "Most output tokens for one generated page.",
+        parser="repowise.core.settings.parsers:quoted_int",
         minimum=0,
         exclusive_minimum=True,
         on_invalid="error",
@@ -102,6 +108,7 @@ SETTINGS: tuple[Setting, ...] = (
         None,
         "Most per-file pages to write; 0 means every file. Unset lets the repo size decide.",
         minimum=0,
+        parser="repowise.core.settings.parsers:int_like",
     ),
     _s(
         "folder_coverage",
@@ -119,10 +126,13 @@ SETTINGS: tuple[Setting, ...] = (
     _s(
         "embedder",
         "str",
-        "mock",
-        "Which embedding service powers semantic search. mock means none.",
-        choices=EMBEDDERS,
+        None,
+        "Which embedding service powers semantic search: openai, gemini, ollama, "
+        "openrouter, edenai, a plugin's, or mock for none.",
+        default_note="Unset: the first embedder whose API key is present, then the "
+        "embedder in ~/.repowise/config.yaml, then mock.",
         env=Env("REPOWISE_EMBEDDER", wins=True),
+        parser="repowise.core.settings.parsers:folded",
         reload="reindex",
     ),
     _s(
@@ -133,13 +143,13 @@ SETTINGS: tuple[Setting, ...] = (
         env=Env("REPOWISE_EMBEDDING_MODEL", wins=True),
         reload="reindex",
     ),
-    _s(
+    _e(
         "REPOWISE_DOC_MODEL",
         "str",
         None,
         "A different model just for get_answer write-ups.",
     ),
-    _s(
+    _e(
         "REPOWISE_EMBEDDING_DIMS",
         "int",
         None,
@@ -148,7 +158,7 @@ SETTINGS: tuple[Setting, ...] = (
         exclusive_minimum=True,
         reload="reindex",
     ),
-    _s(
+    _e(
         "REPOWISE_EMBEDDING_DECLARED_DIMS",
         "int",
         None,
@@ -158,7 +168,7 @@ SETTINGS: tuple[Setting, ...] = (
         exclusive_minimum=True,
         reload="reindex",
     ),
-    _s(
+    _e(
         "REPOWISE_EMBEDDING_TIMEOUT",
         "float",
         None,
@@ -166,21 +176,21 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
     ),
-    _s(
+    _e(
         "REPOWISE_EMBED_DOC_PREFIX",
         "str",
         "",
         'Text put before each document before embedding (e.g. "passage: ").',
         reload="reindex",
     ),
-    _s(
+    _e(
         "REPOWISE_EMBED_QUERY_PREFIX",
         "str",
         "",
         'Text put before each search query before embedding (e.g. "query: ").',
         reload="reindex",
     ),
-    _s(
+    _e(
         "REPOWISE_NO_COST_TRACKING",
         "bool",
         False,

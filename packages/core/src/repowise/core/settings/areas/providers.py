@@ -12,6 +12,7 @@ from repowise.core.settings.model import Setting
 
 AREA = "providers"
 _s = factory(AREA)
+_e = factory(AREA, scope="env")
 
 #: ``name for name, spec in PROVIDER_SPECS.items() if spec.base_url_envs``.
 BASE_URL_PROVIDERS: tuple[str, ...] = (
@@ -38,12 +39,13 @@ SETTINGS: tuple[Setting, ...] = (
         for name in BASE_URL_PROVIDERS
     ),
     *(
-        _s(
+        _e(
             f"REPOWISE_{cli}_CONCURRENCY",
             "int",
             4,
             f"How many {label} calls run at once.",
             minimum=1,
+            out_of_range="clamp",
         )
         for cli, label in (
             ("CLAUDE_CLI", "Claude Code CLI"),
@@ -52,7 +54,7 @@ SETTINGS: tuple[Setting, ...] = (
             ("OPENCODE", "OpenCode CLI"),
         )
     ),
-    _s(
+    _e(
         "REPOWISE_OLLAMA_NUM_CTX",
         "int",
         None,
@@ -60,13 +62,13 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
         exclusive_minimum=True,
     ),
-    _s(
+    _e(
         "REPOWISE_CONFIG_DIR",
         "str",
         "~/.repowise",
         "Folder holding the saved global provider choice (provider_config.json).",
     ),
-    _s(
+    _e(
         "REPOWISE_PRICING_WARM",
         "bool",
         True,
