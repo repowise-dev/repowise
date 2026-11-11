@@ -588,7 +588,9 @@ def _no_body_field(node: Node) -> object:
 _JAVA = LanguageNodeMap(
     bodyless=_no_body_field,
     ctor_kinds=frozenset({"constructor_declaration"}),
-    fixed_signature_markers=frozenset({"Override"}),
+    # Dagger ``@Provides`` and Spring ``@Bean``: the container calls the
+    # method and fills every parameter.
+    fixed_signature_markers=frozenset({"Override", "Provides", "Bean"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
@@ -802,7 +804,10 @@ _KOTLIN = LanguageNodeMap(
     # ``abstract fun``, an interface ``fun`` and ``external fun`` have no ``function_body``.
     bodyless=lambda node: not any(c.type == "function_body" for c in node.children),
     ctor_kinds=frozenset({"secondary_constructor"}),
-    fixed_signature_markers=frozenset({"override"}),
+    # ``@Provides`` / ``@Bean``: the container fills the parameters.
+    # ``@Composable``: Compose takes UI state as flat parameters by design.
+    # ``@Test``: the runner calls it.
+    fixed_signature_markers=frozenset({"override", "Provides", "Bean", "Composable", "Test"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset(
         {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
