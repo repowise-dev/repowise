@@ -24,7 +24,7 @@ from ..health.biomarker_labels import biomarker_label
 from ..health.crap import measured_crap
 from ..health.finding_identity import finding_public_id
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
-from ..health.scoring import ADVISORY_DIMENSION, is_advisory
+from ..health.scoring import ADVISORY_DIMENSION, finding_is_advisory
 from .analyzer import (
     AnalysisCaches,
     RevisionAnalysis,
@@ -737,7 +737,7 @@ def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
     measured coverage), not a test's performance finding, and one the registry serves."""
     return (
         (
-            not is_advisory(finding.biomarker_type)
+            not finding_is_advisory(finding)
             or measured_crap(finding.biomarker_type, finding.details) is not None
         )
         and not _is_test_perf(finding)
