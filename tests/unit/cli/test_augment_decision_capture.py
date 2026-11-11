@@ -589,3 +589,182 @@ def test_the_hook_entry_is_not_installed_without_a_settings_file(
 
     assert claude_config.set_claude_code_capture_hook(True) is None
     assert claude_config.claude_code_capture_hook_installed() is False
+
+
+
+# --- the upkeep prompt --------------------------------------------------------
+
+
+def _governed_store(root: Path, decisions: list[tuple[str, str, str]]) -> None:
+    """A store with in-force decisions ``(id, title, governed path)``.
+
+    Only the columns the hook reads, so the raw SQL is what is under test.
+    """
+    db = root / ".repowise" / "wiki.db"
+    db.unlink(missing_ok=True)
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE decision_records (id TEXT PRIMARY KEY, title TEXT, decision TEXT, "
+        "rationale TEXT, status TEXT, confidence REAL, staleness_score REAL, "
+        "evidence_commits_json TEXT);"
+        "CREATE TABLE decision_node_links (decision_id TEXT, node_id TEXT, link_type TEXT);"
+        "CREATE TABLE decision_acceptances (decision_id TEXT);"
+    )
+    for decision_id, title, path in decisions:
+        conn.execute(
+            "INSERT INTO decision_records VALUES (?, ?, 'd', 'r', 'active', 0.9, 0, '[]')",
+            (decision_id, title),
+        )
+        conn.execute("INSERT INTO decision_node_links VALUES (?, ?, 'file')", (decision_id, path))
+        conn.execute("INSERT INTO decision_acceptances VALUES (?)", (decision_id,))
+    conn.commit()
+    conn.close()
+
+
+def _fake_commit(monkeypatch, root: Path, sha: str, files: list[str]) -> None:
+    """``rev-parse``, ``log`` and ``diff-tree`` for a fresh commit of *files*."""
+    stamp = int(time.time() - 1)
+
+    def _run(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{root}\n", stderr="")
+        if "diff-tree" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="\n".join(files), stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=f"{sha}\n{stamp}\nfix typo", stderr="")
+
+    monkeypatch.setattr(decision_capture.subprocess, "run", _run)
+
+
+_D1 = ("1a2b3c4d" + "0" * 24, "Use JWT auth", "src/auth.py")
+_D2 = ("5e6f7a8b" + "0" * 24, "Price local models at zero", "src/cost.py")
+
+
+@pytest.fixture
+def upkeep_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = tmp_path / "repo"
+    (root / ".repowise").mkdir(parents=True)
+    (root / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  capture_prompt: false\n  upkeep_prompt: true\n", encoding="utf-8"
+    )
+    _governed_store(root, [_D1, _D2])
+    _fake_commit(monkeypatch, root, _SHA, ["src/auth.py", "README.md"])
+    return root
+
+
+def _ledger(root: Path) -> list[tuple]:
+    db = root / ".repowise" / "sessions" / "sessions.db"
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(
+            "SELECT session_id, surface, category, node_id, chars FROM injections"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_upkeep_names_the_governing_decision_and_the_three_commands(upkeep_repo: Path) -> None:
+    notice = _fire(upkeep_repo)
+
+    assert notice is not None and "\n" not in notice
+    assert notice.startswith(f"[repowise] Commit {_SHA[:8]} changes code governed by decision: ")
+    assert '1a2b3c4d "Use JWT auth"' in notice
+    assert "Price local models" not in notice
+    for command in (
+        "repowise decision reaffirm <id>",
+        "repowise decision deprecate <id> --superseded-by <new id>",
+        "repowise decision deprecate <id> --reason '<why>'",
+    ):
+        assert command in notice
+
+
+def test_upkeep_logs_each_firing_for_the_gate(upkeep_repo: Path) -> None:
+    notice = _fire(upkeep_repo, session="sess-1")
+
+    assert _ledger(upkeep_repo) == [("sess-1", "upkeep", "commit_notice", _SHA, len(notice))]
+
+
+def test_upkeep_is_off_by_default(upkeep_repo: Path) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  capture_prompt: false\n", encoding="utf-8"
+    )
+
+    assert _fire(upkeep_repo) is None
+    assert _ledger(upkeep_repo) == []
+
+
+def test_upkeep_says_nothing_for_ungoverned_code(upkeep_repo: Path, monkeypatch) -> None:
+    _fake_commit(monkeypatch, upkeep_repo, _SHA, ["README.md"])
+
+    assert _fire(upkeep_repo) is None
+
+
+def test_upkeep_names_each_decision_once_a_session(upkeep_repo: Path, monkeypatch) -> None:
+    assert _fire(upkeep_repo) is not None
+    second = "f" * 40
+    _fake_commit(monkeypatch, upkeep_repo, second, ["src/auth.py"])
+    assert _fire(upkeep_repo) is None
+    # A commit reaching a decision not named yet is the session's second firing.
+    _fake_commit(monkeypatch, upkeep_repo, second, ["src/auth.py", "src/cost.py"])
+    notice = _fire(upkeep_repo)
+    assert notice is not None and '5e6f7a8b "Price local models at zero"' in notice
+    assert "1a2b3c4d" not in notice
+    assert len(_ledger(upkeep_repo)) == 2
+
+
+def test_upkeep_names_at_most_three(upkeep_repo: Path, monkeypatch) -> None:
+    many = [(f"{i:08x}" + "0" * 24, f"Rule {i}", f"src/m{i}.py") for i in range(5)]
+    _governed_store(upkeep_repo, many)
+    _fake_commit(monkeypatch, upkeep_repo, _SHA, [path for _, _, path in many])
+
+    notice = _fire(upkeep_repo)
+
+    assert notice is not None and "3 decisions: " in notice
+    assert notice.count(' "Rule ') == 3
+
+
+def test_upkeep_rides_beside_the_capture_prompt(upkeep_repo: Path, monkeypatch) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  upkeep_prompt: true\n", encoding="utf-8"
+    )
+    stamp = int(time.time() - 1)
+
+    def _run(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{upkeep_repo}\n", stderr="")
+        if "diff-tree" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="src/auth.py", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=f"{_SHA}\n{stamp}\n{_MESSAGE}", stderr="")
+
+    monkeypatch.setattr(decision_capture.subprocess, "run", _run)
+
+    notice = _fire(upkeep_repo)
+
+    lines = notice.splitlines()
+    assert lines[0].startswith("[repowise] Commit") and "states a choice" in lines[0]
+    assert lines[-1].startswith(f"[repowise] Commit {_SHA[:8]} changes code governed by")
+
+
+def test_the_upkeep_line_is_what_the_classifier_reads(upkeep_repo: Path) -> None:
+    """The hook's wording and the transcript judge are one contract."""
+    from repowise.core.sessions.efficacy import classify, parse_emission
+
+    notice = _fire(upkeep_repo)
+    (firing,) = parse_emission(notice)
+
+    assert (firing.surface, firing.category) == ("upkeep", "commit_notice")
+    assert firing.targets == ["1a2b3c4d"]
+    settled = classify(
+        firing, [("Bash", json.dumps({"command": "repowise decision reaffirm 1a2b3c4d --agent x"}))]
+    )
+    assert settled.acted is True and settled.evidence == "reaffirm"
+
+
+def test_the_capture_prompt_asks_for_one_short_command(repo: Path) -> None:
+    notice = _fire(repo)
+
+    command = next(ln.strip() for ln in notice.splitlines() if "decision add" in ln)
+    assert "--title" not in command and "--format" not in command
+    for flag in ("--agent", "--decision", "--rationale", "--affects", "--evidence-commit"):
+        assert flag in command

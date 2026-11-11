@@ -354,6 +354,7 @@ _SPARSE_SWITCHES: tuple[tuple[str, bool], ...] = (
     ("capture_prompt", True),
     ("require_approval", False),
     ("session_start", False),
+    ("upkeep_prompt", False),
 )
 
 
@@ -391,6 +392,11 @@ class DecisionPolicy:
     #: not it touched governed code, and an edit to governed code names its
     #: decision at that moment anyway.
     session_start: bool = False
+    #: Whether the commit hook names the decisions in force over the files a
+    #: commit changed and asks the agent to settle each one. Off by default:
+    #: it asks something of the agent, and stays off until its firings show
+    #: agents act on it.
+    upkeep_prompt: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -567,6 +573,7 @@ class DecisionPolicy:
             "require_approval": self.require_approval,
             "update_mining": self.update_mining,
             "session_start": self.session_start,
+            "upkeep_prompt": self.upkeep_prompt,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -615,6 +622,9 @@ class DecisionPolicy:
 
     def with_session_start(self, value: bool) -> DecisionPolicy:
         return replace(self, session_start=value)
+
+    def with_upkeep_prompt(self, value: bool) -> DecisionPolicy:
+        return replace(self, upkeep_prompt=value)
 
     @property
     def agent_grants(self) -> bool:
@@ -704,6 +714,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "require_approval",
         "update_mining",
         "session_start",
+        "upkeep_prompt",
     }
 )
 
@@ -908,6 +919,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     require_approval = _default_off_switch(raw, "require_approval", warnings)
     update_mining = _resolve_update_mining(raw, warnings)
     session_start = _default_off_switch(raw, "session_start", warnings, unreadable=False)
+    upkeep_prompt = _default_off_switch(raw, "upkeep_prompt", warnings, unreadable=False)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -924,6 +936,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             require_approval=require_approval,
             update_mining=update_mining,
             session_start=session_start,
+            upkeep_prompt=upkeep_prompt,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

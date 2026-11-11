@@ -86,6 +86,14 @@ def _emit_session_start(policy: DecisionPolicy) -> None:
         )
 
 
+def _emit_upkeep_prompt(policy: DecisionPolicy) -> None:
+    if policy.upkeep_prompt:
+        console.print(
+            "  [dim]Upkeep prompt: on. A commit that changes governed code names up to "
+            "three of its decisions and asks the agent to settle each.[/dim]"
+        )
+
+
 def _emit(repo_path: Path, resolution, fmt: str) -> None:
     """Render a resolved policy, plus any warnings, in the requested format."""
     policy = resolution.policy
@@ -153,6 +161,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         )
     _emit_update_mining(policy)
     _emit_session_start(policy)
+    _emit_upkeep_prompt(policy)
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
@@ -266,6 +275,7 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             "capture_prompt",
             "update_mining",
             "session_start",
+            "upkeep_prompt",
         ),
     )
     if before.harnesses != after.harnesses:
@@ -327,6 +337,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             require_approval=current.require_approval,
             update_mining=current.update_mining,
             session_start=current.session_start,
+            upkeep_prompt=current.upkeep_prompt,
         ),
         fmt,
         dry_run,
@@ -468,6 +479,35 @@ def config_session_start(path: str | None, enabled: bool | None, dry_run: bool, 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_session_start(bool(enabled)), fmt, dry_run)
+
+
+@config_group.command("upkeep-prompt")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Ask the agent to settle them."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_upkeep_prompt(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """After a commit that changes governed code, ask the agent to settle each decision.
+
+    Off by default. On, the commit hook names up to three decisions in force
+    over the files the commit changed, once per decision a session, with the
+    one command for each outcome: it still holds (`decision reaffirm`), this
+    change replaced it, or this change knowingly breaks it (`decision
+    deprecate`). Every firing is logged so `repowise hook stats` can show
+    whether agents act on it.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_upkeep_prompt(bool(enabled)), fmt, dry_run)
+    if enabled and not dry_run:
+        # Fired from the same per-install shell entry as the capture prompt.
+        from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
+
+        set_claude_code_capture_hook(True)
 
 
 @config_group.command("capture-prompt")
