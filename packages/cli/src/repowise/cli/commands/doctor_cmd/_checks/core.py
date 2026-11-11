@@ -249,8 +249,7 @@ def _index_freshness_row(repo_path: _DoctorPath, state: dict) -> DoctorCheck | N
     rows already cover those.
     """
     from repowise.core.git_head import read_head_commit
-    from repowise.core.git_refs import commit_exists
-    from repowise.core.index_freshness import commit_state
+    from repowise.core.index_freshness import commit_state, indexed_commit_missing
 
     name, check_id = "Index freshness", "index-freshness"
     indexed = state.get("last_sync_commit")
@@ -259,7 +258,7 @@ def _index_freshness_row(repo_path: _DoctorPath, state: dict) -> DoctorCheck | N
         return None
     if commit_state(indexed, live) == "up_to_date":
         return _check(name, True, f"indexed at HEAD ({live[:8]})", check_id=check_id)
-    if commit_exists(str(repo_path), indexed) is False:
+    if indexed_commit_missing(repo_path, indexed, live):
         return _check(
             name,
             True,

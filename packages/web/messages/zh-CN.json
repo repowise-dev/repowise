@@ -2873,6 +2873,7 @@
         "detailUpToDate": "已在 {commit} 索引 {files} 个文件。",
         "detailIncomplete": "此仓库还没有完整的索引。",
         "detailBehind": "索引位于 {indexed}，HEAD 已前进到 {live}。",
+        "detailMissing": "索引位于 {indexed}，该提交已不在当前历史中（已变基或重置），请用 --since 指定索引覆盖的提交。",
         "detailSkipped": "有 {count} 个文件无法解析，因此图中缺少它们的符号。"
       },
       "agent": {

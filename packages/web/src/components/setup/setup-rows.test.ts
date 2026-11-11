@@ -73,6 +73,17 @@ describe("deriveSetup", () => {
     expect(view.doneCount).toBe(1);
   });
 
+  it("offers --since when the indexed commit is no longer in the history", () => {
+    const s = setupFixture();
+    const index = { ...s.index, state: "behind" as const, live_head: "9999999aaa", indexed_commit_missing: true };
+    const row = deriveSetup({ ...s, index }, OPTS).attention[0]!;
+    expect(row.id).toBe("index-behind");
+    expect(row.command).toBe("repowise update --since <ref>");
+    expect(row.detail).toEqual({ key: "index.detailMissing", values: { indexed: "abcdef1" } });
+    expect(row.prompt!.command).toBe("repowise update --since <ref>");
+    expect(row.prompt!.state).toContain("abcdef1, which is no longer in this repository's history");
+  });
+
   it("shows an index behind HEAD once when doctor reports it too", () => {
     const s = setupFixture();
     const view = deriveSetup(

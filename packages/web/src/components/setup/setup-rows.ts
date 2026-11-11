@@ -69,7 +69,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Doctor rows another Setup row already shows. `index-freshness` is the index
  * row's own comparison, which the page reads from the database on every load
- * rather than from the cached doctor run.
+ * rather than from the cached doctor run; it carries the same missing-commit
+ * check, so a rebased-away index still gets the `--since` command here.
  */
 const CHECKS_SHOWN_AS_ROWS = new Set(["post-commit-hook", "index-freshness"]);
 
@@ -87,7 +88,35 @@ const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?
 
 // -- index -------------------------------------------------------------------
 
+/**
+ * The indexed commit was rebased or reset away: plain `update` has no base to
+ * diff from and refuses, so name a commit the index covers with `--since`, as
+ * doctor's `index-freshness` row does.
+ */
+function indexMissingRow(s: SetupResponse, o: DeriveOptions): SetupRow {
+  const indexed = shortSha(s.index.indexed_commit);
+  const command = "repowise update --since <ref>";
+  return {
+    id: "index-behind",
+    tone: "attention",
+    status: msg("index.statusBehind"),
+    title: msg("index.title"),
+    detail: msg("index.detailMissing", { indexed }),
+    action: { kind: "prompt" },
+    command,
+    prompt: {
+      repoName: o.repoName,
+      title: "Index is behind",
+      state: `The index is at commit ${indexed}, which is no longer in this repository's history (a rebase or reset), so a plain update has no base to diff from. Pick the newest commit the index still covers and pass it with --since.`,
+      command,
+      verify: "status",
+      fix: true,
+    },
+  };
+}
+
 function indexBehindRow(s: SetupResponse, o: DeriveOptions): SetupRow {
+  if (s.index.indexed_commit_missing) return indexMissingRow(s, o);
   const values = { indexed: shortSha(s.index.indexed_commit), live: shortSha(s.index.live_head) };
   return {
     id: "index-behind",

@@ -427,6 +427,53 @@ async def test_setup_flags_sections_it_could_not_read(
     assert body["agents_available"] is True and body["checks_available"] is True
 
 
+async def _index_at(app, repo: dict, last_sync: str | None) -> dict:
+    """The index section for a real two-commit repo whose state.json names *last_sync*."""
+    import subprocess
+
+    from repowise.core.persistence.crud import batch_upsert_graph_nodes
+
+    root = Path(repo["local_path"])
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    for n in range(2):
+        (root / "f.txt").write_text(str(n))
+        subprocess.run(["git", "add", "f.txt"], cwd=root, check=True)
+        subprocess.run(["git", *ident, "commit", "-q", "-m", f"c{n}"], cwd=root, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (root / ".repowise").mkdir(exist_ok=True)
+    state = {"last_sync_commit": last_sync or first}
+    (root / ".repowise" / "state.json").write_text(json.dumps(state))
+    async with app.state.session_factory() as session:
+        await batch_upsert_graph_nodes(
+            session, repo["id"], [{"node_id": "f.txt", "node_type": "file", "language": "text"}]
+        )
+        await session.commit()
+    return state
+
+
+@pytest.mark.anyio
+async def test_an_index_behind_head_is_not_reported_missing(
+    app, local: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    await _index_at(app, repo, None)
+    index = (await local.get(f"/api/repos/{repo['id']}/setup")).json()["index"]
+    assert (index["state"], index["indexed_commit_missing"]) == ("behind", False)
+
+
+@pytest.mark.anyio
+async def test_an_indexed_commit_gone_from_history_is_reported_missing(
+    app, local: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    # A rebase leaves state.json naming a commit the history no longer has (#5238):
+    # the page must say so, since plain `repowise update` now refuses it.
+    await _index_at(app, repo, "1234567812345678123456781234567812345678")
+    index = (await local.get(f"/api/repos/{repo['id']}/setup")).json()["index"]
+    assert (index["state"], index["indexed_commit_missing"]) == ("behind", True)
+
+
 # -- writes ----------------------------------------------------------------------
 
 

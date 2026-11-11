@@ -144,3 +144,15 @@ def test_status_shows_a_stuck_update(repo: Path, monkeypatch) -> None:
 def test_status_says_nothing_of_a_free_lock(repo: Path, monkeypatch) -> None:
     assert "Update lock" not in _status(repo, monkeypatch, "table")
     assert json.loads(_status(repo, monkeypatch, "json"))["stuck_update_lock"] is None
+
+
+def test_indexed_commit_missing_asks_git_only_when_head_moved(repo: Path) -> None:
+    from repowise.core.index_freshness import indexed_commit_missing
+
+    head = _git(repo, "rev-parse", "HEAD")
+    assert indexed_commit_missing(repo, head, head) is False
+    assert indexed_commit_missing(repo, _git(repo, "rev-parse", "HEAD~2"), head) is False
+    assert indexed_commit_missing(repo, "12345678", head) is True
+    # No HEAD or no indexed commit to compare: git is not asked.
+    assert indexed_commit_missing(repo, "12345678", None) is False
+    assert indexed_commit_missing(repo, None, head) is False
