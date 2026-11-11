@@ -572,8 +572,20 @@ def _find_repo_root(cwd: str) -> str | None:
         # artifact (a tool that indexed with cwd=$TMP), never an opt-in, and
         # it would otherwise capture every temp-dir cwd on the machine.
         # Repos legitimately created UNDER either directory still match.
-        if current not in (home, temp_root) and os.path.isdir(os.path.join(current, ".repowise")):
-            return current
+        if current not in (home, temp_root):
+            if os.path.isdir(os.path.join(current, ".repowise")):
+                return current
+            # A linked worktree with no index of its own takes its main
+            # checkout's opt-in, config and ledger. Distilling does not read
+            # the index, so nothing here describes the wrong tree.
+            if os.path.isfile(os.path.join(current, ".git")):
+                from pathlib import Path
+
+                from repowise.cli._helpers.paths import borrowed_index_base
+
+                base = borrowed_index_base(Path(current))
+                if base is not None:
+                    return str(base)
         parent = os.path.dirname(current)
         if parent == current:
             break

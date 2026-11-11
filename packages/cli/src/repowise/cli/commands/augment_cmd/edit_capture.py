@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._shared import _find_repo_root
+from ._shared import _borrowed_index, _find_repo_root
 
 
 def _payload_cwd(payload: dict) -> str:
@@ -39,7 +39,9 @@ def capture_edit(hook_adapter: str, payload: dict) -> int:
             return 0
         cwd = _payload_cwd(payload)
         repo_root = _find_repo_root(Path(cwd)) if cwd else None
-        if repo_root is None:
+        # A worktree reading its main checkout's index writes no events there;
+        # its edits are recovered from transcripts (see edit_capture.backfill).
+        if repo_root is None or _borrowed_index(Path(cwd), repo_root):
             return 0
         from repowise.core.edit_capture.store import capture_level, record_call
 

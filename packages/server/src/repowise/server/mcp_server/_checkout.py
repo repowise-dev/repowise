@@ -42,10 +42,22 @@ class _Slot:
 # resolution made in a nested task still reaches the envelope.
 _SLOT: ContextVar[_Slot | None] = ContextVar("_repowise_caller_checkout", default=None)
 
+# A server started in a worktree that reads its main checkout's index: every
+# call is made on the worktree's behalf unless it names another checkout.
+_server_caller: CallerCheckout | None = None
+
+
+def serve_worktree(worktree: Path, served: Path) -> None:
+    """Answer calls for *worktree* from *served*'s index (see ``repowise mcp``)."""
+    global _server_caller
+    _server_caller = CallerCheckout(worktree, served)
+
 
 def open_call() -> Any:
-    """Start a call with no caller checkout; returns the token to reset."""
-    return _SLOT.set(_Slot())
+    """Start a call as the server's own caller; returns the token to reset."""
+    slot = _Slot()
+    slot.value = _server_caller
+    return _SLOT.set(slot)
 
 
 def close_call(token: Any) -> None:
@@ -64,8 +76,14 @@ def _note(value: CallerCheckout | None) -> None:
 
 
 def note_match(match: CheckoutMatch | None, indexed: Path) -> bool:
-    """Record a resolved ``repo`` path; True when its own index should answer."""
-    if match is None or match.same_checkout:
+    """Record a resolved ``repo`` path; True when its own index should answer.
+
+    No match (the call named the repo, not a path) keeps the server's caller.
+    """
+    if match is None:
+        _note(_server_caller)
+        return False
+    if match.same_checkout:
         _note(None)
         return False
     from repowise.core.workspace.registry import repo_db_path  # keeps import light
