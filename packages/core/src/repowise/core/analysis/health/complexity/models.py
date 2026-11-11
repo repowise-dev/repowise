@@ -60,6 +60,9 @@ class FunctionComplexity:
     # Of ``param_count``, the ones every call site must pass by name (Python
     # parameters after ``*`` or ``*args``, Dart ``{named}`` parameters).
     keyword_only_param_count: int = 0
+    # Of ``param_count``, Kotlin and Scala ones with a default value, which
+    # call sites leave out or pass by name.
+    defaulted_param_count: int = 0
     # A constructor, by node kind, conventional name, or its type's name.
     is_constructor: bool = False
     # The parameter list is set by another declaration (an override, an
@@ -133,6 +136,8 @@ class FunctionComplexity:
     # return;``) past the first of each run. The complexity markers count a
     # run once. ``complexity/dispatch.py``.
     exit_guards: int = 0
+    # The same for guarded copies (``if (m.containsKey(k)) o.f = m.get(k);``).
+    copy_guards: int = 0
     # Calls on the terminal (print, prompt, console, stdout) over all calls in
     # the body, nested bodies included, to two decimals. ``complexity/terminal.py``.
     terminal_share: float = 0.0

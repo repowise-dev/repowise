@@ -6,8 +6,9 @@ names, C#'s public-API rule) lives on ``LanguageNodeMap``; this module only
 reads the tree with it.
 
 - **constructor**: a constructor node or conventional constructor name of the
-  language, or a function named like its enclosing type, which is how C++ and
-  Java spell one (``Foo::Foo`` out of line).
+  language (Ruby ``initialize``, PHP ``__construct``, Go ``NewServer``, Rust
+  ``new`` and ``from_parts``), or a function named like its enclosing type,
+  which is how C++ and Java spell one (``Foo::Foo`` out of line).
 - **signature fixed elsewhere**: the parameter list is set by something other
   than this declaration, so "group these parameters" is advice nobody can take
   here. Read from the declaration's modifier, annotation, attribute and
@@ -24,6 +25,8 @@ reads the tree with it.
   and Dart ``{named}`` parameters. Every call site names them, so they carry
   no argument-order hazard. Python's ``*args`` / ``**kwargs`` are no
   parameters at all: they collect what is left over.
+- **defaulted parameters**: Kotlin and Scala parameters with a default value,
+  which a call site leaves out or names.
 """
 
 from __future__ import annotations
@@ -33,10 +36,12 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 from .ast_utils import (
+    _count_parameters,
     _dart_signature_sibling,
     _inner_declarator,
     _parameter_nodes,
     is_rest_parameter,
+    param_arity,
 )
 
 if TYPE_CHECKING:
@@ -153,6 +158,8 @@ def _enclosing_type_name(fn_node: Node) -> str | None:
 def is_constructor(fn_node: Node, name: str, lmap: LanguageNodeMap) -> bool:
     if fn_node.type in lmap.ctor_kinds or name in lmap.ctor_names:
         return True
+    if lmap.ctor_name_pattern is not None and lmap.ctor_name_pattern.fullmatch(name):
+        return True
     # Dart: the kind is on the signature beside the body (``A.named`` is one).
     sig = _dart_signature_sibling(fn_node) if fn_node.type == "function_body" else None
     if sig is not None and sig.type in lmap.ctor_kinds:
@@ -211,6 +218,7 @@ def is_signature_fixed(fn_node: Node, lmap: LanguageNodeMap) -> bool:
         or _is_public_api(fn_node, lmap)
         or _in_fixed_abi(fn_node, lmap)
         or _overrides_local_base(fn_node, lmap)
+        or _implements_local_supertype(fn_node, lmap)
     )
 
 
@@ -358,6 +366,90 @@ def _overrides_local_base(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     return any(_defines(base, name, lmap) for base in _local_bases(cls, module))
 
 
+# A Swift protocol is no ``class_kinds`` node, and its requirements, like a
+# Scala abstract ``def``, are no ``function_kinds`` node: neither has a body.
+_PROTOCOL_KINDS = frozenset({"protocol_declaration"})
+_REQUIREMENT_KINDS = frozenset({"function_declaration", "protocol_function_declaration"})
+
+
+def _implements_local_supertype(fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """A method that a supertype declared in the same file declares too: a PHP
+    interface or base class, a Scala trait or abstract class, a Swift
+    protocol. These languages implement a requirement with no ``override``
+    keyword. One file is parsed at a time, so a supertype declared in another
+    file is not followed."""
+    cls = _class_of_method(fn_node, lmap) if lmap.supertype_clause_kinds else None
+    name = _field_text(fn_node, "name")
+    if cls is None or name is None:
+        return False
+    arity = _count_parameters(fn_node)
+    return any(_declares(t, name, arity, lmap) for t in _local_supertypes(cls, lmap))
+
+
+def _local_supertypes(cls: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """Every type in *cls*'s file that *cls* extends or conforms to, directly
+    or through another such type."""
+    types = _file_types(cls, lmap)
+    own = types.get(_simple_type_name(_field_text(cls, "name") or ""), [])
+    # Swift: an extension adds conformances to its type (one node kind for
+    # both), and a protocol extension implements its own protocol.
+    found = [t for t in own if t.type in _PROTOCOL_KINDS]
+    pending = [t for t in own if t.type == cls.type] + found
+    seen = {t.id for t in pending}
+    while pending:
+        bases = (d for name in _supertype_names(pending.pop(), lmap) for d in types.get(name, ()))
+        for decl in bases:
+            if decl.id not in seen:
+                seen.add(decl.id)
+                found.append(decl)
+                pending.append(decl)
+    return found
+
+
+def _file_types(node: Node, lmap: LanguageNodeMap) -> dict[str, list[Node]]:
+    """Type declarations of *node*'s file by simple name, function bodies
+    left unread. Scopes are not resolved: two nested types sharing a simple
+    name read as one, which can only leave a finding out. Walked once per
+    method; a per-file memo is the upgrade if large files make it show."""
+    root = node
+    while root.parent is not None:
+        root = root.parent
+    kinds = lmap.class_kinds | _PROTOCOL_KINDS
+    types: dict[str, list[Node]] = {}
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        if cur.type in kinds and (name := _simple_type_name(_field_text(cur, "name") or "")):
+            types.setdefault(name, []).append(cur)
+        if cur.type not in lmap.function_kinds:
+            stack.extend(cur.named_children)
+    return types
+
+
+def _supertype_names(decl: Node, lmap: LanguageNodeMap) -> Iterator[str]:
+    for clause in decl.children:
+        if clause.type in lmap.supertype_clause_kinds:
+            names = (_simple_type_name(_text(named)) for named in clause.named_children)
+            yield from (name for name in names if name)
+
+
+def _simple_type_name(text: str) -> str:
+    """``\\Foo\\Bar`` / ``a.b.Bar[T]`` / ``Bar(x)`` -> ``Bar``."""
+    head = re.split(r"[\[<(]", text, maxsplit=1)[0]
+    return re.split(r"[.\\]", head.strip())[-1]
+
+
+def _declares(decl: Node, name: str, arity: int, lmap: LanguageNodeMap) -> bool:
+    """*decl* declares a method *name* taking *arity* parameters; an overload
+    with another count is a method of its own."""
+    body = decl.child_by_field_name("body")
+    kinds = lmap.function_kinds | _REQUIREMENT_KINDS
+    return body is not None and any(
+        m.type in kinds and _field_text(m, "name") == name and _count_parameters(m) == arity
+        for m in body.named_children
+    )
+
+
 def _param_type(param: Node) -> Node | None:
     declared = param.child_by_field_name("type")
     if declared is not None:
@@ -378,14 +470,6 @@ def _is_scalar(type_node: Node, scalars: frozenset[str]) -> bool:
         if w not in _TYPE_QUALIFIERS
     ]
     return bool(words) and all(w in scalars for w in words)
-
-
-def _arity(param: Node) -> int:
-    """Names one parameter node declares. Pascal declares ``A, B: Integer`` as
-    one node, and ``_count_parameters`` counts its names."""
-    if param.type != "declArg":
-        return 1
-    return sum(1 for c in param.children if c.type == "identifier")
 
 
 def _indirection(param: Node, type_node: Node) -> str | None:
@@ -432,7 +516,7 @@ def _param_row(param: Node, type_node: Node, lmap: LanguageNodeMap) -> list:
     # one to an object (``client *c``) is that object.
     sized = held in ("text", "buffer") and (raw or _text(type_node) == "void")
     scalar = raw and held in (None, "text")
-    return [_arity(param), sized, scalar, held is None and _is_length(param, type_node)]
+    return [param_arity(param), sized, scalar, held is None and _is_length(param, type_node)]
 
 
 def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int, int]:
@@ -517,10 +601,33 @@ def _dart_named_count(params: Node) -> int:
     return sum(1 for c in group.named_children if c.type == "formal_parameter")
 
 
+def defaulted_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
+    """Kotlin and Scala parameters with a default value. A caller leaves them
+    out or names them, so they carry no argument-order hazard. A
+    framework-bound one is left out: ``bound_param_count`` has it."""
+    if params is None:
+        return 0
+    return sum(
+        1 for p in _parameter_nodes(params) if _has_default(p) and not _is_bound(p, lmap)
+    )
+
+
+def _has_default(param: Node) -> bool:
+    if param.type != "parameter":
+        return False
+    # Kotlin keeps ``= value`` beside the parameter, Scala inside it.
+    sibling = param.next_sibling
+    return param.child_by_field_name("default_value") is not None or (
+        sibling is not None and sibling.type == "=" and param.parent.type == "function_value_parameters"
+    )
+
+
 def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
     """Parameters of *params* a framework binds by annotation."""
     if not lmap.bound_param_markers or params is None:
         return 0
     return sum(
-        _arity(p) for p in params.named_children if p.type not in _NON_PARAMS and _is_bound(p, lmap)
+        param_arity(p)
+        for p in params.named_children
+        if p.type not in _NON_PARAMS and _is_bound(p, lmap)
     )

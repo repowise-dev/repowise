@@ -21,12 +21,14 @@ These narrowings keep the finding to signatures someone can actually fix:
   scalars or strings. A wide list of rich domain types is already the value
   objects this smell asks for. Untyped parameters are left out of that
   majority, and a wholly untyped signature (unannotated Python, Ruby or
-  JavaScript) is judged on the count alone, JavaScript with two more
-  parameters allowed (``_UNTYPED_GRACE``).
+  JavaScript) is judged on the count alone, JavaScript (a Vue or Svelte
+  ``<script>`` included) with two more parameters allowed (``_UNTYPED_GRACE``).
 - A parameter a framework binds by annotation (``@PathVariable``) is the
   route's or the data format's, so only the remaining ones are counted.
 - A keyword-only parameter is left out too: every call site names it, so it
-  carries none of the argument-order hazard a long positional list does.
+  carries none of the argument-order hazard a long positional list does. So
+  is a Kotlin or Scala parameter with a default, which a call site leaves out
+  or names.
 - A Click or Typer command's parameters mirror its CLI options, and a Python
   method overriding a base class in the same file keeps the base's
   parameters; both count as a signature set elsewhere.
@@ -52,7 +54,9 @@ _MIN_FILE_NLOC = 60  # see the module docstring
 # context, a logger). A wholly untyped JavaScript signature is held to two
 # more parameters. Ruby keeps the plain threshold: its wide untyped lists
 # were mostly raw values once rest parameters and constructors are set aside.
-_UNTYPED_GRACE = {"javascript": 2, "jsx": 2}
+# A Vue or Svelte ``<script>`` is JavaScript unless it says ``lang="ts"``, and
+# a wholly untyped signature there is that JavaScript.
+_UNTYPED_GRACE = {"javascript": 2, "jsx": 2, "vue": 2, "svelte": 2}
 
 
 class PrimitiveObsessionDetector:
@@ -83,11 +87,13 @@ class PrimitiveObsessionDetector:
                         "primitive_param_count": primitive,
                         "bound_param_count": fn.bound_param_count,
                         "keyword_only_param_count": fn.keyword_only_param_count,
+                        "defaulted_param_count": fn.defaulted_param_count,
                     },
                     reason=(
                         f"long parameter list: {fn.name} takes {fn.param_count} parameters"
                         + (f", {fn.bound_param_count} bound by the framework" if fn.bound_param_count else "")
                         + (f", {fn.keyword_only_param_count} keyword-only" if fn.keyword_only_param_count else "")
+                        + (f", {fn.defaulted_param_count} with defaults" if fn.defaulted_param_count else "")
                         + (f", {primitive} of {typed} typed ones scalars or strings" if typed else "")
                     ),
                 )
@@ -113,8 +119,11 @@ def _threshold(fn: FunctionComplexity, untyped_grace: int = 0) -> int | None:
 
 
 def _counted(fn: FunctionComplexity) -> int:
-    """Parameters a caller passes by position: framework-bound and keyword-only ones left out."""
-    return fn.param_count - fn.bound_param_count - fn.keyword_only_param_count
+    """Parameters a caller passes by position: framework-bound, keyword-only and
+    defaulted ones left out."""
+    return (
+        fn.param_count - fn.bound_param_count - fn.keyword_only_param_count - fn.defaulted_param_count
+    )
 
 
 def _severity(param_count: int, threshold: int) -> Severity:

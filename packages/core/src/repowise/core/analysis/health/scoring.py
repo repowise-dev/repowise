@@ -585,7 +585,46 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
 # §5.4. Within a listed language the marker behaves exactly like one in
 # ``_ADVISORY_HOME``; findings stored that way carry the ``advisory`` dimension,
 # which is what row-reading surfaces check (:func:`finding_is_advisory`).
-_ADVISORY_BY_LANGUAGE: dict[str, frozenset[str]] = {}
+# Keys are file language tags (``.tsx`` is ``typescript``, ``.jsx`` ``javascript``).
+# Only markers without defect signal are listed; complex_method,
+# nested_complexity and large_method keep their weight in every language.
+_ADVISORY_BY_LANGUAGE: dict[str, frozenset[str]] = {
+    "complex_conditional": frozenset(
+        {
+            "c",
+            "cpp",
+            "csharp",
+            "dart",
+            "fsharp",
+            "go",
+            "java",
+            "javascript",
+            "kotlin",
+            "objectivec",
+            "php",
+            "python",
+            "ruby",
+            "rust",
+            "typescript",
+        }
+    ),
+    "god_class": frozenset({"csharp", "kotlin", "python", "scala", "typescript"}),
+    "primitive_obsession": frozenset(
+        {
+            "c",
+            "cpp",
+            "csharp",
+            "java",
+            "javascript",
+            "php",
+            "python",
+            "rust",
+            "scala",
+            "swift",
+            "typescript",
+        }
+    ),
+}
 
 
 def _advisory_in(name: str, language: str | None) -> bool:

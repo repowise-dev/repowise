@@ -40,6 +40,7 @@ without that mapping count explicit receivers only; (2) flat
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -334,6 +335,8 @@ class LanguageNodeMap:
     # function named like its type, nothing fixes its signatures, and no
     # parameter counts as a scalar, so a typed signature there never fires.
     #   * ``ctor_kinds`` / ``ctor_names`` -- a constructor by node or by name.
+    #     ``ctor_name_pattern`` -- a constructor by naming convention (Go
+    #     ``NewServer``, Rust ``from_parts``), matched against the whole name.
     #   * ``fixed_signature_markers`` -- modifier, annotation, attribute or
     #     decorator words saying the parameter list belongs to another
     #     declaration: an override, a native or generated binding, a
@@ -346,6 +349,10 @@ class LanguageNodeMap:
     #     interface implementation on the member, an enclosing trait impl.
     #   * ``fixed_abi_kinds`` -- an enclosing block whose linkage fixes the
     #     parameter lists inside it (C++ ``extern "C"``).
+    #   * ``supertype_clause_kinds`` -- the clauses of a type declaration
+    #     naming what it extends or implements, for a language that implements
+    #     a requirement with no override keyword. A method a supertype in the
+    #     same file declares too is that supertype's signature.
     #   * ``public_api_modifiers`` / ``public_api_type_kinds`` -- a member
     #     carrying one of these, inside types that all carry one too, is
     #     published API. Only for a language with an assembly-internal level
@@ -355,6 +362,7 @@ class LanguageNodeMap:
     #     word once qualifiers, pointers, nullability and brackets are gone.
     ctor_kinds: frozenset[str] = frozenset()
     ctor_names: frozenset[str] = frozenset()
+    ctor_name_pattern: re.Pattern[str] | None = None
     fixed_signature_markers: frozenset[str] = frozenset()
     bound_param_markers: frozenset[str] = frozenset()
     explicit_impl_kinds: frozenset[str] = frozenset()
@@ -363,6 +371,7 @@ class LanguageNodeMap:
     public_api_modifiers: frozenset[str] = frozenset()
     public_api_type_kinds: frozenset[str] = frozenset()
     scalar_type_names: frozenset[str] = frozenset()
+    supertype_clause_kinds: frozenset[str] = frozenset()
 
     # -- Grammar misreads ----------------------------------------------------
     #   * ``misread_scope`` -- truthy for a ``function_kinds`` node that is
@@ -540,6 +549,7 @@ _TS = LanguageNodeMap(
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
 
 _GO = LanguageNodeMap(
+    ctor_name_pattern=re.compile(r"New(?:[A-Z]\w*)?"),
     scalar_type_names=frozenset(
         {
             "string", "bool", "byte", "rune", "int", "int8", "int16", "int32", "int64",
@@ -599,7 +609,9 @@ def _no_body_field(node: Node) -> object:
 _JAVA = LanguageNodeMap(
     bodyless=_no_body_field,
     ctor_kinds=frozenset({"constructor_declaration"}),
-    fixed_signature_markers=frozenset({"Override"}),
+    # Dagger ``@Provides`` and Spring ``@Bean``: the container calls the
+    # method and fills every parameter.
+    fixed_signature_markers=frozenset({"Override", "Provides", "Bean"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
@@ -733,6 +745,7 @@ _APEX = LanguageNodeMap(
 )
 
 _RUST = LanguageNodeMap(
+    ctor_name_pattern=re.compile(r"new|from_\w+"),
     trait_impl_kinds=frozenset({"impl_item"}),
     scalar_type_names=frozenset(
         {
@@ -814,7 +827,10 @@ _KOTLIN = LanguageNodeMap(
     # ``abstract fun``, an interface ``fun`` and ``external fun`` have no ``function_body``.
     bodyless=lambda node: not any(c.type == "function_body" for c in node.children),
     ctor_kinds=frozenset({"secondary_constructor"}),
-    fixed_signature_markers=frozenset({"override"}),
+    # ``@Provides`` / ``@Bean``: the container fills the parameters.
+    # ``@Composable``: Compose takes UI state as flat parameters by design.
+    # ``@Test``: the runner calls it.
+    fixed_signature_markers=frozenset({"override", "Provides", "Bean", "Composable", "Test"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset(
         {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
@@ -904,6 +920,7 @@ _SWIFT = LanguageNodeMap(
     # ``@objc`` exposes the method to Objective-C selectors and protocols,
     # which own its parameter list.
     fixed_signature_markers=frozenset({"override", "objc"}),
+    supertype_clause_kinds=frozenset({"inheritance_specifier"}),
     scalar_type_names=frozenset(
         {
             "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32",
@@ -1213,6 +1230,7 @@ _SCALA = LanguageNodeMap(
     class_kinds=frozenset(
         {"class_definition", "object_definition", "trait_definition", "enum_definition"}
     ),
+    supertype_clause_kinds=frozenset({"extends_clause"}),
     # Self-type aliases (``self =>``) are skipped: bare and aliased implicit
     # receivers degrade to the LCOM4 "no signal" valve, same documented limit
     # as Kotlin.
@@ -1263,6 +1281,7 @@ _SCALA = LanguageNodeMap(
 
 
 _RUBY = LanguageNodeMap(
+    ctor_names=frozenset({"initialize"}),
     # NB (grammar-wide): tree-sitter-ruby names keyword tokens after their
     # parent node (an ``if`` node contains an unnamed ``if`` token of type
     # ``"if"``); the walkers' ``is_named`` guards keep those tokens from
@@ -1606,6 +1625,7 @@ _OBJC = LanguageNodeMap(
 
 
 _PHP = LanguageNodeMap(
+    ctor_names=frozenset({"__construct"}),
     # ``?string`` and ``int|string`` read as their members. PHP type names
     # are case-insensitive; ``String`` and ``INT`` are the spellings seen.
     scalar_type_names=frozenset(
@@ -1629,6 +1649,7 @@ _PHP = LanguageNodeMap(
     class_kinds=frozenset(
         {"class_declaration", "trait_declaration", "interface_declaration", "enum_declaration"}
     ),
+    supertype_clause_kinds=frozenset({"base_clause", "class_interface_clause"}),
     self_identifiers=frozenset({"$this"}),
     member_access_kinds=frozenset(
         {"member_access_expression", "member_call_expression", "nullsafe_member_access_expression"}
