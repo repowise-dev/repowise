@@ -492,6 +492,7 @@ def _apply_settings_update(policy, body: DecisionSettingsUpdate):
                 agent_acceptance=policy.agent_acceptance,
                 capture_prompt=policy.capture_prompt,
                 require_approval=policy.require_approval,
+                sync=policy.sync,
                 update_mining=policy.update_mining,
             )
     if body.enabled is not None:
