@@ -437,10 +437,9 @@ def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun) -> None:
             ingest_transcript_efficacy,
         )
 
-        if has_unsettled_firings(run.repo_path):
-            classified = ingest_transcript_efficacy(
-                run.repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
-            )
+        since = time.time() - _EFFICACY_LOOKBACK_SECONDS
+        if has_unsettled_firings(run.repo_path, since=since):
+            classified = ingest_transcript_efficacy(run.repo_path, since=since)
             if opts.verbose and classified:
                 console.print(f"Hook firings classified: [green]{sum(classified.values())}[/green]")
     except Exception as exc:

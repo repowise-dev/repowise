@@ -46,9 +46,14 @@ def delivered_decision_ids(result: Any) -> list[str]:
     return list(out)
 
 
-def record_why_delivery(tool: str, live: Any, result: Any) -> None:
-    """Ledger what *result* delivered when *tool* is ``get_why``. Never raises."""
-    if tool != "get_why" or live is None or not live.repo_root:
+def record_why_delivery(tool: str, live: Any, result: Any, call: dict[str, Any]) -> None:
+    """Ledger what *result* delivered when *tool* is ``get_why``. Never raises.
+
+    A cross-repository search (``repo="all"``) is skipped: its rows belong to
+    several repositories and its root is the workspace's, which no repository's
+    count reads.
+    """
+    if tool != "get_why" or live is None or not live.repo_root or call.get("repo") == "all":
         return
     try:
         from repowise.server.mcp_server import _state

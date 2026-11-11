@@ -144,7 +144,19 @@ def test_hook_firings_are_classified_without_the_session_lane(tmp_path, monkeypa
     store = SessionStagingStore.open_default(tmp_path)
     store._conn.execute(
         "INSERT INTO injections (session_id, decision_id, shown_at, surface, category) "
-        "VALUES ('s1', 'k', 1.0, 'upkeep', 'commit_notice')"
+        "VALUES ('old', 'k', 1.0, 'upkeep', 'commit_notice')"
+    )
+    store.commit()
+    # Older than the lookback: its transcript may be gone, so it never re-arms the pass.
+    decision_passes._classify_hook_efficacy(opts, run)
+    assert calls == []
+
+    import time
+
+    store._conn.execute(
+        "INSERT INTO injections (session_id, decision_id, shown_at, surface, category) "
+        "VALUES ('s1', 'k', ?, 'upkeep', 'commit_notice')",
+        (time.time(),),
     )
     store.commit()
     store.close()

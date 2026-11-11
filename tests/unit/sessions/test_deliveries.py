@@ -87,10 +87,10 @@ def test_get_why_rows_never_take_the_edit_notice_slot(tmp_path: Path) -> None:
 
 
 def test_unsettled_firings_gate(tmp_path: Path) -> None:
-    assert not has_unsettled_firings(tmp_path)
+    assert not has_unsettled_firings(tmp_path, since=0.0)
     record_why_deliveries(tmp_path, "s1", [_A])
     # A settled row is nothing to classify.
-    assert not has_unsettled_firings(tmp_path)
+    assert not has_unsettled_firings(tmp_path, since=0.0)
 
     store = SessionStagingStore.open_default(tmp_path)
     try:
@@ -102,4 +102,5 @@ def test_unsettled_firings_gate(tmp_path: Path) -> None:
     finally:
         store.close()
 
-    assert has_unsettled_firings(tmp_path)
+    assert has_unsettled_firings(tmp_path, since=0.0)
+    assert not has_unsettled_firings(tmp_path, since=2.0)

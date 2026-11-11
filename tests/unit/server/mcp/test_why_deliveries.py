@@ -23,7 +23,8 @@ def _reply() -> dict:
     }
 
 
-async def get_why(query: str | None = None) -> dict:  # the name the ledger keys on
+# Named for the tool the ledger keys on.
+async def get_why(query: str | None = None, repo: str | None = None) -> dict:
     return _reply()
 
 
@@ -70,6 +71,10 @@ async def test_other_tools_and_unbound_servers_write_nothing(monkeypatch, tmp_pa
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
     await tool_middleware(get_context)(query="x")
+    assert _why_rows(tmp_path) == []
+
+    # A cross-repository search belongs to no one repository's count.
+    await tool_middleware(get_why)(query="x", repo="all")
     assert _why_rows(tmp_path) == []
 
     monkeypatch.setattr(_state, "_repo_path", None)

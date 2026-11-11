@@ -241,7 +241,7 @@ def tool_middleware(fn: Any) -> Any:
                 with savings_interaction.begin(fn.__name__) as live:
                     result = await inner(*args, **kwargs)
                     savings_event.record(live, result)
-                    record_why_delivery(fn.__name__, live, result)
+                    record_why_delivery(fn.__name__, live, result, kwargs)
                     return result
             finally:
                 _checkout.close_call(token)

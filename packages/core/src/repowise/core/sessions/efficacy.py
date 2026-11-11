@@ -818,10 +818,12 @@ def discover_transcripts(
     )
 
 
-def has_unsettled_firings(repo_path: Path) -> bool:
-    """Whether the ledger holds a firing this module judges and has not yet judged.
+def has_unsettled_firings(repo_path: Path, *, since: float) -> bool:
+    """Whether the ledger holds a firing since *since* this module judges and has not.
 
-    Read-only, so a repository with no ledger pays one stat and creates nothing.
+    Bounded by *since* because a firing whose transcript is gone stays unjudged
+    for good. Read-only, so a repository with no ledger pays one stat and
+    creates nothing.
     """
     import sqlite3
 
@@ -835,8 +837,9 @@ def has_unsettled_firings(repo_path: Path) -> bool:
         conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=1)
         try:
             row = conn.execute(
-                f"SELECT 1 FROM injections WHERE evaluated = 0 AND surface IN ({marks}) LIMIT 1",
-                CLASSIFIED_SURFACES,
+                "SELECT 1 FROM injections WHERE evaluated = 0 AND shown_at >= ? "
+                f"AND surface IN ({marks}) LIMIT 1",
+                (since, *CLASSIFIED_SURFACES),
             ).fetchone()
         finally:
             conn.close()

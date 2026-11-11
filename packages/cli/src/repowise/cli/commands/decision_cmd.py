@@ -878,12 +878,18 @@ def _delivery_json(delivered, decision_id: str) -> dict:
 
 
 async def _deliveries(repo_path: Path, decision_ids: list[str]):
-    """Per-record delivery counts from the hook ledger, or None when it cannot be read."""
+    """Per-record delivery counts from the hook ledger, or None when it cannot be read.
+
+    A display extra: a failure here reads as "not recorded", never as a failed command.
+    """
     from repowise.core.persistence import get_session
     from repowise.core.sessions.deliveries import decision_deliveries
 
-    async with _open_store(repo_path) as sf, get_session(sf) as session:
-        return await decision_deliveries(session, repo_path, decision_ids)
+    try:
+        async with _open_store(repo_path) as sf, get_session(sf) as session:
+            return await decision_deliveries(session, repo_path, decision_ids)
+    except Exception:
+        return None
 
 
 async def _query_decisions(
