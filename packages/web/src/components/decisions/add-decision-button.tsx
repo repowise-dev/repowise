@@ -103,10 +103,27 @@ export function useDecisionAgentPrompt(
   return data;
 }
 
+type RecordPromptKind = "review" | "edit" | "veto" | "pin" | "unpin";
+
+/** The currencies of a decision that has left force. */
+const RETIRED_CURRENCIES: ReadonlySet<string> = new Set(["superseded", "dismissed", "stale"]);
+
 /**
- * One record's agent prompts, rendered by the server for its id: a background
- * record gets the check; a decision in force gets pin or unpin, veto, and
- * change. A retired one gets none.
+ * Which prompts a record gets, in button order: a background record the check;
+ * a decision in force change, veto, and pin or unpin; a retired or dismissed
+ * one none, since it was settled and checking it again would undo that.
+ */
+export function recordPromptKinds(
+  d: Pick<DecisionRecord, "currency" | "pinned" | "status">,
+): RecordPromptKind[] {
+  if (d.currency == null) return d.status === "proposed" ? ["review"] : [];
+  if (RETIRED_CURRENCIES.has(d.currency)) return [];
+  return ["edit", "veto", d.pinned ? "unpin" : "pin"];
+}
+
+/**
+ * One record's agent prompts, rendered by the server for its id. Each kind is
+ * its own fetch, so the buttons appear as their prompts arrive.
  */
 export function DecisionRecordPrompts({
   repoId,
@@ -115,24 +132,29 @@ export function DecisionRecordPrompts({
   repoId: string;
   decision: Pick<DecisionRecord, "id" | "currency" | "pinned" | "status">;
 }) {
+  return (
+    <>
+      {recordPromptKinds(d).map((kind) => (
+        <RecordPrompt key={kind} repoId={repoId} decisionId={d.id} kind={kind} />
+      ))}
+    </>
+  );
+}
+
+function RecordPrompt({
+  repoId,
+  decisionId,
+  kind,
+}: {
+  repoId: string;
+  decisionId: string;
+  kind: RecordPromptKind;
+}) {
   const t = useTranslations("decisions");
-  const retired = d.currency === "superseded" || d.currency === "dismissed" || d.currency === "stale";
-  const inForce = d.currency != null && !retired;
-  // A dismissed or retired record was settled; checking it again would undo that.
-  const background = d.currency == null && d.status === "proposed";
-  const pinKind = d.pinned ? "unpin" : "pin";
-  const review = useDecisionAgentPrompt(repoId, background ? "review" : null, d.id);
-  const pin = useDecisionAgentPrompt(repoId, inForce ? pinKind : null, d.id);
-  const veto = useDecisionAgentPrompt(repoId, inForce ? "veto" : null, d.id);
-  const edit = useDecisionAgentPrompt(repoId, inForce ? "edit" : null, d.id);
+  const prompt = useDecisionAgentPrompt(repoId, kind, decisionId);
   return (
     <DecisionAgentPrompts
-      prompts={[
-        review ? { text: review.text, label: t("agent.review") } : null,
-        edit ? { text: edit.text, label: t("agent.edit") } : null,
-        veto ? { text: veto.text, label: t("agent.veto") } : null,
-        pin ? { text: pin.text, label: t(d.pinned ? "agent.unpin" : "agent.pin") } : null,
-      ]}
+      prompts={[prompt ? { text: prompt.text, label: t(`agent.${kind}`) } : null]}
     />
   );
 }

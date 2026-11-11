@@ -297,41 +297,15 @@ export function DecisionReviewLanes({
       value={lane}
       onValueChange={(id) => onLaneChange(id as DecisionSection)}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 max-w-[68ch] flex-1 space-y-1.5 text-xs">
-          <p className="text-[var(--color-text-secondary)]">{LANE_DESCRIPTION[lane]}</p>
-          {order === "review" && (
-            <p className="text-[var(--color-text-tertiary)]">{reviewOrderNote(lane)}</p>
-          )}
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {/* The lane's one agent action: a queue of candidates is work an
-              agent can check against the code and history, one by one. */}
-          {reviewPrompt && lane === "candidates" && rows.length > 0 && (
-            <AiPromptButton copyText={reviewPrompt} label={REVIEW_WITH_AGENT_LABEL} />
-          )}
-          {/* Built from the shared source list rather than from the loaded rows:
-              a lane page is one window, so a source absent from it would become
-              unselectable, which is the same defect wearing a dynamic coat. */}
-          {onSourceChange && (
-            <select
-              value={source}
-              onChange={(e) => onSourceChange(e.target.value)}
-              aria-label="Filter by source"
-              className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
-            >
-              <option value="all">All sources</option>
-              {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
-                (s) => (
-                  <option key={s} value={s}>
-                    {decisionSourceLabel(s)}
-                  </option>
-                ),
-              )}
-            </select>
-          )}
-        </div>
-      </div>
+      <SectionToolbar
+        lane={lane}
+        order={order}
+        source={source}
+        onSourceChange={onSourceChange}
+        // The section's one agent action: a queue of background records is
+        // work an agent can check against the code and history, one by one.
+        reviewPrompt={lane === "candidates" && rows.length > 0 ? reviewPrompt : undefined}
+      />
 
       {error ? (
         <ApiError
@@ -340,21 +314,7 @@ export function DecisionReviewLanes({
           {...(onRetry ? { onRetry } : {})}
         />
       ) : rows.length === 0 ? (
-        isLoading ? null : (
-          <EmptyState
-            tone={
-              source !== "all"
-                ? "filtered"
-                : "neutral"
-            }
-            title={`Nothing in ${SECTION_LABEL[lane].toLowerCase()}`}
-            description={
-              source === "all"
-                ? LANE_EMPTY[lane]
-                : `No ${decisionSourceLabel(source)} record is in this section. The section itself may not be empty; clear the source filter to see it.`
-            }
-          />
-        )
+        isLoading ? null : <SectionEmpty lane={lane} source={source} />
       ) : (
         <>
           {selectable && (selected.size > 0 || bulk !== null) && (
@@ -397,19 +357,115 @@ export function DecisionReviewLanes({
         pending={open ? (pendingIds?.has(open.id) ?? false) : false}
         href={open ? `${prefix}/decisions/${open.id}` : prefix}
         Link={Link}
-        marks={
-          open ? (
-            <>
-              {open.pinned && <PinnedMark />}
-              {open.currency && open.currency !== "active" && (
-                <CurrencyMark currency={open.currency as DecisionCurrency} />
-              )}
-              <Provenance decision={open} />
-            </>
-          ) : null
-        }
+        marks={open ? <DrawerMarks decision={open} /> : null}
       />
     </ViewTabs>
+  );
+}
+
+/**
+ * What the section holds, the order the host fetched it in, and its controls:
+ * the agent action and the source filter.
+ */
+function SectionToolbar({
+  lane,
+  order,
+  source,
+  onSourceChange,
+  reviewPrompt,
+}: {
+  lane: DecisionSection;
+  order: "review" | undefined;
+  source: string;
+  onSourceChange: ((source: string) => void) | undefined;
+  reviewPrompt: (() => string) | undefined;
+}) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0 max-w-[68ch] flex-1 space-y-1.5 text-xs">
+        <p className="text-[var(--color-text-secondary)]">{LANE_DESCRIPTION[lane]}</p>
+        {order === "review" && (
+          <p className="text-[var(--color-text-tertiary)]">{reviewOrderNote(lane)}</p>
+        )}
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        {reviewPrompt && (
+          <AiPromptButton copyText={reviewPrompt} label={REVIEW_WITH_AGENT_LABEL} />
+        )}
+        {onSourceChange && <SourceFilter source={source} onSourceChange={onSourceChange} />}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Built from the shared source list rather than from the loaded rows: a
+ * section page is one window, so a source absent from it would become
+ * unselectable, which is the same defect wearing a dynamic coat.
+ */
+function SourceFilter({
+  source,
+  onSourceChange,
+}: {
+  source: string;
+  onSourceChange: (source: string) => void;
+}) {
+  return (
+    <select
+      value={source}
+      onChange={(e) => onSourceChange(e.target.value)}
+      aria-label="Filter by source"
+      className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+    >
+      <option value="all">All sources</option>
+      {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map((s) => (
+        <option key={s} value={s}>
+          {decisionSourceLabel(s)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** An empty section says what will fill it, or that the filter may be why. */
+function SectionEmpty({ lane, source }: { lane: DecisionSection; source: string }) {
+  const filtered = source !== "all";
+  return (
+    <EmptyState
+      tone={filtered ? "filtered" : "neutral"}
+      title={`Nothing in ${SECTION_LABEL[lane].toLowerCase()}`}
+      description={
+        filtered
+          ? `No ${decisionSourceLabel(source)} record is in this section. The section itself may not be empty; clear the source filter to see it.`
+          : LANE_EMPTY[lane]
+      }
+    />
+  );
+}
+
+/** The open record's marks in the drawer: pinned, an unusual currency, its signer. */
+function DrawerMarks({ decision }: { decision: DecisionRecord }) {
+  return (
+    <>
+      <RecordMarks decision={decision} />
+      <Provenance decision={decision} />
+    </>
+  );
+}
+
+/**
+ * Pinned, then a currency the reader cannot guess. An accepted decision that
+ * still describes its code is the quiet default and carries no badge.
+ */
+function RecordMarks({ decision: d }: { decision: DecisionRecord }) {
+  const currency = d.currency ?? null;
+  return (
+    <>
+      {d.pinned && <PinnedMark />}
+      {currency !== null && currency !== "active" && (
+        <CurrencyMark currency={currency as DecisionCurrency} />
+      )}
+    </>
   );
 }
 
@@ -526,15 +582,7 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       render: renderHotspotCell,
     });
   }
-  if (ctx.lane === "recent") {
-    columns.push({
-      key: "by",
-      header: "By",
-      priority: 2,
-      cellClassName: "align-top",
-      render: renderRecentByCell,
-    });
-  }
+  if (ctx.lane === "recent") columns.push(RECENT_BY_COLUMN);
   columns.push(
     {
       key: "changed",
@@ -547,30 +595,9 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       cellClassName: "align-top",
       render: renderChangedCell,
     },
-    {
-      key: "age",
-      // A recent row is dated by when it came into force, the rest by when recorded.
-      header: ctx.lane === "recent" ? "In force" : "Recorded",
-      align: "right",
-      priority: 3,
-      cellClassName: "align-top",
-      render: (d) => {
-        const at = ctx.lane === "recent" && d.recent?.at ? d.recent.at : d.created_at;
-        return (
-          <span
-            className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
-            title={parseDateOrNull(at) ? formatDate(at) : undefined}
-          >
-            {formatRelativeTimeOrNull(at)}
-          </span>
-        );
-      },
-    },
+    ageColumn(ctx.lane),
   );
-  // One primary verb per row, and only in the section where it means something.
-  // Everything else on the record lives in its drawer and on its detail page.
-  const inForceVerbs = IN_FORCE_SECTIONS.has(ctx.lane) && (ctx.onPin || ctx.onReaffirm);
-  if (ctx.lane === "candidates" || inForceVerbs) {
+  if (hasRowVerbs(ctx)) {
     columns.push({
       key: "actions",
       header: <span className="sr-only">Review</span>,
@@ -583,8 +610,49 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
   return columns;
 }
 
+/**
+ * One primary verb per row, and only in the section where it means something.
+ * Everything else on the record lives in its drawer and on its detail page.
+ */
+function hasRowVerbs(ctx: ColumnContext): boolean {
+  if (ctx.lane === "candidates") return true;
+  return IN_FORCE_SECTIONS.has(ctx.lane) && Boolean(ctx.onPin || ctx.onReaffirm);
+}
+
+/** Who put a recent decision in force, and where. */
+const RECENT_BY_COLUMN: ResponsiveColumn<DecisionRecord> = {
+  key: "by",
+  header: "By",
+  priority: 2,
+  cellClassName: "align-top",
+  render: renderRecentByCell,
+};
+
+/** A recent row is dated by when it came into force, the rest by when recorded. */
+function ageColumn(lane: DecisionSection): ResponsiveColumn<DecisionRecord> {
+  const recent = lane === "recent";
+  return {
+    key: "age",
+    header: recent ? "In force" : "Recorded",
+    align: "right",
+    priority: 3,
+    cellClassName: "align-top",
+    render: (d) => renderDateCell(recent && d.recent?.at ? d.recent.at : d.created_at),
+  };
+}
+
+function renderDateCell(at: string) {
+  return (
+    <span
+      className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
+      title={parseDateOrNull(at) ? formatDate(at) : undefined}
+    >
+      {formatRelativeTimeOrNull(at)}
+    </span>
+  );
+}
+
 function renderDecisionCell(d: DecisionRecord) {
-  const currency = d.currency ?? null;
   return (
     <div className="min-w-0 space-y-0.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -592,13 +660,8 @@ function renderDecisionCell(d: DecisionRecord) {
         <span className="font-medium text-[var(--color-text-primary)]">
           {stripMarkdown(d.title)}
         </span>
-        {d.pinned && <PinnedMark />}
-        {/* Marked only where it is an exception. An accepted decision that
-            still describes its code is the quiet default and carries no
-            badge; a currency the reader cannot guess does. */}
-        {currency !== null && currency !== "active" && (
-          <CurrencyMark currency={currency as DecisionCurrency} />
-        )}
+        {/* Marked only where it is an exception. */}
+        <RecordMarks decision={d} />
         {d.verification && d.verification !== "exact" && (
           <VerificationBadge verification={d.verification} iconOnly />
         )}
@@ -739,21 +802,32 @@ function ReaffirmAction({
   );
 }
 
+/** Reaffirm on a decision whose files moved, and Pin or Unpin. */
+function InForceActions({
+  d,
+  ctx,
+  pending,
+}: {
+  d: DecisionRecord;
+  ctx: ColumnContext;
+  pending: boolean;
+}) {
+  const reaffirm = d.currency === "needs_review" ? ctx.onReaffirm : undefined;
+  return (
+    <div className="flex justify-end gap-1.5" onClick={stop} onKeyDown={stop}>
+      {reaffirm && <ReaffirmAction d={d} pending={pending} onReaffirm={reaffirm} />}
+      {ctx.onPin && <PinVerb d={d} pending={pending} onPin={ctx.onPin} />}
+    </div>
+  );
+}
+
 function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
   const { onAccept, onDismiss, readOnlyReason } = ctx;
   const pending = ctx.pendingIds?.has(d.id) ?? false;
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
-  if (IN_FORCE_SECTIONS.has(ctx.lane)) {
-    const reaffirm = ctx.onReaffirm && d.currency === "needs_review" ? ctx.onReaffirm : undefined;
-    return (
-      <div className="flex justify-end gap-1.5" onClick={stop} onKeyDown={stop}>
-        {reaffirm && <ReaffirmAction d={d} pending={pending} onReaffirm={reaffirm} />}
-        {ctx.onPin && <PinVerb d={d} pending={pending} onPin={ctx.onPin} />}
-      </div>
-    );
-  }
+  if (IN_FORCE_SECTIONS.has(ctx.lane)) return <InForceActions d={d} ctx={ctx} pending={pending} />;
   if (!onAccept && !onDismiss) return null;
   // The same checks the engine refuses on, asked before the button is drawn,
   // so a candidate that names nothing does not sit beside an Accept that
