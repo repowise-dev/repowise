@@ -532,14 +532,15 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
-        if not self.agent_acceptance:
-            block["agent_acceptance"] = False
-        if not self.capture_prompt:
-            block["capture_prompt"] = False
-        if self.require_approval:
-            block["require_approval"] = True
-        if self.sync:
-            block["sync"] = True
+        # Each switch is written only when it differs from its default.
+        for key, default in (
+            ("agent_acceptance", True),
+            ("capture_prompt", True),
+            ("require_approval", False),
+            ("sync", False),
+        ):
+            if getattr(self, key) != default:
+                block[key] = getattr(self, key)
         # Always written: this block always carries ``sources``, and a block
         # with ``sources`` and no key reads back as on (the upgrade rule), so
         # leaving it out would turn update mining on for a policy that has it off.
