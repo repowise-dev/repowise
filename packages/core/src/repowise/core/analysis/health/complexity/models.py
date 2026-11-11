@@ -58,7 +58,7 @@ class FunctionComplexity:
     # (``@PathVariable``); they are in neither count above.
     bound_param_count: int = 0
     # Of ``param_count``, the ones every call site must pass by name (Python
-    # parameters after ``*`` or ``*args``).
+    # parameters after ``*`` or ``*args``, Dart ``{named}`` parameters).
     keyword_only_param_count: int = 0
     # A constructor, by node kind, conventional name, or its type's name.
     is_constructor: bool = False

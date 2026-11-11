@@ -899,6 +899,7 @@ _SWIFT = LanguageNodeMap(
 )
 
 _DART = LanguageNodeMap(
+    fixed_signature_markers=frozenset({"override"}),
     scalar_type_names=frozenset({"int", "double", "num", "bool", "String"}),
     # Dart splits a function into a ``function_signature`` node whose body is
     # a SIBLING ``function_body`` node (members wrap the signature in

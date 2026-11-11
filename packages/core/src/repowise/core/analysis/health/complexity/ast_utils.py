@@ -651,6 +651,18 @@ def _parameter_nodes(params: Node) -> Iterator[Node]:
         # the parameters, not children of them.
         yield from (c for c in params.named_children if c.type == "parameter")
         return
+    for child in _parameter_children(params):
+        if child.type == "optional_formal_parameters":
+            # Dart wraps its ``[optional]`` and ``{named}`` parameters in one node.
+            yield from (c for c in child.named_children if c.type == "formal_parameter")
+        # C++ represents a bare variadic parameter as an unnamed token.
+        elif child.is_named or child.type == "...":
+            yield child
+
+
+def _parameter_children(params: Node) -> Iterator[Node]:
+    """Children of *params* that can hold a parameter: no comments, no C
+    ``(void)``, and no parse error continuing the parameter before it."""
     after_param = False
     for child in params.children:
         if is_comment(child) or _is_void_parameter(child):
@@ -660,11 +672,27 @@ def _parameter_nodes(params: Node) -> Iterator[Node]:
         # declaration and an ERROR holding ``* p``.
         continues = child.type == "ERROR" and after_param
         after_param = child.type not in {",", ";", "("}
-        if continues:
-            continue
-        # C++ represents a bare variadic parameter as an unnamed token.
-        if child.is_named or child.type == "...":
+        if not continues:
             yield child
+
+
+# Rest parameters: Python ``*args`` / ``**kwargs``, Ruby ``*args`` /
+# ``**opts`` / ``&block``, JavaScript and TypeScript ``...rest``.
+_REST_PARAMETERS = frozenset(
+    {
+        "list_splat_pattern", "dictionary_splat_pattern", "splat_parameter",
+        "hash_splat_parameter", "block_parameter", "rest_pattern",
+    }
+)
+
+
+def is_rest_parameter(param: Node) -> bool:
+    """A rest parameter collects what is left over, so no call site has to
+    fill it, and it is no parameter of the signature."""
+    # ``*args: int`` / ``...rest: T[]`` wrap the rest pattern in a typed node.
+    typed = param.type in ("typed_parameter", "required_parameter") and param.named_child_count
+    first = param.named_children[0] if typed else param
+    return first.type in _REST_PARAMETERS
 
 
 def _is_void_parameter(node: Node) -> bool:
@@ -699,7 +727,8 @@ def _receiver_parameter(params: Node) -> Node | None:
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
-    Counts declared parameters, excluding receivers, comments and separators.
+    Counts declared parameters, excluding receivers, comments, separators and
+    Python's ``*args`` / ``**kwargs``.
     Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
     params = _parameter_list(fn_node)
@@ -718,7 +747,7 @@ def _count_parameters(fn_node: Node) -> int:
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity.
-        if child.type in ("keyword_separator", "positional_separator"):
+        if child.type in ("keyword_separator", "positional_separator") or is_rest_parameter(child):
             continue
         if child.type == "declArg":
             # Pascal groups same-typed parameters under one ``declArg``
