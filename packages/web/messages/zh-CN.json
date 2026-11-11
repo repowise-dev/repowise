@@ -685,7 +685,7 @@
       "checkoutTitle": "关于这份检出",
       "checkoutDescription": "这些是关于工作区本身的事实，而不是谁对它的声明；它们在索引时推导得出，不调用模型、无需历史记录。正是这些事实最容易绊倒新来的人，无论他是人还是智能体。",
       "reviewTitle": "记录",
-      "reviewDescription": "每条记录只属于一个标签页，计数可以相加：生效中的、从历史挖掘出的背景记录、与所指代码已脱节的、什么都没指向的，以及已退役的。"
+      "reviewDescription": "生效中的决策（置顶的排在最前）、你的智能体本周做出的决策、从历史挖掘出的背景记录，以及已退役的决策。任何一条都可以交给智能体去置顶、否决或修改。"
     },
     "contributors": {
       "title": "代码所有权",
@@ -1908,7 +1908,12 @@
   "decisions": {
     "agent": {
       "discover": "让智能体核查背景记录",
-      "agreements": "把工作约定移到 CLAUDE.md"
+      "agreements": "把工作约定移到 CLAUDE.md",
+      "review": "交给智能体核查",
+      "edit": "交给智能体修改",
+      "veto": "交给智能体否决",
+      "pin": "交给智能体置顶",
+      "unpin": "交给智能体取消置顶"
     },
     "add": {
       "trigger": "记录一条决策",
@@ -1922,14 +1927,18 @@
     "review": {
       "accepted": "已生效。它将约束其指定的文件。",
       "dismissed": "已忽略。重新索引不会再挖掘它。",
-      "acceptFailed": "接受失败：{message}",
+      "acceptFailed": "未能生效：{message}",
       "dismissFailed": "忽略失败：{message}",
       "reaffirmed": "已重新确认。它对所涉及的文件重新生效。",
       "reaffirmFailed": "重新确认失败：{message}",
       "bulkDismissed": "已忽略 {count} 条记录。",
-      "actionFailed": "审阅操作失败。",
+      "actionFailed": "操作失败。",
       "previous": "上一页",
-      "next": "下一页"
+      "next": "下一页",
+      "pinned": "已置顶。智能体在替换它之前会先询问人。",
+      "unpinned": "已取消置顶。它仍然生效。",
+      "pinFailed": "置顶失败：{message}",
+      "unpinFailed": "取消置顶失败：{message}"
     }
   },
   "files": {

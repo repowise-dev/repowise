@@ -20,6 +20,11 @@ export interface DecisionAgentPromptsProps {
   agreements?: DecisionAgentPrompt | null;
   /** Record the decisions nobody wrote down. */
   add?: DecisionAgentPrompt | null;
+  /**
+   * Prompts about one record (check it, pin or unpin it, veto it, change it),
+   * in the order given. Each one the server rendered for that record's id.
+   */
+  prompts?: (DecisionAgentPrompt | null | undefined)[];
 }
 
 /**
@@ -28,8 +33,13 @@ export interface DecisionAgentPromptsProps {
  * so an agent run from the terminal and one handed the copied prompt do the
  * same pass. Renders nothing until a prompt is passed.
  */
-export function DecisionAgentPrompts({ discover, agreements, add }: DecisionAgentPromptsProps) {
-  const shown = [discover, agreements, add].filter(
+export function DecisionAgentPrompts({
+  discover,
+  agreements,
+  add,
+  prompts = [],
+}: DecisionAgentPromptsProps) {
+  const shown = [discover, agreements, add, ...prompts].filter(
     (p): p is DecisionAgentPrompt => Boolean(p && p.text),
   );
   if (shown.length === 0) return null;

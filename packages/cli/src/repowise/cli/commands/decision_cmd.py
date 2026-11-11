@@ -174,9 +174,11 @@ def _register_config_commands() -> None:
         import_command,
         merge_command,
         migrate_command,
+        pin_command,
         reaffirm_command,
         split_command,
         status_command,
+        unpin_command,
     )
     from repowise.cli.commands.decision_sync_cmd import pull_command, push_command
 
@@ -185,6 +187,8 @@ def _register_config_commands() -> None:
         candidates_command,
         discover_command,
         reaffirm_command,
+        pin_command,
+        unpin_command,
         merge_command,
         dedupe_command,
         split_command,
@@ -1011,7 +1015,7 @@ async def _load_decision(repo_path: Path, decision_id: str):
     ``(None, None, None)`` when nothing resolves.
     """
     from repowise.core.persistence import get_decision, get_session
-    from repowise.core.persistence.crud.authority import latest_acceptance
+    from repowise.core.persistence.crud.authority import is_pinned, latest_acceptance
     from repowise.core.persistence.crud.decision_staleness import latest_grant_times
     from repowise.core.persistence.models import DecisionCandidateMeta
 
@@ -1020,6 +1024,8 @@ async def _load_decision(repo_path: Path, decision_id: str):
         rec = await get_decision(session, full_id) if full_id else None
         acceptance = await latest_acceptance(session, rec.id) if rec else None
         signed = _describe_signature(acceptance)
+        if signed is not None:
+            signed["pinned"] = await is_pinned(session, rec.id)
         if rec is not None and signed is None:
             # A candidate's dismissal is signed on its review row, not the log.
             signed = _describe_review(rec, await session.get(DecisionCandidateMeta, rec.id))
@@ -1056,6 +1062,7 @@ def _decision_json(rec, signed, currency) -> dict:
         "created_at": rec.created_at.isoformat() if rec.created_at else None,
         # Not "accepted_by": the same log records withdrawals.
         "signature": signed,
+        "pinned": bool(signed and signed.get("pinned")),
         "currency": currency,
         "context": rec.context,
         "decision": rec.decision,
@@ -1080,6 +1087,8 @@ def _decision_header_lines(rec, signed, currency) -> list[str]:
     if currency:
         lines.append(f"[dim]{currency}[/dim]")
     # A candidate has no line at all; status already says so.
+    if signed and signed.get("pinned"):
+        lines.append("[bold]Pinned[/bold]: held as law; an agent asks a person before replacing it")
     if signed:
         lines.append(f"{signed['verb']} by: {signed['label']}")
         if signed.get("evidence"):
@@ -1312,6 +1321,12 @@ def decision_confirm(
 @click.argument("decision_ids", nargs=-1)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
 @click.option("--reason", default="", help="Why it was tombstoned.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Retire a pinned decision. For a person only; an agent asks one first.",
+)
 @_signing_options
 @click.option(
     "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
@@ -1321,19 +1336,22 @@ def decision_dismiss(
     decision_ids: tuple[str, ...],
     yes: bool,
     reason: str,
+    force: bool,
     agent: str,
     agent_session: str,
     preview: bool,
     fmt: str,
 ) -> None:
-    """Dismiss proposed decisions (kept as tombstones; never re-proposed).
+    """Dismiss decisions (kept as tombstones; never re-proposed).
 
-    Takes one id or many, and an optional repository path after them.
+    Takes one id or many, and an optional repository path after them. A
+    pinned decision is refused unless a person passes ``--force``.
     """
     ids, path = _split_ids_and_path(decision_ids)
     _require_ids(ids, "dismiss", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
+    _refuse_agent_force(force, signer)
 
     if not _dismissal_confirmed(ids, yes=yes, preview=preview, fmt=fmt):
         console.print("[yellow]Cancelled.[/yellow]")
@@ -1349,6 +1367,7 @@ def decision_dismiss(
             accepter=signer.name(repo_path),
             kind=signer.kind,
             accepter_session=signer.session,
+            force=force,
         )
 
     results = run_async(
@@ -1367,6 +1386,15 @@ def decision_dismiss(
         "[dim](kept as a tombstone; reindexing will not re-propose it)[/dim]",
         "",
     )
+
+
+def _refuse_agent_force(force: bool, signer: _Signer) -> None:
+    """``--force`` retires a pinned decision, which is a person's call, never an agent's."""
+    if force and signer.agent:
+        raise click.ClickException(
+            "--force is for a person: a pinned decision is replaced only by one. "
+            "Ask them, or have them unpin it with `repowise decision unpin <id>`."
+        )
 
 
 def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) -> bool:
@@ -1391,6 +1419,12 @@ def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) 
 @click.argument("path", required=False, default=None)
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
 @click.option("--reason", default="", help="Why it was retired.")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Retire a pinned decision. For a person only; an agent asks one first.",
+)
 @_signing_options
 @click.option(
     "--preview", is_flag=True, default=False, help="Report what it would do, and write nothing."
@@ -1401,6 +1435,7 @@ def decision_deprecate(
     path: str | None,
     superseded_by: str | None,
     reason: str,
+    force: bool,
     agent: str,
     agent_session: str,
     preview: bool,
@@ -1410,18 +1445,22 @@ def decision_deprecate(
 
     With ``--superseded-by`` this writes an explicit lineage edge; the retired
     id keeps naming its own record. Similarity never writes an edge: one exists
-    because somebody named the successor.
+    because somebody named the successor. A pinned decision is refused unless
+    a person passes ``--force``: an agent asks first.
     """
     from repowise.cli.commands.decision_batch import _RefusedError
 
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
+    _refuse_agent_force(force, signer)
 
     async def _deprecate(session, rec) -> None:
         successor = await _resolve_decision_id(session, superseded_by) if superseded_by else None
         if superseded_by and successor is None:
             raise _RefusedError("decision_not_found", f"Unknown successor: {superseded_by}")
-        await _retire(session, rec, successor, signer=signer, repo_path=repo_path, reason=reason)
+        await _retire(
+            session, rec, successor, signer=signer, repo_path=repo_path, reason=reason, force=force
+        )
 
     results = run_async(
         _review_batch(
@@ -1440,11 +1479,12 @@ def decision_deprecate(
 
 
 async def _retire(
-    session, rec, successor, *, signer: _Signer, repo_path: Path, reason: str
+    session, rec, successor, *, signer: _Signer, repo_path: Path, reason: str, force: bool
 ) -> None:
     """Supersede an accepted record, or mark any other one deprecated."""
     from repowise.cli.commands.decision_batch import _RefusedError
     from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
         deprecate_decision,
         is_accepted,
         supersede_decision,
@@ -1460,7 +1500,10 @@ async def _retire(
                 kind=signer.kind,
                 accepter_session=signer.session,
                 note=reason,
+                force=force,
             )
+        except AcceptanceRefusedError:
+            raise
         except ValueError as exc:
             raise _RefusedError("supersede_refused", str(exc)) from exc
         return
@@ -1473,6 +1516,7 @@ async def _retire(
         accepter=signer.name(repo_path),
         kind=signer.kind,
         accepter_session=signer.session,
+        force=force,
     )
     if successor:
         rec.superseded_by = successor

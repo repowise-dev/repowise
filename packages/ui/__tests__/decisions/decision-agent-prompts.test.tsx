@@ -32,6 +32,23 @@ describe("DecisionAgentPrompts", () => {
     expect(screen.queryByRole("button", { name: "Check background records" })).not.toBeInTheDocument();
   });
 
+  it("lists one record's prompts in the order given, skipping the missing ones", () => {
+    render(
+      <DecisionAgentPrompts
+        prompts={[
+          { text: "change it", label: "Change with your agent" },
+          null,
+          { text: "pin it", label: "Pin with your agent" },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Change with your agent",
+      "Pin with your agent",
+    ]);
+  });
+
   it("renders nothing with no prompt", () => {
     const { container } = render(<DecisionAgentPrompts />);
     expect(container).toBeEmptyDOMElement();

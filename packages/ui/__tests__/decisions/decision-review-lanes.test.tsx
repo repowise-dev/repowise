@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
-  DECISION_LANES,
+  DECISION_SECTIONS,
   DecisionReviewLanes,
-  type DecisionLane,
+  type DecisionSection,
 } from "../../src/decisions/decision-review-lanes";
 import type { DecisionRecord } from "@repowise-dev/types/decisions";
 
@@ -39,7 +39,7 @@ function record(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
 }
 
 function renderLanes(
-  lane: DecisionLane,
+  lane: DecisionSection,
   props: Partial<React.ComponentProps<typeof DecisionReviewLanes>> = {},
 ) {
   return render(
@@ -53,37 +53,30 @@ function renderLanes(
   );
 }
 
-describe("lane structure", () => {
-  it("partitions the repository: five lanes, no overlap", () => {
-    expect([...DECISION_LANES]).toEqual([
-      "active",
-      "candidates",
-      "needs_review",
-      "uncheckable",
-      "history",
-    ]);
-    expect(new Set(DECISION_LANES).size).toBe(DECISION_LANES.length);
+describe("section structure", () => {
+  it("is a digest, in order: in force, recent, background, history", () => {
+    expect([...DECISION_SECTIONS]).toEqual(["in_force", "recent", "candidates", "history"]);
   });
 
-  it("renders one tab per lane, with the measured counts", () => {
-    renderLanes("active", {
-      counts: {
-        active: 122,
-        candidates: 381,
-        needs_review: 4,
-        uncheckable: 57,
-        history: 2,
-      },
+  it("renders one tab per section in that order, with the measured counts", () => {
+    renderLanes("in_force", {
+      counts: { in_force: 122, recent: 4, candidates: 381, history: 2 },
     });
 
     const tablist = screen.getByRole("tablist");
-    expect(within(tablist).getAllByRole("tab")).toHaveLength(5);
+    const tabs = within(tablist).getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent?.replace(/\d+/g, ""))).toEqual([
+      "In force",
+      "Recent",
+      "Background",
+      "History",
+    ]);
     expect(within(tablist).getByText("381")).toBeInTheDocument();
-    expect(within(tablist).getByText("57")).toBeInTheDocument();
+    expect(within(tablist).getByText("4")).toBeInTheDocument();
   });
 
-  it("omits a badge for a lane nobody counted", () => {
-    renderLanes("active", { counts: { active: 3 } });
+  it("omits a badge for a section nobody counted", () => {
+    renderLanes("in_force", { counts: { in_force: 3 } });
 
     const tablist = screen.getByRole("tablist");
     // One badge rendered, not five zeroes: a number nobody measured is worse
@@ -92,9 +85,9 @@ describe("lane structure", () => {
     expect(within(tablist).getByText("3")).toBeInTheDocument();
   });
 
-  it("reports the lane change rather than switching itself", () => {
+  it("reports the section change rather than switching itself", () => {
     const onLaneChange = vi.fn();
-    renderLanes("active", { onLaneChange });
+    renderLanes("in_force", { onLaneChange });
 
     fireEvent.click(screen.getByRole("tab", { name: /Background/ }));
 
@@ -153,13 +146,13 @@ describe("a candidate is a review request, not an instruction", () => {
     expect(screen.getByText(/through get_why/)).toBeInTheDocument();
   });
 
-  it("offers the review verbs only in the candidates lane", () => {
+  it("offers the review verbs only in the background section", () => {
     const onAccept = vi.fn();
-    renderLanes("active", { onAccept, decisions: [record({ currency: "active" })] });
-    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    renderLanes("in_force", { onAccept, decisions: [record({ currency: "active" })] });
+    expect(screen.queryByRole("button", { name: "Put in force" })).not.toBeInTheDocument();
 
     renderLanes("candidates", { onAccept });
-    expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeInTheDocument();
   });
 
   it("hands the record back rather than writing", () => {
@@ -167,7 +160,7 @@ describe("a candidate is a review request, not an instruction", () => {
     const onDismiss = vi.fn();
     renderLanes("candidates", { onAccept, onDismiss });
 
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    fireEvent.click(screen.getByRole("button", { name: "Put in force" }));
     expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
@@ -181,7 +174,7 @@ describe("a candidate is a review request, not an instruction", () => {
       pendingIds: new Set(["d1"]),
     });
 
-    expect(screen.getByRole("button", { name: "Accepting…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Putting in force…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeDisabled();
   });
 
@@ -194,8 +187,8 @@ describe("a candidate is a review request, not an instruction", () => {
 
     // One write in flight must not freeze the queue: a single pending id used
     // to disable every row, and re-enable them all when the first resolved.
-    expect(screen.getByRole("button", { name: "Accepting…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Accept" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Putting in force…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeEnabled();
   });
 
   it("disables Accept, with the reason, on a candidate the engine would refuse", () => {
@@ -215,7 +208,7 @@ describe("a candidate is a review request, not an instruction", () => {
     // The engine refuses an acceptance with no scope, reason or evidence. The
     // row already knows all three, so the button says so before it is pressed
     // rather than reporting it in an error toast afterwards.
-    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeDisabled();
     expect(screen.getByText(/names no files/)).toBeInTheDocument();
     // Dismissing stays available: an unacceptable candidate is exactly the one
     // worth tombstoning.
@@ -230,7 +223,7 @@ describe("a candidate is a review request, not an instruction", () => {
     });
 
     // The row reads the title fallback, but acceptance reads the stored text.
-    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeDisabled();
     expect(screen.getByText(/doesn't say what was chosen/i)).toBeInTheDocument();
   });
 
@@ -246,7 +239,7 @@ describe("a candidate is a review request, not an instruction", () => {
       onAccept: vi.fn(),
     });
 
-    expect(screen.getByRole("button", { name: "Accept" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeEnabled();
     expect(screen.queryByText(/Cannot accept/)).not.toBeInTheDocument();
   });
 
@@ -256,7 +249,7 @@ describe("a candidate is a review request, not an instruction", () => {
       readOnlyReason: "Read-only snapshot",
     });
 
-    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Put in force" })).not.toBeInTheDocument();
     expect(screen.getByText("Read-only snapshot")).toBeInTheDocument();
   });
 });
@@ -267,7 +260,7 @@ describe("currency marks the exception, not the default", () => {
   const rows = () => within(screen.getByRole("table"));
 
   it("says nothing extra about a decision that still describes its code", () => {
-    renderLanes("active", { decisions: [record({ currency: "active" })] });
+    renderLanes("in_force", { decisions: [record({ currency: "active" })] });
 
     expect(rows().queryByText("Needs review")).not.toBeInTheDocument();
     expect(rows().queryByText("Uncheckable")).not.toBeInTheDocument();
@@ -275,7 +268,7 @@ describe("currency marks the exception, not the default", () => {
   });
 
   it("names a currency the reader cannot guess", () => {
-    renderLanes("uncheckable", {
+    renderLanes("in_force", {
       decisions: [
         record({ currency: "uncheckable", affected_files: [], affected_modules: [] }),
       ],
@@ -292,7 +285,7 @@ describe("who signed is provenance, read in the drawer", () => {
   const rows = () => within(screen.getByRole("table"));
 
   it("puts no signer mark on a row, whoever signed", () => {
-    renderLanes("active", {
+    renderLanes("in_force", {
       decisions: [
         record({ id: "a", currency: "active", accepter: "claude_code", accepter_kind: "agent" }),
         record({ id: "b", title: "Other", currency: "active", accepter: "Raghav", accepter_kind: "person" }),
@@ -305,7 +298,7 @@ describe("who signed is provenance, read in the drawer", () => {
   });
 
   it("names the signer and session in the drawer, without a kind", () => {
-    renderLanes("active", {
+    renderLanes("in_force", {
       decisions: [
         record({
           currency: "active",
@@ -324,7 +317,7 @@ describe("who signed is provenance, read in the drawer", () => {
   });
 
   it("says an agent accepted it once, not again as a signer", () => {
-    renderLanes("active", {
+    renderLanes("in_force", {
       decisions: [
         record({
           currency: "active",
@@ -372,7 +365,7 @@ describe("reviewing the candidates with an agent", () => {
     expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
     second.unmount();
 
-    renderLanes("active", { reviewPrompt: () => "x" });
+    renderLanes("in_force", { reviewPrompt: () => "x" });
     expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
   });
 });
@@ -462,7 +455,7 @@ describe("the queue is a table with a drawer", () => {
     });
 
     fireEvent.click(screen.getByText("Use JWT for authentication"));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Accept" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Put in force" }));
 
     expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }));
     expect(
@@ -484,7 +477,7 @@ describe("reaffirming a decision whose files moved", () => {
 
   it("offers Reaffirm on the row and hands the record back", () => {
     const onReaffirm = vi.fn();
-    renderLanes("needs_review", { decisions: [drifted()], onReaffirm });
+    renderLanes("in_force", { decisions: [drifted()], onReaffirm });
 
     fireEvent.click(screen.getByRole("button", { name: "Reaffirm" }));
 
@@ -494,7 +487,7 @@ describe("reaffirming a decision whose files moved", () => {
 
   it("offers it in the drawer too", () => {
     const onReaffirm = vi.fn();
-    renderLanes("needs_review", { decisions: [drifted()], onReaffirm });
+    renderLanes("in_force", { decisions: [drifted()], onReaffirm });
 
     fireEvent.click(screen.getByText("Use JWT for authentication"));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reaffirm" }));
@@ -502,10 +495,101 @@ describe("reaffirming a decision whose files moved", () => {
     expect(onReaffirm).toHaveBeenCalledTimes(1);
   });
 
-  it("is not offered in any other lane", () => {
-    renderLanes("active", { decisions: [record({ currency: "active" })], onReaffirm: vi.fn() });
+  it("is not offered on a decision whose files have not moved", () => {
+    renderLanes("in_force", { decisions: [record({ currency: "active" })], onReaffirm: vi.fn() });
 
     expect(screen.queryByRole("button", { name: "Reaffirm" })).toBeNull();
+  });
+});
+
+describe("pinning a decision in force", () => {
+  const inForce = (overrides: Partial<DecisionRecord> = {}) =>
+    record({ status: "active", currency: "active", ...overrides });
+  const rows = () => within(screen.getByRole("table"));
+
+  it("marks a pinned row and leaves the others quiet", () => {
+    renderLanes("in_force", {
+      decisions: [
+        inForce({ id: "p", title: "Pinned one", pinned: true }),
+        inForce({ id: "q", title: "Plain one", pinned: false }),
+      ],
+    });
+
+    expect(rows().getAllByText("Pinned")).toHaveLength(1);
+    // The host sends pinned rows first; the section keeps that order.
+    const titles = rows()
+      .getAllByText(/one$/)
+      .map((el) => el.textContent);
+    expect(titles).toEqual(["Pinned one", "Plain one"]);
+  });
+
+  it("offers Pin on an unpinned row and Unpin on a pinned one, handing the record back", () => {
+    const onPin = vi.fn();
+    renderLanes("in_force", {
+      decisions: [
+        inForce({ id: "p", title: "Pinned one", pinned: true }),
+        inForce({ id: "q", title: "Plain one" }),
+      ],
+      onPin,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Pin" }));
+    expect(onPin).toHaveBeenCalledWith(expect.objectContaining({ id: "q" }), true);
+    fireEvent.click(screen.getByRole("button", { name: "Unpin" }));
+    expect(onPin).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }), false);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers it in the drawer, beside the record's agent prompts", () => {
+    const onPin = vi.fn();
+    renderLanes("in_force", {
+      decisions: [inForce()],
+      onPin,
+      recordPrompts: (d) => <span>prompts for {d.id}</span>,
+    });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
+    expect(drawer.getByText("prompts for d1")).toBeInTheDocument();
+    fireEvent.click(drawer.getByRole("button", { name: "Pin" }));
+    expect(onPin).toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }), true);
+  });
+
+  it("is never offered on background records", () => {
+    renderLanes("candidates", { onPin: vi.fn(), onAccept: vi.fn() });
+
+    expect(screen.queryByRole("button", { name: "Pin" })).toBeNull();
+  });
+});
+
+describe("what came into force recently", () => {
+  it("says who put each one in force and the commit it landed in", () => {
+    renderLanes("recent", {
+      decisions: [
+        record({
+          status: "active",
+          currency: "active",
+          recent: {
+            at: "2026-11-10T12:00:00Z",
+            signer: "claude_code",
+            signer_kind: "agent",
+            commit: "abc123456789",
+            landed_on: "main",
+          },
+        }),
+      ],
+    });
+
+    expect(screen.getByRole("columnheader", { name: "By" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "In force" })).toBeInTheDocument();
+    expect(screen.getByText("claude_code (agent)")).toBeInTheDocument();
+    expect(screen.getByText("abc123456 on main")).toBeInTheDocument();
+  });
+
+  it("says what fills it when nothing came into force", () => {
+    renderLanes("recent", { decisions: [] });
+
+    expect(screen.getByText(/Nothing came into force in the last week/)).toBeInTheDocument();
   });
 });
 

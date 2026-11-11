@@ -1547,7 +1547,7 @@ export interface DeadCodeSummaryResponse {
  * ``agreements`` with none stored, and then a surface offers nothing.
  */
 export interface DecisionAgentPromptResponse {
-  kind: "discover" | "add" | "agreements";
+  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
   text: string;
   ids: string[];
   count: number;
@@ -1674,6 +1674,9 @@ export interface DecisionLaneCountsResponse {
   history: number;
   governing: number;
   total: number;
+  in_force?: number | null;
+  pinned?: number | null;
+  recent?: number | null;
 }
 
 /** One node in a decision lineage chain (root → … → current). */
@@ -1688,6 +1691,21 @@ export interface DecisionLineageEntry {
 /** The supersedes/refines chain, root first. */
 export interface DecisionLineageResponse {
   lineage?: DecisionLineageEntry[];
+}
+
+/** POST body for /decisions/{id}/pin and /unpin. Both fields optional. */
+export interface DecisionPinUpdate {
+  reason?: string | null;
+}
+
+/** How a decision came into force, for the ``recent`` lane's rows. */
+export interface DecisionRecentInfo {
+  at: string;
+  signer: string;
+  signer_kind: string;
+  signer_session?: string;
+  commit?: string;
+  landed_on?: string;
 }
 
 export interface DecisionRecordResponse {
@@ -1724,6 +1742,8 @@ export interface DecisionRecordResponse {
   accepter_kind?: string | null;
   accepter_session?: string | null;
   blockers?: string[] | null;
+  pinned?: boolean | null;
+  recent?: DecisionRecentInfo | null;
   decision_text_missing?: boolean;
   delivered_count?: number | null;
   last_delivered_at?: string | null;
