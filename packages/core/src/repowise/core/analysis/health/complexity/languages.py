@@ -881,12 +881,20 @@ _SWIFT = LanguageNodeMap(
     field_decl_kinds=frozenset({"property_declaration"}),
     identifier_kinds=frozenset({"simple_identifier"}),
     ctor_kinds=frozenset({"init_declaration"}),
-    fixed_signature_markers=frozenset({"override"}),
-    # No ``scalar_type_names``: a Swift ``parameter`` is a child of the function
-    # with no list node around it, which ``typed_param_counts`` does not read
-    # yet, so ``primitive_obsession`` has nothing to count here. No assertion
-    # kinds either: XCTest has no vocabulary row, so the test-quality markers
-    # do not read Swift.
+    # ``@objc`` exposes the method to Objective-C selectors and protocols,
+    # which own its parameter list.
+    fixed_signature_markers=frozenset({"override", "objc"}),
+    scalar_type_names=frozenset(
+        {
+            "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32",
+            "UInt64", "Float", "Double", "CGFloat", "Bool", "String", "Substring", "Character",
+            # C types as Swift imports them.
+            "CInt", "CUnsignedInt", "CLong", "CUnsignedLong", "CShort", "CChar", "CBool",
+            "CFloat", "CDouble",
+        }
+    ),
+    # No assertion kinds: XCTest has no vocabulary row, so the test-quality
+    # markers do not read Swift.
     call_kinds=frozenset({"call_expression"}),
 )
 

@@ -183,6 +183,8 @@ def is_signature_fixed(fn_node: Node, lmap: LanguageNodeMap) -> bool:
         return True
     if any(c.type in lmap.explicit_impl_kinds for c in fn_node.children):
         return True
+    if _is_delegate_callback(fn_node, lmap):
+        return True
     return (
         _in_trait_impl(fn_node, lmap)
         or _is_public_api(fn_node, lmap)
@@ -205,6 +207,65 @@ def _in_fixed_abi(fn_node: Node, lmap: LanguageNodeMap) -> bool:
             return value is None or _text(value) != '"C++"'
         node = node.parent
     return False
+
+
+def _is_delegate_callback(fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """A Swift delegate or data source callback, which Cocoa names after the
+    object calling it, passed first and unlabelled (``func urlSession(_
+    session: URLSession, task: ...)``, ``func tableView(_ tableView:
+    UITableView, ...)``). The protocol it implements owns the signature, and
+    its type says so: an extension, or a type with a supertype clause."""
+    if not _conforms_to_something(fn_node):
+        return False
+    first = next((c for c in fn_node.children if c.type == "parameter"), None)
+    label = first.child_by_field_name("external_name") if first is not None else None
+    if label is None or _text(label) != "_":
+        return False
+    type_node = _param_type(first)
+    name = _field_text(fn_node, "name") or ""
+    if type_node is None or _is_scalar(type_node, lmap.scalar_type_names):
+        return False
+    return _named_after(name, _text(type_node).rstrip("?!"))
+
+
+def _named_after(name: str, caller: str) -> bool:
+    """*name* starts with the word for *caller*: ``UITableView`` is
+    ``tableView``, ``URLSession`` is ``urlSession``."""
+    stems = {_lower_camel(caller), _lower_camel(_TYPE_PREFIX_RE.sub("", caller, count=1))}
+    return any(
+        name.startswith(stem) and (len(name) == len(stem) or name[len(stem)].isupper())
+        for stem in stems
+    )
+
+
+_TYPE_PREFIX_RE = re.compile(r"^[A-Z]{2,3}(?=[A-Z][a-z])")
+
+
+def _conforms_to_something(fn_node: Node) -> bool:
+    body = fn_node.parent
+    decl = body.parent if body is not None else None
+    if decl is None or decl.type != "class_declaration":
+        return False
+    kind = decl.child_by_field_name("declaration_kind")
+    return (kind is not None and _text(kind) == "extension") or any(
+        c.type == "inheritance_specifier" for c in decl.children
+    )
+
+
+def _lower_camel(type_name: str) -> str:
+    """``URLSession`` -> ``urlSession``, ``TableView`` -> ``tableView``."""
+    run = len(type_name) - len(type_name.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    if 1 < run < len(type_name):
+        run -= 1  # the last capital starts the next word
+    return type_name[:run].lower() + type_name[run:]
+
+
+def _is_inout(type_node: Node) -> bool:
+    """A Swift ``inout`` parameter is the caller's variable, not a raw value."""
+    modifiers = type_node.prev_named_sibling
+    return modifiers is not None and modifiers.type == "parameter_modifiers" and (
+        "inout" in _text(modifiers).split()
+    )
 
 
 def _class_of_method(fn_node: Node, lmap: LanguageNodeMap) -> Node | None:
@@ -285,6 +346,8 @@ def _param_type(param: Node) -> Node | None:
 
 
 def _is_scalar(type_node: Node, scalars: frozenset[str]) -> bool:
+    if _is_inout(type_node):
+        return False
     text = _text(type_node)
     if "<" in text or "(" in text:
         return False
