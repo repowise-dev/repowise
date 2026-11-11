@@ -6,7 +6,12 @@ import pytest
 
 from repowise.core.analysis.doc_drift.extractor import extract
 from repowise.core.analysis.doc_drift.models import DocReference, DriftKind, DriftVerdict
-from repowise.core.analysis.doc_drift.resolver import RepoIndex, join_relative, resolve
+from repowise.core.analysis.doc_drift.resolver import (
+    RepoIndex,
+    anchor_host,
+    join_relative,
+    resolve,
+)
 
 TREE = frozenset(
     {
@@ -209,6 +214,75 @@ def test_a_link_that_escapes_the_repository_root_is_uncheckable():
 
 
 # ---------------------------------------------------------------------------
+# A link reads like a renderer reads it: from its own document (#5473)
+# ---------------------------------------------------------------------------
+
+_SIBLINGS = frozenset({"setup.md", "docs/setup.md", "missing.md", "docs/guide.md", "src/app.py"})
+
+
+def _resolve_in_guide(text: str, kind: DriftKind = DriftKind.LINK, tree=_SIBLINGS):
+    ref = next(r for r in extract(text, "docs/guide.md") if r.kind is kind)
+    return resolve(_index(tree=tree), ref)
+
+
+def test_a_link_reads_the_sibling_over_the_root_file_of_the_same_name():
+    res = _resolve_in_guide("[setup](setup.md)")
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "relative-to-doc", "docs/setup.md"
+    )
+
+
+def test_a_link_only_the_root_file_could_satisfy_is_missing():
+    """GitHub serves a 404 here; the root ``missing.md`` sharing the basename
+    does not make it ambiguous."""
+    res = _resolve_in_guide("[x](missing.md)")
+    assert (res.verdict, res.detail) == (DriftVerdict.MISSING, "no-candidate")
+
+
+def test_a_slash_rooted_link_reads_the_root_only():
+    res = _resolve_in_guide("[s](/setup.md)")
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "exact", "setup.md"
+    )
+    # Never the document's own directory, even where that file exists.
+    res = _resolve_in_guide("[x](/src/x.py)", tree=_SIBLINGS | {"docs/src/x.py"})
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_a_dot_relative_backticked_path_reads_the_document_directory():
+    """`./missing.md` in ``docs/`` is not the root file, and is anchored as written."""
+    res = _resolve_in_guide("See `./missing.md`.", DriftKind.PATH)
+    assert (res.verdict, res.detail) == (DriftVerdict.UNCHECKABLE, "unanchored")
+    res = _resolve_in_guide("See `./setup.md`.", DriftKind.PATH)
+    assert (res.detail, res.resolved_target) == ("relative-to-doc", "docs/setup.md")
+
+
+def test_a_dot_relative_illustration_is_not_anchored_by_its_document_directory():
+    """Joined to ``docs/``, `./site.css` would pass anchoring and report MISSING."""
+    res = _resolve_in_guide("The `./site.css` fallback.", DriftKind.PATH)
+    assert (res.verdict, res.detail) == (DriftVerdict.UNCHECKABLE, "unanchored")
+
+
+def test_a_root_relative_backticked_path_still_resolves_from_the_root():
+    res = _resolve_in_guide("See `src/app.py`.", DriftKind.PATH)
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "exact", "src/app.py"
+    )
+
+
+@pytest.mark.parametrize(
+    "tree", [_SIBLINGS | {"guide.md"}, _SIBLINGS - {"docs/guide.md"} | {"guide.md"}]
+)
+def test_anchor_host_and_the_link_verdict_read_the_same_file(tree):
+    refs = extract("[g](guide.md#h)", "docs/a.md")
+    anchor, link = (next(r for r in refs if r.kind is k) for k in (DriftKind.ANCHOR, DriftKind.LINK))
+    idx = _index(tree=tree)
+    host = anchor_host(anchor)
+    assert host == "docs/guide.md"
+    assert (host in idx.files) is (resolve(idx, link).verdict is DriftVerdict.RESOLVED)
+
+
+# ---------------------------------------------------------------------------
 # Anchors: rules 4 and 5
 # ---------------------------------------------------------------------------
 
@@ -223,7 +297,7 @@ def _anchor_index(readme: str, tree=None):
 
 def _anchor_ref(fragment: str):
     return DocReference(
-        DriftKind.ANCHOR, f"README.md#{fragment}", f"README.md#{fragment}",
+        DriftKind.ANCHOR, f"../README.md#{fragment}", f"../README.md#{fragment}",
         "docs/guide.md", 1, "ctx",
     )
 
@@ -356,7 +430,7 @@ def test_end_to_end_on_a_small_document():
     text = (
         "# Doc\n\n"
         "Real path `src/app.py`, gone path `src/util/gone.py`.\n"
-        "Run `make build`. See [readme](README.md#heading).\n"
+        "Run `make build`. See [readme](../README.md#heading).\n"
     )
     idx = RepoIndex.build(
         tracked_paths=TREE,

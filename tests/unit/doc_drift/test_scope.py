@@ -56,6 +56,16 @@ def test_a_link_is_matched_relative_to_its_document():
     assert scope.reason(finding) == "removed"
 
 
+def test_a_link_is_never_matched_from_the_root():
+    """Review r1 #2: deleting root ``setup.md`` did not break ``docs/guide.md``'s link."""
+    scope = _scope(_change("deleted", "setup.md", None))
+    finding = _finding(file_path="docs/guide.md", kind="link", target="setup.md")
+    assert scope.reason({**finding, "raw": "setup.md"}) is None
+    assert scope.reason({**finding, "raw": "/setup.md"}) == "removed"
+    anchor = _finding(file_path="docs/a.md", kind="anchor", target="guide.md#setup")
+    assert _scope(_change("modified", "guide.md", "guide.md")).reason(anchor) is None
+
+
 def test_an_anchor_into_an_edited_document_is_in_scope():
     scope = _scope(_change("modified", "docs/guide.md", "docs/guide.md"))
     finding = _finding(file_path="docs/a.md", kind="anchor", target="guide.md#setup")

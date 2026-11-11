@@ -10,9 +10,9 @@ lookup and an on-disk probe, so a host without a checkout can run it. The one
 I/O implementation, :func:`git_renames`, is a default the analyzer wires in
 when it has a repository root.
 
-A path is looked up both as written and joined relative to its document, and a
-suggestion found through the relative form is written back in that form, so it
-pastes into the same link.
+A path is looked up the way the resolver reads it (:func:`~.resolver.readings`),
+and a suggestion found through the document-relative reading is written back
+in that form, so it pastes into the same link.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from ..git_cli import run_git
 from .constants import SuggestionBasis
 from .models import DocReference, DriftKind
 from .renderer import github_slug
-from .resolver import RepoIndex, Resolution, anchor_host, join_relative
+from .resolver import RepoIndex, Resolution, anchor_host, readings
 
 #: Where each given old repo path ended up, for as many of them as it knows.
 RenameLookup = Callable[[Sequence[str]], Mapping[str, str]]
@@ -77,7 +77,7 @@ def suggest_all(
         return out
 
     pending = {
-        i: _forms(res.ref.doc_path, res.ref.target)
+        i: _forms(res.ref, res.ref.target)
         for i, res in enumerate(misses)
         if not out[i][0] and res.ref.kind in _PATH_KINDS
     }
@@ -161,10 +161,10 @@ def unique_close_match(word: str, candidates: frozenset[str] | set[str]) -> str:
     return matches[0]
 
 
-def _forms(doc: str, target: str) -> list[_Form]:
-    """*target* as written, then joined relative to *doc* when that differs."""
-    joined = join_relative(doc, target)
-    return [(target, False)] if joined == target else [(target, False), (joined, True)]
+def _forms(ref: DocReference, target: str) -> list[_Form]:
+    """*target* read the way the resolver reads *ref*, so a fix is a link that resolves."""
+    paths = readings(ref.doc_path, ref.raw, target, is_link=ref.kind is DriftKind.LINK)
+    return [(path, path != target) for path in paths]
 
 
 def _written(doc: str, path: str, relative: bool) -> str:
@@ -202,7 +202,7 @@ def _package_split(res: Resolution, idx: RepoIndex, dir_tails: _DirTails) -> Sug
     dot = base.rfind(".")
     if dot <= 0:
         return NO_SUGGESTION
-    forms = _forms(doc, target[: len(target) - len(base) + dot])
+    forms = _forms(res.ref, target[: len(target) - len(base) + dot])
     for stem, relative in forms:
         if stem in idx.dirs:
             return f"{_written(doc, stem, relative)}/", "package_split"
@@ -222,7 +222,7 @@ def _package_split(res: Resolution, idx: RepoIndex, dir_tails: _DirTails) -> Sug
 def _similar_heading(res: Resolution, idx: RepoIndex) -> Suggestion:
     ref = res.ref
     fragment = ref.target.partition("#")[2]
-    anchors = idx.doc_anchors(anchor_host(idx, ref) or ref.doc_path)
+    anchors = idx.doc_anchors(anchor_host(ref) or ref.doc_path)
     match = unique_close_match(github_slug(fragment), anchors)
     if not match:
         return NO_SUGGESTION

@@ -88,7 +88,7 @@ def _document_targets(
 
     strongest: dict[str, DriftKind] = {}
     for ref in extract(text, doc):
-        target = _reference_target(index, ref, doc)
+        target = _reference_target(index, ref)
         if target is None or target == doc:
             continue
         if target in host._parsed_files and strongest.get(target) is not DriftKind.LINK:
@@ -96,10 +96,10 @@ def _document_targets(
     return strongest
 
 
-def _reference_target(index: RepoIndex, ref: DocReference, doc: str) -> str | None:
+def _reference_target(index: RepoIndex, ref: DocReference) -> str | None:
     """The file one link or path reference resolves to, else None."""
     from ...analysis.doc_drift.models import DriftKind, DriftVerdict
-    from ...analysis.doc_drift.resolver import join_relative, resolve
+    from ...analysis.doc_drift.resolver import resolve
 
     if ref.kind not in (DriftKind.LINK, DriftKind.PATH):
         return None
@@ -107,12 +107,11 @@ def _reference_target(index: RepoIndex, ref: DocReference, doc: str) -> str | No
     # Same filter as ``_Tally.resolve_document``, narrowed to files.
     if res.verdict is not DriftVerdict.RESOLVED:
         return None
-    if ref.kind is DriftKind.PATH:
-        target = res.resolved_target.rstrip("/")
-        # A bare name hits the root file first; `package.json` is generic prose, not that file.
-        return None if "/" not in ref.raw and "/" not in target else target
-    # Relative to its document; a leading "/" is the repository root.
-    return ref.target if ref.raw.startswith("/") else join_relative(doc, ref.target)
+    target = res.resolved_target.rstrip("/")
+    # A bare name hits the root file first; `package.json` is generic prose, not that file.
+    if ref.kind is DriftKind.PATH and "/" not in ref.raw and "/" not in target:
+        return None
+    return target
 
 
 def _place_document_edge(graph: Any, doc: str, target: str, kind: DriftKind) -> None:
