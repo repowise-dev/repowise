@@ -1539,6 +1539,9 @@ _FSHARP = LanguageNodeMap(
     switch_kinds=frozenset({"match_expression"}),
     case_kinds=frozenset({"rules"}),
     boolean_operator_kinds=frozenset(),
+    # ``a && b`` is an ``infix_expression`` whose ``infix_op`` child carries the
+    # operator text, the same sniff as Scala.
+    boolean_operator_text_kinds=frozenset({"infix_expression"}),
     class_kinds=frozenset({"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}),
     self_identifiers=frozenset(),
     member_access_kinds=frozenset(),

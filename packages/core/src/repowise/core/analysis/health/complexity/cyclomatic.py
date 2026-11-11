@@ -275,6 +275,26 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
+def _fsharp_conditions(node: Node, lmap: LanguageNodeMap) -> list[Node] | None:
+    """The condition parts of an F# construct, whose grammar names none ``condition``.
+
+    ``None`` for any other node.
+    """
+    if node.type == "rules":
+        # F# counts a ``match`` once at its ``rules`` wrapper, whose arms hold
+        # the bodies: only their ``when`` guards are conditions. Guards of
+        # several arms add up into one record (ceiling: one record per arm
+        # would need the arms as case nodes, which scores flat matches high).
+        return [g for arm in node.named_children if (g := arm.child_by_field_name("guard"))]
+    if node.type in lmap.if_kinds and (guard := node.child_by_field_name("guard")):
+        # A Python ``case`` guard is no ``if`` kind: it is its own branch node.
+        return [guard]
+    if node.type == "while_expression" and node.child_by_field_name("condition") is None:
+        # ``while c do body`` names neither part: the condition comes first.
+        return node.named_children[:1]
+    return None
+
+
 def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
@@ -285,6 +305,9 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """
     if node.type in lmap.foreach_kinds or node.type == "range_clause":
         return []
+    fsharp = _fsharp_conditions(node, lmap)
+    if fsharp is not None:
+        return fsharp
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
