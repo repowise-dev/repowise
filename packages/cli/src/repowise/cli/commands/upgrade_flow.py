@@ -519,7 +519,7 @@ def _upgrade_embedding(repo_path: Path, embedder_name: str | None) -> tuple[Any,
     vector_store = None
     embedding_error: str | None = None
     try:
-        embedder = build_embedder(resolve_embedder(embedder_name), repo_path)
+        embedder = build_embedder(resolve_embedder(embedder_name, repo_path=repo_path), repo_path)
         vector_store = build_vector_store(repo_path, embedder)
     except Exception as exc:
         embedding_error = str(exc)
@@ -797,7 +797,7 @@ def upgrade_to_full(
     follow_renames = bool(cfg.get("follow_renames", False))
 
     _announce_upgrade(repo_path, provider)
-    embedder_name = _keyless_embedder_name(cfg) if keyless else _upgrade_embedder_name(cfg)
+    embedder_name = _keyless_embedder_name(cfg, repo_path=repo_path) if keyless else _upgrade_embedder_name(cfg, repo_path=repo_path)
 
     # The same single-flight lock as an incremental update: a concurrent
     # `repowise update` must not race this run's save_state. If another update
@@ -943,7 +943,7 @@ def _template_provider() -> Any:
     return TemplateProvider()
 
 
-def _upgrade_embedder_name(cfg: dict[str, Any]) -> str | None:
+def _upgrade_embedder_name(cfg: dict[str, Any], repo_path: Path | None = None) -> str | None:
     """The embedder to write with: re-resolved when the index recorded the mock.
 
     Index-only promises no spend, so it records the mock embedder. The user is
@@ -952,16 +952,16 @@ def _upgrade_embedder_name(cfg: dict[str, Any]) -> str | None:
     """
     from repowise.cli.providers import model_run_embedder
 
-    embedder_name, stated, _replaced = model_run_embedder(cfg.get("embedder"))
+    embedder_name, stated, _replaced = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
     return embedder_name
 
 
-def _keyless_embedder_name(cfg: dict[str, Any]) -> str:
+def _keyless_embedder_name(cfg: dict[str, Any], repo_path: Path | None = None) -> str:
     """The embedder a keyless upgrade uses: the one the user chose, else the free mock."""
     from repowise.cli.providers import keyless_run_embedder
 
-    embedder_name, stated = keyless_run_embedder(cfg.get("embedder"))
+    embedder_name, stated = keyless_run_embedder(cfg.get("embedder"), repo_path=repo_path)
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
     return embedder_name
 

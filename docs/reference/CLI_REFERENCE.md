@@ -918,7 +918,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 |------|--------------|---------|
 | `--file <path>` | One file in depth (relative path). | |
 | `--module <prefix>` | Files under this path prefix. | all |
-| `--scope` | `all` or `production`: files every figure covers (`production` scores lower with no defect: tests score higher). | `all` |
+| `--scope` | `all` or `production`: files every figure covers (`production` leaves out tests, tooling, build, vendored, generated and docs example files, which tend to score higher, so it scores lower with no defect). | `all` |
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
@@ -937,8 +937,8 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 - **Default**: reads, never writes, what `init` / `update` stored (MCP and web UI rows, with `repowise coverage add`
   coverage). `repowise status`: `Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`.
 - **Preview languages**: a dim line per layer and language, e.g. `Refactoring on Java: preview, measured 22% precision
-  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: health on C++; refactoring,
-  performance, dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
+  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: refactoring, performance,
+  dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
 
 #### `repowise health check [REVSPEC]`
 
@@ -2108,6 +2108,12 @@ repowise doctor --workspace --repair
   `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
   A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
   repo's alias.
+- **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
+  would redo stored work: git history written by older rules, health or security results from an older analyzer or
+  scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each
+  problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
+  HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
+  `repowise update --index-only` (no model calls).
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.

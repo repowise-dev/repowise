@@ -878,7 +878,9 @@ def _workspace_init(
         hook = plan.sync if plan.sync is not None else hook
     primary_repo = pick.primary_repo
     load_dotenv(primary_repo.path)
-    answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+    answers.embedder_name_resolved = resolve_embedder(
+        answers.embedder_name, repo_path=primary_repo.path
+    )
     # Whether the user named this embedder, rather than resolve_embedder
     # inferring one from an LLM key: the free template path will not put a
     # hosted embedder on the user's bill unless they named it.
@@ -1103,7 +1105,9 @@ def _resolve_workspace_provider(
             )
             # Re-resolve: interactive provider selection may just have set the
             # provider's API key in os.environ.
-            answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+            answers.embedder_name_resolved = resolve_embedder(
+                answers.embedder_name, repo_path=primary_repo.path
+            )
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
                 f"Model: [{VALUE}]{provider.model_name}[/]"

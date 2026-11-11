@@ -32,7 +32,11 @@ def resolve_embedding_model(embedder_name: str, repo_path: Path | str | None = N
     return embedding_model_for(embedder_name, repo_path)
 
 
-def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = None) -> str:
+def resolve_embedder(
+    embedder_flag: str | None,
+    env: Mapping[str, str] | None = None,
+    repo_path: Any = None,
+) -> str:
     """Auto-detect the embedder backend, or use the flag value.
 
     *env* layers a repo's persisted ``.repowise/.env`` under the process
@@ -41,25 +45,31 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
     this is the choice ``init`` makes afresh. Order: flag > ``REPOWISE_EMBEDDER``
     > detection from keys > ``~/.repowise/config.yaml``'s ``embedder`` > mock.
     """
-    return resolve_embedder_choice(embedder_flag, env)[0]
+    return resolve_embedder_choice(embedder_flag, env, repo_path=repo_path)[0]
 
 
 def resolve_embedder_choice(
-    embedder_flag: str | None, env: Mapping[str, str] | None = None
+    embedder_flag: str | None,
+    env: Mapping[str, str] | None = None,
+    repo_path: Any = None,
 ) -> tuple[str, str]:
     """:func:`resolve_embedder` plus why it was picked, for the run to state."""
     from repowise.core.providers.embedding.resolve import embedder_reason, resolve_embedder_name
+    from repowise.core.providers.llm.resolve import repo_getenv
 
     overlay = env or {}
+    base_getenv = repo_getenv(repo_path)
 
     def getenv(name: str) -> str | None:
-        return os.environ.get(name) or overlay.get(name) or None
+        return os.environ.get(name) or overlay.get(name) or base_getenv(name)
 
-    name, source = resolve_embedder_name(embedder_flag, getenv=getenv, use_pin=False)
-    return name, embedder_reason(name, source, getenv=getenv)
+    name, source = resolve_embedder_name(
+        embedder_flag, repo_path=repo_path, getenv=getenv, use_pin=False
+    )
+    return name, embedder_reason(name, source, repo_path=repo_path, getenv=getenv)
 
 
-def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
+def model_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str | None, str, bool]:
     """``(name, stated, replaced_mock)`` for a run that pays a model.
 
     A keyless run pins ``mock`` because it promised no spend. A run already
@@ -68,7 +78,7 @@ def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
     """
     name, reason, upgraded = pinned, "pinned in .repowise/config.yaml", False
     if not pinned or pinned == "mock":
-        resolved, reason = resolve_embedder_choice(None)
+        resolved, reason = resolve_embedder_choice(None, repo_path=repo_path)
         if resolved != (pinned or "mock"):
             if pinned == "mock":
                 reason += ", replacing the keyless mock"
@@ -79,7 +89,7 @@ def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
     return name, f"{stated} ({reason})", upgraded
 
 
-def keyless_run_embedder(pinned: str | None) -> tuple[str, str]:
+def keyless_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str, str]:
     """``(name, stated)`` for a run with no model, which promises no spend.
 
     An embedder the user chose (a real pin, ``REPOWISE_EMBEDDER``) is kept and
@@ -88,7 +98,7 @@ def keyless_run_embedder(pinned: str | None) -> tuple[str, str]:
     if pin_names_an_embedder(pinned):
         name, reason = str(pinned).strip(), "pinned in .repowise/config.yaml"
     else:
-        name, reason = resolve_embedder_choice(None)
+        name, reason = resolve_embedder_choice(None, repo_path=repo_path)
         kept = template_run_embedder(name, embedder_was_requested(None, pinned))
         if kept != name:
             name, reason = kept, "keyless run"

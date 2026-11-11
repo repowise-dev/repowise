@@ -1049,3 +1049,11 @@ def test_a_nested_docs_root_counts_only_beside_its_site_config(tmp_path) -> None
     assert code_origin("website/docs/examples/a.ts", repo_root=tmp_path) == "docs_example"
     assert code_origin("app/docs/page.tsx", repo_root=tmp_path) == "production"
     assert code_origin("docs/guide/a.py", repo_root=tmp_path) == "docs_example"
+
+
+def test_a_path_only_origin_reads_python_t_tree_as_tests() -> None:
+    # celery's pytest smoke-test workers: ingestion (with the language) stores
+    # them as tests, and a caller holding only the path now agrees.
+    assert code_origin("t/smoke/workers/dev.py") == "test"
+    assert code_origin("t/smoke/tasks.py") == "test"
+    assert code_origin("t/basic.pl") == "production"

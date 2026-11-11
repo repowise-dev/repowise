@@ -368,24 +368,50 @@ def _collect_add_warnings(
     return warnings
 
 
+def _build_decision_next_command(stored: _Persisted) -> str:
+    agent_flag = f" --agent {stored.agent}" if stored.agent else ""
+    blockers = set(stored.blockers)
+    needed: list[str] = []
+    if NO_DECISION_BLOCKER in blockers:
+        needed.append("--decision <text>")
+    if NO_RATIONALE_BLOCKER in blockers:
+        needed.append("--reason <rationale>")
+    if NO_SCOPE_BLOCKER in blockers:
+        needed.append("--scope <path>")
+    if NO_EVIDENCE_BLOCKER in blockers or not needed:
+        needed.append("--evidence <commit|file>")
+    return f"confirm {stored.id}{agent_flag} {' '.join(needed)}"
+
+
+def _build_decision_added_payload(
+    stored: _Persisted, warnings: list[str] | None = None
+) -> dict[str, object]:
+    # The full id: a caller passes it back to `confirm` or `show`.
+    payload: dict[str, object] = {
+        "id": stored.id,
+        "title": stored.title,
+        "status": stored.status,
+        "kind": stored.kind,
+        "existed": stored.existed,
+    }
+    if stored.existed:
+        payload["kept"] = stored.kept
+    if warnings:
+        payload["warnings"] = list(warnings)
+    if stored.blockers:
+        payload["blockers"] = stored.blockers
+        payload["next"] = _build_decision_next_command(stored)
+    return payload
+
+
 def _report_added(
     repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str] | None = None
 ) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
-        # The full id: a caller passes it back to `confirm` or `show`.
-        payload = {
-            "id": stored.id,
-            "title": stored.title,
-            "status": stored.status,
-            "kind": stored.kind,
-            "existed": stored.existed,
-        }
-        if stored.existed:
-            payload["kept"] = stored.kept
-        if warnings:
-            payload["warnings"] = list(warnings)
-        emit_json({"repo": str(repo_path), "decision": payload})
+        emit_json(
+            {"repo": str(repo_path), "decision": _build_decision_added_payload(stored, warnings)}
+        )
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
     kept = f"; kept stored {', '.join(stored.kept)}" if stored.kept else ""
@@ -509,6 +535,8 @@ class _Persisted(NamedTuple):
     kind: str
     existed: bool
     kept: list[str]
+    blockers: tuple[str, ...] = ()
+    agent: str = ""
 
 
 #: Restatable fields, and the column each list field is stored in.
@@ -602,8 +630,13 @@ async def _persist_decision(
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
             # A different title means the derived id folded this onto a record
             # stating the same decision, which is an update too.
+            from repowise.core.persistence.crud.authority import record_blockers
+
             existed = existing is not None or rec.title != fields.title
-            stored = _Persisted(rec.id, rec.title, rec.status, rec.kind, existed, kept)
+            blockers = tuple(record_blockers(rec))
+            stored = _Persisted(
+                rec.id, rec.title, rec.status, rec.kind, existed, kept, blockers, signer.agent
+            )
 
         # After the session commits, so a network embed never holds the write
         # transaction or vectors an uncommitted record.
@@ -1019,11 +1052,18 @@ _ACCEPT_REMEDY = "Supply the missing parts with --decision, --reason, --scope or
 _ACCEPT_IDENTITY_REMEDY = "Name the signer with --as <name> or --agent <slug>."
 
 
-def _accept_remedy_for_blockers(blockers: list[str]) -> str:
+#: Shown in place of the agent-acceptance remedy when approval mode refused it.
+_APPROVAL_REMEDY = (
+    "This repository requires a person to accept new decisions. Ask a person to run "
+    "`repowise decision confirm`."
+)
+
+
+def _accept_remedy_for_blockers(blockers: list[str], *, approval: bool = False) -> str:
     """Return only the remedies that address the blockers in this refusal."""
     remedies = []
     if any(AGENT_ACCEPTANCE_DISABLED_BLOCKER in blocker for blocker in blockers):
-        remedies.append(AGENT_ACCEPTANCE_REMEDY)
+        remedies.append(_APPROVAL_REMEDY if approval else AGENT_ACCEPTANCE_REMEDY)
     if NO_ACCEPTANCE_IDENTITY_BLOCKER in blockers:
         remedies.append(_ACCEPT_IDENTITY_REMEDY)
     if any(
@@ -1089,21 +1129,28 @@ def decision_confirm(
     ``--agent`` is how an agent signs as itself. Without it the acceptance is
     recorded as a person's, because without it the identity resolves to the
     repository's git name and a person's is what it would be. An agent's
-    acceptance is refused only where ``decision config agent-acceptance --off``
-    is set for this repository.
+    acceptance is refused where ``decision config agent-acceptance --off`` or
+    ``decision config approval --on`` is set for this repository. When the
+    record cites a commit that has not reached the default branch yet, an
+    agent's acceptance is kept and the decision governs once that commit lands.
     """
     ids, path = _split_ids_and_path(decision_ids)
     _require_ids(ids, "accept", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
 
     signer = _signer(agent, agent_session, accepter=accepter)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    policy = _load_policy(repo_path)
+    granted = policy.agent_grants if agent else False
 
-    async def _accept(session, rec) -> None:
+    async def _accept(session, rec) -> dict | None:
         from repowise.cli.commands.decision_batch import _refuse_if_governing
         from repowise.core.persistence.crud.authority import accept_decision
 
         await _refuse_if_governing(session, rec)
+        if agent and granted:
+            held = await _hold_until_landed(session, rec)
+            if held is not None:
+                return held
         await accept_decision(
             session,
             rec,
@@ -1117,6 +1164,30 @@ def decision_confirm(
             decision=decision_text,
         )
 
+    async def _hold_until_landed(session, rec) -> dict | None:
+        # An agent's acceptance governs from the merge, never before it: a
+        # record whose commits are still off the default branch is held, and
+        # the landing pass on a later update accepts it signed as this agent.
+        from repowise.core.analysis.decisions.landing import is_commit_ref
+        from repowise.core.analysis.decisions.merge_accept import awaiting_landing
+        from repowise.core.persistence.crud.authority import hold_decision
+
+        commits = [e.strip() for e in evidence if is_commit_ref(e)]
+        branch = awaiting_landing(repo_path, rec, commits)
+        if not branch:
+            return None
+        await hold_decision(
+            session,
+            rec,
+            agent=signer.agent,
+            agent_session=signer.session,
+            reason=reason,
+            scope=list(scope) or None,
+            commits=commits,
+            decision=decision_text,
+        )
+        return {"action": "pending", "waits_for": branch}
+
     results = run_async(
         _review_batch(
             repo_path, ids, action="accepted", verb="accept", preview=preview, apply_one=_accept
@@ -1127,11 +1198,18 @@ def decision_confirm(
         for result in results
         for blocker in result.get("blockers", [])
     ]
-    remedy = _accept_remedy_for_blockers(blockers)
+    remedy = _accept_remedy_for_blockers(blockers, approval=policy.require_approval)
     if len(ids) > 1 or preview or fmt == "json":
         _emit_batch(results, "accepted", "accept", preview, fmt, remedy)
         return
-    _emit_single(results[0], ids[0], "accept", fmt, "(governing)", remedy)
+    first = results[0]
+    if first["ok"] and first.get("action") == "pending":
+        console.print(
+            f"[green]Decision {first['id'][:8]} recorded[/green] [dim](governs once its "
+            f"commit lands on {first['waits_for']})[/dim]"
+        )
+        return
+    _emit_single(first, ids[0], "accept", fmt, "(governing)", remedy)
 
 
 @decision_group.command("dismiss")

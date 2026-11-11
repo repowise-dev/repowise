@@ -224,8 +224,8 @@ def _global_key(name: str) -> str | None:
     return str(cfg.get("embedder_api_key") or "").strip() or None
 
 
-def _positive_int(var: str) -> int | None:
-    raw = os.environ.get(var)
+def _positive_int(var: str, lookup: EnvLookup | None = None) -> int | None:
+    raw = lookup(var) if lookup is not None else os.environ.get(var)
     if not raw:
         return None
     try:
@@ -280,26 +280,30 @@ def embedding_model_for(name: str, repo_path: Path | str | None = None) -> str |
     return None
 
 
-def _ollama_kwargs() -> dict[str, Any]:
+def _ollama_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
+    lookup = repo_getenv(repo_path)
     kwargs: dict[str, Any] = {}
-    base_url = os.environ.get("OLLAMA_BASE_URL")
+    base_url = lookup("OLLAMA_BASE_URL")
     if base_url:
         kwargs["base_url"] = base_url
-    dims = _positive_int("OLLAMA_EMBEDDING_DIMS") or _positive_int("REPOWISE_EMBEDDING_DIMS")
+    dims = _positive_int("OLLAMA_EMBEDDING_DIMS", lookup) or _positive_int(
+        "REPOWISE_EMBEDDING_DIMS", lookup
+    )
     if dims:
         kwargs["dimensions"] = dims
     return kwargs
 
 
-def _gemini_kwargs() -> dict[str, Any]:
+def _gemini_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
+    lookup = repo_getenv(repo_path)
     # Gemini spells the width ``output_dimensionality``; openai and ollama
     # read REPOWISE_EMBEDDING_DIMS in their own constructors.
-    dims = _positive_int("REPOWISE_EMBEDDING_DIMS")
+    dims = _positive_int("REPOWISE_EMBEDDING_DIMS", lookup)
     return {"output_dimensionality": dims} if dims else {}
 
 
 #: Constructor arguments only some embedders take.
-_EXTRA_KWARGS: dict[str, Callable[[], dict[str, Any]]] = {
+_EXTRA_KWARGS: dict[str, Callable[[Path | str | None], dict[str, Any]]] = {
     "ollama": _ollama_kwargs,
     "gemini": _gemini_kwargs,
 }
@@ -315,7 +319,7 @@ def embedder_kwargs(name: str, repo_path: Path | str | None = None) -> dict[str,
     kwargs: dict[str, Any] = {"model": model} if model else {}
     extra = _EXTRA_KWARGS.get(name)
     if extra is not None:
-        kwargs.update(extra())
+        kwargs.update(extra(repo_path))
     # Passed explicitly so a key in the repo's .env or the global config
     # reaches the embedder, not only an exported one.
     key = resolve_embedder_key(name, repo_path).key

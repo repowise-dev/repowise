@@ -684,3 +684,39 @@ def test_the_agent_switch_does_not_rewrite_the_stored_preset(tmp_path):
     assert resolved.agent_acceptance is False
     assert resolved.preset_name() == "balanced"
     assert load_repo_config(tmp_path)["decisions"]["preset"] == "balanced"
+
+
+# ---------------------------------------------------------------------------
+# Approval
+# ---------------------------------------------------------------------------
+
+
+def test_approval_is_off_with_no_block_and_in_every_preset():
+    assert resolve_policy({}).policy.require_approval is False
+    for name in PRESET_NAMES:
+        assert preset_policy(name).require_approval is False
+
+
+def test_a_non_boolean_approval_reads_as_on():
+    """Someone asked for a gate; a quoted value must not silently open it."""
+    resolution = resolve_policy({"decisions": {"require_approval": "yes"}})
+
+    assert resolution.policy.require_approval is True
+    assert any("require_approval" in w for w in resolution.warnings)
+
+
+def test_approval_round_trips_and_keeps_the_preset(tmp_path):
+    from repowise.core.repo_config import load_repo_config
+
+    write_policy(tmp_path, preset_policy("balanced"))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_require_approval(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.require_approval is True
+    assert resolved.agent_grants is False
+    assert resolved.preset_name() == "balanced"
+    assert load_repo_config(tmp_path)["decisions"]["require_approval"] is True
+
+    write_policy(tmp_path, resolved.with_require_approval(False))
+    assert load_policy(tmp_path).policy.require_approval is False
+    assert "require_approval" not in load_repo_config(tmp_path)["decisions"]

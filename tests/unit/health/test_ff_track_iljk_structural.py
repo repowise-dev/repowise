@@ -55,6 +55,7 @@ def _flat_match_src(tangled_arm: bool = False) -> str:
     """A ``match``/``case`` dispatch table long enough to trip the NLOC threshold.
 
     Every arm is a single-expression return unless *tangled_arm* nests branches in the first.
+    The arms call ``label``: an arm returning a bare literal is data, not code.
     """
     lines = ["def dispatch(status, flags):", "    match status:"]
     if tangled_arm:
@@ -63,7 +64,7 @@ def _flat_match_src(tangled_arm: bool = False) -> str:
         lines += ["                return 'c'"]
     for i in range(31):
         lines.append(f"        case {i}:")
-        lines.append(f'            return "s{i}"')
+        lines.append(f'            return label("s{i}")')
     lines.append("        case _:")
     lines.append('            return "unknown"')
     return "\n".join(lines) + "\n"
