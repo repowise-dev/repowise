@@ -110,7 +110,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.dry_violation,
     category: "duplication",
     description:
-      "Code blocks duplicated across files. Ranked by co-change frequency — clones that move together are most worth consolidating. Advisory: it costs this file no points.",
+      "Code blocks duplicated across files. Ranked by co-change frequency — clones that move together are most worth consolidating. Scored in TypeScript; elsewhere advisory, costing the file no points.",
   },
   untested_hotspot: {
     label: BIOMARKER_LABELS.untested_hotspot,
@@ -242,7 +242,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.error_handling,
     category: "error_handling",
     description:
-      "Swallowed exceptions, bare excepts, unsafe unwraps, or discarded error returns. Failures here vanish silently. Advisory: it costs this file no points.",
+      "Swallowed exceptions, bare excepts, unsafe unwraps, or discarded error returns. Failures here vanish silently. Scored in Python; elsewhere advisory, costing the file no points.",
   },
   ungoverned_hotspot: {
     label: BIOMARKER_LABELS.ungoverned_hotspot,
@@ -483,8 +483,6 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "brain_method",
   "repeated_nesting",
   "low_cohesion",
-  "dry_violation",
-  "error_handling",
   "untested_complexity",
   "apex_soql_injection",
   "apex_missing_sharing",
@@ -507,6 +505,8 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
  */
 export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "primitive_obsession",
+  "dry_violation",
+  "error_handling",
   "sql_high_complexity",
   "sql_select_star",
   "sql_update_delete_without_where",

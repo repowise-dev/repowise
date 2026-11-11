@@ -570,6 +570,17 @@ def test_a_split_file_plan_and_a_complex_method_stay() -> None:
     assert len(_queue([_finding()]).items) == 1
 
 
+def test_a_rust_panic_path_is_no_fix_first_candidate() -> None:
+    """An unwrap or panic is a crash path, not a failure the handler hides."""
+    rows = [
+        {**_finding(f"src/{kind}.rs"), "biomarker_type": "error_handling", "line_start": 9,
+         "details": {"kind": kind}}
+        for kind in ("unsafe_unwrap", "panic_macro")
+    ]
+    queue = _queue(rows)
+    assert queue.items == () and queue.totals.excluded["low_value_kind"] == 2
+    swallowed = {**rows[0], "file_path": "src/a.py", "details": {"kind": "swallowed_catch"}}
+    assert [i.target.file_path for i in _queue([swallowed]).items] == ["src/a.py"]
 
 
 def test_a_perf_step_names_its_function_unless_the_action_already_does() -> None:

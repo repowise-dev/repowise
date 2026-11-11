@@ -109,14 +109,15 @@ def test_repeated_nesting_is_advisory():
     assert deductions == [0.0]
 
 
-@pytest.mark.parametrize("name", ["low_cohesion", "dry_violation", "error_handling"])
-def test_low_precision_markers_are_listed_not_scored(name):
+@pytest.mark.parametrize("language", [None, "python", "typescript", "go", "java"])
+def test_low_cohesion_is_listed_not_scored(language):
     """Mostly judged not worth acting on in a blind study; still detected, never deducted."""
-    assert is_advisory(name)
-    scores, deductions = score_file([_result(name, Severity.CRITICAL)])
+    assert is_advisory("low_cohesion")
+    scores, deductions = score_file([_result("low_cohesion", Severity.CRITICAL)], language)
     assert scores == {"defect": 10.0, "maintainability": 10.0, "performance": 10.0}
     assert deductions == [0.0]
-    assert attach_impacts([_result(name)], [0.0])[0].dimension == ADVISORY_DIMENSION
+    (finding,) = attach_impacts([_result("low_cohesion")], [0.0], language)
+    assert finding.dimension == ADVISORY_DIMENSION
 
 
 @pytest.mark.parametrize("name", ["complex_method", "nested_complexity", "large_method"])

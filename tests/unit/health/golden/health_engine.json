@@ -210,7 +210,7 @@
     "metrics": [
       {
         "file_path": "account.ts",
-        "score": 8.75,
+        "score": 8.42,
         "max_ccn": 17,
         "max_nesting": 3,
         "nloc": 66,
@@ -219,10 +219,10 @@
         "duplication_pct": 97.14,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.75,
-        "maintainability_score": 8.8,
+        "defect_score": 8.42,
+        "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 1.247,
+        "structure_deduction": 1.578,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -248,7 +248,7 @@
       },
       {
         "file_path": "workspace.ts",
-        "score": 8.75,
+        "score": 8.42,
         "max_ccn": 17,
         "max_nesting": 3,
         "nloc": 66,
@@ -257,10 +257,10 @@
         "duplication_pct": 97.14,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.75,
-        "maintainability_score": 8.8,
+        "defect_score": 8.42,
+        "maintainability_score": 8.1,
         "performance_score": 10.0,
-        "structure_deduction": 1.247,
+        "structure_deduction": 1.578,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -304,10 +304,10 @@
           "worst_clone_partner": "workspace.ts",
           "worst_clone_co_change": 0
         },
-        "health_impact": 0.0,
+        "health_impact": 0.331,
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with workspace.ts",
-        "dimension": "advisory",
-        "id": "finding_ab659ec4f41c74f85e2f"
+        "dimension": "maintainability",
+        "id": "finding_adecdf1cea8a1aad2796"
       },
       {
         "biomarker_type": "untested_complexity",
@@ -366,10 +366,10 @@
           "worst_clone_partner": "account.ts",
           "worst_clone_co_change": 0
         },
-        "health_impact": 0.0,
+        "health_impact": 0.331,
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with account.ts",
-        "dimension": "advisory",
-        "id": "finding_a45d03f1f09637a4c833"
+        "dimension": "maintainability",
+        "id": "finding_27bf987f937f7819f307"
       },
       {
         "biomarker_type": "untested_complexity",
@@ -394,21 +394,21 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 8.8,
+      "average_health": 8.49,
       "worst_performer_path": "account.ts",
-      "worst_performer_score": 8.75,
+      "worst_performer_score": 8.42,
       "worst_test_path": null,
       "worst_test_score": null,
       "file_count": 3,
-      "maintainability_average": 8.85,
+      "maintainability_average": 8.18,
       "maintainability_hotspot": null,
       "performance_average": 10.0,
       "performance_hotspot": null,
-      "structure_average": 1.2,
+      "structure_average": 1.51,
       "history_average": 0.0,
       "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 8.8,
+      "production_average": 8.49,
       "production_file_count": 3,
       "unanalysed_file_count": 0,
       "analysed_share": 1.0
@@ -1720,7 +1720,7 @@
       },
       {
         "file_path": "python/nested.py",
-        "score": 8.55,
+        "score": 8.28,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 14,
@@ -1729,10 +1729,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.55,
-        "maintainability_score": 8.8,
+        "defect_score": 8.28,
+        "maintainability_score": 8.2,
         "performance_score": 10.0,
-        "structure_deduction": 1.452,
+        "structure_deduction": 1.724,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -3971,10 +3971,10 @@
           "symbol_line": 1,
           "symbol": "deeply_nested"
         },
-        "health_impact": 0.0,
+        "health_impact": 0.136,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "advisory",
-        "id": "finding_dd0bc82cc681e447b2dc"
+        "dimension": "maintainability",
+        "id": "finding_a2c98dd353bdd9aa22b3"
       },
       {
         "biomarker_type": "error_handling",
@@ -3988,10 +3988,10 @@
           "symbol_line": 1,
           "symbol": "deeply_nested"
         },
-        "health_impact": 0.0,
+        "health_impact": 0.136,
         "reason": "broad `except Exception` catches unrelated errors and can hide bugs",
-        "dimension": "advisory",
-        "id": "finding_39698f4b98e1f2991619"
+        "dimension": "maintainability",
+        "id": "finding_61df1a80f37292b7b485"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -5301,7 +5301,7 @@
       "worst_test_path": "apex/HealthMarkersTest.cls",
       "worst_test_score": 10.0,
       "file_count": 71,
-      "maintainability_average": 9.73,
+      "maintainability_average": 9.72,
       "maintainability_hotspot": null,
       "performance_average": 9.8,
       "performance_hotspot": null,
@@ -5309,7 +5309,7 @@
       "history_average": 0.0,
       "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 9.67,
+      "production_average": 9.66,
       "production_file_count": 69,
       "unanalysed_file_count": 4,
       "analysed_share": 0.9467

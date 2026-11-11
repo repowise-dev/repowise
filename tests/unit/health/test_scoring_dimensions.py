@@ -427,7 +427,11 @@ def test_biomarker_home_dimension():
     assert biomarker_dimension("sql_select_star") == "maintainability"
     # Listed, never scored.
     assert biomarker_dimension("low_cohesion") == "advisory"
-    assert biomarker_dimension("error_handling") == "advisory"
+    # Scored in its one language only (``_SCORED_ONLY_IN``).
+    assert biomarker_dimension("error_handling", "python") == "maintainability"
+    assert biomarker_dimension("error_handling", "go") == "advisory"
+    assert biomarker_dimension("dry_violation", "typescript") == "maintainability"
+    assert biomarker_dimension("dry_violation", "python") == "advisory"
     # Structural duals home to defect (their primary, calibrated role).
     assert biomarker_dimension("god_class") == "defect"
     # Calibrated predictors home to defect.

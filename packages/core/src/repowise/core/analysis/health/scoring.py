@@ -63,9 +63,12 @@ CATEGORY_CAPS: dict[str, float] = {
     # Test-quality smells are mild, advisory signals - a small cap keeps a
     # noisy test file from dominating its own health score.
     "test_quality": 0.5,
-    # ``duplication`` and ``error_handling`` hold only advisory markers
-    # (``_BIOMARKER_DIMENSIONS``), so no finding reaches either cap; detectors
-    # still declare these categories for grouping.
+    # Error-handling anti-patterns (swallowed catch / bare except / unsafe
+    # unwrap / discarded Go error) are an advisory maintainability signal,
+    # not a calibrated defect predictor (AUC-neutral on the 21-repo T0
+    # benchmark; size-orthogonal, least redundant signal tested). Own
+    # capped category so the bounded deduction can never squeeze - or be
+    # squeezed by - the predictive categories.
     "error_handling": 0.5,
 }
 
@@ -162,7 +165,14 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     # --- floored: fired widely but weak / non-predictive at T0 ---
     "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
     "primitive_obsession": 0.5,
+    "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
+    # Error-handling anti-patterns: maintainability flag, NOT a fitted
+    # predictor - deliberately excluded from the calibration roster (same
+    # treatment as governance biomarkers). Floored weight + LOW severity
+    # (0.3 x 0.5 = 0.15/finding) + the 0.5 category scale keep the impact
+    # under about 1.5 points per file regardless of hit count.
+    "error_handling": 0.5,
     # (coverage_gap, large_assertion_block, duplicated_assertion_block
     #  default to 1.0 - kept at prior)
     # Governance - additive pass, weights are informational
@@ -260,6 +270,8 @@ ZERO_IMPACT_DIMENSIONS: frozenset[str] = frozenset({"performance", ADVISORY_DIME
 _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Floored-in-defect maintainability smells -> full weight in maintainability.
     "primitive_obsession": {"defect", "maintainability"},
+    "dry_violation": {"defect", "maintainability"},
+    "error_handling": {"defect", "maintainability"},
     # Structural smells: calibrated defect predictors that are ALSO core
     # maintainability signals - they contribute to both dimensions.
     "god_class": {"defect", "maintainability"},
@@ -321,12 +333,9 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # functions with a few simple loops. Dropping it with four other weak markers
     # cost 0.004 defect AUC.
     "repeated_nesting": {ADVISORY_DIMENSION},
-    # A blind precision study (705 cards, 64 repos) judged few findings worth
-    # acting on: low_cohesion 7 of 39, dry_violation 7 of 64, error_handling 6 of
-    # 54. Defect AUC as a flag: 0.527, 0.498 and 0.579. Listed, never deducted.
+    # A blind precision study (705 cards, 64 repos) judged 7 of 39 findings
+    # worth acting on; defect AUC as a flag 0.527. Listed, never deducted.
     "low_cohesion": {ADVISORY_DIMENSION},
-    "dry_violation": {ADVISORY_DIMENSION},
-    "error_handling": {ADVISORY_DIMENSION},
     # Its two inputs already deduct: complexity through complex_method, missing
     # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
     # which complex functions most need tests rather than moving the score.
@@ -347,6 +356,8 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
 # below, never against the defect corpus. Unknown biomarkers fall back to 1.0.
 _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "primitive_obsession": 1.0,
+    "dry_violation": 1.0,
+    "error_handling": 1.0,
     "god_class": 1.0,
     "large_method": 1.0,
     "nested_complexity": 1.0,
@@ -368,6 +379,8 @@ _MAINTAINABILITY_CATEGORY: dict[str, str] = {
     "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
+    "dry_violation": "duplication",
+    "error_handling": "error_handling",
     # SQL smells share one capped category so a smell-dense migrations dir
     # can't dominate the maintainability score.
     "sql_high_complexity": "sql",
@@ -381,6 +394,8 @@ _MAINTAINABILITY_CATEGORY: dict[str, str] = {
 _MAINTAINABILITY_CATEGORY_CAPS: dict[str, float] = {
     "structural_complexity": 4.0,
     "size_and_complexity": 2.0,
+    "duplication": 2.0,
+    "error_handling": 2.0,
     "sql": 2.0,
 }
 
@@ -392,6 +407,8 @@ _MAINTAINABILITY_CATEGORY_CAPS: dict[str, float] = {
 _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
     {
         "primitive_obsession",
+        "dry_violation",
+        "error_handling",
         "sql_high_complexity",
         "sql_select_star",
         "sql_update_delete_without_where",
@@ -552,8 +569,6 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
         "brain_method",
         "repeated_nesting",
         "low_cohesion",
-        "dry_violation",
-        "error_handling",
         "untested_complexity",
         "apex_soql_injection",
         "apex_missing_sharing",
@@ -611,8 +626,24 @@ _ADVISORY_BY_LANGUAGE: dict[str, frozenset[str]] = {
 }
 
 
+# The inverse: marker -> the only languages where it scores; everywhere else it
+# behaves like an ``_ADVISORY_BY_LANGUAGE`` cell. For a marker whose findings
+# are mostly not worth acting on (dry_violation 7 of 64, error_handling 6 of 54
+# judged) but whose flag still ranks defects in one language: dry_violation in
+# TypeScript (flag AUC 0.571, 32% of files), error_handling in Python (0.641,
+# 28%). There each keeps its floored weight (code-health.md §5.4).
+_SCORED_ONLY_IN: dict[str, frozenset[str]] = {
+    "dry_violation": frozenset({"typescript"}),
+    "error_handling": frozenset({"python"}),
+}
+
+
 def _advisory_in(name: str, language: str | None) -> bool:
-    return language is not None and language in _ADVISORY_BY_LANGUAGE.get(name, ())
+    if language is None:
+        return False
+    if name in _SCORED_ONLY_IN:
+        return language not in _SCORED_ONLY_IN[name]
+    return language in _ADVISORY_BY_LANGUAGE.get(name, ())
 
 
 def severity_deduction(sev: Severity) -> float:
@@ -640,7 +671,8 @@ def dimensions_for(name: str, language: str | None = None) -> set[str]:
     Unlisted biomarkers default to ``{"defect"}`` (the historical single score).
     Performance-only detectors map to ``{"performance"}`` and are deliberately
     excluded from ``defect`` - that exclusion is what keeps the defect golden
-    guarantee intact. *language* applies ``_ADVISORY_BY_LANGUAGE``.
+    guarantee intact. *language* applies ``_ADVISORY_BY_LANGUAGE`` and
+    ``_SCORED_ONLY_IN``.
     """
     if _advisory_in(name, language):
         return {ADVISORY_DIMENSION}

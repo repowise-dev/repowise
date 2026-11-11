@@ -32,7 +32,8 @@ _EXPECTED_CATEGORY_CAPS = {
     "size_and_complexity": 1.5,
     "duplication": 1.0,
     "test_quality": 0.5,
-    # Holds only the advisory error_handling marker, so no finding reaches it.
+    # Error-handling anti-patterns: scored in Python only (``_SCORED_ONLY_IN``),
+    # in their own bounded category.
     "error_handling": 0.5,
 }
 
@@ -69,7 +70,11 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     # floored - fired widely but weak/non-predictive at T0
     "developer_congestion": 0.5,
     "primitive_obsession": 0.5,
+    "dry_violation": 0.5,
     "knowledge_loss": 0.4,
+    # Error-handling anti-patterns - maintainability flag excluded from the
+    # calibration roster; floored weight keeps LOW findings at 0.15 each.
+    "error_handling": 0.5,
     # Governance biomarkers (informational - surfaced as findings, not fed back
     # into the score pass, which has already run upstream).
     "contradictory_decision": 1.0,
@@ -209,6 +214,20 @@ def test_continuous_deduction_override_is_used_and_capped():
     scores2, ded2 = score_file([deep])
     assert round(scores2["defect"], 3) == 7.502
     assert [round(d, 3) for d in ded2] == [2.498]
+
+
+def test_error_handling_cap_bounds_stream():
+    """In Python, error_handling findings weigh 0.15 each (LOW 0.3 x 0.5 weight)
+    in their own category, which saturates toward 3.09 x its 0.5 cap whatever
+    the count."""
+    two = [_result("error_handling", Severity.LOW) for _ in range(2)]
+    scores, deductions = score_file(two, "python")
+    assert round(scores["defect"], 3) == 9.727  # raw 0.3 -> 0.273
+    assert [round(d, 3) for d in deductions] == [0.136, 0.136]
+
+    many = [_result("error_handling", Severity.LOW) for _ in range(10)]
+    scores2, _ = score_file(many, "python")
+    assert round(scores2["defect"], 3) == 9.04  # raw 1.5 -> 0.96
 
 
 def test_organizational_cap_bounds_stream():

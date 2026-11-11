@@ -337,8 +337,7 @@ def test_impact_from_overlapping_dry_violation():
     findings = [_DryFinding(12, 22, 1.8)]
     sugs = detect_refactorings(_ctx("pkg/a.py", [pair], findings=findings))
     s = next(s for s in sugs if s.refactoring_type == "extract_helper")
-    # dry_violation is advisory: the plan is listed and frees no points.
-    assert s.impact_delta == removal_gain(findings, [(findings[0], 1.0)]) == 0.0
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 1.0)]) > 0
 
 
 def test_impact_share_counts_cross_file_lines_only():
@@ -351,7 +350,7 @@ def test_impact_share_counts_cross_file_lines_only():
     sugs = detect_refactorings(_ctx("pkg/a.py", [block, other, intra], findings=findings))
     s = next(s for s in sugs if s.target_symbol == "a.py:10-25")
     assert s.evidence["recovered_share"] == 0.5
-    assert s.impact_delta == removal_gain(findings, [(findings[0], 0.5)]) == 0.0
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 0.5)]) > 0
 
 
 def test_no_impact_when_finding_disjoint():
