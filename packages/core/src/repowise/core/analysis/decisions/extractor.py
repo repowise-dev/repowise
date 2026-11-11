@@ -719,10 +719,10 @@ class DecisionExtractor:
         """
         if self._graph is None:
             return []
-        from repowise.core.ingestion.graph._metrics import without_documentation_edges
+        from repowise.core.ingestion.graph._metrics import without_non_code_edges
 
-        # A README linking to every file would otherwise rank as the most central.
-        scores = _centrality_scores(without_documentation_edges(self._graph))
+        # A README linking to every file, or a co-change partner, is not a dependency vote.
+        scores = _centrality_scores(without_non_code_edges(self._graph))
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         out: list[str] = []
         for node, _score in ranked:
@@ -924,10 +924,10 @@ class DecisionExtractor:
         """Get 1-hop graph neighbors for a file."""
         if self._graph is None:
             return []
-        from repowise.core.ingestion.graph._metrics import without_documentation_edges
+        from repowise.core.ingestion.graph._metrics import without_non_code_edges
 
-        # A doc naming the file is not a file the decision affects.
-        graph = without_documentation_edges(self._graph)
+        # A doc naming the file, or a file that changes with it, is not one the decision affects.
+        graph = without_non_code_edges(self._graph)
         neighbors: set[str] = set()
         if file_path in graph:
             neighbors.update(graph.successors(file_path))

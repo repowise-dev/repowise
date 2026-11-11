@@ -59,6 +59,14 @@ def without_documentation_edges(g: nx.DiGraph) -> nx.DiGraph:
     )
 
 
+def without_non_code_edges(g: nx.DiGraph) -> nx.DiGraph:
+    """Read-only view of *g* minus doc links and ``co_changes``: the edges no code dependency runs on."""
+    return nx.subgraph_view(
+        g,
+        filter_edge=lambda u, v: g.edges[u, v].get("edge_type") not in NON_CODE_EDGE_TYPES,
+    )
+
+
 def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
     """Score a directed symbol graph exactly, skipping isolated nodes."""
     from ._betweenness import betweenness_centrality_fast

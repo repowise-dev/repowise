@@ -32,12 +32,8 @@ def limit_to_top_pagerank(
     cannot drift between two copies of the same truncation.
     """
     try:
-        import networkx as nx
-
-        from ...ingestion.graph._metrics import without_documentation_edges
-
-        # Doc links are not importance; ranking with them lifts every file a README names.
-        ranks = nx.pagerank(without_documentation_edges(graph_builder.graph()))
+        # The builder's file PageRank, which skips doc links and co-change edges.
+        ranks = graph_builder.pagerank()
     except Exception:
         ranks = {}
     return sorted(
