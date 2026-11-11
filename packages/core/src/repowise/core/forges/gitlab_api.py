@@ -86,7 +86,10 @@ class GitLabClient:
         query: Mapping[str, Any] | None = {"per_page": PER_PAGE, **(params or {})}
         while url:
             response = self._send("GET", url, path, query, None)
-            yield from _decode(response, path)
+            page = _decode(response, path)
+            if not isinstance(page, list):
+                raise GitLabError(f"GitLab's answer to {path} was not a list.")
+            yield from page
             url = response.links.get("next", {}).get("url")
             # The next link carries the whole query.
             query = None

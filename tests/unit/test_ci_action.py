@@ -206,7 +206,8 @@ def test_each_gitlab_gate_job_hands_its_row_to_the_note_job(gate) -> None:
     }
     assert "repowise-summary/" in job["artifacts"]["paths"]
     assert job["artifacts"]["when"] == "always"
-    assert job["after_script"][-1] == jobs[".repowise-exit-code"]
+    # First, so the missing report of a job that stopped early cannot skip it.
+    assert job["after_script"][0] == jobs[".repowise-exit-code"]
     assert {"job": f"repowise-{gate}", "optional": True} in jobs["repowise-note"]["needs"]
 
 
@@ -234,8 +235,10 @@ def test_a_gitlab_job_that_stopped_early_reads_as_could_not_evaluate(
         "REPOWISE_GATE": "health",
         "CI_JOB_STATUS": status,
     }
-    line = _gitlab_jobs()[".repowise-exit-code"]
-    subprocess.run([bash, "-c", line], cwd=tmp_path, env=env, check=True)
+    # The whole after_script, as GitLab runs it; no report exists here.
+    lines = _gitlab_jobs()["repowise-health"]["after_script"]
+    script = "\n".join(["set -eo pipefail", *lines]) + "\n"
+    subprocess.run([bash, "-c", script], cwd=tmp_path, env=env)
     assert (rows / "health.exit").read_text(encoding="utf-8").strip() == expected
 
 

@@ -98,8 +98,9 @@ repowise-coverage:
       echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/coverage.exit";
       exit "$status"
   after_script:
-    - cat repowise-coverage.md
+    # First: a job that stopped early has no report for cat to read.
     - *repowise-exit-code
+    - cat repowise-coverage.md
   artifacts:
     when: always
     paths: [repowise-coverage.md, repowise-summary/]
@@ -128,8 +129,9 @@ repowise-doc-drift:
       echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/doc-drift.exit"
       exit "$status"
   after_script:
-    - cat repowise-doc-drift.md
+    # First: a job that stopped early has no report for cat to read.
     - *repowise-exit-code
+    - cat repowise-doc-drift.md
   artifacts:
     when: always
     paths: [repowise-doc-drift.md, repowise-summary/]
@@ -157,8 +159,9 @@ repowise-security:
       echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/security.exit"
       exit "$status"
   after_script:
-    - cat repowise-security.md
+    # First: a job that stopped early has no report for cat to read.
     - *repowise-exit-code
+    - cat repowise-security.md
   artifacts:
     when: always
     paths: [repowise-security.md, repowise-summary/]
@@ -186,8 +189,9 @@ repowise-health:
       echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/health.exit"
       exit "$status"
   after_script:
-    - cat repowise-health.md
+    # First: a job that stopped early has no report for cat to read.
     - *repowise-exit-code
+    - cat repowise-health.md
   artifacts:
     when: always
     paths: [repowise-health.md, repowise-summary/]
@@ -232,8 +236,9 @@ repowise-risk:
       echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/risk.exit";
       exit "$status"
   after_script:
-    - cat repowise-risk.md
+    # First: a job that stopped early has no report for cat to read.
     - *repowise-exit-code
+    - cat repowise-risk.md
   artifacts:
     when: always
     paths: [repowise-risk.md, repowise-summary/]

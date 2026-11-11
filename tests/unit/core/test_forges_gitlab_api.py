@@ -221,6 +221,26 @@ def test_an_unreachable_host_is_an_error_without_a_status() -> None:
     assert exc.value.status is None and "Could not reach GitLab at" in str(exc.value)
 
 
+def test_an_answer_in_the_wrong_shape_never_raises(capsys) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/user"):
+            return httpx.Response(200, json={"id": 1001})
+        if request.method == "GET":
+            return httpx.Response(200, json={"not": "a list"})
+        return httpx.Response(201, json=["no id"])
+
+    post_gitlab_note(_rows(), env=ENV, transport=httpx.MockTransport(handler))
+    assert "was not a list" in capsys.readouterr().err
+
+    def no_id(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/user"):
+            return httpx.Response(200, json={"id": 1001})
+        return httpx.Response(200 if request.method == "GET" else 201, json=[] if request.method == "GET" else ["x"])
+
+    post_gitlab_note(_rows(), env=ENV, transport=httpx.MockTransport(no_id))
+    assert "unexpected answer" in capsys.readouterr().err
+
+
 def test_a_web_page_instead_of_the_api_is_an_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html>sign in</html>")

@@ -76,10 +76,15 @@ def post_gitlab_note(
             previous = existing.get("body") if existing else None
             body = render_comment(rows, previous=previous, key=key)
             note, created = upsert_note(client, project, int(iid), body, existing=existing)
+        note_id = note["id"]
     except GitLabError as exc:
         click.echo(f"Could not post the merge-request note. {exc}", err=True)
         return
-    click.echo(f"{'Posted' if created else 'Updated'} merge-request note {note['id']}.", err=True)
+    except (LookupError, TypeError, AttributeError) as exc:
+        # A proxy or a page that is not the API can answer in the wrong shape.
+        click.echo(f"Could not post the merge-request note: unexpected answer ({exc!r}).", err=True)
+        return
+    click.echo(f"{'Posted' if created else 'Updated'} merge-request note {note_id}.", err=True)
 
 
 @click.command("ci-summary")

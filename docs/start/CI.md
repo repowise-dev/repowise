@@ -196,6 +196,8 @@ decided, and its own failure never fails the pipeline.
 - **Variable.** Add it under Settings > CI/CD > Variables as
   `REPOWISE_GITLAB_TOKEN`, masked. Leave it unprotected: merge request
   pipelines run on unprotected branches, where protected variables are empty.
+  Every job of such a pipeline can read it, including code a merge request
+  adds, so keep the token to one project and the Reporter role.
 - **Self-managed GitLab** works the same way: the job talks to
   `CI_API_V4_URL`, which GitLab sets to your instance's API.
 - **Outside the template**, run `repowise ci-summary DIR --gate NAME=CODE ...
