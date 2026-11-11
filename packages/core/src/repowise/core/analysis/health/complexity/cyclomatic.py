@@ -65,6 +65,7 @@ _ELSE_IF_NODE_KINDS = frozenset(
         "if_statement",
         "if_expression",
         "elif_clause",
+        "elif_expression",
         "elsif",
         "else_if_clause",
         "if_let_expression",
@@ -119,6 +120,7 @@ def _is_elif_continuation(node: Node) -> bool:
     special-case. The AST shape differs per grammar:
 
     - Python: a dedicated ``elif_clause`` node (always a continuation).
+    - F#: a dedicated ``elif_expression`` node (always a continuation).
     - Ruby: a dedicated ``elsif`` node (always a continuation).
     - PHP: a dedicated ``else_if_clause`` node for ``elseif`` (always a
       continuation); ``else if`` is wrapped in an ``else_clause`` as below.
@@ -129,7 +131,7 @@ def _is_elif_continuation(node: Node) -> bool:
     """
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
-    if node.type in ("elif_clause", "elsif", "else_if_clause"):
+    if node.type in ("elif_clause", "elif_expression", "elsif", "else_if_clause"):
         return True
     parent = node.parent
     if parent is None:
