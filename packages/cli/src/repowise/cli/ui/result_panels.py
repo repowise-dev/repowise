@@ -137,6 +137,23 @@ DISCOVER_COMMAND = "repowise decision discover"
 _MAX_FOLLOW_UPS = 2
 
 
+def _discover_step(records: int | None, hotspot_count: int) -> list[tuple[str, str]]:
+    """The agent's pass over the decisions on the busiest files, as zero or one row."""
+    if records:
+        noun = "record" if records == 1 else "records"
+        return [
+            (
+                DISCOVER_COMMAND,
+                f"a prompt for your agent: check {records} background {noun} on the busiest files",
+            )
+        ]
+    if records == 0 and hotspot_count > 0:
+        return [
+            (DISCOVER_COMMAND, "a prompt for your agent: record the decisions behind the busiest files")
+        ]
+    return []
+
+
 def build_contextual_next_steps(
     *,
     fast_mode: bool = False,
@@ -177,19 +194,7 @@ def build_contextual_next_steps(
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
-    if discovery_records:
-        noun = "record" if discovery_records == 1 else "records"
-        candidates.append(
-            (
-                DISCOVER_COMMAND,
-                f"a prompt for your agent: check {discovery_records} background {noun} "
-                "on the busiest files",
-            )
-        )
-    elif discovery_records == 0 and hotspot_count > 0:
-        candidates.append(
-            (DISCOVER_COMMAND, "a prompt for your agent: record the decisions behind the busiest files")
-        )
+    candidates.extend(_discover_step(discovery_records, hotspot_count))
     dead = dead_unreachable + dead_unused
     if dead > 0:
         noun = "finding" if dead == 1 else "findings"
