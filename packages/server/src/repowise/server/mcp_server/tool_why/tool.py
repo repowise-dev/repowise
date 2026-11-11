@@ -67,6 +67,8 @@ async def get_why(
         resolve_enum_argument(v, _INCLUDE, argument="include", ignored=ignored)
         for v in include or []
     ]
+    if reference:
+        id, repo = _reference_coordinates(reference, id, repo)
     result = await _dispatch(query, targets, repo, id, reference, history)
     attach_ignored_arguments(result, ignored)
     return result
@@ -84,8 +86,37 @@ async def _dispatch(
     reference: dict[str, Any] | None,
     history: bool,
 ) -> dict:
-    if reference:
-        id, repo = _reference_coordinates(reference, id, repo)
+    early = await _without_question(query, targets, repo, id, reference, history)
+    if early is not None:
+        return early
+
+    # --- Mode 2: Path → decisions, origin story, alignment ---
+    if _is_path(query):
+        return _stamp_answer_basis(_lean(await _why_path(query, repo, history=history)))
+
+    # --- Mode 3: Natural language → target-aware search ---
+    # A named file anchors as ``targets`` would; a failed lookup anchors nothing.
+    named = None
+    if not targets:
+        try:
+            named = await _named_file(query, repo)
+        except Exception:
+            named = None
+    result = await _why_search(query, [named] if named else targets, repo)
+    if named:
+        result["anchored_on"] = named
+    return _stamp_answer_basis(_lean(result))
+
+
+async def _without_question(
+    query: str | None,
+    targets: list[str] | None,
+    repo: str | None,
+    id: str | None,
+    reference: dict[str, Any] | None,
+    history: bool,
+) -> dict | None:
+    """A reference lookup, a cross-repo search, targets alone or the dashboard; else None."""
     if id:
         if repo == "all":
             return _unsupported_repo_all("get_why (reference lookup)")
@@ -108,23 +139,7 @@ async def _dispatch(
             )
         # An orientation call, not an answer: no basis to name.
         return _lean(await _why_health_dashboard(repo))
-
-    # --- Mode 2: Path → decisions, origin story, alignment ---
-    if _is_path(query):
-        return _stamp_answer_basis(_lean(await _why_path(query, repo, history=history)))
-
-    # --- Mode 3: Natural language → target-aware search ---
-    # A named file anchors as ``targets`` would; a failed lookup anchors nothing.
-    named = None
-    if not targets:
-        try:
-            named = await _named_file(query, repo)
-        except Exception:
-            named = None
-    result = await _why_search(query, [named] if named else targets, repo)
-    if named:
-        result["anchored_on"] = named
-    return _stamp_answer_basis(_lean(result))
+    return None
 
 
 def _lean(result: dict) -> dict:

@@ -49,15 +49,19 @@ def _why_path_summary(result: dict[str, Any]) -> str:
     # ``decisions`` is capped by the path-mode projection; report what
     # governs the file, not how many survived the cap.
     total = result.get("decisions_total", len(decisions))
-    parts = [f"{total} decision(s)"]
-    # Alignment and the origin story come only with the history; absent, not unknown.
+    return ", ".join([f"{total} decision(s)", *_why_history_parts(result)])
+
+
+def _why_history_parts(result: dict[str, Any]) -> list[str]:
+    """Alignment and author, which come only with the history; absent, not unknown."""
+    parts = []
     score = (result.get("alignment") or {}).get("score")
     if score is not None:
         parts.append(f"alignment: {score}")
     origin = result.get("origin_story") or {}
     if origin.get("available") and origin.get("primary_author"):
         parts.append(f"author: {origin['primary_author']}")
-    return ", ".join(parts)
+    return parts
 
 
 def _why_summary(result: dict[str, Any]) -> str:
