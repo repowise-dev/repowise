@@ -937,8 +937,9 @@ But propagating changes through the entire dependency graph could trigger hundre
 ```
 Input:
   file_diffs: list of changed files with their old/new parsed versions
-  graph: dependency graph (directed, import edges; `documents` edges dropped,
-         so a doc linking to a changed file is not regenerated for it)
+  graph: dependency graph (directed, import edges; `documents` and `co_changes`
+         edges dropped from the walk, so a doc linking to a changed file is not
+         regenerated for it, and co-change partners only decay (step 4))
   cascade_budget: max pages to fully regenerate (adaptive, hard cap 50)
 
 Output:
