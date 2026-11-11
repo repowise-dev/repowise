@@ -9,7 +9,7 @@ nodes and pull condition subtrees out for the boolean-operator tally.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .ast_utils import is_named_block_lambda
 from .body_facts import BodyTally, step
@@ -361,30 +361,80 @@ def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     return cases
 
 
-def _is_flat_match(node: Node, lmap: LanguageNodeMap) -> bool:
-    """Return True if *node* is a match/switch with only simple arms.
+# Arm node types that are a switch's ``default`` (TS, Go, Dart).
+_DEFAULT_ARM_KINDS = frozenset({"switch_default", "default_case", "switch_statement_default"})
+# The token or keyword that opens a ``default`` / ``else ->`` arm (C, C#,
+# Kotlin, Swift, Java's ``switch_label``).
+_DEFAULT_TOKENS = frozenset({"default", "else", "default_keyword"})
+# A catch-all pattern: Rust / Scala / Python / C# ``_``, shell ``*)``.
+_WILDCARD_TEXTS = frozenset({b"_", b"*"})
+# A case guard, per grammar (Scala, Python, Swift).
+_GUARD_KINDS = frozenset({"guard", "if_clause", "where_clause"})
 
-    A "flat" match has arms whose bodies are single expressions without
-    nested control flow (no ``if``, ``match``, ``for``, ``while``,
-    ``loop``, ``if_let``, ``while_let`` expressions, and no ``block``
-    with multiple statements).  Flat matches contribute 1 CCN point for
-    the match keyword itself but do NOT count each arm individually.
 
-    Python's ``match_statement`` is excluded: ``match``/``case`` in Python
-    is *pattern matching* — each ``case`` is a distinct branch point,
-    structurally the same decision as ``if``/``elif``. Suppressing its arms
-    like a C-style flat switch would report a ``match`` with N arms as ~N
-    points too low (measured: a 3-arm ``match`` gave CCN 2 while the
-    equivalent ``if``/``elif`` gave 4). Rust ``match_expression`` and other
-    languages' dispatch switches keep the flat behaviour.
+def _is_default_arm(arm: Node) -> bool:
+    """A ``default`` / ``else ->`` / ``_`` arm: where the dispatch lands when no case
+    matched, not a decision of its own."""
+    if arm.type in _DEFAULT_ARM_KINDS:
+        return True
+    if not arm.children:
+        return False
+    first = arm.children[0]
+    if first.type == "switch_label":
+        first = first.children[0] if first.children else first
+    if first.type in _DEFAULT_TOKENS:
+        return True
+    head = first if first.is_named else (arm.named_children or [first])[0]
+    # ``case _ if c`` / ``case _ where c`` decides on its guard: a case.
+    guarded = arm.child_by_field_name("guard") is not None or any(
+        c.type in _GUARD_KINDS for c in arm.named_children
+    )
+    return head.text in _WILDCARD_TEXTS and not guarded
+
+
+def _has_subject(node: Node) -> bool:
+    """A subjectless ``switch {}`` / ``when {}`` / ``case`` is an ``if`` chain."""
+    if node.type == "expression_switch_statement":
+        return node.child_by_field_name("value") is not None
+    if node.type == "when_expression":
+        return any(c.type == "when_subject" for c in node.children)
+    if node.type == "case" and any(c.type == "when" for c in node.children):
+        return node.child_by_field_name("value") is not None
+    return True
+
+
+class _Arms(NamedTuple):
+    """How a switch's arms count: ``flat`` ones not at all, ``counted`` ones one
+    point each, and the switch one point for its simple cases (``point``)."""
+
+    flat: set[int]
+    counted: set[int]
+    point: bool
+
+
+def _split_arms(node: Node, lmap: LanguageNodeMap) -> _Arms:
+    """Sort a switch's arms by how they count.
+
+    A ``default`` / ``else`` / ``_`` arm is never a case. A case whose arm
+    holds no control flow (no ``if`` / loop / switch, no multi-statement
+    ``block``) is one more value of the dispatch: the simple cases count one
+    point together, on the switch. A case with control flow of its own counts
+    one point, so one ``if`` in one arm leaves the other arms flat.
+
+    A switch with no subject (``when { }``, Go ``switch { }``) is an ``if`` /
+    ``else if`` chain once any arm has control flow: then each case counts.
+    Python's ``match_statement`` always keeps one point per case: ``match`` /
+    ``case`` is pattern matching, the same decision as ``if`` / ``elif`` (a
+    3-arm ``match`` would score 2 against the equivalent ``if`` / ``elif``'s 4).
     """
-    if node.type == "match_statement":
-        return False
     complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
-    cases = _collect_case_children(node, lmap)
-    if not cases:
-        return False
-    return all(not _subtree_contains_complex(arm, complex_types) for arm in cases)
+    cases = [arm for arm in _collect_case_children(node, lmap) if not _is_default_arm(arm)]
+    defaults = {arm.id for arm in _collect_case_children(node, lmap)} - {c.id for c in cases}
+    tangled = {c.id for c in cases if _subtree_contains_complex(c, complex_types)}
+    if node.type == "match_statement" or (tangled and not _has_subject(node)):
+        tangled = {c.id for c in cases}
+    simple = {c.id for c in cases} - tangled
+    return _Arms(defaults | simple, tangled, bool(simple))
 
 
 def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> bool:
@@ -580,15 +630,10 @@ def _walk_function_body(
             # try's depth (Sonar's cognitive complexity spec).
             bare_handler_ids.update(_bare_on_handlers(node))
         elif node.is_named and node.type in lmap.switch_kinds:
-            arm_ids = {c.id for c in _collect_case_children(node, lmap)}
-            # Detect flat match: all arms are simple single-expression arms.
-            if _is_flat_match(node, lmap):
-                flat_arm_ids.update(arm_ids)
-                # Flat match: count 1 CCN point for the match itself,
-                # open a nesting level, but arms won't be counted.
-                ccn_increment = 1
-            else:
-                switch_arm_ids.update(arm_ids)
+            arms = _split_arms(node, lmap)
+            flat_arm_ids.update(arms.flat)
+            switch_arm_ids.update(arms.counted)
+            ccn_increment = int(arms.point)
             # The switch opens one nesting level for its whole body; each
             # case adds CCN only.
             nesting_increment = 1
