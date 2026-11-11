@@ -1182,6 +1182,7 @@ def test_decision_add_derives_the_title_when_none_is_given(indexed_repo: Path) -
         [
             "decision", "add",
             "--decision", "Escape % and _ before interpolating. Unescaped patterns scan.",
+            "--agent", "claude_code",
             "--format", "json",
             str(indexed_repo),
         ],
@@ -1189,4 +1190,17 @@ def test_decision_add_derives_the_title_when_none_is_given(indexed_repo: Path) -
     )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["decision"]["title"] == "Escape % and _ before interpolating"
+    assert json.loads(result.output)["decision"]["title"] == (
+        "Escape % and _ before interpolating. Unescaped patterns scan"
+    )
+
+
+def test_a_person_with_no_title_is_still_asked_for_it(indexed_repo: Path) -> None:
+    result = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--decision", "Escape LIKE patterns", "--format", "json", str(indexed_repo)],
+        input="",
+    )
+
+    assert result.exit_code != 0
+    assert "--title" in result.output

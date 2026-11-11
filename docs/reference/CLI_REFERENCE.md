@@ -987,7 +987,7 @@ Manage architectural decision records.
 repowise decision list
 repowise decision show ID
 repowise decision add                   # interactive
-repowise decision add --decision D  # no prompts, lands proposed
+repowise decision add --title T --decision D  # no prompts, lands proposed
 repowise decision add --agent SLUG --decision D --rationale R --affects PATH  # an agent's own record
 repowise decision candidates            # awaiting review; these govern nothing
 repowise decision confirm ID...         # accept: this makes them govern
@@ -1020,7 +1020,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--title` | Short title. Defaults to the decision's first sentence. | |
+| `--title` | Short title. With `--agent`, defaults to the decision's opening words. | |
 | `--decision` | What was chosen. | |
 | `--context` | What forced it. | |
 | `--rationale` | Why. | |
@@ -1033,7 +1033,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--agent` | Record as this agent's (source `agent`, e.g. `claude_code`); acceptance then needs evidence. | |
 | `--session` | The agent session recording it. Needs `--agent`. | |
 
-- `--decision`: no prompts, prints the new id. Any flag, or `--format json`, without it is refused.
+- `--title` plus `--decision` (or `--decision` with `--agent`): no prompts, prints the new id. Any flag, or `--format json`, without them is refused.
 - Flag-driven records land `proposed`, interactive `active`; promote with `repowise decision confirm <id>`.
 
 **`candidates`**

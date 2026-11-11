@@ -462,6 +462,8 @@ def test_upkeep_needs_a_named_decision_and_a_settling_verb():
         _bash("repowise decision reaffirm deadbeef --agent x"),
         _bash("repowise decision show 1a2b3c4d"),
         ("Read", json.dumps({"file_path": "1a2b3c4d"})),
+        # Named in the same call, but not as an argument of the command.
+        _bash("git commit -m 'run repowise decision reaffirm later for 1a2b3c4d'"),
     ]
 
     assert classify(_upkeep_firing(), calls).acted is False

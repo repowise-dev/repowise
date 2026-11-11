@@ -168,19 +168,18 @@ missing a reason, scope or evidence has Accept disabled with the gap named.
 # a coding agent records a choice it reasoned out
 repowise decision add --agent claude_code --decision D --rationale R --affects PATH --evidence-commit SHA
 repowise decision add                                        # a person: guided prompts
-repowise decision add --decision D [--affects PATH ...]   # a person: no prompts
+repowise decision add --title T --decision D [--affects PATH ...]   # a person: no prompts
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `--decision` | Switches to non-interactive mode and prints the new id |
-| `--title` | A short title; defaults to the decision's first sentence |
+| `--title`, `--decision` | Both together switch to non-interactive mode and print the new id |
 | `--context`, `--rationale` | Why it was needed, why this choice |
 | `--alternative`, `--consequence` | A rejected alternative; a tradeoff accepted. Repeatable |
 | `--affects`, `--tag` | A file or module it governs; a tag. Repeatable |
 | `--evidence-commit` | A commit the decision was made in. Repeatable |
 | `--kind` | `architectural` (default) or `agreement` |
-| `--agent`, `--session` | Sign the record as this coding agent (source `agent`), with its session id. Needs `--decision` |
+| `--agent`, `--session` | Sign the record as this coding agent (source `agent`), with its session id. Needs `--decision`; `--title` defaults to its opening words |
 | `--format json` | Machine-readable output with the full id |
 
 What gets stored depends on how you add it:
@@ -188,7 +187,7 @@ What gets stored depends on how you add it:
 - Guided prompts record an acceptance, signed by you. An architectural
   decision that names no files is kept as a candidate, because it cannot be
   checked against the code.
-- Flags (`--decision` and the rest) store a candidate (`proposed`). A person
+- Flags (`--title` and `--decision`) store a candidate (`proposed`). A person
   answering the prompts has reviewed the decision; a script or agent inferring
   one has not. An agent promotes it with
   `repowise decision confirm ID --agent SLUG --evidence <commit|file>`; a person

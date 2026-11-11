@@ -372,8 +372,12 @@ _WRONG_PATH_ATTEMPTED = re.compile(r"^\[repowise\] (?P<attempted>\S+) is not in 
 #: The decision ids an upkeep line names: each is followed by its quoted title.
 _UPKEEP_IDS = re.compile(r'\b([0-9a-f]{8}) "')
 
-#: The three settling commands, through ``repowise distill`` or not.
-_UPKEEP_CMD = re.compile(r"\brepowise\s+(?:distill\s+)?decision\s+(reaffirm|deprecate)\b")
+#: The three settling commands, through ``repowise distill`` or not, with the
+#: ids they were given: a named id has to be an argument of that command, not
+#: just somewhere in the same call.
+_UPKEEP_CMD = re.compile(
+    r"\brepowise\s+(?:distill\s+)?decision\s+(reaffirm|deprecate)((?:\s+[0-9a-f]{8,})+)"
+)
 
 #: A path-shaped token, for harvesting the file lists that follow a triage
 #: header or ride inside a digest body. Both separators are accepted: triage
@@ -641,10 +645,11 @@ def _acted_upkeep(firing: Firing, name: str, norm: str, raw: str) -> str:
     """A settling command on a decision the line named; its verb is the evidence."""
     if name not in ("Bash", "PowerShell"):
         return ""
-    m = _UPKEEP_CMD.search(raw)
-    if m is None or not any(t in raw for t in firing.targets):
-        return ""
-    return m.group(1)
+    for m in _UPKEEP_CMD.finditer(raw):
+        given = m.group(2).split()
+        if any(arg.startswith(t) for arg in given for t in firing.targets):
+            return m.group(1)
+    return ""
 
 
 def firing_dose(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -658,7 +663,9 @@ def firing_dose(rows: list[dict[str, Any]]) -> dict[str, int]:
     """
     by_session: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        by_session.setdefault(row.get("session_id") or "", []).append(row)
+        # A row with no session cannot be ordered within one.
+        if row.get("session_id"):
+            by_session.setdefault(row["session_id"], []).append(row)
     out = dict.fromkeys(
         ("firings", "acted", "first", "first_acted", "second", "second_acted"), 0
     )
