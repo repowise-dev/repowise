@@ -180,6 +180,11 @@ def values_cell(s: Setting, *, as_env: bool = False) -> str:
         return f"{bounds} (clamped)" if s.out_of_range == "clamp" else bounds
     if s.choices:
         return ", ".join(_code(c) for c in s.choices)
+    if s.members:
+        from repowise.core.settings.registry import family_members
+
+        slot = s.key.split("<", 1)[1].split(">", 1)[0]
+        return f"{slot}: " + ", ".join(_code(m) for m in family_members(s))
     if as_env and s.type == "bool" and s.env is not None:
         return _bool_spellings(s)
     return ""

@@ -1214,16 +1214,9 @@ openai: {base_url: http://localhost:1234/v1}
 ```
 
 <!-- BEGIN GENERATED settings:provider-endpoints (python scripts/gen_config_docs.py) -->
-| Key | Default | What it does |
-|-----|---------|--------------|
-| `gemini.base_url` | unset | Custom http(s) endpoint for gemini, such as a proxy or a local server. |
-| `anthropic.base_url` | unset | Custom http(s) endpoint for anthropic, such as a proxy or a local server. |
-| `openai.base_url` | unset | Custom http(s) endpoint for openai, such as a proxy or a local server. |
-| `deepseek.base_url` | unset | Custom http(s) endpoint for deepseek, such as a proxy or a local server. |
-| `kimi.base_url` | unset | Custom http(s) endpoint for kimi, such as a proxy or a local server. |
-| `edenai.base_url` | unset | Custom http(s) endpoint for edenai, such as a proxy or a local server. |
-| `ollama.base_url` | unset | Custom http(s) endpoint for ollama, such as a proxy or a local server. |
-| `litellm.base_url` | unset | Custom http(s) endpoint for litellm, such as a proxy or a local server. |
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `<provider>.base_url` | unset | provider: `gemini`, `anthropic`, `openai`, `deepseek`, `kimi`, `edenai`, `ollama`, `litellm` | Custom http(s) endpoint for a provider (openai.base_url and the like), such as a proxy or a local server. |
 <!-- END GENERATED settings:provider-endpoints -->
 
 ## Embeddings (for semantic search)
