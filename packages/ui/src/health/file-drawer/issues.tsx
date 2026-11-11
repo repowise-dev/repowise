@@ -40,6 +40,7 @@ import {
   type TopIssue,
 } from "./model";
 import { MICRO_LABEL, POOLED_FILE_KEY, QUIET_LINK, STATUS_LABEL, TRIAGE_STATUSES } from "./shared";
+import { formatNumber } from "../../lib/format";
 
 /** What every row needs from the drawer: links, triage, and its opened detail. */
 export interface RowContext {
@@ -251,7 +252,7 @@ export function OtherIssues({
   ctx: RowContext;
 }) {
   if (rest.length === 0 && heldBackTotal === 0) return null;
-  const count = rest.length.toLocaleString();
+  const count = formatNumber(rest.length);
   return (
     <CollapsibleSection
       title={leading > 0 ? `Other issues (${count})` : `All issues (${count})`}
@@ -259,7 +260,7 @@ export function OtherIssues({
     >
       {heldBackTotal > 0 ? (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          <span className="tabular-nums">{heldBackTotal.toLocaleString()}</span> more{" "}
+          <span className="tabular-nums">{formatNumber(heldBackTotal)}</span> more{" "}
           {heldBackTotal === 1 ? "finding is" : "findings are"} held back:{" "}
           {Object.values(heldBack ?? {})
             .map((g) => g.reason)

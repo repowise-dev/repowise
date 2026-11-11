@@ -23,8 +23,8 @@ def load_state(repo_path: Path) -> dict[str, Any]:
 
 #: Slots the last whole-repo generation put in front of this repository's
 #: signals, which is not the same as the slots that produced a page. The two
-#: differ, and only the first answers "has this index ever been offered a
-#: Glossary?".
+#: differ, and only the first answers "has this index ever been offered an
+#: Active Landscape?".
 ONBOARDING_SLOTS_OFFERED_KEY = "onboarding_slots_offered"
 
 
@@ -40,11 +40,10 @@ def stamp_offered_slots(state: dict[str, Any], *, enabled: bool = True) -> None:
     was built has never been evaluated here, and ``update --full`` would build
     it; a slot that *was* evaluated and whose gate refused the repository will
     be refused again by the same signals, and telling the user to spend a model
-    run on it is a lie. Measured on ``test-repos/microdot``: of the five
-    registered slots, two produce pages and three (``getting_started``,
-    ``active_landscape``, ``glossary``) are gate-skipped on every run, full or
-    fresh. A notice driven by the rows alone would name all three, forever, and
-    none of them would ever arrive.
+    run on it is a lie. Measured on ``test-repos/microdot``: some registered
+    slots (``getting_started``, ``active_landscape``) are gate-skipped on every
+    run, full or fresh. A notice driven by the rows alone would name them
+    forever, and none of them would ever arrive.
 
     ``enabled`` is the run's ``enable_onboarding``. A run with onboarding off
     offered nothing, and recording otherwise would silence the notice for a

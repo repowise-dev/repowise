@@ -216,8 +216,7 @@ describe("a candidate is a review request, not an instruction", () => {
     // row already knows all three, so the button says so before it is pressed
     // rather than reporting it in an error toast afterwards.
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByText(/no scope: name the files or modules it governs/))
-      .toBeInTheDocument();
+    expect(screen.getByText(/names no files/)).toBeInTheDocument();
     // Dismissing stays available: an unacceptable candidate is exactly the one
     // worth tombstoning.
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeEnabled();
@@ -232,8 +231,7 @@ describe("a candidate is a review request, not an instruction", () => {
 
     // The row reads the title fallback, but acceptance reads the stored text.
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByText(/no decision text: state what was chosen/))
-      .toBeInTheDocument();
+    expect(screen.getByText(/doesn't say what was chosen/i)).toBeInTheDocument();
   });
 
   it("leaves Accept enabled on a candidate that carries what the contract needs", () => {
@@ -311,6 +309,25 @@ describe("who signed is provenance, read in the drawer", () => {
       decisions: [
         record({
           currency: "active",
+          accepter: "Raghav",
+          accepter_kind: "person",
+          accepter_session: "sess-42",
+        }),
+      ],
+    });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
+
+    expect(drawer.getByText("Signed by Raghav, session sess-42")).toBeInTheDocument();
+    expect(drawer.queryByText(/an agent|a person/)).not.toBeInTheDocument();
+  });
+
+  it("says an agent accepted it once, not again as a signer", () => {
+    renderLanes("active", {
+      decisions: [
+        record({
+          currency: "active",
           accepter: "claude_code",
           accepter_kind: "agent",
           accepter_session: "sess-42",
@@ -321,8 +338,8 @@ describe("who signed is provenance, read in the drawer", () => {
     fireEvent.click(screen.getByText("Use JWT for authentication"));
     const drawer = within(screen.getByRole("dialog"));
 
-    expect(drawer.getByText("Signed by claude_code, session sess-42")).toBeInTheDocument();
-    expect(drawer.queryByText(/an agent|a person/)).not.toBeInTheDocument();
+    expect(drawer.getByText("Accepted by your agent (sess-42)")).toBeInTheDocument();
+    expect(drawer.queryByText(/Signed by|Signer not recorded/)).not.toBeInTheDocument();
   });
 
   it("says nothing about a candidate, which nobody signed", () => {
@@ -332,6 +349,31 @@ describe("who signed is provenance, read in the drawer", () => {
 
     expect(within(screen.getByRole("dialog")).queryByText(/Signed by|Signer not recorded/))
       .not.toBeInTheDocument();
+  });
+});
+
+describe("reviewing the candidates with an agent", () => {
+  it("copies the host's prompt from the candidates lane", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderLanes("candidates", { reviewPrompt: () => "review them" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Review with your agent" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("review them"));
+  });
+
+  it("is offered only where there are candidates and a prompt", () => {
+    const first = renderLanes("candidates");
+    expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
+    first.unmount();
+
+    const second = renderLanes("candidates", { reviewPrompt: () => "x", decisions: [] });
+    expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
+    second.unmount();
+
+    renderLanes("active", { reviewPrompt: () => "x" });
+    expect(screen.queryByRole("button", { name: /with your agent/ })).not.toBeInTheDocument();
   });
 });
 

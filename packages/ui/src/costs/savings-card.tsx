@@ -3,7 +3,7 @@
 import { Scissors, Sparkles, Zap } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
-import { formatCost, formatTokens } from "../lib/format";
+import { formatCost, formatNumber, formatTokens } from "../lib/format";
 import { ProportionBar } from "../shared/proportion-bar";
 
 export interface SavingsBreakdownRow {
@@ -212,7 +212,7 @@ export function SavingsCard({ data }: SavingsCardProps) {
           <div className="flex gap-6 text-right">
             <div>
               <div className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
-                {data.unique_events.toLocaleString()}
+                {formatNumber(data.unique_events)}
               </div>
               <div className="text-xs text-[var(--color-text-tertiary)]">
                 interaction{data.unique_events === 1 ? "" : "s"}
@@ -220,7 +220,7 @@ export function SavingsCard({ data }: SavingsCardProps) {
             </div>
             <div>
               <div className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
-                {data.mcp_queries_answered.toLocaleString()}
+                {formatNumber(data.mcp_queries_answered)}
               </div>
               <div className="text-xs text-[var(--color-text-tertiary)]">
                 MCP quer{data.mcp_queries_answered === 1 ? "y" : "ies"} answered
@@ -274,7 +274,7 @@ export function SavingsCard({ data }: SavingsCardProps) {
               <span className="font-medium text-[var(--color-warning)]">
                 Observed opportunity: ~{formatTokens(data.missed_tokens_est ?? 0)}
               </span>{" "}
-              — {(data.missed_events ?? 0).toLocaleString()} raw command
+              — {formatNumber(data.missed_events ?? 0)} raw command
               {(data.missed_events ?? 0) === 1 ? "" : "s"} bypassed distillation in the last{" "}
               {data.missed_window_days ?? 7} days.{" "}
               <a
@@ -296,7 +296,7 @@ export function SavingsCard({ data }: SavingsCardProps) {
               <span className="font-medium text-[var(--color-warning)]">
                 Potentially avoid ~{formatTokens(data.reread_tokens_est ?? 0)}
               </span>{" "}
-              — {(data.reread_events ?? 0).toLocaleString()} full re-read
+              — {formatNumber(data.reread_events ?? 0)} full re-read
               {(data.reread_events ?? 0) === 1 ? "" : "s"} of unchanged files{" "}
               {(data.reread_events ?? 0) === 1 ? "was" : "were"} observed.
             </div>

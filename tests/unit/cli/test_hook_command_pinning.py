@@ -125,6 +125,153 @@ def test_install_repins_to_the_install_running_it(install, settings_path) -> Non
     assert claude_config._rewrite_hook_command() in commands
 
 
+#: The shell gate releases before this one wrote: ``git commit`` alone.
+_COMMIT_ONLY_GATE = 'input=$(cat); case "$input" in *"git commit"*) '
+_PATH_RUN = (
+    'command -v repowise-augment >/dev/null 2>&1; then printf "%s" "$input" | repowise-augment'
+)
+
+
+def _commit_only_capture(pinned: str | None = None) -> str:
+    """The capture command exactly as a commit-only release wrote it."""
+    if pinned is None:
+        run = f"if {_PATH_RUN}; fi"
+    else:
+        run = f"if [ -x '{pinned}' ]; then printf \"%s\" \"$input\" | '{pinned}'; elif {_PATH_RUN}; fi"
+    return f"{_COMMIT_ONLY_GATE}{run};; esac"
+
+
+def _write_capture_settings(settings_path: Path, command: str, **extra) -> None:
+    """Settings with the augment entry and a capture entry running *command*."""
+    capture = claude_config._capture_entry()
+    capture["hooks"][0]["command"] = command
+    augment = {
+        "matcher": claude_config._AUGMENT_MATCHER,
+        "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
+    }
+    settings = {"hooks": {"PostToolUse": [augment, capture]}, **extra}
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+
+def _capture_commands(settings_path: Path) -> list[str]:
+    entries = json.loads(settings_path.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]
+    return [h["command"] for e in entries if claude_config._is_capture_entry(e) for h in e["hooks"]]
+
+
+def _elsewhere(tmp_path: Path) -> str:
+    """A live ``repowise-augment`` belonging to another install on this machine."""
+    other = tmp_path / "other" / f"repowise-augment{_SUFFIX}"
+    other.parent.mkdir()
+    other.write_text("", encoding="utf-8")
+    return other.as_posix()
+
+
+def test_the_self_heal_widens_a_commit_only_gate_with_nothing_to_pin(
+    settings_path, tmp_path, monkeypatch
+) -> None:
+    """No script beside the interpreter: the PATH form is both old and new pin."""
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    _write_capture_settings(settings_path, _commit_only_capture())
+
+    assert claude_config.migrate_claude_code_hooks()
+
+    assert _capture_commands(settings_path) == [claude_config._CAPTURE_HOOK_COMMAND]
+    assert not claude_config.migrate_claude_code_hooks()  # settled
+
+
+def test_the_self_heal_widens_a_commit_only_gate_and_keeps_a_live_pin(
+    install, settings_path, tmp_path
+) -> None:
+    """Two installs must not take turns rewriting the file, so the pin stays."""
+    other = _elsewhere(tmp_path)
+    _write_capture_settings(settings_path, _commit_only_capture(other))
+
+    assert claude_config.migrate_claude_code_hooks()
+
+    widened = claude_config._capture_hook_command().replace(
+        _script(install, "repowise-augment"), other
+    )
+    assert _capture_commands(settings_path) == [widened]
+    assert not claude_config.migrate_claude_code_hooks()
+
+
+def test_the_self_heal_widens_and_pins_a_commit_only_gate_on_path(install, settings_path) -> None:
+    _write_capture_settings(settings_path, _commit_only_capture())
+
+    assert claude_config.migrate_claude_code_hooks()
+
+    assert _capture_commands(settings_path) == [claude_config._capture_hook_command()]
+
+
+def test_install_widens_a_commit_only_gate_with_nothing_to_pin(
+    settings_path, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    _write_capture_settings(settings_path, _commit_only_capture())
+
+    claude_config.install_claude_code_hooks()
+
+    assert _capture_commands(settings_path) == [claude_config._CAPTURE_HOOK_COMMAND]
+
+
+def test_install_widens_a_commit_only_gate_and_repins_it_here(
+    install, settings_path, tmp_path
+) -> None:
+    """``init`` keeps its policy: the hook runs the install that ran it."""
+    _write_capture_settings(settings_path, _commit_only_capture(_elsewhere(tmp_path)))
+
+    claude_config.install_claude_code_hooks()
+
+    assert _capture_commands(settings_path) == [claude_config._capture_hook_command()]
+
+
+def test_widening_the_gate_leaves_everything_else_alone(install, settings_path) -> None:
+    from repowise.core.owned_paths import COVERAGE_HOOK_COMMAND
+
+    # A user's own gate on the same words runs their tool, not ours.
+    theirs = f"{_COMMIT_ONLY_GATE}my-tool --after-commit;; esac"
+    _write_capture_settings(
+        settings_path,
+        _commit_only_capture(),
+        permissions={"allow": ["Bash(git status:*)"]},
+    )
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["hooks"]["PostToolUse"] += [
+        {"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": theirs}]},
+        claude_config._coverage_entry(),
+    ]
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    claude_config.migrate_claude_code_hooks()
+
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert saved["permissions"] == {"allow": ["Bash(git status:*)"]}
+    commands = _commands(settings_path)
+    assert theirs in commands
+    assert COVERAGE_HOOK_COMMAND in commands
+    assert _capture_commands(settings_path) == [claude_config._capture_hook_command()]
+
+
+def test_a_plugin_with_the_commit_only_gate_still_stands_in_for_ours(
+    install, settings_path
+) -> None:
+    """The CLI never rewrites plugin files; the plugin's own update widens its gate.
+
+    Until then it still carries the shell entry, so settings must not gain a
+    second one that would start the shell twice on every shell call.
+    """
+    capture = claude_config._capture_entry()
+    capture["hooks"][0]["command"] = _commit_only_capture()
+    _enable_plugin(settings_path, {"PostToolUse": [capture]})
+    plugin_file = next(settings_path.parent.glob("plugins/cache/repowise/*/hooks/hooks.json"))
+    shipped = plugin_file.read_text(encoding="utf-8")
+
+    claude_config.install_claude_code_hooks()
+
+    assert _capture_commands(settings_path) == []
+    assert plugin_file.read_text(encoding="utf-8") == shipped
+
+
 def test_a_hook_whose_script_is_nowhere_is_reported(install, settings_path) -> None:
     from repowise.cli.commands.doctor_cmd._checks.integrations import _hook_scripts_row
 

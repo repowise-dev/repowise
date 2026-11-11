@@ -28,6 +28,13 @@ import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
 import { DecisionReviewDrawer } from "./decision-review-drawer";
+import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
+import { DecisionAppliedLine, DecisionOrigin, acceptedLine } from "./decision-origin";
+import { AiPromptButton } from "../health/ai-prompt-button";
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 import type { BulkReviewResult } from "./bulk-review";
 import { useBulkSelection, type BulkState, type Selection } from "./use-bulk-selection";
 import {
@@ -103,6 +110,12 @@ const LANE_EMPTY: Record<DecisionLane, string> = {
   history: "Nothing has been retired yet.",
 };
 
+/** The candidates lane's agent action. Hosts use the same words wherever they offer it. */
+export const REVIEW_WITH_AGENT_LABEL = "Review with your agent";
+
+/** The agent action for recording decisions nobody wrote down yet. */
+export const ADD_WITH_AGENT_LABEL = "Add decisions with your agent";
+
 export interface DecisionReviewLanesProps {
   lane: DecisionLane;
   onLaneChange: (lane: DecisionLane) => void;
@@ -123,8 +136,11 @@ export interface DecisionReviewLanesProps {
    */
   source?: string;
   onSourceChange?: (source: string) => void;
-  /** Accepts the candidate. Omit where the surface cannot write. */
-  onAccept?: (decision: DecisionRecord) => void;
+  /**
+   * Accepts the candidate. Omit where the surface cannot write. `options`
+   * carries a reason typed in the drawer; send it as `reason` on the write.
+   */
+  onAccept?: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void;
   /** Dismisses the candidate as a tombstone. Omit where the surface cannot write. */
   onDismiss?: (decision: DecisionRecord) => void;
   /**
@@ -171,6 +187,12 @@ export interface DecisionReviewLanesProps {
     decisions: DecisionRecord[],
     onProgress: (settled: number) => void,
   ) => Promise<BulkReviewResult>;
+  /**
+   * The prompt that hands the candidates to the reader's agent to review,
+   * built on click. Shown on the Candidates lane while it has rows; omit it
+   * and the lane offers no agent action.
+   */
+  reviewPrompt?: () => string;
 }
 
 export function DecisionReviewLanes({
@@ -193,6 +215,7 @@ export function DecisionReviewLanes({
   order,
   onReaffirm,
   onDismissMany,
+  reviewPrompt,
 }: DecisionReviewLanesProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const Link = LinkComponent as LinkLike;
@@ -213,12 +236,14 @@ export function DecisionReviewLanes({
   // the drawer a queue and not a detour. Read before the host refreshes
   // the rows, because the record acted on is about to leave them.
   const actAndAdvance = (
-    act: (decision: DecisionRecord) => void,
+    act: (decision: DecisionRecord, options?: DecisionAcceptOptions) => void,
     d: DecisionRecord,
+    options?: DecisionAcceptOptions,
   ) => {
     const at = rows.findIndex((r) => r.id === d.id);
     const next = rows[at + 1] ?? null;
-    act(d);
+    if (options) act(d, options);
+    else act(d);
     setOpenId(next?.id ?? null);
   };
 
@@ -253,26 +278,33 @@ export function DecisionReviewLanes({
             <p className="text-[var(--color-text-tertiary)]">{reviewOrderNote(lane)}</p>
           )}
         </div>
-        {/* Built from the shared source list rather than from the loaded rows:
-            a lane page is one window, so a source absent from it would become
-            unselectable, which is the same defect wearing a dynamic coat. */}
-        {onSourceChange && (
-          <select
-            value={source}
-            onChange={(e) => onSourceChange(e.target.value)}
-            aria-label="Filter by source"
-            className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
-          >
-            <option value="all">All sources</option>
-            {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
-              (s) => (
-                <option key={s} value={s}>
-                  {decisionSourceLabel(s)}
-                </option>
-              ),
-            )}
-          </select>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {/* The lane's one agent action: a queue of candidates is work an
+              agent can check against the code and history, one by one. */}
+          {reviewPrompt && lane === "candidates" && rows.length > 0 && (
+            <AiPromptButton copyText={reviewPrompt} label={REVIEW_WITH_AGENT_LABEL} />
+          )}
+          {/* Built from the shared source list rather than from the loaded rows:
+              a lane page is one window, so a source absent from it would become
+              unselectable, which is the same defect wearing a dynamic coat. */}
+          {onSourceChange && (
+            <select
+              value={source}
+              onChange={(e) => onSourceChange(e.target.value)}
+              aria-label="Filter by source"
+              className="shrink-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+            >
+              <option value="all">All sources</option>
+              {DECISION_SOURCES.filter((s) => !isRetiredDecisionSource(s)).map(
+                (s) => (
+                  <option key={s} value={s}>
+                    {decisionSourceLabel(s)}
+                  </option>
+                ),
+              )}
+            </select>
+          )}
+        </div>
       </div>
 
       {error ? (
@@ -333,7 +365,7 @@ export function DecisionReviewLanes({
           reaffirmable && onReaffirm ? (d) => actAndAdvance(onReaffirm, d) : undefined
         }
         onClose={() => setOpenId(null)}
-        onAccept={onAccept ? (d) => actAndAdvance(onAccept, d) : undefined}
+        onAccept={onAccept ? (d, options) => actAndAdvance(onAccept, d, options) : undefined}
         onDismiss={onDismiss ? (d) => actAndAdvance(onDismiss, d) : undefined}
         readOnlyReason={readOnlyReason}
         pending={open ? (pendingIds?.has(open.id) ?? false) : false}
@@ -385,7 +417,7 @@ type LinkLike = React.ElementType<{
 interface ColumnContext {
   lane: DecisionLane;
   showHotspots: boolean;
-  onAccept?: ((decision: DecisionRecord) => void) | undefined;
+  onAccept?: ((decision: DecisionRecord, options?: DecisionAcceptOptions) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
   onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
   readOnlyReason?: string | undefined;
@@ -527,10 +559,12 @@ function renderDecisionCell(d: DecisionRecord) {
         {d.verification && d.verification !== "exact" && (
           <VerificationBadge verification={d.verification} iconOnly />
         )}
+        <DecisionOrigin decision={d} />
       </div>
       <p className="line-clamp-2 text-xs text-[var(--color-text-secondary)]">
         {stripMarkdown(d.decision || d.title)}
       </p>
+      <DecisionAppliedLine decision={d} />
     </div>
   );
 }
@@ -669,7 +703,7 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
           <Button
             size="sm"
             disabled={pending || blockers.length > 0}
-            title={blockers.length ? blockers.join("; ") : undefined}
+            title={blockers.length ? blockers.map(shortGap).join("; ") : undefined}
             onClick={() => onAccept(d)}
           >
             {pending ? "Accepting…" : "Accept"}
@@ -681,7 +715,8 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
           exactly the one worth tombstoning. The drawer says how to fill it. */}
       {onAccept && blockers.length > 0 && (
         <p className="max-w-[24ch] text-right text-xs text-[var(--color-text-tertiary)]">
-          Cannot accept: {blockers.join("; ")}.
+          {/* The drawer holds the fix, including the reason field. */}
+          {capitalize(blockers.map(shortGap).join("; "))}. Open it to fix.
         </p>
       )}
     </div>
@@ -694,9 +729,11 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
  * Provenance and nothing else: it names the signer and the session without
  * sorting signers into kinds, so it reads the same whoever signed. A candidate
  * has no signer and renders nothing; its source is already in the header.
+ * Nor does a record whose accepter the drawer body already names ("Accepted
+ * by your agent", "Accepted by @x"), so the signer is said once.
  */
 function Provenance({ decision }: { decision: DecisionRecord }) {
-  if (decision.currency == null) return null;
+  if (decision.currency == null || acceptedLine(decision) !== null) return null;
   const who = decision.accepter?.trim();
   const session = decision.accepter_session?.trim();
   return (

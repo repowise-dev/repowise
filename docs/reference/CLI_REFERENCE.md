@@ -156,7 +156,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Model set: subsystem (concept) tree, repo overview, architecture diagram, onboarding. `--prose` writes it (key needed); `--no-prose` leaves stubs.
   - `--no-prose` makes no model calls even with a key, so decision extraction from PRs, commits and comments waits; [`repowise generate`](#repowise-generate-path) fills both later.
   - Full-text search always; semantic search needs an embedder.
-- **`--onboarding`.** Slots: Project Overview, Architecture Guide, Getting Started, Codebase Map, Key Concepts, How It Works, Development Guide, Active Landscape; thin ones skipped.
+- **`--onboarding`.** Slots: Project Overview, Getting Started, How It Works, Active Landscape; thin ones skipped.
 - **`--resume`.** No-op when fully indexed. Skips done phases (indexing, analysis), keeps the git tier, writes only
   missing pages, never paying twice: for interrupted runs or failed pages (outage, rate limits). Per-page matching
   survives provider switches.
@@ -233,6 +233,8 @@ repowise update                        # diff since last sync
 repowise update --since v1.0.0 --working-tree
 repowise update --workspace --docs     # every stale repo, docs forced
 repowise update --repo backend         # one workspace repo
+repowise update --no-workspace --index-only --defer-docs   # facts now, docs later
+repowise update --no-workspace --index-only --defer-docs --refresh-git   # recover Git rows
 repowise update --full --provider anthropic   # fast index to full
 ```
 
@@ -246,7 +248,9 @@ repowise update --full --provider anthropic   # fast index to full
 | `--yes` / `-y` | Skip the `--full` cost prompt. | off |
 | `--dry-run` | Preview only. | off |
 | `--docs` / `--no-docs` | This run: `--docs` LLM-regenerates changed pages (even if indexed without docs); `--no-docs` = `--index-only`. | `docs_mode` in `.repowise/state.json` (from `init`) |
-| `--index-only` | No doc regeneration; in a workspace, for every stale repo. | off |
+| `--index-only` | Skip model regeneration; template wikis still render. In a workspace, applies to every stale repo. | off |
+| `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
+| `--refresh-git` | Re-read Git history at the current tier and commit cap, even at an unchanged HEAD. Requires `--index-only --defer-docs`; single repo only; not with `--full`. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
 | `--full` | Fast (`--mode fast`) index to full (below). Errors in workspace mode. | off |
 | `--workspace` / `-w` | All stale workspace repos plus cross-repo analysis; see notes. | auto-detect |
@@ -265,6 +269,8 @@ repowise update --full --provider anthropic   # fast index to full
 **Flag notes**
 
 - **`--working-tree`.** Uncommitted renames reach the graph. Off so hooks and plain runs stay commit-anchored. Workspace: uncommitted changes make a repo stale. `repowise watch` always does this.
+- **`--refresh-git`.** Requires `--index-only --defer-docs` to recover missing Git rows without rendering or embedding existing pages. It keeps the configured history scope and history-version stamp. The next ordinary update remains incremental. `--dry-run` previews the refresh without store writes. Use `--full` separately when the Git tier needs upgrading.
+- **`--defer-docs`.** Pass a repo path and `--no-workspace`. Existing page bodies and surviving vectors stay in place; deleted sources still follow the normal tombstone cleanup. Renderer changes mark every template page stale and retain the old renderer fingerprint. Generation config changes retain their old fingerprints until a rendering run completes. `status` reports `stale_pages`; the JSON `done` event also includes `docs_deferred: true` and `stale_pages` (null if the count is unreadable). Run `update --index-only` without this flag to render the pending template pages. Model-written stale pages still use `generate --stale`. This flag cannot be combined with `--docs` or `--full`, and does not force a Git history walk when its existing stamps say current.
 - **`--workspace`.** Each repo's `docs_mode` (`docs_enabled` beside it) plus `--docs` / `--no-docs` / `--index-only`
   picks docs or index-only. `--docs` needs each repo's provider and key (or `--provider`).
   - Docs repos run the full single-repo docs path (pages, diagrams, decisions); others the fast parallel index-only path.
@@ -912,7 +918,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 |------|--------------|---------|
 | `--file <path>` | One file in depth (relative path). | |
 | `--module <prefix>` | Files under this path prefix. | all |
-| `--scope` | `all` or `production`: files every figure covers (`production` scores lower with no defect: tests score higher). | `all` |
+| `--scope` | `all` or `production`: files every figure covers (`production` leaves out tests, tooling, build, vendored, generated and docs example files, which tend to score higher, so it scores lower with no defect). | `all` |
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
@@ -931,8 +937,8 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 - **Default**: reads, never writes, what `init` / `update` stored (MCP and web UI rows, with `repowise coverage add`
   coverage). `repowise status`: `Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`.
 - **Preview languages**: a dim line per layer and language, e.g. `Refactoring on Java: preview, measured 22% precision
-  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: health on C++; refactoring,
-  performance, dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
+  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: refactoring, performance,
+  dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
 
 #### `repowise health check [REVSPEC]`
 
@@ -1066,6 +1072,8 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--limit` | `dedupe`: clusters listed. `migrate`: reasons listed. | `10` |
 | `--force` | `export`: overwrite a committed manifest from a store that accepted nothing. | off |
 | `--dry-run` | `import`: write nothing. | off |
+
+- `migrate` and `import` first delete the inert supersede pointers an older version left, and list each one as `stale`. `migrate` also lists each pointer it leaves `unplaced`, which resolves to nothing. With `--format json`, both return the repairs as `repaired`; only `migrate` also returns `unplaced`.
 
 **`list`**
 
@@ -2100,6 +2108,12 @@ repowise doctor --workspace --repair
   `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
   A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
   repo's alias.
+- **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
+  would redo stored work: git history written by older rules, health or security results from an older analyzer or
+  scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each
+  problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
+  HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
+  `repowise update --index-only` (no model calls).
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.

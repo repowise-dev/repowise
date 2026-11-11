@@ -11,12 +11,14 @@ file itself declares.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 import pytest
 
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.sfc_source import prepare_source
 
 _COMPONENT = b"""@page "/orders"
 @inject OrderService OrderService
@@ -109,6 +111,11 @@ class TestCalls:
         grid = next(c for c in parsed.calls if c.target_name == "RadzenDataGrid")
         assert grid.caller_symbol_id is not None
         assert grid.caller_symbol_id.endswith("::Orders")
+
+    def test_many_comments_and_tags_scan_in_linear_time(self) -> None:
+        start = time.perf_counter()
+        prepare_source("razor", b"@* c *@<Card />\n" * 20_000)
+        assert time.perf_counter() - start < 1
 
     @pytest.mark.xfail(
         strict=True,

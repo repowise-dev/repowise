@@ -19,8 +19,9 @@ import {
   reaffirmDecision,
 } from "@/lib/api/decisions";
 import { reviewEach } from "@repowise-dev/ui/decisions";
+import { buildReviewCandidatesPrompt } from "@/lib/decision-prompts";
 import { useTranslations } from "next-intl";
-import { stripMarkdown } from "@repowise-dev/ui/lib/format";
+import { formatNumber, stripMarkdown } from "@repowise-dev/ui/lib/format";
 
 interface Props {
   repoId: string;
@@ -134,10 +135,11 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       {...(counts ? { counts } : {})}
       source={source}
       onSourceChange={changeSource}
-      onAccept={(d) => void review(d, "accept")}
+      onAccept={(d, options) => void review(d, "accept", options?.reason)}
       onDismiss={(d) => void review(d, "dismiss")}
       onReaffirm={(d) => void review(d, "reaffirm")}
       onDismissMany={dismissMany}
+      reviewPrompt={buildReviewCandidatesPrompt}
       pendingIds={pending}
       repoId={repoId}
       LinkComponent={Link}
@@ -153,7 +155,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
         <div className="flex items-center justify-between gap-4 border-t border-[var(--color-border-default)] pt-3">
           <p className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
             {rows.length > 0 ? `${first}–${last}` : "0"}
-            {total !== undefined ? ` of ${total.toLocaleString()}` : ""}
+            {total !== undefined ? ` of ${formatNumber(total)}` : ""}
           </p>
           <div className="flex items-center gap-2">
             <PageButton
@@ -187,7 +189,7 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
   // write was still running, so a second click double-wrote.
   const [pending, setPending] = React.useState<ReadonlySet<string>>(new Set());
   const review = React.useCallback(
-    async (d: DecisionRecord, verb: "accept" | "dismiss" | "reaffirm") => {
+    async (d: DecisionRecord, verb: "accept" | "dismiss" | "reaffirm", reason?: string) => {
       setPending((prev) => new Set(prev).add(d.id));
       try {
         if (verb === "reaffirm") {
@@ -195,6 +197,7 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
         } else {
           await patchDecision(repoId, d.id, {
             status: verb === "accept" ? "active" : "dismissed",
+            ...(verb === "accept" && reason ? { reason } : {}),
           });
         }
         toast.success(

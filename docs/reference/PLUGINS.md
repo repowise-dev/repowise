@@ -19,6 +19,7 @@ The plugin API is experimental. Read [Stability](#stability) before you publish.
 | Add an LLM provider | `register_provider(name, factory)` | `llm-provider` |
 | Add an embedding provider | `register_embedder(name, factory)` | `embedder` |
 | Add or replace an implementation of a seam | `<seam registry>.register(name, impl)` | the seam name, for example `event-sink` |
+| Create and change your own tables | `storage_migrations.register(StorageMigration(...))` | `storage-migration` |
 
 Every row is listed in the [extension points catalog](#extension-points-catalog).
 
@@ -39,6 +40,17 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Team shortcut command | `cli-command` | Wraps a repowise workflow your team runs often in one command |
 | Phase timings | `pipeline-hook` | Records when each index phase starts and ends and sends the timings to your metrics system |
 | Extract an unsupported document type | `document-extractors` | Converts a plugin-supported file type to Markdown for the existing ingestion path |
+
+## Community plugins
+
+Plugins built and maintained outside this repository. Each is owned by its
+author, so read its README for install steps and supported versions.
+
+| Plugin | Uses | What it does |
+|--------|------|--------------|
+| [repowise-markitdown-plugin](https://github.com/digimangos/repowise-markitdown-plugin) | `document-extractors` | Indexes PDFs through Microsoft's MarkItDown, with results cited by the original PDF path |
+
+To list yours, open a pull request that adds a row here.
 
 ## Build your first plugin
 
@@ -107,8 +119,11 @@ repowise plugins --format json
 ```
 
 The listing shows each plugin with its source, target, status (`loaded`,
-`failed` with the error, or `skipped` for a duplicate) and everything it
-registered as `"<kind>:<name>"` strings. It then lists every seam with the
+`failed` with the error, `skipped` for a duplicate, or `pending` when a
+[storage revision](#storage-revisions) it registered is not applied to the
+index in the current directory) and everything it registered as
+`"<kind>:<name>"` strings, followed by its storage revisions applied and
+pending. It then lists every seam with the
 implementation `get()` picks and all registered names. The JSON form carries
 the same data:
 
@@ -122,7 +137,8 @@ the same data:
       "target": "repowise_hello:register",
       "status": "loaded",
       "error": null,
-      "seams": ["cli-command:hello", "mcp-tool:hello_greet", "event-sink:hello-stderr", "report-section:hello"]
+      "seams": ["cli-command:hello", "mcp-tool:hello_greet", "event-sink:hello-stderr", "report-section:hello"],
+      "storage": {"applied": [], "pending": []}
     }
   ],
   "seams": {
@@ -150,7 +166,8 @@ Plugins load once per process, the first time repowise needs them:
 
 | Moment | What triggers loading |
 |--------|-----------------------|
-| CLI | an unknown command name or a command listing (`repowise --help`); a built-in command runs without loading plugins |
+| CLI | an unknown command name or a command listing (`repowise --help`); a built-in command runs without loading plugins until it opens the index |
+| Opening the index | `init_db`, and the read path's check for a store that is behind, so the store sees every [storage revision](#storage-revisions) |
 | MCP server | server start, before tools attach |
 | `repowise serve` | app creation |
 | Index and update | each pipeline run, before hooks are wrapped |
@@ -171,6 +188,7 @@ repowise runs each registered implementation in registration order.
 | `pipeline-hook` | `register_hook(phase, callback, when=...)` from `repowise.core.registry` | every | before (`pre`) or after (`post`) the named phase of `repowise init` and `repowise update` | an exception is logged and the pipeline continues | `packages/core/src/repowise/core/registry/pipeline_hooks.py` |
 | `llm-provider` | `register_provider(name, factory)` from `repowise.core.providers.llm` | one, by name | when that provider name is selected | a name that a built-in provider holds raises `ValueError` | `packages/core/src/repowise/core/providers/llm/registry.py` |
 | `embedder` | `register_embedder(name, factory)` from `repowise.core.providers.embedding` | one, by name | when that embedder name is selected | a name that a built-in embedder holds raises `ValueError` | `packages/core/src/repowise/core/providers/embedding/registry.py` |
+| `storage-migration` | `storage_migrations.register(StorageMigration(...))` from `repowise.core.registry.storage_migrations` | every, in registration order within a namespace | when the index is opened, after the core schema, once per store | `StorageMigrationError` naming the plugin, namespace and revision; on a store that cannot take the write the plugin is `pending` instead | `packages/core/src/repowise/core/registry/storage_migrations.py` |
 
 `parent=` attaches a command under an existing Click group instead of the
 root. For `register_lazy_command`, `name` must equal the Click command's own
@@ -206,6 +224,48 @@ An LLM provider factory receives the keyword arguments repowise builds for it
 returns an `Embedder` (`repowise.core.providers.embedding.base`). Users select a
 registered provider by name like a built-in one, for example
 `REPOWISE_PROVIDER=<name>` or `REPOWISE_EMBEDDER=<name>`.
+
+### Storage revisions
+
+A plugin that keeps its own tables, such as the records an
+`index-persistence` implementation writes, registers a revision for each
+change to them. Registering touches no database:
+
+```python
+import hashlib
+from pathlib import Path
+
+from repowise.core.registry.storage_migrations import StorageMigration, storage_migrations
+
+from . import v1  # one module per revision, with `async def apply(connection)`
+
+
+def register() -> None:
+    checksum = hashlib.sha256(Path(v1.__file__).read_bytes()).hexdigest()
+    storage_migrations.register(StorageMigration("example.plugin", "v1", checksum, v1.apply))
+```
+
+Opening an index applies each revision not yet applied there, after the core
+schema, in its own transaction with its row in `plugin_storage_revisions`,
+under the writer lock (`BEGIN IMMEDIATE` on SQLite, an advisory lock on
+PostgreSQL). `apply` receives the `AsyncConnection` and must not commit or roll
+back. Revisions apply in the order a namespace registers them; namespaces are
+independent. Alembic never sees them, so removing the plugin leaves nothing for
+core to resolve. A failure raises `StorageMigrationError` naming the plugin,
+namespace and revision.
+
+- A changed checksum fails every open, and `repowise plugins` lists the plugin
+  as `failed`. Add a new revision instead of editing one. The checksum above
+  hashes the module's bytes, so a line-ending change or a comment edit to an
+  applied revision fails every open too: keep an applied revision's file
+  byte-stable, or hash a normalised string instead.
+- An index that cannot take the write (read-only, or a SQLite store another
+  writer holds past the busy timeout) still opens; the revision stays pending
+  there and the plugin is `pending` until a later open in the same process
+  applies it, or finds it applied, on every store where it was pending.
+- A pending plugin's seam implementations are unready: `all()` leaves them out
+  and `get()` raises `KeyError` naming the plugin and revision. Its MCP tools,
+  CLI commands and pipeline hooks stay registered.
 
 ### Seams
 

@@ -128,7 +128,6 @@ _REPO_METADATA_DIR = ".github"
 # a whole ``test(s)/`` folder by default. Ceiling: an AVA or Mocha run pointed at
 # a ``src/**/tests/`` folder of plainly named files reads as production; reading
 # the runner config's globs would settle that case.
-_JS_FAMILY_TAGS: tuple[str, ...] = ("javascript", "typescript", "vue", "svelte", "astro")
 _SOURCE_TREE = "src"
 _FEATURE_NAMED_TESTS_DIR = "tests"
 
@@ -254,6 +253,8 @@ class _Conventions:
     dir_suffixes: tuple[str, ...]
     unambiguous_dir_suffixes: tuple[str, ...]
     lang_dir_tokens: dict[str, frozenset[str]]
+    #: The same tokens keyed by file extension, for a caller with no language.
+    ext_dir_tokens: dict[str, frozenset[str]]
     manifest_names: frozenset[str]
     js_family_exts: frozenset[str]
 
@@ -270,6 +271,7 @@ def _conventions() -> _Conventions:
     no prefix, and dropping it would unclassify RSpec-style ``spec_foo.rb``.
     """
     from .ingestion.languages.registry import REGISTRY
+    from .ingestion.models import TS_JS_LANGUAGES
 
     return _Conventions(
         stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
@@ -298,8 +300,13 @@ def _conventions() -> _Conventions:
             if s.lstrip(".").lower() not in _AMBIGUOUS_TEST_DIR_TOKENS
         ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
+        ext_dir_tokens={
+            ext: tokens
+            for lang, tokens in REGISTRY.test_dir_tokens_by_language().items()
+            for ext in REGISTRY.extensions_for((lang,))
+        },
         manifest_names=REGISTRY.package_manifest_filenames(),
-        js_family_exts=REGISTRY.extensions_for(_JS_FAMILY_TAGS),
+        js_family_exts=REGISTRY.extensions_for(TS_JS_LANGUAGES),
     )
 
 
@@ -440,7 +447,14 @@ def _has_test_segment(
     segments: list[str], original: list[str], filename: str, language: str | None
 ) -> bool:
     """Whether one directory's own name says it holds tests."""
-    lang_tokens = _conventions().lang_dir_tokens.get((language or "").lower(), frozenset())
+    rules = _conventions()
+    # A path-only caller (``path_origin``) has no language: the extension
+    # names it, so ``t/smoke/tasks.py`` reads as tests there as at ingestion.
+    lang_tokens = (
+        rules.lang_dir_tokens.get(language.lower(), frozenset())
+        if language
+        else rules.ext_dir_tokens.get(PurePosixPath(filename.lower()).suffix, frozenset())
+    )
     # ``spec/`` needs corroboration from somewhere: the language declaring the
     # token, a test- or support-shaped filename, or a scaffolding dir beneath it
     # (``spec/support/helper.rb`` is RSpec whatever the filename says, and

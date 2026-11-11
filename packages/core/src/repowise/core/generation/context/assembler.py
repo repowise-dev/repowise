@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -49,7 +50,16 @@ from .graph_intelligence import (
     extract_heritage,
 )
 from .module_excerpts import module_excerpts
-from .module_facts import build_module_facts
+from .module_facts import (
+    ModuleBudget,
+    build_module_facts,
+    git_activity,
+    importing_tests,
+    module_base,
+    module_budget,
+    symbol_weight,
+)
+from .readme_digest import module_readmes
 from .token_budget import (
     estimate_kg_tokens,
     estimate_tokens,
@@ -59,11 +69,12 @@ from .token_budget import (
 
 log = structlog.get_logger(__name__)
 
+# A module prompt's size besides its code excerpts: facts, parts, readme, instructions.
+_MODULE_FRAME_TOKENS = 5000
+
 
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
-# Tokens of code excerpts a module page prompt carries; the Public API claims them first.
-_MODULE_EXCERPT_BUDGET = 10_000
 # Public API names are always listed, even past the budget, up to this cap; the rest are counted.
 _MODULE_EXCERPT_HARD_CAP = 15_000
 # Maximum top-files to include in repo overview
@@ -253,6 +264,33 @@ def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues
 # ---------------------------------------------------------------------------
 
 
+def _not_under(files: list[str], child_pages: list[dict] | None) -> set[str]:
+    """The files no part page below this one covers: a map page quotes only its own code."""
+    roots = tuple(c["path"].rstrip("/") + "/" for c in child_pages or () if c.get("path"))
+    return {f for f in files if not f.startswith(roots)} if roots else set(files)
+
+
+def _own_excerpts(
+    own: set[str],
+    public_api: list[dict],
+    parsed: dict[str, ParsedFile],
+    ranked: list[str],
+    source_map: dict[str, bytes],
+    budget: ModuleBudget,
+    weight: dict[str, int],
+) -> tuple[Any, list[str]]:
+    """Code excerpts from the files the page owns, heaviest symbols first."""
+    return module_excerpts(
+        [e for e in public_api if e.get("file") in own],
+        parsed,
+        [p for p in ranked if p in own],
+        source_map,
+        budget.excerpt_tokens,
+        weight=weight,
+        per_file=budget.per_file,
+    )
+
+
 class ContextAssembler:
     """Assemble Jinja2 template context from ingestion data.
 
@@ -263,9 +301,14 @@ class ContextAssembler:
 
     def __init__(self, config: GenerationConfig, repo_path: Any | None = None) -> None:
         self._config = config
-        # Checkout root, used only to read package boundaries off disk.
+        # Checkout root, used to read package boundaries and module READMEs off disk.
         self._repo_path = repo_path
         self._package_roots: set[str] | None = None
+
+    def use_context_window(self, window: int | None) -> None:
+        """Size material for the window the generating model runs with."""
+        if window and window != self._config.context_window:
+            self._config = replace(self._config, context_window=window)
 
     # ------------------------------------------------------------------
     # Token utilities
@@ -495,12 +538,16 @@ class ContextAssembler:
         parsed_files: dict[str, ParsedFile] | None = None,
         source_map: dict[str, bytes] | None = None,
         execution_flows: Sequence[Any] = (),
+        target_path: str | None = None,
+        full_material: bool = False,
     ) -> ModulePageContext:
         """Assemble context for the module_page template.
 
         *public_api* (see :func:`~.public_api.compute_public_api`) has first
         claim on the excerpt budget; entries past it keep only their name.
-        With *parsed_files* and *source_map*, code excerpts take what it leaves.
+        With *parsed_files* and *source_map*, code excerpts take what it leaves,
+        from the files no part page below this one covers. *full_material*
+        (the default style) sizes the budget and the page by the module.
         """
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
         public_symbols = sum(
@@ -620,13 +667,21 @@ class ContextAssembler:
             most_fixed_file,
         ) = self._module_git_enrichment(files, set(files), git_meta_map)
 
-        api_rows, api_cost = self._excerpt_public_api(public_api or [])
-        excerpts, declared_files = module_excerpts(
+        own = _not_under(files, child_pages)
+        budget = module_budget(len(files), len(own), full_material)
+        cap = budget.excerpt_tokens
+        budget = budget._replace(
+            excerpt_tokens=self._config.material_budget(cap, cap + _MODULE_FRAME_TOKENS)
+        )
+        api_rows, api_cost = self._excerpt_public_api(public_api or [], budget.excerpt_tokens)
+        excerpts, declared_files = _own_excerpts(
+            own,
             public_api or [],
             parsed_files or {},
             [fc.file_path for fc in by_rank],
             source_map or {},
-            max(0, _MODULE_EXCERPT_BUDGET - api_cost),
+            budget._replace(excerpt_tokens=max(0, budget.excerpt_tokens - api_cost)),
+            symbol_weight(graph, own, execution_flows),
         )
 
         ctx = ModulePageContext(
@@ -672,11 +727,17 @@ class ContextAssembler:
             coupled_modules=coupled_modules,
             bugfix_total=bugfix_total,
             most_fixed_file=most_fixed_file,
+            readmes=module_readmes(self._repo_path, [target_path, *directories]),
+            tests=importing_tests(graph, files, parsed_files),
+            git_activity=git_activity(files, git_meta_map, module_base(files)),
+            words=budget.words,
         )
         ctx.facts = build_module_facts(ctx, file_contexts, graph, execution_flows)
         return ctx
 
-    def _excerpt_public_api(self, api: list[dict]) -> tuple[list[dict], int]:
+    def _excerpt_public_api(
+        self, api: list[dict], budget: int
+    ) -> tuple[list[dict], int]:
         """Every name (to the hard cap), then signature + doc line while half the rest lasts.
 
         Costs follow the rendered shape (bare names grouped under their file);
@@ -694,7 +755,7 @@ class ContextAssembler:
             return 1 + self._estimate_tokens(row)
 
         named, used = items_within_budget(api, 0, _MODULE_EXCERPT_HARD_CAP, name_cost)
-        half = used + max(0, _MODULE_EXCERPT_BUDGET - used) // 2
+        half = used + max(0, budget - used) // 2
         kept, used = items_within_budget(named, used, half, row_cost)
         return kept + [{**e, "signature": "", "doc": ""} for e in named[len(kept) :]], used
 
@@ -834,7 +895,7 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
         parsed_files: list[ParsedFile] | None = None,
-        prose_digest: str = "",
+        material: Any = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -966,7 +1027,7 @@ class ContextAssembler:
             external_systems=external_systems or [],
             decision_records=decision_records or [],
             package_stats=package_stats,
-            prose_digest=prose_digest,
+            material=material,
         )
 
     # ------------------------------------------------------------------

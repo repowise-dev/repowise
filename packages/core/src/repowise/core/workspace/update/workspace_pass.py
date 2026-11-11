@@ -421,6 +421,10 @@ def _write_repo_state(
         state["phase_timings"] = result.phase_timings
     if result.git_history_refreshed:
         state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    if result.graph_update is not None:
+        from ...pipeline.incremental.feature import stamp_graph_update
+
+        stamp_graph_update(state, result.graph_update)
     # Stamp the config fingerprint so the drift check in
     # update_single_repo_index stays calibrated (and legacy repos
     # without one stop re-triggering the full re-index).

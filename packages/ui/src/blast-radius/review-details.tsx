@@ -5,6 +5,7 @@ import { CollapsibleSection } from "../shared/collapsible-section";
 import { CochangeTable } from "./cochange-table";
 import { PathRef } from "./blast-radius-verdict";
 import type { Reach } from "./blast-map-model";
+import { formatNumber } from "../lib/format";
 
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
 
@@ -35,14 +36,14 @@ export function ReviewDetails({ result, reach, fileHref }: { result: Result; rea
   return (
     <div>
       {changed.length > 0 && (
-        <CollapsibleSection title="Changed files with no test" hint={changed.length.toLocaleString()}>
+        <CollapsibleSection title="Changed files with no test" hint={formatNumber(changed.length)}>
           <UntestedList paths={changed} fileHref={fileHref} />
         </CollapsibleSection>
       )}
       {partners > 0 && (
         <CollapsibleSection
           title="Usually change together, not in this change"
-          hint={`${partners.toLocaleString()} ${partners === 1 ? "file" : "files"}`}
+          hint={`${formatNumber(partners)} ${partners === 1 ? "file" : "files"}`}
         >
           <CochangeTable rows={result.cochange_warnings} />
         </CollapsibleSection>

@@ -78,7 +78,19 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
     misunderstanding, and a silent no-op would hide it, so it is a clear error
     pointing at the command that does refresh those pages.
     """
-    bad = [pid for pid in page_ids if pid.split(":", 1)[0] in STRUCTURAL_PAGE_TYPES]
+    bad: list[str] = []
+    for pid in page_ids:
+        prefix, _, target = pid.partition(":")
+        if prefix in STRUCTURAL_PAGE_TYPES:
+            bad.append(pid)
+        elif prefix == "onboarding":
+            from repowise.core.generation.onboarding import get_spec
+
+            slot = target.removeprefix("onboarding/").strip("/")
+            spec = get_spec(slot)
+            if spec is not None and spec.deterministic:
+                bad.append(pid)
+
     if bad:
         joined = ", ".join(bad)
         raise click.ClickException(
@@ -325,7 +337,7 @@ def generate_command(
     # search as useless as it was before, with nothing in the output saying so.
     # `update --full` has re-resolved here since it was written; `generate`
     # never did. Same rule, same message.
-    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"))
+    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
 
     start = time.monotonic()

@@ -10,6 +10,7 @@
  */
 
 import { isWeak, type Reach } from "./blast-map-model";
+import { formatNumber } from "../lib/format";
 
 export type ReviewTone = "calm" | "look";
 
@@ -28,12 +29,12 @@ const SMALL_REACH = 25;
 
 /** `n word` with an `s` past one, the number grouped. */
 export function count(n: number, word: string, plural = `${word}s`): string {
-  return `${n.toLocaleString()} ${n === 1 ? word : plural}`;
+  return `${formatNumber(n)} ${n === 1 ? word : plural}`;
 }
 
 /** A figure above the fold: exact up to a thousand, then "2,000+", never more digits than meaning. */
 export function roughCount(n: number): string {
-  return n < 1000 ? n.toLocaleString() : `${(Math.floor(n / 1000) * 1000).toLocaleString()}+`;
+  return n < 1000 ? formatNumber(n) : `${formatNumber(Math.floor(n / 1000) * 1000)}+`;
 }
 
 export interface ReviewFacts {

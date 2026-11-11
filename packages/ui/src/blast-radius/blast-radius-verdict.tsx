@@ -20,6 +20,7 @@ import { buildBlastRadiusPrompt } from "../health/ai-prompts/blast-radius-prompt
 import { OwnerAvatar } from "../owners/owner-avatar";
 import { CopyPathButton, FilePath } from "../shared/file-path";
 import { InfoTip } from "../shared/info-tip";
+import { formatNumber } from "../lib/format";
 
 type Href = ((path: string) => string) | undefined;
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
@@ -178,7 +179,7 @@ function TestList({ impact }: { impact: Result["test_impact"] }) {
       </ul>
       {tests.length > 5 && (
         <button type="button" className={MORE} onClick={() => setAll((v) => !v)}>
-          {all ? "Show fewer" : `Show all ${tests.length.toLocaleString()}`}
+          {all ? "Show fewer" : `Show all ${formatNumber(tests.length)}`}
         </button>
       )}
     </>
@@ -239,7 +240,7 @@ function TestsToRun({ result }: { result: Result }) {
 function Owners({ result, changed }: { result: Result; changed: number }) {
   const ofChanged = result.changed_owners;
   const people = ofChanged
-    ? ofChanged.map((o) => ({ email: o.email, name: ownerName(o), why: `owns ${o.files.toLocaleString()} of the ${count(changed, "changed file")}` }))
+    ? ofChanged.map((o) => ({ email: o.email, name: ownerName(o), why: `owns ${formatNumber(o.files)} of the ${count(changed, "changed file")}` }))
     : result.recommended_reviewers.slice(0, 3).map((r) => ({ email: r.email, name: ownerName(r), why: "owns code that depends on this" }));
   if (people.length === 0) return <p className={NONE}>No one owns the changed files yet: they are new or have no history.</p>;
   const owned = ofChanged ? ofChanged.slice(0, 3).reduce((n, o) => n + o.files, 0) : 0;
@@ -257,7 +258,7 @@ function Owners({ result, changed }: { result: Result; changed: number }) {
       {/* Never imply full coverage: say how many changed files these people own between them. */}
       {ofChanged && owned < changed && (
         <li className={NONE}>
-          {people.length === 1 ? "That is" : "Together,"} {owned.toLocaleString()} of the {count(changed, "changed file")}; the
+          {people.length === 1 ? "That is" : "Together,"} {formatNumber(owned)} of the {count(changed, "changed file")}; the
           rest have no owner on record.
         </li>
       )}
@@ -372,13 +373,13 @@ function Stats({ reach, total, analyzed, testsTotal }: { reach: Reach; total: nu
   const files = reach.files.length;
   return (
     <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
-      <Stat figure={total.toLocaleString()} label={`${total === 1 ? "file" : "files"} changed${total > analyzed ? ` (first ${analyzed.toLocaleString()} analyzed)` : ""}`} />
+      <Stat figure={formatNumber(total)} label={`${total === 1 ? "file" : "files"} changed${total > analyzed ? ` (first ${formatNumber(analyzed)} analyzed)` : ""}`} />
       {files === 0 ? (
         <Stat figure="0" label="source files depend on it" />
       ) : (
-        <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${reach.direct.toLocaleString()} directly`} />
+        <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${formatNumber(reach.direct)} directly`} />
       )}
-      <Stat figure={testsTotal.toLocaleString()} label={testsTotal === 1 ? "test to run" : "tests to run"} />
+      <Stat figure={formatNumber(testsTotal)} label={testsTotal === 1 ? "test to run" : "tests to run"} />
       <span className="self-center">
         <InfoTip content={GLOSSARY} label="What these words mean" />
       </span>
@@ -481,7 +482,7 @@ export function BlastRadiusVerdict({
             <LookFirst reach={reach} fileHref={fileHref} />
           </Block>
         )}
-        <Block title="Run these tests" hint={testsTotal > 0 ? testsTotal.toLocaleString() : undefined}>
+        <Block title="Run these tests" hint={testsTotal > 0 ? formatNumber(testsTotal) : undefined}>
           <TestsToRun result={result} />
         </Block>
         <Block title="Who to ask">

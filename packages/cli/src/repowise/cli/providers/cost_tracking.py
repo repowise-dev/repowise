@@ -90,6 +90,23 @@ def build_cost_tracker(
         return CostTracker()
 
 
+def run_cost_tracker(
+    repo_path: Path,
+    llm_client: object | None,
+    *,
+    no_cost_tracking: bool = False,
+) -> CostTracker | None:
+    """The tracker for a run that indexes with *llm_client*, or ``None`` without one.
+
+    Built before the pipeline, because indexing already calls the model to mine
+    decisions; generation then bills the same tracker, so one ledger and one
+    total cover the whole run.
+    """
+    if llm_client is None:
+        return None
+    return build_cost_tracker(repo_path, Path(repo_path).name, no_cost_tracking=no_cost_tracking)
+
+
 def flush_cost_tracker(cost_tracker: CostTracker) -> int:
     """Persist any buffered cost rows from a synchronous CLI context.
 

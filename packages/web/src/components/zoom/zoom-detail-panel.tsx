@@ -32,6 +32,7 @@ import { healthBandTextColor } from "@repowise-dev/ui/health";
 import { useTranslations } from "next-intl";
 import { ZoomDetailC4 } from "./zoom-detail-c4";
 import { ZoomDetailActions } from "./zoom-detail-actions";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
@@ -61,7 +62,7 @@ function Row({ label, value, tone }: { label: string; value: number; tone?: stri
       <span
         className={`text-[15px] font-medium tabular-nums ${tone ?? "text-[var(--color-text-primary)]"}`}
       >
-        {value.toLocaleString()}
+        {formatNumber(value)}
       </span>
     </div>
   );

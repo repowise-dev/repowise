@@ -114,6 +114,59 @@ def _repair_module_attribution(repo_path: Path) -> int:
     return changed
 
 
+def accept_landed_decisions(repo_path: Path) -> int:
+    """Put in force an agent's decisions whose commits reached the default branch.
+
+    Every update, before the "already up to date" and "no changed files"
+    returns: a squash merge pulled after the branch was indexed changes no
+    file, and a fetch moves the default branch without moving HEAD, so either
+    would otherwise skip the persist step that runs this pass. One store read
+    when nothing waits; git runs only for records that do. No model.
+
+    Failure-isolated like the attribution repair: the next update retries.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.merge_accept import (
+        accept_landed_decisions as _accept,
+    )
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(Path(repo_path)):
+        return 0
+
+    async def _run() -> int:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return (await _accept(session, repo.id, repo_path))["accepted"]
+        finally:
+            await engine.dispose()
+
+    try:
+        accepted = run_async(_run())
+    except Exception as exc:
+        log.debug("decision_landing_check_failed", error=str(exc))
+        return 0
+    if accepted:
+        console.print(
+            f"[dim]Decisions: [bold]{accepted}[/bold] now govern; "
+            "their commits landed on the default branch.[/dim]"
+        )
+    return accepted
+
+
 async def _persist_partial_health(
     session: Any, repo_id: str, report: Any, repo_path: Any = None
 ) -> None:
@@ -590,6 +643,9 @@ def _persist_index_only_update(
     vector_store: Any | None = None,
     require_config_rebuild_success: bool = False,
     history_window_changed: bool = False,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
+    stamp_config: bool = True,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
@@ -638,6 +694,8 @@ def _persist_index_only_update(
             reconcile_full_scope=reconcile_full_scope,
             full_generation_page_ids=full_generation_page_ids,
             vector_store=vector_store,
+            deferred_page_scope=deferred_page_scope,
+            deferred_page_paths=deferred_page_paths,
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
@@ -672,9 +730,13 @@ def _persist_index_only_update(
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": config_fingerprint(repo_path),
+        "config_fingerprint": (
+            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
+        ),
         "config_dependency_fingerprints": (
-            dependency_fingerprints
+            state.get("config_dependency_fingerprints")
+            if not stamp_config
+            else dependency_fingerprints
             if dependency_fingerprints is not None
             else config_dependency_fingerprints(repo_path)
         ),
@@ -788,9 +850,11 @@ class PageCheckpointer:
             upsert_repository,
         )
 
+        queue = self._queue
+        assert queue is not None  # start() creates the queue before scheduling this task.
         repo_id: str | None = None
         while True:
-            page = await self._queue.get()
+            page = await queue.get()
             if page is None:
                 return
             if self.failure is not None:
@@ -1189,6 +1253,23 @@ def security_scanner_changed(state: dict) -> bool:
     return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
 
 
+def renderer_changed(
+    stored_fp: str | None, current_fp: str, docs_mode: str, *, index_only: bool
+) -> bool:
+    """Whether the structural pages were rendered by a different renderer.
+
+    A missing stamp counts as a change; an empty current fingerprint (computing
+    it failed) disables the gate. A wiki with no docs has nothing to re-render,
+    and a model wiki waits for a full update, the run that can re-render it.
+    """
+    return (
+        bool(current_fp)
+        and stored_fp != current_fp
+        and docs_mode != "none"
+        and not (index_only and docs_mode == "llm")
+    )
+
+
 def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
     """Full security rescan when the scanner changed, stamping ``state`` on success.
 
@@ -1226,7 +1307,7 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")
-    if not isinstance(last, (int, float)):
+    if not isinstance(last, int | float):
         return True
     return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
 

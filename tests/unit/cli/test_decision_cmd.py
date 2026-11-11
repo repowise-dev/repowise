@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.main import cli
 from repowise.core.persistence.database import init_db
-from repowise.core.persistence.models import DecisionRecord, Repository
+from repowise.core.persistence.models import (
+    SUPERSEDED_REASON,
+    DecisionAlias,
+    DecisionRecord,
+    Repository,
+)
 
 _REPO_ID = "decision-cli-repo"
 
@@ -542,6 +547,52 @@ def test_decision_ambiguous_prefix_errors(indexed_repo: Path) -> None:
     assert "ambiguous" in result.output.lower()
 
 
+def _seed_aliases(repo_root: Path, aliases: list[tuple[str, str, str]]) -> None:
+    """Add ``(alias_id, decision_id, reason)`` rows to a seeded ``wiki.db``."""
+
+    async def _build() -> None:
+        db_path = repo_root / ".repowise" / "wiki.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            for alias_id, decision_id, reason in aliases:
+                session.add(
+                    DecisionAlias(
+                        alias_id=alias_id,
+                        repository_id=_REPO_ID,
+                        decision_id=decision_id,
+                        reason=reason,
+                    )
+                )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
+def test_a_prefix_skips_a_pre_fix_supersede_pointer(indexed_repo: Path) -> None:
+    # #5331: a ``superseded`` alias names the successor, not the retired id's
+    # record, so resolving through it would show the wrong decision.
+    successor = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    _seed_wiki_db(indexed_repo, [{"id": successor, "title": "The successor"}])
+    _seed_aliases(
+        indexed_repo,
+        [
+            ("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", successor, SUPERSEDED_REASON),
+            ("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", successor, "merged"),
+        ],
+    )
+
+    merged = CliRunner().invoke(cli, ["decision", "show", "c3c3c3c3", str(indexed_repo)])
+    assert merged.exit_code == 0, merged.output
+    assert "The successor" in merged.output
+
+    pointer = CliRunner().invoke(cli, ["decision", "show", "b2b2b2b2", str(indexed_repo)])
+    assert pointer.exit_code != 0, pointer.output
+    assert "The successor" not in pointer.output
+    assert "not found" in pointer.output.lower()
+
+
 def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     _seed_wiki_db(
         indexed_repo,
@@ -1034,3 +1085,90 @@ def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
         kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
     assert "actions" not in kinds
     assert "fix_first" in kinds
+
+
+def test_decision_add_json_reports_blockers_and_next(indexed_repo: Path) -> None:
+    # Adding via an agent without evidence leaves it blocked
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--affects",
+            "command.go",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["decision"]
+    assert "blockers" in payload
+    assert any("evidence" in b for b in payload["blockers"])
+    assert "next" in payload
+    assert "confirm " in payload["next"]
+    assert "--evidence" in payload["next"]
+    assert "--agent probe" in payload["next"]
+
+    # Adding with evidence-commit has no blockers
+    result_ok = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags with evidence",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--affects",
+            "command.go",
+            "--evidence-commit",
+            "a" * 40,
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_ok.exit_code == 0, result_ok.output
+    payload_ok = json.loads(result_ok.output)["decision"]
+    assert "blockers" not in payload_ok
+    assert "next" not in payload_ok
+
+    # Adding without scope and evidence includes both flags in next command
+    result_multi = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags no scope",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_multi.exit_code == 0, result_multi.output
+    payload_multi = json.loads(result_multi.output)["decision"]
+    assert "blockers" in payload_multi
+    assert any("scope" in b for b in payload_multi["blockers"])
+    assert any("evidence" in b for b in payload_multi["blockers"])
+    assert "--scope <path>" in payload_multi["next"]
+    assert "--evidence <commit|file>" in payload_multi["next"]

@@ -67,9 +67,11 @@ _SHARED_VOICE = (
 SYSTEM_PROMPTS: dict[str, str] = {
     "module_page": _SHARED_VOICE
     + (
-        "Clarity beats completeness: explain how the parts work together and why, "
-        "in short plain sentences, and leave lists of names to the reference "
-        "material kept beside the page. "
+        "This page explains one area of the code. When its parts have pages of their "
+        "own it is the map: what each part owns, when to open it, and how a run "
+        "crosses them. Otherwise it explains the mechanism, in the order the work "
+        "happens. Names alone are reference material kept beside the page: name a "
+        "function or type when the reader needs it to follow the work. "
         "\n"
         # The page shape, including the questions section, is stated once, in
         # module_page.j2: stating a heading in both places makes the model emit it
@@ -80,35 +82,30 @@ SYSTEM_PROMPTS: dict[str, str] = {
     ),
     "flow_page": _SHARED_VOICE
     + (
-        "This page is a walkthrough. It follows a single operation through the code "
-        "from the function that starts it to the work it hands off, so a newcomer "
-        "can trace it in the source. Explain what each step decides or produces and "
-        "why the operation needs it, in short plain sentences. "
+        "This page is a walkthrough. It follows a single operation from what the "
+        "user runs or calls to what it leaves behind, told as stages of work with "
+        "the data handed between them, so a newcomer can follow it and then trace "
+        "it in the source. Explain what each stage decides, produces or writes and "
+        "why, and how the operation can end early. "
         "\n"
-        "Ground every claim in the traced steps listed below: never invent "
-        "functions, files, calls or rationale that are not there."
+        "Ground every claim in the steps, code and documentation listed below: never "
+        "invent functions, files, calls, options or rationale that are not there."
     ),
     "repo_overview": _SHARED_VOICE
     + (
         "This page is the repository overview, the first page a new developer reads. "
         "\n"
-        "Lead-with-purpose rule: the FIRST sentence under ## Project "
-        "Summary says in plain words what the project is and who uses it, the way "
-        "its README would introduce it to a newcomer: a concrete noun, then what "
-        "it does for them, in at most 30 words. "
+        "Lead-with-purpose rule: the FIRST sentence under the title says in plain "
+        "words what the project is and who uses it, the way its README would "
+        "introduce it to a newcomer: a concrete noun, then what it does for them, "
+        "in at most 30 words. Never open with the README's tagline or slogan. "
         "Bad: 'This repository implements a documentation tool with 15 packages.' "
-        "Bad: 'X consumes files, history and metadata, indexes and parses them into "
-        "structured evidence, analyzes relationships and produces views.' "
-        "Good: 'Flask is a lightweight Python web framework for building web "
-        "applications and APIs, from a single file to a large project.' "
-        "Required sections, in this order and no others: ## Project Summary, "
-        "## Architecture, ## Key concepts. A list of entry-point paths or of the "
-        "most-imported files is something the reader can get from ls; say what is "
-        "central and why instead. "
+        "Good: 'Flask is a Python web framework for building web applications and "
+        "APIs, from a single file to a large project.' "
+        "Write the sections the user prompt lists, in its order and no others. "
         "\n"
-        "The page is a short orientation, not a manual: keep the prose within the "
-        "word budget the user prompt states. The enumerable facts are inserted "
-        "after you write, from the code as indexed, so do not tabulate them."
+        "Ground every claim in the facts listed below: never invent commands, "
+        "files, parts or rationale that are not there."
     ),
     "onboarding": _SHARED_VOICE
     + (

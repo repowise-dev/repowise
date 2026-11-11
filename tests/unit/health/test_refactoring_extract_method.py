@@ -918,6 +918,26 @@ def test_a_helper_inheriting_the_finding_undiminished_is_not_worth_it():
     assert _worth_extracting(_Shape(25, 117), _Span(8, 40), {"complex_method"})
 
 
+def test_dispatch_heavy_function_judged_severity_refuses_helper_of_same_severity():
+    from repowise.core.analysis.health.models import Severity
+
+    # Repro for #4148:
+    # Function with raw CCN 30, but judged severity is MEDIUM due to dispatch.
+    # A span removing 12 points yields helper CCN 13 (which rule grades as MEDIUM).
+    # Since helper (MEDIUM) is not better than the finding's judged severity (MEDIUM),
+    # the extraction must be refused.
+    fn = _Shape(30, 80)
+    span = _Span(12, 30)
+
+    # When judged severity is MEDIUM (as in dispatch-heavy function):
+    assert not _worth_extracting(fn, span, {"complex_method": Severity.MEDIUM})
+
+    # On a plain function where raw CCN 30 yields CRITICAL severity:
+    # A helper of MEDIUM is an improvement over CRITICAL, so it is offered.
+    assert _worth_extracting(fn, span, {"complex_method": Severity.CRITICAL})
+    assert _worth_extracting(fn, span, {"complex_method"})
+
+
 def test_detector_offers_the_next_best_span_when_the_best_misses_the_floor():
     fn = _first(_PROCESS)
     lmap = get_language_map("python")

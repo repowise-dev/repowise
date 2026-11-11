@@ -407,6 +407,64 @@ async def mark_page_ids_stale(session: Any, repo_id: str, page_ids: Iterable[str
     return marked
 
 
+async def mark_deferred_pages(
+    session: Any,
+    repo_id: str,
+    *,
+    scope: str,
+    repo_path: Path,
+    paths: Iterable[str] = (),
+    parsed_files: list[Any] | None = None,
+    graph_builder: Any = None,
+) -> int:
+    """Mark deferred document inputs stale without changing bodies or vectors."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    rows = list(
+        await session.execute(
+            select(Page.id, Page.provider_name, Page.target_path, Page.metadata_json).where(
+                Page.repository_id == repo_id, Page.freshness_status != "tombstone"
+            )
+        )
+    )
+    if scope == "all":
+        ids = {pid for pid, _, _, _ in rows}
+    elif scope == "template":
+        from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
+
+        ids = {pid for pid, provider, _, _ in rows if provider == TEMPLATE_PROVIDER_NAME}
+    else:
+        changed = set(paths)
+        if not changed:
+            return 0
+        from repowise.core.generation import GenerationConfig
+        from repowise.core.generation.cascade import expand_cascade
+        from repowise.core.generation.scope import build_dependencies, load_page_records
+        from repowise.core.pipeline.scoped_generation import _load_page_rows, load_kg_context
+        from repowise.core.repo_config import load_repo_config
+
+        deps = build_dependencies(
+            parsed_files=parsed_files or [],
+            graph_builder=graph_builder,
+            config=GenerationConfig.from_repo_config(load_repo_config(repo_path)),
+            kg_ctx=load_kg_context(repo_path),
+            records=load_page_records(await _load_page_rows(session, repo_id)),
+            repo_name=repo_path.name,
+        )
+        seeds = {f"file_page:{path}" for path in changed}
+        ids = seeds | expand_cascade(seeds, "none", deps).stale_ids
+        # Source-backed pages and persisted flow steps can survive selection changes.
+        ids.update(
+            pid
+            for pid, _, target, meta in rows
+            if (target or "").split("::", 1)[0] in changed
+            or changed.intersection(_metadata(meta).get("file_paths") or ())
+        )
+    return await _persist.mark_page_ids_stale(session, repo_id, ids)
+
+
 def _is_expired(metadata_json: str | None, updated_at: datetime | None, cutoff: datetime) -> bool:
     """A deleted file's tombstone older than *cutoff*. A rename's never expires.
 

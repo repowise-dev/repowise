@@ -12,6 +12,7 @@ import {
   type StepMap,
   type StepPath,
 } from "./blast-step-model";
+import { formatNumber } from "../lib/format";
 
 // The change in plum, the product's second accent: orange reads as an alert next to red.
 const CHANGED = "var(--color-accent-secondary)";
@@ -39,8 +40,8 @@ function clip(text: string, max: number): string {
 function blockSummary(b: StepBlock): string {
   if (b.less) return "Show fewer folders in this step";
   const where = b.column === 0 ? "changed" : `${stepWords(b.column)} away`;
-  const poor = b.poor ? `, ${b.poor.toLocaleString()} with poor health` : "";
-  const what = `${b.label}, ${where}: ${b.files.toLocaleString()} ${b.files === 1 ? "file" : "files"}${poor}`;
+  const poor = b.poor ? `, ${formatNumber(b.poor)} with poor health` : "";
+  const what = `${b.label}, ${where}: ${formatNumber(b.files)} ${b.files === 1 ? "file" : "files"}${poor}`;
   return b.other ? `${what}. Show every folder in this step` : `${what}. Show these files in the list`;
 }
 
@@ -228,7 +229,7 @@ function Block({
     );
   }
   const poorHeight = b.files ? (b.height * b.poor) / b.files : 0;
-  const suffix = `${b.files.toLocaleString()}${b.poor ? ` · ${b.poor.toLocaleString()} poor` : ""}`;
+  const suffix = `${formatNumber(b.files)}${b.poor ? ` · ${formatNumber(b.poor)} poor` : ""}`;
   const name = clip(b.label, LABEL_CHARS - suffix.length - 1);
   return (
     <g
@@ -296,8 +297,8 @@ function Tooltip({ b, map }: { b: StepBlock; map: StepMap }) {
     >
       <p className="font-medium text-[var(--color-text-primary)]">{b.label}</p>
       <p className="tabular-nums text-[var(--color-text-secondary)]">
-        {b.files.toLocaleString()} {b.files === 1 ? "file" : "files"} {b.column === 0 ? "changed" : `${stepWords(b.column)} away`}
-        {b.poor > 0 && <span className="text-[var(--color-error)]"> · {b.poor.toLocaleString()} poor health</span>}
+        {formatNumber(b.files)} {b.files === 1 ? "file" : "files"} {b.column === 0 ? "changed" : `${stepWords(b.column)} away`}
+        {b.poor > 0 && <span className="text-[var(--color-error)]"> · {formatNumber(b.poor)} poor health</span>}
       </p>
       {b.top.length > 0 && (
         <ul className="space-y-0.5 font-mono text-[11px] text-[var(--color-text-tertiary)]">
@@ -332,9 +333,9 @@ function Legend() {
 function notDrawn(map: StepMap): string {
   const parts: string[] = [];
   if (map.testsNotDrawn)
-    parts.push(`${map.testsNotDrawn.toLocaleString()} test ${map.testsNotDrawn === 1 ? "file" : "files"} that import the change`);
+    parts.push(`${formatNumber(map.testsNotDrawn)} test ${map.testsNotDrawn === 1 ? "file" : "files"} that import the change`);
   if (map.changedTestsNotDrawn)
-    parts.push(`${map.changedTestsNotDrawn.toLocaleString()} changed test ${map.changedTestsNotDrawn === 1 ? "file" : "files"}`);
+    parts.push(`${formatNumber(map.changedTestsNotDrawn)} changed test ${map.changedTestsNotDrawn === 1 ? "file" : "files"}`);
   return parts.join(" and ");
 }
 
@@ -378,7 +379,7 @@ function StepStack({ map, selectedKey, path, bind }: ViewProps) {
         return (
           <div key={c.title} className="space-y-1">
             <p className="text-xs text-[var(--color-text-secondary)]">
-              {c.title} <span className="tabular-nums text-[var(--color-text-tertiary)]">{c.files.toLocaleString()}</span>
+              {c.title} <span className="tabular-nums text-[var(--color-text-tertiary)]">{formatNumber(c.files)}</span>
             </p>
             <ul>
               {blocks.map((b) => {
@@ -413,8 +414,8 @@ function StepStack({ map, selectedKey, path, bind }: ViewProps) {
                             {b.label}
                           </span>
                           <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
-                            {b.files.toLocaleString()}
-                            {b.poor > 0 && <span className="text-[var(--color-error)]"> · {b.poor.toLocaleString()} poor</span>}
+                            {formatNumber(b.files)}
+                            {b.poor > 0 && <span className="text-[var(--color-error)]"> · {formatNumber(b.poor)} poor</span>}
                           </span>
                         </>
                       )}
@@ -441,13 +442,13 @@ function StepDrawing({ map, selectedKey, selectedBand, path, hoverBlock, bind, o
         viewBox={`0 0 ${map.width} ${map.height}`}
         className="block max-w-full"
         role="group"
-        aria-label={`What depends on the change, by step: ${map.columns[0]!.files.toLocaleString()} changed source files reach ${reached.toLocaleString()} source files. Arrow keys move between folders; Enter shows a folder's files; Escape clears.`}
+        aria-label={`What depends on the change, by step: ${formatNumber(map.columns[0]!.files)} changed source files reach ${formatNumber(reached)} source files. Arrow keys move between folders; Enter shows a folder's files; Escape clears.`}
       >
         {map.columns.map((c) => (
           <text key={c.title} x={c.x} y={14} style={{ fontSize: 12 }} className="fill-[var(--color-text-secondary)]">
             {c.title}
             <tspan dx={6} className="fill-[var(--color-text-tertiary)] tabular-nums">
-              {c.files.toLocaleString()}
+              {formatNumber(c.files)}
             </tspan>
           </text>
         ))}
@@ -465,7 +466,7 @@ function StepDrawing({ map, selectedKey, selectedBand, path, hoverBlock, bind, o
                 onClick={() => onSelectBand(b)}
                 className={`cursor-pointer ${FADE}`}
               >
-                <title>{`${b.files.toLocaleString()} ${b.files === 1 ? "file" : "files"} reached through this link. Show them in the list`}</title>
+                <title>{`${formatNumber(b.files)} ${b.files === 1 ? "file" : "files"} reached through this link. Show them in the list`}</title>
               </path>
             );
           })}

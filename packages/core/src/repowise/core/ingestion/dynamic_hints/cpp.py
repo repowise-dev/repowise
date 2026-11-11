@@ -105,6 +105,38 @@ def _iter_func_defs(text: str):
         pos = d + 1
 
 
+# Kinds that name a function by ordinary lookup, so a definition in the
+# referencing file wins. dlsym / GetProcAddress name an exported symbol of a
+# loaded library and Qt slots a member of the receiver's class: not these.
+_NAME_LOOKUP_KINDS = frozenset({"fn_ptr", "desig_init"})
+
+_HEADER_EXTS = frozenset({".h", ".hh", ".hpp", ".hxx", *INCLUDE_FRAGMENT_EXTENSIONS})
+_STATIC_RE = re.compile(r"\s*(?:inline\s+|constexpr\s+)*static\b")
+
+
+def _internal_linkage(definition: str, rel: str) -> bool:
+    """A ``static`` definition in a source file (not a header or include
+    fragment) no other file can reach: a free function with internal linkage,
+    or a static member of a class declared in that source file.
+
+    Ceiling: anonymous-namespace functions also have internal linkage and
+    still read as reachable; spotting them needs the enclosing scope.
+    """
+    return Path(rel).suffix.lower() not in _HEADER_EXTS and bool(_STATIC_RE.match(definition))
+
+
+def _register_defs(
+    text: str, rel: str, func_to_files: dict[str, list[str]], local_to: dict[str, set[str]]
+) -> None:
+    """Record each function *rel* defines: in *local_to* always, and in
+    *func_to_files* when another file could name it."""
+    for match in _iter_func_defs(text):
+        name = match.group(1)
+        local_to.setdefault(name, set()).add(rel)
+        if not _internal_linkage(match.group(0), rel):
+            func_to_files.setdefault(name, []).append(rel)
+
+
 class CppDynamicHints(DynamicHintExtractor):
     """Discover C++ function-pointer assignments, dlopen/dlsym, Qt connect."""
 
@@ -114,6 +146,7 @@ class CppDynamicHints(DynamicHintExtractor):
         edges: list[DynamicEdge] = []
 
         func_to_files: dict[str, list[str]] = {}
+        local_to: dict[str, set[str]] = {}
         sources: list[tuple[Path, str, str]] = []
         repo_root_resolved = repo_root.resolve()
         for ext in _CPP_EXTS:
@@ -130,13 +163,17 @@ class CppDynamicHints(DynamicHintExtractor):
                     continue
                 rel = rel_path.as_posix()
                 sources.append((src, text, rel))
-                for match in _iter_func_defs(text):
-                    func_to_files.setdefault(match.group(1), []).append(rel)
+                _register_defs(text, rel, func_to_files, local_to)
 
         for _src, text, rel in sources:
             seen: set[tuple[str, str]] = set()
 
             def _emit(name: str, kind: str, *, seen: set = seen, rel: str = rel) -> None:
+                if kind in _NAME_LOOKUP_KINDS and rel in local_to.get(name, ()):
+                    # The file defines the name itself: ordinary lookup binds
+                    # the reference there, never to a same-named function in
+                    # another translation unit.
+                    return
                 for target in func_to_files.get(name, ()):
                     key = (target, kind)
                     if key in seen or target == rel:

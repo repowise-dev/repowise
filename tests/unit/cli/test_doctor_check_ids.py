@@ -39,6 +39,7 @@ PINNED_IDS = {
     "git-repository",
     "grammar-*",
     "hosted-account",
+    "index-data",
     "llm-provider",
     "mcp-responds",
     "omission-store",

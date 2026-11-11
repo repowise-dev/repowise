@@ -80,7 +80,10 @@ Per file:
 1. **Walk** (`_walk`, `walk_file`): each `FunctionComplexity` carries name, line range,
    nloc, ccn, max nesting, cognitive complexity, bumps and params; each
    `ClassComplexity` carries method count and list, total nloc, LCOM4, max method ccn and
-   field count. A nested function gets its own entry; a lambda counts toward its holder.
+   field count. A nested function gets its own entry, as does a JS/TS arrow function
+   with a block body bound to a name (`const f = () => { ... }`, an assignment, an
+   object property); other lambdas count toward their holder. A function's nloc
+   leaves out the lines only its nested entries cover.
 2. **Symbol complexity** (`_populate_symbol_complexity`): `max(ccn)` into
    `Symbol.complexity_estimate` for the `ContextAssembler` ranker.
 3. **Evaluate** (`FileEvaluator.evaluate`): a `FileContext` (nloc, `has_test_file`,
@@ -167,22 +170,22 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `apex_hardcoded_id` | Apex | A record Id as a string literal | Medium; 18 chars with a valid checksum or 15 on a standard prefix; non-test Apex | Advisory |
 | `apex_see_all_data` | Apex | `@IsTest(SeeAllData=true)` | Low | Advisory |
 | `cobol_unstructured_flow` | COBOL | A paragraph or section with `ALTER`, `GO TO ... DEPENDING ON`, or a `GO TO` that is not a forward jump to an `...EXIT` paragraph of its own `PERFORM THRU` range | Low; one finding per paragraph | Advisory |
-| `io_in_loop` | Performance | I/O per loop iteration (N+1), across functions | Medium | perf 1.0 |
-| `string_concat_in_loop` | Performance | `+=` of a provable string in a loop | Low | perf 0.7 |
+| `io_in_loop` | Performance | I/O per loop iteration (N+1), across functions | Medium | Listed, never scored |
+| `string_concat_in_loop` | Performance | `+=` of a provable string in a loop | Low | Listed, never scored |
 | `blocking_sync_in_async` | Performance | A sync blocking call in `async def` | Medium; Python, Rust, C#, Kotlin, Scala | perf 0.7 |
 | `regex_compile_in_loop` | Performance | A static regex compiled per iteration | Medium; Java, Go, Rust, C++, Kotlin, Ruby, Scala | perf 0.6 |
 | `defer_in_loop` | Performance | `defer` inside a loop | Medium; Go | perf 0.6 |
 | `resource_construction_in_loop` | Performance | A client built per iteration | Medium | perf 0.7 |
-| `lock_in_loop` | Performance | A lock taken each iteration | Low | perf 0.5 |
+| `lock_in_loop` | Performance | A lock taken each iteration | Low | Listed, never scored |
 | `serial_await_in_loop` | Performance | Awaited I/O run serially in a loop | Low | perf 0.4 |
-| `membership_test_against_list_in_loop` | Performance | `x in list` (or `.includes`) on a provable list in a loop | Low | perf 0.7 |
+| `membership_test_against_list_in_loop` | Performance | `x in list` (or `.includes`) on a provable list in a loop | Low | Listed, never scored |
 | `unbounded_read_reduced_in_memory` | Performance | An unlimited query reduced per key in code | Low; Python | perf 0.4 |
 | `lazy_load_in_loop` | Performance | An ORM lazy relation read per iteration | Low; SQLAlchemy, Django | perf 0.4 (Django 0.7) |
-| `nested_loop_with_io` | Performance | I/O in a loop nested two deep | Medium | perf 0.5 |
+| `nested_loop_with_io` | Performance | I/O in a loop nested two deep | Medium | Listed, never scored |
 | `nested_loop_quadratic` | Performance | A quadratic nested loop, widely called | Low; centrality gated | perf 0.4 |
 | `hot_path_sync_io` | Performance | Sync I/O in a widely called function | Low; centrality gated | perf 0.5 |
 | `blocking_io_under_lock` | Performance | Blocking I/O while holding a lock | Medium | perf 0.6 |
-| `list_insert_zero_in_loop` | Performance | `list.insert(0, x)` in a loop | Medium; Python | perf 0.6 |
+| `list_insert_zero_in_loop` | Performance | `list.insert(0, x)` in a loop | Medium; Python | Listed, never scored |
 | `pd_concat_in_loop` | Performance | `pd.concat` accumulating in a loop | Medium; Python | perf 0.6 |
 | `pandas_iterrows_in_loop` | Performance | `df.iterrows()` | Medium; Python | perf 0.6 |
 | `json_parse_in_loop` | Performance | A `JSON.parse(JSON.stringify(x))` deep clone per iteration | Low; JavaScript, TypeScript | perf 0.4 |
@@ -329,6 +332,24 @@ language because it does not transfer:
   ([user guide](../layers/TEST_INTELLIGENCE.md#untested-complexity)).
 - The four `apex_*` markers: every finding on 13 Salesforce repos hand-read, none
   wrong; no defect corpus covers Apex yet.
+
+A marker can also be advisory in some languages only: `scoring._ADVISORY_BY_LANGUAGE`
+maps a marker to the languages where it is listed but never scored, for a cell whose
+measured precision falls short there alone. Within those languages it behaves like an
+advisory marker, and its stored findings carry the `advisory` dimension, so an entry
+takes effect on a repository's next re-score. Only markers without defect signal are
+listed; `complex_method`, `nested_complexity` and `large_method` keep their weight in
+every language. An entry is a cell judged under 80% worth acting on with at least 5
+findings decided (TP / (TP + FP), unsure left out), from its latest blind judging:
+
+| marker | language: worth acting on / decided |
+|---|---|
+| `primitive_obsession` | c 0/5, cpp 0/7, csharp 4/8, java 5/7, javascript 0/5, php 2/5, python 0/8, rust 2/6, scala 3/5, swift 0/5, typescript 4/8 |
+| `complex_conditional` | c 2/5, cpp 3/8, csharp 2/8, dart 1/5, fsharp 3/5, go 3/8, java 3/8, javascript 2/5, kotlin 2/8, objectivec 3/5, php 3/5, python 3/8, ruby 2/5, rust 1/8, typescript 1/8 |
+| `god_class` | csharp 3/8, kotlin 1/5, python 3/6, scala 3/5, typescript 2/7 |
+
+Languages are file tags: `.tsx` files are `typescript`, `.jsx` files `javascript`; Vue,
+Svelte, Astro and Razor files keep their own tags and are not listed.
 
 ### 5.5 Worked example: the dispatch rule
 

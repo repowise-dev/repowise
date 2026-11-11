@@ -15,7 +15,6 @@ enrichment. All three are prompting, and this path has no model.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -26,7 +25,7 @@ from repowise.core.persistence import (
 )
 
 
-def deterministic_embedder_name(cfg: dict) -> str:
+def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) -> str:
     """Resolve the embedder for a no-spend run, honouring only an explicit one.
 
     Same rule as ``init --index-only``: a hosted embedder is a real bill, and
@@ -37,13 +36,15 @@ def deterministic_embedder_name(cfg: dict) -> str:
     leaves full-text search working.
     """
     from repowise.cli.providers import resolve_embedder
+    from repowise.core.providers.llm.resolve import repo_getenv
 
-    chosen = cfg.get("embedder") or os.environ.get("REPOWISE_EMBEDDER", "").strip()
+    env_lookup = repo_getenv(repo_path)
+    chosen = cfg.get("embedder") or (env_lookup("REPOWISE_EMBEDDER") or "").strip()
     if chosen:
         return str(chosen)
     # Nothing was chosen, so whatever resolve_embedder returns was inferred
     # from a key. Only the ones that cannot bill survive that.
-    resolved = resolve_embedder(None)
+    resolved = resolve_embedder(None, repo_path=repo_path)
     return resolved if resolved in ("mock", "ollama") else "mock"
 
 
@@ -271,7 +272,10 @@ def _render_pages(
         # way. It also keeps the lancedb import off the post-commit hook's
         # path, which is the one place in this command that avoids it.
         resolved_vector_store = vector_store
-        embedder_name = deterministic_embedder_name(cfg)
+        try:
+            embedder_name = deterministic_embedder_name(cfg, repo_path=repo_path)
+        except TypeError:
+            embedder_name = deterministic_embedder_name(cfg)
         if not embed_during_generation:
             resolved_vector_store = None
         elif resolved_vector_store is None and embedder_name != "mock":
