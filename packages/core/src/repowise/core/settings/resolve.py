@@ -58,13 +58,11 @@ def resolve(
     a setting declared ``on_invalid="error"``.
     """
     s = registry.get(setting) if isinstance(setting, str) else setting
-    area_resolve = getattr(registry.area_module(s.area), "resolve_setting", None)
+    area_resolve = registry.area_resolver(s.area)
     if area_resolve is not None:
-        present = s.scope != "env" and lookup(config, s.key) is not MISSING
-        return Resolved(
-            area_resolve(s, config or {}),
-            _FILE_SOURCE[s.scope] if present else Source.DEFAULT,
-        )
+        # The registry refuses an env-backed setting in such an area, so the
+        # file is the only layer the area has to weigh.
+        return area_resolve(s, config or {})
 
     layers = _layers(s, config, os.environ if environ is None else environ)
     problems: list[str] = []
@@ -107,12 +105,20 @@ def _layers(
 def validate(s: Setting, raw: Any, *, from_env: bool = False) -> Any:
     """*raw* as a value of *s*, or ``ValueError`` saying why it is not one.
 
-    Environment values arrive as text and are converted first.
+    Environment values arrive as text and are converted first. A setting's
+    parser runs before the typed check, and anything it raises is a problem
+    with the value, never a crash.
     """
+    if s.type == "list" and not isinstance(raw, (str, list, tuple)):
+        raise ValueError("must be a list")
     if s.parser is not None:
         module_name, _, attr = s.parser.partition(":")
-        return getattr(import_module(module_name), attr)(raw)
-    if from_env:
+        parse = getattr(import_module(module_name), attr)
+        try:
+            raw = parse(raw)
+        except Exception as exc:  # a reader's own parser may raise anything
+            raise ValueError(str(exc) or type(exc).__name__) from None
+    elif from_env:
         raw = _from_text(s, raw)
     return _CHECKS[s.type](s, raw)
 
@@ -173,14 +179,28 @@ def _number(s: Setting, raw: Any) -> int | float:
         raise ValueError("must be a number")
     if s.type == "int" and not isinstance(raw, int):
         raise ValueError("must be a whole number")
-    if raw != raw or raw in (float("inf"), float("-inf")):
+    if raw != raw:
         raise ValueError("must be a finite number")
-    if s.minimum is not None and s.exclusive_minimum and raw <= s.minimum:
-        raise ValueError(f"must be more than {_fmt(s.minimum)}")
-    if s.minimum is not None and raw < s.minimum:
-        raise ValueError(f"must be at least {_fmt(s.minimum)}")
-    if s.maximum is not None and raw > s.maximum:
-        raise ValueError(f"must be at most {_fmt(s.maximum)}")
+    low, high = s.minimum, s.maximum
+    if low is not None and s.exclusive_minimum and raw <= low:
+        raise ValueError(f"must be more than {_fmt(low)}")
+    if s.out_of_range == "clamp":
+        raw = _clamp(raw, low, high)
+    if raw in (float("inf"), float("-inf")):
+        raise ValueError("must be a finite number")
+    if low is not None and raw < low:
+        raise ValueError(f"must be at least {_fmt(low)}")
+    if high is not None and raw > high:
+        raise ValueError(f"must be at most {_fmt(high)}")
+    return raw
+
+
+def _clamp(raw: int | float, low: float | None, high: float | None) -> int | float:
+    """*raw* moved to the nearest bound it is past, keeping its type."""
+    if low is not None and raw < low:
+        return type(raw)(low)
+    if high is not None and raw > high:
+        return type(raw)(high)
     return raw
 
 

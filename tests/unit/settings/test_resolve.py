@@ -108,9 +108,55 @@ def test_validate_is_usable_on_its_own():
 def test_decisions_resolve_through_the_policy():
     cfg = {"decisions": {"mode": "read_only"}}
     r = resolve("decisions.agent_acceptance", cfg, environ={})
-    # The mode sets this switch's default; the registry default is full's.
-    assert get("decisions.agent_acceptance").default is True
-    assert (r.value, r.source) == (False, Source.DEFAULT)
+    # The mode sets this switch's default, so the registry states none.
+    assert get("decisions.agent_acceptance").default is None
+    assert "decisions.mode" in get("decisions.agent_acceptance").default_note
+    assert (r.value, r.source) == (False, Source.REPO_FILE)
+    assert resolve("decisions.agent_acceptance", {}, environ={}).source is Source.DEFAULT
     r = resolve("decisions.sources.pr.enabled", {"decisions": {"preset": "local_only"}}, environ={})
     assert r.value is False
     assert resolve("decisions.mode", {"decisions": {"mode": False}}, environ={}).value == "off"
+
+
+def test_decisions_problems_and_sources():
+    r = resolve("decisions.require_approval", {"decisions": {"require_approval": "no"}})
+    assert (r.value, r.source) == (True, Source.REPO_FILE)
+    assert "require_approval" in r.problem
+    r = resolve("decisions.discovery.max_sessions", {"decisions": {"discovery": {"max_sessions": 99}}})
+    assert (r.value, r.source) == (12, Source.DEFAULT)
+    assert "max_sessions" in r.problem
+    r = resolve("decisions.sources.pr.enabled", {"decisions": {"sources": {"pr": True}}})
+    assert (r.value, r.source) == (True, Source.REPO_FILE)
+
+
+def test_clamp_caps_to_the_nearest_bound():
+    name = "REPOWISE_EMBED_TIMEOUT_S"
+    assert resolve(name, environ={name: "500"}).value == 120.0
+    assert resolve(name, environ={name: "inf"}).value == 120.0
+    r = resolve(name, environ={name: "0"})
+    assert (r.value, r.source) == (8.0, Source.DEFAULT)
+    assert "more than 0" in r.problem
+    assert resolve("REPOWISE_CLAUDE_CLI_CONCURRENCY", environ={"REPOWISE_CLAUDE_CLI_CONCURRENCY": "-3"}).value == 1
+
+
+def test_a_parser_that_raises_anything_is_a_problem_not_a_crash():
+    for bad in (5, {"a": 1}, 2.5):
+        r = resolve("mcp.tools", {"mcp": {"tools": bad}}, environ={})
+        assert (r.value, r.source) == (None, Source.DEFAULT)
+        assert r.problem
+
+
+def test_reader_tolerances():
+    assert resolve("embedder", {"embedder": " OpenAI "}, environ={}).value == "openai"
+    assert resolve("hooks.read_skeleton_mode", {"hooks": {"read_skeleton_mode": "PLUS"}}, environ={}).value == "plus"
+    assert resolve("max_tokens", {"max_tokens": "2048"}, environ={}).value == 2048
+    assert resolve("max_file_pages", {"max_file_pages": 12.9}, environ={}).value == 12
+    assert validate(get("decisions.mode"), "read-only") == "read_only"
+    assert validate(get("decisions.mode"), False) == "off"
+
+
+def test_bool_coercing_readers_stay_strict_here():
+    """``bool("false")`` is true; the registry does not copy that."""
+    r = resolve("enable_onboarding", {"enable_onboarding": "false"}, environ={})
+    assert (r.value, r.source) == (True, Source.DEFAULT)
+    assert r.problem

@@ -51,8 +51,43 @@ def test_decisions_keys_are_the_policy_keys():
 
 
 def test_decisions_defaults_are_what_an_empty_block_resolves_to():
+    from repowise.core.analysis.decisions.policy import MODE_DEFAULTS
+
     for s in settings_in("decisions"):
-        assert resolve(s, {}).value == s.default, s.key
+        r = resolve(s, {})
+        assert r.source is Source.DEFAULT, s.key
+        if s.default_note is None:
+            assert r.value == s.default, s.key
+        elif s.key == "decisions.update_mining":
+            assert r.value is False
+        else:
+            assert r.value == MODE_DEFAULTS["full"][s.key.split(".")[1]], s.key
+
+
+@pytest.mark.parametrize("mode", ["full", "read_only", "off"])
+def test_mode_dependent_switches_follow_the_mode(mode):
+    from repowise.core.analysis.decisions.policy import MODE_DEFAULTS
+
+    for s in settings_in("decisions"):
+        name = s.key.split(".")[1]
+        if s.default_note and name in MODE_DEFAULTS[mode]:
+            assert f"under {mode}" in s.default_note or mode in s.default_note
+            value = resolve(s, {"decisions": {"mode": mode}}).value
+            assert value == MODE_DEFAULTS[mode][name], (s.key, mode)
+
+
+@pytest.mark.parametrize("raw", ["read-only", "read_only", False, "full", "Full"])
+def test_decisions_mode_spellings_match(raw):
+    from repowise.core.analysis.decisions.policy import resolve_policy
+
+    real = resolve_policy({"decisions": {"mode": raw}}).policy.mode
+    assert resolve("decisions.mode", {"decisions": {"mode": raw}}).value == real
+    s = get("decisions.mode")
+    try:
+        ours = validate(s, raw)
+    except ValueError:
+        ours = s.fallback
+    assert ours == real
 
 
 @pytest.mark.parametrize(
@@ -132,11 +167,6 @@ def test_hook_flags_resolve_like_hook_flag_enabled(tmp_path, monkeypatch, varian
         assert hook_flag_enabled(repo, flag) == _registry(f"hooks.{flag}", config, environ), flag
 
 
-#: (config value, env value) where ``configured_mode`` and the registry part.
-SKELETON_MODE_DISAGREEMENTS = {
-    ("PLUS", None): "the reader lower-cases; the registry's choices are exact",
-    (" plus ", None): "the reader strips; the registry's choices are exact",
-}
 
 
 @pytest.mark.parametrize(
@@ -148,7 +178,9 @@ SKELETON_MODE_DISAGREEMENTS = {
         (None, "plus"),
         ("plus", "smart"),
         ("plus", ""),
-        *SKELETON_MODE_DISAGREEMENTS,
+        ("PLUS", None),
+        (" plus ", None),
+        (None, " Plus"),
     ],
 )
 def test_read_skeleton_mode(tmp_path, monkeypatch, value, env_value):
@@ -161,8 +193,7 @@ def test_read_skeleton_mode(tmp_path, monkeypatch, value, env_value):
     if env_value is not None:
         monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", env_value)
         environ = {"REPOWISE_HOOK_READ_SKELETON_MODE": env_value}
-    agree = configured_mode(repo) == _registry("hooks.read_skeleton_mode", config, environ)
-    assert agree is ((value, env_value) not in SKELETON_MODE_DISAGREEMENTS)
+    assert configured_mode(repo) == _registry("hooks.read_skeleton_mode", config, environ)
 
 
 # ---------------------------------------------------------------- distill
@@ -291,7 +322,8 @@ def test_generation_defaults_match_the_generation_config():
     cfg = GenerationConfig.from_repo_config({})
     assert cfg.max_tokens == DEFAULT_MAX_TOKENS
     assert get("wiki_style").default == DEFAULT_STYLE
-    assert get("embedder").default == DEFAULT_EMBEDDER
+    assert get("embedder").default is None
+    assert DEFAULT_EMBEDDER in get("embedder").default_note
     assert set(generation.EMBEDDERS) == set(_BUILTIN_EMBEDDERS)
     assert resolve_reasoning(None, {}) == get("reasoning").default
 
@@ -306,12 +338,40 @@ def test_max_tokens_fails_closed_like_the_generation_config(value):
         resolve("max_tokens", {"max_tokens": value}, environ={})
 
 
-def test_max_tokens_reader_accepts_a_quoted_number_the_registry_rejects():
+@pytest.mark.parametrize("raw", ["12", " 12 ", 12])
+def test_max_tokens_reads_a_quoted_number_like_the_reader(raw):
     from repowise.core.generation.models import GenerationConfig
 
-    assert GenerationConfig.from_repo_config({"max_tokens": "12"}).max_tokens == 12
-    with pytest.raises(ValueError):
-        resolve("max_tokens", {"max_tokens": "12"}, environ={})
+    real = GenerationConfig.from_repo_config({"max_tokens": raw}).max_tokens
+    assert resolve("max_tokens", {"max_tokens": raw}, environ={}).value == real
+
+
+@pytest.mark.parametrize("raw", ["12", 12.7, 0, -1, "x", [1], 5])
+def test_max_file_pages_reads_like_the_reader(raw):
+    from repowise.cli._helpers.config import resolve_max_file_pages
+
+    cfg = {"max_file_pages": raw}
+    assert resolve("max_file_pages", cfg, environ={}).value == resolve_max_file_pages(None, cfg)
+
+
+@pytest.mark.parametrize("raw", ["OpenAI", " gemini ", "mock"])
+def test_embedder_name_is_folded_like_the_resolver(tmp_path, raw):
+    from repowise.core.providers.embedding.resolve import resolve_embedder_name
+
+    repo = _repo(tmp_path, {"embedder": raw})
+    name, _ = resolve_embedder_name(repo_path=repo, getenv={}.get, detect=False)
+    assert name == _registry("embedder", {"embedder": raw})
+
+
+def test_embedder_keyless_update_path_lets_the_file_beat_env(tmp_path, monkeypatch):
+    """The index-only update path reads the pin before REPOWISE_EMBEDDER; every
+    other path, and the registry, let the variable win."""
+    from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "gemini")
+    cfg = {"embedder": "openai"}
+    assert deterministic_embedder_name(cfg, _repo(tmp_path, cfg)) == "openai"
+    assert _registry("embedder", cfg, {"REPOWISE_EMBEDDER": "gemini"}) == "gemini"
 
 
 def test_reasoning_env_beats_the_file_like_resolve_reasoning(monkeypatch):
@@ -363,17 +423,57 @@ def test_base_url_providers_match_the_specs():
     assert expected == providers.BASE_URL_PROVIDERS
 
 
-@pytest.mark.parametrize("raw", ["", "2", "x", "-3", "0"])
+@pytest.mark.parametrize("raw", ["", "2", "x", "-3", "0", " 7 "])
 def test_cli_concurrency(monkeypatch, raw):
     from repowise.core.providers.llm._concurrency import DEFAULT_CONCURRENCY, resolve_concurrency
 
     name = "REPOWISE_CLAUDE_CLI_CONCURRENCY"
     assert get(name).default == DEFAULT_CONCURRENCY
     monkeypatch.setenv(name, raw)
-    real = resolve_concurrency(name, "claude_cli")
-    ours = _registry(name, None, {name: raw})
-    # The reader clamps a number under 1 up to 1; the registry rejects it.
-    assert (real == ours) is (raw not in ("-3", "0"))
+    assert resolve_concurrency(name, "claude_cli") == _registry(name, None, {name: raw})
+
+
+_CAPPED = ["", "5", "0", "-1", "x", "nan", "inf", "9999"]
+
+
+def _capped_readers():
+    from repowise.server.mcp_server import _federation, _helpers
+    from repowise.server.mcp_server.tool_answer.synthesis import _synthesis_timeout
+
+    class _NoBudget:
+        interactive_timeout_s = None
+
+    return [
+        ("REPOWISE_VECTOR_SEARCH_TIMEOUT_S", _helpers.vector_search_timeout_s),
+        ("REPOWISE_SEMANTIC_GRACE_S", _helpers.semantic_grace_s),
+        ("REPOWISE_EMBED_TIMEOUT_S", _helpers.embed_timeout_s),
+        ("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", _federation.fanout_timeout_s),
+        (
+            "REPOWISE_WORKSPACE_CONCURRENCY",
+            lambda: int(_federation._env_number("REPOWISE_WORKSPACE_CONCURRENCY", 4, 64)),
+        ),
+        # Unset falls to the provider's own budget, which the registry notes as None.
+        ("REPOWISE_ANSWER_TIMEOUT_S", lambda: _synthesis_timeout(_NoBudget())),
+    ]
+
+
+@pytest.mark.parametrize("raw", _CAPPED)
+def test_capped_env_numbers_clamp_like_their_readers(monkeypatch, raw):
+    for name, reader in _capped_readers():
+        monkeypatch.setenv(name, raw)
+        ours = _registry(name, None, {name: raw})
+        if ours is None:  # unset or unusable: the reader's own fallback applies
+            ours = 30.0
+        assert reader() == ours, (name, raw)
+
+
+@pytest.mark.parametrize("raw", ["3", "-2", "0", "x"])
+def test_full_rescore_interval_clamps_at_zero(monkeypatch, raw):
+    from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
+
+    name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
+    monkeypatch.setenv(name, raw)
+    assert _full_rescore_interval_days() == _registry(name, None, {name: raw})
 
 
 # ---------------------------------------------------------------- editor, events, attribution
