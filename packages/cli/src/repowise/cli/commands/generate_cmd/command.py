@@ -337,7 +337,7 @@ def generate_command(
     # search as useless as it was before, with nothing in the output saying so.
     # `update --full` has re-resolved here since it was written; `generate`
     # never did. Same rule, same message.
-    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"))
+    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
 
     start = time.monotonic()

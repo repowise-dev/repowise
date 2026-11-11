@@ -38,7 +38,7 @@ def _build_update_vector_store(
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder"), repo_path=repo_path), repo_path)
         store = build_vector_store(repo_path, embedder)
         if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
             raise RuntimeError(
