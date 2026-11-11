@@ -221,7 +221,8 @@ def refresh_decisions_manifest(repo_path: Path) -> str:
             await engine.dispose()
 
     try:
-        if not has_db_store(Path(repo_path)) or not load_policy(repo_path).policy.enabled:
+        policy = load_policy(repo_path).policy
+        if not has_db_store(Path(repo_path)) or not (policy.enabled and policy.delivers):
             return "absent"
         outcome, count = run_async(_run())
     except Exception as exc:

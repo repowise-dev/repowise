@@ -830,3 +830,119 @@ def test_upkeep_prompt_is_off_unless_asked_for(tmp_path):
     assert load_policy(tmp_path).policy.upkeep_prompt is True
     write_policy(tmp_path, load_policy(tmp_path).policy.with_upkeep_prompt(False))
     assert "upkeep_prompt" not in load_repo_config(tmp_path)["decisions"]
+
+
+# ---------------------------------------------------------------------------
+# decisions.mode: the one switch
+# ---------------------------------------------------------------------------
+
+
+def _mode(block: dict):
+    return resolve_policy({"decisions": block}).policy
+
+
+def test_mode_is_full_when_absent():
+    policy = resolve_policy(None).policy
+
+    assert policy.mode == "full"
+    assert policy.captures and policy.delivers
+    assert policy.commit_prompt and policy.agent_grants
+
+
+def test_read_only_delivers_and_captures_nothing():
+    policy = _mode({"mode": "read_only", "update_mining": True, "sync": True})
+
+    assert policy.delivers
+    assert not policy.captures
+    assert policy.enabled_index_sources() == ()
+    assert not policy.update_llm
+    assert not policy.commit_prompt and not policy.agent_grants
+    # Pull still runs; nothing goes up.
+    assert policy.sync and not policy.sends
+
+
+def test_off_delivers_nothing_whatever_the_switches_say():
+    policy = _mode(
+        {
+            "mode": "off",
+            "capture_prompt": True,
+            "upkeep_prompt": True,
+            "session_start": True,
+            "sync": True,
+        }
+    )
+
+    assert not policy.delivers and not policy.captures
+    assert not policy.commit_prompt
+    assert not policy.commit_upkeep
+    assert not policy.session_start_on
+    assert not policy.sends
+    assert policy.enabled_index_sources() == ()
+
+
+def test_under_read_only_a_stated_switch_wins_over_the_mode_default():
+    policy = _mode({"mode": "read_only", "upkeep_prompt": True, "capture_prompt": True})
+
+    assert policy.commit_upkeep
+    assert policy.commit_prompt
+
+
+def test_the_cli_spelling_reads_the_same():
+    assert _mode({"mode": "read-only"}).mode == "read_only"
+
+
+def test_a_bare_yaml_off_reads_as_off():
+    """YAML loads an unquoted ``mode: off`` as the boolean false."""
+    loaded = yaml.safe_load("decisions:\n  mode: off\n")
+    assert loaded["decisions"]["mode"] is False
+    assert resolve_policy(loaded).policy.mode == "off"
+
+
+def test_an_unknown_mode_reads_as_read_only_with_a_warning():
+    resolution = resolve_policy({"decisions": {"mode": "of"}})
+
+    assert resolution.policy.mode == "read_only"
+    assert any("decisions.mode" in w for w in resolution.warnings)
+
+
+@pytest.mark.parametrize("mode", ["off", "read_only", "full"])
+def test_each_mode_round_trips_through_the_config_block(mode):
+    policy = resolve_policy(None).policy.with_mode(mode)
+    block = policy.to_config_block()
+
+    assert resolve_policy({"decisions": block}).policy == policy
+    # Switches at the mode's default stay out of the block.
+    assert "capture_prompt" not in block and "agent_acceptance" not in block
+    assert block.get("mode", "full") == mode
+
+
+def test_setting_a_mode_resets_the_switches_it_governs():
+    policy = _mode({"upkeep_prompt": True, "agent_acceptance": False}).with_mode("full")
+
+    assert policy.upkeep_prompt is False
+    assert policy.agent_acceptance is True
+
+
+def test_a_mode_keeps_capture_membership():
+    policy = preset_policy("balanced").with_mode("off").with_mode("full")
+
+    assert policy.preset_name() == "balanced"
+
+
+def test_status_names_the_mode_for_a_source_it_stops(tmp_path: Path):
+    runtime = {rt.key: rt for rt in _mode({"mode": "read_only"}).runtime(provider_available=True)}
+
+    assert runtime["adr"].status == "disabled"
+    assert "read-only" in runtime["adr"].reason
+    assert runtime["cli"].status == "always_on"
+
+
+def test_layer_mode_reads_full_for_a_missing_or_broken_config(tmp_path: Path):
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    assert layer_mode(None) == "full"
+    assert layer_mode(tmp_path) == "full"
+    _write_config(tmp_path, "decisions: [unclosed\n")
+    assert layer_mode(tmp_path) == "full"
+    _write_config(tmp_path, "decisions:\n  mode: off\n")
+    assert layer_mode(tmp_path) == "off"

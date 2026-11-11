@@ -65,14 +65,9 @@ _MAX_PINNED_DECISIONS = 5
 _MAX_FIX_FIRST = 3
 
 
-def _pinned(records: list) -> list:
-    """The records a person pinned as law, in the order given.
-
-    Nothing can be pinned yet, so this returns nothing and the decisions block
-    is the pointer alone. When pinning lands, this is the one place that reads
-    it.
-    """
-    return []
+def _pinned(records: list, pinned_ids: set[str]) -> list:
+    """The records a person pinned as law, in the order given."""
+    return [r for r in records if r.id in pinned_ids]
 
 
 def _signed_by(signature) -> str:
@@ -129,8 +124,11 @@ class EditorFileDataFetcher:
         stored_commit = ((repo.head_commit or "")[:7]) if repo else ""
         # The date likewise is the index's sync time, never the render time.
         synced_at = crud.index_synced_at(repo)
+        from repowise.core.analysis.decisions.policy_store import layer_mode
+
+        mode = layer_mode(self._repo_path)
         decisions_in_force, pinned = (
-            await self._get_decisions() if "decisions" in s else (False, [])
+            await self._get_decisions() if "decisions" in s and mode != "off" else (False, [])
         )
 
         return EditorFileData(
@@ -146,6 +144,7 @@ class EditorFileDataFetcher:
             hotspots=await self._get_hotspots() if "hotspots" in s else [],
             decisions=pinned,
             decisions_in_force=decisions_in_force,
+            record_decisions=mode == "full",
             build_commands=detect_build_commands(self._repo_path) if "commands" in s else {},
             avg_confidence=await self._get_avg_confidence(),
             code_health=(
@@ -360,8 +359,10 @@ class EditorFileDataFetcher:
         from repowise.core.persistence.crud.authority import (
             accepted_predicate,
             decision_signatures,
+            pinned_decision_ids,
         )
 
+        pinned_ids = await pinned_decision_ids(self._session, self._repo_id)
         result = await self._session.execute(
             select(DecisionRecord)
             .where(
@@ -370,16 +371,17 @@ class EditorFileDataFetcher:
                 func.coalesce(DecisionRecord.kind, "") != AGREEMENT_KIND,
                 accepted_predicate(),
             )
-            .order_by(DecisionRecord.staleness_score.asc())
+            # Pinned first, so the window below always holds them.
+            .order_by(
+                DecisionRecord.id.in_(pinned_ids).desc(), DecisionRecord.staleness_score.asc()
+            )
             # Over-fetch: records anchored entirely in excluded paths (vendored
             # venvs mined before exclude rules changed) are dropped below.
-            # Ceiling: a pin outside this window is missed; read pins by their
-            # own query once pinning exists.
             .limit(_MAX_PINNED_DECISIONS * 3)
         )
         exclude_spec = build_exclude_spec(self._repo_path)
         records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)]
-        pinned = _pinned(records)[:_MAX_PINNED_DECISIONS]
+        pinned = _pinned(records, pinned_ids)[:_MAX_PINNED_DECISIONS]
         signatures = await decision_signatures(self._session, self._repo_id, pinned)
         summaries = [
             DecisionSummary(

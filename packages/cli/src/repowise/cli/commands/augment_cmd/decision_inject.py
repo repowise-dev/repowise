@@ -631,7 +631,17 @@ def _session_start_enabled(repo_path: Path) -> bool:
     """Whether this repository asked for decisions at session start. Off by default."""
     from repowise.core.analysis.decisions.policy_store import load_policy
 
-    return load_policy(repo_path).policy.session_start
+    try:
+        return load_policy(repo_path).policy.session_start_on
+    except Exception:  # an unreadable config never fails a session start
+        return False
+
+
+def _delivers(repo_path: Path) -> bool:
+    """Whether this repository shows decisions at all (``decisions.mode`` not off)."""
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    return layer_mode(repo_path) != "off"
 
 
 def _session_decision_block(
@@ -800,7 +810,7 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
     The caller owns loading/saving *state*.
     """
     shown: list = state.setdefault("decisions_shown", [])
-    if len(shown) >= _MAX_EDIT_NOTICES:
+    if len(shown) >= _MAX_EDIT_NOTICES or not _delivers(repo_path):
         return None
     conn = _open_wiki_ro(repo_path)
     if conn is None:

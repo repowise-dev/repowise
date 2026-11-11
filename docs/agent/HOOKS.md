@@ -174,17 +174,25 @@ session per decision and at most six per session. A decision governs the files
 its scope names, and every file under a directory its scope names, including a
 new one.
 
+A file with a repeated bug-fix history gets a one-line heads-up too (see
+[bug history](../layers/BUG_HISTORY.md)).
+
 **Commit-time upkeep.** With `decisions.upkeep_prompt: true` (off by default),
 a commit that changes governed files gets one line naming up to three of
 their decisions, each once per session, and the one command for each outcome:
 still holds (`decision reaffirm`), replaced, or knowingly broken (`decision
-deprecate`). It fires from the shell entry the capture prompt uses. A file with a repeated bug-fix history
-gets a one-line heads-up too (see [bug history](../layers/BUG_HISTORY.md)).
+deprecate`). It fires from the shell entry the capture prompt uses.
 
-Every injected decision id is recorded in `.repowise/sessions/sessions.db`. On
-the next `repowise update`, the session miner checks whether your corrections
-followed or contradicted that guidance and adjusts the decision's staleness, so
-guidance that stops being true stops being injected. See
+**The decisions mode.** Every decision line above follows `decisions.mode`.
+`read_only` keeps the edit-time notice and the upkeep line when it is on, and
+drops the capture prompt; `off` silences them all, including session start.
+See [CONFIG.md](../reference/CONFIG.md#mode).
+
+Every decision line a hook delivers is recorded in
+`.repowise/sessions/sessions.db`. `repowise decision list` and `show` report
+how often each decision reached an agent and when last; with `hooks.measure`
+on, `update` also reads the session transcripts locally to settle whether the
+agent acted on it, for `repowise hook stats`. See
 [decisions](../layers/DECISIONS.md).
 
 The three read and search keys are written by the rewrite-hook question in

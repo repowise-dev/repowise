@@ -794,3 +794,32 @@ def test_a_non_ascii_path_comes_back_as_git_stores_it(tmp_path: Path) -> None:
     git("commit", "-q", "-m", "first")
 
     assert sorted(decision_capture._commit_files(root)) == ["src/café.py", "src/plain.py"]
+
+
+# --- decisions.mode -----------------------------------------------------------
+
+
+def test_read_only_asks_nothing_after_a_commit(repo: Path) -> None:
+    (repo / ".repowise" / "config.yaml").write_text("decisions:\n  mode: read_only\n", encoding="utf-8")
+
+    assert _fire(repo) is None
+
+
+def test_off_silences_both_commit_lines_whatever_the_switches_say(upkeep_repo: Path) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: off\n  capture_prompt: true\n  upkeep_prompt: true\n",
+        encoding="utf-8",
+    )
+
+    assert _fire(upkeep_repo) is None
+    assert _ledger(upkeep_repo) == []
+
+
+def test_read_only_keeps_an_upkeep_prompt_turned_on(upkeep_repo: Path) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: read_only\n  upkeep_prompt: true\n", encoding="utf-8"
+    )
+
+    notice = _fire(upkeep_repo)
+
+    assert notice is not None and "Use JWT auth" in notice

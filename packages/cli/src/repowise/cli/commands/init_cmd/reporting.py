@@ -268,14 +268,22 @@ def _decision_counts(repo_path: Path) -> dict[str, int]:
     """The background record count, and how many the discovery pass would check.
 
     Empty when the store cannot be read: the row and the step are left out,
-    never shown as 0.
+    never shown as 0. Empty too with ``decisions.mode: off``; ``read_only``
+    keeps the row and drops the step, which would put records in force.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli.helpers import run_async
+    from repowise.core.analysis.decisions.policy_store import layer_mode
 
+    mode = layer_mode(repo_path)
+    if mode == "off":
+        return {}
     try:
-        return run_async(_count_decisions(repo_path))
+        counts = run_async(_count_decisions(repo_path))
+        if mode != "full":
+            counts.pop("discovery_records", None)
+        return counts
     except (SQLAlchemyError, OSError):
         return {}
     except Exception:

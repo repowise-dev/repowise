@@ -316,7 +316,7 @@ def merge_command(
 
     signer = _signer(agent, agent_session)
     repo_path = _resolve_decision_repo(path, fmt)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    granted = _load_policy(repo_path).agent_may_accept if agent else False
 
     async def _merge(session, rec) -> dict:
         from repowise.core.persistence.crud.authority import merge_candidate
@@ -385,7 +385,7 @@ def reaffirm_command(
     _require_ids(ids, "reaffirm", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    granted = _load_policy(repo_path).agent_may_accept if agent else False
 
     async def _reaffirm(session, rec) -> None:
         from repowise.core.persistence.crud.authority import reaffirm_decision
@@ -829,8 +829,10 @@ def _render_status(report: dict) -> None:
     """Render the capture report for a person."""
     policy = report["policy"]
     console.print("[bold]Decision capture[/bold]\n")
+    capture = policy["enabled"] and policy["mode"] == "full"
     console.print(
-        f"  Capture [bold]{'on' if policy['enabled'] else 'off'}[/bold]  ·  "
+        f"  Mode [bold]{policy['mode'].replace('_', '-')}[/bold]  ·  "
+        f"Decision capture [bold]{'on' if capture else 'off'}[/bold]  ·  "
         f"LLM extraction [bold]{'on' if policy['llm'] else 'off'}[/bold]  ·  "
         f"preset [bold]{policy['preset']}[/bold]"
     )
@@ -875,7 +877,7 @@ def _render_status(report: dict) -> None:
     counts = Table(title="\nRecords", show_header=False, box=None, pad_edge=False, show_edge=False)
     counts.add_column("Metric", style="cyan")
     counts.add_column("Value", justify="right")
-    counts.add_row("Governing", str(lanes["governing"]))
+    counts.add_row("In force", str(lanes["governing"]))
     counts.add_row("Pinned", str(report["recent"]["pinned"]))
     counts.add_row("Active", str(lanes["active"]))
     counts.add_row("Needs review", str(lanes["needs_review"]))

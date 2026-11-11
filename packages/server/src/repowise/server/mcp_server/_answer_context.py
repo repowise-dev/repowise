@@ -147,6 +147,10 @@ async def fetch_relevant_decisions(
     model as something the repository has settled on, which is exactly the
     claim nobody has made about it.
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    if layer_mode(getattr(ctx, "path", None)) == "off":
+        return []
     if not target_paths and not question:
         return []
     targets_set = set(target_paths)

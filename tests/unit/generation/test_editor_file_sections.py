@@ -287,3 +287,14 @@ def test_with_nothing_pinned_the_decisions_block_is_one_pointer_line(gen):
         'Recorded decisions govern some files: `get_why(targets=["<file>"])` '
         "before changing how one works."
     )
+
+
+def test_read_only_drops_the_record_a_decision_line(gen):
+    for sections in (None, ALL_SECTIONS):
+        kw = {"sections": sections} if sections else {}
+        full = gen.render(_full_data(**kw))
+        read_only = gen.render(_full_data(record_decisions=False, **kw))
+        assert "repowise decision add" in full
+        assert "repowise decision add" not in read_only
+        assert "### Decisions" in read_only
+        assert len(read_only) < len(full)

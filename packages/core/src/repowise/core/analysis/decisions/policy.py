@@ -22,6 +22,7 @@ __all__ = [
     "CAPTURE_SOURCE_KEYS",
     "DISCOVERY_BOUNDS",
     "INDEX_SOURCE_KEYS",
+    "MODES",
     "PRESETS",
     "PRESET_NAMES",
     "SOURCE_SPECS",
@@ -36,6 +37,7 @@ __all__ = [
 ]
 
 Authority = Literal["machine", "human"]
+Mode = Literal["off", "read_only", "full"]
 SourceStatus = Literal[
     "enabled",
     "disabled",
@@ -347,16 +349,42 @@ class SourceRuntime:
         }
 
 
-#: Switches written to the config only when they differ from their default,
-#: so an untouched config stays as short as the user left it.
-_SPARSE_SWITCHES: tuple[tuple[str, bool], ...] = (
-    ("agent_acceptance", True),
-    ("capture_prompt", True),
-    ("require_approval", False),
-    ("sync", False),
-    ("session_start", False),
-    ("upkeep_prompt", False),
-)
+#: The one switch over the whole layer, and the default each finer switch
+#: takes under it. ``full`` captures and delivers; ``read_only`` delivers what
+#: the repository already holds and captures nothing (no mining, no prompt to
+#: record, no agent granting, nothing sent to repowise.dev); ``off`` does
+#: neither. A switch the config states explicitly wins over its mode default,
+#: except under ``off``, which silences every delivery whatever they say.
+#: Switches are written to the config only when they differ from the mode's
+#: default, so an untouched config stays as short as the user left it.
+_MODE_DEFAULTS: dict[str, dict[str, bool]] = {
+    "full": {
+        "agent_acceptance": True,
+        "capture_prompt": True,
+        "require_approval": False,
+        "sync": False,
+        "session_start": False,
+        "upkeep_prompt": False,
+    },
+    "read_only": {
+        "agent_acceptance": False,
+        "capture_prompt": False,
+        "require_approval": False,
+        "sync": False,
+        "session_start": False,
+        "upkeep_prompt": False,
+    },
+}
+_MODE_DEFAULTS["off"] = _MODE_DEFAULTS["read_only"]
+
+MODES: tuple[str, ...] = ("off", "read_only", "full")
+
+#: Why a source does not run when capture is off, by mode.
+_CAPTURE_OFF_REASON: dict[str, str] = {
+    "off": "Decisions are off for this repository.",
+    "read_only": "Decisions are read-only for this repository.",
+    "full": "Decision capture is off for this repository.",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +430,8 @@ class DecisionPolicy:
     #: it asks something of the agent, and stays off until its firings show
     #: agents act on it.
     upkeep_prompt: bool = False
+    #: The layer's one switch; see :data:`_MODE_DEFAULTS`.
+    mode: Mode = "full"
 
     # -- queries ---------------------------------------------------------
 
@@ -412,7 +442,7 @@ class DecisionPolicy:
             return False
         if not spec.togglable:
             return True
-        if not self.enabled:
+        if not self.captures:
             return False
         setting = self.sources.get(key)
         return bool(setting and setting.enabled)
@@ -452,7 +482,46 @@ class DecisionPolicy:
     @property
     def update_llm(self) -> bool:
         """Whether ``update`` may make any decision model call at all."""
-        return self.update_mining and self.enabled and self.llm
+        return self.update_mining and self.captures and self.llm
+
+    @property
+    def captures(self) -> bool:
+        """Whether machine capture may run: ``enabled`` and the mode is ``full``.
+
+        Read from the mode, not from ``enabled`` or ``sources`` alone: every
+        write lists both, so a stored value cannot say whether a person meant it.
+        """
+        return self.enabled and self.mode == "full"
+
+    @property
+    def delivers(self) -> bool:
+        """Whether any surface may show a decision to an agent or a person."""
+        return self.mode != "off"
+
+    @property
+    def pulls(self) -> bool:
+        """Whether ``update`` and ``decision pull`` may bring decisions down from repowise.dev."""
+        return self.sync and self.delivers and self.enabled
+
+    @property
+    def sends(self) -> bool:
+        """Whether ``update`` and ``decision push`` may send records to repowise.dev."""
+        return self.sync and self.captures
+
+    @property
+    def commit_prompt(self) -> bool:
+        """Whether the commit hook asks the agent to record the choice it states."""
+        return self.delivers and self.enabled and self.capture_prompt
+
+    @property
+    def commit_upkeep(self) -> bool:
+        """Whether the commit hook names the decisions a commit's files are under."""
+        return self.delivers and self.upkeep_prompt
+
+    @property
+    def session_start_on(self) -> bool:
+        """Whether a new agent session opens with the relevant decisions."""
+        return self.delivers and self.session_start
 
     # -- projections -----------------------------------------------------
 
@@ -508,8 +577,8 @@ class DecisionPolicy:
     ) -> tuple[SourceStatus, str]:
         if not spec.togglable:
             return "always_on", f"{spec.label} is always available."
-        if not self.enabled:
-            return "disabled", "Decision capture is off for this repository."
+        if not self.captures:
+            return "disabled", _CAPTURE_OFF_REASON[self.mode]
         if not enabled:
             return "disabled", "This source is switched off."
         if not spec.llm:
@@ -554,9 +623,11 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
+        if self.mode != "full":
+            block["mode"] = self.mode
         block.update(
             (key, getattr(self, key))
-            for key, default in _SPARSE_SWITCHES
+            for key, default in _MODE_DEFAULTS[self.mode].items()
             if getattr(self, key) != default
         )
         # Always written: this block always carries ``sources``, and a block
@@ -568,6 +639,7 @@ class DecisionPolicy:
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
         """The JSON payload shared by ``decision config show`` and the API."""
         return {
+            "mode": self.mode,
             "enabled": self.enabled,
             "llm": self.llm,
             "preset": self.preset_name(),
@@ -635,10 +707,26 @@ class DecisionPolicy:
     def with_upkeep_prompt(self, value: bool) -> DecisionPolicy:
         return replace(self, upkeep_prompt=value)
 
+    def with_mode(self, mode: str) -> DecisionPolicy:
+        """A copy at *mode*, every switch it governs reset to that mode's default.
+
+        Setting the position is the point of the one switch, so a finer switch
+        set under the old mode does not survive it. Capture membership
+        (``sources``, ``llm``, ``enabled``) does: it says what ``full`` mines.
+        """
+        if mode not in MODES:
+            raise ValueError(f"Unknown mode: {mode}. Choose one of {', '.join(MODES)}.")
+        return replace(self, mode=mode, **_MODE_DEFAULTS[mode])
+
+    @property
+    def agent_may_accept(self) -> bool:
+        """``agent_acceptance``, and nothing at all under mode ``off``."""
+        return self.agent_acceptance and self.delivers
+
     @property
     def agent_grants(self) -> bool:
         """Whether an agent's acceptance may put a decision in force."""
-        return self.agent_acceptance and not self.require_approval
+        return self.agent_may_accept and not self.require_approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -725,6 +813,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "update_mining",
         "session_start",
         "upkeep_prompt",
+        "mode",
     }
 )
 
@@ -745,37 +834,38 @@ def _as_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _default_on_switch(raw: dict, key: str, warnings: list[str]) -> bool:
-    """A switch that ships on: absent reads as on, a boolean as itself.
+#: How a present but non-boolean switch reads (a quoted "no"): on for a gate,
+#: the reading that holds more back; off for every other switch, since each
+#: grants authority, spends an agent's tokens or sends data somewhere.
+_UNREADABLE_AS_ON: frozenset[str] = frozenset({"require_approval"})
 
-    Present but not a boolean (a quoted "no") was written by someone saying
-    something, so it reads as off, not on.
-    """
+
+def _switch(raw: dict, key: str, default: bool, warnings: list[str]) -> bool:
+    """A switch as stated, or its mode default when absent."""
     value = _as_bool(raw.get(key))
     if value is not None:
         return value
     if key not in raw:
-        return True
-    warnings.append(f"`decisions.{key}` is not a boolean; treating it as false.")
-    return False
-
-
-def _default_off_switch(
-    raw: dict, key: str, warnings: list[str], *, unreadable: bool = True
-) -> bool:
-    """A switch that ships off: absent reads as off, a boolean as itself.
-
-    Present but not a boolean reads as *unreadable*: on for a gate, the reading
-    that holds more back; off for a switch that spends an agent's tokens or
-    sends data somewhere.
-    """
-    value = _as_bool(raw.get(key))
-    if value is not None:
-        return value
-    if key not in raw:
-        return False
-    warnings.append(f"`decisions.{key}` is not a boolean; treating it as {str(unreadable).lower()}.")
+        return default
+    unreadable = key in _UNREADABLE_AS_ON
+    warnings.append(
+        f"`decisions.{key}` is not a boolean; treating it as {str(unreadable).lower()}."
+    )
     return unreadable
+
+
+def _resolve_mode(raw: dict, warnings: list[str]) -> Mode:
+    """``decisions.mode``; ``full`` when absent, ``read-only`` read as ``read_only``."""
+    value = raw.get("mode", "full")
+    if value is False:
+        # YAML reads a bare `mode: off` as the boolean false.
+        return "off"
+    if isinstance(value, str) and value.replace("-", "_") in MODES:
+        return value.replace("-", "_")  # type: ignore[return-value]
+    # Unreadable reads as read_only: it shows what is there and mines, asks and
+    # sends nothing, so a typo neither spends nor silences the layer.
+    warnings.append(f"Unknown `decisions.mode` {value!r}; treating it as read_only.")
+    return "read_only"
 
 
 def _resolve_update_mining(raw: dict, warnings: list[str]) -> bool:
@@ -925,13 +1015,11 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
     harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
-    capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
-    require_approval = _default_off_switch(raw, "require_approval", warnings)
-    sync = _default_off_switch(raw, "sync", warnings, unreadable=False)
+    mode = _resolve_mode(raw, warnings)
+    switches = {
+        key: _switch(raw, key, default, warnings) for key, default in _MODE_DEFAULTS[mode].items()
+    }
     update_mining = _resolve_update_mining(raw, warnings)
-    session_start = _default_off_switch(raw, "session_start", warnings, unreadable=False)
-    upkeep_prompt = _default_off_switch(raw, "upkeep_prompt", warnings, unreadable=False)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -943,13 +1031,9 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             sources=sources,
             discovery=discovery,
             harnesses=harnesses,
-            agent_acceptance=agent_acceptance,
-            capture_prompt=capture_prompt,
-            require_approval=require_approval,
-            sync=sync,
             update_mining=update_mining,
-            session_start=session_start,
-            upkeep_prompt=upkeep_prompt,
+            mode=mode,
+            **switches,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),
