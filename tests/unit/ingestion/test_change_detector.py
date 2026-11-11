@@ -317,6 +317,17 @@ class TestGetAffectedPages:
         assert result.rename_patch == []
         assert result.decay_only == []
 
+    def test_co_change_partner_decays_whichever_way_it_sorts(self, tmp_path: Path) -> None:
+        """The edge is stored once, ``a.py -> b.py``; either file changing only decays the other (#5472)."""
+        d = self._detector(tmp_path)
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("a.py", "b.py", edge_type="co_changes")
+
+        for changed, partner in (("b.py", "a.py"), ("a.py", "b.py")):
+            result = d.get_affected_pages([self._simple_file_diff(changed)], graph=g)
+            assert result.regenerate == [changed]
+            assert result.decay_only == [partner]
+
 
 class TestAffectedPagesPagerankParam:
     """A caller-supplied pagerank map must drive cascade-budget ordering
