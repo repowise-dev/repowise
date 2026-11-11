@@ -216,6 +216,17 @@ class TestCHints:
         edges = CDynamicHints().extract(tmp_path)
         assert any(e.hint_source == "c:dlopen" for e in edges)
 
+    def test_static_function_in_another_c_file_is_not_a_target(self, tmp_path: Path) -> None:
+        # Internal linkage: the assignment in b.c can only mean its own handler.
+        (tmp_path / "a.c").write_text("static void handler(int x) {\n}\n")
+        (tmp_path / "b.c").write_text(
+            "void handler(int x) {\n}\nvoid setup(void) { cb = handler; }\n"
+        )
+        (tmp_path / "c.c").write_text("void setup2(void) { cb = handler; }\n")
+        targets = {(e.source, e.target) for e in CDynamicHints().extract(tmp_path)}
+        assert ("b.c", "a.c") not in targets and ("c.c", "a.c") not in targets
+        assert ("c.c", "b.c") in targets
+
 
 class TestLuauHints:
     def test_get_service(self, tmp_path: Path) -> None:

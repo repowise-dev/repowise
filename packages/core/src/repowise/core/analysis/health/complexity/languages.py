@@ -392,6 +392,14 @@ class LanguageNodeMap:
     #     function; at module level the node keeps the entry it always had.
     local_value: Callable[[Node], object] | None = None
 
+    # -- Word operators ------------------------------------------------------
+    #   * ``logical_operator`` -- truthy for a node that matched
+    #     ``boolean_operator_kinds`` / ``boolean_operator_text_kinds`` and
+    #     really joins two conditions. A word operator can be something else: a
+    #     ScalaTest matcher or Spark ``Column`` method (``be > 1 and be < 5``),
+    #     Pascal bitwise ``Flags and $FF``. None means every match is logic.
+    logical_operator: Callable[[Node], object] | None = None
+
 
 
 # Scalar type names C and C++ share, Win32's typedefs included because C/C++ on
@@ -886,17 +894,26 @@ _SWIFT = LanguageNodeMap(
     field_decl_kinds=frozenset({"property_declaration"}),
     identifier_kinds=frozenset({"simple_identifier"}),
     ctor_kinds=frozenset({"init_declaration"}),
-    fixed_signature_markers=frozenset({"override"}),
+    # ``@objc`` exposes the method to Objective-C selectors and protocols,
+    # which own its parameter list.
+    fixed_signature_markers=frozenset({"override", "objc"}),
     supertype_clause_kinds=frozenset({"inheritance_specifier"}),
-    # No ``scalar_type_names``: a Swift ``parameter`` is a child of the function
-    # with no list node around it, which ``typed_param_counts`` does not read
-    # yet, so ``primitive_obsession`` has nothing to count here. No assertion
-    # kinds either: XCTest has no vocabulary row, so the test-quality markers
-    # do not read Swift.
+    scalar_type_names=frozenset(
+        {
+            "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32",
+            "UInt64", "Float", "Double", "CGFloat", "Bool", "String", "Substring", "Character",
+            # C types as Swift imports them.
+            "CInt", "CUnsignedInt", "CLong", "CUnsignedLong", "CShort", "CChar", "CBool",
+            "CFloat", "CDouble",
+        }
+    ),
+    # No assertion kinds: XCTest has no vocabulary row, so the test-quality
+    # markers do not read Swift.
     call_kinds=frozenset({"call_expression"}),
 )
 
 _DART = LanguageNodeMap(
+    fixed_signature_markers=frozenset({"override"}),
     scalar_type_names=frozenset({"int", "double", "num", "bool", "String"}),
     # Dart splits a function into a ``function_signature`` node whose body is
     # a SIBLING ``function_body`` node (members wrap the signature in
@@ -1132,6 +1149,12 @@ _CSHARP = LanguageNodeMap(
 )
 
 
+def _scala_symbolic_logic(node: Node) -> bool:
+    """``a && b`` / ``a || b``, not a DSL's infix ``and`` / ``or``."""
+    operator = node.child_by_field_name("operator")
+    return operator is not None and operator.text in (b"&&", b"||")
+
+
 _SCALA = LanguageNodeMap(
     fixed_signature_markers=frozenset({"override"}),
     scalar_type_names=frozenset(
@@ -1169,11 +1192,11 @@ _SCALA = LanguageNodeMap(
     case_kinds=frozenset({"case_clause"}),
     boolean_operator_kinds=frozenset(),
     # ``&&`` / ``||`` are ``operator_identifier`` tokens inside a generic
-    # ``infix_expression``, the text sniff. The sniffer also matches ``and`` /
-    # ``or`` operator text (ScalaTest matcher DSL combinators), which are
-    # genuine boolean combinators when used infix, so the shared behavior is
-    # acceptable here.
+    # ``infix_expression``, the text sniff. Infix ``and`` / ``or`` is never
+    # one: ``Boolean`` has no such methods, so they are a DSL's (ScalaTest
+    # ``be > 1 and be < 5``, Spark ``col("a") > 1 and col("b") < 2``).
     boolean_operator_text_kinds=frozenset({"infix_expression"}),
+    logical_operator=_scala_symbolic_logic,
     # ``object`` (singletons / companions), ``trait``, and Scala 3 ``enum``
     # bodies all group methods the same way a class body does; case classes
     # are plain ``class_definition``s.
@@ -1321,6 +1344,56 @@ _SHELL = LanguageNodeMap(
 )
 
 
+# Pascal operators that only take numbers; a comparison is integer-typed
+# when its other side is one.
+_PASCAL_ARITHMETIC = frozenset({"kAdd", "kSub", "kMul", "kDiv", "kFdiv", "kMod", "kShl", "kShr"})
+_PASCAL_BITWISE = frozenset({"kAnd", "kOr", "kXor"})
+_PASCAL_COMPARISON = frozenset({"kEq", "kNeq", "kLt", "kLte", "kGt", "kGte"})
+
+
+def _pascal_unparen(node: Node | None) -> Node | None:
+    while node is not None and node.type == "exprParens" and node.named_children:
+        node = node.named_children[0]
+    return node
+
+
+def _pascal_operator(node: Node) -> str:
+    operator = node.child_by_field_name("operator")
+    return operator.type if operator is not None else ""
+
+
+def _pascal_integer(node: Node | None) -> bool:
+    """A number, arithmetic, or a bitwise ``and`` / ``or`` / ``xor`` over one."""
+    node = _pascal_unparen(node)
+    if node is None:
+        return False
+    if node.type == "literalNumber":
+        return True
+    if node.type != "exprBinary":
+        return False
+    operator = _pascal_operator(node)
+    if operator in _PASCAL_ARITHMETIC:
+        return True
+    return operator in _PASCAL_BITWISE and any(
+        _pascal_integer(node.child_by_field_name(side)) for side in ("lhs", "rhs")
+    )
+
+
+def _pascal_not_bitwise(node: Node) -> bool:
+    """``A and B`` on conditions, not ``Flags and $FF`` or ``(F and M) <> 0``."""
+    expr = node.parent
+    if expr is None or _pascal_integer(expr):
+        return False
+    outer = expr.parent
+    while outer is not None and outer.type == "exprParens":
+        outer = outer.parent
+    if outer is None or outer.type != "exprBinary":
+        return True
+    if _pascal_operator(outer) not in _PASCAL_COMPARISON:
+        return True
+    return not any(_pascal_integer(outer.child_by_field_name(side)) for side in ("lhs", "rhs"))
+
+
 _PASCAL = LanguageNodeMap(
     # ``defProc`` pairs a signature (``header: declProc``) with a ``body``
     # block field -- the interface-only ``declProc`` forward/interface
@@ -1358,6 +1431,8 @@ _PASCAL = LanguageNodeMap(
     # not generic operator text inside a binary node, so no text-sniffing
     # set is needed here (unlike the C-family languages above).
     boolean_operator_kinds=frozenset({"kAnd", "kOr"}),
+    # ... unless the operands are integers: ``Flags and $FF`` masks bits.
+    logical_operator=_pascal_not_bitwise,
     # DUnit's ``Check`` / ``CheckEquals`` / ``Fail`` family are ordinary calls
     # named in ``asserts/lexicon.py``'s Pascal row (broad tier); DUnitX's
     # ``Assert.AreEqual`` / ``Assert.IsTrue`` / ... need no row at all -- the
@@ -1471,6 +1546,9 @@ _FSHARP = LanguageNodeMap(
     switch_kinds=frozenset({"match_expression"}),
     case_kinds=frozenset({"rules"}),
     boolean_operator_kinds=frozenset(),
+    # ``a && b`` is an ``infix_expression`` whose ``infix_op`` child carries the
+    # operator text, the same sniff as Scala.
+    boolean_operator_text_kinds=frozenset({"infix_expression"}),
     class_kinds=frozenset({"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}),
     self_identifiers=frozenset(),
     member_access_kinds=frozenset(),
@@ -1518,6 +1596,13 @@ _OBJC = LanguageNodeMap(
 
 
 _PHP = LanguageNodeMap(
+    # ``?string`` and ``int|string`` read as their members. PHP type names
+    # are case-insensitive; ``String`` and ``INT`` are the spellings seen.
+    scalar_type_names=frozenset(
+        spelling
+        for name in ("int", "float", "string", "bool", "true", "false")
+        for spelling in (name, name.capitalize(), name.upper())
+    ),
     bodyless=_no_body_field,
     function_kinds=frozenset({"function_definition", "method_declaration"}),
     lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),
