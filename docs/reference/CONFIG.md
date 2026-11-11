@@ -1384,8 +1384,10 @@ Keys resolve in order:
 | `REPOWISE_GIT_WORKERS` | unset | > 0 | Parallel git processes while indexing history. Unset sizes to the machine. |
 | `REPOWISE_GIT_INDEX_TIMEOUT_S` | `120` | > 0 | Seconds one file's git history lookup may take. |
 | `REPOWISE_GIT_SCOPE` | `module` |  | Set to repo to index the whole repository's history when indexing one module. |
+| `REPOWISE_GIT_WINDOW_ANCHOR` | unset |  | Set to now to measure git windows (recent churn, prior defects, blame age) from today instead of from the indexed commit's date. |
 | `REPOWISE_GRAMMAR_DIR` | unset |  | Folder of pre-downloaded language grammars, for offline machines. |
 | `REPOWISE_WORKTREE_FALLBACK` | on | on unless `0`, `false`, `no`, `off` | Let a git worktree read its main checkout's index; 0 turns it off. |
+| `REPOWISE_INDEX_INFORMATION_FLOOR` | `0` | >= 0 | Least characters of real prose a wiki page needs to be found by semantic search. Shorter pages stay readable, just not in that search. 0 is off. |
 <!-- END GENERATED settings:env-indexing -->
 
 `REPOWISE_PARSE_WORKERS` defaults to the CPU count capped at 8, never above
@@ -1400,7 +1402,7 @@ faster.
 | `REPOWISE_ANSWER_TIMEOUT_S` | unset | 0-600 (clamped) | Seconds get_answer may spend writing one answer. Unset uses the provider's own. |
 | `REPOWISE_EMBED_TIMEOUT_S` | `8` | 0-120 (clamped) | Seconds a get_answer question may wait to be embedded. |
 | `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | `30` | 0-120 (clamped) | Seconds one semantic search may take. |
-| `REPOWISE_WORKSPACE_CONCURRENCY` | `4` | 0-64 (clamped) | How many repos one workspace query asks at once. |
+| `REPOWISE_WORKSPACE_CONCURRENCY` | `4` | 1-64 (clamped) | How many repos one workspace query asks at once, never more than the server keeps open. |
 | `REPOWISE_WORKSPACE_REPO_TIMEOUT_S` | `60` | 0-300 (clamped) | Seconds each repo gets in a workspace query. |
 | `REPOWISE_MCP_NO_WATCHDOG` | off | `1`, `true`, `yes` | Keep the MCP server running when the app that started it exits. |
 <!-- END GENERATED settings:env-mcp -->
@@ -1471,6 +1473,7 @@ any truthy value turns it off (cross-tool convention).
 | `REPOWISE_TELEMETRY_DEBUG` | off | `1`, `on`, `true`, `yes` | Print the telemetry payload instead of sending it. |
 | `REPOWISE_NO_HINTS` | off | `1`, `on`, `true`, `yes` | Hide repowise.dev tips in the CLI and web UI. |
 | `REPOWISE_NO_SAVE_KEY` | off | on when set, unless `0`, `false`, `no` | Do not copy an API key into the repo's .repowise/.env. For CI and shared machines. |
+| `REPOWISE_CHANGELOG` | unset |  | A changelog file for the what's-new check to read instead of the bundled one. |
 <!-- END GENERATED settings:env-account -->
 
 `REPOWISE_OFFLINE` also turns off the PyPI release check and the `init` probe
