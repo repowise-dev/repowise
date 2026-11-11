@@ -36,10 +36,30 @@ RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
 #: Python handler types that catch every ordinary exception; only the second
 #: also catches the interpreter's exit signals.
 PY_CATCH_ALL = ("Exception", "BaseException")
-# Cancellation is a stop signal, not an error: dropping it after cancelling a
-# task is deliberate, so a handler catching only these is not swallowing.
-_CANCEL_TYPES = {
-    "python": frozenset({"CancelledError"}),
+# Exceptions an empty handler may drop on purpose, so a handler catching only
+# these is not swallowing. Cancellation is a stop signal, not an error:
+# dropping it after cancelling a task is deliberate. The other Python types
+# each name one expected outcome, the ``contextlib.suppress`` idiom: an
+# optional import, a delete/remove/kill that finds nothing there, a mkdir that
+# finds the folder there, an exhausted iterator, a non-blocking call with
+# nothing ready, a reader that closed the pipe, a Ctrl-C ending a run quietly.
+_EXPECTED_TYPES = {
+    "python": frozenset(
+        {
+            "CancelledError",
+            "ImportError",
+            "ModuleNotFoundError",
+            "KeyError",
+            "FileNotFoundError",
+            "FileExistsError",
+            "ProcessLookupError",
+            "StopIteration",
+            "StopAsyncIteration",
+            "BlockingIOError",
+            "BrokenPipeError",
+            "KeyboardInterrupt",
+        }
+    ),
     "csharp": frozenset({"OperationCanceledException", "TaskCanceledException"}),
 }
 # A docstring or comment that states the handler's fallback: "best-effort",
@@ -54,6 +74,13 @@ _FALLBACK_DOC_RE = re.compile(
     r"(?:\b(?:on|upon)\s+(?:any\s+)?(?:failure|errors?|exceptions?)\b"
     r"|\b(?:if|when)\s+(?:\w+\s+){0,4}?(?:fails?|failed|cannot|can't|could\s+not|couldn't)\b)",
     re.IGNORECASE | re.MULTILINE,
+)
+# A logger's name: ``logger``, ``log``, ``logging``, ``app_log``, ``_LOGGER``
+# (not ``catalog`` or ``dialog``), and its methods at a level someone reads;
+# ``debug`` is off in production, so it reports nothing.
+_PY_LOGGER_RE = re.compile(r"(?:^|_)log(?:ger|ging)?$", re.IGNORECASE)
+_PY_LOG_METHODS = frozenset(
+    {"info", "warning", "warn", "error", "exception", "critical", "fatal", "log"}
 )
 
 
@@ -171,9 +198,10 @@ def _eh_caught_types(clause: Node, language: str) -> list[Node]:
     return types
 
 
-def _eh_catches_only_cancellation(clause: Node, language: str) -> bool:
-    """``except asyncio.CancelledError`` / C# ``catch (OperationCanceledException)``."""
-    names = _CANCEL_TYPES.get(language)
+def _eh_catches_only_expected(clause: Node, language: str) -> bool:
+    """``except asyncio.CancelledError`` / ``except (ImportError, KeyError)`` /
+    C# ``catch (OperationCanceledException)``."""
+    names = _EXPECTED_TYPES.get(language)
     if names is None:
         return False
     types = _eh_caught_types(clause, language)
@@ -229,6 +257,38 @@ def _eh_documented_fallback(clause: Node, block: Node | None) -> bool:
     return any(_FALLBACK_DOC_RE.search(t) for t in _eh_fallback_doc_texts(clause, block))
 
 
+def _eh_called_function(stmt: Node) -> Node | None:
+    """The callee of a statement that is a bare call, else ``None``."""
+    call = _eh_named(stmt)[0] if stmt.type == "expression_statement" and _eh_named(stmt) else None
+    return call.child_by_field_name("function") if call is not None and call.type == "call" else None
+
+
+def _eh_is_log_call(stmt: Node) -> bool:
+    """``logger.exception(...)`` / ``self.log.warning(...)`` / ``warnings.warn(...)``."""
+    fn = _eh_called_function(stmt)
+    if fn is None or fn.type not in ("identifier", "attribute"):
+        return False
+    if fn.type == "identifier":
+        return _eh_text(fn) == "warn"
+    receiver = _eh_text(fn.child_by_field_name("object")).rsplit(".", 1)[-1]
+    method = _eh_text(fn.child_by_field_name("attribute"))
+    if receiver == "warnings":
+        return method == "warn"
+    return method in _PY_LOG_METHODS and bool(_PY_LOGGER_RE.search(receiver))
+
+
+def _eh_logs(block: Node | None) -> bool:
+    """The handler logs the failure at a visible level, so it is reported, not
+    hidden; what it does next (continue, return a fallback) is its choice."""
+    real = _eh_real_stmts(block, "python") if block is not None else []
+    return any(_eh_is_log_call(s) for s in real)
+
+
+def _eh_broad_is_handled(clause: Node, block: Node | None) -> bool:
+    """``except Exception`` that logs the failure or returns a documented fallback."""
+    return _eh_logs(block) or _eh_documented_fallback(clause, block)
+
+
 def _eh_rust_attr_is_test(attr_text: str) -> bool:
     """True when a Rust attribute marks test-only code.
 
@@ -273,6 +333,19 @@ def _eh_rust_in_test(node: Node) -> bool:
                 sib = sib.prev_sibling
         cur = cur.parent
     return False
+
+
+def _eh_rust_in_main(node: Node) -> bool:
+    """True when *node*'s nearest enclosing function is a crate's top-level
+    ``fn main``: a panic there ends the program with its message, the same
+    exit a returned error would give."""
+    cur: Node | None = node.parent
+    while cur is not None and cur.type != "function_item":
+        cur = cur.parent
+    if cur is None or cur.parent is None or cur.parent.type != "source_file":
+        return False
+    name = cur.child_by_field_name("name")
+    return name is not None and _eh_text(name) == "main"
 
 
 def _eh_rust_hit(node: Node) -> bool:
@@ -421,7 +494,7 @@ def _eh_broad_except_hit(
 ) -> ErrorHandlingHit | None:
     """The bare/broad except hit for a Python clause that does not re-raise,
     unless its noqa codes suppress that kind or, for ``except Exception``, the
-    fallback it returns is documented."""
+    fallback it returns is documented or the handler logs the failure."""
     # ``except:`` / ``except BaseException:`` also swallow
     # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
     is_base = _eh_catches_base(node)
@@ -431,17 +504,17 @@ def _eh_broad_except_hit(
         or (kind == "broad_except" and "BLE001" in noqa_codes)
         or (kind == "bare_except" and bool(noqa_codes & {"BLE001", "E722"}))
     )
-    if suppress or (kind == "broad_except" and _eh_documented_fallback(node, block)):
+    if suppress or (kind == "broad_except" and _eh_broad_is_handled(node, block)):
         return None
     return ErrorHandlingHit(kind, node.start_point[0] + 1)
 
 
 def _eh_swallow_expected(node: Node, language: str) -> bool:
     """An empty handler that is the intended landing spot: a Java/Apex test's
-    expected throw, or a caught cancellation."""
+    expected throw, or a caught cancellation or other expected outcome."""
     if language in ("java", "apex"):
         return _eh_java_try_ends_in_fail(node, language)
-    return _eh_catches_only_cancellation(node, language)
+    return _eh_catches_only_expected(node, language)
 
 
 def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> None:
@@ -485,7 +558,7 @@ def _eh_visit(
         # A panic-family macro aborts unconditionally; unwrap/expect converts
         # a Result/Option into a panic. Different claims → different kinds.
         # ``.unwrap()`` inside a ``#[test]`` is the intended failure signal.
-        if not _eh_rust_in_test(node):
+        if not (_eh_rust_in_test(node) or _eh_rust_in_main(node)):
             _eh_rust_append(node, hits)
     elif language == "go" and _eh_go_hit(node):
         hits.append(ErrorHandlingHit("go_swallow", node.start_point[0] + 1))
