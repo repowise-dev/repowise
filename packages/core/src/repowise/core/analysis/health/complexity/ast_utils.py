@@ -580,6 +580,16 @@ def _nested_function_nodes(
 def _parameter_list(fn_node: Node) -> Node | None:
     """The node holding *fn_node*'s declared parameters, or ``None``."""
     params = fn_node.child_by_field_name("parameters")
+    if params is not None and (params.type == "type_parameters" or _is_context_list(params)):
+        # Scala tags ``[A, B]`` with the ``parameters`` field too, and an
+        # ``implicit`` / ``using`` list is filled by the compiler: the first
+        # list a caller passes is the signature.
+        params = next(
+            (c for c in fn_node.children if c.type == "parameters" and not _is_context_list(c)),
+            None,
+        )
+        if params is None:
+            return None
     if params is None:
         params = next(
             (
@@ -596,6 +606,11 @@ def _parameter_list(fn_node: Node) -> Node | None:
             None,
         )
     return params if params is not None else _dialect_parameter_list(fn_node)
+
+
+def _is_context_list(params: Node) -> bool:
+    """A Scala ``(implicit ...)`` or ``(using ...)`` parameter list."""
+    return any(c.type in ("implicit", "using") for c in params.children)
 
 
 def _dialect_parameter_list(fn_node: Node) -> Node | None:

@@ -26,7 +26,9 @@ These narrowings keep the finding to signatures someone can actually fix:
 - A parameter a framework binds by annotation (``@PathVariable``) is the
   route's or the data format's, so only the remaining ones are counted.
 - A keyword-only parameter is left out too: every call site names it, so it
-  carries none of the argument-order hazard a long positional list does.
+  carries none of the argument-order hazard a long positional list does. So
+  is a Kotlin or Scala parameter with a default, which a call site leaves out
+  or names.
 - A Click or Typer command's parameters mirror its CLI options, and a Python
   method overriding a base class in the same file keeps the base's
   parameters; both count as a signature set elsewhere.
@@ -85,11 +87,13 @@ class PrimitiveObsessionDetector:
                         "primitive_param_count": primitive,
                         "bound_param_count": fn.bound_param_count,
                         "keyword_only_param_count": fn.keyword_only_param_count,
+                        "defaulted_param_count": fn.defaulted_param_count,
                     },
                     reason=(
                         f"long parameter list: {fn.name} takes {fn.param_count} parameters"
                         + (f", {fn.bound_param_count} bound by the framework" if fn.bound_param_count else "")
                         + (f", {fn.keyword_only_param_count} keyword-only" if fn.keyword_only_param_count else "")
+                        + (f", {fn.defaulted_param_count} with defaults" if fn.defaulted_param_count else "")
                         + (f", {primitive} of {typed} typed ones scalars or strings" if typed else "")
                     ),
                 )
@@ -115,8 +119,11 @@ def _threshold(fn: FunctionComplexity, untyped_grace: int = 0) -> int | None:
 
 
 def _counted(fn: FunctionComplexity) -> int:
-    """Parameters a caller passes by position: framework-bound and keyword-only ones left out."""
-    return fn.param_count - fn.bound_param_count - fn.keyword_only_param_count
+    """Parameters a caller passes by position: framework-bound, keyword-only and
+    defaulted ones left out."""
+    return (
+        fn.param_count - fn.bound_param_count - fn.keyword_only_param_count - fn.defaulted_param_count
+    )
 
 
 def _severity(param_count: int, threshold: int) -> Severity:
