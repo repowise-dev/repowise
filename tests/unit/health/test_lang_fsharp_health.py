@@ -83,6 +83,22 @@ def test_record_members() -> None:
     assert (cls.method_count, cls.total_nloc) == (5, 7)
 
 
+def test_module_and_class_values_are_not_units() -> None:
+    source = (
+        "module M\n"
+        "let Colon = ','\n"
+        "let f x = x\n"
+        "\n"
+        "type C() =\n"
+        "    let mutable n = 1\n"
+        "    member x.M() = n\n"
+    )
+    fcx = _walk(source)
+    assert sorted(f.name for f in fcx.functions) == ["M", "f"]
+    [cls] = fcx.classes
+    assert cls.method_count == 1
+
+
 @pytest.mark.skip(reason="curried and tupled F# parameters are not counted: param_count is 0")
 def test_parameters() -> None:
     params = {f.name: f.param_count for f in [*_walk(_CURRIED).functions, *_walk(_FAKE).functions]}
