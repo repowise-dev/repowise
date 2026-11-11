@@ -1906,6 +1906,10 @@
     "regenFailed": "Couldn't start regeneration"
   },
   "decisions": {
+    "agent": {
+      "discover": "Check background records with your agent",
+      "agreements": "Move working agreements to CLAUDE.md"
+    },
     "add": {
       "trigger": "Record a decision",
       "title": "Record a decision",

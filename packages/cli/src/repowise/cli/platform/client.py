@@ -151,6 +151,37 @@ class PlatformClient:
             body = {}
         return resp.status_code, body if isinstance(body, dict) else {}
 
+    def get_json(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """GET ``path`` and return ``(status_code, parsed_body)``, like :meth:`post_json`.
+
+        For reads whose refusal the caller acts on (a repo not published yet, a
+        route an older server lacks), where :meth:`get` would fold it into the
+        same ``None`` as offline. No answer at all is ``(0, {})``.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.get(
+                url,
+                params=params,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+        except Exception:
+            return 0, {}
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        return resp.status_code, body if isinstance(body, dict) else {}
+
     def post_form(
         self,
         path: str,

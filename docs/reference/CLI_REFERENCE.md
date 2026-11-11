@@ -547,7 +547,7 @@ Why the code is shaped this way (decisions, rationale, git archaeology); run bef
 
 ```bash
 repowise why "why the retry cap?" --target src/api/client.py
-repowise why src/api/auth.py                     # governing decisions + origin story
+repowise why src/api/auth.py                     # governing decisions (--full adds the origin story)
 repowise why                                     # decision health dashboard
 ```
 
@@ -990,6 +990,8 @@ repowise decision add                   # interactive
 repowise decision add --title T --decision D  # no prompts, lands proposed
 repowise decision add --agent SLUG --title T --decision D --rationale R --affects PATH  # an agent's own record
 repowise decision candidates            # awaiting review; these govern nothing
+repowise decision discover              # a prompt for your agent: check the background records on the busiest files
+repowise decision discover --agreements # a prompt that moves working agreements into CLAUDE.md
 repowise decision confirm ID...         # accept: this makes them govern
 repowise decision reaffirm ID...        # renew an accepted decision after re-reading it
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
@@ -1001,6 +1003,8 @@ repowise decision health
 repowise decision status                # what capture did and cost
 repowise decision export                # accepted decisions to .repowise/decisions.yaml
 repowise decision import                # reconcile the store to that file
+repowise decision push                  # decisions recorded here, to this repo on repowise.dev
+repowise decision pull                  # decisions in force there that this store lacks
 repowise decision migrate               # classify pre-split rows (dry run unless --apply)
 repowise decision config show                   # resolved capture policy
 repowise decision config preset NAME            # default | off | local_only | balanced | full
@@ -1008,6 +1012,7 @@ repowise decision config discovery              # broad discovery call budget
 repowise decision config agent-acceptance --on|--off  # may an agent grant authority? (on)
 repowise decision config capture-prompt --on|--off    # agent records what it committed (on);
                                                       # --on installs the shell hook
+repowise decision config sync --on|--off              # push and pull during update (off)
 repowise decision source list                   # source registry and state
 repowise decision source set SRC --on|--off     # switch one source
 repowise decision source set SRC --llm|--no-llm # switch only its model stage
@@ -1074,6 +1079,17 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--dry-run` | `import`: write nothing. | off |
 
 - `migrate` and `import` first delete the inert supersede pointers an older version left, and list each one as `stale`. `migrate` also lists each pointer it leaves `unplaced`, which resolves to nothing. With `--format json`, both return the repairs as `repaired`; only `migrate` also returns `unplaced`.
+- Once `.repowise/decisions.yaml` exists, `update` rewrites it as `export` would when the store changes, and leaves it alone when it holds edits the store has not read. `update` never creates it.
+
+**`push`** / **`pull`**
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--dry-run` | `push`: list each record and its payload; nothing sent, no sign-in. | off |
+
+- Both need `decisions.sync` on, `repowise login`, and a GitHub `origin`; otherwise they refuse with the reason.
+- `push` sends decisions in force whose source is `agent` or `session`, each once, with its evidence references and one verbatim quote. Per record: `created`, `duplicate`, `refused` with the reason, `skipped`, or `not_sent`. Exit 1 when any record was refused or not sent.
+- `pull` takes decisions recorded on repowise.dev, not ones its index found. Reports `received`, `updated`, `retired`, `unchanged`, `skipped`. A server without the route reports that nothing is available.
 
 **`list`**
 

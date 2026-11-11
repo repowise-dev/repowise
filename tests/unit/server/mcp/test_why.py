@@ -26,7 +26,7 @@ async def test_get_why_natural_language(setup_mcp):
 async def test_get_why_file_path(setup_mcp):
     from repowise.server.mcp_server import get_why
 
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
     assert result["mode"] == "path"
     assert result["path"] == "src/auth/service.py"
     # The JWT record has never been accepted, so it is a review request rather
@@ -58,7 +58,7 @@ async def test_get_why_file_path(setup_mcp):
 async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
     from repowise.server.mcp_server import get_why
 
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
     origin = result["origin_story"]
 
     # "Add JWT support" says one of the title's three words, which does not
@@ -189,7 +189,7 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     from repowise.server.mcp_server import get_why
 
     # middleware.py has no GitMetadata in the fixture
-    result = await get_why("src/auth/middleware.py")
+    result = await get_why("src/auth/middleware.py", include=["history"])
     assert result["mode"] == "path"
     origin = result["origin_story"]
     assert origin["available"] is False
@@ -223,7 +223,7 @@ async def test_get_why_file_ungoverned(session, setup_mcp, tmp_path):
     _write(tmp_path, "src/other/utils.py")
 
     # Use a path that has no decisions — triggers git archaeology fallback
-    result = await get_why("src/other/utils.py")
+    result = await get_why("src/other/utils.py", include=["history"])
     assert result["mode"] == "path"
     assert result["alignment"]["score"] == "none"
     assert "ungoverned" in result["alignment"]["explanation"]
@@ -244,7 +244,7 @@ async def test_get_why_says_when_the_index_has_no_accepted_decisions(setup_mcp, 
     from repowise.server.mcp_server import get_why
 
     _write(tmp_path, "src/other/utils.py")
-    result = await get_why("src/other/utils.py")
+    result = await get_why("src/other/utils.py", include=["history"])
 
     explanation = result["alignment"]["explanation"]
     assert "holds no decision in force" in explanation
@@ -292,7 +292,7 @@ async def test_get_why_fallback_with_cross_references(setup_mcp, tmp_path):
     # src/auth/service.py has git metadata with commits mentioning "auth"
     # Query a nonexistent auth file — cross-references should find commits
     # from service.py that mention "auth" terms
-    result = await get_why("src/auth/new_handler.py")
+    result = await get_why("src/auth/new_handler.py", include=["history"])
     assert result["mode"] == "path"
     assert len(result["decisions"]) == 0  # No decisions for this file
 
@@ -393,7 +393,7 @@ async def test_get_why_directory_origin_rolls_up_its_files(setup_mcp):
     """A directory has no git row of its own; its files' rows are its history."""
     from repowise.server.mcp_server import get_why
 
-    origin = (await get_why("src/"))["origin_story"]
+    origin = (await get_why("src/", include=["history"]))["origin_story"]
     assert origin["available"] is True
     assert origin["scope"] == "directory"
     assert origin["files_with_history"] == 2
@@ -408,7 +408,7 @@ async def test_get_why_directory_origin_rolls_up_its_files(setup_mcp):
 async def test_get_why_target_cards_roll_up_a_directory(setup_mcp):
     from repowise.server.mcp_server import get_why
 
-    result = await get_why(targets=["src/db", "src/auth/service.py"])
+    result = await get_why(targets=["src/db", "src/auth/service.py"], include=["history"])
     db = result["target_context"]["src/db"]["origin"]
     assert db["scope"] == "directory"
     assert db["files_with_history"] == 1
@@ -464,7 +464,7 @@ async def test_get_why_path_surfaces_code_rationale(setup_mcp, tmp_path):
     )
     mcp_mod._repo_path = str(tmp_path)
 
-    result = await get_why("src/other/widget.py")
+    result = await get_why("src/other/widget.py", include=["history"])
     assert result["mode"] == "path"
     assert len(result["decisions"]) == 0  # ungoverned → fallback fires
     assert "code_rationale" in result
@@ -497,17 +497,13 @@ async def test_get_why_targets_surfaces_code_rationale(setup_mcp, tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_why_semantic_decision_namespace_filtering(session, setup_mcp):
-    """Mode 3 semantic path: over-fetch from page store, keep only decision: hits.
+    """The semantic window feeds documentation only; decisions come from the store.
 
-    Upserts a decision vector under the 'decision:' prefix and a noise page
-    without the prefix into the shared vector store.  Confirms that get_why
-    surfaces the decision hit with the prefix stripped, and excludes the noise
-    page from the decisions list.
-
-    A stored record is seeded alongside them because the semantic lanes now run
-    only once something has cleared the relevance floor: a question no stored
-    record answers returns before embedding anything, rather than serving the
-    three nearest vectors to a store that has nothing to say.
+    A decision vector in the window is either a record that already cleared the
+    relevance floor as a keyword match, or one below it. Serving the second
+    after a correct hit is the unrelated tail an agent learns to ignore, so
+    only the stored, floored record is served, and no decision-namespace page
+    leaks into documentation.
     """
     import json
 
@@ -564,12 +560,9 @@ async def test_get_why_semantic_decision_namespace_filtering(session, setup_mcp)
     assert result["mode"] == "search"
 
     decision_ids = [d["id"] for d in result["decisions"]]
-    # The semantic decision hit should appear with the prefix stripped
-    assert "dec-vec-1" in decision_ids, f"Expected 'dec-vec-1' in decisions; got {decision_ids}"
-    # The noise page must not appear in decisions
-    assert not any(d.get("id", "").startswith("file_page:") for d in result["decisions"]), (
-        "Noise page should not appear in decisions list"
-    )
+    assert decision_ids == ["dec-redis"]
+    docs = [d["page_id"] for d in result.get("related_documentation", [])]
+    assert not any(page.startswith(DECISION_VECTOR_PREFIX) for page in docs)
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +706,7 @@ async def test_get_why_path_caps_records_and_keeps_the_active_one_first(
 
     await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
 
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
 
     assert len(result["decisions"]) <= _MAX_PATH_DECISIONS
     # Ranked, not table-scan order, and every row is an accepted decision.
@@ -791,7 +784,7 @@ async def test_get_why_path_leaves_a_small_response_untouched(session, setup_mcp
     """No cap fires on the ordinary case: no truncation flags, full arrays."""
     from repowise.server.mcp_server import get_why
 
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
 
     assert "truncated" not in result
     assert "decisions_total" not in result
@@ -832,7 +825,7 @@ async def test_get_why_path_fits_with_one_enormous_record(session, setup_mcp, mo
     )
     await session.flush()
 
-    result = await get_why("src/auth/service.py")
+    result = await get_why("src/auth/service.py", include=["history"])
 
     assert result["truncated"] is True
     assert len(_json.dumps(result, default=str)) <= effective_char_budget()
@@ -877,7 +870,7 @@ async def test_get_why_path_fits_on_an_ungoverned_file(session, setup_mcp, monke
     )
     await session.flush()
 
-    result = await get_why("src/other/utils.py")
+    result = await get_why("src/other/utils.py", include=["history"])
 
     assert result["decisions"] == []
     # The fallback really was over the line — otherwise this test proves nothing.

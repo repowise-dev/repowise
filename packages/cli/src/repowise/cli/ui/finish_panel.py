@@ -37,6 +37,8 @@ class StoodOut:
     hotspot_file: str | None = None
     hotspot_commits: int | None = None
     decision_candidates: int | None = None
+    #: Background records the agent's discovery pass would check (``decision discover``).
+    discovery_records: int | None = None
 
     def as_summary(self) -> dict[str, Any]:
         """The same findings for ``--progress json``, one key each, null when not measured."""

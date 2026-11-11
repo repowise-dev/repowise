@@ -72,6 +72,15 @@ When you settle an architectural choice yourself (you weighed options and picked
 
 Add `--evidence-commit <sha>` once it is committed. The record comes into force when that commit merges to the default branch, so recording on a branch is safe.
 
+## Checking the background records after an index
+
+When the user asks you to check the decisions, run `repowise decision discover`
+and do what it prints. It names the background
+records on the busiest production files, at most 20. Keep a record only if an
+agent editing that code could do the wrong thing without it; dismiss bug-fix
+notes and implementation details. On a repository with no background records it
+asks you to record the decisions behind the busiest files instead.
+
 ## Putting a background record in force
 
 When a background record you relied on still holds, put it in force with `repowise decision confirm <id> --agent <your slug>`, adding `--reason`, `--scope <path>`, `--evidence <commit|file|link>` or `--decision` for whatever a blocker names. Dismiss a wrong one with `repowise decision dismiss <id> --agent <your slug> --reason ... --yes`, fold a duplicate with `repowise decision merge <id> <into-id> --agent <your slug>` (the target must already be accepted; confirm it first), and retire one with `repowise decision deprecate <id> --agent <your slug> --reason ...`. When an accepted decision is `needs_review` and still holds, renew it with `repowise decision reaffirm <id> --agent <your slug>`; `confirm` is for records not yet in force. With `--format json` every review command returns `results[]`, even for one id. Your acceptances are recorded as yours, never a person's. If the repository turned agent acceptance off, the confirm is refused; leave it for a person and mention it.
