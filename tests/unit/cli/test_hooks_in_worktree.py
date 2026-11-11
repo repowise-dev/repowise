@@ -265,3 +265,25 @@ def test_mcp_server_started_in_worktree_serves_main_for_the_worktree(
             _checkout.close_call(token)
     finally:
         _checkout._server_caller = None
+
+
+def test_health_gate_stays_off_in_worktree(indexed: Path, worktree: Path, monkeypatch) -> None:
+    from repowise.cli.health_gate_hook import _enabled
+
+    monkeypatch.setenv("REPOWISE_HOOK_HEALTH_GATE", "1")
+    assert _enabled(str(indexed))
+    assert not _enabled(str(worktree))
+
+
+def test_read_after_served_relativises_to_worktree(
+    indexed: Path, worktree: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.augment_cmd import served_reads
+
+    seen: list[str] = []
+    monkeypatch.setattr(served_reads, "_read_window", lambda *_a: seen.append("window"))
+    served_reads._log_read_after_served(
+        {"file_path": str(worktree / _PATH)}, {}, str(worktree), "sess-served"
+    )
+    # Reaching the window step means the path relativised against the worktree.
+    assert seen == ["window"]

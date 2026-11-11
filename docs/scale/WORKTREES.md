@@ -16,7 +16,7 @@ What works in the worktree:
 | Wrong-path rescue | Fires when the suggested file exists in the worktree |
 | Re-read and stale-read notices | Fire; they track this session's own reads |
 | Decision capture after a commit | Fires; `repowise decision add` in a worktree records into the main checkout's index |
-| Command distilling | Follows the main checkout's settings |
+| Command distilling | On or off as the main checkout sets it; filters run with their defaults |
 | MCP server (`repowise mcp` started in the worktree) | Serves the main checkout's index; responses flag a served file that differs in the worktree |
 
 What stays quiet, because the index describes the main checkout's indexed commit, not your branch:
@@ -29,10 +29,11 @@ What stays quiet, because the index describes the main checkout's indexed commit
 | "Index is stale" after a commit | A commit on the branch does not age the main checkout's index |
 | Coverage re-ingest | The worktree's coverage is not the main checkout's |
 | Edit capture for attribution | It writes events; worktree edits are recovered from transcripts instead |
+| Health gate on commit and push | It checks against an index of the checkout itself, which the worktree does not have |
 
 The worktree never writes the main checkout's index. Hook bookkeeping (the session ledger that `repowise hook stats` reads) does land in the main checkout's `.repowise/`, so worktree sessions are counted with the rest. No `.repowise/` is created in the worktree, so the post-commit hook stays inert there and never starts an update.
 
-To turn the fallback off, set `REPOWISE_WORKTREE_FALLBACK=0` in the environment your agent or editor runs in. The worktree then behaves as an unindexed checkout.
+To turn the fallback off, set `REPOWISE_WORKTREE_FALLBACK=0` in the environment your agent or editor runs in. The hooks and the MCP server then treat the worktree as an unindexed checkout.
 
 ## For long-lived worktrees: seed an index of its own
 
