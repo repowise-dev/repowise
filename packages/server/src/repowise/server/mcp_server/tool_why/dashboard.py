@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
+from repowise.core.persistence.crud.decision_staleness import latest_grant_times
 from repowise.core.persistence.database import get_session
-from repowise.core.precedent.currency import commits_since
+from repowise.core.precedent.currency import decision_commits_since
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
     cap_collection,
@@ -31,20 +33,24 @@ from repowise.server.mcp_server.tool_why.caps import (
 from repowise.server.mcp_server.tool_why.loading import _attach_decision_evidence
 
 
-def _stale_row_currency(root: Path, decision: object, files: list[str]) -> dict:
+def _stale_row_currency(
+    root: Path, decision: object, files: list[str], accepted_at: datetime | None = None
+) -> dict:
     """What git can say about one stale row: commits since, and files gone.
 
     Only keys git can answer are returned; a failed query omits them rather
-    than guessing. ``commits_since`` counts from the evidence commit when
-    there is one, else from the record's creation date.
+    than guessing. ``commits_since`` counts over the record's whole scope from
+    the anchor the stored staleness score uses (its birth, the landing of its
+    evidence, or its latest reviewed grant, whichever is latest). ``files`` is
+    the served, capped list, so ``moved_files`` never names a file the row
+    does not show.
     """
-    evidence = json.loads(getattr(decision, "evidence_commits_json", None) or "[]")
-    since_commit = evidence[-1] if evidence else None
-    count = commits_since(
+    count = decision_commits_since(
         root,
-        since_commit=since_commit,
-        since_date=None if since_commit else getattr(decision, "created_at", None),
-        nodes=files,
+        created_at=getattr(decision, "created_at", None),
+        nodes=json.loads(getattr(decision, "affected_files_json", None) or "[]"),
+        evidence_commits=json.loads(getattr(decision, "evidence_commits_json", None) or "[]"),
+        accepted_at=accepted_at,
     )
     extra: dict = {}
     if count is not None:
@@ -146,6 +152,8 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             )
         # After the cap, so the git cost is bounded by the rows actually served.
         by_id = {d.id: d for d in stale}
+        served = [entry["id"] for entry in result_data["stale_decisions"]]
+        grants = await latest_grant_times(session, repository.id, served) if served else {}
         for entry in result_data["stale_decisions"]:
             decision = by_id.get(entry["id"])
             if decision is None:
@@ -156,6 +164,7 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                     Path(ctx.path),
                     decision,
                     entry["affected_files"],
+                    grants.get(decision.id),
                 )
             )
         collector.attach(result_data)
