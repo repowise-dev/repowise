@@ -61,6 +61,26 @@ def _stale_row_currency(
     return extra
 
 
+async def _add_stale_row_currency(
+    session: object, repository_id: str, root: Path, rows: list[dict], stale: list
+) -> None:
+    """Stamp each served stale row with :func:`_stale_row_currency`."""
+    by_id = {d.id: d for d in stale}
+    served = [row["id"] for row in rows if row["id"] in by_id]
+    if not served:
+        return
+    grants = await latest_grant_times(session, repository_id, served)
+    for row in rows:
+        decision = by_id.get(row["id"])
+        if decision is None:
+            continue
+        row.update(
+            await asyncio.to_thread(
+                _stale_row_currency, root, decision, row["affected_files"], grants.get(decision.id)
+            )
+        )
+
+
 async def _why_health_dashboard(repo: str | None) -> dict:
     """Mode 1: no query — return the decision health dashboard."""
     from repowise.core.persistence.crud import get_decision_health_summary
@@ -151,21 +171,8 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                 label=f"health {key} beyond cap={cap}",
             )
         # After the cap, so the git cost is bounded by the rows actually served.
-        by_id = {d.id: d for d in stale}
-        served = [entry["id"] for entry in result_data["stale_decisions"]]
-        grants = await latest_grant_times(session, repository.id, served) if served else {}
-        for entry in result_data["stale_decisions"]:
-            decision = by_id.get(entry["id"])
-            if decision is None:
-                continue
-            entry.update(
-                await asyncio.to_thread(
-                    _stale_row_currency,
-                    Path(ctx.path),
-                    decision,
-                    entry["affected_files"],
-                    grants.get(decision.id),
-                )
-            )
+        await _add_stale_row_currency(
+            session, repository.id, Path(ctx.path), result_data["stale_decisions"], stale
+        )
         collector.attach(result_data)
         return result_data
