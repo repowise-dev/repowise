@@ -20,7 +20,10 @@ from repowise.server.mcp_server._code_rationale import repo_rationale
 from repowise.server.mcp_server._episodes import episode_evidence
 from repowise.server.mcp_server._helpers import _decision_body
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._why_evidence import annotate_response_evidence_async
+from repowise.server.mcp_server._why_evidence import (
+    _resolved_commits,
+    annotate_response_evidence_async,
+)
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
     query_scorer,
@@ -51,11 +54,15 @@ from repowise.server.mcp_server.tool_why.loading import (
     _load_corpus,
 )
 from repowise.server.mcp_server.tool_why.path_mode import _build_target_context
-from repowise.server.mcp_server.tool_why.projection import _merge_decisions
+from repowise.server.mcp_server.tool_why.projection import (
+    _merge_decisions,
+    bounded,
+    trim_background,
+)
 from repowise.server.mcp_server.tool_why.ranking import (
     _collapse_restatements,
-    _rank_keyword_matches,
     _record_text,
+    _score_keyword_matches,
 )
 
 
@@ -149,10 +156,6 @@ def _focus_target_context(
             _focus_archaeology(arch, query, recall)
 
 
-#: A card rule's quoted body. Enough for the ruling; the rest is one id call away.
-_CARD_DECISION_CHARS = 300
-
-
 def _expand_answering_rules(
     entry: dict[str, Any],
     by_id: dict[str, Any],
@@ -180,10 +183,7 @@ def _expand_answering_rules(
 
 
 def _bounded_body(record: Any) -> str:
-    body = _decision_body(record)
-    if len(body) > _CARD_DECISION_CHARS:
-        body = body[: _CARD_DECISION_CHARS - 3].rstrip() + "..."
-    return body
+    return bounded(_decision_body(record))
 
 
 _COMMIT_LANES = ("file_commits", "cross_references", "git_log")
@@ -452,20 +452,28 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     target_set = set(targets) if targets else set()
     # Rank wide, collapse, and project the whole pool; the cap comes last so
     # the rows it sheds are banked whole for recovery.
-    ranked = _rank_keyword_matches(all_decisions, query, target_set)
-    if not ranked:
+    scored = _score_keyword_matches(all_decisions, query, target_set)
+    if not scored:
         return await _why_no_match(
             query, targets, ctx, repository, all_decisions, target_git, accepted
         )
+    ranked = [d for _, d in scored]
     collector = OmissionCollector("get_why", repo_root=ctx.path)
-    collapsed = _collapse_restatements(ranked)
-    decision_results, doc_results = await _semantic_lanes(ctx, query)
+    resolved = await asyncio.to_thread(_resolved_commits, None, ranked, ctx.path)
+    collapsed = _collapse_restatements(ranked, resolved)
+    # The window's decision hits are not served: one that clears the floor is
+    # already a keyword match (same corpus, same weights), so the only rows
+    # it could add are below the floor.
+    _, doc_results = await _semantic_lanes(ctx, query)
     lineage_by_id = await _lineage_for_matches(
         ctx, [d for d, _ in collapsed], all_decisions
     )
-    merged_decisions = _merge_decisions(
-        collapsed, decision_results, lineage_by_id, collector, accepted
+    merged_decisions = _behind_an_answer(
+        _merge_decisions(collapsed, lineage_by_id, collector, accepted),
+        {d.id: -key[0] for key, d in scored},
+        collector,
     )
+    trim_background(merged_decisions)
 
     # Semantic hits are small id-plus-snippet rows, not worth dropping.
     result_data: dict[str, Any] = {
@@ -535,6 +543,27 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     )
     collector.attach(result_data)
     return result_data
+
+
+def _behind_an_answer(
+    rows: list[dict], score_by_id: dict[str, float], collector: OmissionCollector
+) -> list[dict]:
+    """Drop background rows that answer the question less well than a rule does.
+
+    Only when the top row is in force: a mined record that carries less of the
+    question than the governing answer adds nothing an agent acts on. Ranking
+    is untouched, and every dropped row is banked for recovery.
+    """
+    if not rows or rows[0].get("authority") != "accepted":
+        return rows
+    top = score_by_id.get(rows[0]["id"], 0.0)
+    kept: list[dict] = []
+    for row in rows:
+        if row.get("authority") == "accepted" or score_by_id.get(row["id"], 0.0) >= top:
+            kept.append(row)
+        else:
+            collector.add(f"background record ranked below a rule: {row.get('title', '')}", row)
+    return kept
 
 
 def _episode_text(e: dict) -> str:

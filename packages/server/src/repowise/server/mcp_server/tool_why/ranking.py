@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from repowise.core.analysis.decisions.lifecycle import status_rank
@@ -67,7 +68,9 @@ def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str])
     return [d for _, d in _score_keyword_matches(all_decisions, query, target_set)]
 
 
-def _evidence_key(d: Any) -> tuple[object, ...] | None:
+def _evidence_key(
+    d: Any, resolved_commits: Mapping[str, str] | None = None
+) -> tuple[object, ...] | None:
     """The evidence a record cites, as a merge key, or ``None`` when it cites none.
 
     Re-extraction paraphrases a record's prose but not its provenance, so the
@@ -76,19 +79,23 @@ def _evidence_key(d: Any) -> tuple[object, ...] | None:
     coordinates return ``None``, since keeping a duplicate beats erasing a
     decision. Narrower than public evidence ids, which several decisions share.
     """
-    return decision_collapse_key(d)
+    return decision_collapse_key(d, resolved_commits)
 
 
-def _collapse_restatements(records: list) -> list[tuple[Any, list[str]]]:
+def _collapse_restatements(
+    records: list, resolved_commits: Mapping[str, str] | None = None
+) -> list[tuple[Any, list[str]]]:
     """``(kept, folded_ids)`` per distinct decision, input order preserved.
 
     Runs on records, before the lineage walk and projection. Records citing no
-    evidence cannot be compared and are always kept.
+    evidence cannot be compared and are always kept. Mined records mostly cite
+    abbreviated commits, which compare only once *resolved_commits* (from
+    ``_resolved_commits``) maps them to the full sha git knows them by.
     """
     by_evidence: dict[tuple[object, ...], int] = {}
     out: list[tuple[Any, list[str]]] = []
     for d in records:
-        key = _evidence_key(d)
+        key = _evidence_key(d, resolved_commits)
         if key is not None and key in by_evidence:
             out[by_evidence[key]][1].append(d.id)
             continue
