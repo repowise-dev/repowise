@@ -13,7 +13,7 @@ from pathlib import Path
 import networkx as nx
 
 from repowise.core.ingestion import GraphBuilder
-from repowise.core.ingestion.graph._metrics import without_documentation_edges
+from repowise.core.ingestion.graph._metrics import without_non_code_edges
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import parse_file
 
@@ -131,15 +131,16 @@ class TestSubgraphCache:
         assert results[0] == results[1] == results[2] == results[3]
 
 
-def test_without_documentation_edges_drops_only_doc_links() -> None:
+def test_without_non_code_edges_drops_doc_links_and_co_changes() -> None:
     g = nx.DiGraph()
     g.add_edge("README.md", "a.py", edge_type="documents")
     g.add_edge("a.py", "b.py", edge_type="co_changes")
     g.add_edge("b.py", "a.py", edge_type="imports")
 
-    view = without_documentation_edges(g)
+    view = without_non_code_edges(g)
 
     assert not view.has_edge("README.md", "a.py")
-    assert view.has_edge("a.py", "b.py") and view.has_edge("b.py", "a.py")
+    assert not view.has_edge("a.py", "b.py")
+    assert view.has_edge("b.py", "a.py")
     assert "README.md" in view  # nodes stay; only the edge goes
     assert g.has_edge("README.md", "a.py")  # a view, never a mutation

@@ -512,19 +512,20 @@ class ChangeDetector:
                 decay_only=[],
             )
 
-        from .graph._metrics import without_documentation_edges
+        from .graph._metrics import without_non_code_edges
 
-        # A doc linking to a changed file is not its importer: no cascade, no rank.
-        graph = without_documentation_edges(graph)
+        # A doc link or co-change partner is not an importer: no cascade, no rank.
+        code_graph = without_non_code_edges(graph)
 
         # 1-hop cascade: files that import changed files
         one_hop: set[str] = set()
         for changed in directly_changed:
-            if changed in graph:
-                one_hop.update(graph.predecessors(changed))  # files that import this
+            if changed in code_graph:
+                one_hop.update(code_graph.predecessors(changed))  # files that import this
         one_hop -= directly_changed
 
-        # Co-change partner staleness: include co-change partners in decay
+        # Co-change partner staleness: decay only. The edge is stored once in path
+        # order, so a partner is a successor or a predecessor depending on how it sorts.
         co_change_decay: set[str] = set()
         for changed in directly_changed:
             if changed in graph:
@@ -541,9 +542,9 @@ class ChangeDetector:
         # 2-hop (weak) cascade for rename candidates
         two_hop: set[str] = set()
         for changed in rename_candidates:
-            if changed in graph:
-                for pred in graph.predecessors(changed):
-                    two_hop.update(graph.predecessors(pred))
+            if changed in code_graph:
+                for pred in code_graph.predecessors(changed):
+                    two_hop.update(code_graph.predecessors(pred))
         two_hop -= directly_changed | one_hop | co_change_decay
 
         # Apply cascade budget sorted by PageRank (highest priority first)
@@ -551,7 +552,7 @@ class ChangeDetector:
             pr = pagerank
         else:
             try:
-                pr = nx.pagerank(graph)
+                pr = nx.pagerank(code_graph)
             except Exception:
                 pr = {}
 

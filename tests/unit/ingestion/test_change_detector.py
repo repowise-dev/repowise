@@ -318,8 +318,19 @@ class TestGetAffectedPages:
         g.add_edge("README.md", "a.py", edge_type="documents")
 
         result = d.get_affected_pages([self._simple_file_diff("a.py")], graph=g)
-        assert set(result.regenerate) == {"a.py", "b.py", "c.py"}
-        assert "README.md" not in result.decay_only
+        assert set(result.regenerate) == {"a.py", "b.py"}
+        assert result.decay_only == ["c.py"]
+
+    def test_co_change_partner_decays_whichever_way_it_sorts(self, tmp_path: Path) -> None:
+        """The edge is stored once, ``a.py -> b.py``; either file changing only decays the other (#5472)."""
+        d = self._detector(tmp_path)
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("a.py", "b.py", edge_type="co_changes")
+
+        for changed, partner in (("b.py", "a.py"), ("a.py", "b.py")):
+            result = d.get_affected_pages([self._simple_file_diff(changed)], graph=g)
+            assert result.regenerate == [changed]
+            assert result.decay_only == [partner]
 
     def test_documents_edge_is_not_a_rename_cascade(self, tmp_path: Path) -> None:
         """The 2-hop rename cascade walks importers of importers, never doc links."""
