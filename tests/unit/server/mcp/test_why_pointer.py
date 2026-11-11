@@ -67,6 +67,7 @@ async def test_a_governed_target_gets_one_line_naming_the_decision_and_the_call(
     line = await why_pointer(_ctx(factory), [f"{_FILE}::AuthService", "src/other.py"])
 
     assert line == 'Decision "Tokens expire after one hour" governs service.py: get_why(targets=["src/auth/service.py"])'
+    assert "needs review" not in line
 
 
 @pytest.mark.asyncio

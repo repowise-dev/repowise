@@ -21,6 +21,7 @@ the orchestrator can swap individual layers without re-deriving the rest:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from typing import Any
@@ -159,11 +160,11 @@ async def fetch_relevant_decisions(
         )
         all_decisions = list(res.scalars().all())
         currencies = await decision_currencies(session, repo_id, all_decisions)
-        answering = (
-            await _decisions_answering(session, repo_id, question, exclude_spec)
-            if question
-            else []
-        )
+        answering: list[str] = []
+        if question:
+            # Its own guard: a failure here must not cost the path lane below.
+            with contextlib.suppress(Exception):
+                answering = await _decisions_answering(session, repo_id, question, exclude_spec)
     by_id = {d.id: d for d in all_decisions}
     answering = [by_id[i] for i in answering if i in by_id][:limit]
 
@@ -178,12 +179,14 @@ async def fetch_relevant_decisions(
         except (json.JSONDecodeError, TypeError):
             affected = set()
         overlap = len(affected & targets_set)
-        if overlap == 0:
+        currency = currencies.get(d.id)
+        # Accepted once and withdrawn since: not a reason to put to the model.
+        if overlap == 0 or (currency is not None and not is_governing(currency)):
             continue
         # An accepted decision outranks a candidate at the same overlap;
         # confidence breaks ties within a lane. Negative tuple element so
         # higher = better after ascending sort.
-        lane_rank = 0 if is_governing(currencies.get(d.id, "")) else 1
+        lane_rank = 0 if currency is not None else 1
         scored.append((-overlap, lane_rank, d))
 
     scored.sort(key=lambda t: (t[0], t[1], -(t[2].confidence or 0.0)))
