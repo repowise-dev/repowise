@@ -506,7 +506,7 @@ def test_new_detail_keys_leave_the_finding_id_unchanged() -> None:
 def test_judged_ccn_reads_outside_a_dominant_dispatch_and_its_heaviest_arm(
     ccn: int, share: float, arm: int, judged: int
 ) -> None:
-    fn = SimpleNamespace(ccn=ccn, dispatch_share=share, dispatch_arm=arm)
+    fn = SimpleNamespace(ccn=ccn, dispatch_share=share, dispatch_arm=arm, exit_guards=0)
     assert judged_ccn(fn) == judged
 
 
