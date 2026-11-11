@@ -360,8 +360,8 @@ class FileEvaluator:
         biomarker_results = remap_severities(
             biomarker_results, self.run.file_severity_overrides(file_path)
         )
-        scores, deductions = score_file(biomarker_results)
-        findings = attach_impacts(biomarker_results, deductions)
+        scores, deductions = score_file(biomarker_results, ctx.language)
+        findings = attach_impacts(biomarker_results, deductions, ctx.language)
         for f in findings:
             f.file_path = file_path
         _mark_function_facts(findings, fcx.functions)
