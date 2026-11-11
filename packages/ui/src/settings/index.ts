@@ -4,3 +4,7 @@ export * from "./settings-primitives";
 export * from "./model-combobox";
 export * from "./model-sources";
 export * from "./model-upgrade-sheet";
+export * from "./settings-registry-page";
+export * from "./settings-registry-labels";
+export * from "./settings-registry-types";
+export * from "./setting-prompt";

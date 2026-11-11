@@ -1155,6 +1155,10 @@
       },
       "display": {
         "title": "Display"
+      },
+      "all": {
+        "title": "All settings",
+        "description": "Every repowise setting for this repository: its value, where it came from, and what it does. Changes save to .repowise/config.yaml, the same file repowise config set writes."
       }
     },
     "advanced": "Advanced",
@@ -1169,6 +1173,59 @@
       "defaultModelHint": "Repositories without their own model use the server default.",
       "webhooksLabel": "Webhooks",
       "webhooksHint": "A push on GitHub or GitLab can start a sync. The addresses are the same for every repository."
+    },
+    "registry": {
+      "search": "Search settings",
+      "searchPlaceholder": "Search by name or what it does",
+      "changedOnly": "Changed only",
+      "showInternal": "Show internal settings",
+      "countAll": "{total, plural, one {# setting} other {# settings}}",
+      "count": "{shown} of {total} settings",
+      "noMatches": "No setting matches these filters.",
+      "suggestionsTitle": "Suggested for this repository",
+      "suggestionsDescription": "Values that fit this repository better than the current ones.",
+      "apply": "Apply",
+      "applyAria": "Apply the suggested value for {key}",
+      "suggested": "Suggested: {value}",
+      "changed": "Changed",
+      "defaultValue": "default {value}",
+      "sources": {
+        "default": "Default",
+        "env": "Environment",
+        "repo_file": "Repo file",
+        "user_file": "User file"
+      },
+      "envOverride": "{name} is set in the environment and wins over the file.",
+      "envOnly": "Read from {name} in the server's environment.",
+      "userSetting": "Saved for your user, not this repository. Change it with repowise config set {key} in a terminal.",
+      "lockedReason": "Set above this repository, so it cannot be changed here.",
+      "reset": "Reset",
+      "resetAria": "Reset {key} to its default",
+      "copyPrompt": "Copy prompt",
+      "promptTitle": "Change {key} with your agent",
+      "promptDescription": "Your agent explains the setting, asks before changing it, and gives you the undo command.",
+      "saveFailed": "Could not save",
+      "unset": "unset",
+      "listPlaceholder": "a, b",
+      "loading": "Loading settings…",
+      "loadFailed": "Could not load settings.",
+      "retry": "Try again",
+      "moreOn": "More options on the {page} page",
+      "areas": {
+        "account": "Account",
+        "attribution": "AI attribution",
+        "decisions": "Decisions",
+        "distill": "Command output",
+        "editor": "Editor files",
+        "events": "Change events",
+        "generation": "Documentation",
+        "health": "Code health",
+        "hooks": "Agent hooks",
+        "indexing": "Indexing",
+        "mcp": "MCP",
+        "providers": "Model providers",
+        "server": "Server"
+      }
     }
   },
   "repos": {
