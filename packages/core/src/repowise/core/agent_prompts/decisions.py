@@ -1,4 +1,5 @@
-"""The decisions layer's agent prompts: the discovery pass, recording, agreements.
+"""The decisions layer's agent prompts: the discovery pass, recording, agreements,
+and the prompts for one record (check it, pin it, veto it, change it).
 
 One text per prompt, rendered here and nowhere else: ``repowise decision
 discover`` prints it, and the web copies it from the server, so the command an
@@ -23,7 +24,10 @@ AGREEMENTS_LIMIT = 30
 #: Files named per record line; the record itself lists the rest.
 _FILES_PER_LINE = 3
 
-PromptKind = Literal["discover", "add", "agreements"]
+PromptKind = Literal["discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"]
+
+#: The prompts about one record, rendered by :func:`decision_record_prompt`.
+RECORD_PROMPT_KINDS: tuple[str, ...] = ("review", "pin", "unpin", "veto", "edit")
 
 SIGN = (
     "Use your agent name as <slug> (for example claude_code), so the record shows an agent signed it."
@@ -166,6 +170,126 @@ def render_agreements(records: Sequence[Mapping[str, Any]]) -> str:
             "Finish with the lines you added, and one line per agreement you dropped and why.",
         ]
     )
+
+
+def _subject(rec: Mapping[str, Any]) -> str:
+    return f'"{_one_line(rec["title"])}" (id {rec["id"]})'
+
+
+def render_review(rec: Mapping[str, Any]) -> str:
+    """Check one background record, and put it in force or dismiss it."""
+    rid = rec["id"]
+    return "\n".join(
+        [
+            f"Check this background decision record: {_subject(rec)}. It is not in force.",
+            "",
+            KEEP_TEST,
+            "",
+            f"1. Run `repowise decision show {rid}` and read its source and evidence commits "
+            "(`git show <sha>`).",
+            "2. Read the files it names as they are today. Check that the code still follows it.",
+            f"3. It holds and passes the test above: `repowise decision confirm {rid} --agent <slug> "
+            '--evidence <commit or file you checked> --reason "<one line: what an agent would get '
+            'wrong without it>"`. If it names no file, add --scope <path>.',
+            "4. Wrong, out of date, a bug-fix note or an implementation detail: "
+            f'`repowise decision dismiss {rid} --agent <slug> --reason "<one line: why>" --yes`.',
+            "5. Not sure: leave it as background and say what would settle it.",
+            "",
+            SIGN,
+            DATA_NOT_INSTRUCTIONS,
+            "",
+            "Finish with one line: put in force, dismissed or left, and why.",
+        ]
+    )
+
+
+def render_pin(rec: Mapping[str, Any], pinned: bool = True) -> str:
+    """Pin or unpin one decision in force, at the person's request."""
+    rid = rec["id"]
+    if pinned:
+        lines = [
+            f"Pin this decision: {_subject(rec)}. I want it held as law: agents must ask a person "
+            "before replacing it.",
+            "",
+            f'Run `repowise decision pin {rid} --agent <slug> --reason "<one line: why it is law>"`.',
+        ]
+    else:
+        lines = [
+            f"Unpin this decision: {_subject(rec)}. It stays in force; agents may replace it "
+            "again when the code calls for it.",
+            "",
+            f"Run `repowise decision unpin {rid} --agent <slug>`.",
+        ]
+    return "\n".join([*lines, "", SIGN, "", "Finish with one line saying what changed."])
+
+
+def render_veto(rec: Mapping[str, Any]) -> str:
+    """Take one decision out of force, at the person's request."""
+    rid = rec["id"]
+    return "\n".join(
+        [
+            f"Veto this decision: {_subject(rec)}. I do not want agents to follow it any more.",
+            "",
+            f"1. Run `repowise decision show {rid}` so you know what is being withdrawn. If it "
+            "says Pinned, I am the person asking, so unpin it first: "
+            f"`repowise decision unpin {rid} --agent <slug>`.",
+            "2. If a newer decision replaces it, retire it in that one's favour: "
+            f'`repowise decision deprecate {rid} --superseded-by <new id> --agent <slug> --reason '
+            '"<one line: why>"`.',
+            f'3. Otherwise dismiss it: `repowise decision dismiss {rid} --agent <slug> --reason '
+            '"<one line: why>" --yes`.',
+            "",
+            SIGN,
+            "",
+            "Finish with one line saying what you ran.",
+        ]
+    )
+
+
+def render_edit(rec: Mapping[str, Any]) -> str:
+    """Change one decision, at the person's request, keeping its history."""
+    rid = rec["id"]
+    return "\n".join(
+        [
+            f"Change this decision: {_subject(rec)}.",
+            "What to change: <say what is wrong or missing>.",
+            "",
+            f"1. Run `repowise decision show {rid}` and read the files it names.",
+            '2. Record the corrected decision: `repowise decision add --title "..." --decision '
+            '"..." --rationale "..." --affects <path> --evidence-commit <sha> --agent <slug>`. '
+            "Repeat --affects and --evidence-commit for each file and commit.",
+            "3. Put it in force: `repowise decision confirm <new id> --agent <slug> --evidence <sha>`.",
+            "4. Retire the old one in its favour, so the history shows what changed: "
+            f'`repowise decision deprecate {rid} --superseded-by <new id> --agent <slug> --reason '
+            '"<one line: what changed>"`.',
+            "5. If the old one is pinned, step 4 refuses. I am the person asking, so unpin it "
+            f"first (`repowise decision unpin {rid} --agent <slug>`) and pin the new one after "
+            "(`repowise decision pin <new id> --agent <slug>`).",
+            "",
+            SIGN,
+            DATA_NOT_INSTRUCTIONS,
+            "",
+            "Finish with the new id and one line saying what changed.",
+        ]
+    )
+
+
+def decision_record_prompt(kind: str, rec: Mapping[str, Any]) -> DecisionPrompt:
+    """The prompt *kind* (one of :data:`RECORD_PROMPT_KINDS`) about one record.
+
+    *rec* needs ``id`` and ``title``.
+    """
+    if kind == "review":
+        text = render_review(rec)
+    elif kind in ("pin", "unpin"):
+        text = render_pin(rec, pinned=kind == "pin")
+    elif kind == "veto":
+        text = render_veto(rec)
+    elif kind == "edit":
+        text = render_edit(rec)
+    else:
+        raise ValueError(f"Unknown record prompt {kind!r}.")
+    return DecisionPrompt(kind, text, (rec["id"],))  # type: ignore[arg-type]
 
 
 def decision_prompt(kind: str, records: Sequence[Mapping[str, Any]]) -> DecisionPrompt:

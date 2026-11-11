@@ -28,9 +28,11 @@ export async function listDecisions(
     module?: string;
     include_proposed?: boolean;
     /**
-     * Review lane. `candidates` are records nobody has accepted; `governing`
-     * is what still binds. Applied after the page is fetched on the server,
-     * because a lane is a join and not a column.
+     * Review lane. `candidates` are records nobody has accepted (background);
+     * `in_force` is every accepted record not retired, pinned first; `recent`
+     * is what came into force in the last week, newest first, each row with
+     * its `recent` info; `governing` is what still binds. Applied after the
+     * page is fetched on the server, because a lane is a join and not a column.
      */
     lane?: DecisionLaneFilter;
     limit?: number;
@@ -83,10 +85,12 @@ export async function getDecisionLaneCounts(
 export async function getDecisionAgentPrompt(
   repoId: string,
   kind: DecisionAgentPromptKind = "discover",
+  /** The record a `review`, `pin`, `unpin`, `veto` or `edit` prompt is about. */
+  decisionId?: string,
 ): Promise<DecisionAgentPromptResponse> {
   return apiGet<DecisionAgentPromptResponse>(
     `/api/repos/${repoId}/decisions/agent-prompt`,
-    { kind },
+    decisionId ? { kind, decision_id: decisionId } : { kind },
   );
 }
 
@@ -127,6 +131,23 @@ export async function reaffirmDecision(
 ): Promise<DecisionRecordResponse> {
   return apiPost<DecisionRecordResponse>(
     `/api/repos/${repoId}/decisions/${decisionId}/reaffirm`,
+  );
+}
+
+/**
+ * Pin a decision in force, or unpin it, as a person. A pinned decision is law:
+ * an agent asks a person before replacing it. 400 when it is not in force or
+ * is already in the state asked for.
+ */
+export async function setDecisionPinned(
+  repoId: string,
+  decisionId: string,
+  pinned: boolean,
+  reason?: string,
+): Promise<DecisionRecordResponse> {
+  return apiPost<DecisionRecordResponse>(
+    `/api/repos/${repoId}/decisions/${decisionId}/${pinned ? "pin" : "unpin"}`,
+    reason ? { reason } : {},
   );
 }
 

@@ -6,6 +6,7 @@ import {
   DECISION_CURRENCY_LABELS,
   DECISION_KIND_LABELS,
   DECISION_LANES,
+  DECISION_SECTIONS,
   DECISION_SOURCES,
   decisionAcceptanceBlockers,
   decisionSourceLabel,
@@ -15,6 +16,7 @@ import type {
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
+  DecisionSection,
 } from "@repowise-dev/types/decisions";
 import { ApiError } from "../shared/api-error";
 import { EmptyState } from "../shared/empty-state";
@@ -27,7 +29,12 @@ import { Button } from "../ui/button";
 import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
-import { DecisionReviewDrawer } from "./decision-review-drawer";
+import {
+  DecisionReviewDrawer,
+  PUT_IN_FORCE_LABEL,
+  PinVerb,
+  PinnedMark,
+} from "./decision-review-drawer";
 import { shortGap, type DecisionAcceptOptions } from "./decision-confirm";
 import { DecisionAppliedLine, DecisionOrigin, acceptedLine } from "./decision-origin";
 import { AiPromptButton } from "../health/ai-prompt-button";
@@ -45,8 +52,12 @@ import {
 } from "../lib/format";
 
 /**
- * The review lanes: what governs, what is waiting to be reviewed, and what has
- * been retired.
+ * The decisions page's sections: what is in force (pinned first), what came
+ * into force this week, the mined background, and what has been retired.
+ *
+ * Not a review queue. Agents put decisions in force when their commits merge;
+ * a person reads this as a digest and pins, vetoes or changes a decision,
+ * usually by handing the record's prompt to their agent.
  *
  * The decisions page had one table sorted by a status column, which is the
  * wrong axis now that authority is an acceptance rather than a status. On a
@@ -70,45 +81,45 @@ import {
  * declares neither the lanes nor their words. A second list here would be the
  * second registry this whole change exists to remove.
  */
-export type { DecisionLane };
-export { DECISION_LANES };
+export type { DecisionLane, DecisionSection };
+export { DECISION_LANES, DECISION_SECTIONS };
 
-const LANE_LABEL: Record<DecisionLane, string> = {
-  active: DECISION_CURRENCY_LABELS.active,
+/** The section names. The same words as `repowise decision status` and the docs. */
+export const SECTION_LABEL: Record<DecisionSection, string> = {
+  in_force: "In force",
+  recent: "Recent",
   candidates: "Background",
-  needs_review: DECISION_CURRENCY_LABELS.needs_review,
-  uncheckable: DECISION_CURRENCY_LABELS.uncheckable,
   history: "History",
 };
 
 /**
- * What the lane holds, and what the reader is being asked to do with it. Shown
- * under the tab row, because a lane whose name is a noun still owes the reader
- * a sentence about why its rows are in it.
+ * What the section holds, and what the reader can do with it. Shown under the
+ * tab row, because a section whose name is a noun still owes the reader a
+ * sentence about why its rows are in it.
  */
-const LANE_DESCRIPTION: Record<DecisionLane, string> = {
-  active:
-    "Decisions in force that still describe the code they name. These are the rules an agent is given when it edits a governed file.",
+const LANE_DESCRIPTION: Record<DecisionSection, string> = {
+  in_force:
+    "Decisions in force. An agent editing a file one of these names is told about it. Pinned ones come first: a person holds them as law, and an agent asks before replacing one.",
+  recent:
+    "What your agents decided in the last week, newest first: who put each decision in force, and the commit it landed in.",
   candidates:
     "Mined from pull requests, commits, comments and sessions. Not in force: agents ask about them through get_why for the why behind the code. You can put one in force, or dismiss it.",
-  needs_review:
-    "Accepted decisions whose files have moved since. They still bind, and they are worth re-reading before you rely on one.",
-  uncheckable:
-    "Accepted decisions that name no file or module. Nothing can check them against the code and no agent editing a file will be given one. Add the paths they govern and they move to Active.",
   history:
-    "Decisions that were accepted and then withdrawn, superseded or dismissed, or whose files no longer exist. Kept so the record of what changed survives.",
+    "Decisions that were in force and then withdrawn, superseded or dismissed, or whose files no longer exist. Kept so the record of what changed survives.",
 };
 
-/** An empty lane says what will fill it and what the reader can do next. */
-const LANE_EMPTY: Record<DecisionLane, string> = {
-  active:
+/** An empty section says what will fill it. */
+const LANE_EMPTY: Record<DecisionSection, string> = {
+  in_force:
     "Nothing is in force yet. A decision an agent records comes into force when its commit merges.",
-  candidates:
-    "No background records.",
-  needs_review: "No accepted decision has drifted from the code it names.",
-  uncheckable: "Every accepted decision names the code it governs.",
+  recent:
+    "Nothing came into force in the last week. A decision an agent records comes into force when its commit merges.",
+  candidates: "No background records.",
   history: "Nothing has been retired yet.",
 };
+
+/** Sections whose rows are in force, where pin and reaffirm apply. */
+const IN_FORCE_SECTIONS: ReadonlySet<DecisionSection> = new Set(["in_force", "recent"]);
 
 /** The background lane's agent action. Hosts use the same words wherever they offer it. */
 export const REVIEW_WITH_AGENT_LABEL = "Check with your agent";
@@ -117,8 +128,8 @@ export const REVIEW_WITH_AGENT_LABEL = "Check with your agent";
 export const ADD_WITH_AGENT_LABEL = "Add decisions with your agent";
 
 export interface DecisionReviewLanesProps {
-  lane: DecisionLane;
-  onLaneChange: (lane: DecisionLane) => void;
+  lane: DecisionSection;
+  onLaneChange: (lane: DecisionSection) => void;
   /**
    * Rows for the current lane. The caller filters, because the lane is a
    * server query parameter and this shows one page of it.
@@ -128,7 +139,7 @@ export interface DecisionReviewLanesProps {
    * Per-lane totals for the tab badges. A lane whose count is unknown renders
    * without one rather than with a number nobody measured.
    */
-  counts?: Partial<Record<DecisionLane, number>>;
+  counts?: Partial<Record<DecisionSection, number>>;
   /**
    * Narrow the lane to one capture source, or `"all"`. A separate axis from
    * the lane: the lane asks who accepted a record, this asks where it came
@@ -173,10 +184,20 @@ export interface DecisionReviewLanesProps {
    */
   order?: "review";
   /**
-   * Reaffirms an accepted decision whose files moved, after re-reading it.
-   * Offered in the Needs review lane only. Omit where the surface cannot write.
+   * Reaffirms a decision in force whose files moved, after re-reading it.
+   * Offered on those rows only. Omit where the surface cannot write.
    */
   onReaffirm?: (decision: DecisionRecord) => void;
+  /**
+   * Pins or unpins a decision in force. Offered on in-force rows. Omit where
+   * the surface cannot write.
+   */
+  onPin?: (decision: DecisionRecord, pinned: boolean) => void;
+  /**
+   * The agent prompts for one record (pin, veto, change it), shown in its
+   * drawer. A render prop, so the host can fetch them for the open record.
+   */
+  recordPrompts?: (decision: DecisionRecord) => React.ReactNode;
   /**
    * Dismisses a selection of candidates. Turns on row selection in the
    * Candidates lane. `onProgress` takes the count settled so far; the result
@@ -214,6 +235,8 @@ export function DecisionReviewLanes({
   onRetry,
   order,
   onReaffirm,
+  onPin,
+  recordPrompts,
   onDismissMany,
   reviewPrompt,
 }: DecisionReviewLanesProps) {
@@ -225,7 +248,9 @@ export function DecisionReviewLanes({
   // as it now is, and a record that left the lane closes the drawer.
   const open = rows.find((d) => d.id === openId) ?? null;
   const reviewable = lane === "candidates";
-  const reaffirmable = lane === "needs_review" && onReaffirm !== undefined;
+  const inForce = IN_FORCE_SECTIONS.has(lane);
+  const reaffirmable =
+    inForce && onReaffirm !== undefined && open?.currency === "needs_review";
   const selectable =
     lane === "candidates" && onDismissMany !== undefined && !readOnlyReason;
 
@@ -253,23 +278,24 @@ export function DecisionReviewLanes({
     onAccept,
     onDismiss,
     onReaffirm,
+    onPin,
     readOnlyReason,
     pendingIds,
     selection: selectable ? bulkRun.selection : undefined,
   });
 
-  const tabs: ViewTab[] = DECISION_LANES.map((id) => {
+  const tabs: ViewTab[] = DECISION_SECTIONS.map((id) => {
     const badge = counts?.[id];
     return badge === undefined
-      ? { id, label: LANE_LABEL[id] }
-      : { id, label: LANE_LABEL[id], badge };
+      ? { id, label: SECTION_LABEL[id] }
+      : { id, label: SECTION_LABEL[id], badge };
   });
 
   return (
     <ViewTabs
       tabs={tabs}
       value={lane}
-      onValueChange={(id) => onLaneChange(id as DecisionLane)}
+      onValueChange={(id) => onLaneChange(id as DecisionSection)}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 max-w-[68ch] flex-1 space-y-1.5 text-xs">
@@ -319,15 +345,13 @@ export function DecisionReviewLanes({
             tone={
               source !== "all"
                 ? "filtered"
-                : lane === "needs_review" || lane === "uncheckable"
-                  ? "positive"
-                  : "neutral"
+                : "neutral"
             }
-            title={`Nothing in ${LANE_LABEL[lane].toLowerCase()}`}
+            title={`Nothing in ${SECTION_LABEL[lane].toLowerCase()}`}
             description={
               source === "all"
                 ? LANE_EMPTY[lane]
-                : `No ${decisionSourceLabel(source)} record is in this lane. The lane itself may not be empty; clear the source filter to see it.`
+                : `No ${decisionSourceLabel(source)} record is in this section. The section itself may not be empty; clear the source filter to see it.`
             }
           />
         )
@@ -352,7 +376,7 @@ export function DecisionReviewLanes({
             rowKey={(d) => d.id}
             onRowClick={(d) => setOpenId(d.id)}
             selectedKey={openId}
-            caption={`${LANE_LABEL[lane]} decisions`}
+            caption={`${SECTION_LABEL[lane]} decisions`}
             bare
             className="border-y border-[var(--color-border-subtle)]"
           />
@@ -367,6 +391,8 @@ export function DecisionReviewLanes({
         onClose={() => setOpenId(null)}
         onAccept={onAccept ? (d, options) => actAndAdvance(onAccept, d, options) : undefined}
         onDismiss={onDismiss ? (d) => actAndAdvance(onDismiss, d) : undefined}
+        onPin={inForce && onPin ? onPin : undefined}
+        prompts={open && recordPrompts ? recordPrompts(open) : null}
         readOnlyReason={readOnlyReason}
         pending={open ? (pendingIds?.has(open.id) ?? false) : false}
         href={open ? `${prefix}/decisions/${open.id}` : prefix}
@@ -374,6 +400,7 @@ export function DecisionReviewLanes({
         marks={
           open ? (
             <>
+              {open.pinned && <PinnedMark />}
               {open.currency && open.currency !== "active" && (
                 <CurrencyMark currency={open.currency as DecisionCurrency} />
               )}
@@ -391,7 +418,7 @@ export function DecisionReviewLanes({
  * table, not as a score per row: a number would invite reading the gap
  * between two rows as meaningful, and it is only an order.
  */
-function reviewOrderNote(lane: DecisionLane): string {
+function reviewOrderNote(lane: DecisionSection): string {
   // Only background records can be put in force, so only their note names that step.
   return lane === "candidates"
     ? "Records that can be put in force as they stand come first, then those naming churn hotspots, then those whose files have changed most since they were recorded."
@@ -415,11 +442,12 @@ type LinkLike = React.ElementType<{
 }>;
 
 interface ColumnContext {
-  lane: DecisionLane;
+  lane: DecisionSection;
   showHotspots: boolean;
   onAccept?: ((decision: DecisionRecord, options?: DecisionAcceptOptions) => void) | undefined;
   onDismiss?: ((decision: DecisionRecord) => void) | undefined;
   onReaffirm?: ((decision: DecisionRecord) => void) | undefined;
+  onPin?: ((decision: DecisionRecord, pinned: boolean) => void) | undefined;
   readOnlyReason?: string | undefined;
   pendingIds?: ReadonlySet<string> | undefined;
   selection?: Selection | undefined;
@@ -498,6 +526,15 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
       render: renderHotspotCell,
     });
   }
+  if (ctx.lane === "recent") {
+    columns.push({
+      key: "by",
+      header: "By",
+      priority: 2,
+      cellClassName: "align-top",
+      render: renderRecentByCell,
+    });
+  }
   columns.push(
     {
       key: "changed",
@@ -512,23 +549,28 @@ function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
     },
     {
       key: "age",
-      header: "Recorded",
+      // A recent row is dated by when it came into force, the rest by when recorded.
+      header: ctx.lane === "recent" ? "In force" : "Recorded",
       align: "right",
       priority: 3,
       cellClassName: "align-top",
-      render: (d) => (
-        <span
-          className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
-          title={parseDateOrNull(d.created_at) ? formatDate(d.created_at) : undefined}
-        >
-          {formatRelativeTimeOrNull(d.created_at)}
-        </span>
-      ),
+      render: (d) => {
+        const at = ctx.lane === "recent" && d.recent?.at ? d.recent.at : d.created_at;
+        return (
+          <span
+            className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
+            title={parseDateOrNull(at) ? formatDate(at) : undefined}
+          >
+            {formatRelativeTimeOrNull(at)}
+          </span>
+        );
+      },
     },
   );
-  // One primary verb per row, and only in the lane where it means something.
-  // Everything else on the record lives on its detail page.
-  if (ctx.lane === "candidates" || (ctx.lane === "needs_review" && ctx.onReaffirm)) {
+  // One primary verb per row, and only in the section where it means something.
+  // Everything else on the record lives in its drawer and on its detail page.
+  const inForceVerbs = IN_FORCE_SECTIONS.has(ctx.lane) && (ctx.onPin || ctx.onReaffirm);
+  if (ctx.lane === "candidates" || inForceVerbs) {
     columns.push({
       key: "actions",
       header: <span className="sr-only">Review</span>,
@@ -550,6 +592,7 @@ function renderDecisionCell(d: DecisionRecord) {
         <span className="font-medium text-[var(--color-text-primary)]">
           {stripMarkdown(d.title)}
         </span>
+        {d.pinned && <PinnedMark />}
         {/* Marked only where it is an exception. An accepted decision that
             still describes its code is the quiet default and carries no
             badge; a currency the reader cannot guess does. */}
@@ -620,6 +663,25 @@ function renderScopeCell(d: DecisionRecord) {
   );
 }
 
+/** Who put a recent decision in force, and the commit it landed in. */
+function renderRecentByCell(d: DecisionRecord) {
+  const r = d.recent;
+  if (!r) return <span className={EVIDENCE_META}>Not recorded</span>;
+  const who = r.signer_kind === "agent" ? `${r.signer} (agent)` : r.signer;
+  const commit = r.commit ? r.commit.slice(0, 9) : "";
+  return (
+    <div className="min-w-0 space-y-0.5 text-xs">
+      <p className="break-all text-[var(--color-text-secondary)]">{who}</p>
+      {commit && (
+        <p className={cn(EVIDENCE_META, "font-mono")}>
+          {commit}
+          {r.landed_on ? ` on ${r.landed_on}` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function renderHotspotCell(d: DecisionRecord) {
   const hot = d.hotspot_files ?? [];
   return (
@@ -683,8 +745,14 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
   if (readOnlyReason) {
     return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
   }
-  if (ctx.lane === "needs_review") {
-    return ctx.onReaffirm ? <ReaffirmAction d={d} pending={pending} onReaffirm={ctx.onReaffirm} /> : null;
+  if (IN_FORCE_SECTIONS.has(ctx.lane)) {
+    const reaffirm = ctx.onReaffirm && d.currency === "needs_review" ? ctx.onReaffirm : undefined;
+    return (
+      <div className="flex justify-end gap-1.5" onClick={stop} onKeyDown={stop}>
+        {reaffirm && <ReaffirmAction d={d} pending={pending} onReaffirm={reaffirm} />}
+        {ctx.onPin && <PinVerb d={d} pending={pending} onPin={ctx.onPin} />}
+      </div>
+    );
   }
   if (!onAccept && !onDismiss) return null;
   // The same checks the engine refuses on, asked before the button is drawn,
@@ -706,7 +774,7 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
             title={blockers.length ? blockers.map(shortGap).join("; ") : undefined}
             onClick={() => onAccept(d)}
           >
-            {pending ? "Accepting…" : "Accept"}
+            {pending ? "Putting in force…" : PUT_IN_FORCE_LABEL}
           </Button>
         )}
       </div>

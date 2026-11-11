@@ -517,8 +517,11 @@ async def detect_supersessions_and_conflicts(
                 )
                 if edge is not None:
                     summary["supersedes"] += 1
-                    if conf >= autoflip_confidence and older.status in ("active", "proposed"):
-                        await _retire(session, older, successor_id=newer.id)
+                    if (
+                        conf >= autoflip_confidence
+                        and older.status in ("active", "proposed")
+                        and await _retire(session, older, successor_id=newer.id)
+                    ):
                         summary["flipped"] += 1
             else:
                 # Two active decisions contradict, neither clearly reverses the
@@ -891,8 +894,8 @@ async def run_update_evolution(
 
         kind = verdict["verdict"]
         if kind == "superseded":
-            if dec.status in ("active", "proposed"):
-                await _retire(session, dec)
+            if dec.status in ("active", "proposed") and not await _retire(session, dec):
+                continue
             regen.update(governed)
             result["superseded"] += 1
         elif kind == "amended":
@@ -914,13 +917,16 @@ async def run_update_evolution(
     return result
 
 
-async def _retire(session, record, *, successor_id: str | None = None) -> None:
+async def _retire(session, record, *, successor_id: str | None = None) -> bool:
     """Mark a record superseded, recording the withdrawal if it was accepted.
 
     An accepted decision's authority lives in the acceptance log, so retiring it
     by writing the status column alone would leave the log still saying it
     governs — and the tracked manifest would keep exporting it as current.
     A candidate has no authority to withdraw, so it only moves status.
+
+    A pinned decision is left alone and ``False`` returned: a person holds it
+    as law, and only a person retires it.
     """
     import contextlib
     from datetime import UTC, datetime
@@ -928,9 +934,12 @@ async def _retire(session, record, *, successor_id: str | None = None) -> None:
     from repowise.core.persistence.crud.authority import (
         AcceptanceRefusedError,
         is_accepted,
+        is_pinned,
         record_acceptance,
     )
 
+    if await is_pinned(session, record.id):
+        return False
     if await is_accepted(session, record.id):
         # A record that lost the evidence its acceptance rested on cannot log
         # the withdrawal; the retirement itself still applies.
@@ -949,3 +958,4 @@ async def _retire(session, record, *, successor_id: str | None = None) -> None:
     if successor_id is not None:
         record.superseded_by = successor_id
     record.updated_at = datetime.now(UTC)
+    return True

@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
-from repowise.core.persistence.crud.authority import decision_currencies
+from repowise.core.persistence.crud.authority import decision_currencies, pinned_decision_ids
 from repowise.core.persistence.crud.decision_staleness import latest_grant_times
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord
@@ -104,6 +104,8 @@ async def _why_path(query: str, repo: str | None) -> dict:
         governing, candidates, retired = _split_by_authority(
             matched, lineage_by_id, currencies, collector
         )
+        if governing:
+            governing = _pinned_first(governing, await pinned_decision_ids(session, repository.id))
         await _stamp_still_true(governing, matched, ctx.path, session, repository.id)
 
         # Every lane: the origin story is evidence, not instruction.
@@ -232,6 +234,18 @@ def _split_by_authority(
             entry["authority"] = "withdrawn"
             retired.append(entry)
     return governing, candidates, retired
+
+
+def _pinned_first(governing: list[dict], pinned: set[str]) -> list[dict]:
+    """*governing* with pinned rows marked and first, the rest in their order.
+
+    The mark is set only where true, so a store with nothing pinned answers in
+    the same bytes as before.
+    """
+    for entry in governing:
+        if entry["id"] in pinned:
+            entry["pinned"] = True
+    return sorted(governing, key=lambda e: not e.get("pinned"))
 
 
 async def _stamp_still_true(

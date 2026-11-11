@@ -18,6 +18,7 @@ import { ADD_WITH_AGENT_LABEL } from "@repowise-dev/ui/decisions/decision-review
 import type {
   DecisionAgentPromptKind,
   DecisionCreateInput,
+  DecisionRecord,
 } from "@repowise-dev/types/decisions";
 import { createDecision, getDecisionAgentPrompt } from "@/lib/api/decisions";
 import { useTranslations } from "next-intl";
@@ -90,10 +91,48 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
  * so after the agent's pass the copied list names what is still left. A failed
  * read shows no button rather than an error: the prompt is an extra, not the page.
  */
-export function useDecisionAgentPrompt(repoId: string, kind: DecisionAgentPromptKind) {
+export function useDecisionAgentPrompt(
+  repoId: string,
+  kind: DecisionAgentPromptKind | null,
+  decisionId?: string,
+) {
   const { data } = useSWR(
-    [`/api/repos/${repoId}/decisions/agent-prompt`, kind],
-    () => getDecisionAgentPrompt(repoId, kind),
+    kind ? [`/api/repos/${repoId}/decisions/agent-prompt`, kind, decisionId ?? ""] : null,
+    () => getDecisionAgentPrompt(repoId, kind!, decisionId),
   );
   return data;
+}
+
+/**
+ * One record's agent prompts, rendered by the server for its id: a background
+ * record gets the check; a decision in force gets pin or unpin, veto, and
+ * change. A retired one gets none.
+ */
+export function DecisionRecordPrompts({
+  repoId,
+  decision: d,
+}: {
+  repoId: string;
+  decision: Pick<DecisionRecord, "id" | "currency" | "pinned" | "status">;
+}) {
+  const t = useTranslations("decisions");
+  const retired = d.currency === "superseded" || d.currency === "dismissed" || d.currency === "stale";
+  const inForce = d.currency != null && !retired;
+  // A dismissed or retired record was settled; checking it again would undo that.
+  const background = d.currency == null && d.status === "proposed";
+  const pinKind = d.pinned ? "unpin" : "pin";
+  const review = useDecisionAgentPrompt(repoId, background ? "review" : null, d.id);
+  const pin = useDecisionAgentPrompt(repoId, inForce ? pinKind : null, d.id);
+  const veto = useDecisionAgentPrompt(repoId, inForce ? "veto" : null, d.id);
+  const edit = useDecisionAgentPrompt(repoId, inForce ? "edit" : null, d.id);
+  return (
+    <DecisionAgentPrompts
+      prompts={[
+        review ? { text: review.text, label: t("agent.review") } : null,
+        edit ? { text: edit.text, label: t("agent.edit") } : null,
+        veto ? { text: veto.text, label: t("agent.veto") } : null,
+        pin ? { text: pin.text, label: t(d.pinned ? "agent.unpin" : "agent.pin") } : null,
+      ]}
+    />
+  );
 }
