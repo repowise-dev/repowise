@@ -724,6 +724,18 @@ def _default_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
     return True
 
 
+def _strict_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+    """A switch that ships off and reads as off unless it is ``true``.
+
+    Unlike :func:`_default_off_switch`, a value that is not a boolean reads as
+    off: for a switch that sends data somewhere, off is what holds more back.
+    """
+    value = _as_bool(raw.get(key))
+    if value is None and key in raw:
+        warnings.append(f"`decisions.{key}` is not a boolean; treating it as false.")
+    return bool(value)
+
+
 def _states_enabled(raw_source: Any) -> bool:
     """Does a raw ``sources.<key>`` entry state an on/off of its own?
 
@@ -856,11 +868,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
-    # Not ``_default_off_switch``: a value that is not a boolean must not send
-    # a repository's decisions anywhere, so it reads as off.
-    sync = _as_bool(raw.get("sync"))
-    if sync is None and "sync" in raw:
-        warnings.append("`decisions.sync` is not a boolean; treating it as false.")
+    sync = _strict_off_switch(raw, "sync", warnings)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -875,7 +883,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             agent_acceptance=agent_acceptance,
             capture_prompt=capture_prompt,
             require_approval=require_approval,
-            sync=bool(sync),
+            sync=sync,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

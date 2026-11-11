@@ -60,6 +60,15 @@ def _provider_available(repo_path: Path) -> bool:
     return provider_available_for_repo(repo_path)
 
 
+def _emit_sync(policy: DecisionPolicy) -> None:
+    """One line when sync is on; nothing at all when it is off."""
+    if policy.sync:
+        console.print(
+            "  [dim]Sync: on. `update` sends decisions recorded here to this repo on "
+            "repowise.dev and brings down the ones in force there.[/dim]"
+        )
+
+
 def _emit(repo_path: Path, resolution, fmt: str) -> None:
     """Render a resolved policy, plus any warnings, in the requested format."""
     policy = resolution.policy
@@ -125,11 +134,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [yellow]Approval: required. A new decision waits for a person, even "
             "after its commit lands.[/yellow]"
         )
-    if policy.sync:
-        console.print(
-            "  [dim]Sync: on. `update` sends decisions recorded here to this repo on "
-            "repowise.dev and brings down the ones in force there.[/dim]"
-        )
+    _emit_sync(policy)
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
