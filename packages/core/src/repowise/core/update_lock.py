@@ -175,6 +175,23 @@ def release_update_lock(repo_path: Path) -> None:
     _release_lock_at(update_lock_path(repo_path))
 
 
+@contextlib.contextmanager
+def holding_update_lock(repo_path: Path) -> Iterator[bool]:
+    """Yield whether this process holds the repo's update lock for the block.
+
+    A free lock is taken and released on exit; one this process already holds
+    is kept. ``False`` when another live run owns it, so work that is only safe
+    for the lock owner (closing that run's job rows) is left to the owner.
+    """
+    owner = try_acquire_update_lock(repo_path, None)
+    acquired = owner is None
+    try:
+        yield owner is None or owner.get("pid") == os.getpid()
+    finally:
+        if acquired:
+            release_update_lock(repo_path)
+
+
 def release_workspace_lock(workspace_root: Path) -> None:
     """Remove the workspace-level update lock. Safe to call if it doesn't exist."""
     _release_lock_at(workspace_update_lock_path(workspace_root))
