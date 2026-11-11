@@ -1,11 +1,12 @@
 """Lines that hold only markup or literal data: no logic.
 
-In a JSX file, tags, attributes and text are markup. An attribute value of plain
+In a JSX file, tags, attributes and text are markup; so are the views of a
+SwiftUI ``body``, a Compose ``@Composable`` and a Flutter ``build()``. An attribute value of plain
 data (``style={{ color: "red" }}``, ``title={label}``) is markup too, and so is a
 component's ``const`` data literal used only there. In every language, the
 continuation lines of a multi-line string (a text block, heredoc, raw or
-template string) are data. A call, an operator, a function or control flow
-keeps a line code.
+template string) are data, and so is a switch arm that only returns or assigns
+a literal. A call, an operator, a function or control flow keeps a line code.
 """
 
 from __future__ import annotations
@@ -284,10 +285,12 @@ _DATA_NAMES = frozenset(
         "dimensions",
         "array_rank_specifier",
         "minus_operator",  # Dart's `-` in `-1`, under a `prefix_operator`
+        "template_substitution",  # the `${...}` slot; what it holds is judged on its own
     }
 )
-#: A sign on a number (``-1``) keeps it data; any other operator is code.
-_SIGNS = frozenset({b"-", b"+"})
+#: A sign on a number (``-1``) or Swift's implicit member (``.leading``) keeps
+#: a prefix expression data; any other operator is code.
+_SIGNS = frozenset({b"-", b"+", b"."})
 
 
 def _rows(node: Node) -> range:
@@ -324,18 +327,22 @@ def _literal_token_rows(literal: Node, data: set[int], code: set[int]) -> None:
             data.update(_rows(node))
 
 
-def _edge_rows_with_code(literal: Node, source: bytes) -> list[int]:
+def _edge_rows_with_code(
+    literal: Node, source: bytes, end: int | None = None, last: int | None = None
+) -> list[int]:
     """The literal's first and last rows when a token outside it shares them.
 
     A trailing ``,`` or ``;`` closes the literal and leaves its last row data.
+    *end* and *last* override the node's end byte and row.
     """
-    start, end = literal.start_byte, literal.end_byte
+    start = literal.start_byte
+    end = literal.end_byte if end is None else end
     line_end = source.find(b"\n", end)
     rows = []
     if source[source.rfind(b"\n", 0, start) + 1 : start].strip():
         rows.append(literal.start_point[0])
     if source[end : line_end if line_end >= 0 else len(source)].strip(b" \t\r,;"):
-        rows.append(literal.end_point[0])
+        rows.append(literal.end_point[0] if last is None else last)
     return rows
 
 
@@ -357,12 +364,343 @@ def _string_rows(literals: list[Node], source: bytes) -> set[int]:
     return data - code
 
 
-def markup_rows(root: Node, grammar_tag: str, source: bytes, literals: list[Node]) -> list[int]:
+#: Arms of a switch / when / match across grammars. ``file_scan`` collects them.
+ARM_KINDS = frozenset(
+    {
+        "switch_case",
+        "switch_default",
+        "when_entry",
+        "match_arm",
+        "expression_case",
+        "default_case",
+        "switch_block_statement_group",
+        "switch_rule",
+        "switch_section",
+        "switch_expression_arm",
+        "case_clause",
+        "switch_entry",
+        "case_statement",
+        "default_statement",
+        "match_conditional_expression",
+        "match_default_expression",
+        "when",
+        "switch_statement_case",
+        "switch_statement_default",
+        "switch_expression_case",
+    }
+)
+#: Arms whose body is an expression (``1 => "one"``); a statement arm with no
+#: return or assignment falls through to the next arm and holds no data.
+_EXPRESSION_ARMS = frozenset(
+    {
+        "when_entry",
+        "match_arm",
+        "switch_rule",
+        "switch_expression_arm",
+        "case_clause",
+        "match_conditional_expression",
+        "match_default_expression",
+        "when",
+        "switch_expression_case",
+    }
+)
+#: An arm's plumbing: its label or pattern and the blocks around its body.
+_ARM_STRUCTURE = frozenset(
+    {
+        "switch_label",
+        "constant_pattern",
+        "case_pattern",
+        "match_pattern",
+        "switch_pattern",
+        "pattern",
+        "match_condition_list",
+        "expression_list",
+        "discard",
+        "wildcard",
+        "default_keyword",
+        "dotted_name",
+        "qualified",
+        "qualified_identifier",
+        "class_constant_access_expression",
+        "case_builtin",
+        "break_builtin",
+        "break_statement",
+        "statement_list",
+        "statements",
+        "block",
+        "statement_block",
+        "compound_statement",
+        "control_structure_body",
+        "then",
+        "expression_statement",
+        "directly_assignable_expression",
+        "assignable_expression",
+    }
+)
+#: The statement that carries an arm's value; an arm holds at most one.
+_ARM_VALUE = frozenset(
+    {
+        "return_statement",
+        "return_expression",
+        "control_transfer_statement",
+        "yield_statement",
+        "assignment_expression",
+        "assignment",
+        "assignment_statement",
+    }
+)
+
+
+def _arm_is_data(arm: Node) -> bool:
+    """An arm that only returns, yields or assigns literal data (``case "a": return `x ${y}`;``).
+
+    A call, an operator, control flow, a ``throw`` or a second effect keeps it code.
+    """
+    values = 0
+    stack = list(arm.named_children)
+    while stack:
+        node = stack.pop()
+        kind = node.type
+        if "comment" in kind:
+            continue
+        if kind in _ARM_VALUE:
+            if node.children[0].type == "throw":
+                return False
+            values += bool(node.named_children)
+            if values > 1:
+                return False
+        elif kind not in _ARM_STRUCTURE and not _is_data_node(node):
+            return False
+        stack.extend(node.named_children)
+    return values == 1 or (arm.type in _EXPRESSION_ARMS and _ends_in_a_value(arm))
+
+
+def _ends_in_a_value(arm: Node) -> bool:
+    """Whether an expression arm ends in a value (``1 => "one"``), not a no-op (``{}``)."""
+    last = arm.named_children[-1] if arm.named_children else None
+    while last is not None and last.type in _ARM_STRUCTURE and last.named_children:
+        last = last.named_children[-1]
+    return last is not None and _is_data_node(last)
+
+
+def _is_condition_arm(arm: Node) -> bool:
+    """A Kotlin ``when`` with no subject: its arms are an ``if`` chain, not a table."""
+    if arm.type != "when_entry" or arm.parent is None:
+        return False
+    # The subject, when there is one, comes first.
+    first = arm.parent.named_child(0)
+    return first is None or first.type != "when_subject"
+
+
+def _arm_rows(arms: list[Node], source: bytes) -> set[int]:
+    """Rows of the *arms* that only return or assign literal data: a message table."""
+    data: set[int] = set()
+    code: set[int] = set()
+    for arm in arms:
+        # Ruby's ``when`` keyword shares its arm's node kind.
+        if not arm.is_named or _is_condition_arm(arm) or not _arm_is_data(arm):
+            continue
+        # Go and Swift arms end after the whitespace that leads to the next arm.
+        text = arm.text
+        trailing = len(text) - len(text.rstrip())
+        last = arm.end_point[0] - text.count(b"\n", len(text) - trailing)
+        data.update(range(arm.start_point[0], last + 1))
+        code.update(_edge_rows_with_code(arm, source, arm.end_byte - trailing, last))
+    return data - code
+
+
+#: Grammars with a UI tree builder, and bytes a file holds when it may have one:
+#: SwiftUI ``some View`` / ``@ViewBuilder``, Compose ``@Composable``, Flutter ``Widget``.
+_UI_MARKERS = {
+    "swift": (b"some View", b"@ViewBuilder"),
+    "kotlin": (b"@Composable",),
+    "dart": (b"Widget",),
+}
+#: A builder's plumbing, which takes the state of the call it sits in: argument
+#: lists and labels, trailing closures and their parameters, chained modifiers.
+_UI_STRUCTURE = frozenset(
+    {
+        "statements",
+        "call_suffix",
+        "value_arguments",
+        "value_argument",
+        "value_argument_label",
+        "navigation_suffix",
+        "lambda_literal",
+        "annotated_lambda",
+        "lambda_function_type",
+        "lambda_function_type_parameters",
+        "lambda_parameter",
+        "lambda_parameters",
+        "arguments",
+        "argument",
+        "argument_part",
+        "named_argument",
+        "label",
+        "selector",
+        "unconditional_assignable_selector",
+        "conditional_assignable_selector",
+        "const_builtin",
+    }
+)
+
+
+def _returns_widget(body: Node) -> bool:
+    """A Dart function *body* whose signature (its previous sibling) returns ``Widget``."""
+    signature = body.prev_named_sibling
+    if signature is None:
+        return False
+    if signature.type == "method_signature" and signature.named_children:
+        signature = signature.named_children[0]
+    returns = signature.named_children[0] if signature.named_children else None
+    return returns is not None and returns.text == b"Widget"
+
+
+#: Parameter lists, skipped when reading a function's header for a builder marker.
+_PARAMETER_KINDS = frozenset({"parameter", "function_value_parameters"})
+#: Where a member call is part of a view: an argument value
+#: (``modifier = Modifier.padding(8.dp)``) or a link of a chain.
+_CHAIN_PARENTS = frozenset(
+    {"value_argument", "argument", "named_argument", "call_expression", "navigation_expression"}
+)
+
+
+def _ui_builder_body(node: Node, grammar_tag: str, source: bytes) -> Node | None:
+    """The body of *node* when it builds a UI tree, else ``None``.
+
+    A SwiftUI ``var body: some View`` (or a ``@ViewBuilder`` / ``some View``
+    function), a Compose ``@Composable`` function, a Flutter method returning
+    ``Widget`` (``build``).
+    """
+    kind = node.type
+    if grammar_tag == "dart":
+        return node if kind == "function_body" and _returns_widget(node) else None
+    if kind not in ("function_declaration", "property_declaration"):
+        return None
+    header: list[bytes] = []
+    for child in node.children:
+        if child.type in ("function_body", "computed_property"):
+            # Parameters are left out: ``content: @Composable () -> Unit`` is not a builder.
+            text = b" ".join(header)
+            return child if any(marker in text for marker in _UI_MARKERS[grammar_tag]) else None
+        if child.type not in _PARAMETER_KINDS:
+            header.append(child.text)
+    return None
+
+
+def _call_root(node: Node) -> tuple[Node, bool] | None:
+    """The name a call chain starts from, and whether its first call is on a member.
+
+    ``Text`` and ``False`` for ``Text("a").font(.title)``; ``Log`` and ``True``
+    for ``Log.d("a")``. Swift and Kotlin nest the chain in ``call_expression`` /
+    ``navigation_expression``; Dart lays it flat, a name followed by ``selector``
+    siblings, and spells a ``const`` constructor as ``const_object_expression``.
+    """
+    kind = node.type
+    if kind == "call_expression":
+        root = node
+        on_member = False
+        while root.type in ("call_expression", "navigation_expression") and root.named_children:
+            if root.type == "call_expression":
+                on_member = root.named_children[0].type == "navigation_expression"
+            root = root.named_children[0]
+        return root, on_member
+    if kind == "selector" and any(c.type == "argument_part" for c in node.children):
+        root = node.prev_named_sibling
+        while root is not None and root.type == "selector":
+            root = root.prev_named_sibling
+        if root is None:
+            return None
+        # ``Theme.of(context)``: a member is named before the first argument list.
+        first = root.next_named_sibling
+        named_first = first is not None and first.type == "selector"
+        return root, named_first and not any(c.type == "argument_part" for c in first.children)
+    if kind in ("const_object_expression", "new_expression"):
+        root = next((c for c in node.named_children if c.type == "type_identifier"), None)
+        return (root, False) if root is not None else None
+    return None
+
+
+def _is_view_call(node: Node, root: Node, on_member: bool, in_markup: bool) -> bool:
+    """A call to a view, composable or widget: its name starts upper case (``Text(...)``).
+
+    A call on an upper-case member (``Modifier.padding(8.dp)``) counts only as
+    an argument of a view or a link of its chain; as a statement
+    (``Log.d(...)``) it is code.
+    """
+    first = root.text[:1]
+    if "identifier" not in root.type or not (first.isalpha() and first.isupper()):
+        return False
+    if not on_member:
+        return True
+    parent = node.parent
+    return in_markup and parent is not None and parent.type in _CHAIN_PARENTS
+
+
+def _ui_opens(node: Node, in_markup: bool) -> bool:
+    """Whether *node*'s own tokens are markup, given its parent's state.
+
+    A view call and its modifiers are markup; any other call is code.
+    """
+    call = _call_root(node)
+    if call is not None:
+        return _is_view_call(node, *call, in_markup)
+    if node.type in _UI_STRUCTURE or _is_data_node(node):
+        return in_markup
+    return False
+
+
+def _ui_token_rows(body: Node, markup: set[int], code: set[int]) -> None:
+    """Sort a UI builder *body*'s token rows into *markup* and *code*.
+
+    Views and their data arguments are markup; control flow, operators, a
+    lower-case call (``model.save()``) and a callback's statements are code.
+    A view nested anywhere is markup again, as JSX inside ``{cond && ...}`` is.
+    """
+    stack: list[tuple[Node, bool]] = [(body, False)]
+    while stack:
+        node, in_markup = stack.pop()
+        if "comment" in node.type:
+            continue
+        if node.is_named:
+            in_markup = _ui_opens(node, in_markup)
+        if node.children:
+            stack.extend((child, in_markup) for child in node.children)
+        elif node.start_byte < node.end_byte:
+            (markup if in_markup else code).update(_rows(node))
+
+
+def _ui_rows(root: Node, grammar_tag: str, source: bytes) -> set[int]:
+    """Rows of the file's UI builders whose every token is markup."""
+    markers = _UI_MARKERS.get(grammar_tag)
+    if markers is None or not any(marker in source for marker in markers):
+        return set()
+    markup: set[int] = set()
+    code: set[int] = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        body = _ui_builder_body(node, grammar_tag, source)
+        if body is not None:
+            _ui_token_rows(body, markup, code)
+        else:
+            stack.extend(node.named_children)
+    return markup - code
+
+
+def markup_rows(
+    root: Node, grammar_tag: str, source: bytes, literals: list[Node], arms: list[Node]
+) -> list[int]:
     """Sorted 0-indexed non-blank rows whose every token is markup or literal data.
 
-    *literals* are the file's multi-line literals (strings, tables) outside docstrings.
+    *literals* are the file's multi-line literals (strings, tables) outside docstrings;
+    *arms* its switch / when / match arms.
     """
-    rows = _string_rows(literals, source)
+    rows = (
+        _string_rows(literals, source)
+        | _ui_rows(root, grammar_tag, source)
+        | _arm_rows(arms, source)
+    )
     if grammar_tag in _JSX_GRAMMARS and (b"/>" in source or b"</" in source):
         markup, code = _token_rows(root)
         rows |= markup - code
