@@ -212,7 +212,7 @@ def test_a_typed_const_data_literal_used_only_as_a_prop_is_markup(cast: str) -> 
     assert card.markup_nloc == 4
 
 
-def test_a_const_data_literal_read_by_logic_stays_code() -> None:
+def test_a_const_data_literal_read_by_logic_keeps_its_declaration_line_code() -> None:
     card = _code_rows(
         """export function Card({ kind }: Props) {
   const labels = {
@@ -223,7 +223,8 @@ def test_a_const_data_literal_read_by_logic_stays_code() -> None:
 }
 """
     )
-    assert card.markup_nloc == 0
+    # The table's rows are literal data; ``const labels = {`` and the return stay code.
+    assert card.markup_nloc == 3
 
 
 def test_brain_method_does_not_count_jsx_markup_lines() -> None:
@@ -231,7 +232,7 @@ def test_brain_method_does_not_count_jsx_markup_lines() -> None:
     assert BrainMethodDetector().detect(_central(_fn(nloc=100, ccn=12, markup_nloc=40))) == []
     [finding] = BrainMethodDetector().detect(_central(_fn(nloc=120, ccn=12, markup_nloc=40)))
     assert finding.reason == (
-        "Brain Method: tokenize is 80 lines besides 40 of JSX markup, CCN 12, "
+        "Brain Method: tokenize is 80 lines besides 40 of markup and data, CCN 12, "
         "in a file imported by 10 others"
     )
     assert finding.details["markup_nloc"] == 40

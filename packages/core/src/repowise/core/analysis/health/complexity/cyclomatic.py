@@ -9,7 +9,7 @@ nodes and pull condition subtrees out for the boolean-operator tally.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .ast_utils import is_named_block_lambda
 from .body_facts import BodyTally, step
@@ -22,6 +22,13 @@ if TYPE_CHECKING:
 
 def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
     """True if this node represents a logical ``&&`` / ``||`` operator."""
+    if not _is_operator_token(node, lmap):
+        return False
+    return lmap.logical_operator is None or bool(lmap.logical_operator(node))
+
+
+def _is_operator_token(node: Node, lmap: LanguageNodeMap) -> bool:
+    """True if this node carries an ``&&`` / ``||`` / ``and`` / ``or`` operator."""
     if node.type in lmap.boolean_operator_kinds:
         return True
     if node.type in lmap.boolean_operator_text_kinds:
@@ -268,6 +275,26 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
+def _fsharp_conditions(node: Node, lmap: LanguageNodeMap) -> list[Node] | None:
+    """The condition parts of an F# construct, whose grammar names none ``condition``.
+
+    ``None`` for any other node.
+    """
+    if node.type == "rules":
+        # F# counts a ``match`` once at its ``rules`` wrapper, whose arms hold
+        # the bodies: only their ``when`` guards are conditions. Guards of
+        # several arms add up into one record (ceiling: one record per arm
+        # would need the arms as case nodes, which scores flat matches high).
+        return [g for arm in node.named_children if (g := arm.child_by_field_name("guard"))]
+    if node.type in lmap.if_kinds and (guard := node.child_by_field_name("guard")):
+        # A Python ``case`` guard is no ``if`` kind: it is its own branch node.
+        return [guard]
+    if node.type == "while_expression" and node.child_by_field_name("condition") is None:
+        # ``while c do body`` names neither part: the condition comes first.
+        return node.named_children[:1]
+    return None
+
+
 def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
@@ -278,6 +305,9 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """
     if node.type in lmap.foreach_kinds or node.type == "range_clause":
         return []
+    fsharp = _fsharp_conditions(node, lmap)
+    if fsharp is not None:
+        return fsharp
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
@@ -361,30 +391,80 @@ def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     return cases
 
 
-def _is_flat_match(node: Node, lmap: LanguageNodeMap) -> bool:
-    """Return True if *node* is a match/switch with only simple arms.
+# Arm node types that are a switch's ``default`` (TS, Go, Dart).
+_DEFAULT_ARM_KINDS = frozenset({"switch_default", "default_case", "switch_statement_default"})
+# The token or keyword that opens a ``default`` / ``else ->`` arm (C, C#,
+# Kotlin, Swift, Java's ``switch_label``).
+_DEFAULT_TOKENS = frozenset({"default", "else", "default_keyword"})
+# A catch-all pattern: Rust / Scala / Python / C# ``_``, shell ``*)``.
+_WILDCARD_TEXTS = frozenset({b"_", b"*"})
+# A case guard, per grammar (Scala, Python, Swift).
+_GUARD_KINDS = frozenset({"guard", "if_clause", "where_clause"})
 
-    A "flat" match has arms whose bodies are single expressions without
-    nested control flow (no ``if``, ``match``, ``for``, ``while``,
-    ``loop``, ``if_let``, ``while_let`` expressions, and no ``block``
-    with multiple statements).  Flat matches contribute 1 CCN point for
-    the match keyword itself but do NOT count each arm individually.
 
-    Python's ``match_statement`` is excluded: ``match``/``case`` in Python
-    is *pattern matching* — each ``case`` is a distinct branch point,
-    structurally the same decision as ``if``/``elif``. Suppressing its arms
-    like a C-style flat switch would report a ``match`` with N arms as ~N
-    points too low (measured: a 3-arm ``match`` gave CCN 2 while the
-    equivalent ``if``/``elif`` gave 4). Rust ``match_expression`` and other
-    languages' dispatch switches keep the flat behaviour.
+def _is_default_arm(arm: Node) -> bool:
+    """A ``default`` / ``else ->`` / ``_`` arm: where the dispatch lands when no case
+    matched, not a decision of its own."""
+    if arm.type in _DEFAULT_ARM_KINDS:
+        return True
+    if not arm.children:
+        return False
+    first = arm.children[0]
+    if first.type == "switch_label":
+        first = first.children[0] if first.children else first
+    if first.type in _DEFAULT_TOKENS:
+        return True
+    head = first if first.is_named else (arm.named_children or [first])[0]
+    # ``case _ if c`` / ``case _ where c`` decides on its guard: a case.
+    guarded = arm.child_by_field_name("guard") is not None or any(
+        c.type in _GUARD_KINDS for c in arm.named_children
+    )
+    return head.text in _WILDCARD_TEXTS and not guarded
+
+
+def _has_subject(node: Node) -> bool:
+    """A subjectless ``switch {}`` / ``when {}`` / ``case`` is an ``if`` chain."""
+    if node.type == "expression_switch_statement":
+        return node.child_by_field_name("value") is not None
+    if node.type == "when_expression":
+        return any(c.type == "when_subject" for c in node.children)
+    if node.type == "case" and any(c.type == "when" for c in node.children):
+        return node.child_by_field_name("value") is not None
+    return True
+
+
+class _Arms(NamedTuple):
+    """How a switch's arms count: ``flat`` ones not at all, ``counted`` ones one
+    point each, and the switch one point for its simple cases (``point``)."""
+
+    flat: set[int]
+    counted: set[int]
+    point: bool
+
+
+def _split_arms(node: Node, lmap: LanguageNodeMap) -> _Arms:
+    """Sort a switch's arms by how they count.
+
+    A ``default`` / ``else`` / ``_`` arm is never a case. A case whose arm
+    holds no control flow (no ``if`` / loop / switch, no multi-statement
+    ``block``) is one more value of the dispatch: the simple cases count one
+    point together, on the switch. A case with control flow of its own counts
+    one point, so one ``if`` in one arm leaves the other arms flat.
+
+    A switch with no subject (``when { }``, Go ``switch { }``) is an ``if`` /
+    ``else if`` chain once any arm has control flow: then each case counts.
+    Python's ``match_statement`` always keeps one point per case: ``match`` /
+    ``case`` is pattern matching, the same decision as ``if`` / ``elif`` (a
+    3-arm ``match`` would score 2 against the equivalent ``if`` / ``elif``'s 4).
     """
-    if node.type == "match_statement":
-        return False
     complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
-    cases = _collect_case_children(node, lmap)
-    if not cases:
-        return False
-    return all(not _subtree_contains_complex(arm, complex_types) for arm in cases)
+    cases = [arm for arm in _collect_case_children(node, lmap) if not _is_default_arm(arm)]
+    defaults = {arm.id for arm in _collect_case_children(node, lmap)} - {c.id for c in cases}
+    tangled = {c.id for c in cases if _subtree_contains_complex(c, complex_types)}
+    if node.type == "match_statement" or (tangled and not _has_subject(node)):
+        tangled = {c.id for c in cases}
+    simple = {c.id for c in cases} - tangled
+    return _Arms(defaults | simple, tangled, bool(simple))
 
 
 def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> bool:
@@ -580,15 +660,10 @@ def _walk_function_body(
             # try's depth (Sonar's cognitive complexity spec).
             bare_handler_ids.update(_bare_on_handlers(node))
         elif node.is_named and node.type in lmap.switch_kinds:
-            arm_ids = {c.id for c in _collect_case_children(node, lmap)}
-            # Detect flat match: all arms are simple single-expression arms.
-            if _is_flat_match(node, lmap):
-                flat_arm_ids.update(arm_ids)
-                # Flat match: count 1 CCN point for the match itself,
-                # open a nesting level, but arms won't be counted.
-                ccn_increment = 1
-            else:
-                switch_arm_ids.update(arm_ids)
+            arms = _split_arms(node, lmap)
+            flat_arm_ids.update(arms.flat)
+            switch_arm_ids.update(arms.counted)
+            ccn_increment = int(arms.point)
             # The switch opens one nesting level for its whole body; each
             # case adds CCN only.
             nesting_increment = 1
@@ -626,7 +701,8 @@ def _walk_function_body(
     def _recurse_preproc_arms(node: Node, depth: int, in_markup: bool, scope: int) -> bool:
         """Walk a ``#if`` / ``#elif`` / ``#else`` chain, keeping the largest arm.
 
-        Returns ``True`` when ``node`` is such a chain and was walked here, so
+        Returns ``True`` when ``node`` is such a block (with or without an
+        ``#else``) and was walked here, so
         ``_recurse`` does not descend into it again; ``False`` for every other node.
 
         Each arm starts from the same CCN and cognitive baseline; afterwards the
@@ -635,22 +711,24 @@ def _walk_function_body(
         nested blocks reach this function again through ``_recurse``. Nesting
         depth, conditions and the side channels still see every arm: those lines
         exist in the source, and a flagged condition in any arm is worth showing.
+
+        The ``#if`` / ``#elif`` condition itself is skipped: the compiler decides
+        it, so its ``||`` / ``&&`` are not branches the built function takes.
         """
         nonlocal ccn, cognitive
         if node.type not in _PREPROC_CONDITIONAL_KINDS:
-            return False
-        if node.child_by_field_name("alternative") is None:
             return False
         base_ccn, base_cognitive = ccn, cognitive
         best_ccn, best_cognitive = 0, 0
         arm: Node | None = node
         while arm is not None:
             alternative = arm.child_by_field_name("alternative")
+            condition = arm.child_by_field_name("condition")
+            skipped = {c.id for c in (alternative, condition) if c is not None}
             ccn, cognitive = base_ccn, base_cognitive
             for child in arm.children:
-                if alternative is not None and child.id == alternative.id:
-                    continue
-                _recurse(child, depth, in_markup, scope)
+                if child.id not in skipped:
+                    _recurse(child, depth, in_markup, scope)
             best_ccn, best_cognitive = max(
                 (best_ccn, best_cognitive), (ccn - base_ccn, cognitive - base_cognitive)
             )
@@ -701,7 +779,8 @@ def _compound_condition(node: Node, lmap: LanguageNodeMap) -> list[ConditionComp
     op_count = 0
     op_kinds: set[str] = set()
     negated = False
-    for sub in _condition_subtrees(node, lmap):
+    subtrees = _condition_subtrees(node, lmap)
+    for sub in subtrees:
         sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
         op_count += sub_count
         op_kinds |= sub_kinds
@@ -713,9 +792,167 @@ def _compound_condition(node: Node, lmap: LanguageNodeMap) -> list[ConditionComp
             line=node.start_point[0] + 1,
             operator_count=op_count,
             enclosing_construct=_enclosing_construct(node, lmap),
-            flat_chain=len(op_kinds) == 1 and not negated,
+            flat_chain=len(op_kinds) == 1
+            and (not negated or all(_is_flat_list(sub, lmap) for sub in subtrees)),
         )
     ]
+
+
+# Grouping parentheses (and C's ``if (...)`` clause), per grammar.
+_PAREN_KINDS = frozenset(
+    {"parenthesized_expression", "parenthesized_statements", "exprParens", "condition_clause"}
+)
+# Name tokens an operand can test, per grammar.
+_NAME_KINDS = frozenset({"name", "constant", "variable_name", "instance_variable"})
+# A bare flag: a name or a member read off one, with no call or comparison.
+_FLAG_KINDS = frozenset(
+    {
+        "member_expression",
+        "field_expression",
+        "field_access",
+        "navigation_expression",
+        "member_access_expression",
+        "selector_expression",
+        "attribute",
+    }
+)
+_OPERATOR_TEXTS = frozenset({b"&&", b"||", b"and", b"or"})
+_NOT_TEXTS = frozenset({b"!", b"not"})
+
+
+def _negated_operand(node: Node) -> Node | None:
+    """What a prefix ``!`` / ``not`` node negates, ``None`` for any other node."""
+    first = node.children[0] if node.children else None
+    if first is None or (first.text not in _NOT_TEXTS and first.type != "kNot"):
+        return None
+    named = node.named_children
+    return named[-1] if named and named[-1] != first else None
+
+
+def _strip(node: Node) -> tuple[Node, bool]:
+    """*node* without grouping parentheses or a prefix ``!`` / ``not``, and
+    whether a negation was stripped."""
+    negated = False
+    while True:
+        if node.type in _PAREN_KINDS and len(node.named_children) == 1:
+            node = node.named_children[0]
+        elif (operand := _negated_operand(node)) is not None:
+            node, negated = operand, True
+        else:
+            return node, negated
+
+
+def _is_operator(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An operator token, not an operand: ``&&`` / ``kAnd`` / Dart's operator node."""
+    return node.text in _OPERATOR_TEXTS or (node.child_count == 0 and _is_boolean_operator(node, lmap))
+
+
+def _chain_operands(node: Node, lmap: LanguageNodeMap, top: bool = True) -> list[Node] | None:
+    """The operands of a chain of boolean operators, each stripped.
+
+    ``None`` when a negation covers a sub-chain (``a && !(b && c)``): De Morgan,
+    not a list. One over the whole chain (``!(a || b)``) is "none of" the list.
+    """
+    node, negated = _strip(node)
+    is_chain = (_is_boolean_operator(node, lmap) and node.child_count > 0) or any(
+        _is_operator(c, lmap) for c in node.children
+    )
+    if not is_chain:
+        return [node]
+    if negated and not top:
+        return None
+    out: list[Node] = []
+    for child in node.named_children:
+        if _is_operator(child, lmap):
+            continue
+        operands = _chain_operands(child, lmap, top=False)
+        if operands is None:
+            return None
+        out.extend(operands)
+    return out
+
+
+# Names every operand of a method can share without testing one value.
+_RECEIVER_NAMES = frozenset({b"self", b"this", b"super", b"nil", b"null", b"true", b"false"})
+_CALLEE_FIELDS = ("function", "method", "name")
+_MEMBER_FIELDS = ("property", "attribute", "field", "name", "selector")
+
+
+def _callee_ids(node: Node) -> set[int]:
+    """Ids of the names *node* calls (``strcmp``, ``s.startsWith``'s ``startsWith``)."""
+    ids: set[int] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        stack.extend(cur.children)
+        if cur.child_by_field_name("arguments") is None and cur.type != "message_expression":
+            continue
+        callee = next(filter(None, map(cur.child_by_field_name, _CALLEE_FIELDS)), None)
+        if callee is None:
+            continue
+        ids.add(callee.id)
+        member = next(filter(None, map(callee.child_by_field_name, _MEMBER_FIELDS)), None)
+        if member is not None:
+            ids.add(member.id)
+    return ids
+
+
+def _is_member_name(node: Node) -> bool:
+    """The member part of a member read (``kind`` in ``a->kind``), not its base."""
+    parent = node.parent
+    if parent is None or parent.type not in _FLAG_KINDS:
+        return False
+    return any(
+        (member := parent.child_by_field_name(f)) is not None and member.id == node.id
+        for f in _MEMBER_FIELDS
+    )
+
+
+def _names(node: Node) -> set[bytes]:
+    """The value names *node* tests: not the functions it calls, not ``self``."""
+    called = _callee_ids(node)
+    found: set[bytes] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        stack.extend(cur.children)
+        if cur.id in called or cur.text is None or cur.text in _RECEIVER_NAMES:
+            continue
+        if _is_member_name(cur):
+            # ``a->kind`` and ``b->kind`` test different values.
+            continue
+        if "identifier" in cur.type or cur.type in _NAME_KINDS:
+            found.add(cur.text)
+    return found
+
+
+def _is_flag(node: Node) -> bool:
+    """A bare name, or a member read off one: ``ready``, ``self.done``."""
+    if "identifier" in node.type or node.type in _NAME_KINDS:
+        return True
+    return node.type in _FLAG_KINDS and all(_is_flag(c) for c in node.named_children)
+
+
+def _is_flat_list(condition: Node, lmap: LanguageNodeMap) -> bool:
+    """A one-operator chain that negates whole operands, never a sub-chain, and is
+    a list: every operand a bare flag (``!a || !b || c``), or every operand
+    testing one name (``!strcmp(name, ".") || !strcmp(name, "..")``).
+
+    ``!(a || b || c)`` over such a list is the same list ("none of").
+    """
+    operands = _chain_operands(condition, lmap)
+    if operands is None or len(operands) < 2:
+        return False
+    for operand in operands:
+        stack = [operand]
+        while stack:
+            cur = stack.pop()
+            if _is_boolean_operator(cur, lmap):
+                return False
+            stack.extend(cur.children)
+    if all(_is_flag(o) for o in operands):
+        return True
+    return bool(set.intersection(*(_names(o) for o in operands)))
 
 
 def _bare_on_handlers(try_node: Node) -> list[int]:
