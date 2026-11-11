@@ -60,6 +60,19 @@ def _provider_available(repo_path: Path) -> bool:
     return provider_available_for_repo(repo_path)
 
 
+def _emit_update_mining(policy: DecisionPolicy) -> None:
+    if policy.update_mining:
+        console.print(
+            "  [dim]Update mining: on. Each update reads new pull requests and commits "
+            "with the model.[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]Update mining: off. History is read at init; updates make no "
+            "model calls for decisions. On: repowise decision config update-mining --on[/dim]"
+        )
+
+
 def _emit(repo_path: Path, resolution, fmt: str) -> None:
     """Render a resolved policy, plus any warnings, in the requested format."""
     policy = resolution.policy
@@ -125,16 +138,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [yellow]Approval: required. A new decision waits for a person, even "
             "after its commit lands.[/yellow]"
         )
-    if policy.update_mining:
-        console.print(
-            "  [dim]Update mining: on. Each update reads new pull requests and commits "
-            "with the model.[/dim]"
-        )
-    else:
-        console.print(
-            "  [dim]Update mining: off. History is read at init; updates make no "
-            "model calls for decisions. On: repowise decision config update-mining --on[/dim]"
-        )
+    _emit_update_mining(policy)
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
