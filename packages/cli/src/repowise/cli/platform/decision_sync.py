@@ -374,65 +374,80 @@ def parse_pull(payload: dict[str, Any]) -> tuple[list[Any], list[tuple[str, str]
     fit the store's key, every path must be repo-relative, and a decision the
     route says is not in force is refused rather than mirrored.
     """
-    from repowise.core.analysis.decisions.lifecycle import AGREEMENT_SCOPE
-    from repowise.core.persistence.decision_pull import PulledDecision
-
     kept: list[Any] = []
     refused: list[tuple[str, str]] = []
     for raw in payload.get("decisions") or []:
         if not isinstance(raw, dict):
             continue
-        hosted_id = raw.get("id")
-        if not isinstance(hosted_id, str) or not _HOSTED_ID_RE.match(hosted_id):
-            refused.append((str(hosted_id)[:40], "not a decision id this store can hold"))
-            continue
         acceptance = raw.get("acceptance") if isinstance(raw.get("acceptance"), dict) else {}
+        hosted_id = raw.get("id")
         seq = acceptance.get("seq")
         currency = _text(acceptance.get("currency")) or _text(raw.get("currency"))
-        if type(seq) is not int or seq < 0:
-            refused.append((hosted_id, "no acceptance version"))
-            continue
-        if currency not in ("active", "needs_review"):
-            refused.append((hosted_id, _NOT_IN_FORCE))
-            continue
         title = _text(raw.get("title")).strip()
-        if not title:
-            refused.append((hosted_id, "no title"))
+        why = _pull_refusal(hosted_id, seq, currency, title)
+        if why:
+            refused.append((str(hosted_id)[:40], why))
             continue
-        line = raw.get("evidence_line")
-        evidence_file = repo_paths([_text(raw.get("evidence_file"))])
-        scope = _strs(acceptance.get("scope"))
-        marker = [s for s in scope if s == AGREEMENT_SCOPE]
-        kept.append(
-            PulledDecision(
-                id=hosted_id,
-                title=title,
-                decision=_text(raw.get("decision")),
-                origin=_text(raw.get("origin")),
-                seq=seq,
-                context=_text(raw.get("context")),
-                rationale=_text(raw.get("rationale")),
-                alternatives=_strs(raw.get("alternatives")),
-                consequences=_strs(raw.get("consequences")),
-                affected_files=repo_paths(_strs(raw.get("affected_files"))),
-                evidence_commits=_strs(raw.get("evidence_commits")),
-                kind=_text(raw.get("kind")),
-                source=_text(raw.get("source"))[:_SOURCE_MAX],
-                source_quote=_text(raw.get("source_quote")),
-                evidence_file=evidence_file[0] if evidence_file else None,
-                evidence_line=line if type(line) is int else None,
-                action=_text(acceptance.get("action")),
-                currency=currency,
-                reason=_text(acceptance.get("reason")),
-                scope=marker + repo_paths([s for s in scope if s != AGREEMENT_SCOPE]),
-                evidence=_strs(acceptance.get("evidence")),
-                accepter=_text(acceptance.get("accepter")),
-                accepter_kind=_text(acceptance.get("accepter_kind")),
-                accepter_session=_text(acceptance.get("accepter_session")),
-                accepted_at=_stamp(acceptance.get("accepted_at")),
-            )
-        )
+        kept.append(_pulled(raw, acceptance, hosted_id, seq, currency, title))
     return kept, refused
+
+
+def _pull_refusal(hosted_id: Any, seq: Any, currency: str, title: str) -> str | None:
+    """Why :func:`parse_pull` refuses a row, ``None`` when it can be kept."""
+    if not isinstance(hosted_id, str) or not _HOSTED_ID_RE.match(hosted_id):
+        return "not a decision id this store can hold"
+    if type(seq) is not int or seq < 0:
+        return "no acceptance version"
+    if currency not in ("active", "needs_review"):
+        return _NOT_IN_FORCE
+    if not title:
+        return "no title"
+    return None
+
+
+def _pulled(
+    raw: dict[str, Any],
+    acceptance: dict[str, Any],
+    hosted_id: str,
+    seq: int,
+    currency: str,
+    title: str,
+) -> Any:
+    """A row :func:`_pull_refusal` let through, as a store-ready record."""
+    from repowise.core.analysis.decisions.lifecycle import AGREEMENT_SCOPE
+    from repowise.core.persistence.decision_pull import PulledDecision
+
+    line = raw.get("evidence_line")
+    evidence_file = repo_paths([_text(raw.get("evidence_file"))])
+    scope = _strs(acceptance.get("scope"))
+    marker = [s for s in scope if s == AGREEMENT_SCOPE]
+    return PulledDecision(
+        id=hosted_id,
+        title=title,
+        decision=_text(raw.get("decision")),
+        origin=_text(raw.get("origin")),
+        seq=seq,
+        context=_text(raw.get("context")),
+        rationale=_text(raw.get("rationale")),
+        alternatives=_strs(raw.get("alternatives")),
+        consequences=_strs(raw.get("consequences")),
+        affected_files=repo_paths(_strs(raw.get("affected_files"))),
+        evidence_commits=_strs(raw.get("evidence_commits")),
+        kind=_text(raw.get("kind")),
+        source=_text(raw.get("source"))[:_SOURCE_MAX],
+        source_quote=_text(raw.get("source_quote")),
+        evidence_file=evidence_file[0] if evidence_file else None,
+        evidence_line=line if type(line) is int else None,
+        action=_text(acceptance.get("action")),
+        currency=currency,
+        reason=_text(acceptance.get("reason")),
+        scope=marker + repo_paths([s for s in scope if s != AGREEMENT_SCOPE]),
+        evidence=_strs(acceptance.get("evidence")),
+        accepter=_text(acceptance.get("accepter")),
+        accepter_kind=_text(acceptance.get("accepter_kind")),
+        accepter_session=_text(acceptance.get("accepter_session")),
+        accepted_at=_stamp(acceptance.get("accepted_at")),
+    )
 
 
 def unreadable_ids(refused: list[tuple[str, str]]) -> set[str]:

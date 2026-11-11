@@ -348,14 +348,17 @@ def _sync_once(repo_path: Path, gate: _Gate) -> str | None:
             )
         )
         got = result.outcome
-    moved = [
-        f"sent {pushed}" if pushed else "",
-        f"received {len(got['inserted'])}" if got.get("inserted") else "",
-        f"updated {len(got['updated'])}" if got.get("updated") else "",
-        f"retired {len(got['retired'])}" if got.get("retired") else "",
-    ]
-    moved = [m for m in moved if m]
-    problem = stopped or answer.error
+    return _sync_line(pushed, got, stopped or answer.error)
+
+
+#: Pull outcome keys, in the order the update line names them.
+_SYNC_MOVES = (("inserted", "received"), ("updated", "updated"), ("retired", "retired"))
+
+
+def _sync_line(pushed: int, got: dict[str, Any], problem: str | None) -> str | None:
+    """The one quiet line ``update`` prints for a sync, ``None`` for nothing to say."""
+    moved = [f"sent {pushed}"] if pushed else []
+    moved += [f"{verb} {len(got[key])}" for key, verb in _SYNC_MOVES if got.get(key)]
     if moved:
         line = f"Decisions synced with repowise.dev: {', '.join(moved)}."
         return f"{line} {problem}" if problem else line

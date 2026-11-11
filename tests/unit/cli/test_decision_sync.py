@@ -749,3 +749,69 @@ class TestHostedLimits:
         item = build_item(_rec(affected_files_json=json.dumps(files)), [])
 
         assert item.payload["affected_files"] == ["src/app.py", "lib/x.py"]
+
+
+class TestParsePull:
+    def test_each_unreadable_row_is_refused_with_its_reason(self):
+        no_version = _pulled("v" * 32)
+        no_version["acceptance"]["seq"] = -1
+        retired = _pulled("r" * 32)
+        retired["acceptance"]["currency"] = "superseded"
+        payload = {
+            "decisions": [
+                "not a row",
+                _pulled("bad id!"),
+                no_version,
+                retired,
+                _pulled("t" * 32, title="   "),
+                _pulled(),
+            ]
+        }
+
+        kept, refused = ds.parse_pull(payload)
+
+        assert [k.id for k in kept] == [HOSTED]
+        assert refused == [
+            ("bad id!", "not a decision id this store can hold"),
+            ("v" * 32, "no acceptance version"),
+            ("r" * 32, "not in force"),
+            ("t" * 32, "no title"),
+        ]
+
+    def test_a_kept_row_carries_its_version_and_currency(self):
+        (kept,), _ = ds.parse_pull({"decisions": [_pulled(seq=3)]})
+
+        assert (kept.id, kept.seq, kept.currency, kept.scope) == (
+            HOSTED,
+            3,
+            "active",
+            ["src/hooks.py"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("pushed", "got", "problem", "line"),
+    [
+        (0, {}, None, None),
+        (
+            0,
+            {},
+            "Couldn't reach repowise.dev.",
+            "Decision sync incomplete: Couldn't reach repowise.dev.",
+        ),
+        (
+            2,
+            {"inserted": ["x"], "updated": [], "retired": ["y", "z"]},
+            None,
+            "Decisions synced with repowise.dev: sent 2, received 1, retired 2.",
+        ),
+        (
+            0,
+            {"updated": ["x"]},
+            "Rate limited.",
+            "Decisions synced with repowise.dev: updated 1. Rate limited.",
+        ),
+    ],
+)
+def test_the_update_line_names_only_what_moved(pushed, got, problem, line):
+    assert decision_sync_cmd._sync_line(pushed, got, problem) == line
