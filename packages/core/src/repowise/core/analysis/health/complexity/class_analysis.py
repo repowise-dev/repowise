@@ -703,6 +703,7 @@ def _collect_classes(
                 contract_impl=contract_impl,
                 # A partial fragment's own fields still bind the methods that use them.
                 field_readers=_field_readers(method_fcs, refs),
+                kind=class_node.type,
             )
         )
     return classes
