@@ -34,9 +34,11 @@ __all__ = [
     "import_command",
     "merge_command",
     "migrate_command",
+    "pin_command",
     "reaffirm_command",
     "split_command",
     "status_command",
+    "unpin_command",
 ]
 
 
@@ -412,6 +414,86 @@ def reaffirm_command(
     _emit_single(results[0], ids[0], "reaffirm", fmt, "(governing)", remedy)
 
 
+def _pin_verb(pinned: bool):
+    """``decision pin`` or ``decision unpin``: one body, the state it sets differs."""
+    verb = "pin" if pinned else "unpin"
+    action = "pinned" if pinned else "unpinned"
+
+    def command(
+        decision_ids: tuple[str, ...],
+        reason: str,
+        agent: str,
+        agent_session: str,
+        preview: bool,
+        fmt: str,
+    ) -> None:
+        from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+        ids, path = _split_ids_and_path(decision_ids)
+        _require_ids(ids, verb, fmt)
+        repo_path = _resolve_decision_repo(path, fmt)
+        signer = _signer(agent, agent_session)
+
+        async def _apply(session, rec) -> None:
+            from repowise.core.persistence.crud.authority import set_pinned
+
+            await set_pinned(
+                session,
+                rec,
+                pinned,
+                accepter=signer.name(repo_path),
+                kind=signer.kind,
+                accepter_session=signer.session,
+                reason=reason,
+            )
+
+        results = run_async(
+            _review_batch(
+                repo_path, ids, action=action, verb=verb, preview=preview, apply_one=_apply
+            )
+        )
+        if len(ids) > 1 or preview or fmt == "json":
+            _emit_batch(results, action, verb, preview, fmt)
+            return
+        note = (
+            "(in force; an agent asks a person before replacing it)"
+            if pinned
+            else "(still in force)"
+        )
+        _emit_single(results[0], ids[0], verb, fmt, f"[dim]{note}[/dim]", "")
+
+    command.__name__ = f"{verb}_command"
+    command.__doc__ = (
+        """Pin decisions in force: a person holds them as law.
+
+    An agent that tries to replace or retire a pinned decision is refused and
+    told to ask a person first. Takes one id or many, and an optional
+    repository path after them. ``--agent`` signs as the agent a person asked
+    to pin it.
+    """
+        if pinned
+        else """Unpin decisions. They stay in force; agents may replace them again.
+
+    Takes one id or many, and an optional repository path after them.
+    ``--agent`` signs as the agent a person asked to unpin it.
+    """
+    )
+    command = format_option()(command)
+    command = _preview_option(command)
+    command = _signing_options(command)
+    command = click.option(
+        "--reason",
+        default="",
+        help="Why it is law." if pinned else "Why it no longer is.",
+    )(command)
+    command = click.argument("decision_ids", nargs=-1)(command)
+    return click.command(verb)(command)
+
+
+pin_command = _pin_verb(True)
+unpin_command = _pin_verb(False)
+
+
 # ---------------------------------------------------------------------------
 # decision dedupe
 # ---------------------------------------------------------------------------
@@ -716,6 +798,33 @@ _STATUS_STYLE = {
 }
 
 
+def _render_recent(recent: dict) -> None:
+    """The decisions put in force this week, newest first, and who put them there."""
+    shown = recent["decisions"]
+    title = f"\nRecent: put in force in the last {recent['days']} days ({recent['count']})"
+    if not shown:
+        console.print(f"{title}\n  [dim]Nothing new is in force.[/dim]")
+        return
+    table = Table(title=title, box=None, pad_edge=False, show_edge=False)
+    for column in ("ID", "Decision", "By", "Commit", "When"):
+        table.add_column(column)
+    for row in shown:
+        who = row["signer"] + (" (agent)" if row["signer_kind"] == "agent" else "")
+        commit = row["commit"][:9] + (f" on {row['landed_on']}" if row["landed_on"] else "")
+        table.add_row(
+            row["id"][:8],
+            ("[bold]pinned[/bold] " if row["pinned"] else "") + row["title"][:60],
+            who,
+            commit or "-",
+            row["at"][:10],
+        )
+    console.print(table)
+    if recent["count"] > len(shown):
+        console.print(
+            f"  [dim]{recent['count'] - len(shown)} more; --format json lists them all.[/dim]"
+        )
+
+
 def _render_status(report: dict) -> None:
     """Render the capture report for a person."""
     policy = report["policy"]
@@ -767,6 +876,7 @@ def _render_status(report: dict) -> None:
     counts.add_column("Metric", style="cyan")
     counts.add_column("Value", justify="right")
     counts.add_row("Governing", str(lanes["governing"]))
+    counts.add_row("Pinned", str(report["recent"]["pinned"]))
     counts.add_row("Active", str(lanes["active"]))
     counts.add_row("Needs review", str(lanes["needs_review"]))
     counts.add_row("Uncheckable", str(lanes["uncheckable"]))
@@ -781,6 +891,7 @@ def _render_status(report: dict) -> None:
         "get_why serves them when asked. A decision an agent records comes into "
         "force when its commit merges.[/dim]"
     )
+    _render_recent(report["recent"])
 
     backlog = report["backlog"]
     if backlog["available"]:
@@ -820,18 +931,30 @@ def status_command(path: str | None, fmt: str) -> None:
     async def _run():
         from repowise.core.analysis.decisions.status import capture_status
         from repowise.core.persistence import get_session
+        from repowise.core.persistence.crud.authority import pinned_decision_ids
+        from repowise.core.persistence.crud.decision_digest import RECENT_DAYS, recent_decisions
         from repowise.core.providers.llm.registry import provider_available_for_repo
 
         engine, sf = await _open(repo_path)
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                return await capture_status(
+                report = await capture_status(
                     session,
                     repo_id,
                     repo_path,
                     provider_available=provider_available_for_repo(repo_path),
                 )
+                recent, count = await recent_decisions(session, repo_id)
+                # Every one in json, so an agent answers "what did we decide this
+                # week" from one call; the table shows the newest.
+                report["recent"] = {
+                    "days": RECENT_DAYS,
+                    "count": count,
+                    "pinned": len(await pinned_decision_ids(session, repo_id)),
+                    "decisions": [r.as_dict() for r in recent],
+                }
+                return report
         finally:
             await engine.dispose()
 
@@ -846,4 +969,9 @@ def status_command(path: str | None, fmt: str) -> None:
     if fmt == "json":
         emit_json({"repo": str(repo_path), **report})
         return
+    report["recent"]["decisions"] = report["recent"]["decisions"][:_RECENT_SHOWN]
     _render_status(report)
+
+
+#: Recent decisions the table shows; json lists them all.
+_RECENT_SHOWN = 10

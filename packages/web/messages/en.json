@@ -685,7 +685,7 @@
       "checkoutTitle": "About this checkout",
       "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
       "reviewTitle": "Records",
-      "reviewDescription": "Every record sits in exactly one tab and the counts add up: what is in force, background mined from history, what has drifted from the code it names, what names nothing at all, and what has been retired."
+      "reviewDescription": "What is in force, with pinned decisions first; what your agents decided this week; background mined from history; and what has been retired. Hand any one to your agent to pin, veto or change it."
     },
     "contributors": {
       "title": "Ownership",
@@ -1908,7 +1908,12 @@
   "decisions": {
     "agent": {
       "discover": "Check background records with your agent",
-      "agreements": "Move working agreements to CLAUDE.md"
+      "agreements": "Move working agreements to CLAUDE.md",
+      "review": "Check with your agent",
+      "edit": "Change with your agent",
+      "veto": "Veto with your agent",
+      "pin": "Pin with your agent",
+      "unpin": "Unpin with your agent"
     },
     "add": {
       "trigger": "Record a decision",
@@ -1922,14 +1927,18 @@
     "review": {
       "accepted": "In force. It governs the files it names.",
       "dismissed": "Dismissed. Reindexing will not mine it again.",
-      "acceptFailed": "Couldn't accept: {message}",
+      "acceptFailed": "Couldn't put it in force: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
       "reaffirmed": "Reaffirmed. It is current again for the files it names.",
       "reaffirmFailed": "Couldn't reaffirm: {message}",
       "bulkDismissed": "Dismissed {count, plural, one {# record} other {# records}}.",
-      "actionFailed": "The review action failed.",
+      "actionFailed": "That action failed.",
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "pinned": "Pinned. An agent asks a person before replacing it.",
+      "unpinned": "Unpinned. It stays in force.",
+      "pinFailed": "Couldn't pin: {message}",
+      "unpinFailed": "Couldn't unpin: {message}"
     }
   },
   "files": {

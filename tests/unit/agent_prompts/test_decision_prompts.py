@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from repowise.core.agent_prompts.decisions import (
     DISCOVERY_LIMIT,
     KEEP_TEST,
+    RECORD_PROMPT_KINDS,
     decision_prompt,
+    decision_record_prompt,
     render_add,
     render_agreements,
     render_discovery,
@@ -92,3 +96,56 @@ def test_discover_caps_and_falls_back_to_recording():
 def test_agreements_with_none_stored_render_nothing():
     prompt = decision_prompt("agreements", [])
     assert prompt.kind == "agreements" and prompt.text == "" and prompt.ids == ()
+
+
+# ---------------------------------------------------------------------------
+# Prompts about one record: check it, pin or unpin it, veto it, change it
+# ---------------------------------------------------------------------------
+
+_REC = {"id": "d1abc", "title": "Use SWR\nfor fetching"}
+
+
+def _record_prompts() -> dict[str, str]:
+    return {k: decision_record_prompt(k, _REC).text for k in RECORD_PROMPT_KINDS}
+
+
+def test_review_checks_one_background_record_with_the_keep_test_and_evidence():
+    text = decision_record_prompt("review", _REC).text
+    assert '"Use SWR for fetching" (id d1abc). It is not in force.' in text
+    assert KEEP_TEST in text
+    assert "repowise decision show d1abc" in text
+    assert re.search(
+        r"repowise decision confirm d1abc --agent <slug> --evidence <[^>]+> --reason \"[^\"]+\"", text
+    )
+    assert re.search(r"repowise decision dismiss d1abc --agent <slug> --reason \"[^\"]+\" --yes", text)
+    assert "leave it as background" in text
+
+
+def test_pin_and_unpin_name_the_verb_and_what_it_means():
+    pin = decision_record_prompt("pin", _REC).text
+    unpin = decision_record_prompt("unpin", _REC).text
+    assert "repowise decision pin d1abc --agent <slug>" in pin
+    assert "agents must ask a person before replacing it" in pin
+    assert "repowise decision unpin d1abc --agent <slug>" in unpin
+    assert "It stays in force" in unpin
+
+
+def test_veto_and_edit_keep_the_history_and_say_how_to_get_past_a_pin():
+    veto = decision_record_prompt("veto", _REC).text
+    edit = decision_record_prompt("edit", _REC).text
+    assert "repowise decision dismiss d1abc --agent <slug>" in veto
+    assert "deprecate d1abc --superseded-by <new id>" in veto
+    assert "What to change: <say what is wrong or missing>." in edit
+    assert "repowise decision deprecate d1abc --superseded-by <new id> --agent <slug>" in edit
+    for text in (veto, edit):
+        assert "unpin d1abc --agent <slug>" in text and "I am the person asking" in text
+
+
+def test_record_prompts_are_short_plain_signed_and_name_one_record():
+    for kind, text in _record_prompts().items():
+        assert len(text) < 1500, kind
+        assert not re.search(r"proposal|acceptance|candidate|blocker|\blane|pr_review|—", text, re.I)
+        assert "--agent <slug>" in text and "<id>" not in text
+        assert decision_record_prompt(kind, _REC).ids == ("d1abc",)
+    with pytest.raises(ValueError):
+        decision_record_prompt("discover", _REC)
