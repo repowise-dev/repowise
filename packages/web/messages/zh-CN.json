@@ -1906,6 +1906,10 @@
     "regenFailed": "无法启动重新生成"
   },
   "decisions": {
+    "agent": {
+      "discover": "让智能体核查背景记录",
+      "agreements": "把工作约定移到 CLAUDE.md"
+    },
     "add": {
       "trigger": "记录一条决策",
       "title": "记录一条决策",

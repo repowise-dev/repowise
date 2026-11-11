@@ -14,6 +14,10 @@ import type {
   DecisionSettingsUpdate,
   DecisionStatusUpdate,
 } from "./types";
+import type {
+  DecisionAgentPromptKind,
+  DecisionAgentPromptResponse,
+} from "@repowise-dev/types/decisions";
 
 export async function listDecisions(
   repoId: string,
@@ -72,6 +76,17 @@ export async function getDecisionLaneCounts(
 ): Promise<DecisionLaneCounts> {
   return apiGet<DecisionLaneCounts>(
     `/api/repos/${repoId}/decisions/lane-counts`,
+  );
+}
+
+/** A decision prompt for the reader's agent, the same text `repowise decision discover` prints. */
+export async function getDecisionAgentPrompt(
+  repoId: string,
+  kind: DecisionAgentPromptKind = "discover",
+): Promise<DecisionAgentPromptResponse> {
+  return apiGet<DecisionAgentPromptResponse>(
+    `/api/repos/${repoId}/decisions/agent-prompt`,
+    { kind },
   );
 }
 

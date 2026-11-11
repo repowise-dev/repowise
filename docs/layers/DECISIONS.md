@@ -19,6 +19,7 @@ with no network.
 
 ```bash
 repowise init                        # capture runs as part of indexing
+repowise decision discover           # hand your agent the records worth keeping
 repowise decision candidates         # what is awaiting review
 repowise decision confirm a1b2c3d4 --agent claude_code --evidence <commit|file>
                                      # a coding agent accepts one; this makes it govern
@@ -317,6 +318,7 @@ unknown id.
 | `decision list` | Table of records. `--status`, `--source`, `--proposed`, `--stale-only` |
 | `decision show ID` | Full record with evidence and signature |
 | `decision candidates` | What awaits review, and why each was raised |
+| `decision discover` | Prints a prompt for your agent: the background records on the busiest production files (at most 20) to check against the code, put in force with evidence, or dismiss. With none, it has the agent record the decisions behind those files. `--agreements` prints the prompt that moves working agreements into `CLAUDE.md`. The dashboard copies the same text |
 | `decision confirm ID...` | Accept. `--reason`, `--scope`, `--evidence` fill gaps; `--preview` writes nothing |
 | `decision dismiss ID...` | Tombstone. On an accepted decision this also withdraws its authority |
 | `decision deprecate ID --superseded-by ID2` | Retire with an explicit successor |
