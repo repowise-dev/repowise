@@ -186,7 +186,8 @@ def test_cpp_extern_c_linkage_fixes_the_signature():
     assert fns["api"].signature_fixed and fns["single"].signature_fixed
     assert not fns["own"].signature_fixed and not fns["reentered"].signature_fixed
     assert not fns["member"].signature_fixed
-    assert fns["own"].primitive_param_count == 5
+    # ``uint64_t* e`` is an out-parameter, not a scalar.
+    assert fns["own"].primitive_param_count == 4
 
 
 def test_untyped_parameters_are_in_neither_count():

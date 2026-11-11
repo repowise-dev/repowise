@@ -29,9 +29,15 @@ reads the tree with it.
 from __future__ import annotations
 
 import re
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
-from .ast_utils import _dart_signature_sibling, _parameter_nodes, is_rest_parameter
+from .ast_utils import (
+    _dart_signature_sibling,
+    _inner_declarator,
+    _parameter_nodes,
+    is_rest_parameter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -73,6 +79,16 @@ _TYPE_PUNCT_RE = re.compile(r"[*&?|\[\]]|'\w+")
 _NON_PARAMS = frozenset(
     {"keyword_separator", "positional_separator", "self_parameter"}
 )
+# C and C++ spell indirection on the declarator, not the type.
+_POINTER_DECLARATORS = frozenset(
+    {"pointer_declarator", "abstract_pointer_declarator", "array_declarator", "abstract_array_declarator"}
+)
+_REFERENCE_DECLARATORS = frozenset({"reference_declarator", "abstract_reference_declarator"})
+# Character types whose pointer is a C string, unless a length follows it.
+_C_CHARS = frozenset({"char", "wchar_t", "char8_t", "char16_t", "char32_t", "WCHAR", "TCHAR"})
+# A buffer's length: an integer type, named as a size or a count.
+_INTEGER_RE = re.compile(r"u?int\d*(_t)?|s?size_t|ptrdiff_t|u?intptr_t|long|short|signed|unsigned|U?INT\d*|U?LONG|D?WORD|SIZE_T")
+_LENGTH_NAME_RE = re.compile(r"(?i:len|size|count|cnt|bytes|^num|^cap(acity)?$)|Num|^n$|^(cch|cb)[A-Z]")
 
 
 def _text(node: Node) -> str:
@@ -309,23 +325,78 @@ def _arity(param: Node) -> int:
     return sum(1 for c in param.children if c.type == "identifier")
 
 
+def _indirection(param: Node, type_node: Node) -> str | None:
+    """How a C or C++ parameter reaches its value, read off the declarator
+    (``char *buf`` has type ``char``): ``None`` by value or by const
+    reference, ``"text"`` for a plain character pointer (a C string),
+    ``"buffer"`` for any other pointer or an array, ``"out"`` for a mutable
+    reference. A buffer or an out-parameter is memory the caller lends, not a
+    raw value."""
+    decl = param.child_by_field_name("declarator")
+    pointers = 0
+    mutable_ref = False
+    const = any(c.type == "type_qualifier" and _text(c) == "const" for c in param.children)
+    while decl is not None:
+        if decl.type in _POINTER_DECLARATORS:
+            pointers += 1
+        elif decl.type in _REFERENCE_DECLARATORS:
+            # ``T&&`` takes ownership of a value; only ``T&`` writes back.
+            mutable_ref = not const and all(c.type != "&&" for c in decl.children)
+        decl = _inner_declarator(decl)
+    if pointers == 1 and _text(type_node) in _C_CHARS:
+        return "text"
+    if pointers:
+        return "buffer"
+    return "out" if mutable_ref else None
+
+
+def _is_length(param: Node, type_node: Node) -> bool:
+    """An integer parameter named like the size of the buffer before it."""
+    name = param.child_by_field_name("declarator")
+    return (
+        name is not None
+        and name.type == "identifier"
+        and any(_INTEGER_RE.fullmatch(w) for w in _text(type_node).split())
+        and bool(_LENGTH_NAME_RE.search(_text(name)))
+    )
+
+
+def _param_row(param: Node, type_node: Node, lmap: LanguageNodeMap) -> list:
+    """``[arity, can have a length, scalar, is a length]`` for one typed parameter."""
+    held = _indirection(param, type_node)
+    raw = _is_scalar(type_node, lmap.scalar_type_names)
+    # A pointer to raw memory (``uint8_t *``, ``void *``) can have a length;
+    # one to an object (``client *c``) is that object.
+    sized = held in ("text", "buffer") and (raw or _text(type_node) == "void")
+    scalar = raw and held in (None, "text")
+    return [_arity(param), sized, scalar, held is None and _is_length(param, type_node)]
+
+
 def typed_param_counts(params: Node | None, lmap: LanguageNodeMap) -> tuple[int, int]:
     """``(typed, scalar)``: parameters of *params* that declare a type, and the
     ones among them declared as a scalar or a string. ``(0, 0)`` for a language
-    with no scalar vocabulary: its types cannot be read, so none count."""
-    typed = scalar = 0
+    with no scalar vocabulary: its types cannot be read, so none count.
+
+    A C or C++ buffer, out-parameter or mutable reference is no scalar
+    (``_indirection``). A pointer followed by its length (``char *buf, size_t
+    len``) is one value spelled in two parameters, so neither is a scalar."""
     if not lmap.scalar_type_names or params is None:
-        return typed, scalar
+        return 0, 0
+    rows: list[list] = []
     for param in _parameter_nodes(params):
         if param.type in _NON_PARAMS or (type_node := _param_type(param)) is None:
             continue
-        if _is_bound(param, lmap) or is_rest_parameter(param):
-            continue
-        arity = _arity(param)
-        typed += arity
-        if _is_scalar(type_node, lmap.scalar_type_names):
-            scalar += arity
-    return typed, scalar
+        if not (_is_bound(param, lmap) or is_rest_parameter(param)):
+            rows.append(_param_row(param, type_node, lmap))
+    _pair_lengths(rows)
+    return sum(r[0] for r in rows), sum(r[0] for r in rows if r[2])
+
+
+def _pair_lengths(rows: list[list]) -> None:
+    """A buffer and the length right after it are no scalars."""
+    for before, row in pairwise(rows):
+        if before[1] and row[3]:
+            before[2] = row[2] = False
 
 
 def _is_bound(param: Node, lmap: LanguageNodeMap) -> bool:

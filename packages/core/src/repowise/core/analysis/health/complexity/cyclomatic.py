@@ -90,6 +90,9 @@ _FLAT_BRANCH_KINDS = frozenset(
         "guard",
         # Swift ``for x in xs where c`` / ``catch E where c``.
         "where_clause",
+        # Swift ``guard c else { return }``: an early exit, the code after it
+        # stays at the same level.
+        "guard_statement",
         "if_modifier",
         "unless_modifier",
         "while_modifier",
@@ -287,7 +290,32 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     value = node.child_by_field_name("value")
     if value is not None and "case" in node.type:
         return [value]
+    if node.type in lmap.case_kinds:
+        head = _case_head(node, lmap)
+        if head is not None:
+            return head
     return _non_body_children(node, lmap)
+
+
+# The token between a case's label and its body: ``case x:``, ``x ->``,
+# ``x =>``, shell ``x)``.
+_CASE_SEPARATORS = frozenset({":", "->", "=>", ")"})
+
+
+def _case_head(node: Node, lmap: LanguageNodeMap) -> list[Node] | None:
+    """The label part of a case arm, before its separator; ``None`` without one.
+
+    A grammar whose arm body is not a named block (Swift ``statements``, C's
+    bare statements after ``case x:``) would otherwise hand the whole body to
+    the condition tally.
+    """
+    head: list[Node] = []
+    for child in node.children:
+        if not child.is_named and child.type in _CASE_SEPARATORS:
+            return [c for c in head if c.type not in lmap.branch_kinds]
+        if child.is_named:
+            head.append(child)
+    return None
 
 
 _BLOCK_KINDS = frozenset({"block", "compound_statement", "statement_block"})

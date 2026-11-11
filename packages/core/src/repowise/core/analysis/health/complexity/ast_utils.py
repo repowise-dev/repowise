@@ -642,15 +642,28 @@ def _parameter_nodes(params: Node) -> Iterator[Node]:
         # the parameters, not children of them.
         yield from (c for c in params.named_children if c.type == "parameter")
         return
-    for child in params.children:
-        if is_comment(child) or _is_void_parameter(child):
-            continue
+    for child in _parameter_children(params):
         if child.type == "optional_formal_parameters":
             # Dart wraps its ``[optional]`` and ``{named}`` parameters in one node.
             yield from (c for c in child.named_children if c.type == "formal_parameter")
-            continue
         # C++ represents a bare variadic parameter as an unnamed token.
-        if child.is_named or child.type == "...":
+        elif child.is_named or child.type == "...":
+            yield child
+
+
+def _parameter_children(params: Node) -> Iterator[Node]:
+    """Children of *params* that can hold a parameter: no comments, no C
+    ``(void)``, and no parse error continuing the parameter before it."""
+    after_param = False
+    for child in params.children:
+        if is_comment(child) or _is_void_parameter(child):
+            continue
+        # A parse error right after a parameter, with no comma between, is the
+        # rest of that parameter: C++ SAL ``_In_ UINT* p`` splits into a
+        # declaration and an ERROR holding ``* p``.
+        continues = child.type == "ERROR" and after_param
+        after_param = child.type not in {",", ";", "("}
+        if not continues:
             yield child
 
 
