@@ -127,4 +127,4 @@ def test_a_shared_handle_is_not_a_tested_value():
 def test_finding_text_names_both_kinds_when_both_apply():
     both = SimpleNamespace(ccn=12, exit_guards=3, copy_guards=2, dispatch_share=0.0, dispatch_arm=0)
     assert judged_ccn(both) == 7
-    assert judged_leaves_out(both) == "every repeated error guard and guarded copy"
+    assert judged_leaves_out(both) == "every repeated early-exit guard and guarded copy"

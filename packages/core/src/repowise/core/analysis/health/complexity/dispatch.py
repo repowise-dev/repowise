@@ -13,11 +13,13 @@ outside its one dispatch plus those of its heaviest arm, and its nesting less
 the levels the dispatch opens. A per-case handler is flagged when the code
 around the dispatch, or one of its arms, is complex on its own.
 
-Separately, a run of error guards (Go ``if err != nil { return err }``, C
-``if (rc) goto cleanup;``, shell ``cmd || die``) counts once in
-:func:`judged_ccn`, and so does a run of guarded copies
-(``if (m.containsKey(k)) o.f = m.get(k);``); when both cuts apply, the
-smaller reading wins.
+Separately, a run of early-exit guards counts once in :func:`judged_ccn`:
+error guards (Go ``if err != nil { return err }``, C ``if (rc) goto
+cleanup;``, shell ``cmd || die``) and, where the language map opts in, three
+or more back-to-back precondition checks (``if (!buf) return -1;``, Ruby
+``return x if done``, Swift ``guard ok else { return }``). So does a run of
+guarded copies (``if (m.containsKey(k)) o.f = m.get(k);``). When both cuts
+apply, the smaller reading wins.
 
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
@@ -532,9 +534,94 @@ def _exits_failing(node: Node, command: Node, name: Node) -> bool:
     return any(c.type == "||" for c in node.children)
 
 
+# Exits that ``return_kinds`` and friends do not name: Ruby ``return`` /
+# ``next`` / ``break`` / ``redo`` and Swift's ``return`` / ``throw`` / ``break``
+# / ``continue``, which the CFG maps leave out.
+_EXIT_KINDS = frozenset({"return", "next", "break", "redo", "control_transfer_statement"})
+_RAISE_NAMES = frozenset({b"raise", b"fail"})
+# Wrappers around a guard body's statements: Ruby ``then``, Swift
+# ``statements``, and the statement around a PHP ``throw`` expression.
+_BODY_WRAPPER_KINDS = frozenset({"then", "statements", "expression_statement"})
+# A plain guard may say why before it leaves (``setError(...); return``); a
+# longer body is a branch of its own.
+_GUARD_MAX_STATEMENTS = 2
+
+
+def _guard_statements(node: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """The statements a plain guard runs, wrappers taken off."""
+    body = node.child_by_field_name("consequence") or node.child_by_field_name("body")
+    if body is None:  # Swift: the ``statements`` after the condition.
+        body = next((c for c in node.named_children if c.type == "statements"), None)
+    wrappers = lmap.block_kinds | _BODY_WRAPPER_KINDS
+    pending = [body] if body is not None else []
+    out: list[Node] = []
+    while pending:
+        stmt = pending.pop(0)
+        if stmt.type not in wrappers:
+            out.append(stmt)
+            continue
+        pending[:0] = [c for c in stmt.named_children if "comment" not in c.type]
+    return out
+
+
+def _leaves(stmt: Node, lmap: LanguageNodeMap) -> bool:
+    """A ``return`` / ``raise`` / ``throw`` / ``break`` / ``continue`` / ``next``."""
+    exits = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    if stmt.type in exits or stmt.type in _EXIT_KINDS:
+        # C# ``yield return x`` hands out a value and carries on.
+        return not (stmt.text or b"").startswith(b"yield return")
+    # Ruby ``raise Error, "..."`` is a call; a bare ``raise`` is an identifier.
+    if stmt.type == "call" and stmt.child_by_field_name("receiver") is None:
+        stmt = stmt.child_by_field_name("method") or stmt
+    return stmt.type == "identifier" and stmt.text in _RAISE_NAMES
+
+
+def _is_plain_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """One condition, no ``else``, a body that leaves: ``if (!buf) return -1;``.
+
+    A Swift ``guard`` always has its ``else``: that is its body. Several
+    conditions (Swift ``guard a, b``) are not one.
+    """
+    if node.type not in lmap.plain_guard_kinds or node.child_by_field_name("alternative"):
+        return False
+    if node.type != "guard_statement" and any(c.type in _ELSE_KINDS for c in node.children):
+        return False
+    if any(c.type == "," for c in node.children):
+        return False
+    body = _guard_statements(node, lmap)
+    return 0 < len(body) <= _GUARD_MAX_STATEMENTS and _leaves(body[-1], lmap)
+
+
 def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
     """A one-point early exit that hands an error up, with nothing branching inside."""
     return (_is_exit_if(node, lmap) or _is_shell_exit(node)) and _points([node], lmap) == 1
+
+
+def _is_any_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An error guard, or a one-point precondition check that leaves."""
+    return _is_exit_guard(node, lmap) or (
+        _is_plain_guard(node, lmap) and _points([node], lmap) == 1
+    )
+
+
+def _consecutive_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
+    """Guards past the first of each back-to-back run of three or more.
+
+    Only comments may sit between them. A plain guard after a statement checks
+    what that statement did, so it starts a run of its own; two in a row are
+    one decision and an exit, not a list.
+    """
+    repeats = 0
+    run = 0
+    for child in [*children, None]:
+        if child is not None and "comment" in child.type:
+            continue
+        if child is not None and _is_any_guard(child, lmap):
+            run += 1
+            continue
+        repeats += run - 1 if run >= _MIN_ARMS else 0
+        run = 0
+    return repeats
 
 
 # A guarded copy: ``if (m.containsKey(k)) o.f = m.get(k);`` or
@@ -637,8 +724,12 @@ def _repeated_guards(
 
 
 def exit_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
-    """Decision points of error guards that repeat one already counted in their run."""
-    return _guard_repeats(body, lmap, _is_exit_guard)
+    """Decision points of guards that repeat one already counted in their run.
+
+    Per sibling list, the error-guard reading or the back-to-back reading,
+    whichever is larger: both can cover the same guards.
+    """
+    return _guard_repeats(body, lmap, _is_exit_guard, back_to_back=True)
 
 
 def copy_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
@@ -647,14 +738,21 @@ def copy_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
 
 
 def _guard_repeats(
-    body: Node, lmap: LanguageNodeMap, is_guard: Callable[[Node, LanguageNodeMap], bool]
+    body: Node,
+    lmap: LanguageNodeMap,
+    is_guard: Callable[[Node, LanguageNodeMap], bool],
+    *,
+    back_to_back: bool = False,
 ) -> int:
     lambda_kinds = lmap.lambda_kinds
     total = 0
     stack: list[Node] = [body]
     while stack:
         children = [c for c in stack.pop().children if c.is_named]
-        total += _repeated_guards(children, lmap, is_guard)
+        repeats = _repeated_guards(children, lmap, is_guard)
+        if back_to_back:
+            repeats = max(repeats, _consecutive_guards(children, lmap))
+        total += repeats
         stack.extend(
             c
             for c in children
@@ -676,8 +774,8 @@ def judged_ccn(fn: FunctionComplexity) -> int:
     outside the dispatch plus its heaviest arm's: a switch of one-line cases
     reads as the code around it, one with a tangled arm as that arm.
 
-    A run of error guards, or of guarded copies, counts once either way. The
-    cuts can cover the same guards (three ``if err != nil`` in a row are a
+    A run of early-exit guards, or of guarded copies, counts once either way.
+    The cuts can cover the same guards (three ``if err != nil`` in a row are a
     dispatch on ``err`` too), so the smaller reading wins rather than both applying.
     """
     unguarded = fn.ccn - fn.exit_guards - fn.copy_guards
@@ -692,10 +790,10 @@ def judged_leaves_out(fn: FunctionComplexity) -> str:
     if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < unguarded:
         return "every arm of its dispatch"
     if fn.copy_guards and fn.exit_guards:
-        return "every repeated error guard and guarded copy"
+        return "every repeated early-exit guard and guarded copy"
     if fn.copy_guards:
         return "every repeated guarded copy"
-    return "every repeated error guard"
+    return "every repeated early-exit guard"
 
 
 def judged_nesting(fn: FunctionComplexity) -> int:
