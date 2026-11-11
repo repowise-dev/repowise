@@ -218,12 +218,10 @@ async def persist_result(
             with timed(timings, "persist.generation"):
                 await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
-            await session.commit()
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
             # single-repo init) strands stale community-N / scc / layer pages
             # forever. A type is swept when the run produced pages of it OR
-            await session.commit()
             # declared authority over it (curated runs are authoritative for
             # module/layer pages even when every module page was skipped as
             # 1:1 with a layer); types that are neither stay protected. Pages a
@@ -253,7 +251,6 @@ async def persist_result(
                 result, session, repo.id, scan_commit_health=False
             )
         persisted_repo_id = repo.id
-            await session.commit()
 
         # Tombstone pages whose file is simply gone. The other tombstone path
         # reads a diff, and an init compares nothing, so until here a page
