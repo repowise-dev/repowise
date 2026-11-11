@@ -83,6 +83,28 @@ def test_record_members() -> None:
     assert (cls.method_count, cls.total_nloc) == (5, 7)
 
 
+# FsCheck-style module: a module-level value, a function, and a type whose
+# class-level ``let`` binds a value.
+_VALUE_BINDINGS = """module M
+let Colon = ','
+let f x = x
+
+type C() =
+    let mutable n = 1
+    member x.M() = n
+"""
+
+
+def test_value_bindings_are_not_units() -> None:
+    fcx = _walk(_VALUE_BINDINGS)
+    # ``let Colon`` (module level) and ``let mutable n`` (class level) are value
+    # bindings, not functions, so only ``member M`` and ``let f x`` are units.
+    assert sorted(f.name for f in fcx.functions) == ["M", "f"]
+    # The class-level ``let`` no longer inflates the method count.
+    [cls] = fcx.classes
+    assert cls.method_count == 1
+
+
 @pytest.mark.skip(reason="curried and tupled F# parameters are not counted: param_count is 0")
 def test_parameters() -> None:
     params = {f.name: f.param_count for f in [*_walk(_CURRIED).functions, *_walk(_FAKE).functions]}

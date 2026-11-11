@@ -497,6 +497,12 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     example route callbacks) and get their own entry; lambdas inside an
     already-collected function still roll up into that function. A scope
     the grammar misread as a function is descended like a class body.
+
+    A value binding that shares a function's node type (``lmap.local_value``,
+    F#'s ``let v = ...``) is no unit at any depth: it is dropped here and
+    descended into, so a real function nested in it is still found. This is
+    the module- and class-level mirror of :func:`_is_nested_unit`, which drops
+    the same binding when it sits inside a function.
     """
     out: list[Node] = []
     stack: list[Node] = [root]
@@ -506,6 +512,9 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
             stack.extend(node.children)
             continue
         if _is_function_unit(node, lmap) or node.type in lmap.lambda_kinds:
+            if lmap.local_value is not None and lmap.local_value(node):
+                stack.extend(node.children)
+                continue
             out.append(node)
             continue
         for child in node.children:

@@ -715,9 +715,10 @@ class TestFSharp:
     def test_a_local_value_is_not(self):
         fcx = _walk("a.fs", "fsharp", self.SOURCE)
 
-        # ``outer`` (3), ``inner`` (5) and the module-level value (2), which
-        # had an entry before and keeps it; nothing for lines 4 and 7.
-        assert sorted(fc.start_line for fc in fcx.functions) == [2, 3, 5]
+        # ``outer`` (3) and ``inner`` (5). A value binding is no unit at any
+        # depth, so the module-level ``let top`` (2) and the nested ``let v``
+        # (4) and ``let (p, q)`` (7) each get no entry.
+        assert sorted(fc.start_line for fc in fcx.functions) == [3, 5]
 
 
 class TestTheOtherCallersOfTheCollector:
