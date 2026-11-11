@@ -275,6 +275,26 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
+def _fsharp_conditions(node: Node, lmap: LanguageNodeMap) -> list[Node] | None:
+    """The condition parts of an F# construct, whose grammar names none ``condition``.
+
+    ``None`` for any other node.
+    """
+    if node.type == "rules":
+        # F# counts a ``match`` once at its ``rules`` wrapper, whose arms hold
+        # the bodies: only their ``when`` guards are conditions. Guards of
+        # several arms add up into one record (ceiling: one record per arm
+        # would need the arms as case nodes, which scores flat matches high).
+        return [g for arm in node.named_children if (g := arm.child_by_field_name("guard"))]
+    if node.type in lmap.if_kinds and (guard := node.child_by_field_name("guard")):
+        # A Python ``case`` guard is no ``if`` kind: it is its own branch node.
+        return [guard]
+    if node.type == "while_expression" and node.child_by_field_name("condition") is None:
+        # ``while c do body`` names neither part: the condition comes first.
+        return node.named_children[:1]
+    return None
+
+
 def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
@@ -285,6 +305,9 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """
     if node.type in lmap.foreach_kinds or node.type == "range_clause":
         return []
+    fsharp = _fsharp_conditions(node, lmap)
+    if fsharp is not None:
+        return fsharp
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
@@ -678,7 +701,8 @@ def _walk_function_body(
     def _recurse_preproc_arms(node: Node, depth: int, in_markup: bool, scope: int) -> bool:
         """Walk a ``#if`` / ``#elif`` / ``#else`` chain, keeping the largest arm.
 
-        Returns ``True`` when ``node`` is such a chain and was walked here, so
+        Returns ``True`` when ``node`` is such a block (with or without an
+        ``#else``) and was walked here, so
         ``_recurse`` does not descend into it again; ``False`` for every other node.
 
         Each arm starts from the same CCN and cognitive baseline; afterwards the
@@ -687,22 +711,24 @@ def _walk_function_body(
         nested blocks reach this function again through ``_recurse``. Nesting
         depth, conditions and the side channels still see every arm: those lines
         exist in the source, and a flagged condition in any arm is worth showing.
+
+        The ``#if`` / ``#elif`` condition itself is skipped: the compiler decides
+        it, so its ``||`` / ``&&`` are not branches the built function takes.
         """
         nonlocal ccn, cognitive
         if node.type not in _PREPROC_CONDITIONAL_KINDS:
-            return False
-        if node.child_by_field_name("alternative") is None:
             return False
         base_ccn, base_cognitive = ccn, cognitive
         best_ccn, best_cognitive = 0, 0
         arm: Node | None = node
         while arm is not None:
             alternative = arm.child_by_field_name("alternative")
+            condition = arm.child_by_field_name("condition")
+            skipped = {c.id for c in (alternative, condition) if c is not None}
             ccn, cognitive = base_ccn, base_cognitive
             for child in arm.children:
-                if alternative is not None and child.id == alternative.id:
-                    continue
-                _recurse(child, depth, in_markup, scope)
+                if child.id not in skipped:
+                    _recurse(child, depth, in_markup, scope)
             best_ccn, best_cognitive = max(
                 (best_ccn, best_cognitive), (ccn - base_ccn, cognitive - base_cognitive)
             )
