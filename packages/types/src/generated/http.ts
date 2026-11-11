@@ -1637,7 +1637,7 @@ export interface DecisionGraphResponse {
   code_edges: DecisionCodeEdge[];
 }
 
-/** Governance rollup: what is stale, awaiting review, and ungoverned. */
+/** Governance rollup: what is stale, what is background, and what is ungoverned. */
 export interface DecisionHealthResponse {
   summary?: Record<string, number>;
   stale_decisions?: DecisionRecordResponse[];
