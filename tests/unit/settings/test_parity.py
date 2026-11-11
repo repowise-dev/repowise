@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from repowise.core.settings import Source, all_settings, get, resolve, settings_in
-from repowise.core.settings.areas import editor, events, generation, providers
+from repowise.core.settings.areas import editor, events
 from repowise.core.settings.areas._common import file_reload
 from repowise.core.settings.resolve import validate
 
@@ -339,7 +339,8 @@ def test_generation_defaults_match_the_generation_config():
     assert get("wiki_style").default == DEFAULT_STYLE
     assert get("embedder").default is None
     assert DEFAULT_EMBEDDER in get("embedder").default_note
-    assert set(generation.EMBEDDERS) == set(_BUILTIN_EMBEDDERS)
+    for name in _BUILTIN_EMBEDDERS:
+        assert name in get("embedder").description, name
     assert resolve_reasoning(None, {}) == get("reasoning").default
 
 
@@ -436,9 +437,27 @@ def test_language_falls_back_like_the_reader():
 
 def test_base_url_providers_match_the_specs():
     from repowise.core.providers.llm.specs import PROVIDER_SPECS
+    from repowise.core.settings.registry import family_members
 
     expected = tuple(name for name, spec in PROVIDER_SPECS.items() if spec.base_url_envs)
-    assert expected == providers.BASE_URL_PROVIDERS
+    family = get("<provider>.base_url")
+    assert family_members(family) == expected
+    for name in expected:
+        member = get(f"{name}.base_url")
+        assert (member.key, member.writer) == (f"{name}.base_url", family.writer)
+        cfg = {name: {"base_url": "http://localhost:1"}}
+        assert resolve(member, cfg, environ={}).value == "http://localhost:1"
+    no_endpoint = next(n for n in PROVIDER_SPECS if n not in expected)
+    with pytest.raises(KeyError):
+        get(f"{no_endpoint}.base_url")
+
+
+def test_provider_sections_take_effect_without_a_rebuild():
+    """``_dependency_keys`` files every provider section under state_only."""
+    from repowise.core.repo_config import _dependency_keys
+
+    assert "openai" in _dependency_keys()["state_only"]
+    assert get("<provider>.base_url").reload == "immediate"
 
 
 @pytest.mark.parametrize("raw", ["", "2", "x", "-3", "0", " 7 "])
@@ -486,7 +505,11 @@ def test_capped_env_numbers_clamp_like_their_readers(monkeypatch, raw):
 
 
 def test_full_rescore_interval_reads_non_finite_values_as_the_default(monkeypatch):
+    from repowise.cli.commands.update_cmd import persistence
     from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
+
+    # The reader warns once per process; keep that flag as other tests expect it.
+    monkeypatch.setattr(persistence, "_FULL_RESCORE_WARNING_SENT", False)
 
     name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
     for raw in ("inf", "nan", "-inf"):
@@ -496,7 +519,11 @@ def test_full_rescore_interval_reads_non_finite_values_as_the_default(monkeypatc
 
 @pytest.mark.parametrize("raw", ["3", "-2", "0", "x"])
 def test_full_rescore_interval_clamps_at_zero(monkeypatch, raw):
+    from repowise.cli.commands.update_cmd import persistence
     from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
+
+    # The reader warns once per process; keep that flag as other tests expect it.
+    monkeypatch.setattr(persistence, "_FULL_RESCORE_WARNING_SENT", False)
 
     name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
     monkeypatch.setenv(name, raw)

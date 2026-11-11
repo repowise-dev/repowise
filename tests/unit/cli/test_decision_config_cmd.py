@@ -10,6 +10,7 @@ import yaml
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
+from repowise.core.analysis.decisions.policy_store import load_policy
 
 
 @pytest.fixture
@@ -149,8 +150,9 @@ def test_source_set_toggles_one_source(repo: Path):
     result = _run("decision", "source", "set", "pr", "--off", str(repo))
 
     assert result.exit_code == 0, result.output
-    assert _config(repo)["decisions"]["sources"]["pr"] is False
-    assert _config(repo)["decisions"]["sources"]["adr"] is True
+    # Only the source that moved is written; the rest keep their defaults.
+    assert _config(repo)["decisions"] == {"sources": {"pr": False}, "update_mining": False}
+    assert load_policy(repo).policy.source_enabled("adr")
 
 
 def test_source_set_can_disable_only_the_model_stage(repo: Path):
@@ -411,7 +413,7 @@ def test_upkeep_prompt_writes_and_installs_its_shell_entry(repo: Path, monkeypat
 
     result = _run("decision", "config", "upkeep-prompt", "--off", str(repo))
     assert result.exit_code == 0, result.output
-    assert "upkeep_prompt" not in _config(repo)["decisions"]
+    assert "decisions" not in _config(repo)  # off is the default, so nothing is written
     assert calls == [True]
 
 
@@ -437,7 +439,7 @@ def test_mode_full_leaves_no_mode_key_and_resets_switches(repo: Path):
     result = _run("decision", "config", "mode", "full", str(repo))
 
     assert result.exit_code == 0, result.output
-    block = _config(repo)["decisions"]
+    block = _config(repo).get("decisions") or {}
     assert "mode" not in block
     assert "upkeep_prompt" not in block
 

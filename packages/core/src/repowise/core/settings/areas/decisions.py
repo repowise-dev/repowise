@@ -56,6 +56,12 @@ def _suggest_mode(facts: Any) -> Proposal | None:
     )
 
 
+def _label(spec: Any) -> str:
+    """A source label inside a sentence: lower case, acronyms kept (ADR files)."""
+    first = spec.label.split()[0]
+    return spec.label if first.isupper() else spec.label[0].lower() + spec.label[1:]
+
+
 def _top(key: str, type_: Any, default: Any, description: str, **kw: Any) -> Setting:
     return Setting(
         key=f"decisions.{key}",
@@ -87,7 +93,7 @@ def _settings() -> tuple[Setting, ...]:
             "preset",
             "str",
             None,
-            "A named set of capture sources to start from.",
+            "A named set of capture sources to start from. Unset reads as default.",
             choices=PRESET_NAMES,
             reload=_UPDATE_REASON,
         ),
@@ -95,7 +101,8 @@ def _settings() -> tuple[Setting, ...]:
             "enabled",
             "bool",
             default_preset["enabled"],
-            "Capture decisions from code and history at all.",
+            "Master switch for automatic capture. Stored decisions and manual entry work "
+            "either way.",
             reload=_UPDATE_REASON,
         ),
         _top(
@@ -185,7 +192,7 @@ def _source_settings() -> list[Setting]:
                 f"sources.{spec.key}.enabled",
                 "bool",
                 spec.default_enabled,
-                f"Capture from {spec.label.lower()}: {spec.description} "
+                f"Capture from {_label(spec)}. {spec.description} "
                 "A preset may change the default.",
                 reload=_UPDATE_REASON,
             )
@@ -196,7 +203,7 @@ def _source_settings() -> list[Setting]:
                     f"sources.{spec.key}.llm",
                     "bool",
                     spec.llm,
-                    f"Allow a model call when capturing from {spec.label.lower()}.",
+                    f"Allow a model call when capturing from {_label(spec)}.",
                     reload=_UPDATE_REASON,
                 )
             )

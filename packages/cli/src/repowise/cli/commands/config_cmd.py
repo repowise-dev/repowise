@@ -369,16 +369,22 @@ def _cli_value(value: Any) -> str:
     return shlex.quote(str(value))
 
 
-def _undo(m: Any, path: str | None) -> str:
-    """The command that puts the file back where it was before the write.
+def _undo(m: Any, path: str | None, *, main: bool) -> str | None:
+    """The command that puts the file back where it was, or ``None`` when none is needed.
 
-    Read from the file's own value, not the effective one: an environment
-    variable that decides the value says nothing about what the file held.
+    Read from what the file spelled, not the effective value: an environment
+    variable that decides the value says nothing about what the file held. A
+    setting that moved only because another key did (the switches under a
+    mode) and was never in the file needs no command of its own.
     """
-    s, saved = m.setting, m.saved_before
-    if saved.source in (Source.REPO_FILE, Source.USER_FILE):
-        return f"repowise config set {s.key} {_cli_value(saved.value)}{_path_flag(path)}"
-    return f"repowise config reset {s.key}{_path_flag(path)}"
+    from repowise.core.settings.resolve import MISSING
+
+    key = m.setting.key
+    if m.written_before is not MISSING:
+        return f"repowise config set {key} {_cli_value(m.written_before)}{_path_flag(path)}"
+    if main or m.written_after is not MISSING:
+        return f"repowise config reset {key}{_path_flag(path)}"
+    return None
 
 
 def _write(action: str, key: str, value: str | None, path: str | None, fmt: str) -> None:
@@ -409,7 +415,11 @@ def _write(action: str, key: str, value: str | None, path: str | None, fmt: str)
 def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) -> None:
     s = change.setting
     moved = [m for m in (change.main, *change.also) if m.moved]
-    undo = [_undo(m, path) for m in moved]
+    undo = [
+        line
+        for m in moved
+        if (line := _undo(m, path, main=m is change.main)) is not None
+    ]
     effect = f"{s.description} {_APPLIES[s.reload]}"
     override = s.env.name if change.after.source is Source.ENV and s.env else None
     if fmt == "json":
@@ -438,6 +448,12 @@ def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) ->
     _print_report(change, moved, effect, override, undo)
 
 
+def _written(value: Any) -> Any:
+    from repowise.core.settings.resolve import MISSING
+
+    return None if value is MISSING else value
+
+
 def _print_report(
     change: Any, moved: list[Any], effect: str, override: str | None, undo: list[str]
 ) -> None:
@@ -447,9 +463,9 @@ def _print_report(
             "nothing changed.[/dim]"
         )
     for m in moved:
-        before, after = m.saved_before.value, m.saved_after.value
-        if m.before.value != m.after.value or not override:
-            before, after = m.before.value, m.after.value
+        before, after = m.before.value, m.after.value
+        if override and before == after:  # the file moved under the variable
+            before, after = _written(m.written_before), _written(m.written_after)
         console.print(
             f"[green]✓[/green] {m.setting.key}: {escape(_text(before))} -> {escape(_text(after))}"
         )
