@@ -23,7 +23,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from ._shared import _find_repo_root
+from ._shared import _checkout_root, _find_repo_root
 
 #: How many distinct signal keywords the message must carry. One admits 58% of
 #: this repository's commits and two admits 25%; the once-per-session gate is
@@ -96,12 +96,15 @@ def _notice(tool_input: dict, tool_output: object, cwd: str, session_id: str) ->
         return None
     # ``.repowise`` marks the indexed repository, not the git one. This tree
     # nests other repositories inside it, and a commit made in one of those
-    # must not be read as a commit here.
+    # must not be read as a commit here. A worktree reading this index is
+    # compared as itself: `repowise decision add` there records into this
+    # index too.
+    checkout = _checkout_root(Path(cwd), repo_path)
     here = _git_root(cwd)
-    if here is None or here != _git_root(str(repo_path)):
+    if here is None or here != _git_root(str(checkout)):
         return None
 
-    sha, committed_at, message = _head_commit(repo_path)
+    sha, committed_at, message = _head_commit(checkout)
     # Both sides: a committer date ahead of this clock — a pulled commit, a
     # machine whose clock jumped — otherwise passes an age test for free, and
     # the age test is the only thing standing in for "did this call commit".
