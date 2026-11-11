@@ -274,6 +274,7 @@ overrides a key for one session.
 | `read_reread` | `false` | Serve an unchanged repeat Read as a short notice. |
 | `search_digest` | `false` | Serve multi-file grep floods as a digest. |
 | `coverage_reingest` | `false` | Re-ingest coverage after an agent's full test run, at a process start per shell command ([test intelligence](../layers/TEST_INTELLIGENCE.md)). |
+| `measure` | `false` | On `repowise update`, read this repo's recent agent transcripts (locally, no model) to settle whether each hook firing was acted on, for `repowise hook stats`. `repowise hook backfill` does the same on demand either way. |
 | `health_gate` | `false` | Block an agent's `git commit` / `git push` that fails `repowise health check`; set with `repowise hook health-gate install` ([CI](../start/CI.md#before-an-agent-commits-or-pushes)). |
 
 **`read_skeleton`**

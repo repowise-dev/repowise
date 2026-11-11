@@ -125,9 +125,11 @@ def test_the_model_switch_still_wins_with_update_mining_on(tmp_path, seen):
     assert all(p is None for _, p in seen)
 
 
-def test_hook_firings_are_classified_without_the_session_lane(tmp_path, monkeypatch) -> None:
-    """Classification reads the hooks' own output, no model: it runs for a default
-    repository, but only when the ledger holds a firing still waiting for it."""
+def test_hook_firings_are_classified_only_when_measuring_is_on(tmp_path, monkeypatch) -> None:
+    """Reading transcripts on update is opt-in through ``hooks.measure``, not the
+    session lane; when on, it runs only while a recent firing waits for it."""
+    import time
+
     from repowise.core.sessions import efficacy
     from repowise.core.sessions.staging import SessionStagingStore
 
@@ -135,24 +137,10 @@ def test_hook_firings_are_classified_without_the_session_lane(tmp_path, monkeypa
     monkeypatch.setattr(
         efficacy, "ingest_transcript_efficacy", lambda repo, since: calls.append(repo) or {}
     )
+    monkeypatch.delenv("REPOWISE_HOOK_MEASURE", raising=False)
     opts = SimpleNamespace(verbose=False)
     run = SimpleNamespace(repo_path=tmp_path, degraded=[])
-
-    decision_passes._classify_hook_efficacy(opts, run)
-    assert calls == []
-
     store = SessionStagingStore.open_default(tmp_path)
-    store._conn.execute(
-        "INSERT INTO injections (session_id, decision_id, shown_at, surface, category) "
-        "VALUES ('old', 'k', 1.0, 'upkeep', 'commit_notice')"
-    )
-    store.commit()
-    # Older than the lookback: its transcript may be gone, so it never re-arms the pass.
-    decision_passes._classify_hook_efficacy(opts, run)
-    assert calls == []
-
-    import time
-
     store._conn.execute(
         "INSERT INTO injections (session_id, decision_id, shown_at, surface, category) "
         "VALUES ('s1', 'k', ?, 'upkeep', 'commit_notice')",
@@ -161,5 +149,34 @@ def test_hook_firings_are_classified_without_the_session_lane(tmp_path, monkeypa
     store.commit()
     store.close()
 
+    # Off by default: a recent unsettled firing is not enough on its own.
+    decision_passes._classify_hook_efficacy(opts, run)
+    assert calls == []
+
+    (tmp_path / ".repowise" / "config.yaml").write_text("hooks:\n  measure: true\n")
     decision_passes._classify_hook_efficacy(opts, run)
     assert calls == [tmp_path] and run.degraded == []
+
+
+def test_measuring_skips_when_only_old_firings_wait(tmp_path, monkeypatch) -> None:
+    """A firing older than the lookback may have lost its transcript; it must not
+    re-arm the pass on every update."""
+    from repowise.core.sessions import efficacy
+    from repowise.core.sessions.staging import SessionStagingStore
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        efficacy, "ingest_transcript_efficacy", lambda repo, since: calls.append(repo) or {}
+    )
+    monkeypatch.setenv("REPOWISE_HOOK_MEASURE", "1")
+    store = SessionStagingStore.open_default(tmp_path)
+    store._conn.execute(
+        "INSERT INTO injections (session_id, decision_id, shown_at, surface, category) "
+        "VALUES ('old', 'k', 1.0, 'upkeep', 'commit_notice')"
+    )
+    store.commit()
+    store.close()
+
+    run = SimpleNamespace(repo_path=tmp_path, degraded=[])
+    decision_passes._classify_hook_efficacy(SimpleNamespace(verbose=False), run)
+    assert calls == []

@@ -426,17 +426,20 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
 def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun) -> None:
     """Classify hook firings by what the agent did next (reads transcripts).
 
-    Not gated on the session lane, which governs mining what was said in a
-    session. This reads only the hooks' own output and the tool calls that
-    followed it, on this machine, with no model, to settle whether a firing was
-    acted on; and only when the ledger holds a firing still waiting for that.
+    ``hooks.measure`` is the privacy boundary for reading transcripts on
+    update, off by default, so this fails closed; ``repowise hook backfill``
+    fills the columns on demand either way. When on, it runs only while the
+    ledger holds a recent firing still waiting to be judged.
     """
     try:
+        from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
         from repowise.core.sessions.efficacy import (
             has_unsettled_firings,
             ingest_transcript_efficacy,
         )
 
+        if not hook_flag_enabled(run.repo_path, "measure"):
+            return
         since = time.time() - _EFFICACY_LOOKBACK_SECONDS
         if has_unsettled_firings(run.repo_path, since=since):
             classified = ingest_transcript_efficacy(run.repo_path, since=since)
