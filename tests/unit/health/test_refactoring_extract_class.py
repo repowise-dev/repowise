@@ -133,8 +133,9 @@ def test_detector_emits_split_for_god_class():
     s = sugs[0]
     assert s.refactoring_type == "extract_class"
     assert s.target_symbol == "TwoJobs"
-    # The split answers the whole low_cohesion finding: the file rescored without it.
-    assert s.impact_delta == removal_gain(findings, [(findings[0], 1.0)]) > 0
+    # The split answers the whole low_cohesion finding, which is advisory: the
+    # plan is listed and frees no points.
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 1.0)]) == 0.0
     assert s.evidence["recovered_share"] == 1.0
     assert s.source_biomarker == "low_cohesion"
     assert s.blast_radius == {"dependents_count": 5}
