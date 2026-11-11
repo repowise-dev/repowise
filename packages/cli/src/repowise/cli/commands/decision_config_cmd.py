@@ -198,12 +198,19 @@ def _apply(repo_path: Path, policy: DecisionPolicy, fmt: str, dry_run: bool) -> 
     _emit(repo_path, resolution, fmt)
 
 
+def _switch_changes(
+    before: DecisionPolicy, after: DecisionPolicy, keys: tuple[str, ...]
+) -> list[dict[str, str]]:
+    """One change row per boolean switch in *keys* that differs."""
+    return [
+        {"key": key, "from": str(getattr(before, key)), "to": str(getattr(after, key))}
+        for key in keys
+        if getattr(before, key) != getattr(after, key)
+    ]
+
+
 def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]:
-    changes: list[dict[str, str]] = []
-    if before.enabled != after.enabled:
-        changes.append({"key": "enabled", "from": str(before.enabled), "to": str(after.enabled)})
-    if before.llm != after.llm:
-        changes.append({"key": "llm", "from": str(before.llm), "to": str(after.llm)})
+    changes = _switch_changes(before, after, ("enabled", "llm"))
     for key in _TOGGLABLE:
         old, new = before.sources.get(key), after.sources.get(key)
         if old == new:
@@ -222,30 +229,9 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             changes.append(
                 {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
             )
-    if before.agent_acceptance != after.agent_acceptance:
-        changes.append(
-            {
-                "key": "agent_acceptance",
-                "from": str(before.agent_acceptance),
-                "to": str(after.agent_acceptance),
-            }
-        )
-    if before.require_approval != after.require_approval:
-        changes.append(
-            {
-                "key": "require_approval",
-                "from": str(before.require_approval),
-                "to": str(after.require_approval),
-            }
-        )
-    if before.capture_prompt != after.capture_prompt:
-        changes.append(
-            {
-                "key": "capture_prompt",
-                "from": str(before.capture_prompt),
-                "to": str(after.capture_prompt),
-            }
-        )
+    changes += _switch_changes(
+        before, after, ("agent_acceptance", "require_approval", "capture_prompt")
+    )
     if before.harnesses != after.harnesses:
         changes.append(
             {

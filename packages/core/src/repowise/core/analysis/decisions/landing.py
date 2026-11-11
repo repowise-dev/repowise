@@ -135,13 +135,8 @@ def _resolve(
         names = _names(line)
         # Files only for the commits a name points at: listing them for the
         # whole line costs seconds on a long history.
-        named = {
-            sha
-            for full in off_line
-            if full not in merged
-            for sha in names.get(own[full].subject.strip(), ())
-        }
-        line |= _show(repo_path, sorted(named), timeout) if named else {}
+        named = _named(off_line, own, merged, names)
+        line |= _show(repo_path, named, timeout) if named else {}
     except (OSError, subprocess.SubprocessError) as exc:
         # One line: a git timeout here is routine on a large history, not a crash.
         logger.debug("decision_landing_unreadable", error=f"{type(exc).__name__}: {exc}")
@@ -152,6 +147,14 @@ def _resolve(
         if landing is not None:
             out[stored] = landing
     return out, frozenset(expanded)
+
+
+def _named(
+    off_line: list[str], own: dict[str, _Commit], merged: dict[str, str], names: dict[str, set[str]]
+) -> list[str]:
+    """The line commits whose name matches a commit no merge accounts for."""
+    unplaced = (full for full in off_line if full not in merged)
+    return sorted({sha for full in unplaced for sha in names.get(own[full].subject.strip(), ())})
 
 
 def is_commit_ref(value: str) -> bool:
