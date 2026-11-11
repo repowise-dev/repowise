@@ -820,6 +820,7 @@ def decision_list(
     decisions = _narrow(decisions, proposed=proposed)
     total = len(decisions)
     shown = decisions if show_all else decisions[:limit]
+    delivered = run_async(_deliveries(repo_path, [d.id for d in shown])) if shown else None
 
     if fmt == "json":
         emit_json(
@@ -827,7 +828,7 @@ def decision_list(
                 "repo": str(repo_path),
                 "total": total,
                 "truncated": len(shown) < total,
-                "decisions": [_listed_json(d) for d in shown],
+                "decisions": [_listed_json(d, delivered) for d in shown],
             }
         )
         return
@@ -835,7 +836,7 @@ def decision_list(
     if not shown:
         console.print("[dim]No decisions found.[/dim]")
         return
-    _print_decision_table(shown)
+    _print_decision_table(shown, delivered)
     if len(shown) < total:
         console.print(
             f"[dim]Showing {len(shown)} of {total} decisions; "
@@ -852,7 +853,7 @@ def _narrow(decisions: list, *, proposed: bool) -> list:
     return decisions
 
 
-def _listed_json(d) -> dict:
+def _listed_json(d, delivered=None) -> dict:
     return {
         # Full id, not the table's 8-char prefix: the prefix exists to fit a
         # column, and every id-taking subcommand accepts either.
@@ -863,7 +864,26 @@ def _listed_json(d) -> dict:
         "confidence": d.confidence,
         "staleness_score": d.staleness_score,
         "created_at": d.created_at.isoformat() if d.created_at else None,
+        **_delivery_json(delivered, d.id),
     }
+
+
+def _delivery_json(delivered, decision_id: str) -> dict:
+    """How often agents were shown the record and when last; null when not recorded."""
+    seen = (delivered or {}).get(decision_id)
+    return {
+        "delivered_count": seen.count if seen else None,
+        "last_delivered_at": seen.last_at.isoformat() if seen and seen.last_at else None,
+    }
+
+
+async def _deliveries(repo_path: Path, decision_ids: list[str]):
+    """Per-record delivery counts from the hook ledger, or None when it cannot be read."""
+    from repowise.core.persistence import get_session
+    from repowise.core.sessions.deliveries import decision_deliveries
+
+    async with _open_store(repo_path) as sf, get_session(sf) as session:
+        return await decision_deliveries(session, repo_path, decision_ids)
 
 
 async def _query_decisions(
@@ -901,7 +921,7 @@ _STATUS_COLORS = {
 }
 
 
-def _print_decision_table(decisions: list) -> None:
+def _print_decision_table(decisions: list, delivered=None) -> None:
     table = Table(title="Architectural Decisions")
     table.add_column("ID", style="dim", width=8)
     # Wraps rather than cuts: the title is the record's name.
@@ -910,6 +930,8 @@ def _print_decision_table(decisions: list) -> None:
     table.add_column("Source", style="dim")
     table.add_column("Conf.", justify="right")
     table.add_column("Stale", justify="right")
+    # Times agents were shown it; blank when no hook ledger was readable.
+    table.add_column("Shown", justify="right")
     table.add_column("Created", style="dim")
 
     for d in decisions:
@@ -923,6 +945,7 @@ def _print_decision_table(decisions: list) -> None:
             d.source,
             f"{d.confidence:.0%}",
             stale_str,
+            str(delivered[d.id].count) if delivered and d.id in delivered else "",
             created,
         )
 
@@ -959,10 +982,15 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         evidence_commits=json.loads(rec.evidence_commits_json or "[]"),
         accepted_at=accepted_at,
     )
+    delivered = run_async(_deliveries(repo_path, [rec.id]))
     if fmt == "json":
-        emit_json({"query": decision_id, "decision": _decision_json(rec, signed, currency)})
+        payload = _decision_json(rec, signed, currency) | _delivery_json(delivered, rec.id)
+        emit_json({"query": decision_id, "decision": payload})
         return
     lines = _decision_header_lines(rec, signed, currency) + _decision_body_lines(rec)
+    shown_line = _delivery_line(delivered, rec.id)
+    if shown_line:
+        lines.insert(lines.index(""), shown_line)
     console.print(Panel("\n".join(lines), title=f"Decision {rec.id[:8]}"))
 
 
@@ -1047,6 +1075,17 @@ def _decision_header_lines(rec, signed, currency) -> list[str]:
             lines.append(f"{signed['verb']} on: {', '.join(signed['evidence'])}")
     lines.append("")
     return lines
+
+
+def _delivery_line(delivered, decision_id: str) -> str | None:
+    """``Shown to agents: N times, last <date>``; None when no ledger was readable."""
+    seen = (delivered or {}).get(decision_id)
+    if seen is None:
+        return None
+    text = f"Shown to agents: {seen.count} time{'' if seen.count == 1 else 's'}"
+    if seen.last_at:
+        text += f", last {seen.last_at.date().isoformat()}"
+    return text
 
 
 def _decision_body_lines(rec) -> list[str]:

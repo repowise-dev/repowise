@@ -321,6 +321,13 @@ export interface DecisionRecord {
   /** The pull request number of that review. */
   last_applied_pr?: number | null;
   /**
+   * Times agents were shown this record locally (session start, edit notice,
+   * get_why, commit line). Null when no hook ledger could be read, never 0.
+   */
+  delivered_count?: number | null;
+  /** When an agent was last shown it (ISO-8601). */
+  last_delivered_at?: string | null;
+  /**
    * The code it names has changed since it was last applied, so a reader
    * should re-check it. A hint, not a currency.
    */

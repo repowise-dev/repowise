@@ -81,6 +81,11 @@ class DecisionRecordResponse(BaseModel):
     # title fallback. Acceptance reads the stored text, so a review surface
     # needs this to predict the "no decision text" refusal.
     decision_text_missing: bool = False
+    # How many times agents were shown this record (session start, edit
+    # notice, get_why, commit line) and when last, from the local hook ledger.
+    # Null when no ledger could be read, never 0. List and detail only.
+    delivered_count: int | None = None
+    last_delivered_at: UTCDateTime | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:

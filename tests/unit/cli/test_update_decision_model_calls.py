@@ -123,3 +123,31 @@ def test_the_model_switch_still_wins_with_update_mining_on(tmp_path, seen):
     _run(tmp_path, {"decisions": {"update_mining": True, "llm": False}})
 
     assert all(p is None for _, p in seen)
+
+
+def test_hook_firings_are_classified_without_the_session_lane(tmp_path, monkeypatch) -> None:
+    """Classification reads the hooks' own output, no model: it runs for a default
+    repository, but only when the ledger holds a firing still waiting for it."""
+    from repowise.core.sessions import efficacy
+    from repowise.core.sessions.staging import SessionStagingStore
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        efficacy, "ingest_transcript_efficacy", lambda repo, since: calls.append(repo) or {}
+    )
+    opts = SimpleNamespace(verbose=False)
+    run = SimpleNamespace(repo_path=tmp_path, degraded=[])
+
+    decision_passes._classify_hook_efficacy(opts, run)
+    assert calls == []
+
+    store = SessionStagingStore.open_default(tmp_path)
+    store._conn.execute(
+        "INSERT INTO injections (session_id, decision_id, shown_at, surface, category) "
+        "VALUES ('s1', 'k', 1.0, 'upkeep', 'commit_notice')"
+    )
+    store.commit()
+    store.close()
+
+    decision_passes._classify_hook_efficacy(opts, run)
+    assert calls == [tmp_path] and run.degraded == []

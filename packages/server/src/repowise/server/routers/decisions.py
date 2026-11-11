@@ -20,6 +20,7 @@ from repowise.core.analysis.decisions.review_queue import ReviewSignals, review_
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.crud.decision_health import decision_hotspot_files
 from repowise.core.persistence.models import DecisionEvidence
+from repowise.core.sessions.deliveries import decision_deliveries
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._local_git import local_repo_path
 from repowise.server.schemas import (
@@ -144,6 +145,23 @@ def _review_signals(record, hot: dict[str, list[str]]) -> ReviewSignals:
     )
 
 
+async def _attach_deliveries(
+    session: AsyncSession, repo_id: str, items: list[DecisionRecordResponse]
+) -> None:
+    """Give each row how often agents were shown it; left null without a readable ledger."""
+    if not items:
+        return
+    repo = await crud.get_repository(session, repo_id)
+    delivered = await decision_deliveries(
+        session, repo.local_path if repo else None, [item.id for item in items]
+    )
+    if delivered is None:
+        return
+    for item in items:
+        item.delivered_count = delivered[item.id].count
+        item.last_delivered_at = delivered[item.id].last_at
+
+
 async def _attach_evidence(session: AsyncSession, items: list[DecisionRecordResponse]) -> None:
     """Give each row its evidence count and its top-ranked quote as a preview."""
     if not items:
@@ -258,6 +276,7 @@ async def list_decisions(
         item.hotspot_files = hot.get(item.id, [])
         _attach_signature(item, signatures.get(item.id))
     await _attach_evidence(session, items)
+    await _attach_deliveries(session, repo_id, items)
     return items
 
 
@@ -562,7 +581,9 @@ async def get_decision(
 ) -> DecisionRecordResponse:
     """Get a single decision record by ID."""
     rec = await _decision_in_repo(session, repo_id, decision_id)
-    return await _one_with_signature(session, repo_id, rec)
+    item = await _one_with_signature(session, repo_id, rec)
+    await _attach_deliveries(session, repo_id, [item])
+    return item
 
 
 @router.get(

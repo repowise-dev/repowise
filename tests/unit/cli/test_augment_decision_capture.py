@@ -683,7 +683,8 @@ def test_upkeep_names_the_governing_decision_and_the_three_commands(upkeep_repo:
 def test_upkeep_logs_each_firing_for_the_gate(upkeep_repo: Path) -> None:
     notice = _fire(upkeep_repo, session="sess-1")
 
-    assert _ledger(upkeep_repo) == [("sess-1", "upkeep", "commit_notice", _SHA, len(notice))]
+    # node_id names the records the line carried, so their delivery counts see it.
+    assert _ledger(upkeep_repo) == [("sess-1", "upkeep", "commit_notice", _D1[0], len(notice))]
 
 
 def test_upkeep_is_off_by_default(upkeep_repo: Path) -> None:

@@ -325,7 +325,7 @@ def _run_session_passes(
     # Second: the mining pass is what fills discovery's queue.
     _discover_session_decisions(opts, run, docs, policy, indexed_files)
     _apply_injection_feedback(opts, run, policy)
-    _classify_hook_efficacy(opts, run, policy)
+    _classify_hook_efficacy(opts, run)
 
 
 def _mine_session_decisions(
@@ -423,14 +423,21 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
     return res
 
 
-def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
-    """Classify hook firings by what the agent did next (reads transcripts)."""
-    # The session lane is the privacy boundary for reading transcripts, so this
-    # fails closed; `repowise hook backfill` fills the columns on demand.
-    try:
-        from repowise.core.sessions.efficacy import ingest_transcript_efficacy
+def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun) -> None:
+    """Classify hook firings by what the agent did next (reads transcripts).
 
-        if policy.source_enabled("session"):
+    Not gated on the session lane, which governs mining what was said in a
+    session. This reads only the hooks' own output and the tool calls that
+    followed it, on this machine, with no model, to settle whether a firing was
+    acted on; and only when the ledger holds a firing still waiting for that.
+    """
+    try:
+        from repowise.core.sessions.efficacy import (
+            has_unsettled_firings,
+            ingest_transcript_efficacy,
+        )
+
+        if has_unsettled_firings(run.repo_path):
             classified = ingest_transcript_efficacy(
                 run.repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
             )
