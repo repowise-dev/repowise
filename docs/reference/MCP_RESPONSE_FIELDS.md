@@ -567,7 +567,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 - Commit rows under `git_archaeology` and `origin_story.key_commits` inherit the block's `provenance`.
 - Read the lane, not `status`: `status: "active"` can lack acceptance. Only `repowise decision confirm` or a committed ADR marked accepted accepts.
 - `candidates` and `history` shed first under budget, so an absent lane may mean a tight budget.
-- The dashboard (no arguments): stale decisions, conflicts, ungoverned hotspots, `retired_decisions`, `unscoped_decisions`, five rows each, sizes in `counts`.
+- The dashboard (no arguments): stale decisions, conflicts, ungoverned hotspots, `retired_decisions`, `unscoped_decisions`, five rows each, sizes in `counts`. A stale row adds `commits_since`, the commits touching the files it governs since its anchor (its date, the commit that landed its evidence, or its latest reviewed acceptance, whichever is latest), and `moved_files`, the listed files no longer at that path. Each key is absent when git cannot answer.
 
 ---
 
