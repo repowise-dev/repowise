@@ -36,7 +36,8 @@ SETTINGS: tuple[Setting, ...] = (
         "editor_setup",
         "bool",
         True,
-        "Let update keep agent and editor files current. false leaves them alone.",
+        "Let update keep agent and editor files current. init --no-editor-setup "
+        "writes false, which leaves them alone.",
     ),
     *(
         _s(

@@ -63,7 +63,8 @@ SETTINGS: tuple[Setting, ...] = (
         "context_window",
         "int",
         None,
-        "The model's context size in tokens. Unset asks the provider.",
+        "Tokens (prompt plus answer) the model runs with; page material shrinks to fit. "
+        "Unset: no limit for hosted models, 16384 for a local one.",
         minimum=0,
         exclusive_minimum=True,
         on_invalid="error",
