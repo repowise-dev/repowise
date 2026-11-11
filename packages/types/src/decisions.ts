@@ -45,7 +45,7 @@ export type DecisionStatus = (typeof DECISION_STATUSES)[number];
 /** The word for a status. Presentation, so the fixture pins coverage only. */
 export const DECISION_STATUS_LABELS: Record<DecisionStatus, string> = {
   active: "Active",
-  proposed: "Proposed",
+  proposed: "Background",
   superseded: "Superseded",
   deprecated: "Deprecated",
   dismissed: "Dismissed",

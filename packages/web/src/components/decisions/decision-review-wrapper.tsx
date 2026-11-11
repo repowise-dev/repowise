@@ -8,10 +8,7 @@ import {
   DecisionReviewLanes,
   type DecisionLane,
 } from "@repowise-dev/ui/decisions/decision-review-lanes";
-import type {
-  DecisionLaneCounts,
-  DecisionRecord,
-} from "@repowise-dev/types/decisions";
+import type { DecisionRecord } from "@repowise-dev/types/decisions";
 import {
   getDecisionLaneCounts,
   listDecisions,
@@ -39,8 +36,9 @@ interface Props {
  */
 export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   const t = useTranslations("decisions");
-  // Null until the reader picks a lane, so the section can open on the queue.
-  const [picked, setPicked] = React.useState<DecisionLane | null>(null);
+  // Opens on what is in force. Background records are context, not work, so
+  // the section never opens on them; the reader picks that lane.
+  const [lane, setLane] = React.useState<DecisionLane>("active");
   const [page, setPage] = React.useState(0);
   const [source, setSource] = React.useState("all");
 
@@ -53,31 +51,18 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   // "active" would contradict the lane a reader then opened.
   const {
     data: counts,
-    error: countsError,
     mutate: mutateCounts,
   } = useSWR([`/api/repos/${repoId}/decisions/lane-counts`], () =>
     getDecisionLaneCounts(repoId),
   );
 
-  // Until the reader picks one, the section opens on the work.
-  const lane: DecisionLane | null = picked ?? openingLane(counts, countsError);
-
-  // Pinned once chosen: a review that empties Candidates refreshes the counts,
-  // and a lane still derived from them would move the reader to another tab
-  // in the middle of working this one.
-  React.useEffect(() => {
-    if (picked === null && lane !== null) setPicked(lane);
-  }, [picked, lane]);
-
   // `sort=review` ranks the whole lane by what most needs a person before the
   // page is cut; see `review_queue_order` in core.
   const { data, error, mutate, isLoading } = useSWR(
-    lane === null
-      ? null
-      : [`/api/repos/${repoId}/decisions`, "lane", lane, source, page, pageSize],
+    [`/api/repos/${repoId}/decisions`, "lane", lane, source, page, pageSize],
     () =>
       listDecisions(repoId, {
-        lane: lane as DecisionLane,
+        lane,
         ...(source !== "all" ? { source } : {}),
         include_proposed: true,
         limit: pageSize,
@@ -91,7 +76,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   // Either control invalidates the offset: page 3 of Candidates is not page 3
   // of Active, and leaving it put lands the reader on an empty lane.
   const changeLane = React.useCallback((next: DecisionLane) => {
-    setPicked(next);
+    setLane(next);
     setPage(0);
   }, []);
 
@@ -119,7 +104,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   // Only when the rows and the badge count the same set. Under a source filter
   // the lane count is the wrong denominator, so the range says what it loaded
   // and nothing more rather than "1-12 of 381".
-  const total = source === "all" && lane !== null ? counts?.[lane] : undefined;
+  const total = source === "all" ? counts?.[lane] : undefined;
   const first = page * pageSize + 1;
   const last = page * pageSize + rows.length;
   const hasNext =
@@ -128,7 +113,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
   return (
     <div className="space-y-4">
     <DecisionReviewLanes
-      lane={lane ?? "candidates"}
+      lane={lane}
       onLaneChange={changeLane}
       order="review"
       decisions={data}
@@ -144,7 +129,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
       repoId={repoId}
       LinkComponent={Link}
       error={error}
-      isLoading={isLoading || lane === null}
+      isLoading={isLoading}
       onRetry={() => void mutate()}
     />
 
@@ -258,21 +243,6 @@ function useReviewWrites(repoId: string, refresh: () => Promise<unknown>) {
     [repoId, refresh, t],
   );
   return { pending, review, dismissMany };
-}
-
-/**
- * The lane the section opens on: candidates while any wait, then accepted
- * decisions whose files moved, and the rules only when neither has rows.
- * Null while the counts it is decided from are still loading.
- */
-function openingLane(
-  counts: DecisionLaneCounts | undefined,
-  countsError: unknown,
-): DecisionLane | null {
-  if (!counts) return countsError ? "candidates" : null;
-  if (counts.candidates > 0) return "candidates";
-  if (counts.needs_review > 0) return "needs_review";
-  return "active";
 }
 
 function PageButton({

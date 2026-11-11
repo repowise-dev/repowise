@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import click
@@ -64,7 +65,9 @@ class WorkspaceAnswers:
     embedder_name_resolved: str = "mock"
 
 
-def apply_workspace_advanced(answers: WorkspaceAnswers, adv: dict[str, Any]) -> None:
+def apply_workspace_advanced(
+    answers: WorkspaceAnswers, adv: dict[str, Any], repo_path: Path | None = None
+) -> None:
     """Fold the advanced-config answers into the workspace run."""
     answers.commit_limit = adv.get("commit_limit") or answers.commit_limit
     answers.follow_renames = adv.get("follow_renames", answers.follow_renames)
@@ -76,7 +79,7 @@ def apply_workspace_advanced(answers: WorkspaceAnswers, adv: dict[str, Any]) -> 
     answers.test_run = adv.get("test_run", answers.test_run)
     answers.reasoning = adv.get("reasoning") or answers.reasoning
     answers.embedder_name = adv.get("embedder") or answers.embedder_name
-    answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+    answers.embedder_name_resolved = resolve_embedder(answers.embedder_name, repo_path=repo_path)
     answers.onboarding = adv.get("onboarding", answers.onboarding)
     if adv.get("wiki_style"):
         answers.wiki_style = adv["wiki_style"]
@@ -128,10 +131,8 @@ def _refresh(screen: _Screen, answers: WorkspaceAnswers) -> None:
         if screen.selection is not None
         else None
     )
-    resolved = resolve_embedder(answers.embedder_name)
-    requested = embedder_was_requested(
-        answers.embedder_name, load_config(primary).get("embedder")
-    )
+    resolved = resolve_embedder(answers.embedder_name, repo_path=primary)
+    requested = embedder_was_requested(answers.embedder_name, load_config(primary).get("embedder"))
     plan = state.plan
     state.plan = replace(
         plan,
@@ -180,7 +181,7 @@ def _edit_plan(screen: _Screen, answers: WorkspaceAnswers) -> None:
         commit_limit=answers.commit_limit,
         ask_file_pages=False,
     )
-    apply_workspace_advanced(answers, adv)
+    apply_workspace_advanced(answers, adv, repo_path=_primary_path(screen))
     if screen.state.plan.editor_setup:
         screen.sync = click.confirm(
             "  Keep each index in sync after each commit (post-commit hook)?",

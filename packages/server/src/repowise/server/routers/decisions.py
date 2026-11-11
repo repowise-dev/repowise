@@ -470,6 +470,7 @@ def _apply_settings_update(policy, body: DecisionSettingsUpdate):
                 capture_prompt=policy.capture_prompt,
                 require_approval=policy.require_approval,
                 sync=policy.sync,
+                update_mining=policy.update_mining,
             )
     if body.enabled is not None:
         policy = policy.with_enabled(body.enabled)

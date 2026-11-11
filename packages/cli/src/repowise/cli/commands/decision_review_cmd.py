@@ -146,11 +146,10 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 def candidates_command(
     path: str | None, state: str, lane: str | None, limit: int, fmt: str
 ) -> None:
-    """List records awaiting review. These do not govern anything.
+    """List background records: mined or recorded, and not in force.
 
-    Acceptable candidates come first, so the top of the list is work a reviewer
-    can finish. The rest name what has to be filled in before `confirm` will
-    take them.
+    Records `confirm` would take as they stand come first; the rest name what
+    has to be filled in before it will.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -196,9 +195,9 @@ def candidates_command(
         emit_json({"candidates": rows, "count": len(rows)})
         return
     if not rows:
-        console.print("[dim]No candidates in this state.[/dim]")
+        console.print("[dim]No background records in this state.[/dim]")
         return
-    table = Table(title=f"Candidates ({state})")
+    table = Table(title=f"Background records ({state})")
     for column in ("ID", "Title", "Source", "Conf", "State", "Acceptable"):
         table.add_column(column)
     for row in rows:
@@ -214,8 +213,8 @@ def candidates_command(
         )
     console.print(table)
     console.print(
-        "[dim]Candidates are review material, not guidance. "
-        "`repowise decision confirm ID` is what makes one govern.[/dim]"
+        "[dim]Background, not in force. "
+        "`repowise decision confirm ID` puts one in force.[/dim]"
     )
 
 
@@ -712,7 +711,6 @@ def _render_status(report: dict) -> None:
     console.print(sources)
 
     lanes = report["lanes"]
-    review = report["review"]
     counts = Table(title="\nRecords", show_header=False, box=None, pad_edge=False, show_edge=False)
     counts.add_column("Metric", style="cyan")
     counts.add_column("Value", justify="right")
@@ -721,22 +719,16 @@ def _render_status(report: dict) -> None:
     counts.add_row("Needs review", str(lanes["needs_review"]))
     counts.add_row("Uncheckable", str(lanes["uncheckable"]))
     counts.add_row("History", str(lanes["history"]))
-    counts.add_row("Candidates", f"[yellow]{lanes['candidates']}[/yellow]")
+    counts.add_row("Background", str(lanes["candidates"]))
     counts.add_row("Total", str(lanes["total"]))
     console.print(counts)
+    # Background is context an agent asks about, not a queue: no ages, no
+    # count of what is "ready". The JSON report keeps those numbers.
     console.print(
-        f"  [dim]{review['unreviewed']} awaiting review · oldest "
-        f"{review['oldest_age_days']:.0f}d · median {review['median_age_days']:.0f}d[/dim]"
+        "  [dim]Background records are mined from history and are not in force; "
+        "get_why serves them when asked. A decision an agent records comes into "
+        "force when its commit merges.[/dim]"
     )
-    console.print(
-        f"  [dim]{review['acceptable']} ready to accept · {review['blocked']} blocked; "
-        "`repowise decision candidates` names why[/dim]"
-    )
-    if review["no_review_row"]:
-        console.print(
-            f"  [dim]{review['no_review_row']} candidates carry no review row yet, "
-            "so they rank as unjudged until the next index.[/dim]"
-        )
 
     backlog = report["backlog"]
     if backlog["available"]:

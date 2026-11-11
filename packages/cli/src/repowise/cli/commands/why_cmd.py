@@ -422,7 +422,7 @@ def _render(projected: dict) -> None:
 
     for label, key in (
         ("Stale decisions", "stale_decisions"),
-        ("Proposed, awaiting review", "proposed_awaiting_review"),
+        ("Background, not in force", "proposed_awaiting_review"),
         ("Conflicts", "conflicts"),
         ("Retired", "retired_decisions"),
         ("Accepted, naming no file", "unscoped_decisions"),

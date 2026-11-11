@@ -35,17 +35,17 @@ unless the repository turns it on.
   both `--title` and `--decision` it records without prompting and prints the
   id (`--format json` to parse it back). Also optional: `--context`,
   `--alternative`, `--consequence`, `--tag`. `--alternative`, `--consequence`,
-  `--affects`, `--tag` and `--evidence-commit` repeat. A flag-driven record lands as a candidate for
-  review; it never governs until accepted.
+  `--affects`, `--tag` and `--evidence-commit` repeat. An agent's record that cites its commit
+  comes into force when that commit merges to the default branch.
   **Always state a reason** — pass `--rationale` (or `--context`); a record whose
   body only restates its own title cannot be accepted. `--kind agreement` records
   a working agreement: a rule about how the work is conducted, which names no
   file and is not checked against the code. Bare `repowise decision add` is a
   guided interactive capture (~90s) for a person at a terminal.
-- **candidates** — `repowise decision candidates --format json` — records
-  awaiting review, each with its id and the `blockers` that stop it being accepted.
+- **candidates** — `repowise decision candidates --format json` — background
+  records not in force, each with its id and the `blockers` that stop it being accepted.
 - **confirm** — `repowise decision confirm <id>... --agent <slug> --evidence <commit|file>`
-  accepts candidates so they govern, signed as the agent (plus `--session <id>`
+  puts records in force, signed as the agent (plus `--session <id>`
   if known); the acceptance is recorded as the agent's, not a person's.
   `--decision`, `--reason`, `--scope <path>` and `--evidence <commit|file|link>`
   fill the blockers. The unsigned form is a person's. A repository that

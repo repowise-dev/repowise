@@ -56,7 +56,7 @@ _PROMPT = (
     "  repowise decision add --agent <your slug> --title '<short>' --decision '<what you chose>' "
     "--rationale '<why, and what you rejected>' --affects <path> "
     "--evidence-commit {sha} --format json\n"
-    "  Lands as a candidate for review, never as a rule. Once a session. "
+    "  It comes into force when this commit merges. Once a session. "
     "Off: repowise decision config capture-prompt --off"
 )
 

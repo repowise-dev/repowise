@@ -335,7 +335,11 @@ class EditorFileDataFetcher:
 
         It is also where an agent can read back its own acceptance as the
         team's rule, so a line a person did not sign says so.
+
+        Working agreements are left out: they are rules about how the work is
+        done, which belong in the agent's own instruction files, not here.
         """
+        from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND
         from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
         from repowise.core.persistence.crud.authority import (
             accepted_predicate,
@@ -347,6 +351,7 @@ class EditorFileDataFetcher:
             .where(
                 DecisionRecord.repository_id == self._repo_id,
                 DecisionRecord.status == "active",
+                func.coalesce(DecisionRecord.kind, "") != AGREEMENT_KIND,
                 accepted_predicate(),
             )
             .order_by(DecisionRecord.staleness_score.asc())

@@ -124,8 +124,6 @@ export async function overviewBodyCopy(): Promise<OverviewBodyCopy> {
         securityElsewhere: (count) => t("attention.securityElsewhere", { count }),
         refactoringUnit: t("attention.refactoringUnit"),
         decisionsUnit: t("attention.decisionsUnit"),
-        decisionsDetail: (awaiting, drifting) =>
-          t("attention.decisionsDetail", { awaiting, drifting }),
         ownershipUnit: t("attention.ownershipUnit"),
         ownershipDetail: t("attention.ownershipDetail"),
       },

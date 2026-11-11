@@ -620,7 +620,7 @@ def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Decision Health" in result.output
     assert "Active decisions" in result.output
-    assert "Proposed (needs review)" in result.output
+    assert "Background (not in force)" in result.output
 
 
 def test_decision_health_lists_print_the_whole_title(indexed_repo: Path) -> None:

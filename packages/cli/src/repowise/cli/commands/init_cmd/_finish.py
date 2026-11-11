@@ -208,9 +208,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
         base_state,
         {"commit_limit": run.resolved_commit_limit, "max_file_pages": run.max_file_pages},
         run_mode=run_mode,
-        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[
-            docs_mode
-        ],
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=run.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
@@ -300,7 +298,9 @@ def _save_index_only_state(run: InitRun, base_state: dict[str, Any]) -> None:
         exclude_patterns=run.exclude_patterns if run.exclude_patterns else None,
         commit_limit=run.resolved_commit_limit if run.opts.commit_limit is not None else None,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     # After the config writes, so the first update doesn't false-positive.
     stamp_fresh_index(base_state, repo_path, run.result)

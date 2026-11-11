@@ -389,6 +389,7 @@ decisions:
 | `agent_acceptance` | `true` | Whether an agent may grant a decision authority, signed as itself. |
 | `capture_prompt` | `true` | Ask the agent to record what it just committed. |
 | `sync` | `false` | Send and receive decisions with this repo on repowise.dev during `update`. |
+| `update_mining` | `false` | Let `repowise update` call the model for decisions. See [below](#update_mining). |
 
 ### Sources
 
@@ -423,6 +424,9 @@ decisions:
 
 Editing a key after a preset drops the `preset` line; the policy reads `custom`.
 
+Sources say what is mined at `init` (and `update --full`). Whether `update`
+mines too is [`update_mining`](#update_mining), which no preset changes.
+
 `llm: false` is complete, not degraded: transcripts are read, markers and ADRs
 parsed, episodes recorded, manual decisions work and accepted ones govern. It
 is the one switch proving no extraction reaches a model.
@@ -454,6 +458,24 @@ Off by default, and no preset changes it. On, and with this machine signed in
 model runs, and a failure prints one line without failing the update. A value
 that is not a boolean reads as off. `repowise decision config sync --on|--off`
 writes it.
+
+### `update_mining`
+
+Off by default: `init` reads PR bodies, commit messages and comments once,
+and the records it mines are background, served by `get_why` when asked.
+`update` then makes no model call for decisions. Inline markers are still read
+on changed files, and decisions an agent recorded still come into force when
+their commit lands.
+
+- On: each `update` also mines new PR bodies and commits, structures new
+  inline markers, and asks the model whether a change replaced a decision it
+  touches. `repowise decision config update-mining --on`.
+- With no `update_mining` key, a `decisions:` block that names a `preset` or
+  lists `sources` reads as on, so a repository configured before this setting
+  keeps mining on update. No block reads as off. The key is written on every
+  CLI or API write.
+- While off, each source's mining pointer stays where it was; switching on
+  mines the missed range, bounded by each miner's cap.
 
 ### From the CLI
 

@@ -262,17 +262,13 @@ def _add_review_lanes(
 ) -> None:
     """Serve candidates and retired records beside the rules, each labelled."""
     if candidates:
-        # Separated from the rules, so a review request never reads as one.
+        # Separated from the rules, so background never reads as one.
         result_data["candidates"] = candidates
         result_data["candidates_note"] = (
-            f"{len(candidates)} candidate(s) mention this path and none of them "
-            "govern it. Nobody has accepted them, so they are a review "
-            "request, not a rule. You may review and accept one with "
-            "`repowise decision confirm <id> --agent <your slug> --scope <path>` "
-            "(add `--reason` or `--evidence` if it lacks them), or dismiss it "
-            "with `repowise decision dismiss <id> --agent <your slug> --yes`. "
-            "The acceptance is signed as yours, not a person's; a repository "
-            "with agent acceptance off refuses it."
+            f"{len(candidates)} background record(s) mention this path. None is "
+            "in force: read them as context, not rules. One that still holds can "
+            "be put in force with "
+            "`repowise decision confirm <id> --agent <your slug> --scope <path>`."
         )
 
     if retired:
