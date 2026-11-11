@@ -45,7 +45,8 @@ def test_complex_method_prints_the_judged_ccn_beside_the_raw_one() -> None:
     [finding] = ComplexMethodDetector().detect(_ctx(fn))
     assert finding.severity == "high"
     assert finding.reason == (
-        "tokenize has cyclomatic complexity 15 (30 counting every arm of its dispatch)"
+        "tokenize has 15 independent paths (cyclomatic complexity), "
+        "30 counting every arm of its dispatch"
     )
     assert finding.details["ccn"] == 30
     assert finding.details["judged_ccn"] == 15
@@ -53,7 +54,7 @@ def test_complex_method_prints_the_judged_ccn_beside_the_raw_one() -> None:
 
 def test_complex_method_reason_is_unchanged_without_a_dominant_dispatch() -> None:
     [finding] = ComplexMethodDetector().detect(_ctx(_fn(ccn=12)))
-    assert finding.reason == "tokenize has cyclomatic complexity 12"
+    assert finding.reason == "tokenize has 12 independent paths (cyclomatic complexity)"
     assert "judged_ccn" not in finding.details
 
 
