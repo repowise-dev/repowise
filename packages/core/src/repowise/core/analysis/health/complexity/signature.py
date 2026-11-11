@@ -24,6 +24,8 @@ reads the tree with it.
   and Dart ``{named}`` parameters. Every call site names them, so they carry
   no argument-order hazard. Python's ``*args`` / ``**kwargs`` are no
   parameters at all: they collect what is left over.
+- **defaulted parameters**: Kotlin and Scala parameters with a default value,
+  which a call site leaves out or names.
 """
 
 from __future__ import annotations
@@ -515,6 +517,27 @@ def _dart_named_count(params: Node) -> int:
     if group is None or group.child(0) is None or group.child(0).type != "{":
         return 0
     return sum(1 for c in group.named_children if c.type == "formal_parameter")
+
+
+def defaulted_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
+    """Kotlin and Scala parameters with a default value. A caller leaves them
+    out or names them, so they carry no argument-order hazard. A
+    framework-bound one is left out: ``bound_param_count`` has it."""
+    if params is None:
+        return 0
+    return sum(
+        1 for p in _parameter_nodes(params) if _has_default(p) and not _is_bound(p, lmap)
+    )
+
+
+def _has_default(param: Node) -> bool:
+    if param.type != "parameter":
+        return False
+    # Kotlin keeps ``= value`` beside the parameter, Scala inside it.
+    sibling = param.next_sibling
+    return param.child_by_field_name("default_value") is not None or (
+        sibling is not None and sibling.type == "=" and param.parent.type == "function_value_parameters"
+    )
 
 
 def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
