@@ -761,8 +761,6 @@ def _count_parameters(fn_node: Node) -> int:
     if fn_node.type == "function_or_value_defn" and fn_node.children[1].type == "function_declaration_left":    # when it is 'let' and it is not value binding
         argument_patterns = fn_node.children[1].children[1].children
 
-        print(f"DEBUG NODE {argument_patterns}")
-
         # loops over all the parameters and add one for every parameter, ignoring the punctuation like commas
         return sum(1 for child in fn_node.children[1].children[1].children if child.type in VALID_PATTERN_TYPES)
 
@@ -774,12 +772,7 @@ def _count_parameters(fn_node: Node) -> int:
 
         if sum(1 for child in params if child.type in VALID_PATTERN_TYPES) == 1 and params[1].type == 'paren_pattern':
             # then for sure this is tupled format for member methods
-            print(f"hi")
-
             inside_paren = params[1].children
-
-            print(inside_paren)
-
 
             if sum(1 for child in inside_paren if child.type in VALID_PATTERN_TYPES) == 1 and inside_paren[1].type == 'repeat_pattern':
 
