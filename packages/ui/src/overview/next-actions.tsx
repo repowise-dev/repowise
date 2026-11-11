@@ -1,37 +1,33 @@
 "use client";
 
-import { Fragment, useMemo, useState, type ElementType, type ReactNode } from "react";
+import { Fragment, useCallback, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { BellOff, Check, PanelRight, X } from "lucide-react";
 import { toast } from "sonner";
-import type {
-  ActionHorizonKey,
-  ActionsResponse,
-  ActionStateValue,
-  ActionTier,
-  NextAction,
+import {
+  ACTION_TIER_LABELS,
+  ACTION_TIER_ORDER,
+  type ActionHorizonKey,
+  type ActionsResponse,
+  type ActionStateValue,
+  type ActionTier,
+  type NextAction,
 } from "@repowise-dev/types/actions";
 
+import { useAiPromptAction } from "../health/ai-prompt-action";
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
+import { EFFORT_LABEL } from "../health/labels";
+import type { Severity } from "../health/tokens";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
 import { RowOverflow } from "../shared/row-overflow";
 import { Segmented } from "../shared/segmented";
-import { ActionDrawer } from "./action-drawer";
+import { ActionDrawer, type ActionDrawerProps } from "./action-drawer";
 import { OverviewSection } from "./section";
+import { formatNumber } from "../lib/format";
 
 /** Rows shown before "Show all"; the response carries up to 20 per horizon. */
 const PREVIEW = 5;
-
-const TIER_HEADING: Record<ActionTier, string> = {
-  act_now: "Now",
-  plan: "Worth planning",
-  improve_signal: "Improve what Repowise can see",
-};
-
-const EFFORT_LABEL: Record<NextAction["effort"], string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-};
 
 export interface NextActionsProps {
   /** `null` when the server predates actions; the section then renders nothing. */
@@ -39,10 +35,123 @@ export interface NextActionsProps {
   hrefFor: (action: NextAction) => string | null;
   /** A file's own page, for the files an opened action names. */
   fileHref?: ((path: string) => string | null) | undefined;
-  /** Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs. */
+  /**
+   * Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs.
+   * The sentence over the list is the server's, so pass fresh `data` after a write.
+   */
   onSetState?: (action: NextAction, state: ActionStateValue | null) => Promise<void>;
-  repoName?: string | undefined;
+  /** An action's agent prompt as core renders it. Omit to hide the prompt. */
+  loadPrompt?: ActionDrawerProps["loadPrompt"];
+  /**
+   * Replaces the sentence after the "Not checked" list. Omit for the default
+   * `repowise update` hint; pass `null` to show only the list.
+   */
+  unavailableHint?: ReactNode | null;
+  /** Show each command's CLI line in the drawer. Set false for a host with no CLI. */
+  showCliCommands?: boolean;
+  /**
+   * Set false to start folded behind its heading, for a page where the list
+   * would push everything else below the fold. Defaults to open.
+   */
+  defaultOpen?: boolean;
   LinkComponent?: ElementType | undefined;
+  /** The list's own words. English by default; the actions' text is the server's. */
+  copy?: Partial<NextActionsCopy> | undefined;
+}
+
+export interface NextActionsCopy {
+  title: string;
+  /** The folded heading, which carries the count. */
+  titleCount: (count: number) => string;
+  timeFrame: string;
+  week: string;
+  weekHint: string;
+  quarter: string;
+  quarterHint: string;
+  tier: (tier: ActionTier) => string;
+  allAnswered: string;
+  showFewer: string;
+  showAll: (count: number) => string;
+  listing: (shown: number, total: number) => string;
+  answered: (count: number) => string;
+  /** `checks` is the comma-joined list of checks that did not run. */
+  notChecked: (checks: string) => string;
+  emptyChecks: (count: number) => string;
+  undo: string;
+  undoFailed: string;
+  saveFailed: string;
+  openDetails: string;
+  markDone: string;
+  markedDone: string;
+  snooze: string;
+  snoozed: string;
+  dismiss: string;
+  dismissed: string;
+  effort: (effort: NextAction["effort"]) => string;
+  worthCheck: string;
+  inferred: string;
+  openRow: (title: string) => string;
+  moreFor: (title: string) => string;
+  /** Undefined keeps SeverityMark's own word. */
+  severity: (severity: Severity) => string | undefined;
+}
+
+export const NEXT_ACTIONS_COPY: NextActionsCopy = {
+  title: "Do next",
+  titleCount: (count) => `Do next · ${count.toLocaleString("en-US")}`,
+  timeFrame: "Time frame",
+  week: "This week",
+  weekHint: "What the last 7 days of commits changed",
+  quarter: "This quarter",
+  quarterHint: "What the last 90 days say is worth planning",
+  tier: (tier) => ACTION_TIER_LABELS[tier] ?? tier,
+  allAnswered: "You have answered everything listed here. Answers are kept until the facts change.",
+  showFewer: "Show fewer",
+  showAll: (count) => `Show all ${formatNumber(count)}`,
+  listing: (shown, total) => `Listing ${formatNumber(shown)} of ${formatNumber(total)}.`,
+  answered: (count) => `${plural(count, "action")} answered (done, snoozed or dismissed).`,
+  notChecked: (checks) => `Not checked: ${checks}.`,
+  emptyChecks: (count) =>
+    `Repowise ran ${plural(count, "check")} over this index and none of them produced work for this time frame.`,
+  undo: "Undo",
+  undoFailed: "Could not undo",
+  saveFailed: "Could not save that; the action is back in the list",
+  openDetails: "Open details",
+  markDone: "Mark done",
+  markedDone: "Marked done. It returns if the facts change.",
+  snooze: "Snooze for 14 days",
+  snoozed: "Snoozed for 14 days",
+  dismiss: "Dismiss",
+  dismissed: "Dismissed. It returns if the facts change.",
+  effort: (effort) => `${EFFORT_LABEL[effort]} effort`,
+  worthCheck: "worth a check",
+  inferred: "(inferred)",
+  openRow: (title) => `Open ${title}`,
+  moreFor: (title) => `More for ${title}`,
+  severity: () => undefined,
+};
+
+type ActionPromptLoader = (action: NextAction, flavor: AiPromptFlavor) => Promise<string>;
+
+/**
+ * The row-level "Copy prompt for your agent": opens the shared prompt modal on
+ * one action's prompt. Render `promptModal` once beside the rows.
+ */
+export function useActionPrompt(): {
+  openActionPrompt: (action: NextAction, load: ActionPromptLoader) => void;
+  promptModal: ReactNode;
+} {
+  const { openPrompt, promptModal } = useAiPromptAction();
+  const openActionPrompt = useCallback(
+    (action: NextAction, load: ActionPromptLoader) =>
+      openPrompt({
+        title: action.title.replace(/`/g, ""),
+        filePath: action.target.path || null,
+        promptSource: (flavor) => load(action, flavor),
+      }),
+    [openPrompt],
+  );
+  return { openActionPrompt, promptModal };
 }
 
 /** Split a title on backticks so paths and symbols set in mono. */
@@ -58,51 +167,47 @@ export function renderActionTitle(title: string): ReactNode {
   );
 }
 
+// en-US grouping, as the server writes `{n:,}`, so a local sentence reads the same.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-function formatDay(iso: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? null
-    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Sep 28" from the anchor's own calendar day, never shifted into the viewer's timezone. */
+function anchorDay(iso: string | null): string | null {
+  const m = iso ? /^\d{4}-(\d{2})-(\d{2})/.exec(iso) : null;
+  const month = m ? MONTHS[Number(m[1]) - 1] : undefined;
+  return m && month ? `${month} ${Number(m[2])}` : null;
 }
+
+const workIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) =>
+  (h.by_tier.act_now ?? 0) + (h.by_tier.plan ?? 0);
 
 /**
- * The one sentence that says where things stand. Counts the list as the reader
- * sees it, and names the window, because "this week" means the repository's
- * last week of commits, which is not always the calendar's.
+ * The sentence for a view that carries no `summary` (a server that predates
+ * it). Same as the server's wording, from the same counts, so the line never
+ * goes blank. A view with `summary` always wins.
  */
-export function actionsStatus(
-  data: ActionsResponse,
-  horizon: ActionHorizonKey,
-  answered: ReadonlySet<string> = new Set(),
-): string {
-  const h = data.horizons[horizon];
-  const gone = (tier: ActionTier) =>
-    h.actions.filter((a) => a.tier === tier && answered.has(a.id)).length;
-  const now = (h.by_tier.act_now ?? 0) - gone("act_now");
-  const work = now + (h.by_tier.plan ?? 0) - gone("plan");
-  const until = formatDay(data.anchor);
+function fallbackSummary(data: ActionsResponse, horizon: ActionHorizonKey): string {
+  const until = anchorDay(data.anchor);
   const window =
     horizon === "week"
       ? until
         ? `in the week to ${until}, the last indexed commit`
         : "this week"
       : "this quarter";
+  const work = workIn(data.horizons[horizon]);
   if (work === 0) {
-    const other = horizon === "week" ? data.horizons.quarter : data.horizons.week;
-    const otherWork = (other.by_tier.act_now ?? 0) + (other.by_tier.plan ?? 0);
-    return otherWork > 0
-      ? `Nothing needs you ${window}. ${plural(otherWork, "thing")} ${
-          horizon === "week"
-            ? `${otherWork === 1 ? "is" : "are"} worth planning this quarter`
-            : "came up this week"
-        }.`
-      : `Nothing stands out ${window}.`;
+    const other = workIn(data.horizons[horizon === "week" ? "quarter" : "week"]);
+    if (other === 0) return `Nothing stands out ${window}.`;
+    const tail =
+      horizon === "week"
+        ? `${other === 1 ? "is" : "are"} worth planning this quarter`
+        : "came up this week";
+    return `Nothing needs you ${window}. ${plural(other, "thing")} ${tail}.`;
   }
+  const now = data.horizons[horizon].by_tier.act_now ?? 0;
   return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}.`;
 }
 
@@ -111,25 +216,28 @@ export function NextActions({
   hrefFor,
   fileHref,
   onSetState,
-  repoName,
+  loadPrompt,
+  unavailableHint,
+  showCliCommands,
+  defaultOpen = true,
   LinkComponent,
+  copy,
 }: NextActionsProps) {
+  const c = { ...NEXT_ACTIONS_COPY, ...copy };
   // Open on the week unless it holds no work and the quarter does: a lone
   // "add a coverage report" is not a reason to show an empty week first.
-  const work = (key: ActionHorizonKey, less: ReadonlySet<string> = new Set()) =>
-    data
-      ? (data.horizons[key].by_tier.act_now ?? 0) +
-        (data.horizons[key].by_tier.plan ?? 0) -
-        data.horizons[key].actions.filter((a) => a.tier !== "improve_signal" && less.has(a.id))
-          .length
-      : 0;
+  // Counts come from `data` alone, like the sentence, so the two agree; both
+  // move when the host passes the re-read view after an answer.
+  const work = (key: ActionHorizonKey) => (data ? workIn(data.horizons[key]) : 0);
   const initial: ActionHorizonKey = work("week") === 0 && work("quarter") > 0 ? "quarter" : "week";
   const [horizon, setHorizon] = useState<ActionHorizonKey>(initial);
   const [expanded, setExpanded] = useState(false);
   // Optimistic: a row the person answered leaves at once and comes back if the
-  // write fails.
-  const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
+  // write fails. Kept by id with the action, so "answered everything" still
+  // knows its time frame once a re-read drops the row.
+  const [answered, setAnswered] = useState<ReadonlyMap<string, NextAction>>(new Map());
   const [opened, setOpened] = useState<NextAction | null>(null);
+  const { openActionPrompt, promptModal } = useActionPrompt();
 
   const rows = useMemo(
     () => (data ? data.horizons[horizon].actions.filter((a) => !answered.has(a.id)) : []),
@@ -144,10 +252,10 @@ export function NextActions({
 
   const answer = (action: NextAction, state: ActionStateValue, message: string) => {
     if (!onSetState) return;
-    setAnswered((s) => new Set(s).add(action.id));
+    setAnswered((s) => new Map(s).set(action.id, action));
     const restore = () =>
       setAnswered((s) => {
-        const next = new Set(s);
+        const next = new Map(s);
         next.delete(action.id);
         return next;
       });
@@ -155,52 +263,59 @@ export function NextActions({
       () =>
         toast.success(message, {
           action: {
-            label: "Undo",
+            label: c.undo,
             onClick: () => {
               restore();
-              void onSetState(action, null).catch(() => toast.error("Could not undo"));
+              void onSetState(action, null).catch(() => toast.error(c.undoFailed));
             },
           },
         }),
       () => {
         restore();
-        toast.error("Could not save that; the action is back in the list");
+        toast.error(c.saveFailed);
       },
     );
   };
 
+  const timeFrame = (
+    <Segmented
+      label={c.timeFrame}
+      value={horizon}
+      options={[
+        { value: "week", label: c.week, count: String(work("week")), hint: c.weekHint },
+        { value: "quarter", label: c.quarter, count: String(work("quarter")), hint: c.quarterHint },
+      ]}
+      onChange={(v) => {
+        setHorizon(v);
+        setExpanded(false);
+      }}
+    />
+  );
 
   return (
     <OverviewSection
-      title="Do next"
-      description={actionsStatus(data, horizon, answered)}
-      action={
-        <Segmented
-          label="Time frame"
-          value={horizon}
-          options={[
-            { value: "week", label: "This week", count: String(work("week", answered)), hint: "What the last 7 days of commits changed" },
-            { value: "quarter", label: "This quarter", count: String(work("quarter", answered)), hint: "What the last 90 days say is worth planning" },
-          ]}
-          onChange={(v) => {
-            setHorizon(v);
-            setExpanded(false);
-          }}
-        />
-      }
+      title={defaultOpen ? c.title : c.titleCount(work(horizon))}
+      description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
+      // A folded section has no header action slot, so the time frame sits
+      // under the summary, above the list it filters, and the toggle carries
+      // the count.
+      action={defaultOpen ? timeFrame : undefined}
+      collapsible={!defaultOpen}
+      defaultOpen={defaultOpen}
     >
-      {shown.length === 0 && answered.size > 0 && h.actions.length > 0 ? (
+      {!defaultOpen && timeFrame}
+      {shown.length === 0 && [...answered.values()].some((a) => a.horizons.includes(horizon)) ? (
         <p className="py-2 text-sm text-[var(--color-text-secondary)]">
-          You have answered everything listed here. Answers are kept until the facts change.
+          {c.allAnswered}
         </p>
       ) : shown.length === 0 ? (
-        <EmptyActions data={data} />
+        <EmptyActions data={data} copy={c} />
       ) : (
         <div className="flex flex-col">
           {groupByTier(shown).map(([tier, items]) => (
             <div key={tier} className="flex flex-col">
               <h3 className="pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:pt-0">
-                {TIER_HEADING[tier]}
+                {c.tier(tier)}
               </h3>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
                 {items.map((action) => (
@@ -209,7 +324,9 @@ export function NextActions({
                     action={action}
                     selected={opened?.id === action.id}
                     onOpen={() => setOpened(action)}
+                    onPrompt={loadPrompt ? () => openActionPrompt(action, loadPrompt) : undefined}
                     onAnswer={onSetState ? (state, message) => answer(action, state, message) : undefined}
+                    copy={c}
                   />
                 ))}
               </ul>
@@ -223,27 +340,33 @@ export function NextActions({
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}
-            className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
-            {expanded ? "Show fewer" : `Show all ${Math.min(rows.length, total).toLocaleString()}`}
+            {expanded ? c.showFewer : c.showAll(Math.min(rows.length, total))}
           </button>
         )}
         {total > rows.length && (
           <span className="tabular-nums">
-            {`Listing ${rows.length.toLocaleString()} of ${total.toLocaleString()}.`}
+            {c.listing(rows.length, total)}
           </span>
         )}
         {h.hidden + (h.actions.length - rows.length) > 0 && (
-          <span className="tabular-nums">{`${plural(
-            h.hidden + (h.actions.length - rows.length),
-            "action",
-          )} answered (done, snoozed or dismissed).`}</span>
+          <span className="tabular-nums">
+            {c.answered(h.hidden + (h.actions.length - rows.length))}
+          </span>
         )}
         {unavailable.length > 0 && (
           <span>
-            {`Not checked: ${unavailable.join(", ").replace(/_/g, " ")}. Run `}
-            <code className="font-mono text-[0.85em]">repowise update</code>
-            {" to include them."}
+            {c.notChecked(unavailable.join(", ").replace(/_/g, " "))}
+            {unavailableHint === undefined ? (
+              <>
+                {" Run "}
+                <code className="font-mono text-[0.85em]">repowise update</code>
+                {" to include them."}
+              </>
+            ) : unavailableHint === null ? null : (
+              <> {unavailableHint}</>
+            )}
           </span>
         )}
       </div>
@@ -258,64 +381,91 @@ export function NextActions({
             ? (state, message) => answer(opened, state, message)
             : undefined
         }
-        repoName={repoName}
+        loadPrompt={loadPrompt}
+        showCliCommands={showCliCommands}
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
+      {promptModal}
     </OverviewSection>
   );
 }
 
-function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
-  const out: [ActionTier, NextAction[]][] = [];
+/**
+ * `path:line` for an action whose title does not already name its file, so a
+ * row like a Fix-first item ("Extract lines 60-122 of quick_repo_scan") says
+ * where without opening it. The line is the first piece of evidence in that
+ * file; titles that carry the path in backticks keep their own.
+ */
+export function actionLocation(action: NextAction): string | null {
+  const { kind, path } = action.target;
+  if ((kind !== "file" && kind !== "symbol") || !path) return null;
+  if (action.title.includes(path)) return null;
+  const line = action.details.find((d) => d.path === path && d.line)?.line;
+  return line ? `${path}:${line}` : path;
+}
+
+/** One heading per tier in core's order, rank order kept inside each, as the
+ *  CLI groups them. A tier this build does not know trails under its raw name
+ *  rather than dropping its rows. */
+export function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
+  const groups = new Map<ActionTier, NextAction[]>(ACTION_TIER_ORDER.map((t) => [t, []]));
   for (const a of actions) {
-    const last = out[out.length - 1];
-    if (last && last[0] === a.tier) last[1].push(a);
-    else out.push([a.tier, [a]]);
+    const group = groups.get(a.tier);
+    if (group) group.push(a);
+    else groups.set(a.tier, [a]);
   }
-  return out;
+  return [...groups].filter(([, items]) => items.length > 0);
 }
 
 export function ActionRow({
   action,
   onOpen,
   selected = false,
+  onPrompt,
   onAnswer,
+  copy,
 }: {
   action: NextAction;
   /** Open the action's drawer; the whole row is the trigger. */
   onOpen: () => void;
   selected?: boolean | undefined;
+  /** Open the agent prompt for this action. Omit to hide the row's prompt verb. */
+  onPrompt?: (() => void) | undefined;
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
+  copy?: Partial<NextActionsCopy> | undefined;
 }) {
+  const c = { ...NEXT_ACTIONS_COPY, ...copy };
   const plainTitle = action.title.replace(/`/g, "");
+  const location = actionLocation(action);
   const items = [
-    { label: "Open details", icon: PanelRight, onSelect: onOpen },
+    { label: c.openDetails, icon: PanelRight, onSelect: onOpen },
     ...(onAnswer
       ? [
           {
-            label: "Mark done",
+            label: c.markDone,
             icon: Check,
-            onSelect: () => onAnswer("done", "Marked done. It returns if the facts change."),
+            onSelect: () => onAnswer("done", c.markedDone),
           },
           {
-            label: "Snooze for 14 days",
+            label: c.snooze,
             icon: BellOff,
-            onSelect: () => onAnswer("snoozed", "Snoozed for 14 days"),
+            onSelect: () => onAnswer("snoozed", c.snoozed),
           },
           {
-            label: "Dismiss",
+            label: c.dismiss,
             icon: X,
-            onSelect: () => onAnswer("dismissed", "Dismissed. It returns if the facts change."),
+            onSelect: () => onAnswer("dismissed", c.dismissed),
           },
         ]
       : []),
   ];
   return (
     <li
-      aria-label={`Open ${plainTitle}`}
+      aria-label={c.openRow(plainTitle)}
       aria-current={selected ? "true" : undefined}
-      className={`${CLICKABLE_ROW_CLS} group flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
+      data-selected={selected ? "true" : undefined}
+      className={`${CLICKABLE_ROW_CLS} group group/row flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
         selected ? "bg-[var(--color-bg-elevated)]" : "hover:bg-[var(--color-bg-elevated)]"
       }`}
       {...clickableRowProps(onOpen)}
@@ -323,12 +473,21 @@ export function ActionRow({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           {action.tier === "act_now" && (
-            <SeverityMark severity={action.severity} className="translate-y-[-1px]" />
+            <SeverityMark
+              severity={action.severity}
+              label={c.severity(action.severity)}
+              className="translate-y-[-1px]"
+            />
           )}
           <p className="min-w-0 text-[15px] font-semibold leading-snug text-[var(--color-text-primary)] [text-wrap:pretty] group-hover:text-[var(--color-accent-primary)]">
             {renderActionTitle(action.title)}
           </p>
         </div>
+        {location ? (
+          <p className="mt-0.5 font-mono text-xs text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+            {location}
+          </p>
+        ) : null}
         <p className="mt-1 max-w-[72ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
           {renderActionTitle(action.impact)}
         </p>
@@ -345,7 +504,7 @@ export function ActionRow({
               >
                 {w.value}
                 {w.basis === "inferred" && (
-                  <span className="ml-1 font-sans text-[var(--color-text-tertiary)]">(inferred)</span>
+                  <span className="ml-1 font-sans text-[var(--color-text-tertiary)]">{c.inferred}</span>
                 )}
               </dd>
             </div>
@@ -354,26 +513,27 @@ export function ActionRow({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          <span className="hidden sm:inline">{`${EFFORT_LABEL[action.effort]} effort`}</span>
+          <span className="hidden sm:inline">{c.effort(action.effort)}</span>
           {action.confidence === "medium" && (
             <>
               <span className="hidden sm:inline">, </span>
-              <span>worth a check</span>
+              <span>{c.worthCheck}</span>
             </>
           )}
         </span>
-        <RowOverflow label={`More for ${plainTitle}`} items={items} />
+        {onPrompt && <RowPromptAction subject={plainTitle} onClick={onPrompt} />}
+        <RowOverflow label={c.moreFor(plainTitle)} items={items} />
       </div>
     </li>
   );
 }
 
-function EmptyActions({ data }: { data: ActionsResponse }) {
+function EmptyActions({ data, copy }: { data: ActionsResponse; copy: NextActionsCopy }) {
   const checked = data.rules.filter((r) => r.status === "evaluated").length;
   const skipped = data.rules.filter((r) => r.status === "not_applicable");
   return (
     <div className="flex flex-col gap-1 py-2 text-sm text-[var(--color-text-secondary)]">
-      <p>{`Repowise ran ${plural(checked, "check")} over this index and none of them produced work for this time frame.`}</p>
+      <p>{copy.emptyChecks(checked)}</p>
       {skipped.length > 0 && (
         <p className="text-xs text-[var(--color-text-tertiary)]">
           {skipped.map((r) => r.reason).join(" ")}

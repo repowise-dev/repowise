@@ -4,7 +4,6 @@ import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import useSWR from "swr";
 import {
   getArchitecture,
-  getArchitectureGraph,
   getCallersCallees,
   getCommunities,
   getCommunityDetail,
@@ -49,21 +48,21 @@ export function useZoomMap(
   const key = repoId
     ? `zoom-map:${repoId}:${params?.max_depth ?? ""}:${params?.focus ?? ""}`
     : null;
-  const { data, error, isLoading } = useSWR<ZoomMap>(
+  const { data, error, isLoading, mutate } = useSWR<ZoomMap>(
     key,
     () => getZoomMap(repoId!, params),
     SWR_OPTS,
   );
-  return { zoomMap: data, error, isLoading };
+  return { zoomMap: data, error, isLoading, retry: mutate };
 }
 
 export function useGraph(repoId: string | null, limit?: number) {
-  const { data, error, isLoading } = useSWR<GraphExportResponse>(
+  const { data, error, isLoading, mutate } = useSWR<GraphExportResponse>(
     repoId ? `graph:${repoId}:${limit ?? "default"}` : null,
     () => getGraph(repoId!, limit),
     SWR_OPTS,
   );
-  return { graph: data, error, isLoading };
+  return { graph: data, error, isLoading, mutate };
 }
 
 /**
@@ -78,15 +77,6 @@ export function useArchitectureCommunityGraph(
   const { data, error, isLoading } = useSWR<ArchitectureGraphResponse>(
     repoId ? `arch-community:${repoId}:${populationKey(population)}` : null,
     () => getArchitecture(repoId!, 2, populationParams(population)),
-    SWR_OPTS,
-  );
-  return { graph: data, error, isLoading };
-}
-
-export function useArchitectureGraph(repoId: string | null) {
-  const { data, error, isLoading } = useSWR<GraphExportResponse>(
-    repoId ? `arch-graph:${repoId}` : null,
-    () => getArchitectureGraph(repoId!),
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };

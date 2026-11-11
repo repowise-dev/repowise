@@ -22,6 +22,7 @@ Asserts:
 from __future__ import annotations
 
 import fnmatch
+from pathlib import Path
 
 import networkx as nx
 
@@ -86,6 +87,23 @@ class TestCppFileReachable:
         )
         pkgs = build_cpp_package_files(graph)
         assert is_cpp_file_reachable("a/foo.h", graph, pkgs) is True
+
+    def test_co_change_is_not_an_importer(self) -> None:
+        # Committed together is history: no include reaches the file or its sibling.
+        graph = _build_graph(
+            {
+                "a/foo.cc": _cpp_file(),
+                "a/foo_impl.cc": _cpp_file(),
+                "b/bar.cc": _cpp_file(),
+            },
+            edges=[
+                ("b/bar.cc", "a/foo.cc", {"edge_type": "co_changes"}),
+                ("b/bar.cc", "a/foo_impl.cc", {"edge_type": "co_changes"}),
+            ],
+        )
+        pkgs = build_cpp_package_files(graph)
+        assert is_cpp_file_reachable("a/foo.cc", graph, pkgs) is False
+        assert is_cpp_file_reachable("a/foo_impl.cc", graph, pkgs) is False
 
     def test_main_carrier_is_reachable(self) -> None:
         graph = _build_graph(
@@ -521,3 +539,56 @@ class TestCppEndToEnd:
         report = analyzer.analyze({"min_confidence": 0.0})
         paths = {f.file_path for f in report.findings}
         assert "apps/io_tester/io_tester.cc" not in paths
+
+
+def test_build_listed_cpp_file_is_reachable() -> None:
+    # Issue 3820: a file stamped build_listed is reachable
+    from repowise.core.analysis.dead_code.cpp_reachability import is_cpp_file_reachable
+
+    g = nx.DiGraph()
+    g.add_node("WorkspacesLib/SteamGameHelper.cpp", build_listed=True, language="cpp")
+    g.add_node("Orphan.cpp", build_listed=False, language="cpp")
+
+    assert is_cpp_file_reachable("WorkspacesLib/SteamGameHelper.cpp", g, {}) is True
+    assert is_cpp_file_reachable("Orphan.cpp", g, {}) is False
+
+
+def test_stamp_cpp_build_listed_ignores_headers(tmp_path: Path) -> None:
+    # Review finding: headers in CMake targets or vcxproj ClInclude are not compilation units
+    from unittest.mock import MagicMock
+
+    from repowise.core.ingestion.graph_warmups import _stamp_cpp_build_listed
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    (tmp_path / "App.vcxproj").write_text(
+        '<Project>\n'
+        '  <ItemGroup>\n'
+        '    <ClCompile Include="src/main.cpp" />\n'
+        '    <ClInclude Include="include/stale.h" />\n'
+        '  </ItemGroup>\n'
+        '</Project>\n'
+    )
+    (tmp_path / "app.rc").write_text('#include "include/branding.h"\n')
+
+    g = nx.DiGraph()
+    g.add_node("src/main.cpp")
+    g.add_node("include/stale.h")
+    g.add_node("include/branding.h")
+    g.add_node("cmake_src.cpp")
+    g.add_node("cmake_hdr.h")
+
+    target = MagicMock()
+    target.sources = ("cmake_src.cpp",)
+    target.public_headers = ("cmake_hdr.h",)
+    target.private_headers = ()
+    index = MagicMock()
+    index.targets = {"t": target}
+
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    _stamp_cpp_build_listed(ctx, g, index)
+
+    assert g.nodes["src/main.cpp"].get("build_listed") is True
+    assert g.nodes["cmake_src.cpp"].get("build_listed") is True
+    assert g.nodes["include/branding.h"].get("build_listed") is True
+    assert "build_listed" not in g.nodes["include/stale.h"]
+    assert "build_listed" not in g.nodes["cmake_hdr.h"]

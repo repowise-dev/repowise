@@ -15,9 +15,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.decisions.scope import binds_to_paths
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, gate_for
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile
 
@@ -122,12 +122,24 @@ def collapse_empty_duplicate_headings(content: str) -> str:
 
 
 def _is_infra_file(parsed: ParsedFile) -> bool:
-    """Return True if the file is an infrastructure file."""
-    lang = parsed.file_info.language
-    if lang in _INFRA_LANGUAGES:
-        return True
-    name = Path(parsed.file_info.path).name
-    return name in _INFRA_FILENAMES
+    """Whether a file is documented as infrastructure rather than as code.
+
+    The one definition selection, generation and the sweeps share. Build and
+    deploy definitions (Dockerfile, Makefile, Terraform) are infrastructure. A
+    shell script is code like any other, so a lint or release script competes
+    for a file page, unless it is a container entrypoint: the script the
+    deployment itself runs. Tests are never infrastructure.
+    """
+    fi = parsed.file_info
+    if fi.is_test:
+        return False
+    name = Path(fi.path).name
+    if fi.language == "shell":
+        # Ceiling: matched by name. A script a Dockerfile runs under another
+        # name (``CMD ["./start.sh"]``) stays code; reading the Dockerfile's
+        # ENTRYPOINT/CMD would catch it at the cost of a cross-file pass.
+        return "entrypoint" in name.lower()
+    return fi.language in _INFRA_LANGUAGES or name in _INFRA_FILENAMES
 
 
 def _is_significant_file(
@@ -232,13 +244,17 @@ def _select_clone_representatives(
 def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
     """Index dead-code findings by file path for per-page lookup.
 
-    Kinds the finding-type registry withholds never reach a page prompt.
+    Kinds the finding-type registry withholds, and findings on a language it
+    gates for dead code, never reach a page prompt.
+
+    Ceiling: the analyzer's own values, without the workspace's cross-repo cut;
+    pages are generated per repository, before the workspace pass writes it.
     """
     dead_code_by_file: dict[str, list[dict]] = {}
     withheld = excluded_types()
     if dead_code_report is not None and getattr(dead_code_report, "findings", None):
         for f in dead_code_report.findings:
-            if str(f.kind) in withheld:
+            if str(f.kind) in withheld or gate_for("dead_code", f.file_path, str(f.kind)):
                 continue
             dead_code_by_file.setdefault(f.file_path, []).append(
                 {
@@ -351,3 +367,15 @@ def build_decision_maps(
             for fp in d.affected_files or []:
                 decisions_by_file.setdefault(fp, []).append(payload)
     return decisions_by_file, decisions_all
+
+
+def indexed_parsed_files(graph_builder: Any, parsed_files: list[Any]) -> dict[str, Any]:
+    """``path -> ParsedFile`` for the whole indexed set, not one run's slice.
+
+    Re-exports and package roots reach files an incremental run did not parse,
+    so the builder's own map wins when it has one.
+    """
+    parsed_by_path = getattr(graph_builder, "_parsed_files", None)
+    if not isinstance(parsed_by_path, dict) or not parsed_by_path:
+        parsed_by_path = {p.file_info.path: p for p in parsed_files}
+    return parsed_by_path

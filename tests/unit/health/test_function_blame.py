@@ -7,11 +7,13 @@ from types import SimpleNamespace
 
 from repowise.core.ingestion.git_indexer.function_blame import (
     BlameIndex,
+    _blame_ignore_revs_args,
     _parse_porcelain,
     build_blame_index,
     distinct_commits_in_range,
     median_author_time_in_range,
     recent_commits_in_range,
+    recent_distinct_commits_in_range,
 )
 
 _PORCELAIN = (
@@ -39,7 +41,8 @@ _PORCELAIN = (
 
 
 def test_parse_porcelain_indexes_each_final_line():
-    lines, authors = _parse_porcelain(_PORCELAIN)
+    lines, authors, boundary_shas = _parse_porcelain(_PORCELAIN)
+    assert boundary_shas == frozenset()
     assert set(lines.keys()) == {1, 2, 3, 4}
     assert authors["a" * 40][0] == "Alice"
     assert authors["b" * 40][0] == "Bob"
@@ -49,6 +52,14 @@ def test_parse_porcelain_indexes_each_final_line():
     assert lines[2] == ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1700000000)
     assert lines[3] == ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1750000000)
     assert lines[4] == ("cccccccccccccccccccccccccccccccccccccccc", 1755000000)
+
+
+def test_parse_porcelain_shares_one_entry_per_commit():
+    # Lines from the same commit hold the same tuple, so the index costs one
+    # entry per commit rather than one tuple and sha string per line.
+    lines, _, _ = _parse_porcelain(_PORCELAIN)
+    assert lines[1] is lines[2]
+    assert lines[1] is not lines[3]
 
 
 def test_distinct_commits_in_range():
@@ -84,6 +95,19 @@ def test_recent_commits_in_range():
         "b" * 40,
         "c" * 40,
     }
+
+
+def test_recent_distinct_commits_in_range_keeps_the_newest():
+    idx = BlameIndex(lines=_parse_porcelain(_PORCELAIN)[0])
+    assert recent_distinct_commits_in_range(idx, 1, 4, limit=10) == ["c" * 40, "b" * 40, "a" * 40]
+    assert recent_distinct_commits_in_range(idx, 1, 4, limit=2) == ["c" * 40, "b" * 40]
+    assert recent_distinct_commits_in_range(BlameIndex(), 1, 4, limit=2) == []
+    assert recent_distinct_commits_in_range(idx, 4, 1, limit=2) == []
+
+
+def test_recent_distinct_commits_in_range_breaks_ties_on_sha():
+    idx = BlameIndex(lines={1: ("b", 5), 2: ("a", 5), 3: ("c", 1)})
+    assert recent_distinct_commits_in_range(idx, 1, 3, limit=2) == ["a", "b"]
 
 
 def test_build_blame_index_skips_low_commit_count():
@@ -125,3 +149,71 @@ def test_build_blame_index_happy_path(tmp_path: Path):
         commit_count_total=50,
     )
     assert set(idx.lines.keys()) == {1, 2, 3, 4}
+
+
+def test_blame_ignore_revs_args_empty_when_file_absent(tmp_path: Path):
+    repo = SimpleNamespace(git=SimpleNamespace(config=lambda *a, **kw: ""))
+    assert _blame_ignore_revs_args(repo, tmp_path) == []
+
+
+def test_blame_ignore_revs_args_empty_without_repo_path():
+    repo = SimpleNamespace(git=SimpleNamespace(config=lambda *a, **kw: ""))
+    assert _blame_ignore_revs_args(repo, None) == []
+
+
+def test_blame_ignore_revs_args_added_when_file_present_and_unconfigured(tmp_path: Path):
+    (tmp_path / ".git-blame-ignore-revs").write_text("abc123\n", encoding="utf-8")
+
+    def _raise_unset(*_a, **_kw):
+        raise RuntimeError("key not found")
+
+    repo = SimpleNamespace(git=SimpleNamespace(config=_raise_unset))
+    args = _blame_ignore_revs_args(repo, tmp_path)
+    assert args == ["--ignore-revs-file", str(tmp_path / ".git-blame-ignore-revs")]
+
+
+def test_blame_ignore_revs_args_empty_when_already_configured(tmp_path: Path):
+    (tmp_path / ".git-blame-ignore-revs").write_text("abc123\n", encoding="utf-8")
+    repo = SimpleNamespace(git=SimpleNamespace(config=lambda *a, **kw: "some/other/path\n"))
+    assert _blame_ignore_revs_args(repo, tmp_path) == []
+
+
+def test_build_blame_index_passes_the_ignore_revs_flag(tmp_path: Path):
+    (tmp_path / "foo.py").write_text("def alpha():\n    pass\n", encoding="utf-8")
+    (tmp_path / ".git-blame-ignore-revs").write_text("abc123\n", encoding="utf-8")
+    calls: list[tuple] = []
+
+    def _blame(*a, **kw):
+        calls.append(a)
+        return _PORCELAIN
+
+    def _raise_unset(*_a, **_kw):
+        raise RuntimeError("key not found")
+
+    repo = SimpleNamespace(git=SimpleNamespace(blame=_blame, config=_raise_unset))
+    idx = build_blame_index(repo, "foo.py", repo_path=tmp_path, commit_count_total=50)
+    assert idx.lines
+    assert "--ignore-revs-file" in calls[0]
+
+
+def test_build_blame_index_retries_without_the_flag_on_a_malformed_ignore_revs_file(
+    tmp_path: Path,
+):
+    (tmp_path / "foo.py").write_text("def alpha():\n    pass\n", encoding="utf-8")
+    (tmp_path / ".git-blame-ignore-revs").write_text("not-a-valid-sha\n", encoding="utf-8")
+    calls: list[tuple] = []
+
+    def _blame(*a, **kw):
+        calls.append(a)
+        if "--ignore-revs-file" in a:
+            raise RuntimeError("fatal: could not resolve 'not-a-valid-sha'")
+        return _PORCELAIN
+
+    def _raise_unset(*_a, **_kw):
+        raise RuntimeError("key not found")
+
+    repo = SimpleNamespace(git=SimpleNamespace(blame=_blame, config=_raise_unset))
+    idx = build_blame_index(repo, "foo.py", repo_path=tmp_path, commit_count_total=50)
+    # Degrades to ordinary blame rather than losing the signal entirely.
+    assert idx.lines
+    assert len(calls) == 2

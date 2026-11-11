@@ -32,7 +32,7 @@ src/
   settings/      general-form
   shared/        primitives: responsive-table, adaptive-panel, toast,
                  error-boundary, empty-state, api-error, metric-card,
-                 entity links/hover cards, context-drawer, owl-loader
+                 entity links/hover cards, context-drawer, orb-loader
   symbols/       symbol-table, symbol-drawer, symbol-page, graph/git panels
   ui/            Radix-CVA primitives
   wiki/          wiki-markdown, code-block, ToC, git-history, backlinks

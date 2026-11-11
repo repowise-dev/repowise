@@ -42,6 +42,8 @@ def read_account(account_id: str, expand: str = "") -> dict[str, object]:
         for name in sorted(wanted):
             if name not in normalized:
                 normalized[name] = None
+        normalized["expanded"] = sorted(wanted)
+        normalized["expanded_count"] = len(wanted)
     normalized["links"] = {"self": f"/accounts/{account_id}"}
     return normalized
 
@@ -104,6 +106,8 @@ def read_workspace(workspace_id: str, expand: str = "") -> dict[str, object]:
         for name in sorted(wanted):
             if name not in normalized:
                 normalized[name] = None
+        normalized["expanded"] = sorted(wanted)
+        normalized["expanded_count"] = len(wanted)
     normalized["links"] = {"self": f"/workspaces/{workspace_id}"}
     return normalized
 
@@ -166,6 +170,8 @@ def read_project(project_id: str, expand: str = "") -> dict[str, object]:
         for name in sorted(wanted):
             if name not in normalized:
                 normalized[name] = None
+        normalized["expanded"] = sorted(wanted)
+        normalized["expanded_count"] = len(wanted)
     normalized["links"] = {"self": f"/projects/{project_id}"}
     return normalized
 

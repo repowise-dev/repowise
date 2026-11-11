@@ -13,8 +13,9 @@ asymmetric, durable value:
     * Flood digest: a multi-file grep flood is served as a compact
       per-file digest via updatedToolOutput, with match counts and anchor
       line numbers per file, with the dropped tail named. Opt-in
-      (hooks.search_digest), default off, Claude Code only. Falls back
-      to appending the same digest beside the flood, as it always did.
+      (hooks.search_digest), default off, Claude Code only. When it is
+      not served, nothing is added: appending it beside the flood only
+      grew the result.
     * Zero-result rescue: grep returned 0 hits but the wiki has a
       semantic match (FTS on docs, fuzzy symbol match, decision record
       mention). Surfaces the closest hit so the agent doesn't burn
@@ -69,6 +70,10 @@ registers it any more — see :mod:`.codex`.)
       decision, strictly capped); Codex lifecycle hooks instead get the
       index-staleness reminder below.
 
+  PostToolUse → edit tools, Cursor afterFileEdit
+    * Opt-in edit capture (``attribution.capture``): the lines the agent
+      wrote, as hashes, in a local sidecar. Silent; see :mod:`.edit_capture`.
+
   PostToolUse → edit tools (Codex)
     * After file edits, emit a short reminder that the indexed context may
       be stale.
@@ -100,6 +105,7 @@ import contextlib
 import json
 import sys
 from pathlib import Path
+from typing import TextIO
 
 import click
 
@@ -111,6 +117,7 @@ from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
+from .edit_capture import capture_edit
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
@@ -131,6 +138,11 @@ from .wrong_path import _handle_tool_failure
 #: contract, and ``tests/unit/cli/test_augment_hook_perf.py`` holds that.
 _ADAPTERS: dict[str, object] = {}
 
+#: Where :func:`_emit_response` writes; ``None`` is ``sys.stdout``. The hook
+#: entry sets it and points ``sys.stdout`` at stderr, so a library that prints
+#: (structlog does by default) cannot corrupt the JSON response.
+_response_stream: TextIO | None = None
+
 
 def _adapter(client: str | None):
     """The adapter for this invocation, memoized for the process."""
@@ -144,9 +156,9 @@ def _adapter(client: str | None):
 @click.command("augment")
 @click.option(
     "--client",
-    type=click.Choice(["codex"]),
+    type=click.Choice(["codex", "cursor"]),
     default=None,
-    help="Hook client marker. Codex lifecycle hooks pass this explicitly.",
+    help="Hook client marker. Codex and Cursor hooks pass this explicitly.",
 )
 @click.option(
     "--coverage-only",
@@ -166,6 +178,16 @@ def augment_command(
 ) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     configure_cli_logging(verbose=verbose)
+    if client:
+        from repowise.cli.platform import telemetry
+
+        # The hook names its host; that beats reading the environment.
+        telemetry.add_command_outcome(client=client)
+    # stdout carries the hook response; logs go to stderr.
+    with contextlib.suppress(ImportError):
+        import structlog
+
+        structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
     try:
         _run_augment(client=client, coverage_only=coverage_only)
     except (SystemExit, KeyboardInterrupt):
@@ -193,6 +215,15 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
 
     if coverage_only:
         _run_coverage_only(payload, client)
+        return
+
+    # Opt-in edit capture for AI attribution. First, so a slow enrichment
+    # below cannot cost an event; it returns at once when capture is off.
+    if event == "afterFileEdit" or (
+        event == "PostToolUse" and tool_name in _adapter(client).edit_tool_names
+    ):
+        capture_edit(_adapter(client).name, payload)
+    if event == "afterFileEdit":
         return
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
@@ -332,14 +363,67 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
         payload["additionalContext"] = result.context
     if replacement:
         payload["updatedToolOutput"] = replacement
-    sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
-    sys.stdout.flush()
+    out = _response_stream or sys.stdout
+    out.write(json.dumps({"hookSpecificOutput": payload}))
+    out.flush()
 
 
 # Window within which an identical (event, context) emission is treated as a
 # duplicate. Generous enough to cover two hook processes racing on the same
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
+_MAX_MARKER_CLEANUP_PER_RUN = 20
+_SWEEP_THROTTLE_FILE = ".repowise-augment-sweep.stamp"
+
+
+def _is_sweep_throttled(temp_dir: Path, now: float) -> bool:
+    """Return True if a sweep was performed within the dedup TTL window."""
+    stamp = temp_dir / _SWEEP_THROTTLE_FILE
+    with contextlib.suppress(OSError):
+        if now - stamp.stat().st_mtime < _EMIT_DEDUP_TTL_SECONDS:
+            return True
+    with contextlib.suppress(OSError):
+        stamp.write_text(str(now), encoding="utf-8")
+    return False
+
+
+def _unlink_if_expired(entry: Path, now: float) -> bool:
+    """Delete entry if older than TTL. Return True if deleted."""
+    if entry.name == _SWEEP_THROTTLE_FILE:
+        return False
+    with contextlib.suppress(OSError):
+        if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
+            entry.unlink(missing_ok=True)
+            return True
+    return False
+
+
+def _sweep_dir(temp_dir: Path, now: float, max_delete: int) -> None:
+    deleted = 0
+    with contextlib.suppress(OSError):
+        for entry in temp_dir.glob(".repowise-augment-*"):
+            if _unlink_if_expired(entry, now):
+                deleted += 1
+                if deleted >= max_delete:
+                    break
+
+
+def _cleanup_stale_markers(
+    temp_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
+) -> None:
+    """Delete expired .repowise-augment-* markers, throttled to run at most once per TTL window."""
+    if not _is_sweep_throttled(temp_dir, now):
+        _sweep_dir(temp_dir, now, max_delete)
+
+
+def _take_over_stale_marker(marker: Path, now: float) -> bool:
+    """Take over an existing marker if older than TTL. Return True if claimed."""
+    with contextlib.suppress(OSError):
+        if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
+            return False
+    with contextlib.suppress(OSError):
+        marker.write_text(str(now), encoding="utf-8")
+    return True
 
 
 def _claim_emission(event: str, context: str) -> bool:
@@ -364,9 +448,10 @@ def _claim_emission(event: str, context: str) -> bool:
     import time
 
     try:
-        key = hashlib.sha1(f"{event}\x00{context}".encode()).hexdigest()[:16]
+        key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
         marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
         now = time.time()
+        claimed = False
         try:
             # O_EXCL: only the first concurrent caller creates the file.
             fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -374,19 +459,15 @@ def _claim_emission(event: str, context: str) -> bool:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
-            return True
+            claimed = True
         except FileExistsError:
             # Someone emitted recently — defer unless the marker is stale, in
             # which case take it over (handles a real repeat search later, and
             # a crashed prior run that left the marker behind).
-            try:
-                if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
-                    return False
-            except OSError:
-                return True
-            with contextlib.suppress(OSError):
-                marker.write_text(str(now), encoding="utf-8")
-            return True
+            claimed = _take_over_stale_marker(marker, now)
+        if claimed:
+            _cleanup_stale_markers(marker.parent, now)
+        return claimed
     except Exception:
         return True
 

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob
+from repowise.server.services.index_storage import index_storage_bytes
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -81,15 +82,27 @@ async def test_completed_sync_job_wins_over_fallback(client: AsyncClient, app) -
 
 
 @pytest.mark.asyncio
+async def test_newer_cli_sync_wins_over_an_older_sync_job(client: AsyncClient, app) -> None:
+    """A server sync job from 2020 does not hide a later CLI sync of the row."""
+    repo = await create_test_repo(client)
+    await _complete_job(app, repo["id"], mode="sync", finished_at=datetime(2020, 1, 1))
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["sync"]["last_sync_at"] == body["repo"]["updated_at"]
+    assert body["sync"]["last_sync_model"] is None
+
+
+@pytest.mark.asyncio
 async def test_head_commit_heals_from_state_json(client: AsyncClient, app, tmp_path) -> None:
-    """overview-summary serves state.json's last_sync_commit over a stale DB
-    head_commit, matching /api/repos and /health/overview so the dashboard's
-    indexed-commit display never reads "behind" after a no-op update left the
-    repositories row un-restamped.
+    """overview-summary serves state.json's last_sync_commit when the DB row was
+    never stamped, matching /api/repos and /health/overview. Rows that disagree
+    with state.json are resolved by the shared indexed-commit resolver.
     """
     from repowise.core.persistence.models import Repository
 
-    stale = "a" * 40
     current = "c" * 40
 
     repo = await create_test_repo(client, tmp_path)
@@ -97,12 +110,11 @@ async def test_head_commit_heals_from_state_json(client: AsyncClient, app, tmp_p
     repowise.mkdir(exist_ok=True)
     (repowise / "state.json").write_text(f'{{"last_sync_commit": "{current}"}}', encoding="utf-8")
 
-    # DB row left at an older commit (the un-restamped case the heal repairs).
     async with get_session(app.state.session_factory) as session:
         row = (
             await session.execute(select(Repository).where(Repository.id == repo["id"]))
         ).scalar_one()
-        row.head_commit = stale
+        row.head_commit = None
 
     resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
     assert resp.status_code == 200
@@ -130,14 +142,17 @@ async def test_head_commit_falls_back_to_db_without_state_json(
 
 
 @pytest.mark.asyncio
-async def test_sync_includes_index_storage_bytes(client: AsyncClient, tmp_path) -> None:
-    """overview-summary reports total .repowise on-disk footprint."""
+async def test_index_storage_bytes_moves_to_stats(client: AsyncClient, tmp_path) -> None:
+    """The .repowise footprint is measured for Stats; overview no longer walks it."""
     repo = await create_test_repo(client, tmp_path)
-    repo_dir = Path(repo["local_path"])
-    repowise = repo_dir / ".repowise"
+    repowise = Path(repo["local_path"]) / ".repowise"
     repowise.mkdir()
     (repowise / "wiki.db").write_bytes(b"x" * 100)
 
-    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
-    assert resp.status_code == 200
-    assert resp.json()["sync"]["index_storage_bytes"] == 100
+    assert await index_storage_bytes(repo["local_path"]) == 100
+    assert await index_storage_bytes(None) is None
+    assert await index_storage_bytes(str(tmp_path / "no-index")) is None
+
+    overview = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert overview.status_code == 200
+    assert "index_storage_bytes" not in overview.json()["sync"]

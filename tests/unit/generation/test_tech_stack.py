@@ -434,6 +434,15 @@ def test_a_competing_formatter_suppresses_the_ruff_format_command(tmp_path):
     assert "format" not in cmds
 
 
+def test_explicit_ruff_format_in_pre_commit_sets_the_format_command(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n", encoding="utf-8")
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "repos:\n  - hooks:\n      - id: ruff-format\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert cmds.get("format") == "ruff format ."
+
+
 def test_detects_npm_scripts(tmp_path):
     pkg = {
         "name": "myapp",

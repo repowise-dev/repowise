@@ -19,6 +19,10 @@ describe("published export map", () => {
     expect(missing).toEqual([]);
   });
 
+  it("publishes the shared cache module", () => {
+    expect(exportMap["./cache"]).toBe("./src/cache.ts");
+  });
+
   it("is published under the scope the workflow authenticates against", () => {
     expect(manifest.name).toBe("@repowise-dev/api-client");
     expect(manifest.publishConfig?.registry).toBe("https://npm.pkg.github.com");

@@ -10,6 +10,7 @@ import pytest
 from rich.console import Console
 
 from repowise.cli import mcp_config
+from repowise.cli.agent_targets.types import FileAction, FileWrite
 from repowise.cli.commands import init_cmd, update_cmd
 from repowise.cli.commands.update_cmd.command import run_update
 from repowise.cli.editor_integrations import claude as claude_integration
@@ -626,9 +627,9 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
 ) -> None:
     calls: list[tuple[str, object, object | None]] = []
 
-    def fake_save_root_mcp_config(repo_path: Path) -> Path:
+    def fake_sync_project_mcp_config(repo_path: Path) -> FileWrite:
         calls.append(("root-mcp", repo_path, None))
-        return repo_path / ".mcp.json"
+        return FileWrite(path=repo_path / ".mcp.json", action=FileAction.CREATED)
 
     def fake_maybe_generate_claude_md(
         console_obj: object,
@@ -638,7 +639,9 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
     ) -> None:
         calls.append(("claude-md", repo_path, no_claude_md))
 
-    monkeypatch.setattr(mcp_config, "save_root_mcp_config", fake_save_root_mcp_config)
+    monkeypatch.setattr(
+        claude_integration.claude_target, "sync_project_mcp_config", fake_sync_project_mcp_config
+    )
     monkeypatch.setattr(
         claude_integration,
         "maybe_generate_claude_md",
@@ -806,154 +809,6 @@ def test_write_editor_project_files_honors_agents_config_optout_when_codex_enabl
 
     assert calls == ["mcp", "hooks"]
     assert written == [tmp_path / ".codex" / "config.toml", tmp_path / ".codex" / "hooks.toml"]
-
-
-def _write_settings(path: Path, entry: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"mcpServers": {"repowise": entry}}), encoding="utf-8")
-
-
-def test_describe_mcp_registration_change_warns_on_repoint(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """A second init from another repo replaces the single 'repowise' entry.
-
-    That write is silent and only surfaces later, when the repo or binary it
-    points at is gone. The probe names both sides before the merge happens.
-    """
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    other_repo = str((tmp_path / "other-repo").resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {"command": "repowise", "args": ["mcp", other_repo, "--transport", "stdio"]},
-    )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    this_repo = tmp_path / "this-repo"
-    this_repo.mkdir()
-    notice = claude_config.describe_mcp_registration_change(this_repo)
-
-    assert notice is not None
-    assert other_repo in notice
-    assert str(this_repo.resolve()).replace("\\", "/") in notice
-    assert "--no-editor-setup" in notice
-
-
-def test_describe_mcp_registration_change_silent_when_unchanged(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """Re-running init on the same repo is not a clobber and stays quiet."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    repo_arg = str(repo.resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {"command": "repowise", "args": ["mcp", repo_arg, "--transport", "stdio"]},
-    )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    assert claude_config.describe_mcp_registration_change(repo) is None
-
-
-def test_describe_mcp_registration_change_silent_on_first_run(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """No stored entry means nothing is being replaced."""
-    monkeypatch.setattr(
-        claude_config, "_claude_code_settings_path", lambda: tmp_path / "missing.json"
-    )
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert claude_config.describe_mcp_registration_change(repo) is None
-
-
-def test_describe_mcp_registration_change_warns_on_command_repoint(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """Same repo, different binary — the release-smoke-test case."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    repo_arg = str(repo.resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {
-            "command": "C:/Users/dev/.venv/Scripts/repowise.exe",
-            "args": ["mcp", repo_arg, "--transport", "stdio"],
-        },
-    )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(
-        claude_config, "resolve_repowise_command", lambda: "C:/tmp/throwaway/repowise.exe"
-    )
-
-    notice = claude_config.describe_mcp_registration_change(repo)
-    assert notice is not None
-    assert "C:/Users/dev/.venv/Scripts/repowise.exe" in notice
-    assert "C:/tmp/throwaway/repowise.exe" in notice
-
-
-def test_describe_mcp_registration_change_reports_both_fields(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """A new repo indexed by a new install moves both fields; name both."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    other = str((tmp_path / "other").resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {"command": "old-repowise", "args": ["mcp", other, "--transport", "stdio"]},
-    )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "new-repowise")
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    notice = claude_config.describe_mcp_registration_change(repo)
-
-    assert notice is not None
-    assert "repo and command" in notice
-    assert "old-repowise" in notice and "new-repowise" in notice
-    assert other in notice
-
-
-def test_describe_mcp_registration_change_handles_truncated_entry(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """A hand-edited entry with no args must not print 'was: None'."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    _write_settings(settings, {"command": "repowise", "args": ["mcp"]})
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    notice = claude_config.describe_mcp_registration_change(repo)
-
-    assert notice is not None
-    assert "None" not in notice
-    assert "(not set)" in notice
 
 
 def test_codex_project_setup_writes_project_config_hooks_and_agents(
@@ -1223,17 +1078,19 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 
 
 def test_update_command_uses_editor_refresh_abstraction() -> None:
-    from repowise.cli.commands.update_cmd.command import _refresh_editor_stamp
+    from repowise.cli.commands.update_cmd.command import _finish_outcome, _refresh_editor_stamp
 
-    command_source = inspect.getsource(run_update)
+    command_source = inspect.getsource(inspect.getmodule(run_update))
+    finish_source = inspect.getsource(_finish_outcome)
     stamp_source = inspect.getsource(_refresh_editor_stamp)
 
-    # The command routes every editor-file write through the shared stamp
-    # helper, which in turn uses the refresh abstraction — never the raw
-    # generator/fetcher internals.
-    assert "_refresh_editor_stamp" in command_source
+    # The command routes every editor-file write through the shared exit
+    # helper and its stamp helper, which in turn uses the refresh abstraction —
+    # never the raw generator/fetcher internals.
+    assert "_finish_outcome" in command_source
+    assert "_refresh_editor_stamp" in finish_source
     assert "refresh_editor_project_files" in stamp_source
-    for source in (command_source, stamp_source):
+    for source in (command_source, finish_source, stamp_source):
         assert "ClaudeMdGenerator" not in source
         assert "EditorFileDataFetcher" not in source
         assert "claude_md" not in source
@@ -1299,9 +1156,36 @@ def test_workspace_generation_rebinds_codex_provider_to_repo(
     assert calls == [("codex_cli", "codex_cli/gpt-5.5", tmp_path)]
 
 
+def test_workspace_generation_rebinds_opencode_provider_to_repo(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """opencode also runs in the repo's cwd, so a workspace must rebind it per repo."""
+
+    class FakeProvider:
+        provider_name = "opencode"
+        model_name = "opencode/default"
+
+    rebound = object()
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_resolve_provider(provider_name: str, model: str, repo_path: Path) -> object:
+        calls.append((provider_name, model, repo_path))
+        return rebound
+
+    monkeypatch.setattr(init_cmd.workspace, "resolve_provider", fake_resolve_provider)
+
+    result = init_cmd.workspace._workspace_generation_provider_for_repo(FakeProvider(), tmp_path)
+
+    assert result is rebound
+    assert calls == [("opencode", "opencode/default", tmp_path)]
+
+
 def test_init_command_uses_editor_option_abstraction() -> None:
-    source = inspect.getsource(init_cmd.init_command.callback) + inspect.getsource(
-        init_cmd._workspace_init
+    source = (
+        inspect.getsource(init_cmd.command._editor_options)
+        + inspect.getsource(init_cmd._finish._write_editor_files)
+        + inspect.getsource(init_cmd.workspace._workspace_editor_options)
     )
 
     assert "resolve_editor_setup_options" in source
@@ -1545,3 +1429,91 @@ def test_project_file_optouts_are_recorded_even_when_setup_is_off(
     editor_files = load_config(tmp_path).get("editor_files", {})
     assert editor_files.get("claude_md") is False
     assert editor_files.get("agents_md") is False
+
+
+def test_update_leaves_editor_files_alone_after_init_without_editor_setup(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """``init --no-editor-setup`` is remembered: ``update`` writes no editor file
+    until a later ``init`` turns editor setup back on."""
+    from repowise.cli.helpers import load_config
+
+    refreshed: list[Path] = []
+
+    class FakeIntegration:
+        integration_id = "fake"
+
+        def write_project_files(self, c: Any, p: Path, o: Any) -> list[Path]:
+            return []
+
+        def refresh_project_files(self, c: Any, p: Path, o: Any) -> None:
+            refreshed.append(p)
+
+    integrations: tuple[Any, ...] = (FakeIntegration(),)
+    (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
+    def init(no_editor_setup: bool) -> None:
+        write_editor_project_files(
+            _silent_console(),
+            tmp_path,
+            integrations=integrations,
+            no_editor_setup=no_editor_setup,
+        )
+
+    def update() -> None:
+        refresh_editor_project_files(
+            _silent_console(),
+            tmp_path,
+            integrations=integrations,
+        )
+
+    init(no_editor_setup=True)
+    assert load_config(tmp_path)["editor_setup"] is False
+    update()
+    assert refreshed == []
+
+    init(no_editor_setup=False)
+    assert load_config(tmp_path)["editor_setup"] is True
+    update()
+    assert refreshed == [tmp_path]
+
+
+def test_the_env_var_alone_is_not_remembered(tmp_path: Path, monkeypatch: Any) -> None:
+    """``REPOWISE_SKIP_EDITOR_SETUP`` describes the machine, so config is left alone."""
+    from repowise.cli.helpers import load_config
+
+    (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    write_editor_project_files(_silent_console(), tmp_path, integrations=())
+    assert "editor_setup" not in load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("agents_md", "expected"),
+    [
+        ("# Mine\n\n<!-- REPOWISE_AGENTS:START — Do not edit below this line. "
+         "Auto-generated by Repowise. -->\nold\n<!-- REPOWISE_AGENTS:END -->\n", True),
+        ("# Mine, no repowise section\n", False),
+        (None, False),
+    ],
+)
+def test_refresh_keeps_an_existing_agents_section_current(
+    tmp_path: Path, monkeypatch: Any, agents_md: str | None, expected: bool
+) -> None:
+    """Update never creates AGENTS.md, but a section it wrote is not left to go stale."""
+    if agents_md is not None:
+        (tmp_path / "AGENTS.md").write_text(agents_md, encoding="utf-8")
+    defaults: list[bool] = []
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, _repo, *, agents_md=None, default=True: defaults.append(default),
+    )
+
+    CodexSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    assert defaults == [expected]

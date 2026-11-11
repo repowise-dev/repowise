@@ -1,6 +1,6 @@
 ---
 description: Export the wiki (or architecture model) to markdown, HTML, JSON, or Structurizr DSL.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise export:*), Read
 ---
 
 # Repowise Export

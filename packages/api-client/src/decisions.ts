@@ -33,9 +33,11 @@ export async function listDecisions(
     offset?: number;
     /**
      * `priority` (server default) leads with confirmed rules, then the
-     * highest-confidence proposals. `recent` is newest-first.
+     * highest-confidence proposals. `recent` is newest-first. `review` is the
+     * review queue order: what most needs a person first, ranked over the
+     * whole lane before the page is cut.
      */
-    sort?: "priority" | "recent";
+    sort?: "priority" | "recent" | "review";
   },
 ): Promise<DecisionRecordResponse[]> {
   return apiGet<DecisionRecordResponse[]>(`/api/repos/${repoId}/decisions`, opts);
@@ -97,6 +99,19 @@ export async function patchDecision(
   return apiPatch<DecisionRecordResponse>(
     `/api/repos/${repoId}/decisions/${decisionId}`,
     data,
+  );
+}
+
+/**
+ * Re-accept a governing decision after re-reading it, which clears
+ * `needs_review`. Refused (400) for a candidate or a withdrawn decision.
+ */
+export async function reaffirmDecision(
+  repoId: string,
+  decisionId: string,
+): Promise<DecisionRecordResponse> {
+  return apiPost<DecisionRecordResponse>(
+    `/api/repos/${repoId}/decisions/${decisionId}/reaffirm`,
   );
 }
 

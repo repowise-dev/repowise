@@ -286,3 +286,52 @@ class TestSearchMode:
 
         assert result["mode"] == "symbol"
         assert "ignored_arguments" not in result
+
+
+class TestSearchPatternAlias:
+    # A host that defers tool schemas lets the model call search_codebase before
+    # it has seen one, so it guesses grep's `pattern` for `query`.
+
+    @pytest.mark.asyncio
+    async def test_pattern_alone_runs_as_the_query(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        by_pattern = await search_codebase(pattern="AuthService")
+        by_query = await search_codebase("AuthService")
+
+        assert "error" not in by_pattern
+        assert by_pattern["mode"] == by_query["mode"] == "symbol"
+        assert by_pattern["results"] == by_query["results"]
+        assert "ignored_arguments" not in by_pattern
+
+    @pytest.mark.asyncio
+    async def test_query_wins_and_pattern_is_named(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", pattern="src/auth/service.py")
+
+        assert result["mode"] == "symbol"
+        entry = _entry(result, "pattern")
+        assert entry["values"] == ["src/auth/service.py"]
+        assert entry["superseded_by"] == "query"
+
+    @pytest.mark.asyncio
+    async def test_neither_names_the_required_argument(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase()
+
+        assert result["results"] == []
+        assert "`query`" in result["error"]
+        assert "`pattern`" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_schema_accepts_pattern_without_query(self):
+        # The original failure was FastMCP's own validation, before the body ran.
+        from repowise.server.mcp_server import mcp
+
+        tools = await mcp.list_tools()
+        schema = next(t for t in tools if t.name == "search_codebase").inputSchema
+
+        assert "pattern" in schema["properties"]
+        assert "query" not in schema.get("required", [])

@@ -6,10 +6,13 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from repowise.core.analysis.risk_semantics import file_risk_scales
+from repowise.core.analysis.test_reachability import direct_importers
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.persistence.batches import chunked
+from repowise.core.persistence.crud import get_graph_nodes_by_ids, get_test_file_paths
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -18,7 +21,9 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.core.support_paths import is_doc_or_config_path
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._changes import file_changes
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -32,9 +37,30 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import served_root
+from repowise.server.mcp_server._test_selection import (
+    SelectionUnavailableError,
+    files_change,
+    select_change_tests,
+)
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
+from repowise.server.mcp_server._workspace_routing import (
+    hint_misses,
+    needs_routing,
+    one_repo_refusal,
+    rekey_targets,
+    route_targets,
+    settle_missing,
+    single_repo,
+)
 
-from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
-from .directives import _build_pr_directive, _governance_directive
+from .assessment import (
+    _assess_one_target,
+    _get_active_contributor_count,
+    fix_annotation,
+    normalize_target_path,
+)
+from .directives import ChangeTests, _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health
 
 #: Fields an agent cannot rank or act on: uncalibrated pagerank floats, and
@@ -71,10 +97,31 @@ _TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
         "relationship_analysis",
     ),
     "churn": ("change_magnitude", "risk_type", "change_pattern"),
+    "owners": (
+        "owner_pct",
+        "owner_line_pct",
+        "recent_owner",
+        "recent_owner_pct",
+        "bus_factor",
+        "contributor_count",
+    ),
 }
 _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
-_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES) | {"scales"}
+#: ``tests`` adds the PR directive's typed ``test_recommendations`` rows and
+#: ``blast`` the ``pr_blast_radius`` dossier, ``changes`` each file's recent
+#: Change Records.
+_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | {"blast", "scales", "tests", "changes"}
+#: Blocks only the PR directive builds: without ``changed_files`` they hold nothing.
+_PR_ONLY_INCLUDES = ("tests", "blast")
+
+
+def _name_pr_only_includes(ignored: list[dict], include: set[str]) -> None:
+    """Name the PR-only blocks a targets-only call asked for, so their absence
+    is not read as "no tests" or "no blast radius"."""
+    unused = [block for block in _PR_ONLY_INCLUDES if block in include]
+    if unused:
+        ignored.append({"argument": "include", "values": unused, "requires": "changed_files"})
 
 
 def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
@@ -110,25 +157,63 @@ def _add_link(links: dict[str, dict[str, set[str]]], node: str, other: str, edge
     links.setdefault(node, {}).setdefault(other, set()).add(edge_type)
 
 
-async def _load_dependency_graph(session: Any, repo_id: str) -> _DependencyGraph:
-    node_res = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
-    node_meta = {n.node_id: n for n in node_res.scalars().all()}
-    file_node_ids = {node_id for node_id, node in node_meta.items() if node.node_type == "file"}
+async def _file_dependency_edges(
+    session: Any, repo_id: str, endpoint: Any, node_ids: set[str], node_meta: dict[str, GraphNode]
+) -> list[GraphEdge]:
+    """File-to-file dependency edges whose *endpoint* column is in *node_ids*.
 
-    # File-to-file dependency edges only: every edge is read as "X depends on
-    # Y", so a symbol, containment or co-change edge would invent a dependent
-    # (a co-change partner would be reported as an import).
-    res = await session.execute(
-        select(GraphEdge).where(
-            GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.in_(FILE_DEPENDENCY_EDGE_TYPES),
-            GraphEdge.source_node_id.in_(file_node_ids),
-            GraphEdge.target_node_id.in_(file_node_ids),
+    File-to-file only: every edge is read as "X depends on Y", so a symbol,
+    containment or co-change edge would invent a dependent (a co-change
+    partner would be reported as an import). The node-type check runs here
+    rather than as SQL subqueries, which led SQLite onto the source-node index
+    and cost seconds per call. Endpoint rows are added to *node_meta*.
+    """
+    edges: list[GraphEdge] = []
+    for batch in chunked(sorted(node_ids)):
+        res = await session.execute(
+            select(GraphEdge).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.in_(FILE_DEPENDENCY_EDGE_TYPES),
+                endpoint.in_(batch),
+            )
         )
+        edges.extend(res.scalars().all())
+    unseen = {n for e in edges for n in (e.source_node_id, e.target_node_id)} - node_meta.keys()
+    node_meta.update(await get_graph_nodes_by_ids(session, repo_id, sorted(unseen)))
+
+    def is_file(node_id: str) -> bool:
+        node = node_meta.get(node_id)
+        return node is not None and node.node_type == "file"
+
+    return [e for e in edges if is_file(e.source_node_id) and is_file(e.target_node_id)]
+
+
+async def _load_dependency_graph(session: Any, repo_id: str, roots: set[str]) -> _DependencyGraph:
+    """The part of the dependency graph the cards for *roots* read.
+
+    That is every edge touching a root (``import_links``), plus the edges into
+    each direct dependent, the second hop ``_dependency_population`` walks.
+    Adjacency and ``dep_counts`` are complete for roots and their direct
+    dependents only, and ``node_meta`` holds just the roots and the endpoints
+    of those edges. Reading the whole graph instead cost tens of seconds per
+    call on a large repository.
+    """
+    node_meta = await get_graph_nodes_by_ids(session, repo_id, sorted(roots))
+    near = await _file_dependency_edges(
+        session, repo_id, GraphEdge.target_node_id, roots, node_meta
     )
+    near += await _file_dependency_edges(
+        session, repo_id, GraphEdge.source_node_id, roots, node_meta
+    )
+    direct = {e.source_node_id for e in near if e.target_node_id in roots}
+    far = await _file_dependency_edges(
+        session, repo_id, GraphEdge.target_node_id, direct - roots, node_meta
+    )
+
     import_links: dict[str, dict[str, set[str]]] = {}
     reverse_deps: dict[str, dict[str, set[str]]] = {}
-    for e in res.scalars().all():
+    # A root-to-root edge comes back from both queries; the sets absorb it.
+    for e in [*near, *far]:
         edge_type = str(e.edge_type)
         _add_link(import_links, e.source_node_id, e.target_node_id, edge_type)
         _add_link(import_links, e.target_node_id, e.source_node_id, edge_type)
@@ -139,21 +224,25 @@ async def _load_dependency_graph(session: Any, repo_id: str) -> _DependencyGraph
     return _DependencyGraph(node_meta, import_links, reverse_deps, dep_counts)
 
 
-def _hotspot_entry(meta: GitMetadata) -> dict:
+def _hotspot_entry(meta: GitMetadata, as_of_ts: Any = None) -> dict:
     entry = {
         "file_path": meta.file_path,
         "hotspot_score": meta.churn_percentile,
         "is_hotspot": True,
         "primary_owner": meta.primary_owner_name,
     }
-    fixes = fix_annotation(meta)
+    fixes = fix_annotation(meta, now=as_of_ts)
     if fixes is not None:
         entry.update(fixes)
     return entry
 
 
 async def _global_hotspots(
-    session: Any, repo_id: str, targets: list[str], exclude_spec: Any
+    session: Any,
+    repo_id: str,
+    targets: list[str],
+    exclude_spec: Any,
+    as_of_ts: Any = None,
 ) -> list[dict]:
     """Hotspots outside ``targets``, ranked on bug-fix history, then churn.
 
@@ -176,7 +265,11 @@ async def _global_hotspots(
     )
     all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
     target_set = set(targets)
-    return [_hotspot_entry(h) for h in all_hotspots if h.file_path not in target_set]
+    return [
+        _hotspot_entry(h, as_of_ts=as_of_ts)
+        for h in all_hotspots
+        if h.file_path not in target_set
+    ]
 
 
 async def _pr_blast_radius(
@@ -199,10 +292,21 @@ async def _gather_evidence(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
-        graph = await _load_dependency_graph(session, repo_id)
+        # A card walks from the target as given and reads links under its
+        # normalized path, so both spellings are roots.
+        repo_root = served_root(repository, ctx.path)
+        roots = {*targets, *(normalize_target_path(t, repo_root) for t in targets)}
+        graph = await _load_dependency_graph(session, repo_id, roots)
 
         # Repo-wide, so computed once for every target's bus-factor calibration.
         team_size = await _get_active_contributor_count(session, repo_id)
+        as_of_ts = (
+            await session.execute(
+                select(func.max(GitMetadata.last_commit_at)).where(
+                    GitMetadata.repository_id == repo_id
+                )
+            )
+        ).scalar()
 
         results = await asyncio.gather(
             *[
@@ -218,19 +322,25 @@ async def _gather_evidence(
                     team_size,
                     collector,
                     include_graph,
+                    as_of_ts=as_of_ts,
+                    repo_root=repo_root,
                 )
                 for t in targets
             ]
         )
         global_hotspots = []
         if len(targets) > 1 and not changed_files:
-            global_hotspots = await _global_hotspots(session, repo_id, targets, exclude_spec)
+            global_hotspots = await _global_hotspots(
+                session, repo_id, targets, exclude_spec, as_of_ts=as_of_ts
+            )
         pr_blast_radius = None
+        # Only the PR directive reads this, and only for affected file paths.
+        test_paths: set[str] = set()
         if changed_files:
             pr_blast_radius = await _pr_blast_radius(
                 session, repo_id, ctx.alias, changed_files, exclude_spec
             )
-        test_paths = {nid for nid, n in graph.node_meta.items() if n.is_test}
+            test_paths = await get_test_file_paths(session, repo_id)
     return _RiskEvidence(repository, results, test_paths, global_hotspots, pr_blast_radius)
 
 
@@ -250,6 +360,45 @@ async def _enrich_cards(
     await asyncio.to_thread(_enrich_episodes, scored, ctx.path)
 
 
+async def _attach_changes(results: list[dict], ctx: Any) -> None:
+    """Each resolved card's recent Change Records (``include=["changes"]``)."""
+    from repowise.core.attribution import attribution_enabled
+
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        attribution = attribution_enabled(repository.local_path)
+        root = served_root(repository, ctx.path)
+        cards = {
+            normalize_target_path(card["target"], repo_root=root): card
+            for card in results
+            if card.get("resolved") is not False
+        }
+        found = await file_changes(session, repository, list(cards), attribution=attribution)
+        for path, card in cards.items():
+            card.update(found[path])
+
+
+async def _change_tests(ctx: Any, paths: list[str]) -> ChangeTests:
+    """The selection for a change known by its paths, and the tests importing them.
+
+    Every path counts, excluded or not: a test can break on any of them.
+    """
+    try:
+        change = await asyncio.to_thread(files_change, ctx.path, paths)
+        result, selection, checkout = await select_change_tests(
+            ctx.path, ctx.session_factory, change
+        )
+        async with get_session(ctx.session_factory) as session:
+            importers = await direct_importers(session, (await _get_repo(session)).id, paths)
+    except SelectionUnavailableError as exc:
+        return ChangeTests(status=exc.status, message=str(exc))
+    except Exception as exc:  # the rest of the directive stands without its tests
+        return ChangeTests(status="unknown", message=f"Could not select tests: {exc}")
+    return ChangeTests(
+        result=result, selection=selection, importers=importers, roots=checkout.roots
+    )
+
+
 async def _lead_with_pr_directive(
     response: dict,
     evidence: _RiskEvidence,
@@ -258,6 +407,9 @@ async def _lead_with_pr_directive(
     exclude_spec: Any,
     collector: OmissionCollector,
     full_scale: bool,
+    include_tests: bool,
+    include_blast: bool,
+    touched: list[str] | None = None,
 ) -> dict:
     governance_risk = await _governance_directive(ctx, changed_files)
     _build_pr_directive(
@@ -269,7 +421,10 @@ async def _lead_with_pr_directive(
         governance_risk,
         evidence.test_paths,
         ctx.alias,
+        tests=await _change_tests(ctx, touched or changed_files),
         full_scale=full_scale,
+        include_tests=include_tests,
+        include_blast=include_blast,
     )
     # Insertion order is the serialized order, and PR mode leads with the directive.
     return {"directive": response.pop("directive"), **response}
@@ -294,43 +449,58 @@ async def _lead_with_pr_directive(
     ),
 )
 async def get_risk(
-    targets: list[str],
+    targets: list[str] | None = None,
     repo: str | None = None,
     changed_files: list[str] | None = None,
     include: list[str] | None = None,
 ) -> dict:
     """What history says about touching these files — bug fixes, churn, owners.
 
-    Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
-    bus factor) with graph topology. ``dependents`` are directed structural
-    reach (source depends on target), ``consumers`` require typed contract links,
-    and ``co_change_partners`` are historical correlation only. Those counts
-    are a floor over the indexed graph. Structural reach is not proof of
-    runtime breakage. The response also includes security
-    findings. Pass changed_files for PR mode: the response leads with a
-    directive block (may_break, missing_cochanges, missing_tests,
-    tests_to_run) — read it first. Each test_recommendations row carries a
-    measured or inferred basis, and coverage availability is explicit. To
-    score a commit or ``base..head`` range instead, use ``get_change_risk``.
-
-    In PR mode ``structural_impact_score`` is an uncalibrated 0-10 structural
-    heuristic, never a runtime-breakage probability; ``overall_risk_score`` is
-    its deprecated exact alias.
-
-    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
-    ``_meta.recovery_unavailable`` names a storage failure.
-    Include-gated blocks are projections, not omissions.
+    Fuses git signals (``hotspot_score``/``owner_pct`` 0-1, trend, bus
+    factor) with graph reach. ``dependents`` and ``co_change_partners`` are
+    a floor and correlation, not proof of runtime breakage. Pass
+    ``changed_files`` for PR mode: the response leads with ``directive``
+    (may_break, missing_cochanges, missing_tests, tests_to_run); read it
+    first. ``directive.reach`` is never a breakage probability. For a
+    commit or range use ``get_change_risk``.
 
     Args:
-        targets: file paths to assess.
+        targets: file paths; defaults to changed_files.
+        changed_files: PR-changed files for PR mode.
+        include: "graph", "churn", "owners", "scales" (units, calibration),
+            "changes"; with changed_files only: "tests" (typed test rows), "blast".
         repo: usually omitted.
-        changed_files: PR-changed files for blast-radius mode.
-        include: opt-in blocks - "graph", "churn", "scales" (units and
-            calibration for every scalar; identical per call, so ask once).
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
+    if not targets and not changed_files:
+        from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+        note_error_reason("invalid_args")
+        return {"error": "targets or changed_files is required", "_meta": _build_meta()}
+    routes = (
+        await route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
+        if repo is None
+        else None
+    )
+    if routes is not None and changed_files:
+        routes = settle_missing(routes, set(changed_files))
+    if needs_routing(routes):
+        alias = single_repo(routes)
+        if alias is None:
+            return {**one_repo_refusal("get_risk", routes), "_meta": _build_meta()}
+        local = {r.target: r.local for r in routes}
+        routed = await get_risk(
+            [local[t] for t in targets] if targets else None,
+            repo=alias,
+            changed_files=[local[t] for t in changed_files] if changed_files else None,
+            include=include,
+        )
+        rekey_targets(routed, routes)
+        if any(r.routed for r in routes):
+            routed["repo"] = alias
+        hint_misses(routed, routes)
+        return routed
     ignored: list[dict] = []
     include_set = {
         block
@@ -340,16 +510,23 @@ async def get_risk(
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
     exclude_spec = _get_exclude_spec(ctx.path)
-    targets = filter_path_list(targets, exclude_spec)
+    touched = list(dict.fromkeys(changed_files or ()))
+    targets = filter_path_list(targets or changed_files, exclude_spec)
     changed_files = filter_path_list(changed_files, exclude_spec)
     include_graph = "graph" in include_set
     evidence = await _gather_evidence(
         ctx, targets, changed_files, exclude_spec, collector, include_graph
     )
     await _enrich_cards(evidence.results, ctx, evidence.repository.id, collector, include_graph)
+    if "changes" in include_set:
+        await _attach_changes(evidence.results, ctx)
 
+    # The budget sheds cards from the tail, so docs and config cards go last.
+    cards = evidence.results
+    if changed_files:
+        cards = sorted(cards, key=lambda r: is_doc_or_config_path(r["target"]))
     response: dict = {
-        "targets": {r["target"]: r for r in evidence.results},
+        "targets": {r["target"]: r for r in cards},
         **({"risk_scales": file_risk_scales()} if "scales" in include_set else {}),
     }
     if evidence.pr_blast_radius is not None:
@@ -361,6 +538,9 @@ async def get_risk(
             exclude_spec,
             collector,
             full_scale="scales" in include_set,
+            include_tests="tests" in include_set,
+            include_blast="blast" in include_set,
+            touched=touched,
         )
     elif len(targets) > 1:
         # Ambient hotspots orient a multi-file request; beside one named file they are noise.
@@ -373,11 +553,14 @@ async def get_risk(
             label="global_hotspots beyond cap=5",
         )
 
+    await attach_why_pointer(response, ctx, [*targets, *changed_files])
     response["_meta"] = _build_meta(
         repository=evidence.repository, targets=[*targets, *changed_files] or None
     )
     _drop_opt_in_blocks(response, include_set)
     drop_echoed_target(response.get("targets"))
+    if not changed_files:
+        _name_pr_only_includes(ignored, include_set)
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response

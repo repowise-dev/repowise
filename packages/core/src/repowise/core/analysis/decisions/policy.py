@@ -161,6 +161,18 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         default_enabled=True,
         togglable=False,
     ),
+    SourceSpec(
+        key="agent",
+        label="Agent entry",
+        description="Decisions a coding agent recorded with `repowise decision add --agent`.",
+        deterministic=True,
+        llm=False,
+        # An entry route like ``cli``, not machine capture: the record is what
+        # the agent stated, and acceptance still gates it.
+        authority="human",
+        default_enabled=True,
+        togglable=False,
+    ),
 )
 
 _SPECS_BY_KEY: dict[str, SourceSpec] = {spec.key: spec for spec in SOURCE_SPECS}
@@ -344,13 +356,19 @@ class DecisionPolicy:
     sources: dict[str, SourceSetting]
     discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
     harnesses: tuple[str, ...] = DEFAULT_HARNESSES
-    #: Whether an agent may grant authority, not merely withdraw it. The only
-    #: setting here that lets something other than a person create a
-    #: constraint, so it ships off and no preset turns it on.
-    agent_acceptance: bool = False
-    #: Whether the commit hook asks the agent to record a decision. An agent
-    #: cannot decline a hook, so this ships off and no preset turns it on.
-    capture_prompt: bool = False
+    #: Whether an agent may grant authority, not merely withdraw it. On by
+    #: default: agents do most of the reviewing, and every grant is signed
+    #: as the agent's, never a person's. ``--off`` restores a person-only gate.
+    agent_acceptance: bool = True
+    #: Whether the commit hook asks the agent to record a decision. On by
+    #: default: it fires at most once a session, only on a commit that states
+    #: a choice, and what it records lands as a candidate, never a rule.
+    capture_prompt: bool = True
+    #: Whether a new decision waits for a person. Off by default: an agent's
+    #: decision governs once its commit lands on the default branch. On, the
+    #: landing grants nothing and an agent's own acceptance is refused, so only
+    #: a person puts a new decision in force.
+    require_approval: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -450,7 +468,7 @@ class DecisionPolicy:
         provider_available: bool,
     ) -> tuple[SourceStatus, str]:
         if not spec.togglable:
-            return "always_on", "Manual entry is always available."
+            return "always_on", f"{spec.label} is always available."
         if not self.enabled:
             return "disabled", "Decision capture is off for this repository."
         if not enabled:
@@ -497,10 +515,12 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
-        if self.agent_acceptance:
-            block["agent_acceptance"] = True
-        if self.capture_prompt:
-            block["capture_prompt"] = True
+        if not self.agent_acceptance:
+            block["agent_acceptance"] = False
+        if not self.capture_prompt:
+            block["capture_prompt"] = False
+        if self.require_approval:
+            block["require_approval"] = True
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -513,6 +533,7 @@ class DecisionPolicy:
             "harnesses": list(self.harnesses),
             "agent_acceptance": self.agent_acceptance,
             "capture_prompt": self.capture_prompt,
+            "require_approval": self.require_approval,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -552,6 +573,14 @@ class DecisionPolicy:
 
     def with_capture_prompt(self, value: bool) -> DecisionPolicy:
         return replace(self, capture_prompt=value)
+
+    def with_require_approval(self, value: bool) -> DecisionPolicy:
+        return replace(self, require_approval=value)
+
+    @property
+    def agent_grants(self) -> bool:
+        """Whether an agent's acceptance may put a decision in force."""
+        return self.agent_acceptance and not self.require_approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,6 +662,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "harnesses",
         "agent_acceptance",
         "capture_prompt",
+        "require_approval",
     }
 )
 
@@ -651,6 +681,36 @@ def preset_policy(name: str) -> DecisionPolicy:
 
 def _as_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _default_on_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+    """A switch that ships on: absent reads as on, a boolean as itself.
+
+    Present but not a boolean (a quoted "no") was written by someone saying
+    something, so it reads as off, not on.
+    """
+    value = _as_bool(raw.get(key))
+    if value is not None:
+        return value
+    if key not in raw:
+        return True
+    warnings.append(f"`decisions.{key}` is not a boolean; treating it as false.")
+    return False
+
+
+def _default_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+    """A switch that ships off: absent reads as off, a boolean as itself.
+
+    Present but not a boolean was written by someone asking for it, so it reads
+    as on: for a gate, the reading that holds more back.
+    """
+    value = _as_bool(raw.get(key))
+    if value is not None:
+        return value
+    if key not in raw:
+        return False
+    warnings.append(f"`decisions.{key}` is not a boolean; treating it as true.")
+    return True
 
 
 def _states_enabled(raw_source: Any) -> bool:
@@ -782,19 +842,9 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
     harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    # A non-boolean warns rather than grants: the failure this must not have
-    # is reading as on.
-    agent_acceptance = _as_bool(raw.get("agent_acceptance"))
-    if agent_acceptance is None:
-        if "agent_acceptance" in raw:
-            warnings.append("`decisions.agent_acceptance` is not a boolean; ignoring it.")
-        agent_acceptance = False
-
-    capture_prompt = _as_bool(raw.get("capture_prompt"))
-    if capture_prompt is None:
-        if "capture_prompt" in raw:
-            warnings.append("`decisions.capture_prompt` is not a boolean; ignoring it.")
-        capture_prompt = False
+    agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
+    capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
+    require_approval = _default_off_switch(raw, "require_approval", warnings)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -808,6 +858,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             harnesses=harnesses,
             agent_acceptance=agent_acceptance,
             capture_prompt=capture_prompt,
+            require_approval=require_approval,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

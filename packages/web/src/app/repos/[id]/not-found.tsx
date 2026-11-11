@@ -1,28 +1,50 @@
+"use client";
+
 import Link from "next/link";
-import { Home, ChevronLeft } from "lucide-react";
+import { useParams } from "next/navigation";
+import { BookOpen, HeartPulse, Home, LayoutDashboard } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { RouteNotFound } from "@repowise-dev/ui/shared/route-states";
 
 export default function RepoNotFound() {
+  const t = useTranslations("errors");
+  const params = useParams<{ id?: string }>();
+  const base = params?.id ? `/repos/${params.id}` : null;
+
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 px-6 text-center">
-      <div className="rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] p-4">
-        <Home className="h-8 w-8 text-[var(--color-text-tertiary)]" />
-      </div>
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          Page not found
-        </h1>
-        <p className="max-w-md text-sm text-[var(--color-text-secondary)]">
-          The page or resource you requested doesn&apos;t exist for this repository. It may
-          have been moved or never existed.
-        </p>
-      </div>
-      <Link
-        href="/"
-        className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
-      >
-        <ChevronLeft className="h-4 w-4" />
-        Back to dashboard
-      </Link>
-    </div>
+    <RouteNotFound
+      title={t("repoNotFoundTitle")}
+      description={t("repoNotFoundBody")}
+      linksLabel={t("notFoundLinks")}
+      links={[
+        ...(base
+          ? [
+              <Link key="overview" href={`${base}/overview`}>
+                <Home aria-hidden />
+                {t("repoOverview")}
+              </Link>,
+              <Link key="health" href={`${base}/code-health`}>
+                <HeartPulse aria-hidden />
+                {t("repoCodeHealth")}
+              </Link>,
+              <Link key="docs" href={`${base}/docs`}>
+                <BookOpen aria-hidden />
+                {t("repoDocs")}
+              </Link>,
+            ]
+          : []),
+        <Link key="dashboard" href="/">
+          <LayoutDashboard aria-hidden />
+          {t("dashboard")}
+        </Link>,
+      ]}
+      hint={t.rich("notFoundSearchHint", {
+        kbd: (chunks) => (
+          <kbd className="rounded border border-[var(--color-border-default)] px-1 font-mono text-[10px]">
+            {chunks}
+          </kbd>
+        ),
+      })}
+    />
   );
 }

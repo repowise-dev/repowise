@@ -74,7 +74,7 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
       collapsibleState: vscode.TreeItemCollapsibleState.None,
       command: {
         command: InternalCommands.openRefactoringPlan,
-        title: "Open Refactoring Plan",
+        title: "Open Refactoring",
         arguments: [plan],
       },
     };

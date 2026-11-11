@@ -249,8 +249,152 @@ def test_one_parse_when_promotion_and_extract_method_hit_same_file(tmp_path: Pat
     assert calls["n"] == 1
 
 
+def test_flagged_analyses_are_in_source_order():
+    _require_python()
+
+    def fn(name: str) -> str:
+        body = "".join(f"    if x == {i}:\n        y = {i}\n" for i in range(10))
+        return f"def {name}(x):\n    y = 0\n{body}    return y\n\n"
+
+    source = (fn("first") + fn("second") + fn("third")).encode()
+    flagged = FileDataflow("a.py", "python", source=source).flagged_analyses()
+
+    assert [a.name for a in flagged] == ["first", "second", "third"]
+    assert [a.start_line for a in flagged] == sorted(a.start_line for a in flagged)
+
+
 def test_cache_construction_does_not_touch_the_file(tmp_path: Path):
     fd = FileDataflow(str(tmp_path / "missing.py"), "python")
     # Nothing read or parsed yet; a consumer call on a missing file is silent.
     assert fd.flagged_analyses() == []
     assert fd.analyses_covering({1}) == []
+
+
+def test_release_drops_the_entry_and_get_rebuilds_it(tmp_path: Path):
+    cache = FileDataflowCache()
+    path = str(tmp_path / "a.py")
+    first = cache.get(path, "python")
+    assert cache.get(path, "python") is first
+    cache.release(path)
+    cache.release(path)  # releasing an absent entry is a no-op
+    assert cache.get(path, "python") is not first
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+def test_health_pass_releases_each_file_after_evaluating_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_async: bool
+):
+    """A repository-wide pass must not hold every file's parse until it ends."""
+    import asyncio
+
+    from repowise.core.analysis.health import HealthAnalyzer
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    _require_python()
+    for i in range(3):
+        (tmp_path / f"m{i}.py").write_text(f"def f{i}(x):\n    return x\n", encoding="utf-8")
+    parser, gb, parsed = ASTParser(), GraphBuilder(), []
+    for fi in FileTraverser(tmp_path).traverse():
+        pf = parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+        gb.add_file(pf)
+        parsed.append(pf)
+    gb.build()
+
+    released: list[str] = []
+    real = FileDataflowCache.release
+
+    def _spy(self, abs_path):
+        released.append(abs_path)
+        real(self, abs_path)
+
+    monkeypatch.setattr(FileDataflowCache, "release", _spy)
+    analyzer = HealthAnalyzer(gb.graph(), parsed_files=parsed)
+    if use_async:
+        asyncio.run(analyzer.analyze_async())
+    else:
+        analyzer.analyze()
+    assert sorted(released) == sorted(str(pf.file_info.abs_path) for pf in parsed)
+
+
+# ---------------------------------------------------------------------------
+# Exception paths: a protected region reaches its handlers and ``finally``
+# from the state before it and from every block inside it.
+# ---------------------------------------------------------------------------
+
+
+def _dead(src: str) -> list[tuple[str, int]]:
+    return [(d.var, d.line) for d in _facts(src, 2).dead_stores]
+
+
+def test_a_write_before_try_is_live_when_the_body_may_raise_first():
+    # ``g()`` may raise before ``x = 2``, so the handler reads ``x = 1``.
+    dead = _dead(
+        """
+        def f(g, use):
+            x = 1
+            try:
+                y = g()
+                x = 2
+            except Exception:
+                use(x)
+            return x, y
+        """
+    )
+    assert ("x", 3) not in dead
+
+
+def test_finally_reads_the_write_before_a_body_that_may_raise():
+    dead = _dead(
+        """
+        def f(g, use):
+            x = 1
+            try:
+                x = g()
+            finally:
+                use(x)
+            return x
+        """
+    )
+    assert ("x", 3) not in dead
+
+
+def test_finally_reads_a_handler_write_before_the_handler_returns():
+    dead = _dead(
+        """
+        def f(g, use):
+            x = 0
+            try:
+                x = g()
+            except Exception:
+                if g():
+                    x = 1
+                    return None
+                x = 2
+            finally:
+                use(x)
+            return x
+        """
+    )
+    assert ("x", 8) not in dead
+
+
+def test_finally_reads_an_else_write_before_the_else_returns():
+    dead = _dead(
+        """
+        def f(g, use):
+            x = 0
+            try:
+                y = g()
+            except Exception:
+                y = None
+            else:
+                if y:
+                    x = 2
+                    return y
+                x = 3
+            finally:
+                use(x)
+            return x
+        """
+    )
+    assert ("x", 10) not in dead

@@ -94,17 +94,17 @@ def claude_on_path(monkeypatch):
 def test_provider_name_and_default_model(claude_on_path):
     provider = ClaudeCliProvider()
     assert provider.provider_name == "claude_cli"
-    assert provider.model_name == "claude_cli/claude-haiku-4-5"
+    assert provider.model_name == "claude_cli/claude-haiku-5-5"
 
 
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
-        (None, "claude-haiku-4-5"),
+        (None, "claude-haiku-5-5"),
         ("claude-sonnet-4-6", "claude-sonnet-4-6"),
         # A persisted label must round-trip rather than become "claude_cli/claude_cli/...".
         ("claude_cli/claude-sonnet-4-6", "claude-sonnet-4-6"),
-        ("claude_cli/default", "claude-haiku-4-5"),
+        ("claude_cli/default", "claude-haiku-5-5"),
     ],
 )
 def test_model_normalization_round_trips(given, expected):
@@ -144,9 +144,9 @@ def test_reasoning_modes_match_the_claude_cli_effort_flag(claude_on_path):
 def test_available_model_options_are_labelled(claude_on_path):
     options = ClaudeCliProvider().available_model_options()
     assert [o.model for o in options] == [
-        "claude_cli/claude-haiku-4-5",
-        "claude_cli/claude-sonnet-4-6",
-        "claude_cli/claude-opus-4-6",
+        "claude_cli/claude-haiku-5-5",
+        "claude_cli/claude-sonnet-5-5",
+        "claude_cli/claude-opus-5-5",
     ]
     assert sum(1 for o in options if o.recommended) == 1
     assert all(
@@ -393,6 +393,58 @@ def test_parse_result_rejects_empty_output():
         _parse_result("   ")
 
 
+def test_parse_result_reads_result_event_from_verbose_array():
+    """With --verbose the CLI emits an event array, not a single object (#3161)."""
+    events = json.dumps(
+        [
+            {"type": "system", "subtype": "init", "session_id": "abc"},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "hi"},
+        ]
+    )
+    assert _parse_result(events)["result"] == "hi"
+
+
+def test_parse_result_rejects_array_without_result_event():
+    """An event array with no result event must keep the existing failure."""
+    events = json.dumps(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+        ]
+    )
+    with pytest.raises(ProviderError, match="could not parse"):
+        _parse_result(events)
+
+
+async def test_verbose_array_nonzero_exit_surfaces_error_and_http_status(claude_on_path, monkeypatch):
+    """A verbose run still reports the API failure carried by its result event."""
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(
+            returncode=1,
+            stdout=json.dumps(
+                [
+                    {"type": "system", "subtype": "init"},
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "api_error_status": 404,
+                        "result": "There's an issue with the selected model.",
+                    },
+                ]
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError, match="selected model") as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    assert caught.value.status_code == 404
+
+
 async def test_missing_usage_is_flagged_estimated(claude_on_path, monkeypatch):
     async def fake_exec(*_args, **_kwargs):
         return FakeProcess(stdout=json.dumps({"subtype": "success", "result": "hi"}) + "\n")
@@ -576,12 +628,12 @@ def test_registered_as_keyless_provider():
 
 def test_subscription_usage_is_priced_at_zero():
     """A seat is not API spend; the bare `claude` prefixes would price it wrongly."""
-    from repowise.core.cost_estimator.pricing import _lookup_cost
+    from repowise.core.cost_estimator.pricing import lookup_cost
 
-    assert _lookup_cost("claude_cli/claude-haiku-4-5") == (0.0, 0.0)
-    assert _lookup_cost("claude_cli/claude-opus-4-6") == (0.0, 0.0)
+    assert lookup_cost("claude_cli/claude-haiku-4-5") == (0.0, 0.0)
+    assert lookup_cost("claude_cli/claude-opus-4-6") == (0.0, 0.0)
     # The keyed API path is unaffected.
-    assert _lookup_cost("claude-haiku-4-5") != (0.0, 0.0)
+    assert lookup_cost("claude-haiku-4-5") != (0.0, 0.0)
 
 
 def test_resolves_through_the_registry(claude_on_path):
@@ -589,4 +641,20 @@ def test_resolves_through_the_registry(claude_on_path):
 
     provider = get_provider("claude_cli")
     assert provider.provider_name == "claude_cli"
-    assert provider.model_name == "claude_cli/claude-haiku-4-5"
+    assert provider.model_name == "claude_cli/claude-haiku-5-5"
+
+
+def test_nested_session_markers_are_stripped(claude_on_path, monkeypatch):
+    """Run from inside Claude Code, the child must not inherit the parent session."""
+    for name in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN"):
+        monkeypatch.setenv(name, "parent")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "keep")
+
+    env = ClaudeCliProvider().subprocess_env()
+
+    assert "CLAUDECODE" not in env
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert "CLAUDE_CODE_MESSAGING_TOKEN" not in env
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert env["ANTHROPIC_MODEL"] == "keep"

@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { RefreshCw, Zap, AlertTriangle, Download } from "lucide-react";
+import { SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { Button } from "@repowise-dev/ui/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -14,7 +14,9 @@ import {
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
 import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
+import { useWatchedJob } from "@/lib/hooks/use-watched-job";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repoId: string;
@@ -22,18 +24,20 @@ interface Props {
 }
 
 export function OperationsPanel({ repoId, repoName }: Props) {
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const t = useTranslations("repos");
+  const tc = useTranslations("common");
+  const { watched, watch, settle, dismiss } = useWatchedJob<"sync" | "resync">();
   const [confirmResync, setConfirmResync] = useState(false);
   const [loading, setLoading] = useState<"sync" | "resync" | null>(null);
 
   async function handleSync() {
     setLoading("sync");
     try {
-      const job = await syncRepo(repoId);
-      setActiveJobId(job.id);
-      toast.info(`Sync started — ${repoName}`);
+      const { job_id } = await syncRepo(repoId);
+      watch(job_id, "sync");
+      toast.info(t("ops.syncStarted", { name: repoName }));
     } catch (e) {
-      toast.error("Sync failed", {
+      toast.error(t("ops.syncFailed"), {
         description: toFriendlyMessage(e),
       });
     } finally {
@@ -45,11 +49,11 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     setConfirmResync(false);
     setLoading("resync");
     try {
-      const job = await fullResyncRepo(repoId);
-      setActiveJobId(job.id);
-      toast.info(`Full resync started — ${repoName}`);
+      const { job_id } = await fullResyncRepo(repoId);
+      watch(job_id, "resync");
+      toast.info(t("ops.resyncStarted", { name: repoName }));
     } catch (e) {
-      toast.error("Resync failed", {
+      toast.error(t("ops.resyncFailed"), {
         description: toFriendlyMessage(e),
       });
     } finally {
@@ -57,64 +61,40 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     }
   }
 
-  function handleJobDone() {
-    setActiveJobId(null);
-  }
+  const busy = loading !== null || watched !== null;
 
   return (
     <>
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Operations</CardTitle>
-        </CardHeader>
+      <SettingsRows>
+        <SettingsRow label={t("ops.syncLabel")} hint={t("ops.syncHint")}>
+          <div className="flex sm:justify-end">
+            <Button size="sm" onClick={handleSync} disabled={busy}>
+              <Zap className="mr-1.5 h-3.5 w-3.5" />
+              {loading === "sync" ? t("ops.starting") : t("ops.sync")}
+            </Button>
+          </div>
+        </SettingsRow>
+        <SettingsRow label={t("ops.resyncLabel")} hint={t("ops.resyncHint")}>
+          <div className="flex sm:justify-end">
+            <Button variant="outline" size="sm" onClick={() => setConfirmResync(true)} disabled={busy}>
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              {loading === "resync" ? t("ops.starting") : t("ops.resync")}
+            </Button>
+          </div>
+        </SettingsRow>
+      </SettingsRows>
 
-        <CardContent id="operations-panel-content" className="space-y-4">
-          {/* Active job progress */}
-          {activeJobId && (
-            <GenerationProgress
-              jobId={activeJobId}
-              repoName={repoName}
-              onDone={handleJobDone}
-            />
-          )}
-
-          {/* Action buttons */}
-          {!activeJobId && (
-            <div className="flex gap-2">
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleSync}
-                disabled={loading !== null}
-                className="flex-1"
-              >
-                <Zap className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "sync" ? "Starting…" : "Sync"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmResync(true)}
-                disabled={loading !== null}
-                className="flex-1"
-              >
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "resync" ? "Starting…" : "Full Resync"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                asChild
-              >
-                <a href={`/api/repos/${repoId}/export`} download>
-                  <Download className="h-3.5 w-3.5 mr-1.5" />
-                  Export
-                </a>
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {watched && (
+        <GenerationProgress
+          key={watched.id}
+          jobId={watched.id}
+          repoName={repoName}
+          onDone={settle}
+          // A full re-index retry goes back through its confirmation.
+          onRetry={watched.action === "resync" ? () => setConfirmResync(true) : handleSync}
+          onDismiss={dismiss}
+        />
+      )}
 
       {/* Confirm resync dialog */}
       <Dialog open={confirmResync} onOpenChange={setConfirmResync}>
@@ -122,24 +102,46 @@ export function OperationsPanel({ repoId, repoName }: Props) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-[var(--color-stale)]" />
-              Full Resync
+              {t("ops.resync")}
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-[var(--color-text-secondary)]">
-            This regenerates every page for{" "}
-            <span className="font-medium text-[var(--color-text-primary)]">{repoName}</span>{" "}
-            from scratch. All existing pages will be overwritten.
+            {t.rich("ops.resyncConfirm", {
+              name: repoName,
+              repo: (chunks) => (
+                <span className="font-medium text-[var(--color-text-primary)]">
+                  {chunks}
+                </span>
+              ),
+            })}
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setConfirmResync(false)}>
-              Cancel
+              {tc("cancel")}
             </Button>
             <Button variant="destructive" onClick={handleResync}>
-              Resync Everything
+              {t("ops.resyncConfirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/** Download this repository's index; rare, so it sits under Models' Advanced. */
+export function ExportDocsRow({ repoId }: { repoId: string }) {
+  const t = useTranslations("repos");
+  return (
+    <SettingsRow label={t("ops.exportLabel")} hint={t("ops.exportHint")}>
+      <div className="flex sm:justify-end">
+        <Button variant="outline" size="sm" asChild>
+          <a href={`/api/repos/${encodeURIComponent(repoId)}/export`} download>
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            {t("ops.export")}
+          </a>
+        </Button>
+      </div>
+    </SettingsRow>
   );
 }

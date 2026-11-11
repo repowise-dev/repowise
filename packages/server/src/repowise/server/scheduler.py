@@ -1,7 +1,7 @@
 """APScheduler background jobs for repowise server.
 
 Two recurring jobs:
-1. Staleness checker — finds stale wiki pages and queues regeneration.
+1. Staleness checker — reports stale wiki pages without regenerating them.
 2. Polling fallback — catches missed webhooks by comparing HEAD commits.
 """
 
@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
+from repowise.core.update_lock import read_update_lock
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,7 +31,6 @@ def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
     """
     import json
     import subprocess
-    from pathlib import Path
 
     state_path = Path(repo_path) / ".repowise" / "state.json"
     stored_commit = None
@@ -73,8 +75,9 @@ def setup_scheduler(
 
     async def check_staleness() -> None:
         """Find stale pages and log them for regeneration."""
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
+        from repowise.core.generation.page_selection import STALE_STATUSES
         from repowise.core.persistence.database import get_session
         from repowise.core.persistence.models import Page, Repository
 
@@ -85,19 +88,21 @@ def setup_scheduler(
 
                 for repo in repos:
                     stale_result = await session.execute(
-                        select(Page).where(
+                        select(func.count())
+                        .select_from(Page)
+                        .where(
                             Page.repository_id == repo.id,
-                            Page.freshness_status.in_(["stale", "expired"]),
+                            Page.freshness_status.in_(sorted(STALE_STATUSES)),
                         )
                     )
-                    stale = stale_result.scalars().all()
-                    if stale:
+                    stale_count = stale_result.scalar()
+                    if stale_count:
                         logger.info(
                             "staleness_check",
                             extra={
                                 "repo_id": repo.id,
                                 "repo_name": repo.name,
-                                "stale_count": len(stale),
+                                "stale_count": stale_count,
                             },
                         )
         except Exception:
@@ -133,6 +138,10 @@ def setup_scheduler(
                     stored_commit, current_head = inspection
 
                     if stored_commit and current_head == stored_commit:
+                        continue
+
+                    # A running `repowise update` will advance the baseline itself.
+                    if await asyncio.to_thread(read_update_lock, Path(repo.local_path)):
                         continue
 
                     # Check no active job already

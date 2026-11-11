@@ -14,14 +14,14 @@ from types import SimpleNamespace
 
 import networkx as nx
 
-from repowise.core.generation.context.public_api import (
+from repowise.core.analysis.public_api import (
     _Resolver,
     api_roots,
     compute_public_api,
 )
 from repowise.core.generation.context_assembler import ContextAssembler, FilePageContext
 from repowise.core.generation.page_generator import PageGenerator
-from repowise.core.generation.page_generator.levels import _rollup_child_pages
+from repowise.core.generation.page_generator.levels import _children_of, _heads
 from repowise.core.generation.selection.selector import _build_module_groups
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.package_roots import package_roots_from_paths
@@ -155,8 +155,9 @@ async def test_public_api_reaches_the_prompt_excerpts(tmp_path, sample_config):
         public_api=api,
     )
     prompt = provider._calls[-1]["user_prompt"]
-    assert "### Public API" in prompt
-    assert "- `Client` (class, `packages/sdk/src/client.ts`): `` class Client" in prompt
+    assert '"public_api": [' in prompt
+    assert '"name": "Client"' in prompt
+    assert '"signature": "class Client' in prompt
     assert "Talks to the service." in prompt
 
 
@@ -199,12 +200,13 @@ def test_rollup_links_to_leaves_below_it_with_no_chapter_between():
     g = lambda key, rollup=False: SimpleNamespace(key=key, display=key, is_rollup=rollup)  # noqa: E731
     pkg, sub = g("pkgs/a", True), g("pkgs/a/src/x/deep", True)
     groups = [pkg, g("pkgs/a/src/io"), g("pkgs/a/src/model"), sub, g("pkgs/a/src/x/deep/y")]
-    assert [c["path"] for c in _rollup_child_pages(pkg, groups)] == [
+    heads = _heads(groups)
+    assert [c.key for c in _children_of(pkg.key, groups, heads)] == [
         "pkgs/a/src/io",
         "pkgs/a/src/model",
         "pkgs/a/src/x/deep",
     ]
-    assert [c["path"] for c in _rollup_child_pages(sub, groups)] == ["pkgs/a/src/x/deep/y"]
+    assert [c.key for c in _children_of(sub.key, groups, heads)] == ["pkgs/a/src/x/deep/y"]
 
 
 def test_python_dunder_all_decides_what_is_published(tmp_path):
@@ -224,6 +226,214 @@ def test_python_dunder_all_decides_what_is_published(tmp_path):
     # A named import reaches past the source's ``__all__``; a wildcard does not.
     names = [e["name"] for e in compute_public_api(list(parsed), parsed, set())]
     assert sorted(names) == ["Request", "__version__", "helper"]
+
+
+def test_python_lazy_getattr_map_publishes_literal_exports(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['extract', 'generate', 'missing']\n"
+                "_LAZY: dict[str, str] = {\n"
+                "    'extract': ('.extract', 'extract'),\n"
+                "    'generate': ('.report', 'generate'),\n"
+                "    'missing': '.missing',\n"
+                "}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+            "lazy_lib/report.py": "def generate():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert {(entry["name"], entry["file"]) for entry in api} == {
+        ("extract", "lazy_lib/extract.py"),
+        ("generate", "lazy_lib/report.py"),
+    }
+
+
+def test_python_local_lazy_getattr_map_publishes_literal_exports(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "def __getattr__(name):\n"
+                "    lazy = {'extract': ('lazy_lib.extract', 'extract')}\n"
+                "    if name in lazy:\n"
+                "        module_name, attr = lazy[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert [(entry["name"], entry["file"]) for entry in api] == [
+        ("extract", "lazy_lib/extract.py")
+    ]
+
+
+def test_python_computed_lazy_getattr_map_is_ignored(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['extract']\n"
+                "_NAMES = ['extract']\n"
+                "_LAZY = {name: ('.extract', name) for name in _NAMES}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert api == []
+
+
+def test_python_computed_rebinding_invalidates_an_earlier_lazy_map(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['extract']\n"
+                "_LAZY = {'extract': '.extract'}\n"
+                "_NAMES = ['extract']\n"
+                "_LAZY = {name: '.extract' for name in _NAMES}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        return getattr(importlib.import_module(_LAZY[name], __name__), name)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/extract.py": "def extract():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert api == []
+
+
+def test_python_lazy_getattr_does_not_shadow_declared_names(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "from .eager import Client\n"
+                "__all__ = ['Client']\n"
+                "_LAZY = {'Client': ('.lazy', 'Client')}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/eager.py": "class Client:\n    pass\n",
+            "lazy_lib/lazy.py": "class Client:\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert [(entry["name"], entry["file"]) for entry in api] == [
+        ("Client", "lazy_lib/eager.py")
+    ]
+
+
+def test_python_lazy_getattr_does_not_shadow_a_module_alias(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "import lazy_lib.eager as Client\n"
+                "__all__ = ['Client']\n"
+                "_LAZY = {'Client': ('.lazy', 'Client')}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/eager.py": "class Client:\n    pass\n",
+            "lazy_lib/lazy.py": "class Client:\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert api == []
+
+
+def test_python_deferred_imports_do_not_shadow_lazy_exports(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['Client']\n"
+                "_LAZY = {'Client': ('.lazy', 'Client')}\n\n"
+                "def __getattr__(name):\n"
+                "    from .eager import Client\n"
+                "    if name in _LAZY:\n"
+                "        module_name, attr = _LAZY[name]\n"
+                "        return getattr(importlib.import_module(module_name, __name__), attr)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/eager.py": "class Client:\n    pass\n",
+            "lazy_lib/lazy.py": "class Client:\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert [(entry["name"], entry["file"]) for entry in api] == [
+        ("Client", "lazy_lib/lazy.py")
+    ]
+
+
+def test_python_lazy_getattr_uses_the_last_map_assignment(tmp_path):
+    parsed = _index(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\nname = "lazy-lib"\n',
+            "lazy_lib/__init__.py": (
+                "__all__ = ['extract']\n"
+                "_LAZY = {'extract': '.first'}\n"
+                "_LAZY = {'extract': '.second'}\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        return getattr(importlib.import_module(_LAZY[name], __name__), name)\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "lazy_lib/first.py": "def extract():\n    pass\n",
+            "lazy_lib/second.py": "def extract():\n    pass\n",
+        },
+    )
+
+    api = compute_public_api(list(parsed), parsed, set())
+
+    assert [(entry["name"], entry["file"]) for entry in api] == [
+        ("extract", "lazy_lib/second.py")
+    ]
 
 
 def test_barrels_that_re_export_each_other_publish_everything_from_every_root(tmp_path):

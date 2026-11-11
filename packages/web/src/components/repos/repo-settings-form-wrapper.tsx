@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { GeneralForm } from "@repowise-dev/ui/settings/general-form";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
@@ -9,12 +9,14 @@ import type { RepoResponse } from "@/lib/api/types";
 import { DEFAULT_WIKI_STYLE } from "@repowise-dev/types";
 import type { RepoSettingsValue, WikiStyle } from "@repowise-dev/types/settings";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repo: RepoResponse;
 }
 
 export function RepoSettingsFormWrapper({ repo }: Props) {
+  const t = useTranslations("repos");
   const currentStyle =
     (repo.settings?.wiki_style as WikiStyle | undefined) ?? DEFAULT_WIKI_STYLE;
 
@@ -28,6 +30,9 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
 
   // When the style changes on save, offer to regenerate the wiki in the new
   // voice (the persisted style only takes effect on the next generation).
+  // Fields autosave one at a time, so compare with the last saved style, not
+  // the one the page loaded with.
+  const savedStyle = useRef<WikiStyle>(currentStyle);
   const [regenOpen, setRegenOpen] = useState(false);
   const [pendingStyle, setPendingStyle] = useState<WikiStyle | null>(null);
   const [regenLoading, setRegenLoading] = useState(false);
@@ -44,13 +49,13 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
           wiki_style: nextStyle,
         },
       });
-      toast.success("Repository settings saved");
-      if (nextStyle !== currentStyle) {
+      if (nextStyle !== savedStyle.current) {
+        savedStyle.current = nextStyle;
         setPendingStyle(nextStyle);
         setRegenOpen(true);
       }
     } catch (err) {
-      toast.error(toFriendlyMessage(err, "Failed to save settings"));
+      toast.error(toFriendlyMessage(err, t("settings.saveFailed")));
       throw err;
     }
   }
@@ -59,11 +64,11 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
     setRegenLoading(true);
     try {
       await fullResyncRepo(repo.id);
-      toast.info("Wiki regeneration queued");
+      toast.info(t("settings.regenQueued"));
       setRegenOpen(false);
     } catch (err) {
       toast.error(
-        toFriendlyMessage(err, "Failed to queue regeneration"),
+        toFriendlyMessage(err, t("settings.regenFailed")),
       );
     } finally {
       setRegenLoading(false);
@@ -75,16 +80,19 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
       <GeneralForm
         value={value}
         onSubmit={handleSubmit}
+        autosave
         localPath={repo.local_path}
         remoteUrl={repo.url ?? undefined}
       />
       <ConfirmDialog
         open={regenOpen}
         onOpenChange={setRegenOpen}
-        title="Regenerate the wiki now?"
-        description={`The documentation style was changed to "${pendingStyle ?? ""}". Regenerate the whole wiki now to apply it? This runs LLM generation (a cost). You can also do it later from Sync.`}
-        confirmLabel="Regenerate now"
-        cancelLabel="Later"
+        title={t("settings.regenTitle")}
+        description={t("settings.regenDescription", {
+          style: pendingStyle ?? "",
+        })}
+        confirmLabel={t("settings.regenConfirm")}
+        cancelLabel={t("settings.regenCancel")}
         loading={regenLoading}
         onConfirm={() => void handleRegenerate()}
       />

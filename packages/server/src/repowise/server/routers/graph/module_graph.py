@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud import indexed_file
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
@@ -29,7 +30,10 @@ async def module_graph(
     _repo: object = Depends(with_repo),
 ) -> ModuleGraphResponse:
     """Collapsed directory-level graph: one node per top-level path segment."""
-    node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
+    # Indexed files only: symbol rows and import targets are not a module's files.
+    node_result = await session.execute(
+        select(GraphNode).where(GraphNode.repository_id == repo_id, indexed_file())
+    )
     nodes = node_result.scalars().all()
 
     # Group nodes by first path segment, detecting monorepo roots

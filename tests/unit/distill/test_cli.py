@@ -151,7 +151,7 @@ def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path
     render and reads the child's ``sys.argv`` back.
     """
     tokens = (sys.executable, "-c", "import sys,json;print(json.dumps(sys.argv[1:]))", payload)
-    proc = subprocess.run(
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
         _render_command(tokens),
         shell=True,
         capture_output=True,
@@ -185,7 +185,7 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
     # renderer. Argument fidelity is covered by the parametrized test above.
     shim.write_text("@echo SHIM_OK\n", encoding="utf-8")
 
-    proc = subprocess.run(
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
         _render_command((str(shim), "arg one", "a&b")),
         shell=True,
         capture_output=True,
@@ -198,6 +198,31 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
 
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert "SHIM_OK" in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe program-name resolution")
+def test_render_command_runs_a_forward_slash_program_path(tmp_path: Path) -> None:
+    """A Git Bash spelling like ``./bin/tool.cmd`` must reach cmd as one program.
+
+    Unquoted, cmd reads the leading ``.`` as the program and ``/bin`` as a
+    switch, so a rewritten ``./.venv/Scripts/python.exe -m pytest`` never ran.
+    """
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "tool.cmd").write_text("@echo TOOL_OK\n", encoding="utf-8")
+
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
+        _render_command(("./bin/tool.cmd", "arg")),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "TOOL_OK" in proc.stdout
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")

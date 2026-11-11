@@ -19,7 +19,8 @@ from ..models import (
     GraphNodeMembership,
     _new_uuid,
 )
-from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed
+from . import _graph_edge_sync as _edge_sync
+from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed, _column_values
 
 # ---------------------------------------------------------------------------
 # Graph CRUD (batch)
@@ -60,6 +61,8 @@ _NODE_FIELDS = (
     "is_test",
     "is_entry_point",
     "is_reachability_root",
+    "always_run_reason",
+    "public_api",
     "pagerank",
     "betweenness",
     "betweenness_commit",
@@ -92,6 +95,12 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     call_lines = edge_data.get("call_lines_json")
     if call_lines is not None:
         existing.call_lines_json = call_lines
+    type_only = edge_data.get("type_only")
+    if type_only is not None:
+        existing.type_only = bool(type_only)
+    deferred = edge_data.get("deferred")
+    if deferred is not None:
+        existing.deferred = bool(deferred)
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -103,6 +112,27 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
         if confidence > (existing.confidence or 0.0):
             existing.resolution_origin = edge_data.get("resolution_origin")
         existing.confidence = max(existing.confidence or 0.0, confidence)
+
+
+def _edge_values(repository_id: str, e: dict) -> dict:
+    """Column values for a new ``graph_edges`` row built from an edge payload."""
+    return {"id": _new_uuid(), "repository_id": repository_id, **_edge_content_values(e)}
+
+
+def _edge_content_values(e: dict) -> dict:
+    """The payload-derived columns of a ``graph_edges`` row (no id, no repo)."""
+    return {
+        "source_node_id": e.get("source_node_id", ""),
+        "target_node_id": e.get("target_node_id", ""),
+        "imported_names_json": e.get("imported_names_json", "[]"),
+        "edge_type": e.get("edge_type", "imports"),
+        "confidence": e.get("confidence", 1.0),
+        "hint_source": e.get("hint_source"),
+        "resolution_origin": e.get("resolution_origin"),
+        "call_lines_json": e.get("call_lines_json", "[]"),
+        "type_only": bool(e.get("type_only", False)),
+        "deferred": bool(e.get("deferred", False)),
+    }
 
 
 def _update_graph_metric(existing: GraphMetric, m: dict) -> None:
@@ -155,11 +185,11 @@ async def batch_upsert_graph_nodes(
             float_columns=_CENTRALITY_COLUMNS,
             float_atol=_CENTRALITY_ATOL,
         ),
-        insert_fn=lambda n: GraphNode(
-            id=_new_uuid(),
-            repository_id=repository_id,
+        insert_fn=lambda n: {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
             **{k: v for k, v in n.items() if k not in ("id", "repository_id")},
-        ),
+        },
     )
 
 
@@ -189,18 +219,7 @@ async def batch_upsert_graph_edges(
         ),
         row_key_fn=lambda row: (row.source_node_id, row.target_node_id, row.edge_type),
         update_fn=_update_graph_edge,
-        insert_fn=lambda e: GraphEdge(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            source_node_id=e.get("source_node_id", ""),
-            target_node_id=e.get("target_node_id", ""),
-            imported_names_json=e.get("imported_names_json", "[]"),
-            edge_type=e.get("edge_type", "imports"),
-            confidence=e.get("confidence", 1.0),
-            hint_source=e.get("hint_source"),
-            resolution_origin=e.get("resolution_origin"),
-            call_lines_json=e.get("call_lines_json", "[]"),
-        ),
+        insert_fn=lambda e: _edge_values(repository_id, e),
     )
 
 
@@ -214,8 +233,13 @@ async def reconcile_edges_for_files(
     repository_id: str,
     source_file_paths: list[str],
     edges: list[dict],  # fresh edges whose source belongs to those files
+    *,
+    keep_edge_types: frozenset[str] = frozenset(),
 ) -> int:
     """Make ``graph_edges`` outgoing from *source_file_paths* match a fresh parse.
+
+    Stored rows of a type in *keep_edge_types* are left as they are, for a
+    caller whose fresh set does not cover that type.
 
     Sibling of :func:`reconcile_symbols_for_files` for the edge table. The
     incremental update path rebuilds the in-memory graph, but only the full-init
@@ -225,12 +249,16 @@ async def reconcile_edges_for_files(
     from this table). This deletes every edge whose source node belongs to one
     of *source_file_paths* — both the file node and its symbol nodes, including
     symbols the change deleted whose node rows the incremental path never prunes
-    — then inserts the fresh set. Edges *into* a changed file from an unchanged
-    one are owned by that other file and left untouched, the same file-scoping
-    the symbol reconciler uses; a full reindex reconciles those.
+    — then inserts the fresh set, writing only the rows that differ. Edges *into*
+    one of the files from a file outside the list are owned by that other file
+    and left untouched, the same file-scoping the symbol reconciler uses. The
+    exception is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``),
+    which the target's file owns too.
 
-    Returns the number of deleted rows.
+    Returns the number of deleted rows (removed or rewritten).
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     scoped = [p for p in dict.fromkeys(source_file_paths) if p]
     if not scoped:
         return 0
@@ -268,37 +296,28 @@ async def reconcile_edges_for_files(
     if not source_ids:
         return 0
 
-    id_list = list(source_ids)
-    deleted = 0
-    for i in range(0, len(id_list), _EDGE_RECONCILE_CHUNK):
-        batch = id_list[i : i + _EDGE_RECONCILE_CHUNK]
-        res = await session.execute(
-            delete(GraphEdge).where(
-                GraphEdge.repository_id == repository_id,
-                GraphEdge.source_node_id.in_(batch),
-            )
-        )
-        deleted += res.rowcount or 0
-
-    # Every fresh edge's source was just cleared, so these are all plain inserts
-    # — no need for the repo-wide upsert (which reloads every edge row).
-    for e in edges:
-        session.add(
-            GraphEdge(
-                id=_new_uuid(),
-                repository_id=repository_id,
-                source_node_id=e.get("source_node_id", ""),
-                target_node_id=e.get("target_node_id", ""),
-                imported_names_json=e.get("imported_names_json", "[]"),
-                edge_type=e.get("edge_type", "imports"),
-                confidence=e.get("confidence", 1.0),
-                hint_source=e.get("hint_source"),
-                resolution_origin=e.get("resolution_origin"),
-                call_lines_json=e.get("call_lines_json", "[]"),
-            )
-        )
-    await session.flush()
-    return deleted
+    # Diff instead of delete-all-then-insert: an update reconciles every file,
+    # and nearly all of its rows come back unchanged.
+    stored = await _edge_sync.load_owned_edges(
+        session,
+        repository_id,
+        list(source_ids),
+        frozenset(TARGET_OWNED_HINTS),
+        _EDGE_RECONCILE_CHUNK,
+    )
+    if keep_edge_types:
+        stored = {key: row for key, row in stored.items() if key[2] not in keep_edge_types}
+    stale_ids, inserts = _edge_sync.diff_edges(
+        stored,
+        [_edge_content_values(e) for e in edges],
+        lambda values: _column_values(
+            GraphEdge, {"id": _new_uuid(), "repository_id": repository_id, **values}
+        ),
+    )
+    await _edge_sync.apply_edge_diff(
+        session, repository_id, stale_ids, inserts, _EDGE_RECONCILE_CHUNK
+    )
+    return len(stale_ids)
 
 
 async def batch_upsert_graph_metrics(
@@ -329,16 +348,16 @@ async def batch_upsert_graph_metrics(
             float_columns=_CENTRALITY_COLUMNS,
             float_atol=_CENTRALITY_ATOL,
         ),
-        insert_fn=lambda kv: GraphMetric(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            node_id=kv[0],
-            pagerank=float(kv[1].get("pagerank", 0.0)),
-            betweenness=float(kv[1].get("betweenness", 0.0)),
-            community_id=int(kv[1].get("community_id", 0)),
-            in_degree=int(kv[1].get("in_degree", 0)),
-            out_degree=int(kv[1].get("out_degree", 0)),
-        ),
+        insert_fn=lambda kv: {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
+            "node_id": kv[0],
+            "pagerank": float(kv[1].get("pagerank", 0.0)),
+            "betweenness": float(kv[1].get("betweenness", 0.0)),
+            "community_id": int(kv[1].get("community_id", 0)),
+            "in_degree": int(kv[1].get("in_degree", 0)),
+            "out_degree": int(kv[1].get("out_degree", 0)),
+        },
     )
 
 
@@ -404,19 +423,19 @@ async def batch_upsert_graph_node_membership(
                 row[0]: row[1:] for row in existing_rows if row[0] in current
             },
         ),
-        insert_fn=lambda kv: GraphNodeMembership(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            node_id=kv[0],
-            node_type=str(kv[1].get("node_type", "file")),
-            scc_id=(None if kv[1].get("scc_id") is None else int(kv[1]["scc_id"])),
-            scc_size=int(kv[1].get("scc_size", 0)),
-            symbol_community_id=(
+        insert_fn=lambda kv: {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
+            "node_id": kv[0],
+            "node_type": str(kv[1].get("node_type", "file")),
+            "scc_id": (None if kv[1].get("scc_id") is None else int(kv[1]["scc_id"])),
+            "scc_size": int(kv[1].get("scc_size", 0)),
+            "symbol_community_id": (
                 None
                 if kv[1].get("symbol_community_id") is None
                 else int(kv[1]["symbol_community_id"])
             ),
-        ),
+        },
     )
 
 
@@ -488,6 +507,8 @@ async def get_all_graph_nodes(
             "is_test": row.is_test,
             "is_entry_point": row.is_entry_point,
             "is_reachability_root": row.is_reachability_root,
+            "always_run_reason": row.always_run_reason,
+            "public_api": row.public_api,
             "kind": row.kind,
             "name": row.name,
             "qualified_name": row.qualified_name,
@@ -535,9 +556,28 @@ async def get_all_graph_edges(
                 "hint_source": row.hint_source,
                 "resolution_origin": row.resolution_origin,
                 "call_lines": call_lines,
+                "type_only": bool(row.type_only),
+                "deferred": bool(row.deferred),
             }
         )
     return edges
+
+
+async def get_file_import_edges(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[tuple[str, str]]:
+    """``(src, dst)`` for every persisted import edge between two files.
+
+    Two columns rather than whole rows, for callers that only need the
+    direction of the file import graph.
+    """
+    result = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+            GraphEdge.repository_id == repository_id, GraphEdge.edge_type == "imports"
+        )
+    )
+    return [(u, v) for u, v in result.tuples().all() if "::" not in u and "::" not in v]
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +869,8 @@ async def get_cross_community_edges(
             GraphEdge.__table__.c.repository_id == repository_id,
             source_node.c.community_id == community_id,
             target_node.c.community_id != community_id,
+            # External code is stored with no community (-1); it is not a target.
+            target_node.c.community_id >= 0,
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",

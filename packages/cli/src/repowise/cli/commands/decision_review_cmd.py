@@ -10,8 +10,21 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
+from repowise.cli.commands.decision_batch import (
+    _emit_batch,
+    _emit_single,
+    _preview_option,
+    _RefusedError,
+    _require_ids,
+    _resolve_decision_id,
+    _review_batch,
+    _signer,
+    _signing_options,
+    _split_ids_and_path,
+)
 from repowise.cli.helpers import console, get_db_url_for_repo, run_async
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
+from repowise.core.analysis.decisions.lifecycle import AGENT_ACCEPTANCE_REMEDY
 
 __all__ = [
     "candidates_command",
@@ -20,6 +33,7 @@ __all__ = [
     "import_command",
     "merge_command",
     "migrate_command",
+    "reaffirm_command",
     "split_command",
     "status_command",
 ]
@@ -65,8 +79,10 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     Dry run by default. Records promoted by recurrence rather than by a person
     become candidates, which is a visible loss of standing decisions and the
-    intended one: they were never accepted. Nothing is deleted, every id keeps
-    resolving, and re-running changes nothing.
+    intended one: they were never accepted. No decision is deleted, and
+    re-running changes nothing. The supersede pointers an older version left
+    are repaired first, and each is listed; one left unplaced resolves to
+    nothing.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -74,6 +90,7 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 
     async def _run():
         from repowise.core.persistence import get_session
+        from repowise.core.persistence.decision_id_migration import repair_superseded_aliases
         from repowise.core.persistence.decision_migration import (
             apply_migration,
             plan_migration,
@@ -84,20 +101,26 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
+                repaired, unplaced = await repair_superseded_aliases(session, repo_id, apply=apply_)
                 plan = await plan_migration(session, repo_id)
                 if apply_:
                     plan = await apply_migration(session, repo_id, plan=plan)
-                return plan, render_plan(plan, limit=limit)
+                return plan, render_plan(plan, limit=limit), repaired, unplaced
         finally:
             await engine.dispose()
 
-    plan, report = run_async(_run())
+    plan, report, repaired, unplaced = run_async(_run())
     if fmt == "json":
         payload = plan.as_dict()
         payload["applied"] = apply_
+        payload["repaired"] = repaired
+        payload["unplaced"] = unplaced
         emit_json(payload)
         return
     console.print(report.replace("(dry run)", "(applied)" if apply_ else "(dry run)"))
+    if repaired or unplaced:
+        console.print(f"\nSupersede pointers: repaired {len(repaired)}  unplaced {len(unplaced)}")
+        _print_repairs(repaired, unplaced)
     if not apply_:
         console.print("\n[dim]Nothing was written. Re-run with --apply.[/dim]")
 
@@ -161,6 +184,7 @@ def candidates_command(
                         "needs_split": bool(meta.needs_split) if meta else False,
                         "lane": meta.lane if meta else "",
                         "blockers": record_blockers(rec),
+                        "reviewed_by": _review_signature(meta),
                     }
                     for rec, meta in rows
                 ]
@@ -195,8 +219,20 @@ def candidates_command(
     )
 
 
+def _review_signature(meta) -> dict | None:
+    """Who dismissed the candidate or asked for a split, and why. ``None`` if unrecorded."""
+    if meta is None or not meta.dismissed_by:
+        return None
+    return {
+        "accepter": meta.dismissed_by,
+        "kind": meta.dismissed_by_kind or "unrecorded",
+        "session": meta.dismissed_session or "",
+        "reason": meta.dismissed_reason,
+    }
+
+
 # ---------------------------------------------------------------------------
-# decision merge / split
+# decision merge / reaffirm / split
 # ---------------------------------------------------------------------------
 
 
@@ -204,47 +240,125 @@ def candidates_command(
 @click.argument("decision_id")
 @click.argument("into_id")
 @click.argument("path", required=False, default=None)
+@_signing_options
+@_preview_option
 @format_option()
-def merge_command(decision_id: str, into_id: str, path: str | None, fmt: str) -> None:
-    """Fold a candidate into an existing decision instead of accepting a duplicate."""
-    from repowise.cli.commands.decision_cmd import _resolve_decision_id, _resolve_decision_repo
+def merge_command(
+    decision_id: str,
+    into_id: str,
+    path: str | None,
+    agent: str,
+    agent_session: str,
+    preview: bool,
+    fmt: str,
+) -> None:
+    """Fold a candidate into an existing decision instead of accepting a duplicate.
 
+    INTO_ID must already be an accepted decision: merging into a candidate is
+    refused. Accept the target first with ``repowise decision confirm
+    INTO_ID``, or merge the other way. ``--agent`` signs the merge as that
+    agent, like ``decision confirm``.
+    """
+    from repowise.cli.commands.decision_cmd import _load_policy, _resolve_decision_repo
+
+    signer = _signer(agent, agent_session)
     repo_path = _resolve_decision_repo(path, fmt)
+    granted = _load_policy(repo_path).agent_acceptance if agent else False
 
-    async def _run():
-        from repowise.core.analysis.decisions.accepter import resolve_accepter
-        from repowise.core.persistence import get_session
+    async def _merge(session, rec) -> dict:
         from repowise.core.persistence.crud.authority import merge_candidate
-        from repowise.core.persistence.models import DecisionRecord
 
-        engine, sf = await _open(repo_path)
-        try:
-            async with get_session(sf) as session:
-                src = await _resolve_decision_id(session, decision_id)
-                dst = await _resolve_decision_id(session, into_id)
-                if src is None:
-                    emit_refusal("decision_not_found", f"Decision not found: {decision_id}", fmt)
-                if dst is None:
-                    emit_refusal("decision_not_found", f"Decision not found: {into_id}", fmt)
-                rec = await session.get(DecisionRecord, src)
-                try:
-                    await merge_candidate(
-                        session, rec, into_id=dst, accepter=resolve_accepter(repo_path)
-                    )
-                except ValueError as exc:
-                    emit_refusal("merge_refused", str(exc), fmt, decision_id=src)
-                return {"id": src, "merged_into": dst}
-        finally:
-            await engine.dispose()
+        target = await _resolve_decision_id(session, into_id)
+        if target is None:
+            raise _RefusedError("decision_not_found", f"Decision not found: {into_id}")
+        await merge_candidate(
+            session,
+            rec,
+            into_id=target,
+            accepter=signer.name(repo_path),
+            kind=signer.kind,
+            accepter_session=signer.session,
+            agent_acceptance=granted,
+        )
+        return {"merged_into": target}
 
-    result = run_async(_run())
-    if fmt == "json":
-        emit_json(result)
-        return
-    console.print(
-        f"[green]Candidate {result['id'][:8]} merged into "
-        f"{result['merged_into'][:8]}[/green]  [dim](the old id still resolves)[/dim]"
+    results = run_async(
+        _review_batch(
+            repo_path, [decision_id], action="merged", verb="merge", preview=preview,
+            apply_one=_merge,
+        )
     )
+    remedy = AGENT_ACCEPTANCE_REMEDY if agent and not granted else ""
+    if preview or fmt == "json":
+        _emit_batch(results, "merged", "merge", preview, fmt, remedy)
+        return
+    _emit_single(
+        results[0], decision_id, "merge", fmt,
+        f"into {into_id} [dim](the old id still resolves)[/dim]", remedy,
+    )
+
+
+@click.command("reaffirm")
+@click.argument("decision_ids", nargs=-1)
+@click.option("--reason", default="", help="Why it still holds. Defaults to its rationale.")
+@click.option(
+    "--evidence",
+    multiple=True,
+    help="Commit, file or link the review rests on. Repeatable. Defaults to its evidence.",
+)
+@_signing_options
+@_preview_option
+@format_option()
+def reaffirm_command(
+    decision_ids: tuple[str, ...],
+    reason: str,
+    evidence: tuple[str, ...],
+    agent: str,
+    agent_session: str,
+    preview: bool,
+    fmt: str,
+) -> None:
+    """Re-accept decisions after review, so they govern as active again.
+
+    For a decision marked needs_review because its code moved: read it, then
+    reaffirm it if it still holds. Takes one id or many, and an optional
+    repository path after them. A candidate is refused (accept it with
+    ``confirm``), and so is a withdrawn decision (accept it again with
+    ``confirm``). ``--agent`` signs as that agent, like ``decision confirm``.
+    """
+    from repowise.cli.commands.decision_cmd import _load_policy, _resolve_decision_repo
+
+    ids, path = _split_ids_and_path(decision_ids)
+    _require_ids(ids, "reaffirm", fmt)
+    repo_path = _resolve_decision_repo(path, fmt)
+    signer = _signer(agent, agent_session)
+    granted = _load_policy(repo_path).agent_acceptance if agent else False
+
+    async def _reaffirm(session, rec) -> None:
+        from repowise.core.persistence.crud.authority import reaffirm_decision
+
+        await reaffirm_decision(
+            session,
+            rec,
+            accepter=signer.name(repo_path),
+            kind=signer.kind,
+            accepter_session=signer.session,
+            agent_acceptance=granted,
+            reason=reason,
+            evidence=list(evidence) or None,
+        )
+
+    results = run_async(
+        _review_batch(
+            repo_path, ids, action="reaffirmed", verb="reaffirm", preview=preview,
+            apply_one=_reaffirm,
+        )
+    )
+    remedy = AGENT_ACCEPTANCE_REMEDY if agent and not granted else ""
+    if len(ids) > 1 or preview or fmt == "json":
+        _emit_batch(results, "reaffirmed", "reaffirm", preview, fmt, remedy)
+        return
+    _emit_single(results[0], ids[0], "reaffirm", fmt, "(governing)", remedy)
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +396,11 @@ def dedupe_command(
     and every folded id keeps resolving.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
-    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
+    from repowise.cli.providers.embedders import (
+        build_embedder,
+        resolve_embedder_for_repo,
+        semantic_search_command,
+    )
     from repowise.cli.providers.vector_store import build_vector_store
     from repowise.core.analysis.decisions.semantic_match import DEFAULT_DEDUP_TAU
     from repowise.core.providers.embedding.base import MockEmbedder
@@ -298,7 +416,7 @@ def dedupe_command(
             "no_real_embedder",
             "Decisions can only be compared with a real embedder, not test vectors.",
             fmt,
-            remedy="Set an embedder key and run 'repowise reindex'.",
+            remedy=f"Run '{semantic_search_command(repo_path)}'.",
         )
     vector_store = build_vector_store(repo_path, embedder)
     if vector_store is None:
@@ -306,7 +424,7 @@ def dedupe_command(
             "no_vector_store",
             "This repo has no vector store to compare decisions with.",
             fmt,
-            remedy="Set an embedder key and run 'repowise reindex'.",
+            remedy=f"Run '{semantic_search_command(repo_path)}'.",
         )
 
     async def _run():
@@ -361,12 +479,16 @@ def dedupe_command(
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 @click.option("--reason", default="", help="What the two choices are.")
+@_signing_options
 @format_option()
-def split_command(decision_id: str, path: str | None, reason: str, fmt: str) -> None:
+def split_command(
+    decision_id: str, path: str | None, reason: str, agent: str, agent_session: str, fmt: str
+) -> None:
     """Flag a candidate as bundling two choices. Never splits it for you."""
-    from repowise.cli.commands.decision_cmd import _resolve_decision_id, _resolve_decision_repo
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt)
+    signer = _signer(agent, agent_session)
 
     async def _run():
         from repowise.core.persistence import get_session
@@ -380,7 +502,14 @@ def split_command(decision_id: str, path: str | None, reason: str, fmt: str) -> 
                 if full_id is None:
                     emit_refusal("decision_not_found", f"Decision not found: {decision_id}", fmt)
                 rec = await session.get(DecisionRecord, full_id)
-                await request_split(session, rec, reason=reason)
+                await request_split(
+                    session,
+                    rec,
+                    reason=reason,
+                    accepter=signer.name(repo_path),
+                    kind=signer.kind,
+                    accepter_session=signer.session,
+                )
                 return {"id": full_id, "review_state": "needs_split"}
         finally:
             await engine.dispose()
@@ -498,12 +627,28 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         return
     console.print(
         f"created {len(result['created'])}  accepted {len(result['accepted'])}  "
-        f"unchanged {len(result['unchanged'])}  skipped {len(result['skipped'])}"
+        f"reaffirmed {len(result['reaffirmed'])}  unchanged {len(result['unchanged'])}  "
+        f"skipped {len(result['skipped'])}  repaired {len(result['repaired'])}"
     )
+    for decision_id in result["reaffirmed"]:
+        console.print(f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted")
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
+    _print_repairs(result["repaired"])
     if dry_run:
         console.print("[dim]Nothing was written.[/dim]")
+
+
+def _print_repairs(repaired: list[str], unplaced: list[str] | None = None) -> None:
+    """One line per supersede pointer the repair deletes, or leaves resolving to nothing."""
+    for alias_id in repaired:
+        console.print(
+            f"  [cyan]stale[/cyan] {alias_id[:8]}: supersede pointer, deleted unless a dry run"
+        )
+    for alias_id in unplaced or ():
+        console.print(
+            f"  [yellow]unplaced[/yellow] {alias_id[:8]}: record moved, resolves to nothing"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -535,17 +680,33 @@ def _render_status(report: dict) -> None:
         console.print(f"  [yellow]{warning}[/yellow]")
 
     sources = Table(title="\nSources", box=None, pad_edge=False, show_edge=False)
-    for column in ("Source", "Status", "Records", "Accepted", "Last seen", "Why"):
+    for column in (
+        "Source",
+        "Status",
+        "Records",
+        "Accepted",
+        "Last seen",
+        "Last run",
+        "Last failure",
+        "Why",
+    ):
         sources.add_column(column)
     for source in report["sources"]:
         style = _STATUS_STYLE.get(source["status"], "")
         last = source.get("last_captured")
+        last_run = source.get("last_run")
+        run_cell = str(last_run)[:19] if last_run else "-"
+        if source.get("last_run_status") == "failed":
+            run_cell = f"[red]{run_cell} (failed)[/red]"
+        failure = source.get("last_failure")
         sources.add_row(
             source["key"],
             f"[{style}]{source['status']}[/{style}]" if style else source["status"],
             str(source["records"]),
             str(source["accepted"]),
             str(last)[:10] if last else "-",
+            run_cell,
+            f"[red]{str(failure)[:60]}[/red]" if failure else "-",
             f"[dim]{source['reason']}[/dim]",
         )
     console.print(sources)

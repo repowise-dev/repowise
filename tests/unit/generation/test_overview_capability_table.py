@@ -54,7 +54,6 @@ def _term(
         source_paths=source_paths,
         doc_frequency=doc_frequency,
         code_frequency=code_frequency,
-        is_indexed_symbol=False,
     )
 
 
@@ -153,7 +152,7 @@ def test_the_table_carries_the_term_its_sentence_and_its_source():
             _term(
                 "Dead code",
                 definition="Dead code is code no import path reaches.",
-                definition_source="src/analysis/dead_code.py",
+                definition_source="docs/dead_code.md",
             )
         ],
         MODULES,
@@ -161,7 +160,40 @@ def test_the_table_carries_the_term_its_sentence_and_its_source():
     table = build_capability_table(picked)
     assert "| Capability | What it is | Where it is written |" in table
     assert "| Dead code | Dead code is code no import path reaches. |" in table
-    assert "`src/analysis/dead_code.py`" in table
+    assert "`docs/dead_code.md`" in table
+
+
+def test_a_docstring_definition_is_not_a_capability():
+    """A docstring describes one function, not what the product does. This
+    sentence, read from a doctor check's module, was once the whole table."""
+    picked = select_capabilities(
+        [
+            _term(
+                "Decisions",
+                definition="Decisions are co-located in the page vector store.",
+                definition_source="packages/cli/doctor_cmd/_checks/stores.py",
+            )
+        ],
+        [*MODULES, "Decisions"],
+    )
+    assert picked == []
+
+
+def test_docstring_markup_is_shown_as_markdown():
+    """``literal`` and :role:`x` read as stray punctuation on a Markdown page."""
+    picked = select_terms(
+        [
+            _term(
+                "Decisions",
+                definition="Decisions are stored under the ``decision:<id>`` key by "
+                ":func:`~store.put`, *never* elsewhere.",
+            )
+        ],
+        [*MODULES, "Decisions"],
+    )
+    assert picked[0].definition == (
+        "Decisions are stored under the `decision:<id>` key by `store.put`, never elsewhere."
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,7 +241,7 @@ def test_a_real_sentence_survives(term, text):
     """Each sentence is paired with the term it names, because a definition
     that never mentions its term is rejected as prose that merely sat nearby."""
     picked = select_capabilities([_term(term, definition=text)], [*MODULES, term])
-    assert picked[0].definition == text
+    assert picked[0].definition == text.replace("``", "`")
 
 
 def test_a_rejected_definition_does_not_leave_its_source_behind():
@@ -360,7 +392,7 @@ def capabilities():
             _term(
                 "Dead code",
                 definition="Dead code is code no import path reaches.",
-                definition_source="src/analysis/dead_code.py",
+                definition_source="docs/dead_code.md",
             )
         ],
         MODULES,
@@ -391,7 +423,7 @@ async def test_the_deterministic_page_carries_the_table(structure, parsed_files,
     assert page.content.count(CAPABILITY_TABLE_HEADING) == 1
 
 
-async def test_the_model_written_page_carries_the_same_bytes(structure, parsed_files, capabilities):
+async def test_only_the_keyless_page_carries_the_table(structure, parsed_files, capabilities):
     from repowise.core.generation.models import GenerationConfig
     from repowise.core.generation.page_generator import PageGenerator
     from repowise.core.providers.llm.mock import MockProvider
@@ -407,9 +439,11 @@ async def test_the_model_written_page_carries_the_same_bytes(structure, parsed_f
         MockProvider(), ContextAssembler(prose), prose
     ).generate_repo_overview(structure, {}, [], {}, **args)
 
+    # The keyless page carries the table; the written page states the same
+    # defined terms in its own section, so the table is not embedded there.
     table = build_capability_table(capabilities)
     assert table in stub_page.content
-    assert table in model_page.content
+    assert table not in model_page.content
 
 
 async def test_a_provider_outage_costs_the_prose_not_the_table(
@@ -495,3 +529,13 @@ async def test_no_capabilities_leaves_the_page_as_it_was(structure, parsed_files
         structure, {}, [], {}, repo_name="testrepo", parsed_files=parsed_files
     )
     assert CAPABILITY_TABLE_HEADING not in page.content
+
+
+def test_embedding_nothing_removes_a_section_an_earlier_run_left():
+    """A model page is reused verbatim while its prompt is unchanged, and the
+    table is not part of the prompt. Rows an earlier selection embedded stay
+    on that page unless an empty selection takes them off."""
+    reused = "# Overview\n\nProse.\n\n## What it does\n\n| a | b |\n\n## Packages\n\nrows\n"
+    out = embed_capability_table(reused, None)
+    assert CAPABILITY_TABLE_HEADING not in out
+    assert out.startswith("# Overview\n\nProse.\n\n## Packages")

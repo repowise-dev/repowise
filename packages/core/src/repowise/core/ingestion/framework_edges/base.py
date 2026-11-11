@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..source_text import source_text as _shared_source_text
+
 if TYPE_CHECKING:
     import networkx as nx
 
@@ -58,13 +60,19 @@ class FrameworkHandler(Protocol):
         ...
 
 
-def _add_edge_if_new(graph: nx.DiGraph, source: str, target: str) -> bool:
-    """Add a framework edge if no edge already exists. Returns True if added."""
+def _add_edge_if_new(
+    graph: nx.DiGraph, source: str, target: str, imported_names: list[str] | None = None
+) -> bool:
+    """Add a framework edge if no edge already exists. Returns True if added.
+
+    An edge without *imported_names* tells dead code the runtime may reach any
+    public member of *target*; one with names vouches for those names only.
+    """
     if source == target:
         return False
     if graph.has_edge(source, target):
         return False
-    graph.add_edge(source, target, edge_type="framework", imported_names=[])
+    graph.add_edge(source, target, edge_type="framework", imported_names=imported_names or [])
     return True
 
 
@@ -89,8 +97,12 @@ def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
         data = graph.nodes.get(node)
         if data is None or data.get("node_type") != "symbol":
             return False
-    if graph.has_edge(source, target):
-        return False
+    existing = graph.get_edge_data(source, target)
+    if existing is not None:
+        # A binding says the target runs, which outranks a bare mention of it.
+        if existing.get("edge_type") != "references":
+            return False
+        graph.remove_edge(source, target)
     graph.add_edge(
         source,
         target,
@@ -127,6 +139,16 @@ def read_text(parsed: Any, encoding: str = "utf-8") -> str:
         return Path(parsed.file_info.abs_path).read_text(encoding=encoding, errors="ignore")
     except OSError:
         return ""
+
+
+def read_text_from(path: str, parsed: Any, source_map: dict[str, bytes] | None) -> str:
+    """:func:`read_text`'s result, from the bytes ingestion already read.
+
+    Decoded like the disk read (``errors="ignore"``, universal newlines), so a
+    regex over it matches the same spans. Falls back to disk when *source_map*
+    lacks *path*.
+    """
+    return _shared_source_text(path, parsed.file_info.abs_path, source_map) or ""
 
 
 def source_text(
@@ -204,18 +226,46 @@ def _build_ts_var_to_file(
     Keyed on ``local_names``, not ``imported_names``: the DSL names the
     handler as this file sees it, so ``import { handler as apiHandler }``
     has to answer to ``apiHandler``.
+
+    Memoised on *ctx* for one framework pass: several handlers ask about the
+    same file, and on a large TS repo re-resolving every import per handler
+    was most of the phase. The result is shared, so callers must not mutate it.
     """
+    memo = _ts_var_memo(ctx, path_set)
+    hit = memo.get(path)
+    if hit is not None and hit[0] is parsed:
+        return hit[1]
+
     from ..resolvers import resolve_import
 
     var_to_file: dict[str, str] = {}
+    language = parsed.file_info.language
     for imp in parsed.imports:
-        for name in imp.local_names:
-            resolved = resolve_import(
-                imp.module_path,
-                path,
-                parsed.file_info.language,
-                ctx,
-            )
-            if resolved and resolved in path_set:
+        if not imp.local_names:
+            continue
+        # One resolution per import, not per name: every name of an import
+        # shares its module path, and resolving is deterministic within a run.
+        # Fewer calls drop no graph node: the resolver's one side effect, an
+        # ``external:`` node, was already added by the import pass that ran
+        # (or was seeded) before this one.
+        resolved = resolve_import(imp.module_path, path, language, ctx)
+        if resolved and resolved in path_set:
+            for name in imp.local_names:
                 var_to_file[name] = resolved
+    memo[path] = (parsed, var_to_file)
     return var_to_file
+
+
+def _ts_var_memo(ctx: ResolverContext, path_set: set[str]) -> dict[str, tuple[Any, dict[str, str]]]:
+    """The per-file memo behind :func:`_build_ts_var_to_file`, reset for a new *path_set*.
+
+    Stashed on *ctx* like the resolvers' lazy indexes. The framework pass builds
+    a fresh context each run, so nothing outlives the run's import resolution;
+    tying the memo to the *path_set* object as well keeps a reused context from
+    answering with a resolution made against a different file set.
+    """
+    stash = getattr(ctx, "_ts_var_to_file_memo", None)
+    if stash is None or stash[0] is not path_set:
+        stash = (path_set, {})
+        ctx._ts_var_to_file_memo = stash
+    return stash[1]

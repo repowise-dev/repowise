@@ -15,6 +15,8 @@ from ._text import plural
 
 #: Below this many production files, a coverage report is not worth asking for.
 COVERAGE_MIN_FILES = 20
+#: Coverage is stale once measured at an earlier commit than the index's
+#: (``build.build_coverage``); a refresh is asked for only once it is this old.
 COVERAGE_STALE_AFTER = timedelta(days=14)
 DECISIONS_REVIEW_MIN = 5
 
@@ -57,7 +59,12 @@ def coverage_stale(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         return RuleOutcome(rule, "evaluated", "Coverage is current or absent.")
     age = ctx.anchor.replace(tzinfo=None) - cov.ingested_at.replace(tzinfo=None)
     if age < COVERAGE_STALE_AFTER:
-        return RuleOutcome(rule, "evaluated", "Coverage is recent enough.")
+        return RuleOutcome(
+            rule,
+            "evaluated",
+            "Coverage was measured at an earlier commit; a refresh is asked for once "
+            f"the report is {COVERAGE_STALE_AFTER.days} days older than the latest commit.",
+        )
     action = Action(
         rule=rule,
         tier="improve_signal",

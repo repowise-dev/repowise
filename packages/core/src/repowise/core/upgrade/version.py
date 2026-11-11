@@ -28,41 +28,16 @@ When to bump
 
 from __future__ import annotations
 
-#: Current on-disk store format. Stamped into ``state.json`` as
-#: ``store_format_version`` on every persist. Legacy stores predating this
-#: field are treated as version 0.
-#:
-#: v2 introduces the derived concept tree (subsystem pages + written prose in
-#: place of per-directory module pages). Unlike v1, it is not reachable by the
-#: automatic reconcile: only a full re-index rebuilds an old store's pages into
-#: it. Its migration is therefore ``REINDEX_RECOMMENDED``, and :func:`stamp`
-#: clamps a routine persist just below it so the notice keeps firing until the
-#: user actually re-indexes.
-STORE_FORMAT_VERSION: int = 2
+#: Current on-disk store format, stamped into ``state.json`` on every persist
+#: (a store without it is version 0). v2 is reachable only by a full re-index,
+#: so :func:`stamp` clamps a routine persist below it until the user re-indexes.
+#: v3 is reached by the update that rebuilds the wiki once (``REBUILD_WIKI``).
+STORE_FORMAT_VERSION: int = 3
 
-#: Current parser/extractor schema. Folded into the parse-cache fingerprint in
-#: place of the package version. See :mod:`repowise.core.ingestion.parse_cache`.
-#:
-#: v2: ``RawCall`` gained ``scope_name`` (the C++ ``Ns::f()`` qualifier as
-#: written) and ``receiver_call`` (the inner call of a chained expression), and
-#: a Rust macro invocation stopped being extracted as a call. A cache written
-#: before that carries neither field, so the scoped-call, chained-call and
-#: macro fixes would resolve against stale rows instead of firing.
-#:
-#: v3: a Python import that resolves to no repo file now becomes an
-#: ``external:`` node and edge instead of resolving to nothing. The fingerprint
-#: change makes ``persist_incremental_edges`` reconcile every file's edges once
-#: on the next update, so an existing index does not keep half its Python files
-#: without external edges.
-#:
-#: v4: Python absolute imports resolve only by their full dotted path (no stem
-#: guess, no sibling lookup inside a package, never the importer itself), and
-#: ``from pkg import a, b`` over submodules no longer edges into
-#: ``pkg/__init__.py``. Reconciling once drops the stale edges from old stores.
-#:
-#: v5: an overload signature (Python ``@overload``, TypeScript function / method
-#: overload) is marked ``is_declaration`` so lookups serve the implementation.
-PARSER_SCHEMA_VERSION: int = 5
+#: Current parser/extractor schema, folded into the parse-cache fingerprint in
+#: place of the package version (see :mod:`repowise.core.ingestion.parse_cache`).
+#: What each bump changed is in this file's git history and the release notes.
+PARSER_SCHEMA_VERSION: int = 13
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
@@ -73,10 +48,15 @@ WRITTEN_BY_VERSION_KEY = "written_by_version"
 #: state.json key holding the embedding model id the vectors were built with.
 EMBEDDING_MODEL_KEY = "embedding_model"
 
+#: state.json key holding the store format version whose wiki rebuild has run,
+#: so a routine persist may advance past a ``REBUILD_WIKI`` migration.
+WIKI_REBUILT_VERSION_KEY = "wiki_rebuilt_store_version"
+
 __all__ = [
     "EMBEDDING_MODEL_KEY",
     "PARSER_SCHEMA_VERSION",
     "STORE_FORMAT_VERSION",
     "STORE_FORMAT_VERSION_KEY",
+    "WIKI_REBUILT_VERSION_KEY",
     "WRITTEN_BY_VERSION_KEY",
 ]

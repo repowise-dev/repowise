@@ -16,16 +16,32 @@ Three separate questions live here and must not collapse into one label:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from ..worth import dormant
+from .cold_paths import is_cold_path
+
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
-# ``expected``: the repetition is real and there is nothing to change.
+# ``expected``: the repetition is real and there is nothing to change, either
+# by its nature or for a reason :func:`expected_reason` reads off the group
+# (``gated_off``: a constant-false flag switches the function off;
+# ``cold_path``: it runs once per deploy, boot or incident;
+# ``bounded_loop``: the loop runs a fixed number of times; ``small_table``: it
+# grows only by reading tables that do not grow with the repository).
 ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
 
+#: Reasons :func:`expected_reason` gives that the default queue counts under
+#: their own name, in precedence order; ``bounded_loop`` and ``small_table``
+#: count as ``expected``.
+EXPECTED_REASONS: tuple[str, ...] = ("gated_off", "cold_path")
+
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
-_EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
+_EXPECTED_REFUSALS = frozenset(
+    {"inherent_to_boundary", "loop_already_chunked", "loop_not_batchable"}
+)
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
@@ -41,6 +57,19 @@ BATCHABLE_BOUNDARIES = frozenset({"db", "network"})
 
 # Fanning out N awaits here spends a pool, rate limit or statement timeout.
 CONCURRENCY_SENSITIVE_BOUNDARIES = frozenset({"db", "network"})
+
+# I/O a lock usually exists to serialize: a file-backed store or log writes
+# under its lock, and a launcher spawns its process once under it. Moving that
+# I/O out of the lock reintroduces the race the lock prevents.
+LOCK_SERIALIZED_BOUNDARIES = frozenset({"filesystem", "subprocess"})
+
+#: What a boundary's call is named in prose ("a database call").
+BOUNDARY_NOUN = {
+    "db": "database",
+    "filesystem": "file system",
+    "network": "network",
+    "subprocess": "subprocess",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +248,10 @@ def assess_fix(
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
             return FixAssessment(None, (), refusal="inherent_to_boundary")
+        if details and all(detail.get("loop_not_batchable") for detail in details):
+            # The loop stops at the first call that answers, or each call needs the
+            # one before it: there is no set of keys to send at once.
+            return FixAssessment(None, (), refusal="loop_not_batchable")
         form = _shared(details, "batch_form")
         if form:
             if _shared(details, "batch_equivalent") is True:
@@ -242,6 +275,10 @@ def assess_fix(
                 ),
                 ("result_equivalence",),
             )
+        if details and all(detail.get("loop_key_unused") for detail in details):
+            # No element or index of the loop reaches the call: a retry,
+            # fallback or partial-write loop, with no set of keys to batch.
+            return FixAssessment(None, ("per_key_call",))
         return FixAssessment(
             PerformanceFix(
                 "batch_or_prefetch_io",
@@ -252,6 +289,8 @@ def assess_fix(
             ("batch_api_contract", "result_equivalence"),
         )
     if marker == "blocking_io_under_lock":
+        if boundary in LOCK_SERIALIZED_BOUNDARIES:
+            return FixAssessment(None, ("io_not_guarded_by_lock",), refusal="lock_serializes_io")
         owners = {
             path[0] for detail in details if (path := detail.get("path")) and isinstance(path, list)
         }
@@ -269,16 +308,48 @@ def assess_fix(
     return FixAssessment(None, ("supported_strategy_for_marker",))
 
 
+def expected_reason(members: Sequence[Any], magnitude: str | None = None) -> str | None:
+    """Why a group needs no change whatever its strategy, or ``None``.
+
+    ``gated_off``: every member sits in a function a constant-false flag in
+    its own file switches off. ``cold_path``: every loop owner is named for a
+    migration, startup, shutdown or crash recovery (:mod:`.cold_paths`), so it
+    runs once per deploy, boot or incident. ``bounded_loop``: the group's loop
+    *magnitude* is proven bounded, so its cost does not grow; ``small_table``
+    when a member is bounded because its loop reads only small tables
+    (:mod:`.table_scale`). Reasons are checked in precedence order.
+    """
+    if not members:
+        return None
+    if all(dormant(facts.details) for facts in members):
+        return "gated_off"
+    if all(is_cold_path(facts.file_path, facts.function_name) for facts in members):
+        return "cold_path"
+    if magnitude != "bounded":
+        return None
+    small = any(facts.details.get("loop_small_tables") for facts in members)
+    return "small_table" if small else "bounded_loop"
+
+
 def actionability(
-    assessment: FixAssessment, evidence_confidence: OpportunityConfidence
+    assessment: FixAssessment,
+    evidence_confidence: OpportunityConfidence,
+    *,
+    expected_reason: str | None = None,
 ) -> Actionability:
     """What to do with this group next, and why not more.
 
     Deliberately not a restatement of fix safety. A proven strategy resting on
     a call path we could not resolve reliably is still only advisory, and the
     demotion names the fact that would promote it. A group with no strategy is
-    kept as investigation evidence rather than dropped.
+    kept as investigation evidence rather than dropped. A group with an
+    *expected_reason* (:func:`expected_reason`) has nothing to change, so it is
+    ``expected`` under that reason and carries no fix.
     """
+    # With or without a strategy: a group with none would otherwise be
+    # ``investigate``, and there is nothing to investigate either.
+    if expected_reason is not None:
+        return Actionability("expected", expected_reason, "low", (), None)
     fix = assessment.fix
     if fix is None:
         state: ActionabilityState = (
@@ -308,6 +379,8 @@ def actionability(
 __all__ = [
     "BATCHABLE_BOUNDARIES",
     "BATCHABLE_MARKERS",
+    "BOUNDARY_NOUN",
+    "LOCK_SERIALIZED_BOUNDARIES",
     "Actionability",
     "ActionabilityState",
     "FixAssessment",

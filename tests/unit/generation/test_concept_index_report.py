@@ -1,7 +1,7 @@
 """The run reports how far the module concept index reached.
 
-The table is appended in code, after the provider call, which is a quieter
-place to lose something than a template. An early return on an error path, or a
+The table is rendered into the page's digest in code, after the provider
+call, which is a quieter place to lose something than a template. An early return on an error path, or a
 refactor that hands back the page before the append, leaves every module page
 pure prose again — and every template test in the suite still passes, because
 none of the templates changed. This counter is the only thing that would say so.
@@ -17,20 +17,20 @@ from repowise.core.generation.models import GeneratedPage
 from repowise.core.generation.report import CONCEPT_INDEX_HEADING, GenerationReport
 
 _WITH = (
-    "# Resolution Layer\n\nProse.\n\n"
     f"{CONCEPT_INDEX_HEADING}\n\n"
     "| Concept | Symbol | File |\n| --- | --- | --- |\n"
     "| Resolver context | `ResolverContext` | `a.py` |\n"
 )
-_WITHOUT = "# Resolution Layer\n\nProse.\n"
+_WITHOUT = ""
 
 
-def _page(page_id: str, page_type: str, content: str) -> GeneratedPage:
+def _page(page_id: str, page_type: str, digest: str) -> GeneratedPage:
     return GeneratedPage(
         page_id=page_id,
         page_type=page_type,
         title=page_id,
-        content=content,
+        content="# Resolution Layer\n\nProse.\n",
+        digest=digest,
         source_hash="",
         model_name="mock",
         provider_name="mock",

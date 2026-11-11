@@ -31,8 +31,11 @@ Verification is two-tier:
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from repowise.core.persistence.models import WikiSymbol
 
@@ -44,6 +47,33 @@ _log = logging.getLogger("repowise.mcp.verify")
 # confirm them. (Module-level constants/variables now indexed make short
 # names common, so the gate must not rubber-stamp them.)
 _MIN_GATE_NAME_LEN = 3
+# A line opening an annotation, attribute or decorator, which JVM, Swift, Rust
+# and C# definitions can start on. Lines inside its brackets continue it.
+_ATTRIBUTE_LINE = re.compile(r"^\s*(?:@|#\[|\[)")
+# A C/C++ return-type or template line above the name (``LRESULT``,
+# ``static int``, ``template <typename T>``): one type-like token, at most one
+# qualifier before it. A bare statement keyword is not a type.
+_TYPE_HEAD = re.compile(
+    r"^\s*(?:(?:static|inline|extern|virtual|constexpr|const|unsigned|signed|friend|explicit)\s+)?"
+    r"(template\s*<.*>|[A-Za-z_][\w:]*(?:<.*>)?)[\s*&]*$"
+)
+# Control-flow and statement words: a line led by one is not a definition or
+# its type head.
+NOT_A_DEFINITION = frozenset(
+    {
+        "if", "for", "while", "switch", "catch", "else", "do", "try", "return",
+        "with", "using", "lock", "foreach", "case", "synchronized", "await",
+        "yield", "new", "typeof", "in", "of", "when", "unless", "match",
+        "raise", "throw", "assert", "del", "delete", "print", "elif", "except",
+        "finally", "import", "from", "global", "nonlocal", "pass", "break",
+        "continue", "go", "defer", "select", "range", "constructor",
+    }
+)
+# ``end`` closes a Ruby or Lua block, but it is a real JS method name, so only
+# the type-head check refuses it.
+_NOT_A_TYPE_HEAD = NOT_A_DEFINITION | {"end"}
+_MAX_TYPE_HEAD_LINES = 2
+_MAX_ATTRIBUTE_LINES = 20
 
 
 @dataclass
@@ -63,12 +93,70 @@ def name_at_line(lines: list[str], name: str, start_line: int) -> bool:
     ``lines`` is the live file split into lines; ``start_line`` is
     1-indexed. The bare name (last segment of a qualified name) must appear
     as a substring of the definition line — true for def/class/assignment
-    lines across every indexed language.
+    lines across every indexed language. A recorded start on an annotation
+    block (``@Override``, ``#[test]``, ``[Fact]``, one spanning lines) or a
+    return-type line (``LRESULT``) is read past to the line it heads.
     """
     if start_line < 1 or start_line > len(lines):
         return False
     bare = _bare_name(name)
-    return bool(bare) and bare in lines[start_line - 1]
+    if not bare:
+        return False
+    depth = heads = 0
+    for text in lines[start_line - 1 : start_line - 1 + _MAX_ATTRIBUTE_LINES]:
+        # An annotation's arguments can name anything (``@Deprecated(since="foo")``),
+        # so only the code after it on the line counts.
+        if depth:
+            depth = _depth_after(depth, text)
+        elif _ATTRIBUTE_LINE.match(text):
+            if bare in _after_attributes(text):
+                return True
+            depth = _depth_after(0, text)
+        elif bare in text:
+            return True
+        elif heads < _MAX_TYPE_HEAD_LINES and _is_type_head(text):
+            heads += 1
+        else:
+            return False
+    return False
+
+
+def _depth_after(depth: int, text: str) -> int:
+    return max(0, depth + sum(map(text.count, "([{")) - sum(map(text.count, ")]}")))
+
+
+def _after_attributes(text: str) -> str:
+    """*text* past its leading annotations (``@A(x) @B [C] #[d]``); empty when one stays open."""
+    i, n = 0, len(text)
+    while True:
+        while i < n and text[i].isspace():
+            i += 1
+        if text.startswith("@", i):
+            i += 1
+            while i < n and (text[i].isalnum() or text[i] in "_.:"):
+                i += 1
+            if not text.startswith("(", i):
+                continue
+        elif text.startswith("#[", i):
+            i += 1
+        elif not text.startswith("[", i):
+            return text[i:]
+        depth = 0
+        for j in range(i, n):
+            depth += (text[j] in "([{") - (text[j] in ")]}")
+            if not depth:
+                i = j + 1
+                break
+        else:
+            return ""
+
+
+def _is_type_head(text: str) -> bool:
+    m = _TYPE_HEAD.match(text)
+    if m is None:
+        return False
+    token = m.group(1)
+    return token.startswith("template") or (len(token) >= 3 and token not in _NOT_A_TYPE_HEAD)
 
 
 def _bare_name(name: str) -> str:
@@ -104,12 +192,8 @@ def end_anchor_holds(lines: list[str], start_line: int, end_line: int) -> bool:
     return _line_indent(after) <= def_indent
 
 
-def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None:
-    """Re-parse the live file and find the symbol's current bounds.
-
-    Returns (start_line, end_line) or None when the symbol no longer
-    exists in the file (deleted/renamed) or the file cannot be parsed.
-    """
+def parse_live_symbols(row: WikiSymbol, source_text: str) -> list[Any] | None:
+    """Parse the live file that holds *row*; None when it cannot be parsed."""
     try:
         from repowise.core.ingestion.models import FileInfo
         from repowise.core.ingestion.parser import ASTParser
@@ -130,10 +214,27 @@ def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None
     except Exception as exc:
         _log.warning("re-parse failed for %s: %s", row.file_path, exc)
         return None
+    return list(parsed.symbols or [])
+
+
+def relocate_symbol(
+    row: WikiSymbol,
+    source_text: str,
+    parsed: Callable[[], list[Any] | None] | None = None,
+) -> tuple[int, int] | None:
+    """Re-parse the live file and find the symbol's current bounds.
+
+    Returns (start_line, end_line) or None when the symbol no longer
+    exists in the file (deleted/renamed) or the file cannot be parsed.
+    ``parsed`` lets a caller checking many rows of one file parse it once.
+    """
+    live = parsed() if parsed is not None else parse_live_symbols(row, source_text)
+    if live is None:
+        return None
 
     # An overload set is several rows under one id; the implementation (the
     # one non-declaration) goes first so a stub never answers for it.
-    symbols = sorted(parsed.symbols or [], key=lambda sym: sym.is_declaration)
+    symbols = sorted(live, key=lambda sym: sym.is_declaration)
     # Strongest match first: exact symbol_id, then (name, parent), then name.
     for sym in symbols:
         if sym.id == row.symbol_id:
@@ -147,7 +248,11 @@ def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None
     return None
 
 
-def check_symbol_bounds(row: WikiSymbol, source_text: str) -> BoundsCheck:
+def check_symbol_bounds(
+    row: WikiSymbol,
+    source_text: str,
+    parsed: Callable[[], list[Any] | None] | None = None,
+) -> BoundsCheck:
     """Verify (and if needed correct) a symbol's bounds against live source.
 
     Cheap gate (no re-parse) only when ALL hold: the name is long enough for
@@ -166,7 +271,7 @@ def check_symbol_bounds(row: WikiSymbol, source_text: str) -> BoundsCheck:
         end = min(max(row.end_line, row.start_line), len(lines))
         return BoundsCheck(start_line=row.start_line, end_line=end, verified=True)
 
-    located = relocate_symbol(row, source_text)
+    located = relocate_symbol(row, source_text, parsed)
     if located is not None:
         corrected = located != (row.start_line, row.end_line)
         if corrected:

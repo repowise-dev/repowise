@@ -150,6 +150,28 @@ async def test_seed_linked_decision_injected(tmp_path, monkeypatch):
     assert "Batch the embed calls" not in block
 
 
+async def test_dot_directory_seed_preserves_leading_dot_and_strips_dot_slash(
+    tmp_path, monkeypatch
+):
+    ci_decision = {
+        "id": "d-ci",
+        "title": "Pin CI actions by SHA",
+        "decision": "Every GitHub Actions workflow pins actions by full commit SHA",
+        "links": [(".github/workflows/ci.yml", "file")],
+    }
+    await _build_wiki_db(tmp_path, [ci_decision, _AUTH_DECISION])
+
+    _quiet_git(monkeypatch, dirty=[".github/workflows/ci.yml"])
+    block = decision_inject._session_decision_block(tmp_path, "sess-dot")
+    assert block is not None
+    assert "Pin CI actions by SHA" in block
+
+    _quiet_git(monkeypatch, dirty=["./src/core/auth.py"])
+    block_rel = decision_inject._session_decision_block(tmp_path, "sess-rel")
+    assert block_rel is not None
+    assert "Use JWT auth" in block_rel
+
+
 async def test_silence_when_nothing_relevant(tmp_path, monkeypatch):
     await _build_wiki_db(tmp_path, [_UNRELATED_DECISION])
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
@@ -456,7 +478,7 @@ async def test_edit_notice_fires_once_per_decision(tmp_path):
     assert "governed by a standing decision" in notice
     assert "Use JWT auth" in notice
     assert "because session cookies broke the mobile clients" in notice
-    assert "confirmed across 2 sessions" in notice
+    assert "seen in 2 sessions" in notice
 
     # Same decision again this session: silence.
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
@@ -562,6 +584,45 @@ async def test_echoed_title_is_not_repeated(tmp_path):
     assert notice is not None
     assert notice.count("namespace, batched") == 1
     assert "because" not in notice
+
+
+async def test_edit_notice_no_double_period_when_rationale_ends_a_sentence(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-cli",
+                "title": "Keep the CLI help text short",
+                "decision": "keep help short",
+                "rationale": "to ensure usability on narrow terminals.",
+                "links": [("src/cli.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/cli.py", "s1", {})
+    assert notice is not None
+    assert "because to ensure usability on narrow terminals" in notice
+    assert notice.endswith("terminals.")
+    assert not notice.endswith("..")
+
+
+async def test_edit_notice_no_period_after_clipped_rationale(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-embed",
+                "title": "Batch embed calls",
+                "decision": "batch embed calls",
+                "rationale": "provider rate limits " * 20,
+                "links": [("src/embed.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/embed.py", "s1", {})
+    assert notice is not None
+    assert notice.endswith("…")
+    assert not notice.endswith("….")
 
 
 async def test_edit_notice_respects_session_cap(tmp_path):
@@ -678,6 +739,8 @@ async def test_a_candidate_reaches_the_session_labelled_as_one(tmp_path, monkeyp
     assert block is not None
     assert "Rotate the auth keys nightly" in block
     assert "NOT accepted" in block
+    # The agent is told how to accept one as itself, not given a person's form.
+    assert "repowise decision confirm <id> --agent <your slug> --evidence" in block
     assert "Standing decisions" not in block
 
 
@@ -1068,7 +1131,7 @@ async def test_the_candidate_lane_prefers_the_better_measured_tier(tmp_path, mon
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
     block = decision_inject._session_decision_block(tmp_path, "sess-1")
     assert block is not None
-    lines = [ln for ln in block.splitlines() if "candidate" in ln.lower()]
+    lines = [ln for ln in block.splitlines() if "tier candidate" in ln]
     assert lines and "Better tier candidate" in lines[0]
 
 

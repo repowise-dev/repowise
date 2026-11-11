@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from .rows import scored_rows
+
 
 class MetricLike(Protocol):
     """The health-metric fields the quadrant reads (duck-typed).
@@ -92,7 +94,8 @@ def churn_complexity_points(
     files. Files with no recent churn are omitted (see module docstring).
     """
     points: list[ChurnComplexityPoint] = []
-    for m in metrics:
+    # No complexity axis for a file health never walked (no score).
+    for m in scored_rows(metrics):
         g = git_meta_by_path.get(m.file_path)
         commit_count = (g.commit_count_90d or 0) if g else 0
         if commit_count <= 0:

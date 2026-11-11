@@ -39,7 +39,6 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ....co_change import parse_partners
-from ....test_paths import is_test_related_path
 from ...dead_code.file_reachability import BARREL_FILENAMES
 from ..models import Severity
 from ..semantics import format_top_percentile
@@ -83,7 +82,7 @@ class CoChangeScatterDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         meta: dict[str, Any] = ctx.git_meta or {}
 
-        if is_test_related_path(ctx.file_path, ctx.language) or _is_barrel(ctx.file_path):
+        if ctx.is_test_material or _is_barrel(ctx.file_path):
             return []
 
         percentile = _as_float(meta.get("co_change_scatter_pct"))

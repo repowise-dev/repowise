@@ -28,6 +28,18 @@ def test_reject_structural_page_ids_allows_concept_pages():
     _reject_structural_page_ids(("module_page:src/api", "repo_overview:demo"))
 
 
+def test_reject_structural_page_ids_errors_on_deterministic_onboarding():
+    with pytest.raises(click.ClickException) as exc:
+        _reject_structural_page_ids(("onboarding:onboarding/active_landscape",))
+    assert "onboarding:onboarding/active_landscape" in str(exc.value)
+    assert "repowise update" in str(exc.value)
+
+
+def test_reject_structural_page_ids_allows_model_written_onboarding():
+    # Model-written onboarding pages pass through untouched.
+    _reject_structural_page_ids(("onboarding:onboarding/how_it_works",))
+
+
 class _RecordingConsole:
     """Captures print calls; asserts the prompt is never reached."""
 

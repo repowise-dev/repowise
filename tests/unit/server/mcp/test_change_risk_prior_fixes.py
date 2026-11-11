@@ -20,7 +20,7 @@ from repowise.server.mcp_server import tool_change_risk as tool
 
 
 async def _block(monkeypatch, impact, changed=None):
-    async def _fake(ctx, changed_lines):
+    async def _fake(ctx, changed_lines, **_):
         return impact
 
     monkeypatch.setattr(tool, "_read_prior_fixes", _fake)

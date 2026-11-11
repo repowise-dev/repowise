@@ -590,6 +590,40 @@ async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
 
 
 @pytest.fixture
+async def pr_checkout(setup_mcp, session, tmp_path):
+    """A git checkout of the fixture's files, indexed at its HEAD.
+
+    PR mode selects tests the way ``repowise impacted-tests`` does, which reads
+    the checkout (its tracked files) and the commit the index describes.
+    """
+    import subprocess
+
+    from sqlalchemy import update
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    for path in ("src/auth/service.py", "src/auth/middleware.py", "src/db/models.py"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    (tmp_path / "tests/test_service.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    git("add", "src", "tests")
+    git("-c", "user.name=Dev", "-c", "user.email=dev@example.com", "commit", "-qm", "seed")
+    head = git("rev-parse", "HEAD")
+    await session.execute(update(Repository).where(Repository.id == "repo1").values(head_commit=head))
+    # Stamped by the indexer: an ordinary test that walks nothing.
+    await session.execute(
+        update(GraphNode).where(GraphNode.is_test == True).values(always_run_reason="")  # noqa: E712
+    )
+    await session.flush()
+    return setup_mcp
+
+
+@pytest.fixture
 async def health_data(session: AsyncSession, populated_db: str) -> str:
     """Seed health_findings + health_file_metrics for the existing repo."""
     from repowise.core.persistence.crud import (
@@ -639,7 +673,7 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "function_name": "authenticate",
                 "line_start": 10,
                 "line_end": 80,
-                "details": {"ccn": 15, "cognitive": 30, "nloc": 70},
+                "details": {"ccn": 15, "cognitive": 30, "nloc": 70, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 1.2,
                 "reason": "authenticate has cyclomatic complexity 15",
             },
@@ -686,6 +720,14 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
     )
     await session.commit()
     return rid
+
+
+@pytest.fixture
+def debug_meta(monkeypatch):
+    """Restore the diagnostic ``_meta`` fields, for tests of the accounting itself."""
+    from repowise.server.mcp_server._meta import DEBUG_META_ENV
+
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
 
 
 @pytest.fixture(autouse=True)
@@ -753,3 +795,13 @@ def _no_omission_writes_outside_a_test_repo(monkeypatch, tmp_path):
     # misses the read.
     monkeypatch.setattr(store_module, "default_store_path", resolve)
     monkeypatch.setattr(collector, "default_store_path", resolve)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_change_risk_cache(monkeypatch):
+    """Each test scores its ranges itself; a cached payload would hide its patches."""
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server.tool_change_risk import cache
+
+    monkeypatch.setattr(cache, "_SCORED", OrderedDict())

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable, Mapping, Sequence
+    from collections.abc import Collection, Coroutine, Iterable, Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -288,35 +288,121 @@ class RepoIndex:
         # No engine means the caller built this over its own handle and owns it.
         if self._engine is None:
             return
-        await self._session.close()
-        await self._engine.dispose()
+        await _close_index_db(self._session, self._engine)
 
 
 class WorkspaceIndex:
-    """The open :class:`RepoIndex` for each workspace repo that has one."""
+    """The open :class:`RepoIndex` for each workspace repo that has one.
 
-    def __init__(self, repos: dict[str, RepoIndex]) -> None:
+    *openable* names repos not opened yet (alias to checkout path);
+    :meth:`ensure` opens the ones a caller turns out to need, so a run that
+    reads two repos does not load the symbols of two hundred.
+    """
+
+    def __init__(self, repos: dict[str, RepoIndex], openable: dict[str, Path] | None = None) -> None:
         self._repos = repos
+        self._openable = dict(openable or {})
 
     def get(self, alias: str) -> RepoIndex | None:
         return self._repos.get(alias)
 
+    async def ensure(self, aliases: Collection[str]) -> None:
+        """Open the index of each alias in *aliases* not opened yet. A repo that fails is skipped."""
+        todo = [(a, self._openable.pop(a)) for a in sorted(aliases) if a in self._openable]
+        tasks = [asyncio.create_task(open_repo_index(alias, path)) for alias, path in todo]
+        try:
+            opened = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # Restore aliases before cleanup can re-raise a repeated cancellation.
+            self._openable.update(todo)
+            await _run_to_end(_close_opened(tasks))
+            raise
+        for (alias, _path), index in zip(todo, opened, strict=True):
+            if isinstance(index, BaseException):
+                _log.warning("Could not open the index for '%s'", alias, exc_info=index)
+            elif index is not None:
+                self._repos[alias] = index
+
     async def close(self) -> None:
-        for repo in self._repos.values():
-            try:
-                await repo.close()
-            except Exception:
-                _log.warning("Error closing index for '%s'", repo.alias, exc_info=True)
+        repos = list(self._repos.values())
         self._repos.clear()
+        await _run_to_end(_close_indexes(repos))
 
 
-async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
-    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
+async def _close_index_db(session: AsyncSession, engine: Any) -> None:
+    async def close() -> None:
+        try:
+            await session.close()
+        finally:
+            await engine.dispose()
+
+    await _run_to_end(close())
+
+
+async def _run_to_end(cleanup: Coroutine[Any, Any, None]) -> None:
+    """Finish *cleanup* however often the caller is cancelled, then re-raise.
+
+    A shield holds off one cancellation. An anyio cancel scope, which MCP tool
+    calls run under, cancels again on every pass of the loop, and the next one
+    would reach the cleanup and leave its connection checked out.
+    """
+    task = asyncio.create_task(cleanup)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            # asyncio.wait never cancels the task it waits on.
+            await asyncio.wait({task})
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    if cancelled is None:
+        return task.result()
+    if not task.cancelled() and task.exception() is not None:
+        _log.warning("Error closing index database", exc_info=task.exception())
+    raise cancelled
+
+
+async def _close_opened(tasks: list[asyncio.Task[RepoIndex | None]]) -> None:
+    """gather settles every open before it re-raises a cancellation, so each
+    index that opened is closed here and none finishes later with no owner.
+    """
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await _close_indexes([r for r in results if r is not None and not isinstance(r, BaseException)])
+
+
+async def _close_indexes(indexes: list[RepoIndex]) -> None:
+    """Close each index; one that fails is logged and the rest still close."""
+    for index in indexes:
+        try:
+            await index.close()
+        except Exception:
+            _log.warning("Error closing index for '%s'", index.alias, exc_info=True)
+
+
+async def checkout_repository(session: AsyncSession, repo_path: Path) -> Any:
+    """The ``repositories`` row describing *repo_path*, or None in an empty index.
+
+    A wiki.db normally holds one repository row; prefer the one recorded at
+    this checkout when it holds more, since test runs and moved checkouts leave
+    others behind. Newest first so the fallback is a decision rather than
+    whatever order the scan returns.
+    """
     from sqlalchemy import select
 
     from repowise.core.persistence.crud.repository import get_repository_by_path
     from repowise.core.persistence.models import Repository
 
+    repo = await get_repository_by_path(session, str(repo_path))
+    if repo is None:
+        repo = (
+            await session.execute(
+                select(Repository).order_by(Repository.updated_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    return repo
+
+
+async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
+    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
     from .registry import open_repo_db, repo_db_path
 
     if not repo_db_path(repo_path).is_file():
@@ -326,17 +412,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
     session = session_factory()
     ok = False
     try:
-        # A wiki.db normally holds one repository row; prefer the one recorded
-        # at this checkout when it holds more, since test runs and moved
-        # checkouts leave others behind. Newest first so the fallback is a
-        # decision rather than whatever order the scan returns.
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo is None:
-            repo = (
-                await session.execute(
-                    select(Repository).order_by(Repository.updated_at.desc()).limit(1)
-                )
-            ).scalar_one_or_none()
+        repo = await checkout_repository(session, repo_path)
         if repo is None:
             raise LookupError(f"No repository row in {repo_path}")
         index = RepoIndex(alias, repo_path, session, engine, repo_id=repo.id)
@@ -346,8 +422,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
         # BaseException too: a cancellation landing in _load would otherwise
         # leak the engine and its connection.
         if not ok:
-            await session.close()
-            await engine.dispose()
+            await _close_index_db(session, engine)
     return index
 
 
@@ -356,23 +431,20 @@ async def open_workspace_index(
     workspace_root: Path,
     *,
     aliases: Collection[str] | None = None,
+    deferred: bool = False,
 ) -> WorkspaceIndex:
     """Open every indexed repo in the workspace. A repo that fails is skipped.
 
-    *aliases*, when given, restricts the open to those repos.
+    *aliases*, when given, restricts the open to those repos. *deferred* opens
+    none of them yet: the caller opens what it needs with
+    :meth:`WorkspaceIndex.ensure`.
     """
-    entries = [e for e in ws_config.repos if aliases is None or e.alias in aliases]
-    opened = await asyncio.gather(
-        *(
-            open_repo_index(e.alias, (workspace_root / e.path).resolve())
-            for e in entries
-        ),
-        return_exceptions=True,
-    )
-    repos: dict[str, RepoIndex] = {}
-    for entry, index in zip(entries, opened, strict=True):
-        if isinstance(index, BaseException):
-            _log.warning("Could not open the index for '%s'", entry.alias, exc_info=index)
-        elif index is not None:
-            repos[entry.alias] = index
-    return WorkspaceIndex(repos)
+    openable = {
+        e.alias: (workspace_root / e.path).resolve()
+        for e in ws_config.repos
+        if aliases is None or e.alias in aliases
+    }
+    index = WorkspaceIndex({}, openable)
+    if not deferred:
+        await index.ensure(list(openable))
+    return index

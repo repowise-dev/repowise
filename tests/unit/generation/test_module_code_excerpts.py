@@ -8,14 +8,16 @@ keeps a line of signatures. Public API names are always listed.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import networkx as nx
 import pytest
 
 from repowise.core.generation.context import assembler as assembler_mod
+from repowise.core.generation.context import module_facts as facts_mod
 from repowise.core.generation.context.evidence import select_symbol_evidence
-from repowise.core.generation.context.module_excerpts import module_excerpts
+from repowise.core.generation.context.module_excerpts import excerpt_candidates, module_excerpts
 from repowise.core.generation.context.token_budget import estimate_tokens
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.page_generator import PageGenerator
@@ -48,17 +50,17 @@ def _sources(repo: Path, parsed: dict) -> dict[str, bytes]:
     return {p: (repo / p).read_bytes() for p in parsed}
 
 
-def _excerpt_share(ctx, config) -> int:
-    """Tokens of the rendered prompt's Public API rows, declarations and excerpts."""
-    prompt = PageGenerator(_RecordingProvider(), ContextAssembler(config), config)._render(
-        "module_page.j2", ctx=ctx
+def _excerpt_share(ctx) -> int:
+    """Tokens the facts spend on Public API rows, declarations and excerpts."""
+    return estimate_tokens(
+        json.dumps({k: ctx.facts.get(k) for k in ("public_api", "code_excerpts", "declared")})
     )
-    api = prompt[prompt.index("### Public API") :]
-    api = api[: api.index("\n##", 1)]
-    starts = [prompt.find(h) for h in ("### What other files declare", "## Exact source")]
-    end = prompt.index("## How to write")
-    code = prompt[min((i for i in starts if i >= 0), default=end) : end]
-    return estimate_tokens(api) + estimate_tokens(code)
+
+
+def _facts(prompt: str) -> dict:
+    """The facts object a module prompt carries."""
+    start = prompt.index("```json\n") + len("```json\n")
+    return json.loads(prompt[start : prompt.index("\n```", start)])
 
 
 async def test_prompt_snapshot_has_public_api_excerpts_and_declarations(tmp_path, sample_config):
@@ -78,27 +80,30 @@ async def test_prompt_snapshot_has_public_api_excerpts_and_declarations(tmp_path
         source_map=_sources(tmp_path, parsed),
     )
     prompt = provider._calls[-1]["user_prompt"]
-    assert "State behaviour only when an excerpt shows it" in prompt
+    assert "Describe what a symbol does only when its excerpt shows it" in prompt
     assert "(historical, <date>)" in prompt
+    facts = _facts(prompt)
     # Nothing is left over at this size, so every candidate has its body.
-    assert "### What other files declare" not in prompt
-    # Fixtures are written in text mode, so a Windows checkout has CRLF sources.
-    code = prompt[prompt.index("## Exact source excerpts") : prompt.index("## How to write")]
-    code = code.replace("\r\n", "\n")
-    assert code.count("<source-excerpt ") == 2
+    assert "declared" not in facts
+    excerpts = facts["code_excerpts"]
     # Public API first, then the higher-ranked file; private names never.
-    assert code.index('symbol="packages/kit/kit/client.py::Client"') < code.index(
-        'symbol="packages/kit/kit/util.py::slugify"'
-    )
+    assert [e["symbol"] for e in excerpts] == [
+        "packages/kit/kit/client.py::Client",
+        "packages/kit/kit/util.py::slugify",
+    ]
+    slugify = excerpts[1]
+    assert (slugify["file"], slugify["lines"], slugify["truncated"]) == ("util.py", "1-3", False)
+    # Fixtures are written in text mode, so a Windows checkout has CRLF sources.
     assert (
-        '<source-excerpt path="packages/kit/kit/util.py" '
-        'symbol="packages/kit/kit/util.py::slugify" lines="1-3">\n'
-        "def slugify(text: str) -> str:\n"
-        '    """Lower-case words joined by dashes."""\n'
-        '    return "-".join(text.lower().split())\n\n'
-        "</source-excerpt>"
-    ) in code
-    assert "_hidden" not in code
+        slugify["code"]
+        .replace("\r\n", "\n")
+        .startswith(
+            "def slugify(text: str) -> str:\n"
+            '    """Lower-case words joined by dashes."""\n'
+            '    return "-".join(text.lower().split())\n'
+        )
+    )
+    assert "_hidden" not in json.dumps(excerpts)
 
 
 def _many_functions(n: int, body_lines: int) -> str:
@@ -115,7 +120,7 @@ async def test_budget_drops_bodies_first_and_keeps_every_public_name(
     parsed = _index(tmp_path, files)
     api = _api(parsed, "pkg/")
     budget = 1_500
-    monkeypatch.setattr(assembler_mod, "_MODULE_EXCERPT_BUDGET", budget)
+    monkeypatch.setattr(facts_mod, "_FIXED_BUDGET", facts_mod.ModuleBudget(budget, 3, (500, 800)))
     ctx = ContextAssembler(sample_config).assemble_module_page(
         "Pkg",
         "python",
@@ -127,8 +132,8 @@ async def test_budget_drops_bodies_first_and_keeps_every_public_name(
     )
     assert [e["name"] for e in ctx.public_api] == [e["name"] for e in api]
     # Section headings and instructions sit outside the budget; allow for them.
-    assert _excerpt_share(ctx, sample_config) <= budget + 200
-    assert 0 < ctx.code_excerpts.count("<source-excerpt ") < 20
+    assert _excerpt_share(ctx) <= budget + 200
+    assert 0 < len(ctx.code_excerpts) < 20
     # A file whose body was dropped keeps its signatures.
     assert ctx.declared_files and all("def f0()" in line for line in ctx.declared_files)
 
@@ -143,8 +148,13 @@ async def test_a_long_body_is_capped_at_sixty_lines(tmp_path, sample_config):
         parsed_files=parsed,
         source_map=_sources(tmp_path, parsed),
     )
-    assert 'symbol="big.py::f0" lines="1-60" truncated="true"' in ctx.code_excerpts
-    assert "x59 = 59" not in ctx.code_excerpts and "x58 = 58" in ctx.code_excerpts
+    [excerpt] = ctx.code_excerpts
+    assert (excerpt["symbol"], excerpt["lines"], excerpt["truncated"]) == (
+        "big.py::f0",
+        "1-60",
+        True,
+    )
+    assert "x59 = 59" not in excerpt["code"] and "x58 = 58" in excerpt["code"]
 
 
 def test_public_api_names_past_the_hard_cap_are_counted(sample_config):
@@ -163,7 +173,7 @@ def test_public_api_names_past_the_hard_cap_are_counted(sample_config):
         "A", "typescript", [_context("a.ts")], nx.DiGraph(), public_api=api
     )
     assert ctx.public_api_omitted == len(api) - len(ctx.public_api) > 0
-    assert _excerpt_share(ctx, sample_config) <= assembler_mod._MODULE_EXCERPT_HARD_CAP
+    assert _excerpt_share(ctx) <= assembler_mod._MODULE_EXCERPT_HARD_CAP
 
 
 @pytest.mark.parametrize("budget", [60, 200, 10_000])
@@ -198,3 +208,47 @@ def test_a_big_public_api_body_is_not_displaced_by_a_smaller_ranked_one(tmp_path
     assert [item.symbol for item in alone.included] == ["small.py::g"]
     assert selection.included == ()
     assert any("big.py" in line for line in declared)
+
+
+def test_c_typedef_duplicates_do_not_consume_excerpt_slots(tmp_path):
+    path = "tokenizer.c"
+    parsed = _index(
+        tmp_path,
+        {
+            path: (
+                "typedef struct Tokenizer Tokenizer;\n"
+                "struct Tokenizer { int value; };\n"
+                "typedef struct Callback Callback;\n"
+                "struct Callback { int value; };\n"
+                "static int hidden(int value) { return value; }\n"
+                "int initialize(void) { return hidden(42); }\n"
+            )
+        },
+    )
+    candidates = excerpt_candidates([], parsed, [path])
+    assert [s.name for s in candidates] == ["Tokenizer", "Callback", "initialize"]
+    selection, _ = module_excerpts([], parsed, [path], _sources(tmp_path, parsed), 10_000)
+    assert [item.symbol for item in selection.included] == [s.id for s in candidates]
+    assert selection.included[-1].text.replace("\r\n", "\n") == (
+        "int initialize(void) { return hidden(42); }\n"
+    )
+
+
+def test_ranked_overloads_select_one_implementation_before_the_file_cap(tmp_path):
+    path = "client.ts"
+    parsed = _index(
+        tmp_path,
+        {
+            path: (
+                "export function encode(value: string): string;\n"
+                "export function encode(value: number): string;\n"
+                "export function encode(value: string | number): string { return String(value); }\n"
+                "export function first(): number { return 1; }\n"
+                "export function second(): number { return 2; }\n"
+                "export function third(): number { return 3; }\n"
+            )
+        },
+    )
+    candidates = excerpt_candidates([], parsed, [path])
+    assert [s.name for s in candidates] == ["encode", "first", "second"]
+    assert not candidates[0].is_declaration

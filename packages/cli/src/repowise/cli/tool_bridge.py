@@ -9,7 +9,7 @@ of anything the MCP server already does.
 The one thing a tool cannot supply itself is its resources: it reads a session
 factory, a full-text index and a vector store out of ``mcp_server._state``,
 which the MCP server's lifespan normally publishes.
-:func:`repowise.server.chat_tools.init_tool_state` is the existing publisher for
+:func:`repowise.server.mcp_server._state.init_tool_state` is the existing publisher for
 exactly that, and this module is the CLI's caller of it — the same wiring the
 HTTP server's chat router already does, built from the same pieces
 ``search_cmd`` builds its own store from.
@@ -46,8 +46,10 @@ async def _acall_tool(
 
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
     from repowise.core.persistence import FullTextSearch, create_engine
-    from repowise.server.chat_tools import init_tool_state
     from repowise.server.mcp_server._failure_shield import _shape_exception
+
+    # Not via ``chat_tools``: that module imports the HTTP auth stack.
+    from repowise.server.mcp_server._state import init_tool_state
 
     engine = None
     store = None
@@ -74,6 +76,8 @@ async def _acall_tool(
         engine = create_engine(db_url)
         session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         store = await _open_vector_store(repo_path)
+        if tool_name in _VECTOR_TOOLS:
+            store = await _connect_or_degrade(store)
         init_tool_state(
             session_factory,
             FullTextSearch(engine),
@@ -85,7 +89,7 @@ async def _acall_tool(
         )
         return _budgeted(tool_name, await factory())
     except Exception as exc:
-        return _shape_exception(tool_name, exc)
+        return _shape_exception(tool_name, exc, long_running=False)
     finally:
         close = getattr(store, "close", None)
         if close is not None:
@@ -122,6 +126,33 @@ def _budgeted(tool_name: str, result: dict) -> dict:
     )
 
 
+#: Tools whose answer reads the vector store. Only these open it up front:
+#: importing lancedb costs about a second, which every other tool skips.
+_VECTOR_TOOLS = frozenset({"search_codebase", "get_answer"})
+
+
+async def _connect_or_degrade(store: Any) -> Any:
+    """Open a LanceDB store now, or fall back and say so in ``_meta``.
+
+    The store imports lancedb lazily, so a missing or broken install only
+    fails on first use. A vector tool makes that use, so it is made here,
+    where a failure can still be reported instead of passing for healthy.
+    """
+    from repowise.core.persistence.vector_store import InMemoryVectorStore, LanceDBVectorStore
+
+    if not isinstance(store, LanceDBVectorStore):
+        return store
+    try:
+        await store._ensure_connected()
+        return store
+    except Exception as exc:
+        # The tool still answers from full-text search.
+        from repowise.server.mcp_server._server import _mark_vector_store_unreadable
+
+        _mark_vector_store_unreadable(exc)
+        return InMemoryVectorStore(embedder=store._embedder)
+
+
 async def _open_vector_store(repo_path: Path) -> Any:
     """The repo's LanceDB store, or an in-memory one when there is none.
 
@@ -142,17 +173,15 @@ async def _open_vector_store(repo_path: Path) -> Any:
     requested = resolve_embedder_for_repo(repo_path)
     embedder = build_embedder(requested, repo_path)
     _publish_embedder_status(requested, embedder)
+    from repowise.server.mcp_server import _state
+
+    _state._vector_store_errors.pop("", None)
     lance_dir = repo_path / REPOWISE_DIR / "lancedb"
     if lance_dir.is_dir():
-        try:
-            from repowise.core.persistence.vector_store import LanceDBVectorStore
+        from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            return LanceDBVectorStore(str(lance_dir), embedder=embedder)
-        except Exception:
-            # No lancedb wheel, or an unreadable table. The tools that do not
-            # need vector search still work off the session factory and FTS,
-            # so degrade rather than refuse to run.
-            pass
+        # Not opened here: see ``_connect_or_degrade``.
+        return LanceDBVectorStore(str(lance_dir), embedder=embedder)
     return InMemoryVectorStore(embedder=embedder)
 
 

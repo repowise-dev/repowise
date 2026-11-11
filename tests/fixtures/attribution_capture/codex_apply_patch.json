@@ -1,0 +1,15 @@
+{
+  "session_id": "019a0000-0000-7000-8000-00000000c0de",
+  "transcript_path": "/home/dev/.codex/sessions/2026/10/14/rollout-2026-10-14T10-00-00-019a0000.jsonl",
+  "cwd": "/work/demo",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.5-codex",
+  "permission_mode": "default",
+  "turn_id": "turn-7",
+  "tool_use_id": "call_apply_1",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: src/billing.py\n@@ def total(items):\n-    return 0\n+    subtotal = sum(item.price for item in items)\n+    return round(subtotal * 1.2, 2)\n*** Add File: src/report.py\n+def render(rows):\n+    header = 'name,amount'\n*** Delete File: src/legacy.py\n*** End Patch"
+  },
+  "tool_response": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nM src/billing.py\nA src/report.py\nD src/legacy.py\n"
+}

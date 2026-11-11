@@ -84,7 +84,7 @@ describe("ContractDrawer", () => {
   it("renders the contract identity, role, location and how it was found", () => {
     render(
       <ContractDrawer
-        contract={contract()}
+        contract={contract({ origin: "route_registration" })}
         open
         onOpenChange={() => {}}
         fullPageHref="/workspace/contracts/detail?id=x"
@@ -96,13 +96,11 @@ describe("ContractDrawer", () => {
     expect(screen.getByText("HTTP contract / Provider")).toBeInTheDocument();
     expect(screen.getByText("users-api")).toBeInTheDocument();
     // The file reads as a dim directory and its name, with the line after it.
-    expect(screen.getByText("users.ts").parentElement).toHaveAttribute(
-      "title",
-      "src/routes/users.ts:42",
-    );
+    expect(screen.getByText("users.ts").parentElement?.textContent).toBe("src/routes/users.ts:42");
     expect(screen.getByText("92%")).toBeInTheDocument();
     expect(screen.getByText("fastapi")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "AI prompt" })).toBeInTheDocument();
+    expect(screen.getByText("Framework registration")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent prompt" })).toBeInTheDocument();
   });
 
   it("links the file and the counterpart code, and swaps to the counterpart", () => {
@@ -113,7 +111,7 @@ describe("ContractDrawer", () => {
         contract={c}
         open
         onOpenChange={() => {}}
-        links={linksForContract(c, [link()])}
+        links={linksForContract(c, [link({ strategy: "gateway_route" })])}
         codeLinks={{
           fileHref: (repo, file) => `/repos/${repo}/files/${file}`,
           symbolHref: (repo, symbolId) => `/repos/${repo}/symbols/${symbolId}`,
@@ -132,6 +130,8 @@ describe("ContractDrawer", () => {
       "/repos/web-app/symbols/src/api/users-client.ts::fetchUser",
     );
     expect(screen.getByText("fetchUser")).toBeInTheDocument();
+    // The counterpart says how it was matched, not just exact or candidate.
+    expect(screen.getByText("Routed through a gateway")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /open the consumer in web-app/i }));
     expect(onSelectContract).toHaveBeenCalledWith({
       repo: "web-app",

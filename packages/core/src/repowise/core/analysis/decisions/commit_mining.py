@@ -11,6 +11,7 @@ from repowise.core.analysis.decisions.scope import (
     commit_scope_files,
     selected_scope_files,
 )
+from repowise.core.forges import CHANGE_BODY_MARKERS, Forge
 
 from .commit_signals import count_decision_signals
 from .records import ExtractedDecision
@@ -24,21 +25,6 @@ _BATCH_MAX_TOKENS = 8000
 #: truncating, so the files offered depend on the commit, not on map order.
 _MAX_PROMPT_FILES = 20
 
-# PR/squash body markers: a body containing any of these reads like a PR
-# description worth mining (vs an incidental multi-line commit message).
-_PR_BODY_MARKERS = (
-    "## why",
-    "## motivation",
-    "## what",
-    "## changes",
-    "## context",
-    "## summary",
-    "closes #",
-    "fixes #",
-    "resolves #",
-    "before:",
-    "after:",
-)
 _MAX_PR_BODIES = 25
 
 
@@ -159,10 +145,25 @@ def signal_commits(
     return commit_map, commit_files
 
 
+def restrict_to_commits(git_meta_map: dict[str, dict], shas: set[str]) -> dict[str, dict]:
+    """*git_meta_map* with each file's significant commits narrowed to *shas*.
+
+    *shas* are 8-character prefixes. Files left with no commit are dropped.
+    Both history miners read only this list, so an update hands them the
+    narrowed map to mine the commits it brought in and nothing older.
+    """
+    narrowed: dict[str, dict] = {}
+    for path, meta in git_meta_map.items():
+        kept = [c for c in _significant_commits(meta) if str(c.get("sha", ""))[:8] in shas]
+        if kept:
+            narrowed[path] = {**meta, "significant_commits_json": kept}
+    return narrowed
+
+
 def _pr_candidate(commit: dict, body: str) -> dict | None:
     """The prompt-ready record of a PR-shaped body with decision signals, else None."""
     low = body.lower()
-    is_prish = commit.get("pr_number") is not None or any(m in low for m in _PR_BODY_MARKERS)
+    is_prish = commit.get("pr_number") is not None or any(m in low for m in CHANGE_BODY_MARKERS)
     if not is_prish or count_decision_signals(low) <= 0:
         return None
     return {
@@ -170,6 +171,7 @@ def _pr_candidate(commit: dict, body: str) -> dict | None:
         "subject": commit.get("message", ""),
         "body": body,
         "pr": commit.get("pr_number"),
+        "date": commit.get("date", ""),
     }
 
 
@@ -215,9 +217,9 @@ def git_commit_block(commit: dict, body: str, files: list[str]) -> str:
     )
 
 
-def pr_commit_block(candidate: dict, files: list[str]) -> str:
-    """One PR body's entry in the PR mining prompt."""
-    pr_label = f" (PR #{candidate['pr']})" if candidate.get("pr") else ""
+def pr_commit_block(candidate: dict, files: list[str], forge: Forge) -> str:
+    """One PR body's entry in the PR mining prompt, its number as *forge* writes it."""
+    pr_label = f" ({forge.format_change_ref(candidate['pr'])})" if candidate.get("pr") else ""
     return (
         f"\n--- Commit {candidate['sha'][:8]}{pr_label} ---\n"
         f"Subject: {candidate['subject']}\n"

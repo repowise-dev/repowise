@@ -76,6 +76,24 @@ def join_notices(*notices: str | None) -> str | None:
 _elapsed_ms = _hook_ledger._elapsed_ms
 emitting_build = _hook_ledger.emitting_build
 
+#: Total time one hook process may spend waiting on a locked index (wiki.db).
+#: A busy timeout applies per statement, so a locked index used to cost one
+#: wait per query, 30s each on the ORM path, and ran past the agent's 10s
+#: hook timeout. A read in WAL mode never waits, so this only bounds the
+#: contended case. The savings ledger writes keep their own timeouts: they
+#: contend with sibling hook processes, and a lost write is lost data.
+_SQLITE_WAIT_BUDGET_MS = 1500
+#: The budget counts from process start, so a slow start can spend it before
+#: any wait. The floor keeps a short grace for a writer's brief commit.
+_SQLITE_WAIT_FLOOR_S = 0.25
+
+
+def sqlite_wait_s(cap_s: float) -> float:
+    """Busy timeout for the next index connection: *cap_s*, or what is left
+    of this process's :data:`_SQLITE_WAIT_BUDGET_MS`, never under the floor."""
+    left_s = (_SQLITE_WAIT_BUDGET_MS - _elapsed_ms()) / 1000
+    return min(cap_s, max(_SQLITE_WAIT_FLOOR_S, left_s))
+
 
 def _ledger_key(surface: str, category: str, text: str) -> str:
     """Efficacy-ledger id for one emission, keyed on the text itself.
@@ -91,7 +109,7 @@ def _ledger_key(surface: str, category: str, text: str) -> str:
     """
     import hashlib
 
-    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
     return f"{surface}:{category}:{digest}"
 
 
@@ -206,16 +224,26 @@ _FORGONE_TABLE_SQL = (
 _FORGONE_MIGRATION_SQL = "ALTER TABLE forgone_savings ADD COLUMN filter TEXT NOT NULL DEFAULT ''"
 
 
-def _omission_db(repo_path: Path) -> Path | None:
+def _omission_db(repo_path: Path, *, create: bool = False) -> Path | None:
     """The omission store, or None when this repo has not opted into one.
 
     Path spelled out rather than imported: the constants live in
     ``distill.store``, which imports structlog: 250ms to learn that a repo
     without an omission store has no omission store. Kept in sync by
-    ``test_the_omission_store_path_matches_distills``.
+    ``test_the_omission_store_path_matches_distills``. With *create*, a repo
+    with ``.repowise/`` but no store yet gets one, once, without that import.
     """
     db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
-    return db_path if db_path.exists() else None
+    if db_path.exists():
+        return db_path
+    if not create:
+        return None
+    try:
+        from repowise.core.savings.recorder import ensure_sidecar
+
+        return ensure_sidecar(repo_path)
+    except Exception:
+        return None
 
 
 def record_saving(
@@ -235,21 +263,24 @@ def record_saving(
     canonical report instead; writing both means this change neither regresses
     a published figure nor claims the old row improved.
 
-    Never creates the omission store: its absence means this repo has not
-    opted into distill bookkeeping, and a hook is not the place to decide
-    otherwise. Any failure is swallowed, because accounting must not cost the agent an
-    enrichment that is already computed.
+    Writes only in a repo that opted in with ``.repowise/``. Any failure is
+    swallowed, because accounting must not cost the agent an enrichment that
+    is already computed.
     """
-    db_path = _omission_db(repo_path)
+    db_path = _omission_db(repo_path, create=True)
     if db_path is None:
         return
     try:
         import sqlite3
 
         from repowise.core.distill.tracking import record_saving as _record
+        from repowise.core.savings.schema import initialize_savings_schema
 
-        con = sqlite3.connect(str(db_path), timeout=2)
+        con = sqlite3.connect(str(db_path), timeout=2, isolation_level=None)
         try:
+            # One version read when current. Repairs a store another process
+            # created but had not finished initializing when this one opened it.
+            initialize_savings_schema(con)
             _record(
                 con,
                 filter_name=filter_name,
@@ -350,7 +381,8 @@ def record_forgone(
 ) -> None:
     """Record a saving this repo *would* have made, had the surface been on.
 
-    Same never-create-the-store rule as :func:`record_saving`, into the
+    Never creates the omission store: a saving that did not happen is no
+    reason to open a ledger. Writes into the
     separate ``forgone_savings`` table so a hypothetical can never be summed
     into the published figure.
     """
@@ -421,15 +453,6 @@ def _record_opportunity(
         )
     except Exception:
         return
-
-
-def _relativize(file_path: str, repo_path: Path) -> str | None:
-    """Repo-relative POSIX path for *file_path*, or None when outside it."""
-    try:
-        rel = Path(file_path).resolve().relative_to(Path(repo_path).resolve())
-    except (ValueError, OSError):
-        return None
-    return rel.as_posix()
 
 
 @lru_cache(maxsize=8)

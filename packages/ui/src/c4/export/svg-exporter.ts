@@ -21,7 +21,7 @@ import { healthBand100 } from "../../health/tokens";
  */
 function resolveInkPalette() {
   return {
-    canvas: resolveToken("--color-bg-canvas", "#f4eae1"),
+    canvas: resolveToken("--color-bg-canvas", "#f0ebe6"),
     grid: resolveToken("--color-diagram-grid", "rgba(245,149,32,0.10)"),
     ink: resolveToken("--color-kg-node-fill", "#fffdf8"),
     ink2: resolveToken("--color-kg-node-fill-2", "#f3ece2"),
@@ -37,7 +37,7 @@ function resolveInkPalette() {
     textSecondary: resolveToken("--color-text-secondary", "#5e5360"),
     success: resolveToken("--color-success", "#1d8155"),
     caution: resolveToken("--color-caution", "#a8821f"),
-    warning: resolveToken("--color-warning", "#9a6614"),
+    warning: resolveToken("--color-warning", "#856700"),
     error: resolveToken("--color-error", "#b23a2e"),
   };
 }

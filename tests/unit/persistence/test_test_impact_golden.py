@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from repowise.core.analysis.test_impact import analyze_test_impact, legacy_guarding_tests
+from repowise.core.analysis.test_impact import analyze_test_impact
 from repowise.core.exclusion import build_exclude_spec
 from tests.unit.persistence.helpers import insert_repo
 from tests.unit.persistence.test_pr_test_impact_semantics import _fixture, _seed
@@ -57,8 +57,6 @@ async def _scenarios(session, tmp_path) -> dict:
         "no_coverage": await analyze_test_impact(session, bare.id, changed),
         "nothing_changed": await analyze_test_impact(session, current.id, []),
     }
-    out["legacy_current"] = legacy_guarding_tests(out["current"])
-    out["legacy_no_coverage"] = legacy_guarding_tests(out["no_coverage"])
     text = json.dumps(out, indent=2, sort_keys=True, default=str)
     for repo, name in ((current, "current"), (stale, "stale"), (bare, "bare")):
         text = text.replace(repo.id, f"<{name}>")
@@ -87,7 +85,8 @@ async def test_a_failed_per_file_coverage_read_degrades_coverage_only(
     async def _boom(*args, **kwargs):
         raise RuntimeError("coverage read failed")
 
-    monkeypatch.setattr("repowise.core.persistence.crud.tests_covering", _boom)
+    # Coverage is read for every changed file in one batched call.
+    monkeypatch.setattr("repowise.core.persistence.crud.tests_covering_files", _boom)
     impact = await analyze_test_impact(async_session, repo.id, fixture["changed_files"])
 
     assert impact["coverage"]["status"] == "degraded"

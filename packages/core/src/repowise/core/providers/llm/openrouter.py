@@ -7,8 +7,8 @@ No additional pip install required — uses the ``openai`` package.
 
 Popular models:
     - google/gemini-3.5-flash-lite  — fast + cheap (default)
-    - openai/gpt-5.6-luna           — OpenAI budget tier
-    - anthropic/claude-haiku-4-5    — Anthropic budget tier
+    - openai/gpt-6-luna             — OpenAI budget tier
+    - google/gemini-3.8-flash       — higher quality
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
+    SdkClientOwner,
     ensure_reasoning_supported,
     fallback_model_option,
     is_temperature_rejection,
@@ -44,6 +45,7 @@ from repowise.core.providers.llm.openai_compat import (
     stream_openai_chat,
     translate_openai_errors,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -173,14 +175,14 @@ def _openrouter_model_options(
     return tuple(options)
 
 
-class OpenRouterProvider(BaseProvider):
+class OpenRouterProvider(SdkClientOwner, BaseProvider):
     """OpenRouter provider — access 200+ models via a single API key.
 
     Uses the OpenAI-compatible endpoint at ``https://openrouter.ai/api/v1``.
 
     Args:
         api_key:      OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
-        model:        Model identifier (vendor/model format). Defaults to google/gemini-3.5-flash-lite.
+        model:        Model identifier (vendor/model format). Defaults to the spec's default_model.
         base_url:     Override the OpenRouter API URL (rarely needed).
         rate_limiter: Optional RateLimiter instance.
         http_referer: Optional site URL for OpenRouter rankings/leaderboards.
@@ -193,7 +195,7 @@ class OpenRouterProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "google/gemini-3.5-flash-lite",
+        model: str = PROVIDER_SPECS["openrouter"].default_model,
         base_url: str = "https://openrouter.ai/api/v1",
         rate_limiter: RateLimiter | None = None,
         http_referer: str | None = None,
@@ -215,10 +217,12 @@ class OpenRouterProvider(BaseProvider):
 
         self._api_key = resolved_key
         self._base_url = base_url.rstrip("/")
-        self._client = AsyncOpenAI(
-            api_key=resolved_key,
-            base_url=base_url,
-            default_headers=headers or None,
+        self._open_client(
+            lambda: AsyncOpenAI(
+                api_key=resolved_key,
+                base_url=base_url,
+                default_headers=headers or None,
+            )
         )
         self._model = model
         self._rate_limiter = rate_limiter

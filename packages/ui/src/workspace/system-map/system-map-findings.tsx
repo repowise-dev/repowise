@@ -16,6 +16,7 @@ import type {
   SystemGraph,
 } from "@repowise-dev/types/workspace";
 import { OverviewSection } from "../../overview/section";
+import { unmatchedOutsideService, unmatchedReasonsOutsideService } from "../contract-facts";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { AiPromptModal } from "../../health/ai-prompt-modal";
 import { buildConformanceAiPrompt } from "../../health/ai-prompt-builder";
@@ -61,8 +62,9 @@ export function SystemMapFindings({
   const totalCycles = conformance ? (conformance.total_cycles ?? conformance.cycle_count) : 0;
   const violations = conformance?.violations ?? [];
   const breakingCount = breaking?.breaking_count ?? 0;
-  const unmatched = diagnostics?.unmatched_consumers.length ?? 0;
-  const reasons = unmatchedReasonList(diagnostics?.unmatched_by_reason ?? {});
+  // In-service calls are served, so they are not findings.
+  const unmatched = diagnostics ? unmatchedOutsideService(diagnostics).length : 0;
+  const reasons = unmatchedReasonList(unmatchedReasonsOutsideService(diagnostics?.unmatched_by_reason));
   // An all-clear needs both reports loaded and actually run; a missing report
   // is not a clean one.
   const clean =

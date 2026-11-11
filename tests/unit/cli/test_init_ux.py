@@ -16,13 +16,14 @@ from rich.console import Console
 from rich.progress import Progress, TextColumn
 
 from repowise.cli.ui import provider_selection
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.progress import RichProgressCallback
 from repowise.core.pipeline.progress import STAGE_ANALYSIS, STAGE_INGESTION, emit_stage
 
 
 def _console() -> tuple[Console, StringIO]:
     buf = StringIO()
-    return Console(file=buf, force_terminal=False, width=100), buf
+    return Console(file=buf, force_terminal=False, width=100, theme=THEME), buf
 
 
 # --- stage headers ---------------------------------------------------------
@@ -99,9 +100,10 @@ def test_stage_header_keys_match_the_core_stage_constants() -> None:
     """progress.py spells the keys out rather than importing them, to keep the
     pipeline package off the CLI's import path. This is what stops that from
     becoming a silent drift."""
-    from repowise.cli.ui.progress import _STAGE_HEADERS
+    from repowise.cli.ui.progress import _STAGES, stage_order
 
-    assert set(_STAGE_HEADERS) == {STAGE_INGESTION, STAGE_ANALYSIS}
+    assert stage_order(4)[:2] == [STAGE_INGESTION, STAGE_ANALYSIS]
+    assert set(_STAGES) == set(stage_order(4))
 
 
 def test_the_progress_module_does_not_drag_in_the_pipeline_package() -> None:
@@ -151,16 +153,14 @@ def test_ollama_is_ready_when_the_endpoint_answers(monkeypatch: Any) -> None:
     """It takes no API key, so reachability is the only question worth asking."""
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: True)
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
 
     assert provider_selection._detect_provider_status()["ollama"] == "http://localhost:11434"
 
 
 def test_ollama_is_not_ready_when_nothing_is_listening(monkeypatch: Any) -> None:
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
 
     assert "ollama" not in provider_selection._detect_provider_status()
 
@@ -246,6 +246,7 @@ def test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt() -> None:
         "codex_cli",
         "claude_cli",
         "opencode",
+        "copilot_cli",
         "ollama",
     }
     for name, lines in provider_selection._LOCAL_PROVIDER_SETUP.items():
@@ -259,8 +260,7 @@ def test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt() -> None:
 def test_selecting_an_unreachable_ollama_never_prompts_for_a_key(monkeypatch: Any) -> None:
     console, buf = _console()
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
 
     def boom(*_args: object, **_kwargs: object) -> str:
         raise AssertionError("ollama has no API key to prompt for")
@@ -271,7 +271,7 @@ def test_selecting_an_unreachable_ollama_never_prompts_for_a_key(monkeypatch: An
     # follows the ollama help, openai is configured so the run can terminate.
     renders: list[int] = []
 
-    def detect() -> dict[str, str]:
+    def detect(*_a: object) -> dict[str, str]:
         renders.append(1)
         return {} if len(renders) == 1 else {"openai": "OPENAI_API_KEY"}
 
@@ -351,8 +351,7 @@ def test_explicit_openai_setup_prompts_for_url_when_key_is_already_set(
 def test_provider_status_separates_official_and_custom_openai(monkeypatch: Any) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "router-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
 
     custom_status = provider_selection._detect_provider_status()
@@ -370,8 +369,7 @@ def test_official_openai_reuses_key_from_previous_custom_setup(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "existing-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
     openai_idx = str(provider_selection._PROVIDER_CHOICES.index("openai") + 1)
     monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *_a, **_k: openai_idx)
@@ -400,7 +398,7 @@ def test_custom_gateway_picker_discovers_model_and_persists_setup(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
-    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {})
+    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda *_a: {})
     monkeypatch.setattr(
         provider_selection,
         "_discover_openai_compatible_models",
@@ -451,7 +449,7 @@ def test_custom_gateway_picker_allows_manual_model_when_discovery_fails(
     monkeypatch.setenv("REPOWISE_NO_SAVE_KEY", "")
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
-    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {})
+    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda *_a: {})
     monkeypatch.setattr(
         provider_selection,
         "_discover_openai_compatible_models",
@@ -486,7 +484,7 @@ def test_custom_gateway_no_save_key_still_persists_endpoint(
     monkeypatch.setenv("REPOWISE_NO_SAVE_KEY", "")
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
-    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {})
+    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda *_a: {})
     provider_idx = str(
         provider_selection._PROVIDER_CHOICES.index(provider_selection._OPENAI_COMPATIBLE_CHOICE) + 1
     )
@@ -507,3 +505,24 @@ def test_custom_gateway_no_save_key_still_persists_endpoint(
     env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
     assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
     assert "OPENAI_API_KEY" not in env_text
+
+
+def test_picker_rows_keep_their_order() -> None:
+    """Row numbers and the pre-selected default (first ready row) follow this
+    order, so reordering the provider specs must not move them."""
+    assert provider_selection._PROVIDER_CHOICES == (
+        "gemini",
+        "openai",
+        "openai_compatible",
+        "anthropic",
+        "deepseek",
+        "kimi",
+        "edenai",
+        "claude_cli",
+        "codex_cli",
+        "opencode",
+        "copilot_cli",
+        "ollama",
+        "openrouter",
+        "litellm",
+    )

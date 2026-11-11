@@ -133,17 +133,18 @@ async def test_get_context_single_file(setup_mcp):
     assert t["ownership"]["primary_owner"] == "Alice"
     assert t["ownership"]["owner_pct"] == 0.65
     assert t["ownership"]["contributor_count"] == 2
-    # Last change
-    assert t["last_change"]["author"] == "Alice"
-    assert t["last_change"]["days_ago"] == 443
+    # Last change. The fixture's authors carry no commit time, so no author is
+    # named; the primary owner is not who made the last change.
+    assert "author" not in t["last_change"]
+    # Days from the file's last commit to the repository's newest one, not the
+    # file's age: this row is the newest, so nothing has changed since.
+    assert t["last_change"]["days_ago"] == 0
     # Decisions. The fixture record is ``proposed`` with no acceptance behind
     # it, so it is a candidate — it used to be served as a governing decision.
     assert t["decisions"] == []
     assert any(d["title"] == "Use JWT for authentication" for d in t["candidates"])
-    # Freshness
-    assert t["freshness"]["confidence_score"] == 0.85
-    assert t["freshness"]["freshness_status"] == "fresh"
-    assert t["freshness"]["is_stale"] is False
+    # A current page sends no freshness block.
+    assert "freshness" not in t
 
 
 @pytest.mark.asyncio
@@ -162,8 +163,8 @@ async def test_get_context_single_module(setup_mcp):
     assert t["docs"]["title"] == "Auth Module"
     assert "authentication" in t["docs"]["content_md"].lower()
     assert len(t["docs"]["files"]) == 2  # service.py and middleware.py
-    # Freshness from module page
-    assert t["freshness"]["confidence_score"] == 0.95
+    # The module page is current, so no freshness block.
+    assert "freshness" not in t
 
 
 @pytest.mark.asyncio
@@ -183,7 +184,9 @@ async def test_get_context_single_symbol(setup_mcp):
     assert t["docs"]["kind"] == "class"
     assert t["docs"]["signature"] == "class AuthService"
     assert t["docs"]["file_path"] == "src/auth/service.py"
-    assert t["docs"]["documentation"]  # Has content from file page
+    # No spotlight and no entry on the file page: the file page is not copied in.
+    assert "documentation" not in t["docs"]
+    assert "file_summary" in t["docs"]
 
 
 @pytest.mark.asyncio
@@ -204,10 +207,10 @@ async def test_get_context_include_filter(setup_mcp):
 
     result = await get_context(["src/auth/service.py"], include=["docs"])
     t = result["targets"]["src/auth/service.py"]
-    # docs + freshness are the always-on defaults (the tool contract says
-    # "defaults are always returned"); include only ADDS blocks.
+    # docs + freshness are the always-on defaults; include only ADDS blocks.
+    # Freshness is sent only on drift, and this page is current.
     assert "docs" in t
-    assert "freshness" in t
+    assert "freshness" not in t
     assert "ownership" not in t
     assert "last_change" not in t
     assert "decisions" not in t
@@ -220,7 +223,6 @@ async def test_get_context_skeleton_keeps_default_card(setup_mcp):
 
     result = await get_context(["src/auth/service.py"], include=["skeleton"])
     t = result["targets"]["src/auth/service.py"]
-    assert "freshness" in t
     assert "docs" in t
     assert t["docs"].get("summary")
     # ...but the symbol list is suppressed: the skeleton already carries
@@ -826,8 +828,7 @@ async def test_file_target_surfaces_parent_concept_page(setup_mcp, session):
     assert t["type"] == "file"
     parent = t["parent_page"]
     assert parent["title"] == "Payments Module"
-    assert parent["target_path"] == "src/payments"
-    assert parent["section"] == "1.2"
+    assert parent == {"title": "Payments Module", "target_path": "src/payments"}
 
 
 @pytest.mark.asyncio
@@ -840,8 +841,8 @@ async def test_concept_target_returns_section_and_children(setup_mcp, session):
     result = await get_context(["src/payments"])
     t = result["targets"]["src/payments"]
     assert t["type"] == "module"
-    # Own tree position.
-    assert t["docs"]["section"] == "1.2"
+    # Own tree position: the parent page, not an outline number.
+    assert "section" not in t["docs"]
     assert t["parent_page"]["title"] == "Layer: Core"
     # Sub-concept child surfaced; the file child stays in "files", not "children".
     children = t["docs"].get("children", [])
@@ -861,8 +862,10 @@ async def test_get_context_meta_envelope(setup_mcp):
     result = await get_context(["src/payments/charge.py"])
     assert "_meta" in result
     meta = result["_meta"]
-    assert "contract_version" in meta
-    assert "timing_ms" in meta
+    assert "index_age_days" in meta
+    # Diagnostics stay off a routine response.
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
     # hint was dead/always None and has been removed; no empty or spurious hint field
     assert "hint" not in meta
 
@@ -1013,3 +1016,73 @@ def test_survivors_keep_their_detail_when_identity_cards_overflow():
     # Eviction came first, so the fair share had room: no survivor lost a block.
     assert not out.get("dropped_blocks")
     assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 6000
+
+
+def _git_row(rid: str, path: str, last_commit_at: datetime | None) -> GitMetadata:
+    return GitMetadata(
+        id=f"gm-{path}",
+        repository_id=rid,
+        file_path=path,
+        commit_count_total=1,
+        commit_count_90d=0,
+        commit_count_30d=0,
+        first_commit_at=datetime(2020, 1, 1, tzinfo=UTC),
+        last_commit_at=last_commit_at,
+        primary_owner_name="Dana",
+        primary_owner_email="dana@example.com",
+        primary_owner_commit_pct=1.0,
+        top_authors_json=json.dumps([{"name": "Dana", "count": 1}]),
+        significant_commits_json=json.dumps([]),
+        co_change_partners_json=json.dumps([]),
+        is_hotspot=False,
+        is_stable=True,
+        churn_percentile=0.1,
+        age_days=2000,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+async def _days_ago(path: str) -> int | None:
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context([path], include=["last_change"], compact=False)
+    return result["targets"][path]["last_change"]["days_ago"]
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_counts_to_the_newest_commit_not_the_files_age(
+    setup_mcp, session
+):
+    # A later commit elsewhere in the repository moves the reference date:
+    # service.py was last changed 2026-03-15, four days before it.
+    session.add(_git_row(setup_mcp, "src/later.py", datetime(2026, 3, 19, tzinfo=UTC)))
+    await session.flush()
+
+    assert await _days_ago("src/auth/service.py") == 4
+    assert await _days_ago("src/later.py") == 0
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_is_none_without_a_last_commit(setup_mcp, session):
+    session.add(_git_row(setup_mcp, "src/undated.py", None))
+    await session.flush()
+
+    assert await _days_ago("src/undated.py") is None
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_accepts_a_naive_timestamp(setup_mcp, session):
+    # SQLite hands timestamps back naive; they are read as UTC, not rejected.
+    session.add(_git_row(setup_mcp, "src/naive.py", datetime(2026, 3, 10)))
+    await session.flush()
+
+    assert await _days_ago("src/naive.py") == 5
+
+
+async def test_days_since_last_change_prefers_as_of_ts(session):
+    from repowise.server.mcp_server.tool_context.targets import _days_since_last_change
+
+    last = datetime(2026, 3, 15)
+    as_of = datetime(2026, 3, 25)
+    assert await _days_since_last_change(session, "any-repo-id", last, as_of) == 10

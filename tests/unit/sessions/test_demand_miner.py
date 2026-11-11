@@ -106,7 +106,7 @@ def test_get_answer_dedups_and_caps_per_call():
 def test_search_attributes_to_hit_files_and_symbols():
     payload = {
         "results": [
-            {"file": "pkg/a.py"},
+            {"path": "pkg/a.py"},
             {"target_path": "pkg/b.py"},
             {"symbol_id": "pkg/c.py::Thing"},
         ]
@@ -116,12 +116,25 @@ def test_search_attributes_to_hit_files_and_symbols():
     assert demand == {"pkg/a.py": 1, "pkg/b.py": 1, "pkg/c.py": 1}
 
 
+def test_search_prefers_the_served_path():
+    # ``target_path`` is an alias; ``path`` is the openable file.
+    payload = {
+        "results": [
+            {"path": "pkg/a.py", "target_path": "pkg/old.py"},
+            {"path": "pkg/b.py", "target_path": "pkg/other.py"},
+        ]
+    }
+    events = [_search_call("s1"), _result("s1", payload)]
+    demand = mine_events_demand(events, REPO_PREFIX)
+    assert demand == {"pkg/a.py": 1, "pkg/b.py": 1}
+
+
 def test_two_calls_accumulate():
     events = [
         _answer_call("a1"),
         _result("a1", {"citations": ["pkg/a.py"]}),
         _search_call("s1"),
-        _result("s1", {"results": [{"file": "pkg/a.py"}]}),
+        _result("s1", {"results": [{"path": "pkg/a.py"}]}),
     ]
     demand = mine_events_demand(events, REPO_PREFIX)
     assert demand == {"pkg/a.py": 2}

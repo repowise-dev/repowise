@@ -77,8 +77,14 @@ describe("CouplingTable (virtualized)", () => {
   });
 
   it("shows the empty state when there are no couplings", () => {
-    render(<CouplingTable edges={[]} />);
+    render(<CouplingTable edges={[]} historyFiles={120} />);
     expect(screen.getByText(/no couplings detected/i)).toBeInTheDocument();
+  });
+
+  it("offers to clear filters when a filter emptied the list", () => {
+    render(<CouplingTable edges={[]} filtered onClearFilters={() => {}} />);
+    expect(screen.getByText(/no couplings match/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /clear filters/i })).toBeInTheDocument();
   });
 
   it("keeps per-row actions out of the table", () => {
@@ -181,6 +187,6 @@ describe("CouplingTable together column", () => {
     const { container } = render(
       <CouplingTable edges={[edge("a.py", "b.py", 4)]} pinnedPath="b.py" />,
     );
-    expect(container.querySelector("tr.bg-\\[var\\(--color-accent-muted\\)\\]\\/30")).not.toBeNull();
+    expect(container.querySelector("tr.bg-\\[var\\(--color-bg-selected\\)\\]")).not.toBeNull();
   });
 });

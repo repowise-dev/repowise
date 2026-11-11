@@ -17,14 +17,14 @@ from typing import Any
 
 import structlog
 
+from repowise.core.forges import CHANGE_BODY_MARKERS, ForgeKind, change_number
+
 from ._constants import (
     _COMMIT_CATEGORIES,
     _DECISION_SIGNAL_WORDS,
     _MAX_BLAME_SIZE_BYTES,
     _MAX_SIGNIFICANT_COMMITS,
     _MAX_TOP_AUTHORS,
-    _PR_BODY_MARKERS,
-    _PR_NUMBER_RE,
     HOTSPOT_HALFLIFE_DAYS,
     _truncate_body,
     is_fix_commit,
@@ -35,7 +35,7 @@ from .function_blame import (
     build_blame_index,
     ownership_from_blame,
 )
-from .identity import canonicalize_author_email
+from .identity import canonicalize_author_email, is_noreply
 from .records import (
     _LOG_FORMAT,
     _RECORD_SEP,
@@ -55,14 +55,14 @@ def _body_carries_decision(subject: str, body: str) -> bool:
     if not body:
         return False
     blob = f"{subject}\n{body}".lower()
-    if any(marker in blob for marker in _PR_BODY_MARKERS):
+    if any(marker in blob for marker in CHANGE_BODY_MARKERS):
         return True
     return any(word in blob for word in _DECISION_SIGNAL_WORDS)
 
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
+__all__ = ["DECAY_REFRESH_KEYS", "decay_meta", "index_file", "new_meta"]
 
 # The anchor-dependent window/decay fields: the only git-metadata columns that
 # recover as the repo's newest-commit anchor advances. An incremental update
@@ -130,9 +130,11 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "prior_defect_raw_count": 0,
         # Repo-relative rank of prior_defect_count; see enrich.compute_percentiles.
         "prior_defect_pct": 0.0,
-        # Share of this file's indexed history that is agent-attributed (local
-        # channels only); agent_authored_pct stays None for a file with no commits.
+        # Agent share of the file's commits with a known source (agent or
+        # human-attested); None when no commit has one. Never a share of all
+        # commits: unknown is not human (see repowise.core.attribution).
         "agent_commit_count": 0,
+        "attribution_known_count": 0,
         "agent_authored_pct": None,
         "agent_tier_counts_json": "{}",
         # Distinct agent-written lines and {model_id: line_count} from the
@@ -160,7 +162,7 @@ def _parse_per_file_log(
     commit_limit: int,
     follow_renames: bool,
     provenance_classifier: Any | None = None,
-    note_agents: dict[str, str] | None = None,
+    note_agents: dict[str, Any] | None = None,
     trace_index: Any | None = None,
 ) -> tuple[list[_CommitRec] | None, str | None]:
     """Run a per-file ``git log --numstat`` and parse it into commit records.
@@ -207,6 +209,7 @@ def _parse_per_file_log(
             prov = labeler.label(header, changed_paths)
             current.agent = prov.agent
             current.agent_tier = prov.autonomy_tier
+            current.attribution = prov.attribution
     return commits, orig_path
 
 
@@ -247,7 +250,7 @@ def _add_own_churn(
 ) -> set[str]:
     """Add the churn of rows naming this file to *current*; return every changed path.
 
-    A rename row adds both of its names to *known_paths*.
+    A rename row naming one of this file's paths adds its other name to *known_paths*.
     """
     changed_paths: set[str] = set()
     for line in numstat_lines:
@@ -281,28 +284,18 @@ class _CommitLabeler:
     """Labels a commit's agent provenance from its header and changed paths."""
 
     def __init__(
-        self, classifier: Any, note_agents: dict[str, str] | None, trace_index: Any | None
+        self, classifier: Any, note_agents: dict[str, Any] | None, trace_index: Any | None
     ) -> None:
         self._classifier = classifier
         self._note_agents = note_agents or {}
         self._trace_index = trace_index
 
     def label(self, header: dict, changed_paths: set[str]) -> Any:
-        trace_hit = (
-            self._trace_index.resolve(header["sha"], header["parents"], changed_paths)
-            if self._trace_index
-            else None
-        )
-        return self._classifier.classify(
-            header["author_name"],
-            header["author_email"],
-            header["committer_name"],
-            header["committer_email"],
-            f"{header['subject']}\n{header['body']}",
-            note_agent=self._note_agents.get(header["sha"]),
-            trace_agent=trace_hit[0] if trace_hit else None,
-            trace_confidence=trace_hit[1] if trace_hit else "high",
-        )
+        from .agent_provenance import classify_commit
+
+        return classify_commit(
+            self._classifier, header, changed_paths, self._note_agents, self._trace_index
+        )[0]
 
 
 def index_file(
@@ -316,9 +309,11 @@ def index_file(
     precomputed_commits: list[_CommitRec] | None = None,
     as_of_ts: float | None = None,
     provenance_classifier: Any | None = None,
-    note_agents: dict[str, str] | None = None,
+    note_agents: dict[str, Any] | None = None,
     trace_index: Any | None = None,
     history_only: bool = False,
+    forge: ForgeKind = ForgeKind.GENERIC,
+    shallow_roots: frozenset[str] = frozenset(),
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -334,6 +329,15 @@ def index_file(
     *history_only* (a non-code file) keeps the history tier: commit counts and
     windows, first and last commit, and authorship. Blame, the decayed churn
     score, agent provenance and commit-message mining stay code-only.
+
+    *forge* is the repo's forge, read first when a commit message names the
+    change it merged.
+
+    *shallow_roots* are the commits a shallow clone cut. Git shows each as
+    adding every file it holds, so they still count as commits here but credit
+    no author, are never a key commit and add no churn. A file whose history
+    reaches one is marked ``commit_count_capped``: its first commit is where
+    the clone's history starts, not when the file was made.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
@@ -362,23 +366,24 @@ def index_file(
         return meta
 
     meta["commit_count_total"] = len(commits)
-    meta["commit_count_capped"] = len(commits) >= commit_limit
+    authored = _authored(commits, shallow_roots)
+    meta["commit_count_capped"] = _history_capped(commits, authored, commit_limit)
 
     # Each step writes its fields in turn, so a failure keeps the fields
     # the earlier steps already wrote.
     try:
-        _add_span(meta, commits, now)
-        authors = _Authors.tally(commits, ninety_days_ago_ts)
-        _add_windows(meta, commits, ninety_days_ago_ts, thirty_days_ago_ts)
+        _add_span(meta, commits, authored, now)
+        authors = _Authors.tally(authored, ninety_days_ago_ts)
+        _add_windows(meta, authored, ninety_days_ago_ts, thirty_days_ago_ts)
         _add_ownership(meta, authors)
         meta["is_stable"] = _is_stable(meta)
         if history_only:
             return meta
         _add_agent_rollup(meta, commits)
-        meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
+        meta["temporal_hotspot_score"] = _temporal_hotspot_score(authored, now)
         if include_blame:
             _add_blame_ownership(meta, repo, repo_path, now, authors)
-        _add_commit_messages(meta, commits)
+        _add_commit_messages(meta, authored, forge)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
             meta["original_path"] = orig_path
@@ -388,20 +393,67 @@ def index_file(
     return meta
 
 
+def _authored(commits: list[_CommitRec], shallow_roots: frozenset[str]) -> list[_CommitRec]:
+    """*commits* without a shallow clone's cut commits, which changed no file here."""
+    if not shallow_roots:
+        return commits
+    return [c for c in commits if c.sha not in shallow_roots]
+
+
+def _history_capped(
+    commits: list[_CommitRec], authored: list[_CommitRec], commit_limit: int
+) -> bool:
+    """Whether older history is missing: the commit cap was hit or a shallow clone cut it."""
+    return len(commits) >= commit_limit or len(authored) < len(commits)
+
+
+def decay_meta(
+    file_path: str,
+    commits: list[_CommitRec],
+    as_of_ts: float | None,
+    shallow_roots: frozenset[str] = frozenset(),
+) -> dict:
+    """A code file's window and decay fields, as :func:`index_file` computes them.
+
+    The idle refresh keeps only :data:`DECAY_REFRESH_KEYS`, so it skips the
+    span, ownership, provenance and commit-message work it would discard.
+    """
+    now = _window_anchor(as_of_ts)
+    meta = new_meta(file_path)
+    commits = _authored(commits, shallow_roots)
+    if commits:
+        _add_windows(
+            meta,
+            commits,
+            (now - timedelta(days=90)).timestamp(),
+            (now - timedelta(days=30)).timestamp(),
+        )
+        meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
+    return meta
+
+
 def _window_anchor(as_of_ts: float | None) -> datetime:
     if as_of_ts is not None:
         return datetime.fromtimestamp(as_of_ts, tz=UTC)
     return datetime.now(UTC)
 
 
-def _add_span(meta: dict[str, Any], commits: list[_CommitRec], now: datetime) -> None:
+def _add_span(
+    meta: dict[str, Any], commits: list[_CommitRec], authored: list[_CommitRec], now: datetime
+) -> None:
+    """First commit and age from every commit, last commit from *authored* ones.
+
+    A shallow clone's cut commit is where the visible history starts, but it
+    changed nothing here, so it is never the file's last change.
+    """
     timestamps = [c.ts for c in commits if c.ts > 0]
     if timestamps:
         first_ts = min(timestamps)
-        last_ts = max(timestamps)
         meta["first_commit_at"] = datetime.fromtimestamp(first_ts, tz=UTC)
-        meta["last_commit_at"] = datetime.fromtimestamp(last_ts, tz=UTC)
         meta["age_days"] = (now - datetime.fromtimestamp(first_ts, tz=UTC)).days
+    changed = [c.ts for c in authored if c.ts > 0]
+    if changed:
+        meta["last_commit_at"] = datetime.fromtimestamp(max(changed), tz=UTC)
 
 
 def _add_windows(
@@ -424,9 +476,6 @@ def _add_windows(
     c90 = meta["commit_count_90d"]
     total_churn = meta["lines_added_90d"] + meta["lines_deleted_90d"]
     meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
-
-
-_NOREPLY_DOMAIN = "@users.noreply.github.com"
 
 
 @dataclass
@@ -459,13 +508,11 @@ class _Authors:
         return authors
 
     def _prefer_email(self, name: str, email: str) -> None:
-        # One email per name: fold GitHub noreply variants and prefer a real
-        # address, so owner_profile (keyed on email) does not split a person.
+        # One email per name: fold noreply variants and prefer a real address,
+        # so owner_profile (keyed on email) does not split a person.
         canon = canonicalize_author_email(email) or email
         existing = self.emails.get(name)
-        if existing is None or (
-            existing.endswith(_NOREPLY_DOMAIN) and not canon.endswith(_NOREPLY_DOMAIN)
-        ):
+        if existing is None or (is_noreply(existing) and not is_noreply(canon)):
             self.emails[name] = canon
 
     def entry(self, name: str, count: int) -> dict[str, Any]:
@@ -473,6 +520,7 @@ class _Authors:
             "name": name,
             "email": self.emails.get(name, ""),
             "commit_count": count,
+            "recent_commit_count": self.recent_counts.get(name, 0),
         }
         if name in self.last_ts:
             entry["last_commit_ts"] = self.last_ts[name]
@@ -482,10 +530,17 @@ class _Authors:
 
 
 def _add_agent_rollup(meta: dict[str, Any], commits: list[_CommitRec]) -> None:
-    """Share of the file's commits that are agent-attributed, and the per-tier breakdown."""
-    agent_commits = [c for c in commits if getattr(c, "agent", None)]
+    """Agent commits, commits with a known source, and the per-tier breakdown.
+
+    Leaves the defaults when attribution is off (every label ``None``).
+    """
+    if all(c.attribution is None for c in commits):
+        return
+    agent_commits = [c for c in commits if c.agent]
+    known = len(agent_commits) + sum(1 for c in commits if c.attribution == "human_attested")
     meta["agent_commit_count"] = len(agent_commits)
-    meta["agent_authored_pct"] = len(agent_commits) / len(commits)
+    meta["attribution_known_count"] = known
+    meta["agent_authored_pct"] = len(agent_commits) / known if known else None
     tier_counts: Counter[str] = Counter(str(c.agent_tier) for c in agent_commits if c.agent_tier)
     meta["agent_tier_counts_json"] = json.dumps(dict(tier_counts))
 
@@ -581,13 +636,15 @@ def _add_blame_ownership(
         pass  # blame is best-effort
 
 
-def _add_commit_messages(meta: dict[str, Any], commits: list[_CommitRec]) -> None:
+def _add_commit_messages(
+    meta: dict[str, Any], commits: list[_CommitRec], forge: ForgeKind = ForgeKind.GENERIC
+) -> None:
     """Significant commits (with PR numbers and decision bodies) and category counts."""
     sig_commits: list[dict[str, Any]] = []
     for c in commits:
         msg = c.subject[:200]
-        if is_significant_commit(msg, c.author_name):
-            sig_commits.append(_significant_entry(c, msg))
+        if is_significant_commit(msg, c.author_name, c.author_email):
+            sig_commits.append(_significant_entry(c, msg, forge))
             if len(sig_commits) >= _MAX_SIGNIFICANT_COMMITS:
                 break
     # Every commit is classified, so the category ratios cover the whole history.
@@ -598,19 +655,21 @@ def _add_commit_messages(meta: dict[str, Any], commits: list[_CommitRec]) -> Non
     meta["commit_categories_json"] = json.dumps(dict(category_counts))
 
 
-def _significant_entry(c: _CommitRec, msg: str) -> dict[str, Any]:
+def _significant_entry(
+    c: _CommitRec, msg: str, forge: ForgeKind = ForgeKind.GENERIC
+) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "sha": c.sha[:8],
         "date": datetime.fromtimestamp(c.ts, tz=UTC).isoformat() if c.ts else "",
         "message": msg,
         "author": c.author_name,
     }
-    pr_match = _PR_NUMBER_RE.search(msg)
-    if pr_match:
-        pr_num = pr_match.group(1) or pr_match.group(2) or pr_match.group(3)
-        entry["pr_number"] = int(pr_num)
     # Squash-merge bodies carry the rationale the PR miner reads.
     raw_body = getattr(c, "body", "") or ""
+    # The full subject: a squash suffix sits at its end, past the 200 kept.
+    pr_number = change_number(c.subject, raw_body, forge)
+    if pr_number is not None:
+        entry["pr_number"] = pr_number
     if _body_carries_decision(c.subject, raw_body):
         body = _truncate_body(raw_body)
         if body:

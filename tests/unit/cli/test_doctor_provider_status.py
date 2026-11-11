@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from repowise.cli.commands.doctor_cmd import repo_checks
+from repowise.cli.commands.doctor_cmd._checks import providers
 
 
 def _rows(repo_path: Path) -> dict[str, tuple[bool, str]]:
@@ -31,7 +32,7 @@ def _patch_provider_state(
     )
     monkeypatch.setattr(
         "repowise.cli.helpers.validate_provider_config",
-        lambda: warnings or [],
+        lambda **_kw: warnings or [],
     )
 
 
@@ -74,3 +75,15 @@ def test_misconfigured_provider_key_still_fails_its_own_check(
         False,
         "openai requires environment variables: OPENAI_API_KEY",
     )
+
+
+def test_stale_hosted_session_warns_without_failing_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: {"stale": True})
+
+    check = providers._hosted_account_check()
+
+    assert check.level == "warn"
+    assert check.ok is True
+    assert check.fix == "repowise login"

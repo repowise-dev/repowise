@@ -152,6 +152,32 @@ class TestExpressLocalMiddlewareReads:
         assert graph.has_edge("mw.ts::__module__", "mw.ts::authGuard")
         assert graph["mw.ts::__module__"]["mw.ts::authGuard"]["edge_type"] == "framework_binds"
 
+    def test_upgraded_reference_carries_a_fresh_bindings_attributes(self) -> None:
+        """``app.use(fn)`` is first a ``references`` edge; the binding replaces it whole."""
+        from repowise.core.ingestion.framework_edges.base import (
+            FRAMEWORK_BIND_CONFIDENCE,
+            add_symbol_edge,
+        )
+
+        graph = nx.DiGraph()
+        for node in ("m::__module__", "m::guard", "m::called"):
+            graph.add_node(node, node_type="symbol")
+        graph.add_edge(
+            "m::__module__", "m::guard",
+            edge_type="references", confidence=0.95, resolution_origin="same_file",
+        )
+        graph.add_edge("m::__module__", "m::called", edge_type="calls", confidence=0.95)
+
+        assert add_symbol_edge(graph, "m::__module__", "m::guard")
+        assert graph["m::__module__"]["m::guard"] == {
+            "edge_type": "framework_binds",
+            "confidence": FRAMEWORK_BIND_CONFIDENCE,
+            "imported_names": [],
+        }
+        # Any other existing edge is the stronger or equal claim and stays.
+        assert not add_symbol_edge(graph, "m::__module__", "m::called")
+        assert graph["m::__module__"]["m::called"]["edge_type"] == "calls"
+
     def test_defines_edge_preserved(self, tmp_path: Path) -> None:
         (tmp_path / "routes.ts").write_text(
             "import { Router } from 'express';\n"
@@ -208,7 +234,9 @@ class TestExpressLocalMiddlewareReads:
             "const app = express();\n"
         )
         graph = _build_graph_with_framework_edges(tmp_path)
-        assert not graph.has_edge("svc.ts::__module__", "svc.ts::cleanup")
+        # Passing it as a value is still a ``references`` edge; only the wiring is absent.
+        edge = graph.get_edge_data("svc.ts::__module__", "svc.ts::cleanup") or {}
+        assert edge.get("edge_type") != "framework_binds"
 
     def test_non_express_file_no_reads_edge(self, tmp_path: Path) -> None:
         (tmp_path / "app.ts").write_text(
@@ -220,7 +248,9 @@ class TestExpressLocalMiddlewareReads:
             "store.get(helper);\n"
         )
         graph = _build_graph_with_framework_edges(tmp_path)
-        assert not graph.has_edge("cache.ts::__module__", "cache.ts::helper")
+        # Passing it as a value is still a ``references`` edge; only the wiring is absent.
+        edge = graph.get_edge_data("cache.ts::__module__", "cache.ts::helper") or {}
+        assert edge.get("edge_type") != "framework_binds"
 
 
 class TestExpressDeadCodeRegression:

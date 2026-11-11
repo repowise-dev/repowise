@@ -22,44 +22,20 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.cost_estimator.pricing import _COST_TABLE_EXACT, _lookup_cost
+from repowise.core.cost_estimator.pricing import _COST_TABLE_EXACT, lookup_cost
 from repowise.core.generation.cost_tracker import _PRICING, get_model_pricing
 
 _SHARED_MODELS = sorted(set(_COST_TABLE_EXACT) & set(_PRICING))
-
-# Models where the two tables already disagree, found by this test on the run
-# that introduced it. Both are Gemini "preview" rows that ``cost_tracker``
-# still prices at the gemini-1.5-flash rate ($0.075/$0.30 per MTok) it sits
-# directly beneath in that file, while the estimator carries per-row rates with
-# explicit per-MTok comments. ``gemini-3.5-flash-lite`` agrees in both tables,
-# which is what makes these two look like copied placeholders rather than a
-# deliberate split.
-#
-# Not fixed here: the wrong half is ``core/generation/cost_tracker.py``, and
-# this branch does not own that file. ``strict=True`` on purpose — whoever
-# corrects the rate gets a failing test telling them to delete this entry,
-# rather than a silently-passing xfail that outlives the bug.
-_KNOWN_DRIFT = {
-    "gemini-3-flash-preview": "cost_tracker prices it at the 1.5-flash rate",
-    "gemini-3.1-flash-lite-preview": "cost_tracker prices it at the 1.5-flash rate",
-}
-
-
-def _param(model: str):
-    if model in _KNOWN_DRIFT:
-        return pytest.param(model, marks=pytest.mark.xfail(strict=True, reason=_KNOWN_DRIFT[model]))
-    return pytest.param(model)
-
 
 def test_the_two_tables_actually_overlap() -> None:
     """Otherwise the parametrised test below would vacuously pass on zero cases."""
     assert len(_SHARED_MODELS) >= 5, _SHARED_MODELS
 
 
-@pytest.mark.parametrize("model", [_param(m) for m in _SHARED_MODELS])
+@pytest.mark.parametrize("model", _SHARED_MODELS)
 def test_estimate_and_live_counter_price_a_model_identically(model: str) -> None:
     """Per-1K x 1000 must equal per-MTok, for both directions of the bill."""
-    est_input, est_output = _lookup_cost(model)
+    est_input, est_output = lookup_cost(model)
     live = get_model_pricing(model)
 
     assert est_input * 1000 == pytest.approx(live["input"]), (

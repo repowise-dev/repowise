@@ -20,13 +20,13 @@ from repowise.server.mcp_server.tool_health.coverage import _coverage_block
 from repowise.server.mcp_server.tool_health.loading import HealthData
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.pillars import (
-    _recommendation_lede,
     _render_performance,
     _render_refactoring,
 )
 from repowise.server.mcp_server.tool_health.plans import _render_plans
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding
+from repowise.server.mcp_server.tool_health.what_if import what_if_block
 
 
 def add_optional_blocks(
@@ -41,10 +41,6 @@ def add_optional_blocks(
         result["trend"] = _trend_block(data, req, pager)
     _render_refactoring(result, data.refactoring, req, pager)
     _render_performance(result, data.performance, req, pager)
-    if req.wants_lede:
-        result["recommendation_lede"] = _recommendation_lede(
-            data.performance, data.refactoring_recommendations, data.reference_repository, req
-        )
     if "coverage" in include:
         result["coverage"] = _coverage_block(
             data.coverage_rows,
@@ -56,10 +52,14 @@ def add_optional_blocks(
         )
     if "doc_drift" in include:
         result["doc_drift"] = _doc_drift_block(data, pager)
+    if "untested_complexity" in include:
+        result["untested_complexity"] = pager.bound(data.crap_rows, "untested_complexity")
     # The dimension filter (``include=["performance"]`` etc.) is applied where
     # rows are selected: filtering here would filter a list already capped.
     if "refactoring" in include and req.wants("suggestion_legend"):
         result["suggestion_legend"] = _suggestion_legend(data)
+    if "what_if" in include and req.wants("what_if"):
+        result["what_if"] = what_if_block(data, req)
 
 
 def _add_biomarkers(result: dict[str, Any], data: HealthData, pager: Pager) -> None:
@@ -71,14 +71,20 @@ def _add_biomarkers(result: dict[str, Any], data: HealthData, pager: Pager) -> N
     """
     findings, repository = data.findings, data.reference_repository
     result["findings"] = pager.bound(
-        [_serialize_finding(f, repository) for f in findings.finding_rows],
+        [
+            _serialize_finding(f, repository, findings.lower_priority.get(f.id))
+            for f in findings.finding_rows
+        ],
         "findings",
     )
     result["findings_total"] = findings.findings_total
     # Dashboard mode only (targeted mode already set ``findings``), so this
     # uses the same production/test split as ``top_findings``.
     result["test_findings"] = pager.bound(
-        [_serialize_finding(f, repository) for f in findings.test_finding_rows],
+        [
+            _serialize_finding(f, repository, findings.lower_priority.get(f.id))
+            for f in findings.test_finding_rows
+        ],
         "test_findings",
     )
     result["test_findings_total"] = findings.test_findings_total
@@ -164,8 +170,7 @@ def _suggestion_legend(data: HealthData) -> dict[str, str]:
     change what a surviving key contains.
 
     The legend explains the findings, not ``refactoring_plans``, so an entry can
-    describe a biomarker no plan addresses. ``directive.plan_addresses_reason``
-    reports that mismatch.
+    describe a biomarker no plan addresses.
     """
     present_types = {getattr(r, "biomarker_type", None) for r in data.findings.legend_rows}
     return {bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)}

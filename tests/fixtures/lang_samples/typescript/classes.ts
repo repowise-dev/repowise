@@ -24,7 +24,7 @@ class Cohesive {
 }
 
 // Fields are declared (not assigned in a constructor) so no single
-// method bridges the two clusters → LCOM4 == 3.
+// method bridges the two clusters → LCOM4 == 2 (the field-less loner does not count).
 class Splintered {
   a = 0;
   b = 0;

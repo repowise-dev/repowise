@@ -25,6 +25,11 @@ graph from the one I last scored?", not a history. Thread-safe because the init
 pipeline computes both kinds concurrently. Best-effort by design: any
 load/save error degrades to a fresh computation.
 
+PageRank rides in the same file, reused only on an exact signature match (and
+only for unweighted graphs, see ``cached_pagerank``). A reused value is the one
+the previous run computed and persisted; a fresh one would normally differ only
+in the last bits, because summation follows insertion order.
+
 Note for the >30k-node sampled path (``nx.betweenness_centrality(k=...)``):
 sampling is seedless, so recomputing the same graph yields slightly
 different values run to run. A cache hit returns the previously sampled
@@ -35,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,8 +129,13 @@ class CentralityCache:
     def __init__(self, cache_dir: Path | str) -> None:
         self._path = Path(cache_dir) / _CACHE_FILENAME
         self._entries: dict[str, _Entry] = {}
+        # kind -> (signature, alpha, values). Exact-signature reuse only: unlike
+        # betweenness, PageRank is cheap enough that drift is never worth serving.
+        self._pagerank: dict[str, tuple[str, float, dict[str, float]]] = {}
         self._lock = threading.Lock()
         self._loaded = False
+        self._signatures: dict[str, tuple[weakref.ref, str]] = {}
+        self._signature_lock = threading.Lock()
 
     def __getstate__(self) -> dict:
         # A ``threading.Lock`` is not picklable, and the GraphBuilder that owns
@@ -134,11 +145,31 @@ class CentralityCache:
         # lock.
         state = self.__dict__.copy()
         state["_lock"] = None
+        state["_signature_lock"] = None
+        state["_signatures"] = {}  # weak references do not pickle
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
         self._lock = threading.Lock()
+        self._signature_lock = threading.Lock()
+        self.__dict__.setdefault("_signatures", {})
+        self.__dict__.setdefault("_pagerank", {})
+
+    def signature(self, kind: str, graph) -> str:
+        """:func:`subgraph_signature` of *graph*, hashed once per subgraph object.
+
+        PageRank and betweenness of a kind run on the same subgraph, often on
+        concurrent threads; the lock makes the second caller wait for the first
+        hash instead of repeating it. Weakly held so a released subgraph frees.
+        """
+        with self._signature_lock:
+            memo = self._signatures.get(kind)
+            if memo is not None and memo[0]() is graph:
+                return memo[1]
+            signature = subgraph_signature(graph)
+            self._signatures[kind] = (weakref.ref(graph), signature)
+            return signature
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -149,10 +180,44 @@ class CentralityCache:
             if payload.get("version") != _CACHE_VERSION:
                 return
             self._entries = payload.get("entries", {})
+            # Optional key: files written before PageRank was cached lack it.
+            self._pagerank = payload.get("pagerank", {})
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
             log.debug("centrality_cache_load_failed", error=str(exc))
+
+    def _save_locked(self) -> None:
+        """Persist every entry atomically; caller holds ``_lock``."""
+        try:
+            payload = {
+                "version": _CACHE_VERSION,
+                "entries": self._entries,
+                "pagerank": self._pagerank,
+            }
+            dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
+        except Exception as exc:
+            log.debug("centrality_cache_save_failed", error=str(exc))
+
+    def lookup_pagerank(
+        self, kind: str, *, signature: str, alpha: float
+    ) -> dict[str, float] | None:
+        """Return *kind*'s stored PageRank if it was computed on this exact structure."""
+        with self._lock:
+            self._ensure_loaded()
+            entry = self._pagerank.get(kind)
+        if entry is None or entry[0] != signature or entry[1] != alpha:
+            return None
+        return dict(entry[2])
+
+    def put_pagerank(
+        self, kind: str, *, signature: str, alpha: float, values: dict[str, float]
+    ) -> None:
+        """Record *kind*'s PageRank for this structure and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._pagerank[kind] = (signature, alpha, dict(values))
+            self._save_locked()
 
     def lookup(
         self, kind: str, graph, *, signature: str, max_churn: int
@@ -195,8 +260,4 @@ class CentralityCache:
             self._entries[kind] = _Entry(
                 signature, dict(values), _edge_fingerprints(graph), scored_commit
             )
-            try:
-                payload = {"version": _CACHE_VERSION, "entries": self._entries}
-                dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
-            except Exception as exc:
-                log.debug("centrality_cache_save_failed", error=str(exc))
+            self._save_locked()

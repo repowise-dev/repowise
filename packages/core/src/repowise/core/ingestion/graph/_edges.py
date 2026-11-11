@@ -17,11 +17,36 @@ from ...co_change import (
     canonical_pair,
     parse_partners,
 )
+from ..models import FILE_DEPENDENCY_EDGE_TYPES, is_dynamic_edge
 from ..resolvers import ResolverContext
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..resolvers.typescript import detect_platform_files
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+
+def _merge_dynamic_hint(existing: dict, hint) -> None:
+    """Fold a dynamic hint into the file edge already joining the same two files.
+
+    The graph holds one edge per pair, and hints run after static resolution,
+    so replacing the edge would drop what the import said (its type, the names
+    it binds). Names are unioned instead. A whole-module hint (no names) on a
+    static edge is kept as ``dynamic_hint`` so dead code still treats every
+    public member as reached. ``dynamic_hint`` lives on the live graph only:
+    persisted rows keep the static type and the unioned names (upgrade path: a
+    column, if a rehydrated graph ever runs the export rescue).
+    """
+    if is_dynamic_edge(existing.get("edge_type")):
+        # Two hints on one pair: a whole-module reach absorbs a named one.
+        if not hint.imported_names or not existing.get("imported_names"):
+            existing.pop("imported_names", None)
+            return
+    elif not hint.imported_names:
+        existing["dynamic_hint"] = hint.hint_source
+        return
+    names = existing.get("imported_names") or []
+    existing["imported_names"] = names + [n for n in hint.imported_names if n not in names]
 
 
 class EdgesMixin:
@@ -83,12 +108,17 @@ class EdgesMixin:
         """Add co_changes edges from git metadata. Returns count of edges added.
 
         Gated on shared commits rather than the decayed weight, whose scale
-        depends on how wide the commits were.
+        depends on how wide the commits were. Both ends must already be graph
+        nodes and each edge runs in canonical order, so the result depends only
+        on the pairs, not on which files ``git_meta_map`` keys or its order:
+        update passes every tracked file's partners, init only indexed files.
         """
         count = 0
         seen: set[tuple[str, str]] = set()
 
         for file_path, meta in git_meta_map.items():
+            if file_path not in self._graph:
+                continue
             for partner in parse_partners(meta.get("co_change_partners_json")):
                 partner_path, co_count = partner.file_path, partner.weight
                 if partner.support < min_support:
@@ -101,12 +131,9 @@ class EdgesMixin:
                     continue
                 seen.add(pair)
 
-                if not self._graph.has_edge(file_path, partner_path) and not self._graph.has_edge(
-                    partner_path, file_path
-                ):
+                if not self._graph.has_edge(*pair) and not self._graph.has_edge(pair[1], pair[0]):
                     self._graph.add_edge(
-                        file_path,
-                        partner_path,
+                        *pair,
                         edge_type="co_changes",
                         weight=co_count,
                         imported_names=[],
@@ -150,12 +177,18 @@ class EdgesMixin:
             # a real `dynamic_*` edge.
             sub_type = e.edge_type
             graph_edge_type = sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
+            existing = self._graph.get_edge_data(e.source, e.target)
+            if existing is not None and existing.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES:
+                _merge_dynamic_hint(existing, e)
+                continue
+            names = {"imported_names": list(e.imported_names)} if e.imported_names else {}
             self._graph.add_edge(
                 e.source,
                 e.target,
                 edge_type=graph_edge_type,
                 hint_source=e.hint_source,
                 weight=e.weight,
+                **names,
             )
             # A ``:test`` hint used to set ``is_test`` on the source node. Only
             # the Rust hinter emits one, for `#[test]` / `#[cfg(test)]` markers,
@@ -176,6 +209,7 @@ class EdgesMixin:
         Returns the number of edges added.
         """
         from ..framework_edges import add_framework_edges
+        from ..framework_edges.scan_cache import ScanCache
 
         path_set = set(self._parsed_files.keys())
         stem_map = build_stem_map(path_set)
@@ -190,15 +224,23 @@ class EdgesMixin:
             go_module_path=(go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)),
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+            has_platform_files=detect_platform_files(path_set),
             parsed_files=self._parsed_files,
             # Same reason ``build()`` passes it: a handler that scans file text
             # (the Godot ``class_name`` one covers every ``.gd`` in the repo)
             # reads the bytes ingestion already has instead of a second pass
             # over the tree. Empty unless ``set_source_map`` was called.
             source_map=self._source_map,
+            pytest_roots=self._pytest_roots,
+            framework_scans=ScanCache(getattr(self, "_cache_dir", None)),
         )
 
+        # The .NET project index ``build()`` already made; handlers that scope
+        # by project read it instead of walking the tree for every .csproj again.
+        if getattr(self, "dotnet_index", None) is not None:
+            ctx._dotnet_index = self.dotnet_index
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
+        ctx.framework_scans.save()
         if count:
             log.info("Framework edges added", count=count)
             self._invalidate_subgraph_caches()

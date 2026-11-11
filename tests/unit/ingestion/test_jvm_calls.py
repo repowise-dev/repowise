@@ -151,3 +151,96 @@ class TestJavaMethodReference:
             "C.java::C::m" in u and "Foo.java::Foo::bar" in v
             for u, v, _ in edges
         ), edges
+
+
+class TestKotlinImportBindings:
+    """Kotlin ``as`` aliases and ``.*`` wildcards, through the call resolver."""
+
+    def _parse_with_imports(
+        self, tmp_path: Path, files: dict[str, tuple[str, str]], resolved: dict[str, str]
+    ) -> dict[str, ParsedFile]:
+        # Stand in for the graph builder: pin each import to its target file.
+        parsed = _parse_all(tmp_path, files)
+        for pf in parsed.values():
+            for imp in pf.imports:
+                imp.resolved_file = resolved.get(imp.module_path)
+        return parsed
+
+    def test_aliased_call_resolves_to_original_symbol(self, tmp_path: Path) -> None:
+        caller = "src/main/kotlin/com/app/App.kt"
+        lib = "src/main/kotlin/com/lib/Greeting.kt"
+        files = {
+            caller: (
+                "kotlin",
+                "package com.app\n"
+                "import com.lib.greet as hello\n"
+                "fun run() { hello() }\n",
+            ),
+            lib: ("kotlin", "package com.lib\nfun greet(): Int = 1\n"),
+        }
+        parsed = self._parse_with_imports(tmp_path, files, {"com.lib.greet": lib})
+        edges = _resolve_calls(parsed, tmp_path, {caller: {lib}, lib: set()})
+        assert any(
+            u.endswith("App.kt::run") and v.endswith("Greeting.kt::greet") for u, v, _ in edges
+        ), edges
+
+    def test_backticked_keyword_alias_resolves(self, tmp_path: Path) -> None:
+        # Call targets keep their backticks, so the alias must keep them too.
+        caller = "src/main/kotlin/com/app/App.kt"
+        lib = "src/main/kotlin/com/lib/Greeting.kt"
+        files = {
+            caller: (
+                "kotlin",
+                "package com.app\n"
+                "import com.lib.greet as `in`\n"
+                "fun run() { `in`() }\n",
+            ),
+            lib: ("kotlin", "package com.lib\nfun greet(): Int = 1\n"),
+        }
+        parsed = self._parse_with_imports(tmp_path, files, {"com.lib.greet": lib})
+        edges = _resolve_calls(parsed, tmp_path, {caller: {lib}, lib: set()})
+        assert any(
+            u.endswith("App.kt::run") and v.endswith("Greeting.kt::greet") for u, v, _ in edges
+        ), edges
+
+    def test_wildcard_import_binds_no_package_name(self, tmp_path: Path) -> None:
+        caller = "src/main/kotlin/com/app/App.kt"
+        helper = "src/main/kotlin/com/lib/routing/Helper.kt"
+        routing = "src/main/kotlin/com/lib/routing/Routing.kt"
+        files = {
+            caller: (
+                "kotlin",
+                "package com.app\n"
+                "import com.lib.routing.*\n"
+                "fun run() { routing() }\n",
+            ),
+            helper: ("kotlin", "package com.lib.routing\nfun helper(): Int = 1\n"),
+            routing: ("kotlin", "package com.lib.routing\nfun routing(): Int = 1\n"),
+        }
+        # The wildcard resolves to one representative file of the package,
+        # which is not the file declaring ``routing``.
+        parsed = self._parse_with_imports(tmp_path, files, {"com.lib.routing.*": helper})
+        (imp,) = parsed[caller].imports
+        assert imp.imported_names == ["*"]
+        assert [b.local_name for b in imp.bindings] == ["*"]
+        edges = _resolve_calls(
+            parsed, tmp_path, {caller: {helper, routing}, helper: set(), routing: set()}
+        )
+        assert any(
+            u.endswith("App.kt::run") and v.endswith("Routing.kt::routing") for u, v, _ in edges
+        ), edges
+
+
+class TestJavaAnnotationElements:
+    def test_an_element_call_binds_to_the_annotation_type(self, tmp_path: Path) -> None:
+        """``since.value()`` reads an element of the ``@interface``, a method of it."""
+        files = {
+            "p/Since.java": ("java", "package p;\npublic @interface Since {\n    double value();\n}\n"),
+            "p/Use.java": (
+                "java",
+                "package p;\nclass Use {\n"
+                "    boolean ok(Since since) {\n        return since.value() > 1;\n    }\n}\n",
+            ),
+        }
+        edges = _resolve_calls(_parse_all(tmp_path, files), tmp_path)
+        assert [(u, v) for u, v, _ in edges] == [("p/Use.java::Use::ok", "p/Since.java::Since::value")]

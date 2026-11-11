@@ -403,6 +403,22 @@ def enrich(rows_json, meta, src):
     assert "also_accessed" not in out
 
 
+def test_identifier_fan_out_is_capped(tmp_path, monkeypatch):
+    """A pasted body naming dozens of identifiers greps only the longest few."""
+    from repowise.server.mcp_server.tool_answer import data_shape as ds
+
+    grepped: list[str] = []
+
+    def fake_grep(_root, identifier, _spec=None):
+        grepped.append(identifier)
+        return []
+
+    monkeypatch.setattr(ds, "_grep_identifier_files", fake_grep)
+    ids = {f"blob_{'x' * i}" for i in range(2, 30)}
+    assert ds.mine_data_shape(tmp_path, ids) is None
+    assert grepped == sorted(ids, key=len, reverse=True)[: ds._MAX_SHAPE_IDENTIFIERS]
+
+
 def test_none_repo_root_is_safe():
     assert mine_data_shape(None, {"anything_json"}) is None
 

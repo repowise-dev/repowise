@@ -12,29 +12,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import replace
 
 import structlog
 
-from ..scoring import HISTORY_CATEGORY, biomarker_category, deduction_split, history_cap
 from .models import CONFIDENCE_LEVELS, RefactoringContext, RefactoringSuggestion
 
 log = structlog.get_logger(__name__)
-
-
-def effort_bucket(nloc: int) -> str:
-    """Map a target's NLOC to a coarse effort bucket.
-
-    Shared by every detector so the effort label is consistent across
-    refactoring types (matches the CLI's refactoring-targets thresholds).
-    """
-    if nloc <= 40:
-        return "S"
-    if nloc <= 150:
-        return "M"
-    if nloc <= 400:
-        return "L"
-    return "XL"
 
 
 class RefactoringDetector(ABC):
@@ -83,32 +66,18 @@ def detect_refactorings(
     every suggestion.
     """
     floor_idx = _confidence_floor_index(min_confidence)
-    structure, history = deduction_split(ctx.findings)
     out: list[RefactoringSuggestion] = []
     for detector in registered_detectors(disabled=disabled):
         try:
             for suggestion in detector.detect(ctx):
                 if floor_idx and _confidence_rank(suggestion.confidence) < floor_idx:
                     continue
-                out.append(_with_released_history(suggestion, structure, history))
+                out.append(suggestion)
         except Exception as exc:
             # One bad detector must not break the health pass; degrade to
             # "no suggestion" for this file.
             log.debug("refactoring_detector_failed", detector=detector.name, error=str(exc))
     return out
-
-
-def _with_released_history(
-    suggestion: RefactoringSuggestion, structure: float, history: float
-) -> RefactoringSuggestion:
-    """Add the history deduction a code-shape fix releases by lowering the history cap."""
-    impact = suggestion.impact_delta
-    if impact <= 0 or history <= 0:
-        return suggestion
-    if biomarker_category(suggestion.source_biomarker) == HISTORY_CATEGORY:
-        return suggestion
-    released = max(0.0, history - history_cap(structure - impact))
-    return replace(suggestion, impact_delta=round(impact + released, 3))
 
 
 def _confidence_rank(level: str) -> int:

@@ -7,6 +7,7 @@ import pytest
 from repowise.core.persistence.crud import (
     count_git_function_blame,
     delete_git_function_blame,
+    get_function_commit_shas,
     get_git_function_blame,
     get_git_function_blames,
     get_git_function_mod_counts,
@@ -118,3 +119,44 @@ async def test_get_git_function_mod_counts_excludes_zero(async_session) -> None:
     # loader that computes the repo-wide p80 from these must not let a zero
     # row into the distribution (matches the in-memory computation).
     assert sorted(counts) == [1, 4, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_function_commit_shas_by_file(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a.py::foo", mods=2, commit_shas_json='["s2", "s1"]'),
+            _row("b.py::bar", mods=1, commit_shas_json='["s3"]', start_line=4, end_line=8),
+            # Written before the column existed: no set, so not a co-change source.
+            _row("c.py::old", mods=3),
+        ],
+    )
+    await async_session.commit()
+
+    assert await get_function_commit_shas(async_session, repo.id) == {
+        "a.py": [("foo", 1, 10, ["s2", "s1"])],
+        "b.py": [("bar", 4, 8, ["s3"])],
+    }
+
+
+@pytest.mark.asyncio
+async def test_replace_drops_a_reblamed_files_vanished_functions(async_session) -> None:
+    from repowise.core.persistence.crud import replace_git_function_blame_for_files
+
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [_row("a.py::old", mods=3), _row("a.py::kept", mods=2), _row("b.py::other", mods=1)],
+    )
+    await replace_git_function_blame_for_files(
+        async_session, repo.id, [_row("a.py::kept", mods=4), _row("a.py::new", mods=1)]
+    )
+    await async_session.commit()
+
+    rows = {r.symbol_id: r.mod_count for r in await get_git_function_blames(async_session, repo.id)}
+    # b.py was not re-blamed, so its row stays.
+    assert rows == {"a.py::kept": 4, "a.py::new": 1, "b.py::other": 1}

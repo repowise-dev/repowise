@@ -1,15 +1,15 @@
+import { getTranslations } from "next-intl/server";
 import { PageSkeleton } from "@repowise-dev/ui/shared/loading-skeletons";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 /**
- * Mirrors the Knowledge Graph layout. `maxWidth` and the 520px canvas box
- * both match the page: the page's own in-flight state renders a centred
- * `h-[520px]` band, so this hands over to it without the canvas changing
- * size.
+ * The route's first paint, before the page's own wait (`ZoomCanvasSkeleton`,
+ * the canvas frame with faint cards) takes over. `maxWidth` matches the page.
  */
-export default function KnowledgeGraphLoading() {
+export default async function KnowledgeGraphLoading() {
+  const t = await getTranslations("loading");
   return (
-    <PageSkeleton maxWidth="wide" label="Loading knowledge graph">
+    <PageSkeleton maxWidth="wide" label={t("knowledgeGraph")}>
       <Skeleton className="h-[520px] w-full rounded-lg" />
     </PageSkeleton>
   );

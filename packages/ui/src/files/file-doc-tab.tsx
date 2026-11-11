@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { BookOpen } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
-import { formatDateTime, formatRelativeTime } from "../lib/format";
+import { formatDateTime } from "../lib/format";
 import type { FileWikiPageRef } from "@repowise-dev/types/files";
+import { RelativeTime } from "../shared/relative-time";
 
 interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
@@ -44,12 +45,12 @@ export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabPro
           className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
           title={formatDateTime(wikiPage.updated_at)}
         >
-          Written {formatRelativeTime(wikiPage.updated_at)}
+          Written <RelativeTime date={wikiPage.updated_at} />
         </p>
       )}
 
       {wikiPage.human_notes && (
-        <div className="border-l-2 border-[var(--color-accent-primary)] pl-4">
+        <div className="border-l-2 border-[var(--color-text-tertiary)] pl-4">
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Team notes
           </p>

@@ -88,12 +88,12 @@ def _derived(stmts: list[Node], rows: frozenset[str]) -> frozenset[str]:
     return frozenset(derived)
 
 
-def _keeps_first_via_setdefault(stmt: Node, rows: frozenset[str], keys: frozenset[str]) -> bool:
+def _setdefault_key(stmt: Node, rows: frozenset[str], keys: frozenset[str]) -> Node | None:
     call = _method_call(stmt)
     if call is None or call[1] != "setdefault" or len(call[2]) < 2:
-        return False
+        return None
     key, value = call[2][0], call[2][1]
-    return ident(value) in rows and references(key, keys)
+    return key if ident(value) in rows and references(key, keys) else None
 
 
 def _stores_row(consequence: Node, container: str, rows: frozenset[str]) -> bool:
@@ -122,32 +122,135 @@ def _adds_to(stmts: list[Node], container: str, keys: frozenset[str]) -> bool:
     )
 
 
-def _keeps_first_via_guard(
+def _stores_value(node: Node, values: frozenset[str]) -> bool:
+    """``x.add/append/extend(v)`` or ``x[...] = v`` with *v* reading *values*."""
+    call = _method_call(node)
+    if call and call[1] in ("add", "append", "extend") and any(
+        references(arg, values) for arg in call[2]
+    ):
+        return True
+    left = node.child_by_field_name("left") if node.type == "assignment" else None
+    right = node.child_by_field_name("right") if left is not None else None
+    return (
+        left is not None
+        and right is not None
+        and left.type == "subscript"
+        and references(right, values)
+    )
+
+
+def _keeps_every_row(stmts: list[Node], values: frozenset[str]) -> bool:
+    """Whether an unguarded statement stores each iterated row."""
+    nested_loops = frozenset({"for_statement", "while_statement"})
+    guarded = False
+    for stmt in stmts:
+        candidates = walk(stmt, nested_loops) if stmt.type not in nested_loops else ()
+        guarded = guarded or any(n.type == "continue_statement" for n in candidates)
+        if guarded:
+            continue
+        node = next((c for c in stmt.children if c.is_named), stmt)
+        if _stores_value(node, values):
+            return True
+    return False
+
+
+def _guard_key(
     stmt: Node, rest: list[Node], rows: frozenset[str], keys: frozenset[str]
-) -> bool:
+) -> Node | None:
     guard = _membership(stmt)
     if guard is None or not references(guard[1], keys):
-        return False
-    operator, _key, container, consequence = guard
+        return None
+    operator, key, container, consequence = guard
     if operator == "not in":
-        return _stores_row(consequence, container, rows)
+        return key if _stores_row(consequence, container, rows) else None
     skips = any(n.type == "continue_statement" for n in walk(consequence))
-    return skips and _adds_to(rest, container, keys)
+    return key if skips and _adds_to(rest, container, keys) else None
+
+
+def reduction_key(for_stmt: Node) -> Node | None:
+    """The key this loop keeps one row per, or ``None`` when it keeps no such row."""
+    body = for_stmt.child_by_field_name("body")
+    rows = _row_names(for_stmt)
+    if body is None or not rows:
+        return None
+    stmts = [c for c in body.children if c.is_named]
+    keys = _derived(stmts, rows)
+    if _keeps_every_row(stmts, keys):
+        return None
+    for index, stmt in enumerate(stmts):
+        key = _setdefault_key(stmt, rows, keys)
+        if key is None:
+            key = _guard_key(stmt, stmts[index + 1 :], rows, keys)
+        if key is not None:
+            return key
+    return None
 
 
 def reduces_per_key(for_stmt: Node) -> bool:
     """Whether this loop keeps one row per key of what it iterates."""
-    body = for_stmt.child_by_field_name("body")
+    return reduction_key(for_stmt) is not None
+
+
+def key_fields(for_stmt: Node, key: Node) -> frozenset[str]:
+    """The row fields *key* reads: ``row.repo_id``, ``row["repo_id"]`` or
+    ``row.get("repo_id")``, also through one local (``rid = row["repo_id"]``).
+    A name unpacked from the row (``for path, name in rows``) is its own field."""
     rows = _row_names(for_stmt)
-    if body is None or not rows:
-        return False
-    stmts = [c for c in body.children if c.is_named]
-    keys = _derived(stmts, rows)
-    return any(
-        _keeps_first_via_setdefault(stmt, rows, keys)
-        or _keeps_first_via_guard(stmt, stmts[index + 1 :], rows, keys)
-        for index, stmt in enumerate(stmts)
-    )
+    local = _locals(for_stmt)
+    fields: set[str] = set()
+    pending, hopped = [key], False
+    while pending:
+        for node in walk(pending.pop()):
+            name = ident(node)
+            parent = node.parent
+            if name is None or parent is None:
+                continue
+            if parent.type == "attribute" and parent.child_by_field_name("attribute") == node:
+                continue
+            if name in rows:
+                fields.add(_field_of(node, parent) or name)
+            elif name in local and not hopped:
+                pending.append(local[name])
+        hopped = True
+    return frozenset(fields)
 
 
-__all__ = ["field_text", "ident", "reduces_per_key", "references", "walk"]
+def _locals(for_stmt: Node) -> dict[str, Node]:
+    """Each name the loop body assigns, to its first value."""
+    body = for_stmt.child_by_field_name("body")
+    local: dict[str, Node] = {}
+    for stmt in body.named_children if body is not None else ():
+        node = next((c for c in stmt.children if c.is_named), stmt)
+        if node.type != "assignment":
+            continue
+        name, right = ident(node.child_by_field_name("left")), node.child_by_field_name("right")
+        if name and right is not None:
+            local.setdefault(name, right)
+    return local
+
+
+def _field_of(row: Node, parent: Node) -> str | None:
+    """``row.f`` / ``row["f"]`` / ``row.get("f")`` -> ``f``."""
+    if parent.type == "subscript" and parent.child_by_field_name("value") == row:
+        index = parent.child_by_field_name("subscript")
+        return _node_text(index).strip("\"'") if index is not None and index.type == "string" else None
+    if parent.type != "attribute" or parent.child_by_field_name("object") != row:
+        return None
+    field = field_text(parent, "attribute")
+    call = parent.parent
+    if field == "get" and call is not None and call.type == "call":
+        args = call.child_by_field_name("arguments")
+        first = next((a for a in args.named_children), None) if args is not None else None
+        return _node_text(first).strip("\"'") if first is not None and first.type == "string" else None
+    return field
+
+
+__all__ = [
+    "field_text",
+    "ident",
+    "key_fields",
+    "reduces_per_key",
+    "reduction_key",
+    "references",
+    "walk",
+]

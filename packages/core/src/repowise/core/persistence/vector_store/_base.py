@@ -129,6 +129,7 @@ def embed_item(
     summary: str,
     content: str,
     page_metadata: Mapping[str, object] | str | None = None,
+    digest: str = "",
 ) -> tuple[str, str, dict] | None:
     """Build the one ``(page_id, text, metadata)`` item every writer embeds.
 
@@ -160,7 +161,7 @@ def embed_item(
     page held out of one arm and kept in the other is still fetched, still
     occupies one of the fixed number of rows retrieval takes before it filters
     anything, and still displaces a page that could have answered. The test is
-    applied to ``content`` alone for that reason — the same input the
+    applied to ``content`` and ``digest`` for that reason, the same input the
     full-text side measures, so the two arms cannot disagree about a page.
 
     The page itself is untouched either way. It stays in ``wiki_pages``, still
@@ -171,7 +172,10 @@ def embed_item(
     ``page_metadata`` is the page's metadata, as a dict (a generated page) or
     the stored JSON string (a ``wiki_pages`` row). Only
     :data:`FILE_VOCABULARY_KEY` is read from it, and appended after the
-    content; the floor still measures ``content`` alone.
+    content; the floor does not measure it.
+
+    ``digest`` is the page's agent material (``wiki_pages.digest``), embedded
+    after the content for the same reason the vocabulary is.
     """
     if not title.strip():
         raise ValueError(
@@ -179,10 +183,12 @@ def embed_item(
             f"vector that cannot be found by name and reports nothing wrong; "
             f"pass the page's real title."
         )
-    if not meets_information_floor(content):
+    if not meets_information_floor(content, digest=digest):
         count_page_denied_a_vector()
         return None
-    parts = [p for p in (title, target_path, summary, content, _vocabulary(page_metadata)) if p]
+    parts = [
+        p for p in (title, target_path, summary, content, digest, _vocabulary(page_metadata)) if p
+    ]
     return (
         page_id,
         "\n".join(parts),
@@ -270,15 +276,27 @@ class VectorStore(ABC):
         for page_id, text, metadata in items:
             await self.embed_and_upsert(page_id, text, metadata)
 
-    async def embed_texts(self, texts: list[str]) -> list[list[float]] | None:
+    async def embed_texts(
+        self, texts: list[str], *, kind: str = "document"
+    ) -> list[list[float]] | None:
         """Embed *texts* in batched embedder requests, without upserting.
 
         Lets a caller that needs the raw vectors (e.g. decision dedup, which
-        searches *and* upserts the same text) pay for one batched embedding
-        instead of one round-trip per item. Returns ``None`` when the backend
-        holds no embedder — callers must fall back to the per-item text APIs.
-        Chunked so a large input can't blow the embedder's per-request token
-        cap; each text is capped at :data:`EMBED_TEXT_MAX_CHARS`.
+        searches *and* upserts the same text — pass ``kind="document"``, the
+        default, so both directions embed identically) pay for one batched
+        embedding instead of one round-trip per item. Returns ``None`` when
+        the backend holds no embedder — callers must fall back to the
+        per-item text APIs. Chunked so a large input can't blow the
+        embedder's per-request token cap; each text is capped at
+        :data:`EMBED_TEXT_MAX_CHARS`.
+
+        Args:
+            kind: ``"query"`` or ``"document"`` — forwarded to the embedder
+                so a directional model (see
+                :func:`repowise.core.providers.embedding.base.resolve_embed_prefix`)
+                applies the right framing. A caller embedding a natural-
+                language question to search against stored pages must pass
+                ``kind="query"``.
         """
         embedder = getattr(self, "_embedder", None)
         if embedder is None:
@@ -287,7 +305,7 @@ class VectorStore(ABC):
             return []
         out: list[list[float]] = []
         for _chunk, capped_texts in iter_embed_chunks([("", t, {}) for t in texts]):
-            out.extend(await embedder.embed(capped_texts))
+            out.extend(await embedder.embed(capped_texts, kind=kind))
         return out
 
     async def search_by_vector(
@@ -314,11 +332,26 @@ class VectorStore(ABC):
         return False
 
     @abstractmethod
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        """Embed *query* and return the *limit* nearest pages."""
+    async def search(
+        self, query: str, limit: int = 10, *, kind: str = "query"
+    ) -> list[SearchResult]:
+        """Embed *query* and return the *limit* nearest pages.
+
+        Args:
+            kind: ``"query"`` or ``"document"``, forwarded to the embedder
+                (see :meth:`embed_texts`). The default matches what every
+                existing caller wants — *query* is a natural-language
+                question being matched against stored documents. Decision
+                near-duplicate lookup is the one caller that isn't: it is
+                comparing decision text to other decision text, symmetric by
+                construction, so it passes ``kind="document"`` to match the
+                prefix the candidate text was — or will be — stored under.
+        """
         ...
 
-    async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
+    async def search_many(
+        self, queries: list[str], limit: int = 10, *, kind: str = "query"
+    ) -> list[list[SearchResult]]:
         """Batch variant of :meth:`search` — one result list per query, aligned
         by index.
 
@@ -328,13 +361,16 @@ class VectorStore(ABC):
         Backends override this to embed *all* queries in a single embedder
         call — the network round-trip dominates each search, so batching the
         embedding turns N round-trips into 1.
+
+        Args:
+            kind: See :meth:`search`; forwarded unchanged to every query.
         """
         import asyncio as _asyncio
 
         if not queries:
             return []
         results = await _asyncio.gather(
-            *(self.search(q, limit=limit) for q in queries), return_exceptions=True
+            *(self.search(q, limit=limit, kind=kind) for q in queries), return_exceptions=True
         )
         return [r if isinstance(r, list) else [] for r in results]
 
@@ -367,6 +403,15 @@ class VectorStore(ABC):
         inconsistencies.  Implementations may override for efficiency.
         """
         return set()  # default: empty (subclasses should override)
+
+    async def holds_current_vectors(self) -> bool:
+        """Whether stored vectors have the width the running embedder writes.
+
+        False when it cannot tell, so a caller that would keep a stored vector
+        embeds again instead. A store whose embedder changed width is rebuilt
+        on its next write, which leaves nothing to keep.
+        """
+        return False
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

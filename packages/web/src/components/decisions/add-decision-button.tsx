@@ -12,15 +12,22 @@ import {
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
+import { ADD_WITH_AGENT_LABEL } from "@repowise-dev/ui/decisions/decision-review-lanes";
+import { buildAddDecisionsPrompt } from "@/lib/decision-prompts";
 import type { DecisionCreateInput } from "@repowise-dev/types/decisions";
 import { createDecision } from "@/lib/api/decisions";
+import { useTranslations } from "next-intl";
 
 /**
  * The host half of recording a decision: the entry point, the POST, and the
  * refresh. The form itself is shared, so hosted mounts the same fields behind
- * its own client.
+ * its own client. Beside it, the page's agent action: hand the search for
+ * unrecorded rules to the reader's agent, which a page with few decisions
+ * needs most.
  */
 export function AddDecisionButton({ repoId }: { repoId: string }) {
+  const t = useTranslations("decisions");
   const [open, setOpen] = React.useState(false);
   const router = useRouter();
 
@@ -32,20 +39,18 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
   );
 
   return (
-    <>
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <AiPromptButton copyText={buildAddDecisionsPrompt} label={ADD_WITH_AGENT_LABEL} />
+      {/* Quieter than the agent action beside it: agents record most decisions. */}
+      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
         <Plus className="h-3.5 w-3.5" />
-        Record a decision
+        {t("add.trigger")}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Record a decision</DialogTitle>
-            <DialogDescription>
-              Something the team has settled on. Name the files it governs and
-              it is recorded as confirmed, because you are the person
-              confirming it.
-            </DialogDescription>
+            <DialogTitle>{t("add.title")}</DialogTitle>
+            <DialogDescription>{t("add.description")}</DialogDescription>
           </DialogHeader>
           <DecisionCreateForm
             onSubmit={handleSubmit}
@@ -60,6 +65,6 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
           />
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }

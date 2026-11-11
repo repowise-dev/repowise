@@ -1,4 +1,4 @@
-"""How far the code a decision governs has moved since the decision was recorded."""
+"""How far the code a decision governs has moved since the decision was made."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ def compute_staleness(
     affected_files: list[str],
     git_meta_map: dict[str, dict],
     decision_text: str = "",
+    landed_at: datetime | None = None,
+    accepted_at: datetime | str | None = None,
 ) -> float:
     """Fraction of *affected_files* that have changed since the record's birth.
 
@@ -40,6 +42,15 @@ def compute_staleness(
     nothing it governs has moved, 1.0 means all of it has. No tuned
     constants and no reading of commit messages. *decision_text* is
     accepted and unused so existing call sites keep working.
+
+    *landed_at* is when the record's own evidence commits reached the main
+    line (see :mod:`.landing`). A record written on a branch is born before
+    the squash that carries it, so the birth is the later of the two: the
+    landing commit is the decision, not a change to it.
+
+    *accepted_at* is the latest time a person or agent granted or renewed
+    the decision. They read the code as it stood then, so a change before
+    that is reviewed, not drift: the birth is the latest of all three.
 
     A file with no git metadata **after** the caller's gap fill counts as
     changed: the record names something the repository does not track, so
@@ -51,7 +62,7 @@ def compute_staleness(
         # `decision health` reports it as unscoped rather than fresh.
         return 0.0
 
-    created = _as_aware_utc(_coerce_dt(decision_created_at)) if decision_created_at else None
+    created = _anchor(decision_created_at, landed_at, accepted_at)
     changed = 0
     for fp in affected_files:
         meta = git_meta_map.get(fp)
@@ -65,6 +76,19 @@ def compute_staleness(
             changed += 1
 
     return round(changed / len(affected_files), 3)
+
+
+def _anchor(
+    created_at: datetime | str | None,
+    landed_at: datetime | None,
+    accepted_at: datetime | str | None = None,
+) -> datetime | None:
+    """The latest of a record's birth, landing and acceptance, or None with no birth."""
+    if not created_at:
+        return None
+    return max(
+        _as_aware_utc(_coerce_dt(when)) for when in (created_at, landed_at, accepted_at) if when
+    )
 
 
 def last_code_change(

@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+from repowise.server.mcp_server._basis import same_file_basis
 from repowise.server.mcp_server.tool_context.targets import _MAX_USED_BY, _resolve_one_target
 
 _FILE = "src/auth/service.py"
@@ -229,9 +230,106 @@ async def test_the_symbols_own_file_is_not_listed_as_its_user(
     )
     await session.commit()
 
-    used_by = (await _card(session, repository, "AuthService"))["docs"]["used_by"]
+    docs = (await _card(session, repository, "AuthService"))["docs"]
 
-    assert _FILE not in used_by
+    assert _FILE not in docs["used_by"]
+    # The empty list must not then claim no resolved edge reaches the symbol.
+    assert docs["used_by"] == []
+    assert docs["used_by_basis"] == same_file_basis(1)
+
+
+async def test_a_recursive_call_is_not_a_same_file_user(
+    session, repository, populated_db
+) -> None:
+    session.add(
+        GraphEdge(
+            id="ge-recursive",
+            repository_id=populated_db,
+            source_node_id=_SYMBOL,
+            target_node_id=_SYMBOL,
+            edge_type="calls",
+            imported_names_json="[]",
+        )
+    )
+    await session.commit()
+
+    docs = (await _card(session, repository, "AuthService"))["docs"]
+
+    # The resolver-coverage basis, not the same-file one.
+    assert "language" in docs["used_by_basis"]
+
+
+async def test_a_same_file_use_that_is_not_a_call_is_where_the_note_points(
+    session, repository, populated_db
+) -> None:
+    """The note points at include=["callers"], so every counted use must be served there."""
+    session.add(
+        GraphNode(
+            id="gn-auth-service",
+            repository_id=populated_db,
+            node_id=_SYMBOL,
+            node_type="symbol",
+            name="AuthService",
+            kind="class",
+            file_path=_FILE,
+            language="python",
+        )
+    )
+    for edge_id, source, edge_type, confidence in (
+        ("ge-sub", f"{_FILE}::AdminService", "extends", 0.9),
+        # Below the floor the callers block serves, so not counted.
+        ("ge-weak", f"{_FILE}::guess", "calls", 0.3),
+    ):
+        session.add(
+            GraphEdge(
+                id=edge_id,
+                repository_id=populated_db,
+                source_node_id=source,
+                target_node_id=_SYMBOL,
+                edge_type=edge_type,
+                confidence=confidence,
+                imported_names_json="[]",
+            )
+        )
+    await session.commit()
+
+    card = await _resolve_one_target(
+        session, repository, "AuthService", {"docs", "callers"}, exclude_spec=None, repo_root=None
+    )
+
+    assert card["docs"]["used_by_basis"] == same_file_basis(1)
+    served = {row["symbol_id"] for r in card["relations"] for row in r["rows"]}
+    assert served == {f"{_FILE}::AdminService"}
+
+
+async def test_an_excluded_user_elsewhere_keeps_the_coverage_basis(
+    session, repository, populated_db
+) -> None:
+    """Exclusion empties used_by, but "all in this file" would then be false."""
+    import pathspec
+
+    for edge_id, source in (("ge-own", f"{_FILE}::login"), ("ge-gen", "gen/client.py::boot")):
+        session.add(
+            GraphEdge(
+                id=edge_id,
+                repository_id=populated_db,
+                source_node_id=source,
+                target_node_id=_SYMBOL,
+                edge_type="calls",
+                imported_names_json="[]",
+            )
+        )
+    await session.commit()
+
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", ["gen/**"])
+    docs = (
+        await _resolve_one_target(
+            session, repository, "AuthService", None, True, exclude_spec=spec, repo_root=None
+        )
+    )["docs"]
+
+    assert docs["used_by"] == []
+    assert "language" in docs["used_by_basis"]
 
 
 async def test_ranking_survives_a_chunked_rank_lookup(

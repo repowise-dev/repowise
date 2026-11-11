@@ -4,8 +4,9 @@ import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { CoChangeList } from "../git/co-change-list";
 import { ChangeHistoryCard } from "../git/change-history-card";
 import { FixHistoryBadge } from "../git/fix-history-badge";
-import { formatRelativeTime, formatDate, formatAgeDays } from "../lib/format";
+import { formatDate, formatAgeDays } from "../lib/format";
 import type { FileAuthor, GitMetadata } from "@repowise-dev/types/git";
+import { RelativeTime } from "../shared/relative-time";
 
 interface GitHistoryPanelProps {
   git: GitMetadata;
@@ -16,12 +17,6 @@ const AUTHOR_COLORS = [
   "bg-pink-500", "bg-indigo-500", "bg-teal-500", "bg-orange-500",
 ];
 const AUTHOR_COLOR_FALLBACK = "bg-gray-500";
-
-const AUTHOR_BAR_COLORS = [
-  "#3b82f6", "#a855f7", "#22c55e", "#eab308",
-  "#ec4899", "#6366f1", "#14b8a6", "#f97316",
-];
-const AUTHOR_BAR_FALLBACK = "#6b7280";
 
 function authorColorIndex(name: string): number {
   let hash = 0;
@@ -145,7 +140,7 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
               <>
                 <span className="text-[var(--color-text-tertiary)]">Last commit</span>
                 <span className="text-[var(--color-text-secondary)]">
-                  {formatRelativeTime(git.last_commit_at)}
+                  <RelativeTime date={git.last_commit_at} />
                 </span>
               </>
             )}
@@ -195,11 +190,8 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
                     <div className="h-1 w-full rounded-full bg-[var(--color-bg-elevated)] ml-7">
                       <div
                         className="h-1 rounded-full transition-all"
-                        style={{
-                          width: `${share * 100}%`,
-                          backgroundColor:
-                            AUTHOR_BAR_COLORS[authorColorIndex(author.name)] ?? AUTHOR_BAR_FALLBACK,
-                        }}
+                        // One series colour for every row: the length is the reading.
+                        style={{ width: `${share * 100}%`, backgroundColor: "var(--color-series-1)" }}
                       />
                     </div>
                   )}
@@ -251,7 +243,7 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
                       {commit.author}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                      {formatRelativeTime(commit.date)}
+                      <RelativeTime date={commit.date} />
                     </span>
                   </div>
                 </div>

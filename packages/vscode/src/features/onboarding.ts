@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { Commands } from "../constants";
+import { Commands, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 
 /** Grace period before the one deferred CLI-presence probe runs. */
@@ -72,10 +72,13 @@ export function registerOnboarding(ctx: RepowiseContext): vscode.Disposable {
     if (!(await cliIsPresent())) {
       ctx.setExtensionState("not-installed");
       const choice = await vscode.window.showWarningMessage(
-        "The repowise CLI was not found. Install it with: pip install repowise",
-        "Copy command",
+        "The repowise CLI was not found. Install it with: uv tool install repowise (or pip install repowise)",
+        "Copy uv command",
+        "Copy pip command",
       );
-      if (choice === "Copy command") {
+      if (choice === "Copy uv command") {
+        await vscode.env.clipboard.writeText("uv tool install repowise");
+      } else if (choice === "Copy pip command") {
         await vscode.env.clipboard.writeText("pip install repowise");
       }
       return;
@@ -120,6 +123,8 @@ export function registerOnboarding(ctx: RepowiseContext): vscode.Disposable {
         if (choice === "Start Server") {
           void vscode.commands.executeCommand(Commands.startServer);
         }
+        // Then, once ever, what repowise.dev adds (owned by the hosted feature).
+        void vscode.commands.executeCommand(InternalCommands.offerPublish);
       })();
     };
     watcher.onDidCreate(onCreated);

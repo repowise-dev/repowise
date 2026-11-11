@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 
+from repowise.core.analysis.change_health.commit_scan import current_fingerprint
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from tests.unit.server.conftest import create_test_repo
@@ -434,11 +435,13 @@ async def test_commit_detail_reports_what_the_commit_did_to_health(
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     async with get_session(app.state.session_factory) as session:
+        stored = await crud.get_repository(session, repo["id"])
         await crud.upsert_commit_health_bulk(
             session,
             repo["id"],
             [
                 {
+                    **current_fingerprint(stored.local_path),
                     "sha": "bbbbbbbb22",
                     "status": "partial",
                     "introduced_count": 2,
@@ -481,6 +484,55 @@ async def test_commit_detail_reports_what_the_commit_did_to_health(
     assert finding["severity_before"] == "high"
     assert finding["path"] == "src/main.py"
     assert finding["attribution_basis"] == "added_lines"
+    assert (health["improved_count"], health["moved_count"]) == (0, 0)
+    assert finding["moved_from"] is None
+
+
+@pytest.mark.asyncio
+async def test_commit_detail_names_where_a_moved_finding_came_from(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        stored = await crud.get_repository(session, repo["id"])
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    **current_fingerprint(stored.local_path),
+                    "sha": "bbbbbbbb22",
+                    "status": "available",
+                    "worsened_count": 1,
+                    "improved_count": 2,
+                    "moved_count": 7,
+                    "findings_stored": 1,
+                }
+            ],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "change_finding_id": "f0",
+                    "position": 0,
+                    "change_kind": "worsened",
+                    "dimension": "defect",
+                    "biomarker_type": "complex_method",
+                    "severity": "critical",
+                    "file_path": "src/pkg/run.py",
+                    "symbol": "run",
+                    "attribution_basis": "moved",
+                    "reason": "run has cyclomatic complexity 26",
+                    "moved_from_path": "src/main.py",
+                    "moved_from_symbol": "run",
+                }
+            ],
+        )
+
+    health = (await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")).json()["health"]
+
+    assert (health["improved_count"], health["moved_count"]) == (2, 7)
+    assert health["findings"][0]["moved_from"] == {"path": "src/main.py", "symbol": "run"}
 
 
 @pytest.mark.asyncio
@@ -599,9 +651,14 @@ async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
     assert agents.json()["total"] == 1
     assert agents.json()["items"][0]["agent_name"] == "claude-code"
 
+    # No commit carries a human attestation: unmarked commits are unknown, never human.
     humans = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "human"})
-    assert humans.json()["total"] == 3
-    assert all(c["agent_name"] is None for c in humans.json()["items"])
+    assert humans.json()["total"] == 0
+    unknown = await client.get(
+        f"/api/repos/{repo['id']}/commits", params={"authorship": "unknown"}
+    )
+    assert unknown.json()["total"] == 3
+    assert all(c["attribution"] == "unknown" for c in unknown.json()["items"])
 
 
 @pytest.mark.asyncio
@@ -647,9 +704,15 @@ async def test_agent_trend(client: AsyncClient, app) -> None:
     resp = await client.get(f"/api/repos/{repo['id']}/commits/agent-trend")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["enabled"] is True
     assert data["total_commits"] == 4
     assert data["agent_commits"] == 1
-    assert data["agent_pct"] == 25.0
+    assert data["unknown_commits"] == 3
+    assert data["human_attested_commits"] == 0
+    # 1 of 4 commits has a known source: below the floor, so no share is shown.
+    assert data["coverage_pct"] == 25.0
+    assert data["agent_pct_of_covered"] is None
+    assert data["suppressed_reason"] == "coverage_below_floor"
     assert data["agent_names"] == [{"name": "claude-code", "count": 1}]
     # All four fixture commits share the epoch-1970 month bucket.
     assert len(data["buckets"]) == 1

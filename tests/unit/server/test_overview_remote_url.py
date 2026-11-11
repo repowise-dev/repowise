@@ -11,9 +11,14 @@ load, and a malformed git config is not a reason to fail the Overview.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from repowise.server.routers.overview import _remote_url
+from repowise.server.schemas.repository import RepoResponse
 
 _ORIGIN = "https://github.com/repowise-dev/repowise.git"
 
@@ -51,6 +56,8 @@ def test_follows_a_worktree_gitdir_pointer(tmp_path: Path) -> None:
     _write_config(main / ".git", f'[remote "origin"]\n\turl = {_ORIGIN}\n')
     worktree_gitdir = main / ".git" / "worktrees" / "feature"
     worktree_gitdir.mkdir(parents=True)
+    # git writes this into every linked worktree's gitdir.
+    (worktree_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
 
     linked = tmp_path / "linked"
     linked.mkdir()
@@ -79,3 +86,64 @@ def test_returns_none_when_no_remote_is_configured(tmp_path: Path) -> None:
 
 def test_returns_none_without_a_local_path() -> None:
     assert _remote_url("", None) is None
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected"),
+    [
+        ("https://user:glpat-secret@gitlab.com/g/sub/p.git", "https://gitlab.com/g/sub/p.git"),
+        ("https://ghp_secret@github.com/o/r.git", "https://github.com/o/r.git"),
+        (
+            "https://user%40corp.com:pat@dev.azure.com/org/proj/_git/repo",
+            "https://dev.azure.com/org/proj/_git/repo",
+        ),
+        ("http://u:p@git.corp:8080/g/p", "http://git.corp:8080/g/p"),
+        ("ssh://git:secret@git.corp:2222/g/p.git", "ssh://git@git.corp:2222/g/p.git"),
+        ("ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"),
+        ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+        ("https://github.com/o/r", "https://github.com/o/r"),
+        ("HTTPS://tok@github.com/o/r", "HTTPS://github.com/o/r"),
+        ("  https://ghp_tok@github.com/o/r  ", "https://github.com/o/r"),
+        ("git+https://ghp_tok@github.com/o/r", "git+https://github.com/o/r"),
+        ("ftp://tok@host/x", "ftp://host/x"),
+        ("https://user:pa/ss@host/p.git", "https://host/p.git"),
+        ("https://gitlab.com/g/p.git?private_token=abc#frag", "https://gitlab.com/g/p.git"),
+        ("https://user:123/secret@host/repo.git", "https://host/repo.git"),
+        ("file:///srv/git/p@1.git", "file:///srv/git/p@1.git"),
+        ("https://host/org/repo@release.git", "https://host/org/repo@release.git"),
+        ("https://git.example.com/org/repo@v1.git", "https://git.example.com/org/repo@v1.git"),
+        ("git@host:org/repo@v1.git", "git@host:org/repo@v1.git"),
+        ("host:org/repo@v1.git", "host:org/repo@v1.git"),
+        ("ssh://ghp_tok@host/x", "ssh://ghp_tok@host/x"),
+        ("user:pw@host:g/p.git", "user@host:g/p.git"),
+        ("user:pa/ss@host:g/p.git", "user@host:g/p.git"),
+        ("https://user:SE?CRET@host/r.git", "https://host/r.git"),
+        ("https://user:SE#CRET@host/r.git", "https://host/r.git"),
+        ("https://host:8080/p.git?x=a@b", "https://host:8080/p.git"),
+        ("/srv/a:b@c/p.git", "/srv/a:b@c/p.git"),
+        ("https://[::1]:8443/g/p", "https://[::1]:8443/g/p"),
+        ("file:///srv/git/p.git", "file:///srv/git/p.git"),
+    ],
+)
+def test_credentials_never_reach_the_ui(tmp_path: Path, remote: str, expected: str) -> None:
+    """The remote is sent to the browser, so a token in userinfo must not survive."""
+    assert _remote_url(remote, None) == expected
+    _write_config(tmp_path / ".git", f'[remote "origin"]\n\turl = {remote}\n')
+    assert _remote_url("", str(tmp_path)) == expected
+
+
+def test_repo_response_url_is_stripped(tmp_path: Path) -> None:
+    """The repo list and detail echo the stored URL, which a client may have sent with a token."""
+    now = datetime.now(UTC)
+    row = SimpleNamespace(
+        id="r1",
+        name="p",
+        url="https://user:glpat-secret@gitlab.com/g/p.git",
+        local_path=str(tmp_path),
+        default_branch="main",
+        head_commit=None,
+        settings_json="{}",
+        created_at=now,
+        updated_at=now,
+    )
+    assert RepoResponse.from_orm(row).url == "https://gitlab.com/g/p.git"

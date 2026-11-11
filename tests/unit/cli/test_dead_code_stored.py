@@ -1,0 +1,252 @@
+"""`repowise dead-code` reads the findings the index stored instead of re-parsing.
+
+The stored path answers the default request when the index is at HEAD; a flag
+the stored run did not compute (a floor below the one it stored at) and an
+index behind HEAD fall back to the live analysis. Both paths print one shape.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+
+from repowise.cli.commands import dead_code_cmd
+from repowise.cli.commands.dead_code_cmd import dead_code_command
+from repowise.cli.helpers import run_async
+
+# A finding the live analyzer can never produce for this tree: the file does
+# not exist, so seeing it proves the answer came from the store.
+_STORED_ONLY = {
+    "kind": "unused_export",
+    "file_path": "gone/only_in_store.py",
+    "symbol_name": "stored_symbol",
+    "symbol_kind": "function",
+    "confidence": 0.9,
+    "reason": "Public symbol 'stored_symbol' has no importers",
+    "lines": 4,
+    "start_line": 1,
+    "end_line": 4,
+    "evidence": ["stored"],
+    "safe_to_delete": True,
+    "commit_count_90d": 0,
+}
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+async def _store(repo_path: Path, findings: list[dict]) -> None:
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.crud import save_dead_code_findings
+
+    db_path = repo_path / ".repowise" / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await upsert_repository(session, name="repo", local_path=str(repo_path))
+            await save_dead_code_findings(session, repo.id, findings)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def indexed_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    root = tmp_path.resolve()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "a@example.com")
+    _git(root, "config", "user.name", "A")
+    (root / ".gitignore").write_text(".repowise/\n")
+    (root / "a.py").write_text("def unused():\n    return 1\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "init")
+    (root / ".repowise").mkdir()
+    state = {"last_sync_commit": _git(root, "rev-parse", "HEAD")}
+    (root / ".repowise" / "state.json").write_text(json.dumps(state))
+    run_async(_store(root, [_STORED_ONLY]))
+    return root
+
+
+def _json(root: Path, *args: str) -> list[dict]:
+    result = CliRunner().invoke(
+        dead_code_command, [str(root), "--format", "json", "--no-workspace", *args]
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output[result.output.index("[") :])
+
+
+def test_default_flags_read_the_store_without_parsing(indexed_repo, monkeypatch):
+    def _no_parse(*_a, **_k):
+        raise AssertionError("the live analysis ran for a request the store answers")
+
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", _no_parse)
+
+    findings = _json(indexed_repo)
+
+    assert [f["file_path"] for f in findings] == [_STORED_ONLY["file_path"]]
+    assert findings[0]["safe_to_delete"] is True
+
+
+def test_a_floor_below_the_stored_one_runs_live(indexed_repo):
+    findings = _json(indexed_repo, "--min-confidence", "0.0")
+
+    assert _STORED_ONLY["file_path"] not in {f["file_path"] for f in findings}
+
+
+def test_an_index_behind_head_runs_live(indexed_repo):
+    (indexed_repo / "b.py").write_text("x = 1\n")
+    _git(indexed_repo, "add", "b.py")
+    _git(indexed_repo, "commit", "-q", "-m", "second")
+
+    findings = _json(indexed_repo)
+
+    assert _STORED_ONLY["file_path"] not in {f["file_path"] for f in findings}
+
+
+def test_kind_switches_filter_the_stored_rows(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+
+    assert _json(indexed_repo, "--no-unused-exports") == []
+    assert len(_json(indexed_repo, "--kind", "unused_export")) == 1
+
+
+def test_both_paths_print_one_shape(indexed_repo):
+    stored = _json(indexed_repo)
+    live = _json(indexed_repo, "--min-confidence", "0.0")
+
+    assert live, "the live fixture must produce a finding to compare"
+    assert {tuple(f) for f in stored} == {tuple(f) for f in live}
+
+
+def test_uncommitted_changes_are_noted_not_recomputed(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    (indexed_repo / "a.py").write_text("def unused():\n    return 2\n")
+
+    result = CliRunner().invoke(
+        dead_code_command, [str(indexed_repo), "--format", "md", "--no-workspace"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "working tree has changes the index does not include" in result.output
+    assert "stored_symbol" in result.output
+
+
+def test_json_marks_an_export_its_own_file_uses_as_export_only(indexed_repo):
+    (indexed_repo / "links.ts").write_text(
+        "export const SITE_URL = 'https://x.dev';\n"
+        "export function link(m: string) {\n"
+        "  return `${SITE_URL}/a#${m}`;\n"
+        "}\n"
+    )
+    _git(indexed_repo, "add", "links.ts")
+    _git(indexed_repo, "commit", "-q", "-m", "links")
+
+    findings = _json(indexed_repo, "--min-confidence", "0.0")
+
+    assert all(isinstance(f["export_only"], bool) for f in findings)
+    (site,) = [f for f in findings if f["symbol_name"] == "SITE_URL"]
+    assert site["export_only"] is True
+    assert site["safe_to_delete"] is False
+    (link,) = [f for f in findings if f["symbol_name"] == "link"]
+    assert link["export_only"] is False
+
+
+def _md(root: Path, *args: str) -> str:
+    result = CliRunner().invoke(
+        dead_code_command, [str(root), "--format", "md", "--no-workspace", *args]
+    )
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_safe_only_says_why_it_is_empty(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    assert "none deletion-ready" not in _md(indexed_repo, "--safe-only")
+
+    unproven = {**_STORED_ONLY, "confidence": 0.6, "safe_to_delete": False}
+    run_async(_store(indexed_repo, [unproven]))
+    out = _md(indexed_repo, "--safe-only")
+    assert "1 finding(s), none deletion-ready" in out
+    assert "none deletion-ready" not in _md(indexed_repo)
+
+
+def test_safe_only_rereads_a_stored_safe_flag_through_the_gate(indexed_repo, monkeypatch):
+    # Stored safe, but a runtime-loaded config path: the read surfaces'
+    # gate downgrades it, so --safe-only hides it and explains why.
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    risky = {**_STORED_ONLY, "file_path": "gone/settings.py"}
+    run_async(_store(indexed_repo, [risky]))
+
+    out = _md(indexed_repo, "--safe-only")
+    assert "gone/settings.py" not in out
+    assert "1 finding(s), none deletion-ready" in out
+
+
+def test_footer_names_the_tier_counts_as_findings(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+
+    result = CliRunner().invoke(dead_code_command, [str(indexed_repo), "--no-workspace"])
+
+    assert result.exit_code == 0, result.output
+    assert "Cleanup-candidate lines:" in result.output
+    assert "findings by confidence: high 1" in result.output
+    assert "confidence)" not in result.output
+
+
+class _HttpConsumed:
+    def has_cross_repo_consumers(self, repo_alias, file_path):
+        return []
+
+    def get_repos_depending_on(self, repo_alias):
+        return []
+
+    def get_package_consumers(self, repo_alias):
+        return []
+
+    def get_contract_links_as_provider(self, repo_alias, file_path):
+        return [{"consumer_repo": "web"}]
+
+
+def test_a_workspace_consumer_lowers_the_stored_finding(indexed_repo, monkeypatch):
+    analyze_live = dead_code_cmd._analyze_live
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    monkeypatch.setattr(
+        dead_code_cmd,
+        "cross_repo_cut_inputs",
+        lambda *_a: {"lookup": _HttpConsumed(), "alias": "api"},
+    )
+    # 0.9 * 0.3 = 0.27, under the default floor the other surfaces apply too.
+    assert _json(indexed_repo) == []
+    assert "1 finding(s) hidden below threshold" in _md(indexed_repo)
+    # The live path takes the same cut.
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", analyze_live)
+    live = _json(indexed_repo, "--min-confidence", "0.0")
+    assert live and all(f["confidence"] <= 0.3 and not f["safe_to_delete"] for f in live)
+
+
+def test_cross_repo_inputs_resolve_the_alias_of_a_member(tmp_path, monkeypatch):
+    from repowise.cli.helpers import cross_repo_cut_inputs
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    monkeypatch.setattr(CrossRepoEnricher, "for_workspace", classmethod(lambda cls, root: root))
+    WorkspaceConfig(repos=[RepoEntry(path="api", alias="api")]).save(tmp_path)
+    member = tmp_path / "api"
+    assert cross_repo_cut_inputs(member, tmp_path) == {"lookup": tmp_path, "alias": "api"}
+    assert cross_repo_cut_inputs(member, None) == {"lookup": None, "alias": None}
+    assert cross_repo_cut_inputs(tmp_path / "other", tmp_path) == {"lookup": None, "alias": None}

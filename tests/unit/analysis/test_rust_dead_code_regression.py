@@ -14,11 +14,10 @@ class TestRustNeverFlagPatterns:
     """Validate never-flag patterns cover Rust conventions."""
 
     def test_build_rs_never_flagged(self):
-        import fnmatch
+        # A build file by type (``code_origin``), not a glob.
+        from repowise.core.analysis.dead_code.constants import never_flag_path
 
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
-        path = "crates/typst-pdf/build.rs"
-        assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
+        assert never_flag_path("crates/typst-pdf/build.rs")
 
     def test_examples_never_flagged(self):
         import fnmatch

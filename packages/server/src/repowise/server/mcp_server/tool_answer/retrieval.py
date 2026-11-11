@@ -17,12 +17,15 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
-from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.core.persistence.search import strip_leading_headings
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
-from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
+from repowise.server.mcp_server._retrieval_rank import rerank_pages_first
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
+    _CANDIDATE_FILES_POOL,
+    _CANDIDATE_FILES_SCORE_FLOOR,
     _COVERAGE_FLOOR,
     _DEFINES_CHAR_BUDGET,
     _DOMAIN_PENALTY,
@@ -87,6 +90,67 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
     return out
 
 
+def serialize_candidate_files(hits: list[dict]) -> list[str]:
+    """Distinct openable file paths in rank order, paths only, no hydration.
+
+    A file only the 1-hop graph walk added is left out: it neighbours a top hit
+    but nothing in the question matched it, so it is not a file to open next.
+    So is one scoring far below the top hit.
+    """
+    floor = max((h.get("score") or 0.0 for h in hits), default=0.0) * _CANDIDATE_FILES_SCORE_FLOOR
+    paths: list[str] = []
+    for h in hits:
+        if h.get("_sources") == {"graph_expand"} or (h.get("score") or 0.0) < floor:
+            continue
+        path = hit_file_path(h)
+        if path and path not in paths:
+            paths.append(path)
+            if len(paths) >= _CANDIDATE_FILES_POOL:
+                break
+    return paths
+
+
+# Symbol names a shortlist row carries: enough to point at a line, not an outline.
+_SHORTLIST_FUNCTIONS = 3
+
+
+def serialize_candidate_file_facts(hits: list[dict]) -> dict[str, dict[str, Any]]:
+    """Per-path ``why`` and ``functions`` for the ``candidate_files`` pool.
+
+    Built from what retrieval already resolved, no extra query: the first hit
+    naming a file supplies the reason, and ``functions`` takes the
+    question-matched hydrated symbols first, then the indexed ``_defines``.
+    Paths with nothing to say get no entry.
+    """
+    facts: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    for h in hits:
+        path = hit_file_path(h)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        row: dict[str, Any] = {}
+        why = _candidate_justification(h)
+        if why:
+            row["why"] = why
+        named: dict[str, int] = {}
+        for s in h.get("symbols") or []:
+            if s.get("_matched") and s.get("name") and s.get("start_line"):
+                named.setdefault(s["name"], s["start_line"])
+        for name, line in h.get("_defines") or ():
+            named.setdefault(name, line)
+        if named:
+            row["functions"] = [
+                {"name": name, "line": line}
+                for name, line in list(named.items())[:_SHORTLIST_FUNCTIONS]
+            ]
+        if row:
+            facts[path] = row
+        if len(seen) >= _CANDIDATE_FILES_POOL:
+            break
+    return facts
+
+
 def serialize_hits(
     hits: list[dict],
     *,
@@ -123,12 +187,14 @@ def serialize_hits(
         summary = h.get("summary") or ""
         if summary_chars is not None and len(summary) > summary_chars:
             summary = summary[: summary_chars - 1].rstrip() + "…"
-        if summary:
-            entry["summary"] = summary
+        # One text per row: the summary and snippet are prefixes of the excerpt.
         serve_excerpt = excerpt_rows is None or idx < excerpt_rows
-        for key in ("snippet", "excerpt"):
-            if h.get(key) and (key != "excerpt" or serve_excerpt):
-                entry[key] = h[key]
+        if h.get("excerpt") and serve_excerpt:
+            entry["excerpt"] = h["excerpt"]
+        elif summary:
+            entry["summary"] = summary
+        elif h.get("snippet"):
+            entry["snippet"] = strip_leading_headings(h["snippet"])
         if h.get("score") is not None:
             entry["score"] = round(h["score"], 3)
         expanded = "graph_expand" in (h.get("_sources") or ())
@@ -214,9 +280,10 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     Returns the number of top hits left without page content, so a hit
     reaching synthesis with no body is visible rather than silent.
     """
-    if not hits:
+    # A file with no page has no content to miss; its symbols carry its code.
+    top = [h for h in hits[:_PAGE_EXCERPT_HITS] if h.get("page_type") != PAGELESS_FILE]
+    if not top:
         return 0
-    top = hits[:_PAGE_EXCERPT_HITS]
     page_ids = [h["page_id"] for h in top if h.get("page_id")]
     if not page_ids:
         _log.warning(
@@ -227,8 +294,14 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
         return len(top)
     try:
         async with get_session(ctx.session_factory) as session:
-            res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
-            content_by_id = {row[0]: (row[1] or "") for row in res.all()}
+            res = await session.execute(
+                select(Page.id, Page.content, Page.digest).where(Page.id.in_(page_ids))
+            )
+            # The digest carries what the page answers in an agent's words.
+            content_by_id = {
+                row[0]: "\n\n".join(part for part in (row[1], row[2]) if part)
+                for row in res.all()
+            }
     except Exception:
         # Never fail the answer over an excerpt fetch, but never hide it either.
         _log.warning(
@@ -338,7 +411,7 @@ def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
     replacement score. Counters BM25 ranking one strongly-matched constraint
     above a hit that matches every constraint moderately.
     """
-    return rerank_by_context_coverage(
+    return rerank_pages_first(
         hits,
         question,
         score_key="score",

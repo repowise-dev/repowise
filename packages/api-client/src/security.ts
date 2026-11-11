@@ -1,16 +1,12 @@
+import type { SecurityFinding, SecuritySummary } from "@repowise-dev/types/security";
 import { apiGet } from "./client";
 
-export interface SecurityFinding {
-  id: number;
-  file_path: string;
-  kind: string;
-  severity: "high" | "med" | "low" | string;
-  snippet: string | null;
-  detected_at: string;
-  /** Verified against the live tree; `null` when the snippet has moved away. */
-  line_number: number | null;
-  line_verified: boolean;
-  commit_at: string | null;
+// One definition of the wire shapes: the types package's, so a field the
+// server adds (path class, class counts) reaches every typed consumer.
+export type { SecurityFinding, SecurityPathClass, SecuritySummary } from "@repowise-dev/types/security";
+
+export async function getSecuritySummary(repoId: string): Promise<SecuritySummary> {
+  return apiGet<SecuritySummary>(`/api/repos/${repoId}/security/summary`);
 }
 
 export async function listSecurityFindings(

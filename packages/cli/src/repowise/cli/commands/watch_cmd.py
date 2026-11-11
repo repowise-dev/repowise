@@ -35,7 +35,9 @@ _SELF_WRITTEN_FILES: frozenset[str] = frozenset({"CLAUDE.md", "AGENTS.md", ".mcp
 _SELF_WRITTEN_DIRS: frozenset[str] = frozenset({".claude", ".codex", ".cursor", ".gemini"})
 
 
-def _event_paths(event: object, repo_path: Path) -> set[str]:
+def _event_paths(
+    event: object, repo_path: Path, output_dirs: dict[Path, bool] | None = None
+) -> set[str]:
     """The watchable repo-relative paths a filesystem event touched.
 
     Both ends of a move are considered. Editors that save atomically (the
@@ -47,6 +49,9 @@ def _event_paths(event: object, repo_path: Path) -> set[str]:
     Paths outside the watched root are dropped rather than raising: an
     unguarded ``relative_to`` here used to take watchdog's dispatcher thread
     down with it, leaving ``watch`` apparently running but permanently deaf.
+
+    *output_dirs* memoizes the output-directory listings for one debounce
+    window, so a build writing N files lists its output root once.
     """
     found: set[str] = set()
     for attr in ("src_path", "dest_path"):
@@ -57,7 +62,7 @@ def _event_paths(event: object, repo_path: Path) -> set[str]:
             rel = str(Path(raw).relative_to(repo_path))
         except ValueError:
             continue
-        if is_watchable_path(rel):
+        if is_watchable_path(rel, repo_path, output_dirs):
             found.add(rel)
     return found
 
@@ -82,7 +87,9 @@ def _release_own_update_lock(repo_path: Path) -> None:
         release_update_lock(repo_path)
 
 
-def is_watchable_path(rel_path: str) -> bool:
+def is_watchable_path(
+    rel_path: str, repo_path: Path | None = None, output_dirs: dict[Path, bool] | None = None
+) -> bool:
     """Whether a change to *rel_path* (repo-relative) should trigger an update.
 
     Two filters. The first is the traversal blocklist, so a write inside
@@ -97,7 +104,7 @@ def is_watchable_path(rel_path: str) -> bool:
         return False
     if posix.split("/", 1)[0] in _SELF_WRITTEN_DIRS:
         return False
-    return is_candidate_source_path(posix)
+    return is_candidate_source_path(posix, repo_path, output_dirs)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +129,7 @@ def _watch_single_repo(
     ensure_repowise_dir(repo_path)
 
     changed_paths: set[str] = set()
+    output_dirs: dict[Path, bool] = {}  # per debounce window, see _event_paths
     lock = threading.Lock()
     # Serialises the updates themselves. The debounce timer only guarantees a
     # quiet gap before a run starts, not that the previous run has finished —
@@ -136,6 +144,7 @@ def _watch_single_repo(
             with lock:
                 paths = set(changed_paths)
                 changed_paths.clear()
+                output_dirs.clear()
                 timer = None
 
             if not paths:
@@ -170,7 +179,7 @@ def _watch_single_repo(
             nonlocal timer
             if event.is_directory:
                 return
-            watched = _event_paths(event, repo_path)
+            watched = _event_paths(event, repo_path, output_dirs)
             if not watched:
                 return
 
@@ -221,6 +230,7 @@ def _watch_workspace(
     # Per-repo state: each repo gets its own change set and debounce timer
     repo_locks: dict[str, threading.Lock] = {}
     repo_changed: dict[str, set[str]] = {}
+    repo_output_dirs: dict[str, dict[Path, bool]] = {}  # see _event_paths
     repo_timers: dict[str, threading.Timer | None] = {}
     # Serialises a repo's own updates; see the single-repo watcher.
     repo_update_locks: dict[str, threading.Lock] = {}
@@ -228,6 +238,7 @@ def _watch_workspace(
     for entry in ws_config.repos:
         repo_locks[entry.alias] = threading.Lock()
         repo_changed[entry.alias] = set()
+        repo_output_dirs[entry.alias] = {}
         repo_timers[entry.alias] = None
         repo_update_locks[entry.alias] = threading.Lock()
 
@@ -239,6 +250,7 @@ def _watch_workspace(
                 with repo_locks[alias]:
                     paths = set(repo_changed[alias])
                     repo_changed[alias].clear()
+                    repo_output_dirs[alias].clear()
                     repo_timers[alias] = None
 
                 if not paths:
@@ -285,7 +297,7 @@ def _watch_workspace(
         def on_any_event(self, event):
             if event.is_directory:
                 return
-            watched = _event_paths(event, self._repo_path)
+            watched = _event_paths(event, self._repo_path, repo_output_dirs[self._alias])
             if not watched:
                 return
 

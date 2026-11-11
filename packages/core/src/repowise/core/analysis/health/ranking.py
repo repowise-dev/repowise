@@ -16,13 +16,17 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .rows import field, split_tests
+from .rows import field, scored_rows, split_tests
 from .scoring import SCORE_MAX
 
 __all__ = [
     "deduction_by_path",
+    "scope_reason",
     "sort_metrics_worst_first",
+    "split_in_scope",
     "worst_first_key",
+    "worst_in_scope",
+    "worst_kpis",
     "worst_metric",
 ]
 
@@ -81,9 +85,69 @@ def worst_metric(rows: Iterable[Any], deductions: Mapping[str, float]) -> Any | 
     production rows without sorting the tail. Sharing the key is what keeps a
     repo's headline "worst performer" from naming a different file than the
     worst-files list under it. Test files are ranked separately, so a test only
-    answers when there is no production row at all.
+    answers when there is no production row at all. A row with no score is
+    never the worst: nothing measured it.
     """
-    production, tests = split_tests(rows)
+    production, tests = split_tests(scored_rows(rows))
     return min(
         production or tests, key=lambda row: worst_first_key(row, deductions), default=None
     )
+
+
+def scope_reason(row: Any) -> str | None:
+    """Why Fix first leaves *row*'s file out (``test``, ``tooling``, ``generated``...),
+    ``None`` when it is in scope: Fix first's rule on the row's flag and stored origin."""
+    # Deferred: the queue pulls in what this module keeps out (see the module docstring).
+    from .queue.eligibility import path_verdict
+
+    return path_verdict(
+        str(field(row, "file_path", "") or ""),
+        field(row, "is_test", False),
+        origin=field(row, "code_origin", None),
+    ).reason
+
+
+def split_in_scope(rows: Iterable[Any]) -> tuple[list[Any], list[Any]]:
+    """``(production, tests)``: the rows in Fix first's scope and the test rows.
+
+    The one split behind ``worst_performer`` and ``production_average``, so
+    both leave out the same tooling, build, vendored, generated and docs example
+    files. A row in neither list is out of scope for another reason.
+    """
+    in_scope: list[Any] = []
+    tests: list[Any] = []
+    for row in rows:
+        reason = scope_reason(row)
+        if reason is None:
+            in_scope.append(row)
+        elif reason == "test":
+            tests.append(row)
+    return in_scope, tests
+
+
+def worst_in_scope(
+    rows: Iterable[Any], deductions: Mapping[str, float]
+) -> tuple[Any | None, Any | None]:
+    """``(worst file, worst test)`` every surface names, under the same key.
+
+    The worst file is the head of the dashboard's ``worst_files``: in Fix
+    first's scope, so a script, schema or generated file scoring lowest is not
+    named. The worst test is the head of ``test_worst_files``. Either is
+    ``None`` when its list is empty.
+    """
+    in_scope, tests = split_in_scope(scored_rows(rows))
+
+    def key(row: Any) -> tuple[float, float, str]:
+        return worst_first_key(row, deductions)
+
+    return min(in_scope, key=key, default=None), min(tests, key=key, default=None)
+
+
+def worst_kpis(rows: Iterable[Any], deductions: Mapping[str, float]) -> dict[str, Any]:
+    """The four wire KPIs naming :func:`worst_in_scope`'s pair, ``None`` when absent."""
+    out: dict[str, Any] = {}
+    pair = worst_in_scope(rows, deductions)
+    for prefix, row in zip(("worst_performer", "worst_test"), pair, strict=True):
+        out[f"{prefix}_path"] = field(row, "file_path") if row is not None else None
+        out[f"{prefix}_score"] = round(float(field(row, "score")), 2) if row is not None else None
+    return out

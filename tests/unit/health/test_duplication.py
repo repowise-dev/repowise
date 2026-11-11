@@ -19,7 +19,7 @@ from repowise.core.analysis.health.duplication import (
 from repowise.core.analysis.health.duplication.detector import (
     ClonePair,
     _aggregate,
-    _union_line_count,
+    union_line_count,
 )
 from repowise.core.analysis.health.duplication.rabin_karp import (
     index_by_hash,
@@ -87,6 +87,10 @@ def test_tokenize_file_reads_tsx_with_the_jsx_grammar():
 
 
 def test_tokenize_file_pascal_normalizes_identifiers_and_literals():
+    # Calls tokenize_file() directly with an inline byte literal, so it
+    # needs its own best-effort guard rather than inheriting one from a
+    # fixture-driven helper.
+    pytest.importorskip("tree_sitter_pascal", reason="run `uv sync --all-packages`")
     source = (
         b"unit U;\n interface\n implementation\n"
         b" procedure Foo;\n begin\n   WriteLn('hello', 42);\n end;\n end.\n"
@@ -170,6 +174,79 @@ def test_detect_clones_attaches_co_change_count(tmp_path: Path):
     assert report.pairs
     # Max of the two reported directions wins.
     assert report.pairs[0].co_change_count == 7
+
+
+_HANDLER = '''class _{cls}Handler:
+    """Adds the edges one framework implies."""
+
+    def detect(self, ctx: Context) -> bool:
+        return True
+
+    def add_edges(
+        self,
+        graph: Graph,
+        parsed_files: dict[str, Any],
+        ctx: Context,
+        path_set: set[str],
+    ) -> int:
+        return _add_{name}_edges(graph, parsed_files, ctx, path_set)
+
+
+HANDLERS: list[Handler] = [_{cls}Handler()]
+'''
+
+
+def _handler_pair(tmp_path: Path, path_a: str, path_b: str, extra: str = "") -> list:
+    parsed = []
+    for path, name in ((path_a, "alpha"), (path_b, "beta")):
+        src = _HANDLER.format(cls=name.title(), name=name).replace("return True", extra or "return True")
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(src)
+        parsed.append(_pf(path, str(target)))
+    return parsed
+
+
+def test_sibling_skeleton_in_one_directory_is_not_a_clone(tmp_path: Path):
+    # Two handlers of one registry share signatures and a registration line,
+    # with no branch or callback: the contract, not copied logic.
+    parsed = _handler_pair(tmp_path, "edges/alpha.py", "edges/beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs == []
+
+
+def test_the_same_skeleton_across_directories_stays_a_clone(tmp_path: Path):
+    parsed = _handler_pair(tmp_path, "one/alpha.py", "two/beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "return bool(ctx) if ctx.ready else False",
+        "return any(map(lambda tok: tok in ctx.stack, ctx.names))",
+    ],
+)
+def test_a_sibling_clone_with_a_branch_or_lambda_stays_a_clone(tmp_path: Path, extra: str):
+    parsed = _handler_pair(tmp_path, "edges/alpha.py", "edges/beta.py", extra)
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+def test_sibling_test_files_keep_their_skeleton_clones(tmp_path: Path):
+    # Duplicated assertion blocks read test clones; they stay.
+    parsed = _handler_pair(tmp_path, "tests/test_alpha.py", "tests/test_beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+    # Ingestion's stored flag decides where the path alone would not.
+    parsed = _handler_pair(tmp_path, "helpers/alpha.py", "helpers/beta.py")
+    parsed[0].file_info.is_test = True
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+def test_decision_lines_marks_branches_and_lambdas_only():
+    from repowise.core.analysis.health.duplication.tokenizer import decision_lines
+
+    source = b"def f(x: int) -> int:\n    y = x\n    if y:\n        g = lambda: y\n    return y\n"
+    assert decision_lines("python", source, "f.py") == {3, 4}
+    assert decision_lines("not-a-language", source) is None
 
 
 def test_detect_clones_skips_files_without_duplicates(tmp_path: Path):
@@ -331,8 +408,8 @@ def _pair(
         ([(1, 10), (1, 10), (1, 10)], 10),  # identical repeats
     ],
 )
-def test_union_line_count(ranges: list[tuple[int, int]], expected: int):
-    assert _union_line_count(ranges) == expected
+def testunion_line_count(ranges: list[tuple[int, int]], expected: int):
+    assert union_line_count(ranges) == expected
 
 
 def test_aggregate_overlapping_pairs_do_not_double_count():
@@ -403,6 +480,41 @@ def test_tokenize_file_drops_python_imports():
     assert [t.kind for t in toks] == ["ID", "=", "LIT"]
 
 
+def test_tokenize_file_drops_the_java_package_declaration():
+    toks = tokenize_file("java", b"package a.b;\nimport x.Y;\nclass C {}\n", "C.java")
+    assert "package" not in [t.kind for t in toks]
+    assert toks[0].kind == "class"
+    assert toks[0].start_line == 3
+
+
+@pytest.mark.parametrize(
+    ("language", "path", "source", "first_line"),
+    [
+        # Ruby loads, but not a method that happens to be named require.
+        ("ruby", "a.rb", b"require 'json'\nrequire_relative 'a/b'\nautoload :X, 'x'\nfoo.require 'x'\n", 4),
+        ("shell", "a.sh", b"source ./lib.sh\n. ./env.sh\necho hi\n", 3),
+        ("kotlin", "A.kt", b"package a.b.c\n\nimport x.y\nfun f() = 1\n", 4),
+        ("csharp", "A.cs", b"namespace A.B;\nusing X;\nclass C {}\n", 3),
+        ("php", "a.php", b"<?php\nnamespace App\\Http;\nuse Foo\\Bar;\nclass C {}\n", 1),
+    ],
+)
+def test_tokenize_file_drops_import_like_headers(
+    language: str, path: str, source: bytes, first_line: int
+):
+    lines = {t.start_line for t in tokenize_file(language, source, path)}
+    assert min(lines) == first_line
+    if language == "php":  # the ``<?php`` tag stays; the namespace line does not
+        assert 2 not in lines and 3 not in lines
+
+
+def test_tokenize_file_keeps_a_block_namespace_body():
+    # The block form wraps the code: skipping it would drop the whole file.
+    php = tokenize_file("php", b"<?php\nnamespace B {\n  function f() { return 1; }\n}\n", "a.php")
+    assert "function" in [t.kind for t in php]
+    cs = tokenize_file("csharp", b"namespace A {\n  class C {}\n}\n", "A.cs")
+    assert "class" in [t.kind for t in cs]
+
+
 def test_tokenize_file_drops_ts_imports_and_reexports_but_keeps_local_exports():
     source = (
         b'import { a, b } from "./x";\n'
@@ -426,12 +538,54 @@ def test_tokenize_file_keeps_raw_identifier_names():
     assert [t.name for t in toks] == ["total", "", "count", "", ""]
 
 
+def test_tokenize_file_lines_match_tree_sitter_points():
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    source = b'x = 1\r\n\r\ns = """a\r\nb\n"""\nif x:\n    y = (s,\n         x)\n'
+    tree = Parser(_get_language("python")).parse(source)
+    leaves = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.child_count == 0 and source[node.start_byte : node.end_byte].strip():
+            leaves.append((node.start_point[0] + 1, node.end_point[0] + 1))
+        stack.extend(reversed(node.children))
+
+    toks = tokenize_file("python", source)
+    assert [(t.start_line, t.end_line) for t in toks] == leaves
+    assert (3, 5) in [(t.start_line, t.end_line) for t in toks]  # the multi-line string
+
+
 def test_detect_clones_ignores_identical_import_blocks(tmp_path: Path):
     imports = "".join(f"from pkg.mod{i} import name{i}, other{i}\n" for i in range(12))
     a = _write(tmp_path, "a.py", imports + "def f():\n    return 1\n")
     b = _write(tmp_path, "b.py", imports + "def g(x):\n    return x * 2\n")
     report = detect_clones([_pf("a.py", str(a)), _pf("b.py", str(b))], window_tokens=20, min_lines=4)
     assert report.pairs == []
+
+
+def test_a_java_clone_starts_at_the_shared_code_not_the_package_line(tmp_path: Path):
+    header = "/* License header */\npackage com.acme.core.util;\n\n" + "".join(
+        f"import com.acme.core.mod{i}.Thing{i};\n" for i in range(12)
+    ) + "\n"
+    method = (
+        "    int total(int a, int b) {\n        int sum = a + b;\n        if (sum > 10) {\n"
+        "            return sum * 2;\n        }\n        for (int i = 0; i < b; i++) {\n"
+        "            sum += i;\n        }\n        return sum;\n    }\n"
+    )
+    a = _write(tmp_path, "A.java", header + "public class Alpha {\n" + method + "}\n")
+    b = _write(tmp_path, "B.java", header + "public class Beta {\n" + method + "}\n")
+    report = detect_clones(
+        [_pf("A.java", str(a), language="java"), _pf("B.java", str(b), language="java")]
+    )
+    # The pair is still found, from the class line (17) on: the package line
+    # is line 2 and the shared method is lines 18-27.
+    assert len(report.pairs) == 1
+    pair = report.pairs[0]
+    assert pair.a_start_line >= 17 and pair.b_start_line >= 17
+    assert pair.a_end_line >= 27 and pair.b_end_line >= 27
 
 
 def test_detect_clones_ignores_matching_data_literals(tmp_path: Path):
@@ -452,3 +606,34 @@ def test_detect_clones_needs_shared_identifier_names(tmp_path: Path):
     report = detect_clones(parsed, window_tokens=20, min_lines=4)
     # Same shape with every name changed is not a copy; a real copy still is.
     assert {(p.file_a, p.file_b) for p in report.pairs} == {("a.py", "c.py")}
+
+
+def _issue_3271_body() -> str:
+    return "".join(
+        f"result{i} = compute(alpha{i}, beta{i})\nname{i} = lookup(result{i}, gamma)\n"
+        f"if name{i} == other:\n    done = finish(name{i}, result{i})\n"
+        for i in range(6)
+    )
+
+
+def test_detect_clones_does_not_pair_across_languages(tmp_path: Path):
+    """Issue #3271: identical token shapes in Python and TypeScript must not cross-pair."""
+    body = _issue_3271_body()
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.ts", body)
+    parsed = [
+        _pf("a.py", str(a), "python"),
+        _pf("b.ts", str(b), "typescript"),
+    ]
+    report = detect_clones(parsed, {}, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=3)
+    cross = {(p.file_a, p.file_b) for p in report.pairs if p.file_a != p.file_b}
+    assert cross == set()
+
+
+def test_detect_clones_still_pairs_same_language_duplicates(tmp_path: Path):
+    body = _issue_3271_body()
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.py", body)
+    parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
+    report = detect_clones(parsed, {}, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=3)
+    assert any({p.file_a, p.file_b} == {"a.py", "b.py"} for p in report.pairs)

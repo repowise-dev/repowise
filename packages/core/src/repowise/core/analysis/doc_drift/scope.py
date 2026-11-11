@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..change_health.sources import FileChange, GitRevisionSource
-from ..git_cli import _git, split_revspec
+from ..git_cli import split_revspec
 from .constants import MANIFEST_NAMES
 from .extractor import is_checkable_document
 from .resolver import join_relative
@@ -158,11 +158,6 @@ def scope_since(root: str, revspec: str) -> ChangeScope:
     source = GitRevisionSource(root, hunks=False)
     changes = list(source.resolve(revspec).changes)
     if parts is not None and parts[2] == "HEAD":
+        # Untracked files included: the working tree resolves them as added.
         changes += source.resolve(None).changes
-        changes += [
-            FileChange(head_path=path, base_path=None, status="added")
-            for path in _git(["ls-files", "-z", "--others", "--exclude-standard"], root)
-            .split("\0")
-            if path
-        ]
     return ChangeScope.from_changes(changes, label=revspec)

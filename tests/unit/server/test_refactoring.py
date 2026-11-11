@@ -5,14 +5,18 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
-from sqlalchemy import event
 
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
     crud,
 )
+
+# The seed covers every plan type, extract_helper included; the registry's
+# hiding of its biomarker is tested in test_refactoring_opportunities.py.
+pytestmark = pytest.mark.usefixtures("dry_violation_shown")
 
 
 async def create_test_repo(client: AsyncClient) -> dict:
@@ -224,95 +228,7 @@ async def test_type_filter_narrows_plans_but_keeps_summary(client: AsyncClient, 
     assert body["summary"]["total"] == 4
 
 
-async def test_paged_targets_are_bounded_deterministic_and_server_filtered(
-    client: AsyncClient, app
-) -> None:
-    repo_id = await _seed(client, app)
-    legacy = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()
-    first = (
-        await client.get(f"/api/repos/{repo_id}/refactoring/targets/page", params={"limit": 2})
-    ).json()
-    second = (
-        await client.get(
-            f"/api/repos/{repo_id}/refactoring/targets/page",
-            params={"limit": 2, "offset": first["next_offset"]},
-        )
-    ).json()
-
-    assert len(first["items"]) == 2
-    assert first["total"] == 4
-    assert first["has_more"] is True
-    assert [item["id"] for item in first["items"] + second["items"]] == [
-        item["id"] for item in legacy["plans"]
-    ]
-
-    filtered = (
-        await client.get(
-            f"/api/repos/{repo_id}/refactoring/targets/page",
-            params={
-                "search": "helper.do_work",
-                "confidence": "medium",
-                "effort": "S",
-                "sort": "file",
-            },
-        )
-    ).json()
-    assert filtered["total"] == 1
-    assert filtered["items"][0]["refactoring_type"] == "move_method"
-    assert filtered["summary"]["total"] == 4
-
-
-async def test_paged_targets_query_count_is_constant_as_payload_grows(
-    client: AsyncClient, app, test_engine
-) -> None:
-    repo_id = await _seed(client, app)
-
-    async def request_count(limit: int) -> int:
-        statements: list[str] = []
-
-        def record(*args) -> None:
-            statements.append(str(args[2]))
-
-        event.listen(test_engine.sync_engine, "before_cursor_execute", record)
-        try:
-            response = await client.get(
-                f"/api/repos/{repo_id}/refactoring/targets/page", params={"limit": limit}
-            )
-            assert response.status_code == 200
-        finally:
-            event.remove(test_engine.sync_engine, "before_cursor_execute", record)
-        return len(statements)
-
-    small = await request_count(1)
-    async with app.state.session_factory() as session:
-        await crud.save_refactoring_suggestions(
-            session,
-            repo_id,
-            [
-                {
-                    "refactoring_type": "extract_method",
-                    "file_path": f"pkg/many_{index}.py",
-                    "target_symbol": f"work_{index}",
-                    "line_start": 1,
-                    "line_end": 30,
-                    "plan": {"suggested_name": f"part_{index}"},
-                    "evidence": {"slice_nloc": 12, "ccn_removed": 2},
-                    "impact_delta": 0.2,
-                    "effort_bucket": "S",
-                    "blast_radius": {"files": [f"pkg/many_{index}.py"], "file_count": 1},
-                    "confidence": "high",
-                    "source_biomarker": "high_complexity",
-                }
-                for index in range(80)
-            ],
-        )
-        await session.commit()
-
-    large = await request_count(60)
-    assert large == small
-
-
-async def test_paged_targets_filter_performance_plans_without_redefining_rank(
+async def test_targets_filter_performance_plans_without_redefining_rank(
     client: AsyncClient, app
 ) -> None:
     repo_id = await _seed(client, app)
@@ -341,18 +257,18 @@ async def test_paged_targets_filter_performance_plans_without_redefining_rank(
         )
         await session.commit()
 
-    all_page = (await client.get(f"/api/repos/{repo_id}/refactoring/targets/page")).json()
+    all_plans = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()
     performance = (
         await client.get(
-            f"/api/repos/{repo_id}/refactoring/targets/page",
+            f"/api/repos/{repo_id}/refactoring/targets",
             params={"refactoring_type": "performance_fix"},
         )
     ).json()
     expected = next(
-        item for item in all_page["items"] if item["refactoring_type"] == "performance_fix"
+        item for item in all_plans["plans"] if item["refactoring_type"] == "performance_fix"
     )
-    assert performance["items"] == [expected]
-    assert performance["summary"]["performance_total"] == 1
+    assert performance["plans"] == [expected]
+    assert {"type": "performance_fix", "count": 1} in performance["summary"]["by_type"]
     assert expected["impact_delta"] == 0.0
     assert expected["benefit"] > 0
 
@@ -389,6 +305,77 @@ async def test_plan_detail_by_id(client: AsyncClient, app) -> None:
     detail = resp.json()
     assert detail["id"] == target["id"]
     assert detail["plan"]["cut_edges"] == [{"from": "pkg/a.py", "to": "pkg/b.py"}]
+
+
+async def test_a_resolved_plan_detail_says_what_happened_to_it(client: AsyncClient, app) -> None:
+    from repowise.server.services.refactoring_health import RefactoringHealthService
+
+    repo_id = await _seed(client, app)
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    open_plan = next(p for p in listed if p["refactoring_type"] == "extract_class")
+    assert "payoff" not in (await client.get(f"/api/repos/{repo_id}/refactoring/{open_plan['id']}")).json()
+
+    async with app.state.session_factory() as session:
+        # pkg/leaf.py is gone from the run that stops detecting its plan.
+        await crud.upsert_refactoring_suggestions(
+            session,
+            repo_id,
+            [],
+            file_paths=["pkg/leaf.py"],
+            payoff=crud.PayoffContext(fact_rows=[], is_live=lambda _path: False, commit="f00d"),
+        )
+        await session.commit()
+
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{open_plan['id']}")).json()
+    assert detail["payoff"]["outcome"] == "file_deleted"
+    assert detail["payoff"]["resolved_commit"] == "f00d"
+
+    async with app.state.session_factory() as session:
+        served = await RefactoringHealthService(session, repo_id, repo_id).plan_detail(
+            open_plan["id"]
+        )
+    assert served["plan"]["status"] == "resolved"
+    assert served["plan"]["payoff"]["outcome"] == "file_deleted"
+
+
+async def test_an_unranked_plan_detail_serves_steps_without_verify(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed(client, app)
+    steps = [
+        {"order": 1, "action": "Batch", "symbol": "load", "file_path": "pkg/hub.py", "line": 3},
+        {"order": 2, "action": "Batch", "symbol": "run", "file_path": "pkg/a.py", "line": 7},
+    ]
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                {
+                    "refactoring_type": "performance_fix",
+                    "file_path": "pkg/hub.py",
+                    "target_symbol": "pkg/hub.py::load",
+                    "plan": {"opportunity_id": "opp-steps", "steps": steps},
+                    "evidence": {},
+                    "impact_delta": 0.0,
+                    "effort_bucket": "M",
+                    "blast_radius": {},
+                    "confidence": "medium",
+                    "source_biomarker": "io_in_loop",
+                }
+            ],
+        )
+        await session.commit()
+    listed = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/targets",
+            params={"refactoring_type": "performance_fix"},
+        )
+    ).json()["plans"]
+    assert listed[0]["plan"]["steps"] == steps
+    # Unranked here, so the read serves the plan-level answer and rebuilds no step.
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{listed[0]['id']}")).json()
+    assert detail["plan"]["steps"] == steps
 
 
 async def test_plan_detail_unknown_id_404(client: AsyncClient, app) -> None:
@@ -536,14 +523,13 @@ async def test_min_confidence_filters(client: AsyncClient, app) -> None:
 async def _seed_enrich_repo(client: AsyncClient, app, *, enabled: bool) -> tuple[str, str]:
     """A repo with a real checkout (config + one source file) and one plan.
 
-    Uses the ``mock`` provider so ``build_enrichment_provider`` resolves a
-    MockProvider with no API key. Returns ``(repo_id, suggestion_id)``."""
+    The provider is stubbed per test through the shared chat resolver.
+    Returns ``(repo_id, suggestion_id)``."""
     repo_dir = Path(tempfile.mkdtemp()) / "enrich-repo"
     (repo_dir / "pkg").mkdir(parents=True, exist_ok=True)
     (repo_dir / ".git").mkdir(exist_ok=True)
     (repo_dir / ".repowise").mkdir(exist_ok=True)
-    # enabled defaults on, so the disabled case writes an explicit false.
-    cfg = "provider: mock\n"
+    cfg = "provider: anthropic\n"
     cfg += f"refactoring:\n  llm:\n    enabled: {'true' if enabled else 'false'}\n"
     (repo_dir / ".repowise" / "config.yaml").write_text(cfg, encoding="utf-8")
     (repo_dir / "pkg" / "leaf.py").write_text(
@@ -591,7 +577,24 @@ async def _seed_enrich_repo(client: AsyncClient, app, *, enabled: bool) -> tuple
     return repo_id, suggestion_id
 
 
-async def test_generate_code_happy_path(client: AsyncClient, app) -> None:
+def _stub_chat_resolver(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Route the shared chat resolver to a MockProvider and record its calls."""
+    from repowise.core.providers.llm.mock import MockProvider
+
+    calls: list[dict] = []
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        return MockProvider()
+
+    monkeypatch.setattr("repowise.server.provider_config.get_chat_provider_instance", fake)
+    return calls
+
+
+async def test_generate_code_happy_path(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _stub_chat_resolver(monkeypatch)
     repo_id, sid = await _seed_enrich_repo(client, app, enabled=True)
     resp = await client.post(f"/api/repos/{repo_id}/refactoring/{sid}/generate-code", json={})
     assert resp.status_code == 200
@@ -599,6 +602,10 @@ async def test_generate_code_happy_path(client: AsyncClient, app) -> None:
     assert body["refactoring_type"] == "extract_class"
     assert body["target_symbol"] == "GodClass"
     assert body["provider"] == "mock"
+    # Generation asks the resolver chat uses, scoped to this repo, not its own.
+    assert len(calls) == 1
+    assert calls[0]["repo_id"] == repo_id
+    assert calls[0]["repo_path"].name == "enrich-repo"
     assert body["content"]  # the mock returned something
     assert body["spans"] and body["spans"][0]["file"] == "pkg/leaf.py"
 
@@ -620,58 +627,67 @@ async def test_generate_code_unknown_id_404(client: AsyncClient, app) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_settings_default_enabled_when_unset(client: AsyncClient, app) -> None:
-    """An untouched repo (no config) reads as enabled with no provider/model."""
+@pytest.fixture
+def _isolated_provider_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the server-global provider store out of the user's home."""
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server-store"))
+
+
+@pytest.mark.usefixtures("_isolated_provider_store")
+async def test_settings_default_off_when_unset(client: AsyncClient, app) -> None:
+    """An untouched repo reads as off; code generation waits for a yes."""
     repo = await create_test_repo(client)
     resp = await client.get(f"/api/repos/{repo['id']}/refactoring/settings")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body == {"enabled": True, "provider": None, "model": None}
+    assert resp.json()["enabled"] is False
 
 
-async def test_settings_put_round_trips_and_preserves_other_keys(client: AsyncClient, app) -> None:
+@pytest.mark.usefixtures("_isolated_provider_store")
+async def test_settings_round_trip_shows_chat_model_and_no_secret(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import yaml
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value")
     repo = await create_test_repo(client)
     repo_id = repo["id"]
-    # Seed an unrelated key so we can assert the writer preserves it.
+    repo_dir = Path(repo["local_path"])
+    (repo_dir / ".repowise").mkdir(exist_ok=True)
+    (repo_dir / ".repowise" / "config.yaml").write_text(
+        "provider: anthropic\nmodel: claude-test\n", encoding="utf-8"
+    )
+
+    resp = await client.put(f"/api/repos/{repo_id}/refactoring/settings", json={"enabled": True})
+    assert resp.status_code == 200
+    expected = {"enabled": True, "provider": "anthropic", "model": "claude-test"}
+    assert resp.json() == expected
+    assert "sk-ant-secret-value" not in resp.text
+
+    got = await client.get(f"/api/repos/{repo_id}/refactoring/settings")
+    assert got.json() == expected
+    cfg = yaml.safe_load((repo_dir / ".repowise" / "config.yaml").read_text(encoding="utf-8"))
+    # Only the switch is written; the model stays where chat reads it.
+    assert cfg["provider"] == "anthropic"
+    assert cfg["refactoring"]["llm"] == {"enabled": True}
+
+    await client.put(f"/api/repos/{repo_id}/refactoring/settings", json={"enabled": False})
+    got = await client.get(f"/api/repos/{repo_id}/refactoring/settings")
+    assert got.json()["enabled"] is False
+
+
+@pytest.mark.usefixtures("_isolated_provider_store")
+async def test_settings_reports_no_provider_when_its_key_is_missing(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider chat could not build reads as none, so the UI offers setup."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    repo = await create_test_repo(client)
     repo_dir = Path(repo["local_path"])
     (repo_dir / ".repowise").mkdir(exist_ok=True)
     (repo_dir / ".repowise" / "config.yaml").write_text("provider: anthropic\n", encoding="utf-8")
 
-    resp = await client.put(
-        f"/api/repos/{repo_id}/refactoring/settings",
-        json={"enabled": False, "provider": "openai", "model": "gpt-x"},
-    )
-    assert resp.status_code == 200
-    assert resp.json() == {"enabled": False, "provider": "openai", "model": "gpt-x"}
-
-    # GET reflects the write, and the unrelated top-level key survived.
-    got = await client.get(f"/api/repos/{repo_id}/refactoring/settings")
-    assert got.json() == {"enabled": False, "provider": "openai", "model": "gpt-x"}
-    cfg = yaml.safe_load((repo_dir / ".repowise" / "config.yaml").read_text(encoding="utf-8"))
-    assert cfg["provider"] == "anthropic"
-    assert cfg["refactoring"]["llm"] == {"enabled": False, "provider": "openai", "model": "gpt-x"}
-
-
-async def test_settings_put_blank_provider_clears_key(client: AsyncClient, app) -> None:
-    import yaml
-
-    repo = await create_test_repo(client)
-    repo_id = repo["id"]
-    await client.put(
-        f"/api/repos/{repo_id}/refactoring/settings",
-        json={"enabled": True, "provider": "openai", "model": "gpt-x"},
-    )
-    # Re-save with blank provider/model -> the keys are removed, not "".
-    resp = await client.put(
-        f"/api/repos/{repo_id}/refactoring/settings",
-        json={"enabled": True, "provider": "", "model": "  "},
-    )
-    assert resp.json() == {"enabled": True, "provider": None, "model": None}
-    repo_dir = Path(repo["local_path"])
-    cfg = yaml.safe_load((repo_dir / ".repowise" / "config.yaml").read_text(encoding="utf-8"))
-    assert cfg["refactoring"]["llm"] == {"enabled": True}
+    resp = await client.get(f"/api/repos/{repo['id']}/refactoring/settings")
+    assert resp.json() == {"enabled": False, "provider": None, "model": None}
 
 
 async def test_settings_unknown_repo_404(client: AsyncClient, app) -> None:
@@ -694,7 +710,7 @@ async def test_plan_status_round_trips_and_hides_the_row(client: AsyncClient, ap
     assert body["status"] == "acknowledged"
     assert body["status_reason"] == "user"
     assert body["status_changed_at"] is not None
-    assert body["public_id"].startswith("refac2_")
+    assert body["public_id"].startswith("refac4_")
 
     resp = await client.patch(
         f"/api/repos/{repo_id}/refactoring/{target['id']}/status",

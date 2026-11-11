@@ -195,7 +195,7 @@
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (member_expression
-    object: (call_expression)
+    object: (call_expression) @call.receiver_call
     property: (property_identifier) @call.target
   )
   arguments: (arguments) @call.arguments
@@ -243,3 +243,39 @@
   (#match? @call.target "^[A-Z]")
 ) @call.site
 
+
+; Handler passed as a JSX attribute value: onClick={handle} / {this.handle}
+(jsx_expression (identifier) @reference.name)
+(jsx_expression (member_expression
+  object: [(identifier) (this)] @reference.receiver
+  property: (property_identifier) @reference.name))
+
+; ---------------------------------------------------------------------------
+; Value references: a function or class handed over by name, not called
+; ---------------------------------------------------------------------------
+; See typescript.scm for the shapes and why they are two alternations.
+[
+  (arguments (identifier) @reference.name)
+  (array (identifier) @reference.name)
+  (pair value: (identifier) @reference.name)
+  (shorthand_property_identifier) @reference.name
+  (return_statement (identifier) @reference.name)
+  (variable_declarator value: (identifier) @reference.name)
+  (assignment_expression right: (identifier) @reference.name)
+  (export_statement value: (identifier) @reference.name)
+]
+
+[
+  (arguments (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (array (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (pair value: (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (assignment_expression right: (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+]

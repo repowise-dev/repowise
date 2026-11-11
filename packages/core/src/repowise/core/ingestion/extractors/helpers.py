@@ -59,6 +59,12 @@ def refine_kotlin_class_kind(class_node: Node) -> str:
     return "class"
 
 
+def refine_swift_class_kind(class_node: Node) -> str:
+    """``impl`` for a Swift ``extension``, which adds members to a type it does not declare."""
+    keyword = class_node.child_by_field_name("declaration_kind")
+    return "impl" if keyword is not None and keyword.type == "extension" else "class"
+
+
 # Elixir definition keyword -> SymbolKind. Every definition is a `call` node,
 # so the node type says nothing; the keyword in the call's target says all.
 _ELIXIR_DEFINITION_KINDS = {

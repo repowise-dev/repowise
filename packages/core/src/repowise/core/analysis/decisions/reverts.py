@@ -14,8 +14,9 @@ commit whose message fits a stronger rule is never retried with a weaker one:
   history has subject ``S``, both compared with a trailing ``(#N)`` or
   ``(gh-N)`` stripped.
 - **pr**: the subject is ``revert:``/``revert(scope):`` and the message
-  references ``#N`` or ``/pull/N``, with exactly one commit that is that pull
-  request (subject ending ``(#N)`` or ``Merge pull request #N``).
+  references ``#N`` or a change the forge writes (``/pull/N``, ``!N`` on
+  GitLab, an MR or PR link), with exactly one commit that is that change (its
+  merge or squash message names it, read by :func:`repowise.core.forges.change_number`).
 
 Every match also needs the target to be an ancestor of the revert, and the two
 must change at least one file in common. A revert that calls itself partial is
@@ -53,11 +54,13 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.git_cli import _git
+from repowise.core.forges import ForgeKind, change_number, change_refs, detect_forge
 
 logger = structlog.get_logger(__name__)
 
 __all__ = [
     "REVERT_SUPERSEDED_PREFIX",
+    "HistoryUnreadableError",
     "RevertLink",
     "apply_revert_supersession",
     "find_revert_links",
@@ -74,9 +77,10 @@ _SUPERSEDED_BY_WIDTH = 32
 _BODY_RE = re.compile(r"This reverts commit ([0-9a-f]{40})\b")
 _SUBJECT_RE = re.compile(r'^Revert "(.+)"$')
 _CONVENTIONAL_RE = re.compile(r"^revert(?:\([^)]*\))?!?:", re.IGNORECASE)
-_PR_REF_RE = re.compile(r"(?:#|/pull/)(\d+)\b")
+#: A bare ``#N``: an issue, or a pull request on forges that number both alike.
+_HASH_REF_RE = re.compile(r"#(\d{1,9})\b")
+#: Subject normalisation only: the same change re-landed under another PR.
 _PR_SUFFIX_RE = re.compile(r"\s*\((?:#|gh-)(\d+)\)\s*$", re.IGNORECASE)
-_MERGE_PR_RE = re.compile(r"^Merge pull request #(\d+)\b")
 _PARTIAL_RE = re.compile(r"\bpart(?:ial(?:ly)?|ly)\b", re.IGNORECASE)
 _RELAND_WORD_RE = re.compile(r"\s*\(?\b(?:re-?land(?:ed)?|re-?appl(?:y|ied))\b\)?:?", re.IGNORECASE)
 _TICKET_PREFIX_RE = re.compile(
@@ -90,6 +94,10 @@ _WORD_ENDING_RE = re.compile(r"(?<=\w{3})(?:ed|es|s|d)$")
 _CHANGES_BATCH = 500
 _FIELD = "\x1f"
 _RECORD = "\x1e"
+
+
+class HistoryUnreadableError(RuntimeError):
+    """A git read :func:`find_revert_links` needs failed (``strict`` only)."""
 
 
 @dataclass(frozen=True)
@@ -141,7 +149,9 @@ def _issue_keys(subject: str) -> set[str]:
     return {k.lower() for k in _ISSUE_KEY_RE.findall(_strip_pr_suffix(subject))}
 
 
-def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]:
+def _changes(
+    repo_path: Path | str, shas: set[str], *, strict: bool = False
+) -> dict[str, dict[str, str]]:
     """Path -> status letter (A, M, D, ...) per commit, against its first parent."""
     out: dict[str, dict[str, str]] = {}
     ordered = sorted(shas)
@@ -158,6 +168,8 @@ def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]
             f"--format={_RECORD}%H",
             *ordered[i : i + _CHANGES_BATCH],
         )
+        if text is None and strict:
+            raise HistoryUnreadableError("git could not list the files reverts touched")
         for block in (text or "").split(_RECORD):
             sha, _, rest = block.partition("\n")
             rows = (line.split("\t", 1) for line in rest.splitlines())
@@ -166,13 +178,9 @@ def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]
     return out
 
 
-def _pr_number(subject: str) -> str | None:
-    m = _PR_SUFFIX_RE.search(subject) or _MERGE_PR_RE.match(subject)
-    return m.group(1) if m else None
-
-
-def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, str]]:
-    """(sha, subject, body) of every commit whose message could fit a rule."""
+def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, str]] | None:
+    """(sha, subject, body) of every commit whose message could fit a rule;
+    ``None`` when git could not answer."""
     out = _git_out(
         repo_path,
         "log",
@@ -183,8 +191,10 @@ def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, s
         "--grep=This reverts commit [0-9a-f]{40}",
         f"--format=%H{_FIELD}%s{_FIELD}%b{_RECORD}",
     )
+    if out is None:
+        return None
     candidates = []
-    for raw in (out or "").split(_RECORD):
+    for raw in out.split(_RECORD):
         parts = raw.strip("\n").split(_FIELD)
         if len(parts) == 3 and parts[0]:
             candidates.append((parts[0].strip(), parts[1], parts[2]))
@@ -211,9 +221,12 @@ class _History:
     by_reland_key: dict[str, list[str]] = field(default_factory=dict)
     by_closed_issue: dict[str, list[str]] = field(default_factory=dict)
     by_issue_key: dict[str, list[str]] = field(default_factory=dict)
+    forge: ForgeKind = ForgeKind.GENERIC
 
     @classmethod
-    def read(cls, repo_path: Path | str, head: str) -> _History | None:
+    def read(
+        cls, repo_path: Path | str, head: str, forge: ForgeKind = ForgeKind.GENERIC
+    ) -> _History | None:
         out = _git_out(
             repo_path,
             "log",
@@ -223,7 +236,7 @@ class _History:
         )
         if out is None:
             return None
-        hist = cls()
+        hist = cls(forge=forge)
         for raw in out.split(_RECORD):
             fields = raw.strip("\n").split(_FIELD, 3)
             if len(fields) == 4 and fields[0]:
@@ -241,9 +254,9 @@ class _History:
             _append(self.by_closed_issue, issue, sha)
         for key in _issue_keys(subject):
             _append(self.by_issue_key, key, sha)
-        pr = _pr_number(subject)
-        if pr:
-            _append(self.by_pr, pr, sha)
+        pr = change_number(subject, body, self.forge)
+        if pr is not None:
+            _append(self.by_pr, str(pr), sha)
 
     def is_ancestor(self, older: str, newer: str) -> bool:
         # Walk *newer*'s parents, never past *older*'s place in the order: an
@@ -274,7 +287,8 @@ class _History:
             others = [s for s in self.by_subject.get(_strip_pr_suffix(m.group(1)), []) if s != sha]
             return [RevertLink(sha, others[0], "subject")] if len(others) == 1 else []
         if _CONVENTIONAL_RE.match(subject):
-            refs = set(_PR_REF_RE.findall(message))
+            refs = set(_HASH_REF_RE.findall(message))
+            refs.update(str(n) for n in change_refs(subject, body, self.forge))
             targets = {s for n in refs for s in self.by_pr.get(n, []) if s != sha}
             return [RevertLink(sha, targets.pop(), "pr")] if len(targets) == 1 else []
         return []
@@ -322,7 +336,9 @@ class _Relands:
         # them.
         subject = self.hist.subject_of[link.target]
         later = set(self.hist.by_reland_key.get(_reland_key(subject), []))
-        for issue in _PR_REF_RE.findall(subject):
+        refs = set(_HASH_REF_RE.findall(subject))
+        refs.update(str(n) for n in change_refs(subject, "", self.hist.forge))
+        for issue in refs:
             later.update(self.hist.by_closed_issue.get(issue, []))
         if self.in_force_at_head(link.target) or any(self.after(link, s) for s in later):
             return True
@@ -330,13 +346,29 @@ class _Relands:
         return any(self.files(s) & target_files for s in self.same_issue_later(link))
 
 
-def find_revert_links(repo_path: Path | str, head: str = "HEAD") -> list[RevertLink]:
-    """Every revert in *head*'s history matched to its target, ancestors only."""
+def find_revert_links(
+    repo_path: Path | str,
+    head: str = "HEAD",
+    *,
+    forge: ForgeKind | None = None,
+    strict: bool = False,
+) -> list[RevertLink]:
+    """Every revert in *head*'s history matched to its target, ancestors only.
+
+    A git read that fails gives no links, or with *strict* raises
+    :class:`HistoryUnreadableError`, so a caller can tell "none" from "unknown".
+    """
     # Only messages that can fit a rule; the full history is read only if one
     # of them does.
     candidates = _read_candidates(repo_path, head)
-    hist = _History.read(repo_path, head) if candidates else None
+    if candidates is None and strict:
+        raise HistoryUnreadableError("git could not read the history for reverts")
+    if not candidates:
+        return []
+    hist = _History.read(repo_path, head, forge or detect_forge(repo_path))
     if hist is None:
+        if strict:
+            raise HistoryUnreadableError("git could not read the history for reverts")
         return []
     proposed = [link for c in candidates for link in hist.match(*c)]
     relands = _Relands(hist, {link.revert for link in proposed})
@@ -349,10 +381,12 @@ def find_revert_links(repo_path: Path | str, head: str = "HEAD") -> list[RevertL
             for link in proposed
             for sha in (link.target, link.revert, *relands.same_issue_later(link))
         },
+        strict=strict,
     )
-    relands.head_paths = set(
-        (_git_out(repo_path, "ls-tree", "-r", "--name-only", head) or "").split("\n")
-    )
+    tree = _git_out(repo_path, "ls-tree", "-r", "--name-only", head)
+    if tree is None and strict:
+        raise HistoryUnreadableError("git could not list the files at HEAD")
+    relands.head_paths = set((tree or "").split("\n"))
     return [
         replace(link, relanded=relands.relanded(link))
         for link in proposed

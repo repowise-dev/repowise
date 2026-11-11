@@ -32,6 +32,14 @@ BUSY_PERCENTILE = 0.9
 FIX_FLOOR = 3
 FIX_PERCENTILE = 0.95
 
+#: Said by every rule that ranks files by their history when the index holds
+#: fewer commits than it takes to call one file busy: a one-commit import or a
+#: shallow clone has churn and fix counts, but they describe the clone.
+HISTORY_TOO_SHORT = (
+    "The index holds too few commits to rank files by their history; "
+    "fetch the full history and run `repowise update`."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RepoContext:
@@ -42,10 +50,15 @@ class RepoContext:
     busy_threshold: int
     fix_threshold: int
     fix_commits_90d: int
+    history_commits: int | None = None
 
     @property
     def is_team(self) -> bool:
         return self.active_authors_90d >= TEAM_MIN_AUTHORS
+
+    @property
+    def history_too_short(self) -> bool:
+        return self.history_commits is not None and self.history_commits < BUSY_FLOOR
 
     def in_week(self, when: datetime | None) -> bool:
         if when is None or self.week_start is None:
@@ -81,4 +94,5 @@ def build_context(facts: RepoFacts) -> RepoContext:
         busy_threshold=max(BUSY_FLOOR, busy),
         fix_threshold=max(FIX_FLOOR, fixes),
         fix_commits_90d=facts.fix_commits_90d,
+        history_commits=facts.history_commits,
     )

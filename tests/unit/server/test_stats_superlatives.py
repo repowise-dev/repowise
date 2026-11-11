@@ -111,16 +111,18 @@ def test_scale_counts_code_languages_and_skips_external_nodes() -> None:
         {"node_id": "b.ts", "language": "typescript", "symbol_count": 2},
         {"node_id": "c.json", "language": "json", "symbol_count": 0},
         {"node_id": "external:requests", "language": "external", "symbol_count": 0},
+        {"node_id": "src/generated", "language": "unknown", "symbol_count": 0},
     ]
     metrics = [
         {"nloc": 100, "module": "a", "is_test": False},
         {"nloc": 40, "module": "tests", "is_test": True},
     ]
-    scale = build_scale(nodes, metrics)
+    scale = build_scale(nodes, metrics, symbol_count=4)
     assert scale["file_count"] == 3
-    assert scale["symbol_count"] == 5
+    assert scale["symbol_count"] == 4  # passed in, not the per-file sum
     assert scale["language_count"] == 2
     assert {lang["language"] for lang in scale["languages"]} == {"python", "typescript"}
+    assert [lang["language"] for lang in scale["docs_config_languages"]] == ["json"]
     assert scale["total_nloc"] == 140
     assert scale["test_nloc"] == 40
 

@@ -2,7 +2,7 @@
 claude-code:
   dir: pre-modification
   frontmatter: |
-    name: pre-modification-check
+    name: pre-modification
     description: >
       Use before modifying, refactoring, or deleting files in a codebase that has Repowise indexed
       (indicated by a .repowise/ directory). Activates when Claude is about to edit code, especially
@@ -24,7 +24,7 @@ Before modifying files in a Repowise-indexed codebase, assess the impact.
 
 Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
 `hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
-`dependents_count`, `co_change_partners`, `primary_owner`, `bus_factor`,
+`dependents_count`, `co_change_partners`, `primary_owner`,
 `test_gap`, and `security_signals`. Read it for:
 - **Bug-fix history** (`defect_profile`) — present only on files with counted
   fixes: `fix_count` over the trailing 6 months, `last_fix_days_ago`, a

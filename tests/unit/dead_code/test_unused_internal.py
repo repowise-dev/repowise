@@ -201,6 +201,52 @@ def test_unused_internal_skipped_when_referenced_as_a_value():
     assert "_handle" not in names
 
 
+def _private_nested_classes(edges: list) -> set[str]:
+    """Unused-internal names for a C# file holding private nested ``Inner``/``Spare``."""
+    g = _build_graph(
+        nodes={
+            "src/Outer.cs": {
+                "language": "csharp",
+                "symbols": [
+                    {
+                        "name": name,
+                        "kind": "class",
+                        "language": "csharp",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": line,
+                        "end_line": line + 4,
+                    }
+                    for name, line in (("Inner", 3), ("Spare", 9))
+                ],
+            },
+        },
+        edges=edges,
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    return {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+
+
+def test_a_class_constructed_through_its_constructor_is_used():
+    """``new Inner(..)`` lands on ``Inner``'s constructor, not on the class node."""
+    ctor = "src/Outer.cs::Inner::Inner"
+    edges = [("src/Main.cs::Main::Run", ctor, {"edge_type": "calls"})]
+    assert _private_nested_classes(edges) == {"Spare"}
+
+
+def test_a_constructor_with_only_containment_edges_does_not_rescue_its_class():
+    ctor = "src/Outer.cs::Inner::Inner"
+    edges = [("src/Outer.cs", ctor, {"edge_type": "defines"})]
+    assert _private_nested_classes(edges) == {"Inner", "Spare"}
+
+
 def test_unused_internal_still_flagged_with_only_containment_edges():
     """A ``defines`` / ``has_method`` containment edge alone must not count as use."""
     g = _build_graph(

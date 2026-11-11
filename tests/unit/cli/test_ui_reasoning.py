@@ -7,12 +7,13 @@ from rich.console import Console
 
 from repowise.cli import ui
 from repowise.cli.ui import mode_selection, provider_selection
+from repowise.cli.ui.brand import THEME
 from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.reasoning import REASONING_MODES
 
 
 def _silent_console() -> Console:
-    return Console(file=StringIO(), force_terminal=False)
+    return Console(file=StringIO(), force_terminal=False, theme=THEME)
 
 
 def test_interactive_advanced_config_uses_shared_reasoning_modes(
@@ -80,9 +81,9 @@ def test_interactive_provider_config_select_uses_model_reasoning_options(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setattr(
-        provider_selection, "_detect_provider_status", lambda: {"gemini": "GEMINI_API_KEY"}
+        provider_selection, "_detect_provider_status", lambda *_a: {"gemini": "GEMINI_API_KEY"}
     )
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
     monkeypatch.setattr(
         provider_selection,
         "_provider_model_options",

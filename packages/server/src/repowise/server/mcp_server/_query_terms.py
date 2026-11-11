@@ -107,6 +107,28 @@ STOPWORDS = frozenset(
     }
 )
 
+# Verbs that frame what is asked ("where is X implemented", "how does X work")
+# rather than name it. Code rarely says them, so a ranking that weighs rare
+# words would let a page win on a class name that happens to hold one
+# (``NotImplemented``). Retrieval still searches them; ranking and coverage
+# do not count them.
+QUESTION_FRAME_VERBS = frozenset(
+    {
+        "work",
+        "works",
+        "working",
+        "implement",
+        "implemented",
+        "implementation",
+        "handle",
+        "handled",
+        "handles",
+        "handling",
+        "happen",
+        "happens",
+    }
+)
+
 # Terms shorter than this match too much of any identifier to be worth a
 # lookup; it is also the floor the rest of the answer pipeline already uses.
 _MIN_TERM_LEN = 3
@@ -125,7 +147,9 @@ def split_humps(text: str) -> str:
     return re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", out)
 
 
-def content_terms(question: str, *, max_terms: int = _MAX_TERMS) -> list[str]:
+def content_terms(
+    question: str, *, max_terms: int | None = _MAX_TERMS, identifiers: bool = True
+) -> list[str]:
     """Content words of *question*, deduplicated, longest first.
 
     Deliberately inclusive: plain lowercase English words are kept, unlike the
@@ -135,13 +159,39 @@ def content_terms(question: str, *, max_terms: int = _MAX_TERMS) -> list[str]:
 
     A camelCase or snake_case token contributes its parts as well as itself, so
     someone who writes ``persist_symbols`` and someone who writes "persist
-    symbols" reach the same rows.
+    symbols" reach the same rows. With ``identifiers=False`` only the parts
+    are kept: for text written in prose, which names ``persist_symbols`` by its
+    words if at all. ``max_terms=None`` keeps every term.
     """
     seen: dict[str, None] = {}
     for raw in _WORD_RE.findall(question or ""):
-        for tok in (raw, *re.split(r"[^A-Za-z0-9]+", split_humps(raw))):
+        parts = re.split(r"[^A-Za-z0-9]+", split_humps(raw))
+        for tok in (raw, *parts) if identifiers else parts:
             t = tok.lower()
             if len(t) < _MIN_TERM_LEN or t in STOPWORDS:
                 continue
             seen.setdefault(t, None)
     return sorted(seen, key=lambda t: (-len(t), t))[:max_terms]
+
+
+def path_words(text: str) -> set[str]:
+    """Lower-case words of a path or sentence, stopwords dropped. Two letters
+    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
+    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
+    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
+
+
+def paths_the_question_names(
+    name: str, paths: list[str], question: str, *, best_only: bool = False
+) -> list[str]:
+    """The files of *name*'s definitions whose path shares a word with *question*.
+
+    The name's own words do not count: every definition shares them. With
+    ``best_only``, only the paths sharing the most words: "the cloudflare pages
+    handler" names ``cloudflare-pages/handler.ts`` over
+    ``cloudflare-workers/serve-static.ts``.
+    """
+    asked = path_words(question) - path_words(name)
+    shared = {p: len(asked & path_words(p.rsplit(".", 1)[0])) for p in paths}
+    floor = max(shared.values(), default=0) if best_only else 1
+    return [p for p in paths if shared[p] and shared[p] >= floor]

@@ -10,6 +10,7 @@ import {
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
+import { useTranslations } from "next-intl";
 
 interface FileHealthPanelProps {
   repoId: string;
@@ -33,14 +34,17 @@ export function FileHealthPanel({
   health,
   functionBlame,
 }: FileHealthPanelProps) {
+  const t = useTranslations("files");
   const prefix = `/repos/${repoId}`;
 
   const onFindingStatusChange = async (findingId: string, status: FindingStatus) => {
     try {
       await updateFindingStatus(repoId, findingId, status);
-      toast.success(`Finding marked ${status.replace("_", " ")}`);
+      toast.success(
+        t("health.findingMarked", { status: status.replace("_", " ") }),
+      );
     } catch (err) {
-      toast.error("Couldn't update finding status");
+      toast.error(t("health.statusFailed"));
       throw err;
     }
   };

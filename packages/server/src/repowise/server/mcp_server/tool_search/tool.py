@@ -1,0 +1,303 @@
+"""MCP Tool 5: search_codebase — semantic search over the wiki."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from repowise.core.persistence.database import get_session
+from repowise.core.registry import ToolRecipe
+from repowise.core.registry import mcp_tool_registry as mcp
+
+# Patchable names are read off the package at call time so patches reach them.
+from repowise.server.mcp_server import tool_search as _pkg
+from repowise.server.mcp_server._answer_pipeline.leg_record import (
+    begin_leg_record,
+    degraded_legs,
+    retrieval_legs,
+)
+from repowise.server.mcp_server._federation import Federation
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    attach_ignored_arguments,
+    filter_dicts_by_key,
+    resolve_enum_argument,
+)
+from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
+from repowise.server.mcp_server._line_hits import attach_line_hits
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
+from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._page_paths import file_candidates
+from repowise.server.mcp_server._query_shape import (
+    _VALID_MODES,
+    _fetch_limit_for,
+    _resolve_mode,
+)
+from repowise.server.mcp_server._retrieval_rank import (
+    boost_named_paths,
+    rerank_pages_first,
+)
+from repowise.server.mcp_server.tool_search_symbols import (
+    IssueFiles,
+    file_path_index,
+    indexed_names,
+    issue_files,
+)
+
+from .ordering import _collapse_by_file
+from .ranking import (
+    _VALID_KINDS,
+    _dedup_decisions,
+    _downweight_decisions,
+    _downweight_test_pages,
+    _filter_by_kind,
+    _minor_spotlights,
+    _rescue_all_decision_window,
+    _reserve_symbol_tail,
+    _sort_demoting_noise,
+)
+from .retrieval import _federated_search, _fused_retrieve, _per_repo
+from .serve import (
+    _apply_freshness_boost,
+    _attach_paths,
+    _drop_internal_ranking_fields,
+    _grep_hint_for,
+    _load_page_info,
+    _page_language,
+    _result_paths,
+    _serve_snippets,
+    _slim_served_rows,
+)
+from .structured import _structured_search
+
+_log = logging.getLogger("repowise.mcp.search")
+
+
+def _query_from_pattern(query: str, pattern: str | None, ignored: list[dict[str, Any]]) -> str:
+    """``pattern`` fills an empty ``query``; beside a real one it is reported ignored."""
+    # Hosts that defer tool schemas let a model guess grep's argument name.
+    if pattern is not None and not query.strip():
+        return pattern
+    if pattern is not None:
+        ignored.append(
+            {"argument": "pattern", "values": [pattern], "valid": [], "superseded_by": "query"}
+        )
+    return query
+
+
+def _resolve_kind_and_mode(
+    kind: str | None, mode: str, ignored: list[dict[str, Any]]
+) -> tuple[str | None, str]:
+    """Validate ``kind`` and ``mode``; an unknown value is dropped and reported."""
+    kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
+    # Modes are case-insensitive; only a genuine miss is dropped, under its own spelling.
+    if mode is not None and mode.lower() in _VALID_MODES:
+        mode = mode.lower()
+    mode = resolve_enum_argument(mode, _VALID_MODES, argument="mode", ignored=ignored)
+    return kind, mode
+
+
+async def _indexed_names(repo: str | None, fed: Federation | None, query: str) -> set[str]:
+    """Indexed names the query mentions, loaded once so every stage validates alike."""
+    names: set[str] = set()
+    for _, repo_names in await _per_repo(repo, fed, lambda ctx: indexed_names([ctx], query)):
+        names |= repo_names
+    return names
+
+
+async def _issue_files(repo: str | None, query: str, names: set[str]) -> IssueFiles | None:
+    """Files the query traces or names; single repo only (a federation has no one tree)."""
+    if repo == "all":
+        return None
+    try:
+        return await issue_files(await _resolve_repo_context(repo), query, names)
+    except Exception:
+        _log.warning("search_codebase: issue file lookup failed", exc_info=True)
+    return None
+
+
+async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id: Any) -> list[dict]:
+    """Drop tombstoned and excluded pages, then boost, demote and dedupe the rest."""
+    async with get_session(ctx.session_factory) as session:
+        page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
+        path_index = await file_path_index(session, repo_id)
+        minor = await _minor_spotlights(session, output, query, repo_id)
+    # Tombstoned pages document deleted/renamed files — never results.
+    output = [item for item in output if item["page_id"] not in tombstoned]
+    _attach_paths(output, page_info)
+    output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
+    for item in output:
+        target_path = page_info.get(item["page_id"])
+        _apply_freshness_boost(item, git_map.get(target_path) if target_path else None)
+    output = rerank_pages_first(output, query, score_key="relevance_score", floor=0.5)
+    # After the coverage rerank, whose window-relative weights cannot tell
+    # a word rare across the repo from one rare in these few hits.
+    boost_named_paths(
+        output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
+    )
+    _downweight_test_pages(output, query)
+    _sort_demoting_noise(output, query, minor)
+    return _dedup_decisions(output)
+
+
+async def _concept_search(
+    query: str,
+    limit: int,
+    page_type: str | None,
+    kind: str | None,
+    repo: str | None,
+    issue: IssueFiles | None,
+    grep_hint: str | None,
+) -> tuple[dict, Any]:
+    """Single-repo concept search; returns the response and the repo context it read."""
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+
+    # Over-fetch: post-filters trim hits, and decision down-weighting needs file
+    # pages inside the window to promote.
+    fetch_limit = _fetch_limit_for(limit, kind)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
+    _downweight_decisions(output, query)
+    output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
+    if output:
+        output = await _rank_concept_pages(ctx, output, query, repository.id)
+
+    output = _filter_by_kind(output, kind)
+    # A file page and a symbol page of one file are one place to look.
+    output = _collapse_by_file(output)
+    # Files the page retrievers cannot see (a private helper, a local name) get
+    # the weakest tail slots.
+    output = _reserve_symbol_tail(output, limit, kind)
+    _drop_internal_ranking_fields(output)
+    # The full ranked pool, kept so ``candidates`` can reach past the cut.
+    ranked = list(output)
+    output = output[:limit]
+    await attach_hit_symbols(ctx, query, output)
+
+    response: dict = {
+        "results": output,
+        "_meta": _build_meta(repository=repository, targets=_result_paths(output)),
+    }
+    if candidates := file_candidates(ranked, limit=limit):
+        response["candidates"] = candidates
+    _pkg._lead_candidates(response, issue, limit)
+    if not output:
+        if grep_hint:
+            response["grep_hint"] = grep_hint
+        else:
+            response["hint"] = _NO_HITS_RECOVERY_HINT
+    return response, ctx
+
+
+@mcp.tool(
+    surface_order=40,
+    artifact_type="search_results",
+    presentation="search_results",
+    evidence_basis="inferred",
+    recipes=(
+        ToolRecipe(
+            "find_raw_hits",
+            'search_codebase(query="identifier or path", mode="auto")',
+            ("search_codebase",),
+        ),
+    ),
+)
+async def search_codebase(
+    query: str = "",
+    limit: int = 5,
+    page_type: str | None = None,
+    kind: str | None = None,
+    repo: str | None = None,
+    mode: str = "auto",
+    symbol_kind: str | None = None,
+    pattern: str | None = None,
+) -> dict:
+    """Find code by concept, symbol, or path — hybrid codebase search.
+
+    For a how/where/why question call get_answer. Use this to enumerate
+    matches, resolve an identifier to a symbol_id, or find files for
+    get_context. Identifier or literal queries return `lines` (path, line,
+    kind, text; definitions first) read from live files; when `complete` is
+    true they are every match, so no grep is needed. `candidates` lists
+    distinct files to Read, best first.
+
+    Args:
+        query: identifier, path, or natural language.
+        limit: max results (default 5).
+        mode: auto (by query shape) | symbol | path | concept | hybrid.
+        kind: implementation | test | config | doc.
+        symbol_kind: function | class | method | ...
+        page_type: file_page | module_page.
+        repo: alias, or "all" for workspace-wide.
+        pattern: alias for query.
+    """
+    ignored: list[dict[str, Any]] = []
+    query = _query_from_pattern(query, pattern, ignored)
+    if not query.strip():
+        from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+        note_error_reason("invalid_args")
+        return {
+            "results": [],
+            "error": "search_codebase requires `query` (or its alias `pattern`).",
+            "_meta": _build_meta(),
+        }
+    kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    begin_leg_record()
+    # One fan-out state for the whole call: a repo that fails one stage is
+    # skipped by the next and reported once.
+    fed = Federation() if repo == "all" else None
+    names = await _indexed_names(repo, fed, query)
+    grep_hint = _grep_hint_for(query, names)
+    resolved_mode = _resolve_mode(query, mode, names)
+    issue = await _issue_files(repo, query, names)
+
+    if resolved_mode in ("symbol", "path", "hybrid"):
+        structured = await _structured_search(
+            query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names, fed
+        )
+        _pkg._lead_candidates(structured, issue, limit)
+        await attach_line_hits(structured, query, resolved_mode, names, repo)
+        attach_ignored_arguments(structured, ignored)
+        return _flag_degraded_legs(_drop_echoed_candidates(structured))
+
+    if fed is not None:
+        # kind is filtered per repo before each repo's limit cut, so the fused
+        # list is already kind-pure and full.
+        federated = await _federated_search(query, limit, page_type, kind, fed)
+        if not federated.get("results"):
+            if grep_hint:
+                federated["grep_hint"] = grep_hint
+            else:
+                federated["hint"] = _NO_HITS_RECOVERY_HINT
+        attach_ignored_arguments(federated, ignored)
+        return _flag_degraded_legs(_drop_echoed_candidates(federated))
+
+    response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
+    await attach_line_hits(response, query, resolved_mode, names, repo)
+    attach_ignored_arguments(response, ignored)
+    # Last, so nothing above has to know the field is on its way out.
+    _slim_served_rows(response["results"], {None: _page_language(ctx)})
+    _serve_snippets(response["results"])
+    return _flag_degraded_legs(_drop_echoed_candidates(response))
+
+
+def _drop_echoed_candidates(response: dict) -> dict:
+    """Drop ``candidates`` that only repeat the result paths in result order."""
+    candidates = response.get("candidates")
+    if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
+        return response
+    rows = [r for r in response.get("results") or [] if isinstance(r, dict)]
+    paths = list(dict.fromkeys(r["path"] for r in rows if r.get("path")))
+    if [c["path"] for c in candidates] == paths:
+        del response["candidates"]
+    return response
+
+
+def _flag_degraded_legs(response: dict) -> dict:
+    """Name the retrieval legs this reply ran without, as get_answer does."""
+    if degraded := degraded_legs(retrieval_legs()):
+        response.setdefault("_meta", {})["retrieval_degraded"] = degraded
+    return response

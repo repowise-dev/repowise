@@ -613,28 +613,45 @@ def test_conventions_runs_with_no_model_once_it_is_switched_on():
 # ---------------------------------------------------------------------------
 
 
-def test_agent_acceptance_is_off_in_every_preset():
-    """The one setting that lets something other than a person grant authority."""
+def test_agent_acceptance_is_on_in_every_preset():
+    """Agents accept by default, signed as themselves; a preset is capture only."""
     for name in PRESET_NAMES:
-        assert preset_policy(name).agent_acceptance is False
+        assert preset_policy(name).agent_acceptance is True
 
 
-def test_a_non_boolean_agent_acceptance_does_not_grant():
-    resolution = resolve_policy({"decisions": {"agent_acceptance": "yes"}})
+def test_agent_acceptance_is_on_with_no_block():
+    assert resolve_policy({}).policy.agent_acceptance is True
+
+
+@pytest.mark.parametrize("value", ["no", "yes", 0])
+def test_a_non_boolean_agent_acceptance_reads_as_off(value):
+    """Someone wrote something there; a quoted "no" must not grant."""
+    resolution = resolve_policy({"decisions": {"agent_acceptance": value}})
 
     assert resolution.policy.agent_acceptance is False
     assert any("agent_acceptance" in w for w in resolution.warnings)
 
 
-def test_turning_agent_acceptance_off_again_actually_writes_it(tmp_path):
-    """``to_config_block`` omits a defaulted setting, so a merging write kept
-    the stored ``true`` and ``--off`` changed nothing at all."""
-    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(True))
-    assert load_policy(tmp_path).policy.agent_acceptance is True
+def test_an_explicit_off_persists(tmp_path):
+    """The block omits a defaulted setting, so off has to be written out or a
+    reload would read the default back on."""
+    from repowise.core.repo_config import load_repo_config
 
-    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(False))
+    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(False))
 
+    assert load_repo_config(tmp_path)["decisions"]["agent_acceptance"] is False
     assert load_policy(tmp_path).policy.agent_acceptance is False
+
+
+def test_turning_agent_acceptance_back_on_actually_writes_it(tmp_path):
+    """A merging write would keep the stored ``false`` and ``--on`` would change
+    nothing, so the policy's keys are replaced, not merged."""
+    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(False))
+    assert load_policy(tmp_path).policy.agent_acceptance is False
+
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(True))
+
+    assert load_policy(tmp_path).policy.agent_acceptance is True
 
 
 def test_a_policy_write_keeps_unrelated_keys_under_decisions(tmp_path):
@@ -661,9 +678,45 @@ def test_the_agent_switch_does_not_rewrite_the_stored_preset(tmp_path):
     from repowise.core.repo_config import load_repo_config
 
     write_policy(tmp_path, preset_policy("balanced"))
-    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(True))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(False))
 
     resolved = load_policy(tmp_path).policy
-    assert resolved.agent_acceptance is True
+    assert resolved.agent_acceptance is False
     assert resolved.preset_name() == "balanced"
     assert load_repo_config(tmp_path)["decisions"]["preset"] == "balanced"
+
+
+# ---------------------------------------------------------------------------
+# Approval
+# ---------------------------------------------------------------------------
+
+
+def test_approval_is_off_with_no_block_and_in_every_preset():
+    assert resolve_policy({}).policy.require_approval is False
+    for name in PRESET_NAMES:
+        assert preset_policy(name).require_approval is False
+
+
+def test_a_non_boolean_approval_reads_as_on():
+    """Someone asked for a gate; a quoted value must not silently open it."""
+    resolution = resolve_policy({"decisions": {"require_approval": "yes"}})
+
+    assert resolution.policy.require_approval is True
+    assert any("require_approval" in w for w in resolution.warnings)
+
+
+def test_approval_round_trips_and_keeps_the_preset(tmp_path):
+    from repowise.core.repo_config import load_repo_config
+
+    write_policy(tmp_path, preset_policy("balanced"))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_require_approval(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.require_approval is True
+    assert resolved.agent_grants is False
+    assert resolved.preset_name() == "balanced"
+    assert load_repo_config(tmp_path)["decisions"]["require_approval"] is True
+
+    write_policy(tmp_path, resolved.with_require_approval(False))
+    assert load_policy(tmp_path).policy.require_approval is False
+    assert "require_approval" not in load_repo_config(tmp_path)["decisions"]

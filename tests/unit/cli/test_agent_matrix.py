@@ -190,6 +190,23 @@ def test_the_readme_agent_headline_counts_the_registry() -> None:
     )
 
 
+def test_the_indexing_column_matches_the_identities() -> None:
+    """Indexing is derived from ``indexing_provider``, never declared per row."""
+    from repowise.core.agents.identity import identity_for_target_id
+
+    for row in GEN.agent_rows():
+        identity = identity_for_target_id(row["id"])
+        expected = "Yes" if identity and identity.indexing_provider else "No"
+        assert GEN._cell(row, "indexing_provider") == expected, row["id"]
+
+
+def test_the_attribution_column_matches_the_supported_agents() -> None:
+    """Attribution is derived from each target's capture adapter."""
+    for row in GEN.agent_rows():
+        expected = "Yes" if row["capture_adapter"] else "No"
+        assert GEN._cell(row, "capture_adapter") == expected, row["id"]
+
+
 def test_the_hooks_column_cannot_lie() -> None:
     """A target's declared HOOKS capability agrees with its hook adapter.
 
@@ -241,16 +258,9 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ),
     ("docs/start/USER_GUIDE.md", "single_repo", "**{W} tools, task-shaped.**"),
     ("docs/architecture/pluggable-storage.md", "single_repo", "{w} MCP tools still expose"),
-    ("website/mcp-server.md", "total", "It registers {n} tools:"),
-    ("website/mcp-server.md", "single_repo", "a curated {n}-tool default surface"),
     ("packages/server/README.md", "total", "registers {n} MCP tools"),
     ("packages/server/README.md", "single_repo", "advertises **{n} by default**"),
     (".claude-plugin/marketplace.json", "single_repo", "{w} task-shaped MCP tools"),
-    (
-        "plugins/claude-code/.claude-plugin/plugin.json",
-        "single_repo",
-        "{w} task-shaped MCP tools",
-    ),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
     ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),
@@ -295,8 +305,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
 def test_the_flagship_set_is_a_real_subset_of_the_default_surface() -> None:
     """The published flagship count is exactly the registry canonical tier."""
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import resolve_enabled_tools
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import resolve_enabled_tools
 
     ensure_full_surface()
     entries = mcp_tool_registry.entries()

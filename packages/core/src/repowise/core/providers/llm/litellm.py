@@ -10,7 +10,7 @@ Use this provider for:
 
 LiteLLM model strings use the format: "<provider>/<model>"
     - "together_ai/meta-llama/Llama-3-8b-chat-hf"
-    - "groq/llama-3.1-70b-versatile"
+    - "groq/openai/gpt-oss-120b"
     - "azure/gpt-4o"
     - "bedrock/claude-sonnet-4-6"
 
@@ -27,6 +27,7 @@ import structlog
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
+    LOCAL_CONTEXT_WINDOW,
     BaseProvider,
     ChatStreamEvent,
     GeneratedResponse,
@@ -288,7 +289,7 @@ class LiteLLMProvider(BaseProvider):
     """LiteLLM proxy provider — 100+ LLMs through a single interface.
 
     Args:
-        model:        LiteLLM model string (e.g., "groq/llama-3.1-70b-versatile").
+        model:        LiteLLM model string (e.g., "groq/openai/gpt-oss-120b").
         api_key:      API key for the target provider. Some providers read from
                       environment variables (e.g., GROQ_API_KEY, TOGETHER_API_KEY).
         api_base:     Optional custom API base URL (e.g., for self-hosted deployments).
@@ -330,6 +331,16 @@ class LiteLLMProvider(BaseProvider):
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
         return ("auto", *_litellm_supported_reasoning_modes(self._model))
+
+    def context_window(self) -> int | None:
+        # A local backend behind LiteLLM does not report its window either.
+        from repowise.core.generation.cost_tracker import is_local_model
+        from repowise.core.providers.llm.openai import _is_loopback_url
+
+        local = is_local_model(self._model) or bool(
+            self._api_base and _is_loopback_url(self._api_base)
+        )
+        return LOCAL_CONTEXT_WINDOW if local else None
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _litellm_model_options(self._model)

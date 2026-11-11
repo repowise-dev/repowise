@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.persistence.search import FullTextSearch, snippet_around
+from repowise.core.persistence.search import (
+    FullTextSearch,
+    snippet_around,
+    strip_leading_headings,
+)
 
 _OPENER = "## Overview\n\nThis module is part of the indexing pipeline. " + "Filler. " * 40
 _MATCH = "The walker refuses to descend into a nested git checkout."
@@ -88,6 +92,86 @@ class TestSnippetAround:
         """
         content = _OPENER + _MATCH + _TAIL
         assert snippet_around(content, "the").startswith("## Overview")
+
+
+class TestSnippetWordEdges:
+    """A window does not open or close in the middle of a word (#5047)."""
+
+    _PROSE = (
+        "Cobra builds commands as a tree, and every subcommand registers itself "
+        "on its parent before the root command executes. "
+    ) * 8
+
+    @staticmethod
+    def _assert_whole_words(content: str, window: str) -> None:
+        start = content.index(window)
+        end = start + len(window)
+        assert start == 0 or content[start - 1].isspace(), window[:20]
+        assert end == len(content) or content[end].isspace(), window[-20:]
+
+    @pytest.mark.parametrize("query", ["subcommand registers", "executes", "parent tree"])
+    def test_prose_window_edges_land_on_whitespace(self, query):
+        window = snippet_around(self._PROSE, query)
+
+        self._assert_whole_words(self._PROSE, window)
+        assert len(window) <= 200
+
+    def test_the_matched_term_stays_in_the_window(self):
+        content = self._PROSE + _MATCH + self._PROSE
+
+        window = snippet_around(content, "nested checkout")
+
+        assert "nested" in window
+        self._assert_whole_words(content, window)
+
+    def test_the_opener_fallback_ends_on_a_word(self):
+        window = snippet_around(self._PROSE, "xylophone")
+
+        assert window.startswith("Cobra builds")
+        self._assert_whole_words(self._PROSE, window)
+
+    def test_a_single_long_token_still_returns_text(self):
+        content = "a" * 1000
+
+        assert snippet_around(content, "aaaa") == "a" * 200
+        assert snippet_around(content, "xylophone") == "a" * 200
+
+
+class TestStripLeadingHeadings:
+    """A served snippet drops the heading that repeats its row's path."""
+
+    _BODY = "Loads persisted session history for reseeding."
+
+    @pytest.mark.parametrize(
+        "head",
+        [
+            "# src/agents/session_history.ts\n\n## Overview\n\n",
+            "# pkg/walker.go\n\n",
+            "## Overview\n",
+            "# Module: billing\r\n\r\n### Summary\r\n\r\n",
+            "\n\n# Decision: use one store\n  \n",
+        ],
+    )
+    def test_leading_headings_are_dropped(self, head):
+        assert strip_leading_headings(head + self._BODY) == self._BODY
+
+    def test_text_without_headings_is_unchanged(self):
+        assert strip_leading_headings(self._BODY) == self._BODY
+
+    def test_a_heading_after_text_is_kept(self):
+        text = "Intro prose.\n## Nested checkout\nTail."
+        assert strip_leading_headings(text) == text
+
+    def test_hash_without_a_space_is_not_a_heading(self):
+        text = "#include <walker.h>\nint main(void);"
+        assert strip_leading_headings(text) == text
+
+    def test_text_of_only_headings_is_returned_as_is(self):
+        text = "# src/empty.py\n\n## Overview\n"
+        assert strip_leading_headings(text) == text
+
+    def test_empty_text_stays_empty(self):
+        assert strip_leading_headings("") == ""
 
 
 class TestFullTextSnippet:

@@ -46,7 +46,8 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 #: Suffix ``ast_utils._find_function_entry_name`` gives a callback entry, as in
-#: ``"it callback"``. The text before it is the callee, arguments included.
+#: ``"it callback"``. The text before it is the callee's dotted path
+#: (``it.each`` for ``it.each([...])``), arguments left out.
 _CALLBACK_SUFFIX = " callback"
 
 _JAVA_MODIFIERS = "modifiers"
@@ -75,6 +76,10 @@ class TestCaseDialect:
     #: qualified ``@org.junit.jupiter.api.Test`` matches the same row.
     annotations: frozenset[str] = frozenset()
 
+    #: Lowercase modifier keywords that mark a case: Apex's legacy
+    #: ``static testMethod void t()``, read from the same ``modifiers`` subtree.
+    modifiers: frozenset[str] = frozenset()
+
     #: Exact names a rule above would otherwise claim. Go's ``TestMain`` matches
     #: ``TestXxx`` but is the test binary's entry point, not a case.
     excluded_names: frozenset[str] = frozenset()
@@ -97,8 +102,13 @@ _JAVA = TestCaseDialect(
     )
 )
 
+# Apex: ``@IsTest`` on the method or the legacy ``testMethod`` modifier; a
+# class-level ``@IsTest`` alone marks no method.
+_APEX = TestCaseDialect(annotations=frozenset({"istest"}), modifiers=frozenset({"testmethod"}))
+
 #: Keyed by ``LanguageTag``, as the sibling lexicons are.
 TEST_CASE_DIALECTS: dict[str, TestCaseDialect] = {
+    "apex": _APEX,
     "go": _GO,
     "java": _JAVA,
     "javascript": _JS_TS,
@@ -109,12 +119,16 @@ TEST_CASE_DIALECTS: dict[str, TestCaseDialect] = {
 
 
 def _annotation_names(fn_node: Node) -> set[str]:
-    """Lowercase last segments of the annotations on *fn_node*."""
+    """Lowercase last segments of the annotations on *fn_node*, and its
+    lowercase modifier keywords (an Apex ``modifier`` node)."""
     modifiers = next((c for c in fn_node.children if c.type == _JAVA_MODIFIERS), None)
     if modifiers is None:
         return set()
     names: set[str] = set()
     for child in modifiers.children:
+        if child.type == "modifier" and child.text is not None:
+            names.add(child.text.decode("utf-8", errors="replace").lower())
+            continue
         if child.type not in _JAVA_ANNOTATION_KINDS:
             continue
         name = child.child_by_field_name("name")
@@ -132,6 +146,34 @@ def _matches_runner_prefix(name: str, prefixes: tuple[str, ...]) -> bool:
     return False
 
 
+def _named_case(name: str, dialect: TestCaseDialect) -> bool:
+    """The name rules alone: a prefix, either case rule, and not excluded."""
+    if name in dialect.excluded_names:
+        return False
+    if dialect.name_prefixes and name.lower().startswith(dialect.name_prefixes):
+        return True
+    return _matches_runner_prefix(name, dialect.runner_prefixes)
+
+
+def test_case_by_name(name: str, language: str | None) -> bool | None:
+    """:func:`is_test_case` for a graph symbol, which has a name and no node.
+
+    ``None`` when the language's rule cannot be read off a name: it has no
+    row, or its cases are marked by annotations or are anonymous callbacks.
+    """
+    dialect = TEST_CASE_DIALECTS.get(language or "")
+    if dialect is None or dialect.annotations or dialect.callback_callees:
+        return None
+    return _named_case(name, dialect)
+
+
+def runs_module_callbacks(language: str | None) -> bool:
+    """Whether the language's cases are callbacks (``it(...)``), which the graph
+    files under the module, so the test file is the case to run."""
+    dialect = TEST_CASE_DIALECTS.get(language or "")
+    return dialect is not None and bool(dialect.callback_callees)
+
+
 def is_test_case(fn_node: Node, name: str, language: str) -> bool:
     """True when *fn_node* is a test case the language's runner would collect."""
     dialect = TEST_CASE_DIALECTS.get(language)
@@ -142,11 +184,10 @@ def is_test_case(fn_node: Node, name: str, language: str) -> bool:
         if not dialect.callback_callees:
             return False
         callee = lowered[: -len(_CALLBACK_SUFFIX)]
-        # ``it.each([1,2])`` carries its arguments in the entry name; the first
-        # dotted segment is the framework function in every form of it.
-        return callee.split(".", 1)[0].split("(", 1)[0] in dialect.callback_callees
-    if dialect.name_prefixes and lowered.startswith(dialect.name_prefixes):
+        # The first dotted segment is the framework function in every form of
+        # it (``it``, ``it.each``, ``it.skip``).
+        return callee.split(".", 1)[0] in dialect.callback_callees
+    if _named_case(name, dialect):
         return True
-    if _matches_runner_prefix(name, dialect.runner_prefixes):
-        return True
-    return bool(dialect.annotations) and bool(dialect.annotations & _annotation_names(fn_node))
+    marks = dialect.annotations | dialect.modifiers
+    return bool(marks) and bool(marks & _annotation_names(fn_node))

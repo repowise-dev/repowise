@@ -22,7 +22,7 @@ from typing import Any, TypeVar
 
 from sqlalchemy import select
 
-from repowise.core.persistence.models import Repository
+from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.mcp_server._index_state import index_state_key
 
 _T = TypeVar("_T")
@@ -80,7 +80,10 @@ def keep_projected_edge(
 
 def reset_cache() -> None:
     """Drop every cached projection. For tests and for a re-index in-process."""
+    global _LOCK
     _CACHE.clear()
+    # A lock that once waited is bound to that event loop; a fresh one is not.
+    _LOCK = asyncio.Lock()
 
 
 def _cached(repo_id: str, key: str, name: str) -> Any | None:
@@ -122,3 +125,19 @@ async def per_index(
         while len(_CACHE) > _CACHE_MAX_REPOS:
             _CACHE.popitem(last=False)
         return value
+
+
+async def graph_file_paths(session: Any, repo_id: str) -> tuple[str, ...]:
+    """Every indexed file's path, with or without a wiki page. Read-only."""
+
+    async def build() -> tuple[str, ...]:
+        res = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type == "file",
+                ~GraphNode.node_id.startswith("external:"),
+            )
+        )
+        return tuple(sorted(p for (p,) in res.all() if p))
+
+    return await per_index(session, repo_id, "graph_file_paths", build)

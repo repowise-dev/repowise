@@ -5,6 +5,7 @@ All tests mock google.genai.Client — no real API calls are made.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -130,6 +131,7 @@ def _make_mock_response(
     usage.prompt_token_count = 100
     usage.candidates_token_count = 50
     usage.cached_content_token_count = 0
+    usage.thoughts_token_count = 0
     usage.total_token_count = 150
 
     response = MagicMock()
@@ -179,6 +181,48 @@ async def test_generate_token_counts():
     assert result.output_tokens == 50
     assert result.cached_tokens == 0
 
+
+async def test_generate_counts_thinking_tokens_as_output_and_reports_them():
+    provider = GeminiProvider(api_key="fake-key")
+    mock_response = _make_mock_response()
+    mock_response.usage_metadata.thoughts_token_count = 900
+    mock_response.usage_metadata.total_token_count = 1050
+
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.return_value = mock_response
+        result = await provider.generate("sys", "user")
+
+    assert result.input_tokens == 100
+    assert result.output_tokens == 950
+    assert result.cached_tokens == 0
+    assert result.usage == {
+        "prompt_token_count": 100,
+        "candidates_token_count": 50,
+        "thoughts_token_count": 900,
+        "total_token_count": 1050,
+    }
+
+
+def test_usage_total_counts_thinking_tokens_and_ignores_invalid_values():
+    usage = gemini_module._UsageTotal()
+    usage.add(
+        SimpleNamespace(
+            prompt_token_count=100,
+            candidates_token_count=50,
+            thoughts_token_count=900,
+        )
+    )
+    usage.add(SimpleNamespace(prompt_token_count=0, candidates_token_count=0))
+    usage.add(
+        SimpleNamespace(
+            prompt_token_count=0,
+            candidates_token_count=0,
+            thoughts_token_count="900",
+        )
+    )
+
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 950
 
 async def test_generate_passes_max_tokens():
     """The shared documentation output limit reaches Gemini's request config."""
@@ -267,3 +311,17 @@ async def test_provider_error_message_includes_exception_type():
         mock_client.return_value.models.generate_content.side_effect = CustomError("bad request")
         with pytest.raises(ProviderError, match="CustomError"):
             await provider.generate("sys", "user")
+
+
+async def test_stream_chat_ends_with_the_usage_of_its_calls():
+    provider = GeminiProvider(api_key="fake-key")
+    response = _make_mock_response()
+    response.usage_metadata.thoughts_token_count = 900
+    response.candidates[0].content.parts = [MagicMock(text="hi", function_call=None)]
+    provider._client = MagicMock()
+    provider._client.models.generate_content.return_value = response
+
+    events = [e async for e in provider.stream_chat([], [], "sys")]
+
+    assert [e.type for e in events] == ["text_delta", "stop", "usage"]
+    assert (events[-1].input_tokens, events[-1].output_tokens) == (100, 950)

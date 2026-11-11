@@ -1,16 +1,20 @@
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { getTranslations } from "next-intl/server";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
+import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 
 /**
  * Skeleton mirroring the Overview layout — identity header, change line,
- * health lede beside its reads column, scale ribbon, then sections.
+ * health lede beside its reads column, ask box, explore cards, then sections.
  *
  * Shapes and widths track the real page deliberately: a skeleton that does not
  * match causes a visible reflow the moment content lands, which reads as
  * slower than showing nothing. (The owl stays reserved for brand moments.)
  */
-export default function OverviewLoading() {
+export default async function OverviewLoading() {
+  const t = await getTranslations("loading");
   return (
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 p-[var(--page-pad)] sm:gap-8">
+    <SkeletonRegion label={t("overview")}>
+    <PageFrame>
       {/* Identity header: mark, title, description, meta row */}
       <div className="flex gap-4">
         <Skeleton className="h-10 w-10 rounded-xl" />
@@ -29,24 +33,24 @@ export default function OverviewLoading() {
         <div className="space-y-3">
           <Skeleton className="h-3 w-24" />
           <Skeleton className="h-12 w-40" />
-          <Skeleton className="h-16 w-full max-w-[54ch]" />
+          <Skeleton className="h-4 w-full max-w-[54ch]" />
           <Skeleton className="h-4 w-36" />
         </div>
         <div className="space-y-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-12" />
-          ))}
+          <Skeleton className="h-16" />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-px sm:grid-cols-3 lg:grid-cols-5">
+      {/* Ask box, then the explore cards */}
+      <Skeleton className="h-10 w-full" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-14" />
+          <Skeleton key={i} className="h-24" />
         ))}
       </div>
 
-      <Skeleton className="h-48" />
-      <Skeleton className="h-40" />
-    </div>
+      <Skeleton className="h-12" />
+    </PageFrame>
+    </SkeletonRegion>
   );
 }

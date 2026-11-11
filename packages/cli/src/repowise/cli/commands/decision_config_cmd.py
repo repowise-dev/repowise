@@ -112,13 +112,22 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
     if policy.agent_acceptance:
         console.print(
-            "  [yellow]Agent acceptance is ON: an agent may grant a decision "
-            "authority. Its acceptances are signed as an agent's, not yours.[/yellow]"
+            "  [dim]Agent acceptance: on. An agent may accept a decision, signed as "
+            "the agent's, never yours.[/dim]"
         )
     else:
-        console.print("  [dim]Agent acceptance: off. Agents withdraw authority, never grant it.[/dim]")
+        console.print(
+            "  [yellow]Agent acceptance: off. Agents withdraw authority; only a "
+            "person grants it.[/yellow]"
+        )
+    if policy.require_approval:
+        console.print(
+            "  [yellow]Approval: required. A new decision waits for a person, even "
+            "after its commit lands.[/yellow]"
+        )
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
+            _claude_code_settings_path,
             claude_code_capture_hook_installed,
         )
 
@@ -132,12 +141,17 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
                 "so it stays silent. `decision config enable` to use it.[/yellow]"
             )
         elif not claude_code_capture_hook_installed():
-            # The flag is per repository and the hook is per install, so the
-            # two drift: another repository's --off removes the shared entry.
-            console.print(
-                "  [yellow]  ...but no shell hook is installed to fire it. "
-                "Re-run `decision config capture-prompt --on`.[/yellow]"
-            )
+            if not _claude_code_settings_path().is_file():
+                console.print(
+                    "[yellow]  ...but no Claude Code settings file was found to install the shell "
+                    "hook into, so nothing will fire it. Run `repowise init` or install the "
+                    "editor integration first.[/yellow]"
+                )
+            else:
+                console.print(
+                    "[yellow]  ...but no shell hook is installed to fire it. "
+                    "Re-run `repowise decision config capture-prompt --on`.[/yellow]"
+                )
     else:
         console.print("  [dim]Capture prompt: off. Nothing asks an agent to record a decision.[/dim]")
     console.print("")
@@ -184,12 +198,19 @@ def _apply(repo_path: Path, policy: DecisionPolicy, fmt: str, dry_run: bool) -> 
     _emit(repo_path, resolution, fmt)
 
 
+def _switch_changes(
+    before: DecisionPolicy, after: DecisionPolicy, keys: tuple[str, ...]
+) -> list[dict[str, str]]:
+    """One change row per boolean switch in *keys* that differs."""
+    return [
+        {"key": key, "from": str(getattr(before, key)), "to": str(getattr(after, key))}
+        for key in keys
+        if getattr(before, key) != getattr(after, key)
+    ]
+
+
 def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]:
-    changes: list[dict[str, str]] = []
-    if before.enabled != after.enabled:
-        changes.append({"key": "enabled", "from": str(before.enabled), "to": str(after.enabled)})
-    if before.llm != after.llm:
-        changes.append({"key": "llm", "from": str(before.llm), "to": str(after.llm)})
+    changes = _switch_changes(before, after, ("enabled", "llm"))
     for key in _TOGGLABLE:
         old, new = before.sources.get(key), after.sources.get(key)
         if old == new:
@@ -208,22 +229,9 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             changes.append(
                 {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
             )
-    if before.agent_acceptance != after.agent_acceptance:
-        changes.append(
-            {
-                "key": "agent_acceptance",
-                "from": str(before.agent_acceptance),
-                "to": str(after.agent_acceptance),
-            }
-        )
-    if before.capture_prompt != after.capture_prompt:
-        changes.append(
-            {
-                "key": "capture_prompt",
-                "from": str(before.capture_prompt),
-                "to": str(after.capture_prompt),
-            }
-        )
+    changes += _switch_changes(
+        before, after, ("agent_acceptance", "require_approval", "capture_prompt")
+    )
     if before.harnesses != after.harnesses:
         changes.append(
             {
@@ -252,7 +260,7 @@ def config_show(path: str | None, fmt: str) -> None:
     """Show the resolved capture policy for this repository."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     _emit(repo_path, _load(repo_path), fmt)
 
 
@@ -268,10 +276,10 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
     from repowise.core.analysis.decisions.policy import preset_policy
 
-    repo_path = _resolve_decision_repo(path, fmt)
-    # A preset names source membership. The harness list and the two agent
-    # switches are not membership, so applying one leaves them as the caller
-    # set them.
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    # A preset names source membership. The harness list, the two agent
+    # switches and approval are not membership, so applying one leaves them as
+    # the caller set them.
     current = _load(repo_path).policy
     _apply(
         repo_path,
@@ -280,6 +288,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             harnesses=current.harnesses,
             agent_acceptance=current.agent_acceptance,
             capture_prompt=current.capture_prompt,
+            require_approval=current.require_approval,
         ),
         fmt,
         dry_run,
@@ -317,7 +326,7 @@ def config_discovery(
     """Set the per-update budget for broad session discovery."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     fields = {
         key: value
         for key, value in (
@@ -346,15 +355,37 @@ def config_agent_acceptance(
 ) -> None:
     """Allow, or forbid, an agent granting a decision authority.
 
-    Off by default, and off is complete: an agent still withdraws authority,
-    proposes candidates and reads what governs. On, its acceptances are
-    recorded as an agent's, with the session that signed, on every surface.
+    On by default: an agent's acceptances are recorded as an agent's, with the
+    session that signed, on every surface. Off is complete: an agent still
+    withdraws authority, proposes candidates and reads what governs.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
+
+
+@config_group.command("approval")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Make new decisions wait."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_approval(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Make every new decision wait for a person before it governs.
+
+    Off by default: a decision an agent records governs once the commit it
+    cites lands on the default branch. On, landing grants nothing and an
+    agent's own acceptance is refused; a person accepts with
+    `repowise decision confirm`.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_require_approval(bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("capture-prompt")
@@ -369,14 +400,18 @@ def config_capture_prompt(
 ) -> None:
     """Ask the agent to record a decision after a commit that states one.
 
-    Off by default. An agent cannot decline a hook, so this fires at most once
+    On by default. An agent cannot decline a hook, so this fires at most once
     a session, only on a commit whose message carries two or more decision
     signals, and never on one a record already cites. It proposes; nothing is
     recorded without the agent running `repowise decision add`.
+
+    `--off` is per repository and leaves the per-install shell hook in place:
+    the hook starts nothing on a shell call that is not a commit, and stays
+    silent in a repository with the prompt off.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
     if dry_run:
@@ -384,12 +419,13 @@ def config_capture_prompt(
     # The flag is per repository; the hook it fires from is a per-install
     # matcher, and the shared one deliberately excludes the shell tools.
     # Writing the flag without this would store a switch nothing reads.
+    # Off removes nothing: other repositories rely on the same entry.
     from repowise.cli.editor_integrations.claude_config import (
         claude_code_capture_hook_installed,
         set_claude_code_capture_hook,
     )
 
-    settings = set_claude_code_capture_hook(bool(enabled))
+    settings = set_claude_code_capture_hook(True) if enabled else None
     if fmt == "json":
         emit_json(
             {
@@ -409,19 +445,10 @@ def config_capture_prompt(
             "`repowise init` or install the editor integration first.[/yellow]"
         )
         return
-    if settings is None:
-        return
-    if enabled:
+    if settings is not None:
         console.print(
-            f"[dim]Added a shell PostToolUse hook to {settings}. Other "
-            "repositories on this machine pay a process start on shell calls "
-            "and emit nothing unless they switch this on too.[/dim]"
-        )
-    else:
-        console.print(
-            f"[dim]Removed the shell PostToolUse hook from {settings}. Any "
-            "other repository using the capture prompt needs "
-            "`capture-prompt --on` again.[/dim]"
+            f"[dim]Updated the shell PostToolUse hook in {settings}. A shell call "
+            "that is not a commit starts nothing.[/dim]"
         )
 
 
@@ -437,7 +464,7 @@ def source_list(path: str | None, fmt: str) -> None:
     """List every capture source with its capabilities and current state."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     _emit(repo_path, _load(repo_path), fmt)
 
 
@@ -467,7 +494,7 @@ def source_set(
     if enabled is None and llm is None:
         raise click.ClickException("Pass --on/--off or --llm/--no-llm.")
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_source(source, enabled=enabled, llm=llm), fmt, dry_run)
 
@@ -491,6 +518,6 @@ def llm_command(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
-    repo_path = _resolve_decision_repo(path, fmt)
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_llm(bool(enabled)), fmt, dry_run)

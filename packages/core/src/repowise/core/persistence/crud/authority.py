@@ -32,6 +32,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTER_SESSION_MAX,
     HISTORY_CURRENCIES,
     NO_SCOPE_BLOCKER,
+    RETIRED_STATUSES,
     STORED_CURRENCIES,
     AcceptanceRequirement,
     acceptance_blockers,
@@ -49,7 +50,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 from repowise.core.analysis.decisions.lifecycle import (
     record_blockers as _record_blockers,
 )
-from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED, binds_to_paths
 
 from ..decision_graph import (
     set_record_scope,
@@ -57,6 +58,8 @@ from ..decision_graph import (
     upsert_decision_edge,
 )
 from ..models import (
+    MERGED_REASON,
+    SUPERSEDED_REASON,
     DecisionAcceptance,
     DecisionAlias,
     DecisionCandidateMeta,
@@ -78,7 +81,10 @@ __all__ = [
     "decision_currencies",
     "decision_fields",
     "decision_signatures",
+    "deprecate_decision",
     "dismiss_candidate",
+    "governing_decisions_by_file",
+    "hold_decision",
     "is_accepted",
     "latest_acceptance",
     "list_candidates",
@@ -133,12 +139,17 @@ def accepted_predicate() -> Any:
 def candidate_predicate() -> Any:
     """A ``WHERE`` clause restricting a ``DecisionRecord`` query to candidates.
 
-    Never accepted, and not tombstoned. The second half is what keeps a
-    dismissed candidate out of a review queue while
-    :func:`count_decisions_by_lane` keeps it out of the totals, so the two
-    cannot report different backlogs off the same store.
+    Never accepted, and not retired. The second half is what keeps a
+    dismissed candidate, or one a later commit superseded, out of a review
+    queue while :func:`count_decisions_by_lane` keeps it out of the totals, so
+    the two cannot report different backlogs off the same store.
     """
-    return ~accepted_predicate() & (DecisionRecord.status != "dismissed")
+    return ~accepted_predicate() & _not_retired()
+
+
+def _not_retired() -> Any:
+    """``status`` is not one a retirement wrote (dismissed, deprecated, superseded)."""
+    return DecisionRecord.status.notin_(sorted(RETIRED_STATUSES))
 
 
 #: The same predicate for the hook path, which opens the store with stdlib
@@ -165,6 +176,24 @@ async def latest_acceptance(
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def accepted_evidence(session: AsyncSession, decision_id: str) -> list[str]:
+    """The evidence the latest acceptance that named any rests on, or ``[]``.
+
+    Evidence given at ``confirm`` is stored on its acceptance row, not on the
+    record, so this is where a later action finds what the decision stands on.
+    """
+    rows = await session.scalars(
+        select(DecisionAcceptance.evidence_json)
+        .where(DecisionAcceptance.decision_id == decision_id)
+        .order_by(DecisionAcceptance.seq.desc())
+    )
+    for raw in rows:
+        evidence = [item for item in json.loads(raw or "[]") if isinstance(item, str) and item]
+        if evidence:
+            return evidence
+    return []
 
 
 async def is_accepted(session: AsyncSession, decision_id: str) -> bool:
@@ -256,6 +285,46 @@ async def decision_currencies(
     return out
 
 
+async def governing_decisions_by_file(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, str]]]:
+    """``(id, title)`` of the governing decisions naming each file, by id.
+
+    The bulk form of "what governs this path": accepted, at a governing
+    currency (``needs_review`` included: a decision whose code moved still
+    binds until someone re-reads it), with a scope basis that binds to paths.
+    Files are matched as named. A record's module list is derived from those
+    files, so reading it would let a decision about two files govern their
+    whole directory.
+    """
+    records = [
+        record
+        for record in (
+            await session.execute(
+                select(DecisionRecord)
+                .where(DecisionRecord.repository_id == repository_id)
+                .order_by(DecisionRecord.id)
+            )
+        ).scalars()
+        if binds_to_paths(record.scope_basis)
+    ]
+    currencies = await decision_currencies(session, repository_id, records)
+    out: dict[str, list[tuple[str, str]]] = {}
+    for record in records:
+        if record.id in currencies and is_governing(currencies[record.id]):
+            for path in dict.fromkeys(_named_files(record.affected_files_json)):
+                out.setdefault(path, []).append((record.id, record.title))
+    return out
+
+
+def _named_files(raw: Any) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
+
+
 def _record_currency(stored: str, record: DecisionRecord) -> str:
     """:func:`effective_currency` for an ORM *record* stored at *stored*."""
     return _row_currency(stored, *(getattr(record, c.key) for c in _CURRENCY_COLUMNS))
@@ -341,15 +410,11 @@ async def count_decisions_by_lane(
         await session.execute(
             select(DecisionRecord.id, *_CURRENCY_COLUMNS).where(
                 DecisionRecord.repository_id == repository_id,
-                # Tombstoned candidates are excluded; a decision that was
+                # Retired candidates are excluded; a decision that was
                 # accepted and then withdrawn is not, because it is history
-                # the History lane promises. ``dismiss_candidate`` writes the
-                # same status for both, so the acceptance row is what tells
-                # them apart, and the loop below does that.
-                or_(
-                    DecisionRecord.status != "dismissed",
-                    accepted_predicate(),
-                ),
+                # the History lane promises. Both carry the same statuses, so
+                # the acceptance row is what tells them apart.
+                or_(_not_retired(), accepted_predicate()),
             )
         )
     ).all()
@@ -409,12 +474,15 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
 async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | None:
     """Resolve an id that may be a retired alias to the live record's id.
 
-    Merging and superseding retire ids that are already in circulation — in a
+    Merging and re-keying retire ids that are already in circulation — in a
     committed manifest, in an agent's notes. Every id-taking entry point routes
     through here so those keep resolving instead of reading as deleted.
     """
     alias = await session.get(DecisionAlias, decision_id)
-    if alias is not None and alias.reason == "merged":
+    if alias is not None and alias.reason == SUPERSEDED_REASON:
+        # A pre-fix supersede pointer names the successor, not this id's record.
+        alias = None
+    if alias is not None and alias.reason == MERGED_REASON:
         # A merged candidate's row survives, because its evidence is worth
         # keeping, so the record still resolves by id. Following the alias is
         # what stops the same constraint being accepted a second time under the
@@ -439,6 +507,7 @@ def decision_fields(record: DecisionRecord) -> dict[str, Any]:
         "kind": record.kind,
         "rationale": record.rationale,
         "context": record.context,
+        "decision": record.decision,
         "source": record.source,
         "evidence_commits": record.evidence_commits_json,
         "evidence_file": record.evidence_file,
@@ -512,6 +581,9 @@ async def record_acceptance(
         raise ValueError(f"Unknown acceptance action {action!r}.")
     if currency not in STORED_CURRENCIES:
         raise ValueError(f"Unknown stored currency {currency!r}.")
+    if evidence is None and not _record_evidence(record):
+        # What an earlier acceptance was given still stands behind the record.
+        evidence = await accepted_evidence(session, record.id) or None
 
     req = requirement(
         decision_fields(record),
@@ -520,6 +592,9 @@ async def record_acceptance(
         evidence=evidence,
         accepter=accepter,
         artifact=artifact,
+        # An import carries a signature given elsewhere; refusing it here would
+        # demote a decision someone already accepted.
+        grant=action == "accepted" and kind != "import",
     )
     blockers = acceptance_blockers(req)
     for check in (
@@ -548,6 +623,14 @@ async def record_acceptance(
         accepter_session=accepter_session,
         note=note,
     )
+    # A grant is a review of the code as it stands, so staleness counts from
+    # now rather than waiting for the next index.
+    from repowise.core.analysis.decisions.lifecycle import GRANTING_ACTIONS
+
+    from .decision_staleness import rescore_decision_staleness
+
+    if action in GRANTING_ACTIONS:
+        await rescore_decision_staleness(session, record)
 
     # The legacy column is a projection of the acceptance, never its source.
     # Keeping it in step is what lets readers that predate the split stay
@@ -631,9 +714,10 @@ async def accept_decision(
     reason: str = "",
     scope: list[str] | None = None,
     evidence: list[str] | None = None,
+    decision: str = "",
     note: str = "",
 ) -> DecisionAcceptance:
-    """Accept a candidate, optionally editing its reason and scope on the way.
+    """Accept a candidate, optionally editing its reason, scope and decision text.
 
     The edit is applied to the record too: accepting a claim with a corrected
     scope must not leave the record describing the uncorrected one. *evidence*
@@ -641,17 +725,7 @@ async def accept_decision(
     the acceptance rather than rewritten onto the record: it is what the
     accepter went on, not something extraction found.
     """
-    meta = await session.get(DecisionCandidateMeta, record.id)
-    if meta is not None and meta.review_state == "merged":
-        raise AcceptanceRefusedError(
-            [f"already merged into {meta.merged_into or 'another decision'}"]
-        )
-    if reason:
-        record.rationale = reason
-    if scope is not None:
-        # The accepter chose these files, so the record binds to them rather
-        # than keeping the basis it was mined with.
-        await set_record_scope(session, record, scope, basis=SCOPE_BASIS_STATED)
+    await _apply_accept_edits(session, record, reason=reason, scope=scope, decision=decision)
     acceptance = await record_acceptance(
         session,
         record,
@@ -671,6 +745,68 @@ async def accept_decision(
     return acceptance
 
 
+async def _apply_accept_edits(
+    session: AsyncSession,
+    record: DecisionRecord,
+    *,
+    reason: str,
+    scope: list[str] | None,
+    decision: str,
+) -> None:
+    """Write what an accepter corrected onto *record*; a folded candidate is refused."""
+    meta = await session.get(DecisionCandidateMeta, record.id)
+    if meta is not None and meta.review_state == "merged":
+        raise AcceptanceRefusedError(
+            [f"already merged into {meta.merged_into or 'another decision'}"]
+        )
+    if reason:
+        record.rationale = reason
+    if decision.strip():
+        record.decision = decision
+    if scope is not None:
+        # The accepter chose these files, so the record binds to them rather
+        # than keeping the basis it was mined with.
+        await set_record_scope(session, record, scope, basis=SCOPE_BASIS_STATED)
+
+
+async def hold_decision(
+    session: AsyncSession,
+    record: DecisionRecord,
+    *,
+    agent: str,
+    agent_session: str = "",
+    reason: str = "",
+    scope: list[str] | None = None,
+    commits: list[str] | None = None,
+    decision: str = "",
+) -> None:
+    """Take an agent's acceptance of *record* without granting it yet.
+
+    For a record whose commits have not reached the default branch: the edits
+    are applied and checked against the contract now, so the agent learns of a
+    gap while it can still fix it, and *commits* join the record's evidence.
+    No acceptance row is written; the record stays a candidate, noted as the
+    agent's, until the landing pass accepts it.
+    """
+    await _apply_accept_edits(session, record, reason=reason, scope=scope, decision=decision)
+    if commits:
+        stored = json.loads(record.evidence_commits_json or "[]")
+        record.evidence_commits_json = json.dumps(list(dict.fromkeys([*stored, *commits])))
+    blockers = acceptance_blockers(
+        requirement(decision_fields(record), reason=reason, accepter=agent, grant=True)
+    )
+    if blockers:
+        raise AcceptanceRefusedError(blockers)
+    meta = await session.get(DecisionCandidateMeta, record.id)
+    grounding = json.loads(meta.grounding_json or "{}") if meta is not None else {}
+    grounding = grounding if isinstance(grounding, dict) else {}
+    await upsert_candidate_meta(
+        session, record, grounding={**grounding, "agent": agent, "session": agent_session}
+    )
+    record.updated_at = _now_utc()
+    await session.flush()
+
+
 async def reaffirm_decision(
     session: AsyncSession,
     record: DecisionRecord,
@@ -680,14 +816,32 @@ async def reaffirm_decision(
     kind: str = "person",
     accepter_session: str = "",
     agent_acceptance: bool = False,
+    reason: str = "",
+    evidence: list[str] | None = None,
     note: str = "",
 ) -> DecisionAcceptance:
-    """Re-accept a decision after review, clearing a ``needs_review`` state."""
+    """Re-accept a decision after review, clearing a ``needs_review`` state.
+
+    Only a governing decision can be reaffirmed. A candidate was never
+    accepted, and a withdrawn one needs a fresh acceptance: both are refused,
+    naming ``confirm``.
+    """
+    currency = await current_currency(session, record)
+    if currency is None:
+        raise AcceptanceRefusedError(
+            ["a candidate, never accepted: accept it with `repowise decision confirm`"]
+        )
+    if currency in HISTORY_CURRENCIES:
+        raise AcceptanceRefusedError(
+            [f"withdrawn ({currency}): accept it again with `repowise decision confirm`"]
+        )
     return await record_acceptance(
         session,
         record,
         action="reaffirmed",
         currency="active",
+        reason=reason,
+        evidence=evidence,
         accepter=accepter,
         artifact=artifact,
         kind=kind,
@@ -740,8 +894,9 @@ async def supersede_decision(
     """Retire *record* in favour of *successor_id*, with an explicit edge.
 
     Similarity never reaches here: an edge is written because someone named the
-    successor. The retired id becomes an alias of the successor so references to
-    it keep resolving to the decision that now governs.
+    successor. No alias: the retired id still names this record, wherever the
+    id migration later moves it, and ``superseded_by`` plus the edge are where
+    the successor is read from.
     """
     successor = await session.get(DecisionRecord, successor_id)
     if successor is None:
@@ -770,7 +925,6 @@ async def supersede_decision(
         confidence=1.0,
         evidence=f"superseded by {accepter or artifact}",
     )
-    await _add_alias(session, record.id, successor.id, reason="superseded")
     return acceptance
 
 
@@ -799,7 +953,8 @@ async def merge_candidate(
         raise ValueError("A candidate cannot be merged into itself.")
     if not await is_accepted(session, target.id):
         raise ValueError(
-            f"Merge target {into_id!r} is a candidate; accept it before merging into it."
+            f"Merge target {into_id[:8]} is a candidate, not a decision. Accept it first "
+            f"with `repowise decision confirm {into_id[:8]}`, or merge the other way."
         )
     if await is_accepted(session, candidate.id):
         raise ValueError(
@@ -812,7 +967,9 @@ async def merge_candidate(
         target,
         action="merged",
         currency="active",
-        evidence=_record_evidence(target) + _record_evidence(candidate),
+        # ``None``, not ``[]``, when neither record carries evidence: the target
+        # stands on what it was confirmed with, which lives on its acceptance row.
+        evidence=(_record_evidence(target) + _record_evidence(candidate)) or None,
         accepter=accepter,
         artifact=artifact,
         kind=kind,
@@ -821,7 +978,7 @@ async def merge_candidate(
         note=note or f"merged candidate {candidate.id}",
     )
     await _set_review_state(session, candidate, "merged", merged_into=target.id)
-    await _add_alias(session, candidate.id, target.id, reason="merged")
+    await _add_alias(session, candidate.id, target.id)
     return acceptance
 
 
@@ -890,6 +1047,7 @@ async def dismiss_candidate(
     """
     meta = await _set_review_state(session, record, "dismissed")
     meta.dismissed_reason = reason
+    _sign_review(meta, accepter, kind, accepter_session)
     if await latest_acceptance(session, record.id) is not None:
         await record_acceptance(
             session,
@@ -913,13 +1071,54 @@ async def request_split(
     record: DecisionRecord,
     *,
     reason: str = "",
+    accepter: str = "",
+    kind: str = "person",
+    accepter_session: str = "",
 ) -> DecisionCandidateMeta:
     """Flag a candidate as bundling two choices. Never splits it by machine."""
     meta = await _set_review_state(session, record, "needs_split")
     meta.needs_split = True
     meta.dismissed_reason = reason
+    _sign_review(meta, accepter, kind, accepter_session)
     await session.flush()
     return meta
+
+
+async def deprecate_decision(
+    session: AsyncSession,
+    record: DecisionRecord,
+    *,
+    reason: str = "",
+    accepter: str = "",
+    kind: str = "person",
+    accepter_session: str = "",
+) -> None:
+    """Retire *record* with nothing named in its place.
+
+    On a decision this withdraws authority and logs it as ``deprecated``, so
+    the log tells a retirement from a dismissal. A candidate has no authority
+    to withdraw: its status moves and its review row is signed.
+    """
+    if await is_accepted(session, record.id):
+        # Sets the status to ``deprecated`` and moves the links.
+        await record_acceptance(
+            session,
+            record,
+            action="deprecated",
+            currency="dismissed",
+            accepter=accepter or "unrecorded",
+            kind=kind,
+            accepter_session=accepter_session,
+            note=reason,
+        )
+        return
+    meta = await _review_meta(session, record)
+    meta.dismissed_reason = reason
+    _sign_review(meta, accepter, kind, accepter_session)
+    record.status = "deprecated"
+    record.updated_at = _now_utc()
+    await session.flush()
+    await sync_links_from_record(session, record)
 
 
 async def list_candidates(
@@ -952,11 +1151,13 @@ async def list_candidates(
     )
     if review_state is not None:
         # A candidate with no meta row has never been reviewed, which is
-        # exactly what ``open`` means.
+        # exactly what ``open`` means. A retired one is not open, whatever its
+        # row says: a later commit can supersede a candidate nobody reviewed.
         if review_state == "open":
             q = q.where(
                 (DecisionCandidateMeta.review_state == "open")
-                | (DecisionCandidateMeta.decision_id.is_(None))
+                | (DecisionCandidateMeta.decision_id.is_(None)),
+                _not_retired(),
             )
         else:
             q = q.where(DecisionCandidateMeta.review_state == review_state)
@@ -984,12 +1185,7 @@ async def _set_review_state(
     *,
     merged_into: str | None = None,
 ) -> DecisionCandidateMeta:
-    meta = await session.get(DecisionCandidateMeta, record.id)
-    if meta is None:
-        meta = DecisionCandidateMeta(
-            decision_id=record.id, repository_id=record.repository_id
-        )
-        session.add(meta)
+    meta = await _review_meta(session, record)
     meta.review_state = state
     if merged_into is not None:
         meta.merged_into = merged_into
@@ -998,13 +1194,32 @@ async def _set_review_state(
     return meta
 
 
-async def _add_alias(
-    session: AsyncSession, alias_id: str, decision_id: str, *, reason: str
-) -> None:
+async def _review_meta(session: AsyncSession, record: DecisionRecord) -> DecisionCandidateMeta:
+    """*record*'s review row, created when it has none."""
+    meta = await session.get(DecisionCandidateMeta, record.id)
+    if meta is None:
+        meta = DecisionCandidateMeta(
+            decision_id=record.id, repository_id=record.repository_id, review_state="open"
+        )
+        session.add(meta)
+    return meta
+
+
+def _sign_review(meta: DecisionCandidateMeta, accepter: str, kind: str, session_id: str) -> None:
+    """Stamp who set ``dismissed_reason``, as an acceptance row would be signed."""
+    meta.dismissed_by = accepter or None
+    meta.dismissed_by_kind = kind or None
+    meta.dismissed_session = session_id or None
+
+
+async def _add_alias(session: AsyncSession, alias_id: str, decision_id: str) -> None:
+    # Every caller is a merge: superseding writes no alias, and the id migration
+    # writes its own rows through ``_write_alias``.
+    #
     # An alias chain would leave a two-hop lookup nobody performs, so anything
-    # already pointing at the retired id is repointed at its successor first —
-    # for the update branch as much as the insert one, or A -> B followed by
-    # B -> C strands A at an id that no longer resolves.
+    # already pointing at the retired id is repointed at the record it merged
+    # into first — for the update branch as much as the insert one, or A -> B
+    # followed by B -> C strands A at an id that no longer resolves.
     stale = (
         (
             await session.execute(
@@ -1020,7 +1235,7 @@ async def _add_alias(
     existing = await session.get(DecisionAlias, alias_id)
     if existing is not None:
         existing.decision_id = decision_id
-        existing.reason = reason
+        existing.reason = MERGED_REASON
         await session.flush()
         return
     record = await session.get(DecisionRecord, decision_id)
@@ -1029,7 +1244,7 @@ async def _add_alias(
             alias_id=alias_id,
             repository_id=record.repository_id if record else "",
             decision_id=decision_id,
-            reason=reason,
+            reason=MERGED_REASON,
         )
     )
     await session.flush()

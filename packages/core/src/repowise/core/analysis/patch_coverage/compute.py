@@ -17,7 +17,9 @@ untested source file is surfaced rather than dropped; it is out of scope
 when it is a test file or a type the report never measures (docs, config).
 Ceiling: a not-in-report file is reported but excluded from the percentage,
 because its executable lines are unknown. A stricter gate can count it once a
-report format carries "file present, nothing executed".
+report format carries "file present, nothing executed". A measured file that
+changed since the report was measured is ``stale_file`` and likewise left
+out: the report's line numbers describe other code.
 
 Path-scoped gates (``coverage.gates``) apply the same rule to the measured
 files their globs match. One that fails and is not informational fails the
@@ -37,7 +39,7 @@ whether that is because the coverage carries no per-line branch data at all
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, get_args
@@ -55,7 +57,9 @@ if TYPE_CHECKING:
     from .hints import TestHint
     from .risk import FileRisk
 
-FileStatus = Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
+FileStatus = Literal[
+    "measured", "not_in_report", "no_line_data", "no_coverable_changes", "stale_file"
+]
 #: Whether the coverage read carries per-line branch counts: ``per_line`` it
 #: does, ``none`` the report has none, ``stored_before`` the stored rows were
 #: written before per-line branches were kept.
@@ -274,9 +278,9 @@ class PatchCoverage:
         verdicts = [self.flat_gate, self.risky_gate, self.branch_gate, project]
         if self.failing_path_gates or "fail" in verdicts:
             return "fail"
-        # An unapplied branch gate gives way to a project verdict.
-        if project != "not_set" and verdicts[2] == "no_data":
-            verdicts[2] = "not_set"
+        # An unapplied gate (no_data) ahead of the project gives way to a project verdict.
+        if project != "not_set":
+            verdicts[:3] = ["not_set" if v == "no_data" else v for v in verdicts[:3]]
         return next((v for v in verdicts if v != "not_set"), "not_set")
 
     @property
@@ -403,6 +407,7 @@ def compute_patch_coverage(
     ignore: Sequence[str] = (),
     gates: Sequence[PathGate] = (),
     judge_gates: bool = True,
+    stale: Collection[str] = (),
 ) -> PatchCoverage:
     """Intersect a change with a coverage report. See the module docstring.
 
@@ -412,7 +417,9 @@ def compute_patch_coverage(
     matching *ignore* (``coverage.ignore``, gitignore syntax) are dropped
     before anything is measured and counted in the scope. Each of *gates*
     (``coverage.gates``) is judged on the measured files its globs match;
-    with *judge_gates* false they are counted but read ``no_data``.
+    with *judge_gates* false they are counted but read ``no_data``. Changed
+    files in *stale* (changed since the coverage was measured) read
+    ``stale_file``, with no numbers.
     """
     measured_suffixes = {PurePosixPath(p).suffix for p in report_paths or coverage}
     ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
@@ -425,6 +432,8 @@ def compute_patch_coverage(
             continue
         if ignore_spec.match_file(path):
             ignored += 1
+        elif path in stale:
+            files.append(FilePatchCoverage(path, "stale_file", len(lines)))
         elif (row := _changed_file(path, lines, coverage, measured_suffixes)) is None:
             out_of_scope += 1
         else:
@@ -531,7 +540,7 @@ def _path_gate(
         threshold=gate.fail_under,
         informational=gate.informational,
         measured_file_count=len(hits),
-        unmeasured_file_count=sum(f.status in _UNMEASURED for f in matched),
+        unmeasured_file_count=sum(f.status in UNMEASURED for f in matched),
         covered_line_count=sum(f.covered_line_count for f in hits),
         coverable_line_count=sum(f.coverable_line_count for f in hits),
         small_change=small_change,
@@ -539,7 +548,8 @@ def _path_gate(
     )
 
 
-_UNMEASURED = frozenset({"not_in_report", "no_line_data"})
+#: Statuses of a changed file the report could not measure, in the order readers list them.
+UNMEASURED: tuple[FileStatus, ...] = ("not_in_report", "stale_file", "no_line_data")
 
 
 def _gate(threshold: float | None, covered: int, coverable: int, small: bool) -> GateStatus:

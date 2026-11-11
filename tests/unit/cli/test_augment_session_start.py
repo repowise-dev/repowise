@@ -38,7 +38,22 @@ def test_current_index(repo, monkeypatch) -> None:
     assert out is not None
     assert "current" in out
     assert _INDEXED[:8] in out
-    assert "get_answer" in out
+    # The freshness fact only: no "prefer the MCP tools" nudge.
+    assert "get_answer" not in out
+    assert "prefer" not in out
+
+
+def test_locked_index_skips_the_decision_queries(repo, monkeypatch) -> None:
+    """Each decision query would wait out its own busy timeout and fail."""
+    monkeypatch.setattr(session_start, "_git_head", lambda p: _INDEXED)
+    unlocked = _handle(repo)
+    monkeypatch.setattr(session_start, "index_locked", lambda p: True)
+    monkeypatch.setattr(
+        session_start,
+        "_decision_block",
+        lambda *a: pytest.fail("decision queries ran against a locked index"),
+    )
+    assert _handle(repo) == unlocked
 
 
 def test_behind_head_with_changed_count(repo, monkeypatch) -> None:
@@ -83,7 +98,8 @@ def test_git_failure_never_claims_current(repo, monkeypatch) -> None:
     out = _handle(repo)
     assert out is not None
     assert "current" not in out
-    assert "MCP tools" in out
+    assert "local codebase index" in out
+    assert "prefer" not in out.lower()
 
 
 def test_silent_outside_indexed_repo(tmp_path) -> None:
@@ -149,3 +165,27 @@ def test_temp_root_repowise_is_ignored(tmp_path, monkeypatch) -> None:
     repo = fake_tmp / "checkout"
     (repo / ".repowise").mkdir(parents=True)
     assert _shared._find_repo_root(repo) == repo.resolve()
+
+
+@pytest.mark.parametrize("bad", ["--output=/tmp/x", "-p", "--no-index", "HEAD~1", "abc", "g" * 40, ""])
+def test_changed_file_count_rejects_non_commit_ids(tmp_path, monkeypatch, bad) -> None:
+    import subprocess
+
+    calls: list = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    assert session_start._changed_file_count(tmp_path, bad, _LIVE) is None
+    assert calls == []
+
+
+def test_changed_file_count_valid_id_passes_end_of_options(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    seen: list = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="a.py\nb.py\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert session_start._changed_file_count(tmp_path, "AbC1234", _LIVE) == 2
+    assert seen == [["git", "diff", "--name-only", "--end-of-options", "AbC1234", _LIVE]]

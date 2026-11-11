@@ -6,9 +6,11 @@ alias resolution that ``GraphBuilder._resolve_import()`` calls before falling
 back to the ``external:`` classification.
 
 Design constraints:
-  - Stateless after ``__init__``: safe to share across all files and threads.
-  - One-time I/O at construction time; per-import resolution is O(k) prefix
-    matching + set lookup where k is the number of alias patterns.
+  - Configs are fixed after ``__init__``; the only later state is idempotent
+    memo caches, so one instance is safe to share across files and threads.
+  - Per-import resolution is O(k) prefix matching + set lookups, where k is
+    the number of alias patterns. Candidate paths are checked against a
+    once-per-directory listing, not one filesystem call per candidate.
   - Fully backwards-compatible: if no tsconfig/jsconfig is found in the repo,
     ``resolve()`` always returns ``None`` and behaviour is identical to before.
   - Pattern matching follows TypeScript's exact semantics:
@@ -21,12 +23,19 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import os
+import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
+
+from repowise.core.fs_walk import _is_reparse_point
+
+from .models import TS_JS_LANGUAGES
 
 log = structlog.get_logger(__name__)
 
@@ -84,6 +93,30 @@ class ResolvedConfig:
     """
 
 
+@dataclass(frozen=True)
+class ProjectConfig:
+    """A config together with the source files it compiles.
+
+    A solution-style tsconfig (``"files": []`` plus ``"references"``) owns no
+    files itself; each source file takes its options from the referenced
+    project whose ``files``/``include`` cover it, as ``tsc --build`` does.
+    """
+
+    config: ResolvedConfig
+    files: frozenset[str]
+    """Absolute POSIX paths listed in ``files``."""
+    include: re.Pattern[str] | None
+    exclude: re.Pattern[str] | None
+
+    def owns(self, source_file: str) -> bool:
+        """Whether *source_file* (an absolute POSIX path) belongs to this project."""
+        if source_file in self.files:
+            return True
+        if self.include is None or not self.include.fullmatch(source_file):
+            return False
+        return self.exclude is None or not self.exclude.fullmatch(source_file)
+
+
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
@@ -112,8 +145,22 @@ class TsconfigResolver:
         # directory (absolute) -> ResolvedConfig
         self._dir_to_config: dict[Path, ResolvedConfig] = {}
 
+        # solution-style config path -> the projects it references, in order
+        self._config_projects: dict[Path, list[ProjectConfig]] = {}
+
         # source-file directory -> applicable ResolvedConfig (or None)
         self._file_config_cache: dict[Path, ResolvedConfig | None] = {}
+
+        # Probe caches (see ``_probe``): directory -> resolved directory,
+        # resolved directory -> its listing and its repo-relative prefix.
+        # Files are assumed not to move while one resolver is alive.
+        self._real_dirs: dict[str, Path] = {}
+        self._listings: dict[str, tuple[dict[str, bool], frozenset[str]] | None] = {}
+        self._dir_prefixes: dict[str, str | None] = {}
+
+        # Every config file read, including ``extends`` and ``references``
+        # targets of any name: a graph patch must not treat their edits as inert.
+        self.read_paths: set[Path] = set()
 
         self._discover_configs()
         log.info(
@@ -198,6 +245,110 @@ class TsconfigResolver:
             resolved = self._load_and_resolve(config_file.resolve(), visited=frozenset())
             if resolved is not None:
                 self._dir_to_config[directory] = resolved
+                projects = self._load_references(resolved, visited=frozenset())
+                if projects:
+                    self._config_projects[resolved.config_path] = projects
+
+    # ------------------------------------------------------------------
+    # Project references
+    # ------------------------------------------------------------------
+
+    def _load_references(
+        self,
+        config: ResolvedConfig,
+        visited: frozenset[Path],
+    ) -> list[ProjectConfig]:
+        """Return the projects a config points at through ``references``.
+
+        A referenced config that is itself a solution contributes its own
+        references in its place. The config is listed first when it compiles
+        files of its own, so those keep its options.
+        """
+        if config.config_path in visited:
+            return []
+        visited = visited | {config.config_path}
+
+        data = self._read_config(config.config_path)
+        references = data.get("references") if data else None
+        if not isinstance(references, list):
+            return []
+
+        projects: list[ProjectConfig] = []
+        own = self._project(config)
+        if own is not None and (own.files or own.include is not None):
+            projects.append(own)
+        for reference in references:
+            ref_path = reference.get("path") if isinstance(reference, dict) else None
+            if not isinstance(ref_path, str):
+                continue
+            target = (config.config_path.parent / ref_path).resolve()
+            if target.is_dir():
+                target = target / "tsconfig.json"
+            if not target.is_file():
+                continue
+            resolved = self._load_and_resolve(target, visited=frozenset())
+            if resolved is None:
+                continue
+            nested = self._load_references(resolved, visited)
+            if nested:
+                projects.extend(nested)
+            elif (project := self._project(resolved)) is not None:
+                projects.append(project)
+        return projects
+
+    def _project(self, config: ResolvedConfig) -> ProjectConfig | None:
+        """Build the :class:`ProjectConfig` for *config* from its file lists."""
+        files, include, exclude = self._file_lists(config.config_path, visited=frozenset())
+        if include is None:
+            # TypeScript includes everything only when ``files`` is absent too.
+            include = [] if files is not None else [(config.config_path.parent / "**/*").as_posix()]
+        return ProjectConfig(
+            config=config,
+            files=frozenset(files or ()),
+            include=_glob_regex(include, subtree=False),
+            exclude=_glob_regex(exclude or [], subtree=True),
+        )
+
+    def _file_lists(
+        self,
+        config_path: Path,
+        visited: frozenset[Path],
+    ) -> tuple[list[str] | None, list[str] | None, list[str] | None]:
+        """Return ``files``, ``include`` and ``exclude`` as absolute POSIX paths.
+
+        Each is inherited through a relative ``extends`` when the config does
+        not set it, and stays relative to the config that defines it.
+        """
+        if config_path in visited:
+            return None, None, None
+        data = self._read_config(config_path)
+        if data is None:
+            return None, None, None
+
+        config_dir = config_path.parent
+        inherited: tuple[list[str] | None, ...] = (None, None, None)
+        extends_val = data.get("extends")
+        if isinstance(extends_val, str) and extends_val.startswith("."):
+            parent = (config_dir / extends_val).resolve()
+            if not parent.suffix:
+                parent = parent.with_suffix(".json")
+            if parent.is_file():
+                inherited = self._file_lists(parent, visited | {config_path})
+
+        lists: list[list[str] | None] = []
+        for key, parent_value in zip(("files", "include", "exclude"), inherited, strict=True):
+            value = data.get(key)
+            if isinstance(value, list):
+                lists.append(
+                    [
+                        posixpath.normpath((config_dir / entry).as_posix())
+                        for entry in value
+                        if isinstance(entry, str)
+                    ]
+                )
+            else:
+                lists.append(parent_value)
+        return lists[0], lists[1], lists[2]
 
     # ------------------------------------------------------------------
     # Config loading & extends resolution
@@ -221,7 +372,7 @@ class TsconfigResolver:
             return None
         visited = visited | {config_path}
 
-        data = self._parse_json_lenient(config_path)
+        data = self._read_config(config_path)
         if data is None:
             return None
 
@@ -362,9 +513,25 @@ class TsconfigResolver:
     # ------------------------------------------------------------------
 
     def _find_config_for_file(self, source_file: Path) -> ResolvedConfig | None:
-        """Find the nearest tsconfig for a source file by walking up."""
-        directory = source_file.parent.resolve()
+        """Find the nearest tsconfig for a source file by walking up.
 
+        When that config is a solution, the referenced project that owns the
+        file applies instead; a file no project owns keeps the solution's.
+        """
+        directory = self._resolved_dir(source_file.parent)
+        config = self._find_config_for_dir(directory)
+        if config is None:
+            return None
+        projects = self._config_projects.get(config.config_path)
+        if projects:
+            path = (directory / source_file.name).as_posix()
+            for project in projects:
+                if project.owns(path):
+                    return project.config
+        return config
+
+    def _find_config_for_dir(self, directory: Path) -> ResolvedConfig | None:
+        """Find the nearest tsconfig for a source directory by walking up."""
         if directory in self._file_config_cache:
             return self._file_config_cache[directory]
 
@@ -411,55 +578,231 @@ class TsconfigResolver:
 
     def _try_extensions(self, base: Path) -> str | None:
         """Try common TS/JS extensions and index files, return first ``path_set`` hit."""
+        if "\x00" in str(base):
+            # No file path holds a NUL, and the OS rejects one in a lookup.
+            return None
         # 1. As-is (if template already has extension).
-        rel = self._to_repo_relative(base)
-        if rel is not None and rel in self._path_set:
+        parent, name = base.parent, base.name
+        rel = self._probe(parent, name)
+        if rel is not None:
             return rel
 
-        # 2. Direct extensions. ``Path.with_suffix`` *replaces* the last
-        # ``.``-component, so for specifiers like ``app/layout.config``
-        # Python's pathlib would clobber ``.config`` and probe
-        # ``app/layout.tsx`` — yielding the wrong file. Append the
-        # extension as a string instead so multi-dot module names
-        # (``layout.config``, ``site.metadata``, ``foo.test``) resolve.
+        # 2. Direct extensions, appended to the name as a string:
+        # ``Path.with_suffix`` would replace ``.config`` in ``app/layout.config``
+        # and probe the wrong file.
         for ext in _TS_EXTENSIONS:
-            rel = self._to_repo_relative(Path(str(base) + ext))
-            if rel is not None and rel in self._path_set:
+            rel = self._probe(parent, name + ext)
+            if rel is not None:
                 return rel
 
         # 3. Index files (base is a directory).
         for index in _INDEX_FILES:
-            rel = self._to_repo_relative(base / index)
-            if rel is not None and rel in self._path_set:
+            rel = self._probe(base, index)
+            if rel is not None:
                 return rel
 
         return None
 
-    def _to_repo_relative(self, path: Path) -> str | None:
-        """Convert *path* to a repo-relative POSIX string, or ``None``."""
+    def _probe(self, directory: Path, name: str) -> str | None:
+        """Return the ``path_set`` entry ``(directory / name).resolve()`` lands on, or ``None``.
+
+        Answers from memory: the directory is resolved once and listed once,
+        and a plain entry resolves to ``<real dir>/<name>``. Whenever the OS
+        could resolve the name differently (a link or reparse point, a case-only
+        variant on a case-insensitive filesystem, a name Windows rewrites, a
+        long path), it falls back to the real ``Path.resolve()``.
+        """
+        real_dir = self._resolved_dir(directory)
+        entries = None if _needs_os_resolve(name, real_dir) else self._listing(real_dir)
+        if entries is None:
+            return self._probe_slow(directory / name)
+        exact, folded = entries
+        is_link = exact.get(name)
+        if is_link or (is_link is None and _fold(name) in folded):
+            return self._probe_slow(directory / name)
+        prefix = self._repo_prefix(real_dir)
+        if prefix is None:
+            return None
+        rel = f"{prefix}/{name}" if prefix else name
+        return rel if rel in self._path_set else None
+
+    def _probe_slow(self, path: Path) -> str | None:
         try:
-            return path.resolve().relative_to(self._repo_path).as_posix()
+            rel = path.resolve().relative_to(self._repo_path).as_posix()
         except ValueError:
             return None
+        return rel if rel in self._path_set else None
+
+    def _resolved_dir(self, directory: Path) -> Path:
+        """``directory.resolve()``, memoized for the life of this resolver."""
+        key = str(directory)
+        real = self._real_dirs.get(key)
+        if real is None:
+            real = self._real_dirs[key] = directory.resolve()
+        return real
+
+    def _listing(self, real_dir: Path) -> tuple[dict[str, bool], frozenset[str]] | None:
+        """``{name: is_link_or_reparse_point}`` and casefolded names for *real_dir*.
+
+        A missing directory (or a file) lists as empty, which matches how a
+        non-strict resolve leaves the name as written. ``None`` means the
+        directory could not be read, so the caller asks the OS.
+        """
+        key = str(real_dir)
+        if key in self._listings:
+            return self._listings[key]
+        listing: tuple[dict[str, bool], frozenset[str]] | None
+        try:
+            with os.scandir(real_dir) as it:
+                exact = {entry.name: _is_link_entry(entry) for entry in it}
+            listing = (exact, frozenset(_fold(n) for n in exact))
+        except (FileNotFoundError, NotADirectoryError):
+            listing = ({}, frozenset())
+        except OSError:
+            listing = None
+        self._listings[key] = listing
+        return listing
+
+    def _repo_prefix(self, real_dir: Path) -> str | None:
+        """Repo-relative POSIX path of *real_dir* (``""`` at the root), or ``None`` outside."""
+        key = str(real_dir)
+        if key not in self._dir_prefixes:
+            try:
+                rel = real_dir.relative_to(self._repo_path).as_posix()
+                self._dir_prefixes[key] = "" if rel == "." else rel
+            except ValueError:
+                self._dir_prefixes[key] = None
+        return self._dir_prefixes[key]
 
     # ------------------------------------------------------------------
     # JSON parsing
     # ------------------------------------------------------------------
 
+    def _read_config(self, config_path: Path) -> dict[str, Any] | None:
+        """:meth:`_parse_json_lenient`, noting *config_path* in :attr:`read_paths`."""
+        self.read_paths.add(config_path)
+        return self._parse_json_lenient(config_path)
+
     @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
-        """Parse JSON with trailing-comma tolerance (common in tsconfig)."""
+        """Parse JSON with comment and trailing-comma tolerance (common in tsconfig)."""
         try:
             text = config_path.read_text(encoding="utf-8", errors="ignore")
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                cleaned = re.sub(r",\s*([}\]])", r"\1", text)
+                stripped = _strip_jsonc_comments(text)
+                cleaned = re.sub(r",\s*([}\]])", r"\1", stripped)
                 data = json.loads(cleaned)
             return data if isinstance(data, dict) else None
         except Exception as exc:
-            log.debug("tsconfig_parse_failed", path=str(config_path), error=str(exc))
+            log.warning("tsconfig_parse_failed", path=str(config_path), error=str(exc))
             return None
+
+
+# Below Windows' MAX_PATH (260) with room to spare: a longer path can come back
+# from ``resolve()`` with a ``\\?\`` prefix, so let the OS answer it.
+_MAX_IN_MEMORY_PATH = 240
+
+
+def _needs_os_resolve(name: str, real_dir: Path) -> bool:
+    """Whether only the OS can say where ``real_dir / name`` resolves to.
+
+    ``..``/``.`` and an empty name are not plain entries. Windows strips a
+    trailing dot or space, expands an 8.3 short name (``~``) and reads ``:`` as
+    a stream, so those names may resolve to an entry spelled differently.
+    A custom short name set with ``fsutil`` carries no ``~`` and is not caught.
+    """
+    return (
+        not name
+        or name[-1] in ". "
+        or "~" in name
+        or ":" in name
+        or len(str(real_dir)) + len(name) >= _MAX_IN_MEMORY_PATH
+    )
+
+
+def _fold(name: str) -> str:
+    """Key under which a case- or normalization-insensitive filesystem may match *name*."""
+    return unicodedata.normalize("NFD", name).casefold()
+
+
+def _is_link_entry(entry: os.DirEntry[str]) -> bool:
+    """True when resolving *entry* may land somewhere else: a symlink or reparse point."""
+    try:
+        return entry.is_symlink() or _is_reparse_point(entry)
+    except OSError:
+        return True
+
+
+def _glob_regex(patterns: list[str], *, subtree: bool) -> re.Pattern[str] | None:
+    """Compile tsconfig ``include``/``exclude`` globs over absolute POSIX paths.
+
+    ``*`` and ``?`` stay within one path segment and ``**/`` spans any number
+    of directories. An ``include`` entry whose last segment has no extension
+    or wildcard names a directory, so it covers everything below it; with
+    *subtree* (``exclude``) every pattern also covers what lies below a match.
+    """
+    alternatives: list[str] = []
+    for pattern in patterns:
+        segments = pattern.split("/")
+        last = segments[-1]
+        if last == "**":
+            segments.append("*")
+        elif not subtree and "." not in last and "*" not in last and "?" not in last:
+            segments += ["**", "*"]
+        regex = ""
+        for i, segment in enumerate(segments):
+            if segment == "**":
+                regex += "(?:[^/]+/)*"
+                continue
+            regex += "".join(
+                "[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in segment
+            )
+            if i < len(segments) - 1:
+                regex += "/"
+        if subtree:
+            regex += "(?:/.*)?"
+        alternatives.append(f"(?:{regex})")
+    return re.compile("|".join(alternatives)) if alternatives else None
+
+
+def _strip_jsonc_comments(text: str) -> str:
+    """Strip // and /* */ comments from JSONC text while preserving string literals."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+
+    while i < n:
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if c == "\\":
+                if i + 1 < n:
+                    i += 1
+                    out.append(text[i])
+            elif c == '"':
+                in_string = False
+            i += 1
+        else:
+            if c == '"':
+                in_string = True
+                out.append(c)
+                i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+    return "".join(out)
 
 
 def wire_tsconfig_resolver(
@@ -473,13 +816,11 @@ def wire_tsconfig_resolver(
 
     Needs to be called after add_file() but before build().
     """
-    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
-    # .svelte component's imports go through the same TS/JS resolver.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
-
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()
-    if not any(pf.file_info.language in _ts_langs for pf in parsed_files):
+    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
+    # .svelte component's imports go through the same TS/JS resolver.
+    if not any(pf.file_info.language in TS_JS_LANGUAGES for pf in parsed_files):
         return
 
     try:

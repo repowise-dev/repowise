@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os.path
 import re
-from collections.abc import Container
+from collections.abc import Container, Sequence
 from functools import cache
+
+from repowise.core.stack_trace import parse_trace
 
 
 @cache
@@ -44,6 +46,24 @@ _NL_QUESTION_TOKENS = frozenset(
 )
 
 
+# Code punctuation a real path almost never carries: a call, a decorator
+# argument, a keyword argument or an annotation. ``mode="path"`` still reaches
+# such a path when someone really means one.
+_CODE_PUNCT_CHARS = '("{='
+# npm-scoped paths (``@angular/core/src/x.ts``) lead with ``@`` but are paths.
+_SCOPED_PACKAGE = re.compile(r"^@[\w.-]+/[\w.-]+")
+# Next.js route groups (``app/(auth)/page.tsx``) carry parentheses legitimately.
+_ROUTE_GROUP = re.compile(r"[/\\]\([\w.-]+\)(?=[/\\])")
+
+
+def _has_code_punctuation(stripped: str) -> bool:
+    """A whitespace-free string shaped like code (``f(x)``, ``@dec``, ``k="v"``)."""
+    probe = _ROUTE_GROUP.sub("/", stripped)
+    if any(ch in probe for ch in _CODE_PUNCT_CHARS):
+        return True
+    return stripped.startswith("@") and not _SCOPED_PACKAGE.match(stripped)
+
+
 def _is_path(query: str) -> bool:
     """Heuristic: does this string look like a file or module path?
 
@@ -75,10 +95,48 @@ def _is_path(query: str) -> bool:
     if any(ch.isspace() for ch in stripped):
         return False
 
+    # A call, decorator or keyword argument is code, even with a "/" inside.
+    if _has_code_punctuation(stripped):
+        return False
+
     if "/" in stripped or "\\" in stripped:
         return True
     _, ext = os.path.splitext(stripped)
     return ext in _code_exts()
+
+
+_TOKEN_EDGE_CHARS = "`'\"()[]{},;?!"
+_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+
+
+def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
+    """The words of ``query`` that read as paths. ``services/x.py register
+    hotkey`` -> ``[services/x.py]``.
+
+    A word with a code file extension counts. A ``/`` or ``\\`` word without
+    one counts only when it is a run of whole segments of one of ``paths``, so
+    ``and/or`` does not. URLs never count; a ``::member`` or ``:line`` suffix
+    is dropped.
+    """
+    out: list[str] = []
+    for raw in query.split():
+        if "://" in raw:
+            continue
+        token = raw.strip(_TOKEN_EDGE_CHARS).split("::", 1)[0].rstrip(".:")
+        token = _LINE_SUFFIX_RE.sub("", token)
+        if os.path.splitext(token)[1] in _code_exts() or (
+            ("/" in token or "\\" in token) and _names_indexed_segments(token, paths)
+        ):
+            out.append(token)
+    return out
+
+
+def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:
+    norm = token.lower().replace("\\", "/").removeprefix("./").strip("/")
+    if not norm:
+        return False
+    needle = f"/{norm}/"
+    return any(needle in f"/{path.lower()}/" for path in paths)
 
 
 def _qual_norm(name: str | None) -> str:
@@ -173,20 +231,98 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     (``_looks_like_code_name``) counts even unindexed, so a search can say it
     does not exist. ``names`` is tested for the token, then for its lowered
     form, so a container that also answers for each name's lowered spelling
-    gets the case-insensitive leg.
+    gets the case-insensitive leg. A one-hump word (``Add``, ``API``) is also
+    an English word, so it counts only in code context (``_in_code_context``);
+    all-caps constants (``DEBUG``, ``TIMEOUT``) included.
     """
     if names is None:
         return _IDENT_TOKEN_RE.findall(query)
     return [
-        token
-        for token in _name_tokens(query)
-        if _names_symbol(token, names) or _looks_like_code_name(token)
+        m.group()
+        for m in _name_token_matches(query)
+        if _looks_like_code_name(m.group())
+        or (
+            _names_symbol(m.group(), names)
+            and (not _one_hump(m.group()) or _in_code_context(query, m))
+        )
+    ]
+
+
+def _unmistakably_code(token: str) -> bool:
+    """Dotted, snake_case, a digit, or a capital past the first letter beside
+    a lowercase one. ``Config`` and ``Result`` are English words too."""
+    if "." in token:
+        return True
+    body = token.strip("_")
+    if "_" in body or any(ch.isdigit() for ch in body):
+        return True
+    return any(ch.islower() for ch in body) and any(ch.isupper() for ch in body[1:])
+
+
+def defined_identifiers(query: str, names: Container[str]) -> list[str]:
+    """Code-shaped tokens of ``query`` (``_unmistakably_code``) that name an
+    indexed symbol. ``names`` as for ``_embedded_identifiers``."""
+    return [
+        t
+        for t in _embedded_identifiers(query, names)
+        if _unmistakably_code(t) and _names_symbol(t, names)
+    ]
+
+
+def is_issue_shaped(query: str, names: Container[str], frames: list | None = None) -> bool:
+    """Whether ``query`` pastes a stack trace or names an identifier the index
+    defines. ``frames`` is ``parse_trace(query)`` when the caller already has it."""
+    if frames is None:
+        frames = parse_trace(query)
+    return bool(frames) or bool(defined_identifiers(query, names))
+
+
+def _name_token_matches(query: str) -> list[re.Match[str]]:
+    """Words that could name a symbol: identifier-shaped, or dotted chains."""
+    return [
+        m
+        for m in _WORD_CHAIN_RE.finditer(query)
+        if "." in m.group() or _identifier_shaped(m.group())
     ]
 
 
 def _name_tokens(query: str) -> list[str]:
-    """Words that could name a symbol: identifier-shaped, or dotted chains."""
-    return [t for t in _WORD_CHAIN_RE.findall(query) if "." in t or _identifier_shaped(t)]
+    return [m.group() for m in _name_token_matches(query)]
+
+
+def _one_hump(token: str) -> bool:
+    """``Add``, ``Client``, ``API``: letters only, one capitalised hump. Go
+    exports plain English words, so prose (``Add support for``) names them."""
+    return token.isalpha() and len(_CAMEL_HUMP_RE.findall(token)) == 1
+
+
+_CALLED_RE = re.compile(r"\(|::")  # no space: "Add (optional) support" is prose
+_ASKS_AFTER_RE = re.compile(
+    r"^\s*(?:where\s+is|where's|where\s+are|what\s+does|how\s+is|how\s+does|how\s+do)\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_LOOKUP_VERB_RE = re.compile(r"\b(?:find|show|open|locate)\s+$", re.IGNORECASE)
+_BARE_LEAD_RE = re.compile(r"^\s*(?:the\s+)?$", re.IGNORECASE)
+_KIND_TAIL_RE = re.compile(
+    r"\s+(?:class|struct|interface|trait|function|method|type|enum)\W*$", re.IGNORECASE
+)
+
+
+def _in_code_context(query: str, m: re.Match[str]) -> bool:
+    """Code syntax around the word (backtick span, ``Add(``, ``Client::new``),
+    or a short lookup frame (``where is Session``, ``find Config``,
+    ``the Router struct``). Issue prose ("Add support for", "Add type
+    annotations") fits none. Dotted chains never get here."""
+    before, after = query[: m.start()], query[m.end() :]
+    if before.count("`") % 2 or before.endswith("::") or _CALLED_RE.match(after):
+        return True
+    if _ASKS_AFTER_RE.match(before):
+        return True
+    if len(query.split()) > 3:
+        return False
+    return bool(
+        _LOOKUP_VERB_RE.search(before) or (_BARE_LEAD_RE.match(before) and _KIND_TAIL_RE.match(after))
+    )
 
 
 def _name_lookup_keys(query: str) -> set[str]:

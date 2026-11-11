@@ -6,8 +6,8 @@
  */
 
 /** Fade thresholds scale with canvas width so the feel is resolution-independent. */
-export const START_FRACTION = 0.25; // fade begins when a node spans this fraction of width
-export const END_FRACTION = 0.4; // fade completes (children fully in) at this fraction
+export const START_FRACTION = 0.36; // fade begins when a node spans this fraction of width
+export const END_FRACTION = 0.52; // fade completes (children fully in) at this fraction
 export const START_MIN_PX = 80;
 export const START_MAX_PX = 450;
 export const END_MIN_PX = 200;
@@ -54,7 +54,7 @@ export const CARD_ASPECT = 1.5;
 export const PACK_SIZE_MIN = 0.58;
 export const PACK_SIZE_MAX = 1.0;
 export const PACK_IMPORTANCE_GAMMA = 0.7;
-export const PACK_GUTTER = 0.3;
+export const PACK_GUTTER = 0.22;
 
 /**
  * Graph-paper line grid painted under the cards (anchored to the camera so it

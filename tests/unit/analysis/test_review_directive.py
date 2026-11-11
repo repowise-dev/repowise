@@ -68,6 +68,34 @@ def test_blocking_finding_requires_review():
     assert directive.evidence_state == "available"
 
 
+def test_the_headline_states_the_changed_codes_health_on_both_sides():
+    from repowise.core.analysis.change_health.file_scores import FileScoreDelta
+
+    def row(path, base, head):
+        return FileScoreDelta(path, base, head, 10 - base, 10 - head, 100, 100)
+
+    delta = _delta([_finding(severity="critical")])
+    delta.files = [row("app/a.py", 8.0, 7.0), row("app/b.py", 9.5, 9.5)]
+    assert review_directive(delta).headline.endswith(
+        "Health of the changed code: 8.75 to 8.25 (-0.50)."
+    )
+    delta.files = [row("app/b.py", 9.5, 9.5)]
+    assert review_directive(delta).headline.endswith("Health of the changed code holds at 9.50.")
+
+
+def test_a_move_names_the_structure_only_basis_instead_of_a_delta():
+    from repowise.core.analysis.change_health.file_scores import FileScoreDelta
+
+    delta = _delta([_finding(severity="critical")])
+    delta.files = [FileScoreDelta("app/a.py", 5.51, 5.70, 4.49, 4.30, 100, 60)]
+    delta.moved_total = 2
+    headline = review_directive(delta).headline
+    assert headline.endswith(
+        "Code moved between files, so the changed code's health (structure only) is not compared."
+    )
+    assert "5.51" not in headline
+
+
 def test_low_severity_only_recommends_review():
     directive = review_directive(_delta([_finding(severity="low")]))
     assert directive.status == "review_recommended"
@@ -110,6 +138,43 @@ def test_skipped_files_are_a_reason_not_a_clean_bill():
     assert any("not a clean bill" in reason for reason in directive.reasons)
 
 
+def test_skipped_docs_beside_analysed_code_ask_for_nothing():
+    delta = _delta()
+    delta.skipped = {"CHANGES.rst": "not_code", "package.json": "not_code"}
+    directive = review_directive(delta)
+    assert directive.status == "clear_in_analyzed_scope"
+    assert directive.reasons == ()
+    assert all(a.kind != "review_skipped_files" for a in directive.actions)
+
+
+def test_a_docs_only_change_says_there_is_no_code_rather_than_unknown():
+    delta = _delta(status="unavailable", explanation="Only documentation changed")
+    delta.skipped = {"README.md": "not_code"}
+    directive = review_directive(delta)
+    assert directive.status == "clear_in_analyzed_scope"
+    assert "No code changed" in directive.headline
+    assert "does not cover them" in directive.headline
+    assert not directive.actions
+
+
+def test_an_unsupported_code_file_still_leaves_the_verdict_unknown():
+    delta = _delta(status="unavailable", explanation="nothing compared")
+    delta.skipped = {"README.md": "not_code", "lib.ex": "not_health_analyzable"}
+    directive = review_directive(delta)
+    assert directive.status == "unknown"
+    assert [a.targets for a in directive.actions] == [("lib.ex",)]
+
+
+def test_a_query_only_change_is_clear_with_its_own_headline():
+    delta = _delta(status="unavailable", explanation="Only query files changed")
+    delta.skipped = {"queries/java.scm": "not_analyzable_data", "README.md": "not_code"}
+    directive = review_directive(delta)
+    assert directive.status == "clear_in_analyzed_scope"
+    assert "query" in directive.headline
+    assert "documentation or configuration" not in directive.headline
+    assert not directive.actions
+
+
 # ---------------------------------------------------------------------------
 # Actions carry targets, not rendered strings
 # ---------------------------------------------------------------------------
@@ -121,6 +186,21 @@ def test_each_finding_produces_an_inspect_action_with_its_id():
     assert len(actions) == 2
     assert all(a.targets and a.evidence_basis == "symbol_overlap" for a in actions)
     assert [a.priority for a in actions] == [0, 1]
+
+
+def test_the_finding_the_headline_names_leads_the_reasons_and_actions():
+    mediums = [_finding(severity="medium", path=f"app/m{i}.py") for i in range(3)]
+    high = _finding(severity="high", path="app/h.py", biomarker="large_method")
+    directive = review_directive(_delta([*mediums, high]))
+    assert directive.headline == (
+        "1 of 4 new findings needs review, starting with large_method in app/h.py."
+    )
+    assert directive.reasons[0].startswith("high defect: large_method")
+    assert directive.actions[0].targets == (high.change_finding_id,)
+    # The rest keep the order the delta gave them.
+    assert [a.targets[0] for a in directive.actions[1:4]] == [
+        f.change_finding_id for f in mediums
+    ]
 
 
 def test_measured_tests_become_a_run_action_with_every_target():

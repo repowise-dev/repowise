@@ -1,8 +1,9 @@
 """Single-file-component source preparation.
 
-A ``.svelte``, ``.vue`` or ``.razor`` file is more than one language in one
-file: ``<script>`` blocks hold TS/JS, the markup is a framework-flavoured
-HTML, and ``@code`` / ``@{ }`` regions hold C#. The markup grammars parse
+A ``.svelte``, ``.vue``, ``.razor`` or ``.astro`` file is more than one
+language in one file: ``<script>`` blocks (and Astro's ``---`` frontmatter)
+hold TS/JS, the markup is a framework-flavoured HTML, and ``@code`` /
+``@{ }`` regions hold C#. The markup grammars parse
 the file but hand each ``<script>`` body back as one opaque ``raw_text``
 node, so a ``.scm`` query run against them captures no symbol, no import and
 no call.
@@ -29,7 +30,7 @@ Only the *region-location* step differs per language, so it lives behind
 :data:`_LOCATORS`; the blanking, fencing, caching and offset invariants are
 shared. Adding a markup language means adding a :class:`Locator`, not a second
 copy of the walker: grammar-backed for Svelte and Vue, byte-scanned for
-Razor, which has no usable tree-sitter grammar (see the ``razor`` locator).
+Razor and Astro, which have no usable tree-sitter grammar (see their locators).
 
 Binding forms are deliberately skipped rather than kept: Svelte's
 ``{#each items as item}`` and ``{#await}`` heads, and Vue's ``v-for="item in
@@ -47,6 +48,8 @@ a :class:`Locator`, no-op unless the language matches.
 
 from __future__ import annotations
 
+import re
+from bisect import bisect_right
 from collections.abc import Callable
 from functools import lru_cache
 from typing import TYPE_CHECKING, NamedTuple
@@ -110,13 +113,17 @@ _SPACE = 0x20
 _SEMICOLON = 0x3B
 _OPEN_BRACE = 0x7B
 _CLOSE_BRACE = 0x7D
+_CLOSE_ANGLE = 0x3E
 _DOUBLE_QUOTE = 0x22
 _SINGLE_QUOTE = 0x27
 
 # Only a byte the scan pointed at *and* that is a real delimiter is ever
 # rewritten to ``;`` — never a byte that turned out to be part of a kept
-# expression. Svelte fences with braces, Vue with attribute quotes.
-_FENCE_BYTES = frozenset({_OPEN_BRACE, _CLOSE_BRACE, _DOUBLE_QUOTE, _SINGLE_QUOTE})
+# expression. Svelte fences with braces, Vue with attribute quotes, Astro with
+# the ``>`` of a script's opening tag.
+_FENCE_BYTES = frozenset({_OPEN_BRACE, _CLOSE_BRACE, _DOUBLE_QUOTE, _SINGLE_QUOTE, _CLOSE_ANGLE})
+# ``bytes.translate`` table: every byte but a newline blanks to a space.
+_BLANK_TABLE = bytes(b if b in (_NEWLINE, _CARRIAGE_RETURN) else _SPACE for b in range(256))
 
 
 class SfcScan(NamedTuple):
@@ -132,11 +139,13 @@ class SfcScan(NamedTuple):
     terminators: tuple[int, ...]
     # (component_name, line) for every markup tag naming a component.
     component_tags: tuple[tuple[str, int], ...]
-    # True when the markup grammar itself could not parse the file cleanly.
-    has_error: bool
+    # (tag, value, bundled) of each Astro markup ``<script src>`` / ``<link href>``,
+    # in source order; the projection blanks them, so the parser reads them here.
+    # ``bundled``: a ``<script>`` with no attribute but ``src``, which Astro imports.
+    asset_refs: tuple[tuple[str, str, bool], ...] = ()
 
 
-_EMPTY_SCAN = SfcScan(js_spans=(), terminators=(), component_tags=(), has_error=False)
+_EMPTY_SCAN = SfcScan(js_spans=(), terminators=(), component_tags=())
 
 
 class Locator(NamedTuple):
@@ -144,7 +153,7 @@ class Locator(NamedTuple):
 
     Two shapes are supported. A **grammar-backed** locator (Svelte, Vue)
     parses the file with a tree-sitter markup grammar and ``visit`` walks
-    every node. A **byte-scanned** locator (Razor) has ``grammar_module`` /
+    every node. A **byte-scanned** locator (Razor, Astro) has ``grammar_module`` /
     ``visit`` left as None and ``byte_scan`` instead walks the raw bytes;
     there is no usable ``tree-sitter-razor`` on PyPI, and an HTML grammar
     actively mis-parses Razor (``List<Order>`` reads as an HTML element).
@@ -156,10 +165,7 @@ class Locator(NamedTuple):
     grammar_module: str | None = None
     # Called for every node (grammar-backed locators); appends to ``state``.
     visit: Callable[[Node, dict], None] | None = None
-    # Maps a raw markup tag name to the component name it instantiates, or
-    # None when the tag is not a user component.
-    component_name: Callable[[str], str | None] | None = None
-    # Byte-scanned locators (Razor): called once with the raw source bytes;
+    # Byte-scanned locators (Razor, Astro): called once with the raw source bytes;
     # appends ``(start, end)`` spans / terminator offsets / ``(name, line)``
     # component tags to ``state`` exactly like a grammar walk would.
     byte_scan: Callable[[bytes, dict], None] | None = None
@@ -379,7 +385,6 @@ _RAZOR_BLOCK_OPENERS = (b"code", b"functions", b"{")
 # Razor expression inside ``<!-- -->`` still runs, so only the tag pass skips
 # them.
 _RAZOR_COMMENT_CLOSE = b"*@"
-_HTML_COMMENT_OPEN = b"<!--"
 _HTML_COMMENT_CLOSE = b"-->"
 
 
@@ -554,39 +559,38 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
     # Skip any ``<`` inside a C# region or a Razor comment: ``List<Order>`` is
     # a generic type argument, ``a < b`` is a comparison, and a commented-out
     # tag renders nothing. HTML comments are jumped over for the same reason.
-    hidden = tuple(state["spans"]) + tuple(comments)
+    _byte_scan_tags(source, [*state["spans"], *comments], state)
 
-    def _is_hidden(offset: int) -> bool:
-        return any(start <= offset < end for start, end in hidden)
 
-    pos = 0
-    while True:
-        lt = source.find(b"<", pos)
-        if lt < 0:
-            break
-        if _is_hidden(lt):
-            pos = lt + 1
+_MARKUP_TAG = re.compile(rb"<(?:!--|([\w.]+))")
+
+
+def _byte_scan_tags(source: bytes, hidden: list[tuple[int, int]], state: dict) -> None:
+    """Record ``(name, line)`` for each Razor component tag outside the disjoint ``hidden`` ranges.
+
+    HTML comments are skipped too.
+    """
+    hidden = sorted(hidden)
+    starts = [start for start, _end in hidden]
+    pos = line_pos = 0
+    line = 1
+    while (tag := _MARKUP_TAG.search(source, pos)) is not None:
+        pos = tag.end()
+        index = bisect_right(starts, tag.start()) - 1
+        if index >= 0 and tag.start() < hidden[index][1]:
+            pos = hidden[index][1]
             continue
-        if source.startswith(_HTML_COMMENT_OPEN, lt):
-            close = source.find(_HTML_COMMENT_CLOSE, lt + len(_HTML_COMMENT_OPEN))
+        if tag.group(1) is None:
+            close = source.find(_HTML_COMMENT_CLOSE, pos)
             pos = len(source) if close < 0 else close + len(_HTML_COMMENT_CLOSE)
             continue
-        name_start = lt + 1
-        name_end = name_start
-        while name_end < len(source) and (
-            source[name_end : name_end + 1].isalnum()
-            or source[name_end : name_end + 1] in (b"_", b".")
-        ):
-            name_end += 1
-        if name_end > name_start:
-            # A namespace-qualified tag (``<Shared.Grid />``) instantiates the
-            # last dotted segment.
-            raw = source[name_start:name_end].decode("utf-8", errors="replace")
-            name = _razor_component_name(raw.rsplit(".", 1)[-1])
-            if name:
-                line = source.count(b"\n", 0, lt) + 1
-                state["tags"].append((name, line))
-        pos = lt + 1
+        # A namespace-qualified tag (``<Shared.Grid />``) instantiates the last
+        # dotted segment.
+        name = _razor_component_name(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
+        if name:
+            line += source.count(b"\n", line_pos, tag.start())
+            line_pos = tag.start()
+            state["tags"].append((name, line))
 
 
 def _razor_component_name(name: str) -> str | None:
@@ -600,6 +604,214 @@ def _razor_component_name(name: str) -> str | None:
     if not name or not name[0].isupper():
         return None
     return name
+
+
+# ---------------------------------------------------------------------------
+# Astro
+# ---------------------------------------------------------------------------
+
+# The ``---`` fence opens the file after an optional BOM and any whitespace, as
+# in Astro's compiler (``FrontmatterInitial``). Astro also closes on an
+# indented ``---`` or one right after a ``;`` / ``}`` on the same line; a
+# ``// ---`` divider comment matches neither.
+# shortcut: a ``---`` line inside a template literal closes the block early
+# (Astro reads strings); fine until a real file does that.
+_ASTRO_FRONTMATTER = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?\s*---[ \t]*\r?\n(.*?)(?:^[ \t]*|(?<=[;}]))---[ \t]*\r?$",
+    re.DOTALL | re.MULTILINE,
+)
+# A ``{...}`` attribute value up to two braces deep, stepping over JS strings
+# (``{"}"}``), but not a quote after a word byte (``/* it's */``). Possessive
+# repeats never back up, so an unclosed one stays linear.
+_ASTRO_JS_BYTE = rb"""(?:(?<!\w)"[^"\n]*"|(?<!\w)'[^'\n]*'|`[^`]*`|[^{}])"""
+_ASTRO_BRACE = rb"\{(?:%b|\{%b*+\})*+\}" % (_ASTRO_JS_BYTE, _ASTRO_JS_BYTE)
+# One start tag: group 2 names a script, style or link, group 3 holds the
+# attributes. Case-sensitive: Astro reads ``<Script>`` as a component. Values may
+# hold ``>`` (``=>``), and the tag is consumed whole, so ``<script>`` in a value is
+# skipped. A ``{`` that does not balance is a plain byte, so the tag still ends at
+# a ``>`` or EOF in one match, as an unclosed quote does.
+# shortcut: in a ``{...}`` value nested 3+ braces deep, a ``>`` outside the two
+# innermost braces ends the tag; widen the brace group once a real file does that.
+# shortcut: ``{"\"}"}``, a quote in a regex literal (``/"/g``), a string right after
+# a word (``return"}"``) and unquoted ``title=it's`` overrun the tag; fine until a real file does.
+_ASTRO_START_TAG = (
+    rb"<(?:(script|style|link)|[A-Za-z][\w.-]*)(?=[\s/>])"
+    rb"((?:\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z)|%b|\{|[^>\"'{])*)(?:>|\Z)" % _ASTRO_BRACE
+)
+# The markup scan, outside and inside a ``{expr}``. Group 1 opens a hidden run,
+# group 4 enters or leaves an expression or an element inside one. ``<!--`` hides
+# text that may mention ``<script>``; in an expression JS strings and comments do
+# too (``{"<style>"}``, ``{ /* */ }``), while ``{cond && <script>}`` still opens one.
+# A bare ``/*`` in markup is text (``accept="audio/*"``). A ``<style>`` body is
+# hidden whole, which covers its CSS comments. ``<link>`` has no body; it is named
+# for its ``href``.
+# shortcut: expression JS is read without regex literals or ``${`...`}`` nesting,
+# an element left open in one (``<br>``) holds markup until its ``}``, and ``a<b ?``
+# reads as a tag up to its ``>``, hiding any tag before it (``{i<n && <Card />}``);
+# parse expressions as JS once a real file trips one of these.
+_ASTRO_MARKUP = re.compile(rb"(<!--)|" + _ASTRO_START_TAG + rb"|(</|<>|[{}])")
+# No element is open at expression level, so ``</`` closes nothing there and is no
+# token: ``{a </* <Card /> */}`` keeps its comment.
+_ASTRO_EXPR = re.compile(rb"(<!--|/\*|//|[\"'`])|" + _ASTRO_START_TAG + rb"|(<>|[{}])")
+# Where each hidden run ends: ``<!--``, ``/*`` and a template literal at their close
+# or EOF, a ``//`` comment and a ``'...'`` or ``"..."`` string at the line end.
+_ASTRO_HIDDEN_END = {
+    b"<!--": re.compile(rb".*?(?:-->|\Z)", re.DOTALL),
+    b"/*": re.compile(rb".*?(?:\*/|\Z)", re.DOTALL),
+    b"//": re.compile(rb"[^\n]*"),
+    b'"': re.compile(rb'(?:\\.|[^"\\\n])*"?', re.DOTALL),
+    b"'": re.compile(rb"(?:\\.|[^'\\\n])*'?", re.DOTALL),
+    b"`": re.compile(rb"(?:\\.|[^`\\])*`?", re.DOTALL),
+}
+# An unterminated body runs to EOF (``\Z``).
+_ASTRO_CLOSE = {
+    b"script": re.compile(rb"</script\s*>|\Z", re.IGNORECASE),
+    b"style": re.compile(rb"</style\s*>|\Z", re.IGNORECASE),
+}
+_ASTRO_SCRIPT_TYPE = re.compile(rb"""(?<![\w.-])type\s*=(?!=)\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+# The ``src`` / ``href`` value in a ``<script>`` / ``<link>`` opener's attributes. The
+# lazy prefix steps over quoted and ``{...}`` values whole, so ``title="src=./x"``
+# is not read, and a ``{url}`` value is an expression, which no value form matches.
+# A ``{`` that does not balance is a plain byte, as in the start tag; atomic, so a
+# value up to two braces deep is never re-entered to read a ``src =`` inside it.
+# shortcut: in a value nested 3+ braces deep, a ``src =``, ``href =`` or ``is:raw``
+# outside the two innermost braces is read; widen the brace group once a real file does that.
+_ASTRO_ATTR_PREFIX = rb"""(?:"[^"]*"|'[^']*'|(?>%b|\{)|[^"'{])*?""" % _ASTRO_BRACE
+_ASTRO_REF = {
+    tag: re.compile(
+        _ASTRO_ATTR_PREFIX
+        + rb"""(?<![\w.:-])%b\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'{}<>=`]+))""" % attr,
+        re.IGNORECASE,
+    )
+    for tag, attr in ((b"script", b"src"), (b"link", b"href"))
+}
+# An ``is:raw`` attribute name, not one inside a value (``title="no is:raw"``).
+_ASTRO_RAW = re.compile(_ASTRO_ATTR_PREFIX + rb"(?<![\w.:-])is:raw(?![\w.:-])")
+# A ``<script>`` whose only attribute is ``src``: Astro bundles it as ``import "<src>"``
+# (a ``<link>`` has no ``src``).
+_ASTRO_LONE_SRC = re.compile(
+    rb"""\s*src\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'{}<>=`]+)\s*(?:/\s*)?""", re.IGNORECASE
+)
+# A ``<script>`` with any other ``type`` (``application/ld+json``) holds data.
+_ASTRO_JS_TYPES = frozenset(
+    {b"module", b"text/javascript", b"application/javascript", b"text/typescript"}
+)
+
+
+def _astro_byte_scan(source: bytes, state: dict) -> None:
+    """Locate the frontmatter, ``<script>`` bodies and component tags of ``.astro`` bytes.
+
+    The leading ``---`` frontmatter and every JS ``<script>`` body (plain,
+    ``is:inline``, ``type="module"``, ``define:vars``) project as TypeScript.
+    Markup ``{expr}`` and ``<style>`` are blanked, and a ``<script>`` inside an
+    HTML comment, a ``<style>`` or ``is:raw`` body or a string or comment of a
+    markup ``{expr}`` is skipped. PascalCase tags in the markup mint component call
+    edges, as for Svelte. Each markup ``<script src>`` / ``<link href>`` is
+    recorded as an asset ref, which the parser turns into an import.
+    """
+    markup_start = 0
+    frontmatter = _ASTRO_FRONTMATTER.match(source)
+    if frontmatter:
+        state["spans"].append(frontmatter.span(1))
+        markup_start = frontmatter.end()
+    _astro_record_scripts(source, markup_start, state)
+    # The walk records each tag at its byte offset, in order; one newline count makes lines.
+    line, line_pos = 1, 0
+    for index, (name, start) in enumerate(state["tags"]):
+        line += source.count(b"\n", line_pos, start)
+        line_pos = start
+        state["tags"][index] = (name, line)
+
+
+def _astro_record_scripts(source: bytes, pos: int, state: dict) -> None:
+    """Record JS ``<script>`` bodies, refs and component tags from ``pos`` on.
+
+    Comments, markup-expression strings, and script and style elements are skipped.
+    """
+    # "{" per open markup expression, "<" per element open inside one: its
+    # children are markup again (``{ok && <p>Don't</p>}``) until its end tag.
+    nesting: list[bytes] = []
+    while (
+        token := (_ASTRO_EXPR if nesting[-1:] == [b"{"] else _ASTRO_MARKUP).search(source, pos)
+    ) is not None:
+        if token.group(1) is not None:
+            pos = _ASTRO_HIDDEN_END[token.group(1)].match(source, token.end()).end()
+        elif token.group(4) is not None:
+            _astro_nest(nesting, token.group(4))
+            pos = token.end()
+        else:
+            pos = _astro_open_tag(source, token, nesting, state)
+
+
+def _astro_nest(nesting: list[bytes], token: bytes) -> None:
+    """Enter or leave a markup ``{expr}``, or an element (``<>`` too) inside one."""
+    if token == b"{":
+        nesting.append(token)
+    elif token == b"}":
+        # Also closes any element left open in the expression (``<br>``).
+        while nesting and nesting.pop() != b"{":
+            pass
+    elif token == b"</":
+        if nesting[-1:] == [b"<"]:
+            nesting.pop()
+    elif nesting:
+        nesting.append(b"<")
+
+
+def _astro_open_tag(
+    source: bytes,
+    opener: re.Match[bytes],
+    nesting: list[bytes],
+    state: dict,
+) -> int:
+    """Read one start tag and any script or style body; return where the scan resumes."""
+    tag, attrs = opener.group(2), opener.group(3)
+    # The name ends at whitespace, ``/`` or ``>``, as in Astro's tokenizer; a dotted
+    # tag (``<Icons.Star />``) instantiates its last segment.
+    # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) reads as a tag; fine
+    # until a false component edge shows up in a real repo.
+    full_name = source[opener.start() + 1 : opener.start(3)]
+    if component := _astro_component_name(full_name.decode().rsplit(".", 1)[-1]):
+        state["tags"].append((component, opener.start()))
+    _astro_record_ref(tag, attrs, state)
+    if attrs.rstrip().endswith(b"/"):
+        return opener.end()
+    if tag is None and _ASTRO_RAW.match(attrs):
+        # An ``is:raw`` body is text (a lone ``{`` is legal), skipped like a <style>
+        # body to the end tag of the full name (``</M.Katex>``).
+        return re.compile(rb"</%b\s*>|\Z" % re.escape(full_name)).search(source, opener.end()).end()
+    if tag not in _ASTRO_CLOSE:
+        # A <link> has no body; another element inside an expression holds markup.
+        if tag is None and nesting:
+            nesting.append(b"<")
+        return opener.end()
+    close_match = _ASTRO_CLOSE[tag].search(source, opener.end())
+    end = close_match.start()
+    if _astro_is_js_script(tag, attrs):
+        state["spans"].append((opener.end(), end))
+        state["terminators"].append(opener.end() - 1)
+    return close_match.end()
+
+
+def _astro_record_ref(tag: bytes | None, attrs: bytes, state: dict) -> None:
+    """Record a ``<script src>`` / ``<link href>`` value as ``(tag, value, bundled)``."""
+    ref = _ASTRO_REF[tag].match(attrs) if tag in _ASTRO_REF else None
+    value = next((v for v in ref.groups() if v is not None), b"").strip() if ref else b""
+    if value:
+        bundled = _ASTRO_LONE_SRC.fullmatch(attrs) is not None
+        state["refs"].append((tag.decode(), value.decode("utf-8", "replace"), bundled))
+
+
+def _astro_is_js_script(tag: bytes, attrs: bytes) -> bool:
+    if tag != b"script":
+        return False
+    script_type = _ASTRO_SCRIPT_TYPE.search(attrs)
+    return script_type is None or script_type.group(1).lower() in _ASTRO_JS_TYPES
+
+
+def _astro_component_name(name: str) -> str | None:
+    """``<Header />`` instantiates a component; ``<div>`` and ``<Fragment>`` do not."""
+    return None if name == "Fragment" else _razor_component_name(name)
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +832,6 @@ _LOCATORS: dict[str, Locator] = {
     "svelte": Locator(
         grammar_module="tree_sitter_svelte",
         visit=_svelte_visit,
-        component_name=_svelte_component_name,
     ),
     # tree-sitter-html parses a Vue SFC cleanly: <template>, <script> and
     # <style> are just elements to it. There is no tree-sitter-vue on PyPI, and
@@ -628,16 +839,15 @@ _LOCATORS: dict[str, Locator] = {
     "vue": Locator(
         grammar_module="tree_sitter_html",
         visit=_vue_visit,
-        component_name=_vue_component_name,
     ),
     # Razor has no usable tree-sitter grammar on PyPI, and an HTML grammar
     # actively mis-parses it (``List<Order>`` reads as an HTML element). The
     # locator byte-scans instead: ``@code`` / ``@functions`` / ``@{ }``
     # interiors project as C#, PascalCase tags become component calls.
-    "razor": Locator(
-        component_name=_razor_component_name,
-        byte_scan=_razor_byte_scan,
-    ),
+    "razor": Locator(byte_scan=_razor_byte_scan),
+    # No tree-sitter-astro on PyPI: the ``---`` frontmatter and ``<script>``
+    # bodies are byte-scanned and project as TypeScript.
+    "astro": Locator(byte_scan=_astro_byte_scan),
 }
 
 
@@ -679,18 +889,17 @@ def scan(language: str, source: bytes) -> SfcScan:
 @lru_cache(maxsize=4)
 def _cached_scan(language: str, source: bytes) -> SfcScan:
     locator = _LOCATORS[language]
-    state: dict = {"spans": [], "terminators": [], "tags": []}
+    state: dict = {"spans": [], "terminators": [], "tags": [], "refs": []}
 
-    # Byte-scanned locator (Razor): no markup grammar exists, so the raw
-    # bytes are scanned directly. There is no tree to carry a parse-error
-    # flag, and a byte scan cannot mis-parse, so ``has_error`` stays False.
+    # Byte-scanned locator (Razor, Astro): no markup grammar exists, so the raw
+    # bytes are scanned directly.
     if locator.byte_scan is not None:
         locator.byte_scan(source, state)
         return SfcScan(
             js_spans=tuple(sorted(state["spans"])),
             terminators=tuple(sorted(state["terminators"])),
             component_tags=tuple(state["tags"]),
-            has_error=False,
+            asset_refs=tuple(state["refs"]),
         )
 
     grammar = _grammar(locator.grammar_module or "")
@@ -710,15 +919,12 @@ def _cached_scan(language: str, source: bytes) -> SfcScan:
         js_spans=tuple(sorted(state["spans"])),
         terminators=tuple(sorted(state["terminators"])),
         component_tags=tuple(state["tags"]),
-        has_error=tree.root_node.has_error,
     )
 
 
 def _blank(source: bytes, scan_result: SfcScan) -> bytes:
     """Blank every non-JS byte, preserving newlines and byte offsets."""
-    out = bytearray(len(source))
-    for index, byte in enumerate(source):
-        out[index] = byte if byte in (_NEWLINE, _CARRIAGE_RETURN) else _SPACE
+    out = bytearray(source.translate(_BLANK_TABLE))
     for start, end in scan_result.js_spans:
         out[start:end] = source[start:end]
     for offset in scan_result.terminators:
@@ -791,4 +997,16 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .parser_helpers import prepare_objectivec_source
 
         return prepare_objectivec_source(source)
+    if language == "apex" and source:
+        from .parser_helpers import prepare_apex_source
+
+        return prepare_apex_source(source)
+    if language == "cobol" and source:
+        from .cobol import prepare_cobol_source
+
+        return prepare_cobol_source(source)
+    if language == "cpp" and source:
+        from .lang_helpers.source_prep import prepare_cpp_source
+
+        return prepare_cpp_source(source)
     return source

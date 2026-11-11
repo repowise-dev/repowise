@@ -389,7 +389,10 @@ async def test_mcp_git_intelligence_flow(mcp_env):
     t = ctx["targets"]["src/auth/login.py"]
     assert t["ownership"]["primary_owner"] == "Alice"
     assert t["ownership"]["owner_pct"] == 0.70
-    assert t["last_change"]["days_ago"] == 443
+    assert t["last_change"]["date"].startswith("2026-03-18")
+    # Days to the repository's newest commit, not the file's age (443): this
+    # is the only git row in the repo, so nothing has changed since.
+    assert t["last_change"]["days_ago"] == 0
 
     # Risk assessment
     risk = await get_risk(["src/auth/login.py", "src/auth/jwt.py"])
@@ -410,11 +413,11 @@ async def test_mcp_dead_code_and_freshness_flow(mcp_env):
     assert dead["summary"]["total_findings"] == 1
     assert dead["tiers"]["high"]["findings"][0]["symbol_name"] == "deprecated_verify"
 
-    # Freshness via get_context (all pages have confidence 0.9)
+    # Freshness via get_context: the page is current, so no freshness block
+    # is sent (it appears only on a stale page or uncommitted edits).
     ctx = await get_context(["src/auth/login.py"], include=["freshness"])
     t = ctx["targets"]["src/auth/login.py"]
-    assert t["freshness"]["confidence_score"] == 0.9
-    assert t["freshness"]["is_stale"] is False
+    assert "freshness" not in t
 
 
 @pytest.mark.asyncio

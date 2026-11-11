@@ -13,6 +13,7 @@ import { FindingsView, type CodeHealthAdapter } from "@repowise-dev/ui/health";
 import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getHealthOverview,
+  getHealthImpactEffort,
   getHealthWorkQueue,
   listHealthFindings,
   getHealthCoverage,
@@ -51,6 +52,8 @@ export function FindingsTab({
       refactoringOpportunityHref(id, opportunityId),
     getHealthWorkQueue: (opts) =>
       getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
+    getImpactEffort: (opts) =>
+      getHealthImpactEffort(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),

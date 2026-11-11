@@ -11,7 +11,7 @@ export type ActionRule =
   | "fresh_regressions"
   | "fragile_file"
   | "fix_concentration"
-  | "hot_path_perf"
+  | "fix_first"
   | "stale_decision"
   | "knowledge_loss"
   | "broken_doc_refs"
@@ -24,6 +24,16 @@ export type ActionHorizonKey = "week" | "quarter";
 
 /** `act_now` is wrong or got worse; `plan` is worth scheduling; `improve_signal` sharpens the other two. */
 export type ActionTier = "act_now" | "plan" | "improve_signal";
+
+/** The heading each tier is listed under; core's `TIER_LABELS`, pinned by the parity test. */
+export const ACTION_TIER_LABELS: Record<ActionTier, string> = {
+  act_now: "Now",
+  plan: "Worth planning",
+  improve_signal: "Improve what Repowise can see",
+};
+
+/** The order tiers are listed in: core's `TIER_LABELS` order, pinned by the parity test. */
+export const ACTION_TIER_ORDER: readonly ActionTier[] = ["act_now", "plan", "improve_signal"];
 
 /** `unknown` is printed as a fact, never read as zero. */
 export type ActionFactBasis = "measured" | "inferred" | "unknown";
@@ -65,11 +75,16 @@ export interface ActionDetail {
   ref: string | null;
 }
 
-/** A way to see more: the MCP call for an agent, the CLI line for a person. */
+/**
+ * A way to see more: the MCP call for an agent, the CLI line for a person.
+ * `tool` and `arguments` are the structured call `mcp` renders, when one exists.
+ */
 export interface ActionCommand {
   purpose: string;
   mcp: string | null;
   cli: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
 }
 
 export interface NextAction {
@@ -87,6 +102,10 @@ export interface NextAction {
   surface: ActionSurface;
   effort: "S" | "M" | "L";
   confidence: "high" | "medium";
+  /** 0 to 4: the Fix first value band, or what the severity says. */
+  value: number;
+  /** Value x confidence / effort: the order inside a tier. */
+  priority: number;
   done_when: string;
   command: string | null;
   /** The biomarker behind the action, for the glossary label. */
@@ -130,8 +149,15 @@ export interface ActionsResponse {
     fix_commits_90d: number;
     busy_threshold: number;
     coverage: "measured" | "stale" | "unknown";
+    /** Too few commits indexed for history-driven rules to rank by. */
+    history_too_short: boolean;
   };
   horizons: Record<ActionHorizonKey, ActionHorizon>;
+  /**
+   * Where things stand in each horizon, in one sentence, worded by core so
+   * every surface says the same thing. Absent from a server that predates it.
+   */
+  summary?: Record<ActionHorizonKey, string>;
   rules: ActionRuleReport[];
   /** Store name to why it could not be read. */
   unavailable: Record<string, string>;

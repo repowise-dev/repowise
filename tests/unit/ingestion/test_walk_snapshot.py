@@ -31,7 +31,7 @@ def tree(tmp_path: Path) -> Path:
         "tests/test_a.py",
         "tests/sub/test_b.py",
         "node_modules/dep/index.js",          # pruned dir
-        "build/gen.go",                       # pruned (derived set)
+        "out/gen.go",                         # pruned (derived set)
         "vendored/.git/HEAD",                 # nested git repo
         "vendored/inner.go",
         "META-INF/services/com.example.Impl",
@@ -80,7 +80,7 @@ class TestWalkSnapshotEquivalence:
         snap = WalkSnapshot(tree, prune_dirs=PRUNED_DIRS_DERIVED)
         hits = {p.name for p in snap.iter_glob(tree, ("*.go", "*.js"))}
         assert "index.js" not in hits   # node_modules pruned
-        assert "gen.go" not in hits     # build pruned (derived set)
+        assert "gen.go" not in hits     # out pruned (derived set)
         assert "inner.go" not in hits   # nested git repo pruned
 
     def test_out_of_tree_root_falls_back_to_live_walk(self, tree: Path, tmp_path_factory) -> None:

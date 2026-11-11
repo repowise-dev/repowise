@@ -14,13 +14,15 @@ ships in its own ``error_handling`` category with an advisory 0.5 cap and
 a floored 0.5 weight, and is excluded from the defect-calibration roster.
 
 Detection happens in the complexity walker's whole-tree pass (see
-``complexity.error_handling._collect_error_handling``); this detector just lifts
+``complexity.error_handling._eh_visit``); this detector just lifts
 the pre-collected hits into findings. Precision-first: unsupported
 languages and parse failures yield zero hits, never a false positive.
 """
 
 from __future__ import annotations
 
+from ....code_origin import path_origin
+from ..complexity import ErrorHandlingHit
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -33,6 +35,33 @@ _REASONS: dict[str, str] = {
     "go_swallow": "error value is checked then ignored, or discarded via the blank identifier",
 }
 
+# Rust invariant assertions (``complexity.rust_unwrap``). They keep their kind
+# (and so their id), state what the call asserts and deduct nothing, like the
+# advisory markers.
+_IDIOM_REASONS: dict[str, str] = {
+    "lock_poison": (
+        "unwrapping a lock panics only if another thread panicked while holding it"
+    ),
+    "thread_join": "unwrapping a thread join re-raises that thread's panic",
+    "invariant_expect": "expect panics with its stated message on a None or Err",
+    "unreachable": "unreachable! asserts this branch cannot run and panics only if it does",
+}
+
+# Rust code that does not ship (a ``build.rs``, an example, a benchmark, a test
+# file) fails by panicking: the panic ends that one run, which is the intent.
+_RUST_PANIC_KINDS = frozenset({"unsafe_unwrap", "panic_macro"})
+_RUST_UNSHIPPED_ORIGINS = frozenset({"build", "docs_example", "tooling", "test"})
+
+
+def _reportable_hits(ctx: FileContext) -> list[ErrorHandlingHit]:
+    """The file's hits, less Rust panics in code that does not ship."""
+    hits = ctx.error_handling_hits
+    if ctx.language != "rust" or not hits:
+        return hits
+    if (ctx.code_origin or path_origin(ctx.file_path)) in _RUST_UNSHIPPED_ORIGINS:
+        return [h for h in hits if h.kind not in _RUST_PANIC_KINDS]
+    return hits
+
 
 class ErrorHandlingDetector:
     name = "error_handling"
@@ -40,7 +69,12 @@ class ErrorHandlingDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for hit in ctx.error_handling_hits:
+        for hit in _reportable_hits(ctx):
+            idiom_reason = _IDIOM_REASONS.get(hit.idiom) if hit.idiom else None
+            details: dict[str, str | float] = {"kind": hit.kind}
+            if idiom_reason is not None:
+                # ``deduction`` in details is what a history refresh replays.
+                details.update(idiom=hit.idiom, deduction=0.0)
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -48,8 +82,9 @@ class ErrorHandlingDetector:
                     function_name=None,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={"kind": hit.kind},
-                    reason=_REASONS.get(hit.kind, hit.kind),
+                    details=details,
+                    reason=idiom_reason or _REASONS.get(hit.kind, hit.kind),
+                    deduction=0.0 if idiom_reason is not None else None,
                 )
             )
         return out

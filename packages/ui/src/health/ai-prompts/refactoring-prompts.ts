@@ -6,9 +6,16 @@ import type {
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
 
-import { typeMeta } from "../../refactoring/meta";
+import { planBlurb, typeMeta } from "../../refactoring/meta";
+import { humanizeBiomarker } from "../../refactoring/opportunity";
 import { blastFiles } from "../../refactoring/types";
-import { planSourceLink, refactoringPlanSteps } from "./refactoring-plan-steps";
+import {
+  LINE_RULE_TEXT,
+  planSourceLink,
+  refactoringPlanSteps,
+  SCRIPT_RULE_TEXT,
+  verifySubject,
+} from "./refactoring-plan-steps";
 import {
   bulletList,
   closingSections,
@@ -17,6 +24,8 @@ import {
   joinSections,
   pluralS,
   repoSuffix,
+  verifyLines,
+  verifySection,
   type AiPromptFlavor,
 } from "./shared";
 
@@ -42,6 +51,15 @@ export function buildPerformanceOpportunityPrompt({
   const intervention = opportunity.intervention_symbol
     ? `Candidate shared intervention: \`${opportunity.intervention_symbol}\`.`
     : "No shared intervention was proven.";
+  const subject = (
+    opportunity.intervention_symbol ??
+    opportunity.terminal_sink ??
+    opportunity.file_path
+  )
+    .split("::")
+    .pop() ?? opportunity.file_path;
+  // An older payload carries no validation; it keeps no Verify block.
+  const verify = opportunity.validation ? verifySection(opportunity.validation, [subject]) : "";
 
   return [
     FLAVOR_PREAMBLE[flavor],
@@ -61,11 +79,14 @@ export function buildPerformanceOpportunityPrompt({
     "",
     evidence.length ? evidence.join("\n") : "No resolved evidence paths were included in this page.",
     "",
+    ...(verify ? [verify, ""] : []),
     "## What to do",
     "",
     "1. Verify the repeated cost and caller-to-sink paths against the real code.",
     "2. Determine whether one behavior-preserving intervention safely addresses the shared cause.",
-    "3. Identify the tests and commands that prove result equivalence and performance improvement.",
+    verify
+      ? "3. Use the tests under Verify to prove result equivalence, and add a measurement that shows the performance improvement."
+      : "3. Identify the tests and commands that prove result equivalence and performance improvement.",
     "4. If the evidence is insufficient or the intervention is unsafe, stop and explain the blocker instead of editing.",
     "",
     "Do not run commands or change files until the evidence and proposed validation have been reviewed.",
@@ -84,39 +105,26 @@ function codeList(items: string[], separator = ", "): string {
 }
 
 /** How many tests guard the change and how that was established. */
-function guardingTests(v: RecommendationValidation): string {
-  if (v.basis === "unknown") {
-    return "No measured or inferred guarding test was found; treat this as a validation gap.";
-  }
-  return `${v.total} guarding test${pluralS(v.total)} via ${v.via ?? v.basis}${
-    v.truncated ? ` (showing ${v.tests.length})` : ""
-  }.`;
-}
-
-function testsLine(v: RecommendationValidation): string | null {
-  return v.tests.length ? `Tests: ${codeList(v.tests)}.` : null;
-}
-
-function runLine(v: RecommendationValidation): string | null {
-  return v.commands.length ? `Run: ${codeList(v.commands, "; ")}.` : null;
+function guardingTests(v: RecommendationValidation): string | null {
+  // With none listed, the Verify block already says to add one.
+  if (v.basis === "unknown" || v.tests.length === 0) return null;
+  return `${v.total} guarding test${pluralS(v.total)} via ${v.via ?? v.basis}.`;
 }
 
 function recommendationValidation(plan: RefactoringPlan): string {
   const validation = plan.validation;
   if (!validation) return "";
   return [
-    "## Validation plan",
+    verifySection(validation, [verifySubject(plan)]),
     "",
     bulletList([
       guardingTests(validation),
-      testsLine(validation),
       validation.affected_files.length
         ? `Affected files: ${codeList(validation.affected_files)}.`
         : null,
       validation.affected_symbols.length
         ? `Affected symbols: ${codeList(validation.affected_symbols)}.`
         : null,
-      runLine(validation),
     ]),
   ].join("\n");
 }
@@ -146,6 +154,11 @@ function planFacts(plan: RefactoringPlan, blurb: string): string {
 /**
  * Hand an agent ONE precomputed refactoring plan to execute and verify, with
  * its per-type steps, blast radius and completion contract.
+ *
+ * Fallback only: the server renders this prompt in core
+ * (`/refactoring/{id}/prompt`). Kept for a host talking to a server older than
+ * that route (the VS Code extension supports servers from 0.47); remove with
+ * the opportunity builder below once no supported server lacks it.
  */
 export function buildRefactoringPlanPrompt({
   plan,
@@ -167,7 +180,7 @@ export function buildRefactoringPlanPrompt({
     "",
     `## ${meta.label}${repoSuffix(repoName)}`,
     "",
-    planFacts(plan, meta.blurb),
+    planFacts(plan, planBlurb(plan)),
     "",
     "## The plan",
     "",
@@ -194,10 +207,10 @@ export interface BuildRefactoringOpportunityPromptOptions {
 function stepApplicabilityLine(step: OpportunityStep): string {
   const classification =
     step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment";
-  const reasons = step.applicability.reasons.map((r) => r.replace(/_/g, " ")).join("; ");
+  const reasons = step.applicability.reasons.map(humanizeBiomarker).join("; ");
   const unknowns = step.applicability.unknowns.length
     ? ` Not established: ${step.applicability.unknowns
-        .map((u) => u.replace(/_/g, " "))
+        .map(humanizeBiomarker)
         .join(", ")}.`
     : "";
   return `${classification}${reasons ? ` — ${reasons}` : ""}.${unknowns}`;
@@ -267,13 +280,32 @@ function opportunityEvidence(opportunity: RefactoringOpportunityDetailResolved):
   ]);
 }
 
-/** The validation profiles the steps share, with their runnable commands. */
+/** What each validation profile's steps change, so a missing test names it. */
+function profileSubjects(opportunity: RefactoringOpportunityDetailResolved, id: string): string[] {
+  const plans = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
+  const subjects = opportunity.steps
+    .filter((step) => step.validation_profile_id === id)
+    .map((step) => {
+      const plan = plans.get(step.plan_id);
+      return plan ? verifySubject(plan) : step.target_symbol || step.file_path;
+    });
+  return subjects.length ? [...new Set(subjects)] : [opportunity.file_path];
+}
+
+/** The validation profiles the steps share: ranked tests with reasons and commands. */
 function opportunityValidation(opportunity: RefactoringOpportunityDetailResolved): string {
-  if (opportunity.validation_profiles.length === 0) return "";
-  const blocks = opportunity.validation_profiles.map((profile) =>
-    bulletList([guardingTests(profile), testsLine(profile), runLine(profile)]),
-  );
-  return ["## Validation plan", "", blocks.join("\n")].join("\n");
+  const profiles = opportunity.validation_profiles;
+  if (profiles.length === 0) return "";
+  const blocks = profiles.map((profile) => {
+    const subjects = profileSubjects(opportunity, profile.id);
+    const summary = guardingTests(profile);
+    return [
+      ...(profiles.length > 1 ? [`### For ${codeList(subjects)}`, ""] : []),
+      ...(summary ? [summary, ""] : []),
+      ...verifyLines(profile, subjects),
+    ].join("\n");
+  });
+  return ["## Verify", "", blocks.join("\n\n")].join("\n");
 }
 
 /**
@@ -321,7 +353,7 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
     `Opportunity: \`${opportunity.opportunity_id}\``,
     `File: \`${opportunity.file_path}\``,
     opportunity.lead_biomarker
-      ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
+      ? `Leading cause: ${humanizeBiomarker(opportunity.lead_biomarker)}.`
       : null,
     `${opportunity.step_count} step${pluralS(opportunity.step_count)}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
     opportunity.recoverable_health > 0
@@ -335,7 +367,8 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
 /**
  * Hand an agent ONE composed refactoring opportunity: its ordered steps with the
  * mechanical/judgment split, evidence, validation and stable id. The multi-step
- * sibling of `buildRefactoringPlanPrompt`.
+ * sibling of `buildRefactoringPlanPrompt`, and a fallback the same way: the
+ * server renders it at `/refactoring/opportunities/{id}/prompt`.
  */
 export function buildRefactoringOpportunityPrompt({
   opportunity,
@@ -345,6 +378,15 @@ export function buildRefactoringOpportunityPrompt({
   const meta = typeMeta(opportunity.lead_refactoring_type || "");
   const others = opportunity.affected_files.filter((f) => f !== opportunity.file_path);
   const anyRelocated = opportunity.steps.some((step) => Boolean(step.relocated_by));
+  // Extract Method's apply rules, only when a step is one; find-by-text only
+  // when its plan carries anchors.
+  const plans = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
+  const extracts = opportunity.steps
+    .filter((step) => step.refactoring_type === "extract_method")
+    .map((step) => plans.get(step.plan_id));
+  const anchored = extracts.some(
+    (plan) => Boolean(((plan?.plan ?? {}) as Record<string, unknown>).anchors),
+  );
 
   const constraintList = [
     "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
@@ -353,6 +395,8 @@ export function buildRefactoringOpportunityPrompt({
       ? "Where a step says to locate its symbol again, do that before touching it: an earlier step moves it, so the recorded path and lines go stale mid-run."
       : null,
     "A step marked Judgment has an unproven obligation. Read the real code and decide before applying it; do not treat it like a mechanical one.",
+    extracts.length > 0 ? SCRIPT_RULE_TEXT : null,
+    anchored ? LINE_RULE_TEXT : null,
     "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
     "If, after reading the real code, a step looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
     others.length > 0 ? `Keep these co-affected files consistent: ${codeList(others)}.` : null,

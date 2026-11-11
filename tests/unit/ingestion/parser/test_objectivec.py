@@ -424,6 +424,35 @@ BLOCK_INVOCATION = b"""\
 
 
 class TestObjectiveCBlockInvocation:
+    def test_a_c_call_in_a_local_initializer_survives(self, parser: ASTParser) -> None:
+        src = b"""\
+int MakeCount(void) { return 1; }
+void caller(void) {
+    int count = MakeCount();
+}
+"""
+        result = parser.parse_file(_objc("Count.m"), src)
+        assert result.parse_errors == []
+        assert [(c.target_name, c.caller_symbol_id) for c in result.calls] == [
+            ("MakeCount", "Count.m::caller")
+        ]
+
+    def test_an_initializer_reference_does_not_shadow_a_c_function(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"""\
+int MakeCount(void) { return 1; }
+void caller(void) {
+    int count = MakeCount();
+    MakeCount();
+}
+"""
+        result = parser.parse_file(_objc("Count.m"), src)
+        assert [(c.target_name, c.caller_symbol_id) for c in result.calls] == [
+            ("MakeCount", "Count.m::caller"),
+            ("MakeCount", "Count.m::caller"),
+        ]
+
     def test_a_block_parameter_call_is_not_an_edge(self, parser: ASTParser) -> None:
         # `completionBlock(YES)` invokes the method's own block parameter. It
         # is a call_expression on a bare identifier, indistinguishable from a

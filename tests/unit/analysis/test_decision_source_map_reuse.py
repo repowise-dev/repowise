@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.analysis.decision_extractor import DecisionExtractor
+from repowise.core.analysis.decisions.source_files import iter_source_files
 
 # Fixtures use ``\n``-escaped single-line string concatenation on purpose: no
 # PHYSICAL line in this committed file begins with a comment marker, so a real
@@ -115,3 +116,14 @@ async def test_restrict_skips_missing_files(tmp_path):
         restrict_to_files=["src/app.py", "src/gone.py"]
     )
     assert {d.evidence_file for d in decisions} == {"src/app.py"}
+
+
+def test_fallback_walk_reads_a_source_package_named_build(tmp_path: Path) -> None:
+    """The walk prunes a ``dist`` bundle but not a source package named ``build`` (#3237)."""
+    for rel in ("src/build/render.ts", "dist/index.js", "src/app.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("// DECISION: x\n", encoding="utf-8")
+
+    found = {p.relative_to(tmp_path).as_posix() for p in iter_source_files(tmp_path)}
+
+    assert found == {"src/build/render.ts", "src/app.py"}

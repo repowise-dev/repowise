@@ -169,12 +169,11 @@ def test_the_target_projection_drops_exactly_what_it_documents() -> None:
 
 
 def test_the_projection_keeps_the_blocks_a_caller_cannot_get_elsewhere() -> None:
-    """``pr_blast_radius`` survives because ``recommended_reviewers`` has no
-    substitute anywhere else in the response."""
+    """``pr_blast_radius`` survives the projection whole."""
     payload = {
         "directive": {"status": "review"},
         "targets": {},
-        "pr_blast_radius": {"recommended_reviewers": ["dev"]},
+        "pr_blast_radius": {"test_gaps": ["a.py"]},
         "global_hotspots": [{"path": "a.py"}],
         "risk_scales": [{"unit": "items"}],
         "omission_marker": "repowise#abc",
@@ -203,6 +202,32 @@ def test_an_absent_block_is_omitted_rather_than_nulled() -> None:
 
 def test_the_projection_survives_a_payload_with_no_targets_key() -> None:
     assert project_risk({})["targets"] == {}
+
+
+def test_a_history_tier_card_prints_its_history_not_hotspot_zeros() -> None:
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from repowise.cli.commands.risk_cmd import card as risk_card
+
+    card = {
+        "signal_tier": "history",
+        "commit_count_total": 11,
+        "last_commit_at": "2026-03-01T00:00:00",
+        "trend": "stable",
+        "primary_owner": "Carol",
+        "owner_pct": 0.5,
+    }
+    projected = project_risk({"targets": {"queries/java.scm": card}})["targets"]["queries/java.scm"]
+    assert projected["signal_tier"] == "history" and projected["commit_count_total"] == 11
+    rec = Console(record=True, width=300)
+    with patch.object(risk_card, "console", rec):
+        risk_card._render_card("queries/java.scm", projected)
+    out = rec.export_text()
+    assert "history only · 11 commits (stable) · last 2026-03-01" in out
+    assert "Carol" in out
+    assert "hotspot" not in out and "direct dependents" not in out
 
 
 # ---------------------------------------------------------------------------

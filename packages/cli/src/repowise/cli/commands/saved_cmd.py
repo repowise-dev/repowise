@@ -97,6 +97,7 @@ def saved_command(
     reported as "nothing recorded" rather than as zero. Covers the distill
     path, the replacement hooks and MCP calls; ``--by surface`` splits them.
     """
+    from repowise.cli.helpers import find_repowise_repo_root
     from repowise.core.distill.store import default_store_path
     from repowise.core.savings.service import load_report
 
@@ -104,7 +105,10 @@ def saved_command(
     since_ts = _parse_since(since)
     window_days = _window_days(since_ts)
 
-    start = Path(path).resolve() if path else Path.cwd()
+    base = Path(path).resolve() if path else Path.cwd()
+    # The ledger is filed under the repository root, so a subdirectory reads
+    # the root's report instead of an empty one.
+    start = find_repowise_repo_root(base) or base
 
     if show_missed:
         # Resolved only on this branch. Detection scans the local agent
@@ -707,8 +711,8 @@ def _resolve_pricing(repo_root: Path, override: str | None) -> tuple[str, str]:
 def _rewrite_hook_installed() -> bool:
     """True when any agent surface has a rewrite hook that can actually fire.
 
-    Mirrors the doctor check: Claude Code is always considered, Codex only
-    when it is actually present on the machine. Registered is not enough — an
+    Mirrors the doctor check: Claude Code is always considered, Codex and
+    Cursor only when actually present on the machine. Registered is not enough — an
     entry whose matcher names a renamed tool fires on nothing, and telling
     someone their hook is installed is the one answer that hides why the rows
     below it are still there.
@@ -723,8 +727,9 @@ def _rewrite_hook_installed() -> bool:
 
         if live(ClaudeCodeAdapter()):
             return True
-        codex = CodexAdapter()
-        return codex.detect() and live(codex)
+        from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+        return any(a.detect() and live(a) for a in (CodexAdapter(), CursorAdapter()))
     except Exception:
         return False
 

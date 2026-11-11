@@ -9,6 +9,66 @@ from repowise.core.analysis.dead_code import (
 from tests.unit.dead_code._helpers import _build_graph
 
 
+def test_jsx_prop_guard_keeps_outer_scope_inside_callbacks():
+    from repowise.core.analysis.dead_code.jsx_prop_guards import (
+        extract_guarded_jsx_renders,
+    )
+
+    local_state = """
+function A() {
+  const [show] = useState(false);
+  return items.map(() => show && <Child />);
+}
+"""
+    outer_prop = """
+function A({ show }) {
+  return items.map(() => show && <Child />);
+}
+"""
+    shadowed_callback_param = """
+function A({ show }) {
+  return items.map(show => show && <Child />);
+}
+"""
+    assert extract_guarded_jsx_renders("A.tsx", local_state) == []
+    assert ("A", "Child", "show") in extract_guarded_jsx_renders("A.tsx", outer_prop)
+    assert extract_guarded_jsx_renders("A.tsx", shadowed_callback_param) == []
+
+
+def test_jsx_prop_guard_does_not_hide_an_unguarded_use(tmp_path):
+    a_file = tmp_path / "A.tsx"
+    c_file = tmp_path / "C.tsx"
+    child_file = tmp_path / "Child.tsx"
+    app_file = tmp_path / "App.tsx"
+    a_file.write_text("function A(props) { return props.flag && <Child />; }")
+    c_file.write_text("function C() { return <Child />; }")
+    child_file.write_text("export function Child() { return null; }")
+    graph = _build_graph(
+        nodes={
+            str(a_file): {"is_test": False, "symbols": [{"name": "A", "kind": "function"}]},
+            str(c_file): {"is_test": False, "symbols": [{"name": "C", "kind": "function"}]},
+            str(child_file): {"is_test": False, "symbols": [{"name": "Child", "kind": "function"}]},
+            str(app_file): {"is_test": False, "symbols": [{"name": "App", "kind": "function"}]},
+        },
+        edges=[
+            (f"{a_file}::A", f"{child_file}::Child", {"edge_type": "calls"}),
+            (f"{c_file}::C", f"{child_file}::Child", {"edge_type": "calls"}),
+            (
+                f"{app_file}::App",
+                f"{a_file}::A",
+                {"edge_type": "calls", "supplied_props": frozenset()},
+            ),
+            (
+                f"{app_file}::App",
+                f"{c_file}::C",
+                {"edge_type": "calls", "supplied_props": frozenset()},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+    assert analyzer._get_unsatisfied_prop_guard(f"{child_file}::Child", "Child") is None
+
+
 def test_jsx_prop_guard_unsatisfied_reported(tmp_path):
     """Component B behind flag in Component A should be reported when A is rendered without flag."""
     a_content = """

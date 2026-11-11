@@ -292,26 +292,91 @@ def test_the_omission_store_path_matches_distills(repo: Path) -> None:
 
 
 def test_the_replacement_is_smaller_than_what_it_replaced(repo: Path) -> None:
-    replacement = _read(repo).replacement
+    replacement = _served(_read(repo))
     assert replacement is not None
     full = (repo / "pkg" / "big.py").read_text(encoding="utf-8")
     assert len(replacement) < len(full) / 2
 
 
 def test_it_never_exceeds_the_output_cap(repo: Path) -> None:
-    replacement = _read(repo).replacement
+    replacement = _served(_read(repo))
     assert replacement is not None
     assert len(replacement) <= _MAX_OUTPUT_CHARS
 
 
-def test_a_skeleton_too_large_for_the_cap_is_skipped_not_truncated(repo: Path) -> None:
-    """Cutting a skeleton would drop its trailing ranges — so we do not cut."""
+def test_an_outline_too_large_for_the_cap_lists_the_symbols_that_fit(repo: Path) -> None:
+    """Cutting a render would drop its trailing ranges, so the outline drops
+    whole symbols instead: every elided span still names its range."""
+    import re
+
     source = _source(bodies=400, body_lines=8)
     (repo / "pkg" / "big.py").write_text(source, encoding="utf-8")
     (repo / ".repowise" / "wiki.db").unlink()
     _write_index(repo, "pkg/big.py", source)
 
-    assert _read(repo).replacement is None
+    served = _served(_read(repo))
+    assert served is not None
+    assert len(served) <= _MAX_OUTPUT_CHARS
+    listed = re.search(r"Only (\d+) of its 400 symbols fit", served)
+    assert listed is not None
+    assert 0 < int(listed.group(1)) < 400
+    # The last line of the file is still accounted for by a range or a line.
+    total = len(source.splitlines())
+    assert re.search(rf"\(\d+-{total}\)|^\s*{total}\t", served, re.MULTILINE)
+
+
+def test_a_partial_outline_keeps_top_level_symbols_before_nested_ones() -> None:
+    from repowise.cli.commands.augment_cmd.read_skeleton import _rank_for_outline
+    from repowise.core.distill.skeleton import SkeletonSymbol
+
+    symbols = [
+        SkeletonSymbol(name="CONST", kind="constant", start_line=1, end_line=1),
+        SkeletonSymbol(name="method", kind="method", start_line=4, end_line=40),
+        SkeletonSymbol(name="Klass", kind="class", start_line=3, end_line=60),
+        SkeletonSymbol(name="helper", kind="function", start_line=62, end_line=70),
+    ]
+    assert [s.name for s in _rank_for_outline(symbols)] == [
+        "Klass",
+        "helper",
+        "CONST",
+        "method",
+    ]
+
+
+def _long_signature_source(funcs: int = 70) -> str:
+    """Signatures long enough that signatures-only overflows the cap."""
+    out = ['"""Module docstring."""', "", "import os", ""]
+    for i in range(funcs):
+        out.append(f"def func_{i}(")
+        out.extend(f"    parameter_number_{j}: int = {j}," for j in range(9))
+        out.append("    ) -> int:")
+        out.extend(f"    total_{j} = parameter_number_0 + {j}" for j in range(10))
+        out.append("    return total_0")
+        out.append("")
+    return "\n".join(out)
+
+
+def test_a_file_whose_signatures_overflow_the_cap_is_served_as_an_outline(repo: Path) -> None:
+    import re
+
+    source = _long_signature_source()
+    (repo / "pkg" / "big.py").write_text(source, encoding="utf-8")
+    (repo / ".repowise" / "wiki.db").unlink()
+    _write_index(repo, "pkg/big.py", source)
+
+    replacement = _served(_read(repo))
+    assert replacement is not None
+    assert len(replacement) <= _MAX_OUTPUT_CHARS
+    assert "this is its outline" in replacement
+    # Every symbol is listed on its real line, its signature joined onto it.
+    lines = source.splitlines()
+    numbered = re.findall(r"^\s*(\d+)\t(.*)$", replacement, re.MULTILINE)
+    heads = [(int(n), text) for n, text in numbered if text.startswith("def ")]
+    assert len(heads) == 70
+    for n, text in heads:
+        assert text.startswith(lines[n - 1] + "parameter_number_0")
+    # Bodies stay recoverable: every elided span still names its range.
+    assert re.search(r"\.\.\. \d+ lines \(\d+-\d+\)", replacement)
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +391,45 @@ def test_it_is_off_unless_the_repo_opted_in(repo: Path) -> None:
     (repo / ".repowise" / "config.yaml").unlink()
     assert _read(repo).replacement is None
     assert enabled(repo) is False
+
+
+def test_a_file_edited_since_the_index_is_left_alone(repo: Path) -> None:
+    """Lines inserted above the symbols move them off their indexed bounds."""
+    path = repo / "pkg" / "big.py"
+    path.write_text("# added\n" * 3 + path.read_text("utf-8"), encoding="utf-8")
+    assert _read(repo).replacement is None
+
+
+def test_one_moved_symbol_is_enough_to_count_as_stale() -> None:
+    """An edit in the second-to-last body moves only the last symbol."""
+    from repowise.cli.commands.augment_cmd.read_skeleton import _bounds_current
+    from repowise.core.distill.skeleton import SkeletonSymbol
+
+    lines = ["def a():", "    pass", "def b():", "    x = 1", "    y = 2", "def c():", "    pass"]
+    indexed = [
+        SkeletonSymbol(name="a", kind="function", start_line=1, end_line=2),
+        SkeletonSymbol(name="b", kind="function", start_line=3, end_line=4),
+        SkeletonSymbol(name="c", kind="function", start_line=5, end_line=6),
+    ]
+    assert _bounds_current(lines, indexed) is False
+    indexed[2] = SkeletonSymbol(name="c", kind="function", start_line=6, end_line=7)
+    assert _bounds_current(lines, indexed) is True
+    # A symbol indexed from the tail of a multi-line decorator is still in place.
+    decorated = ["@pytest.mark.parametrize(", "    'x',", "    [1, 2],", ")", "def test_x(x):", "    pass"]
+    tail = [SkeletonSymbol(name="test_x", kind="function", start_line=4, end_line=6)]
+    assert _bounds_current(decorated, tail) is True
+    # A comment between a decorator and its declaration is still lead-in.
+    noted = ["@cached", "# note", "def f():", "    pass"]
+    assert _bounds_current(noted, [SkeletonSymbol(name="f", kind="function", start_line=1, end_line=4)]) is True
+    # One line inserted above a symbol lands its start on the blank line.
+    shifted = ["def a():", "    pass", "", "", "def b():", "    pass"]
+    assert _bounds_current(shifted, [SkeletonSymbol(name="b", kind="function", start_line=4, end_line=5)]) is False
+    # A short name inside a longer word is not a match.
+    moved = ["def get_user(uid):", "    return get_user_row(uid)"]
+    assert _bounds_current(moved, [SkeletonSymbol(name="get", kind="function", start_line=2, end_line=2)]) is False
+    # A name the declaration does not spell out is not held against the file.
+    indexed.append(SkeletonSymbol(name="<anonymous>", kind="function", start_line=7, end_line=7))
+    assert _bounds_current(lines, indexed) is True
 
 
 def test_a_ranged_read_is_left_alone(repo: Path) -> None:
@@ -597,6 +701,11 @@ def test_the_saving_is_billed_to_the_ledger_repowise_saved_reads(repo: Path) -> 
     filter_name, source, raw, distilled = rows[0]
     assert (filter_name, source) == ("read_skeleton", "hook-read")
     assert 0 < distilled < raw
+    # The Read it replaced carried Claude Code's line-number gutter.
+    from repowise.core.distill.budget import estimate_read_tokens
+
+    text = (repo / "pkg" / "big.py").read_text(encoding="utf-8")
+    assert raw == estimate_read_tokens(text, numbered=True)
 
 
 # ---------------------------------------------------------------------------
@@ -738,3 +847,56 @@ def test_the_reread_notice_no_longer_fires(repo: Path) -> None:
     for _ in range(3):
         result = _read(repo)
         assert "You already read" not in (result.context or "")
+
+
+def test_the_mode_switch_serves_plus_and_defaults_to_smart(repo: Path, monkeypatch) -> None:
+    """``hooks.read_skeleton_mode: plus`` keeps module code that smart elides."""
+    from repowise.cli.commands.augment_cmd.read_skeleton import (
+        configured_mode,
+        skeleton_replacement,
+    )
+
+    table = "TABLE = {\n" + "".join(f"    'k{i}': {i},\n" for i in range(8)) + "}\n"
+    source = _source() + table
+    (repo / "pkg" / "table.py").write_text(source, encoding="utf-8")
+    _write_index(repo, "pkg/table.py", source)
+
+    def serve() -> str:
+        offer = skeleton_replacement(repo, "pkg/table.py", min_ratio_gain=1.0, min_saved_tokens=0)
+        assert offer is not None
+        return offer.text
+
+    assert configured_mode(repo) == "smart"
+    assert "'k5': 5," not in serve()
+
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: true\n  read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    assert configured_mode(repo) == "plus"
+    plus = serve()
+    assert "'k5': 5," in plus
+    assert "def func_3(argument_one, argument_two):" in plus
+    assert "value_20 = argument_one" not in plus
+
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "smart")
+    assert configured_mode(repo) == "smart"
+
+
+def test_the_mode_env_override_ignores_blank_and_unknown_values(repo: Path, monkeypatch) -> None:
+    from repowise.cli.commands.augment_cmd.read_skeleton import configured_mode
+
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: true\n  read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "  ")
+    assert configured_mode(repo) == "plus"  # blank counts as unset
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "everything")
+    assert configured_mode(repo) == "smart"
+
+    monkeypatch.delenv("REPOWISE_HOOK_READ_SKELETON_MODE")
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks: [read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    assert configured_mode(repo) == "smart"
+    (repo / ".repowise" / "config.yaml").write_text("- read_skeleton_mode\n", encoding="utf-8")
+    assert configured_mode(repo) == "smart"

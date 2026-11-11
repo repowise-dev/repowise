@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ..refactoring_summary import groups_named, needs_design
 from .models import RefactoringSuggestion
 from .recommendations import affected_files, blast_size
 
@@ -32,16 +33,24 @@ Applicability = Literal["mechanical", "judgment"]
 # for the two mechanical codes, "what was proved?".
 MECHANICAL_REASONS = ("dataflow_proved_local_extraction",)
 JUDGMENT_REASONS = (
+    "async_helper_unexpressible",
     "build_constraints_unknown",
     "call_site_bindings_unproven",
     "changes_symbol_home",
     "detector_confidence_below_high",
+    "governed_by_decision",
     "inverts_imports_across_files",
-    "no_named_target",
+    "needs_design",
+    "receiver_copy_written",
+    "receiver_unbound",
     "reshapes_class_surface",
     "rewrites_dependent_imports",
+    "type_unresolved",
     "unclassified_refactoring_type",
 )
+
+# Named in ``unknowns`` when composition was not told which plans a decision governs.
+_GOVERNANCE = "governed_by_decision"
 
 # The categorical blast radius Extract Method publishes: extraction adds a
 # private helper and changes no signature, so nothing outside the file moves.
@@ -74,19 +83,6 @@ def _int_or_none(value: Any) -> int | None:
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _named_groups(plan: dict[str, Any]) -> bool | None:
-    """Whether every proposed group names the file it lands in.
-
-    ``None`` when the plan proposes no groups at all: absence of groups is not
-    evidence that the naming succeeded, and R1 made an unnameable group emit
-    ``null`` rather than invent a filename.
-    """
-    groups = [group for group in (plan.get("groups") or []) if isinstance(group, dict)]
-    if not groups:
-        return None
-    return all(group.get("suggested_file") for group in groups)
-
-
 # Which facts each refactoring type can even have. A key absent here is not
 # unknown, it is meaningless: asking whether an Extract Method needs a
 # re-export shim has no answer, and reporting one as ``None`` would read as a
@@ -96,7 +92,7 @@ _BASE_FACT_KEYS = ("affected_file_count", "cross_file", "blast_size", "confidenc
 _TYPE_FACT_KEYS: dict[str, tuple[str, ...]] = {
     "extract_method": ("local_scope",),
     "split_file": ("shim_required", "groups_named", "dependents", "framework_registration"),
-    "extract_class": ("dependents", "framework_registration"),
+    "extract_class": ("groups_named", "dependents", "framework_registration"),
     "move_method": ("callers", "framework_registration"),
     "break_cycle": ("framework_registration",),
     "extract_helper": ("co_change_count",),
@@ -125,7 +121,7 @@ def step_facts(suggestion: RefactoringSuggestion) -> tuple[dict[str, Any], tuple
         "callers": _int_or_none(blast.get("callers")),
         "co_change_count": _int_or_none(evidence.get("co_change_count")),
         "shim_required": plan.get("shim_required") if "shim_required" in plan else None,
-        "groups_named": _named_groups(plan),
+        "groups_named": groups_named(plan),
         # No graph is in scope here, so whether a framework registers the symbols
         # a step moves is never known. It is reported rather than omitted because
         # it is the fact that keeps every symbol-moving step a judgment call.
@@ -142,8 +138,22 @@ def _extract_method_reasons(suggestion: RefactoringSuggestion, facts: dict[str, 
 
     R1's dataflow gate proves the span behaviour-preserving before it is ever
     offered, and the blast radius is categorically local, so the only thing left
-    to check is that the detector itself was sure.
+    to check is that the detector itself was sure, that an awaiting span
+    has an async function to land in, that a typed helper signature has no
+    unresolved slots, and that the helper can share the span's receiver
+    (``extract_method._receiver_hazard``).
     """
+    plan = suggestion.plan or {}
+    symbol = plan.get("new_symbol") or {}
+    signature = symbol.get("signature_text") or ""
+    slots = [*symbol.get("params", ()), *symbol.get("returns", ())]
+    if "<type>" in signature and any(slot.get("type") is None for slot in slots):
+        return ["type_unresolved"]
+    if plan.get("needs_async") and plan.get("async_host") is False:
+        return ["async_helper_unexpressible"]
+    hazard = plan.get("receiver_hazard")
+    if hazard in JUDGMENT_REASONS:
+        return [hazard]
     if not facts["local_scope"]:
         return ["changes_symbol_home"]
     if suggestion.confidence != "high":
@@ -170,8 +180,6 @@ def _split_file_reasons(_suggestion: RefactoringSuggestion, facts: dict[str, Any
     """
     if facts["shim_required"] is not False:
         return ["rewrites_dependent_imports", "changes_symbol_home"]
-    if facts["groups_named"] is not True:
-        return ["no_named_target"]
     return ["build_constraints_unknown"]
 
 
@@ -185,8 +193,16 @@ _JUDGMENT_BY_TYPE: dict[str, tuple[str, ...]] = {
 }
 
 
-def classify_step(suggestion: RefactoringSuggestion) -> StepApplicability:
-    """Whether *suggestion* is safe to automate, and the facts behind that."""
+def classify_step(
+    suggestion: RefactoringSuggestion, *, governed: bool | None = None
+) -> StepApplicability:
+    """Whether *suggestion* is safe to automate, and the facts behind that.
+
+    *governed* says an accepted decision governs the target's file: whatever
+    the shape proves, a person checks the decision allows the change. ``None``
+    means nobody looked (composition from detector rows), and is named in
+    ``unknowns`` rather than read as "not governed".
+    """
     facts, unknowns = step_facts(suggestion)
     kind = suggestion.refactoring_type
     if kind == "extract_method":
@@ -195,6 +211,10 @@ def classify_step(suggestion: RefactoringSuggestion) -> StepApplicability:
         reasons = _split_file_reasons(suggestion, facts)
     else:
         reasons = list(_JUDGMENT_BY_TYPE.get(kind, ("unclassified_refactoring_type",)))
+    if needs_design(suggestion):
+        reasons.insert(0, "needs_design")
+    if governed:
+        reasons.append("governed_by_decision")
     # ``all`` over nothing is True, so a future branch that returned no reason
     # would promote silently. Mechanical has to be positively argued.
     mechanical = bool(reasons) and all(reason in MECHANICAL_REASONS for reason in reasons)
@@ -202,7 +222,7 @@ def classify_step(suggestion: RefactoringSuggestion) -> StepApplicability:
         classification="mechanical" if mechanical else "judgment",
         reasons=tuple(reasons),
         facts=facts,
-        unknowns=unknowns,
+        unknowns=(*unknowns, _GOVERNANCE) if governed is None else unknowns,
     )
 
 
@@ -212,5 +232,6 @@ __all__ = [
     "Applicability",
     "StepApplicability",
     "classify_step",
+    "needs_design",
     "step_facts",
 ]

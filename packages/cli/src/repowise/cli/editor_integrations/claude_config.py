@@ -10,8 +10,11 @@ from pathlib import Path
 from repowise.cli.agent_adapters.claude_code import SHELL_TOOL_MATCHER
 from repowise.cli.mcp_config import (
     generate_mcp_config,
+    hook_pinned_paths,
+    hook_shell_command,
     load_existing_config,
     merge_mcp_entry,
+    read_hooks_block,
     resolve_repowise_command,
 )
 
@@ -34,8 +37,21 @@ def _claude_desktop_config_path() -> Path | None:
 
 
 def _claude_code_settings_path() -> Path:
-    """Return the global Claude Code settings path (~/.claude/settings.json)."""
+    """Return the global Claude Code settings path (~/.claude/settings.json).
+
+    Hooks and ``env`` live here. MCP servers do not: Claude Code ignores
+    ``mcpServers`` in this file (see :func:`_claude_code_user_config_path`).
+    """
     return Path.home() / ".claude" / "settings.json"
+
+
+def _claude_code_user_config_path() -> Path:
+    """Where Claude Code reads user-scope MCP servers: top-level ``mcpServers`` in ~/.claude.json.
+
+    Claude Code owns this file and rewrites it often, so repowise only ever
+    edits its own ``repowise`` member and leaves every other byte alone.
+    """
+    return Path.home() / ".claude.json"
 
 
 def _resolve_mcp_target(repo_path: Path) -> Path:
@@ -63,44 +79,218 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     return workspace_root if workspace_root is not None else repo_path
 
 
-def register_with_claude_desktop(repo_path: Path) -> Path | None:
+def planned_global_entry(
+    stored: dict | None,
+    repo_path: Path,
+    *,
+    follows_launch_dir: bool,
+    retarget: bool = False,
+) -> dict | None:
+    """The ``repowise`` entry to write into a per-user config, or None to keep *stored*.
+
+    A per-user config holds one entry for every repo on the machine, so
+    registering from a second repo never moves it. It is written when absent,
+    when it already serves this repo (the pinned command is refreshed, so a
+    moved venv self-heals), when the repo it names is gone (a moved repo), or
+    on *retarget* (``agents add``). An entry for another repo that still
+    exists keeps its target; only a pinned command that is gone is refreshed.
+
+    *follows_launch_dir* writes a new entry with no repo path, so the server
+    serves the repo the client starts it in. Claude Code starts stdio servers
+    in the project directory; Claude Desktop has no project, so it gets a path.
+    """
+    target = _resolve_mcp_target(repo_path)
+    command = resolve_repowise_command()
+    fresh = _user_entry(None if follows_launch_dir else target, command)
+    if stored is None or retarget:
+        return fresh
+    # A kept entry only ever gets its command refreshed: its args (extra flags
+    # such as --tools) are the user's.
+    refreshed = {**stored, "command": command}
+    current = _entry_repo_target(stored)
+    if current is None:
+        # Ours with no path follows the launch dir already; a hand-shaped
+        # entry (another launcher) is the user's and stays.
+        return refreshed if follows_launch_dir and _is_launch_dir_entry(stored) else None
+    if _same_target(current, target):
+        return refreshed
+    if not Path(current).is_dir():
+        return fresh
+    return refreshed if _pinned_command_missing(stored) else None
+
+
+def _user_entry(target: Path | None, command: str) -> dict:
+    """A per-user entry: pinned *command*, and *target* unless it follows the launch dir."""
+    return generate_mcp_config(target, command=command)["mcpServers"]["repowise"]
+
+
+def _same_target(stored: str, target: Path) -> bool:
+    from repowise.cli._helpers.paths import _same_path
+
+    return _same_path(Path(stored), target)
+
+
+def _is_launch_dir_entry(entry: dict) -> bool:
+    """``repowise mcp`` with flags only: the shape that serves the launch dir."""
+    args = entry.get("args")
+    return isinstance(args, list) and args[:1] == ["mcp"] and _entry_repo_target(entry) is None
+
+
+def _pinned_command_missing(entry: dict) -> bool:
+    command = entry.get("command")
+    pinned = isinstance(command, str) and ("/" in command or "\\" in command)
+    return pinned and not Path(str(command)).exists()
+
+
+def _register_global(
+    config_path: Path, repo_path: Path, *, follows_launch_dir: bool, retarget: bool
+) -> Path | None:
+    entry = planned_global_entry(
+        _stored_repowise_entry(config_path),
+        repo_path,
+        follows_launch_dir=follows_launch_dir,
+        retarget=retarget,
+    )
+    if entry is None:
+        return None
+    return config_path if merge_mcp_entry(config_path, {"repowise": entry}) else None
+
+
+def register_with_claude_desktop(repo_path: Path, *, retarget: bool = False) -> Path | None:
     """Add repowise MCP server to Claude Desktop's config.
 
-    When ``repo_path`` is inside a workspace, the registration targets the
-    workspace root so the MCP server starts in workspace mode.
+    Desktop has no project scope, so its one entry names a repo (the
+    workspace root inside a workspace). See :func:`planned_global_entry` for
+    when an existing entry is kept.
 
-    Returns the config path if successful, None if Claude Desktop is not
-    present or the platform is unsupported.
+    Returns the config path when it was written, None when Claude Desktop is
+    not present, the platform is unsupported, the entry was kept, or the
+    write failed.
     """
     config_path = _claude_desktop_config_path()
-    if config_path is None:
+    if config_path is None or not config_path.parent.exists():
         return None
-    if not config_path.parent.exists():
-        # Claude Desktop not installed
-        return None
-    target = _resolve_mcp_target(repo_path)
-    # Per-user config: pin the absolute path of the running install so a
-    # PATH shadow install (conda, old pip, pipx) can't hijack the server.
-    # Refreshed on every re-registration, so a moved venv self-heals on the
-    # next `repowise init`/`update`.
-    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
-    return config_path if merge_mcp_entry(config_path, entry) else None
+    return _register_global(config_path, repo_path, follows_launch_dir=False, retarget=retarget)
 
 
-def register_with_claude_code(repo_path: Path) -> Path | None:
-    """Add repowise MCP server to global Claude Code settings (~/.claude/settings.json).
+def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Path | None:
+    """Add the repowise MCP server to Claude Code's user scope (~/.claude.json).
 
-    When ``repo_path`` is inside a workspace, the registration targets the
-    workspace root so the MCP server starts in workspace mode and subsequent
-    inits against sibling repos do not overwrite the entry.
+    A new entry names no repo: Claude Code starts it in the project it opens,
+    so one entry serves every repo. See :func:`planned_global_entry` for when
+    an existing entry is kept. Nothing is written when the repowise plugin is
+    installed, since its server is the same path-less entry.
 
-    Returns the settings path if successful, None on failure.
+    Returns the config path when it was written, None when the entry was
+    kept, the plugin serves it, or the write failed.
     """
-    settings_path = _claude_code_settings_path()
-    target = _resolve_mcp_target(repo_path)
-    # Per-user config: absolute command, see register_with_claude_desktop.
-    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
-    return settings_path if merge_mcp_entry(settings_path, entry) else None
+    migrate_claude_code_mcp_entry()
+    if claude_code_plugin_installed():
+        return None
+    config_path = _claude_code_user_config_path()
+    entry = planned_global_entry(
+        _stored_repowise_entry(config_path),
+        repo_path,
+        follows_launch_dir=True,
+        retarget=retarget,
+    )
+    if entry is None:
+        return None
+    return config_path if _upsert_user_entry(config_path, entry) else None
+
+
+def claude_code_plugin_installed() -> bool:
+    """Whether the repowise Claude Code plugin is installed and not disabled.
+
+    It ships its own path-less ``repowise`` MCP server.
+    """
+    import click
+
+    from repowise.cli.agent_targets.targets.claude_code import PLUGIN_KEY, _plugin_installs
+
+    if not _plugin_installs():
+        return False
+    try:
+        enabled = load_existing_config(_claude_code_settings_path()).get("enabledPlugins")
+    except click.ClickException:  # absent or unreadable settings: no opt-out
+        enabled = None
+    return not (isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False)
+
+
+def claude_code_user_scope_serves(repo_path: Path) -> bool:
+    """Whether Claude Code already loads a user-scope repowise server in *repo_path*.
+
+    True for the enabled plugin, or a ``~/.claude.json`` entry that follows the
+    launch dir or names this repo (or its workspace root) and whose pinned
+    command still exists. A project ``.mcp.json`` entry beside either makes
+    Claude Code report conflicting scopes, so init leaves it out.
+    """
+    if claude_code_plugin_installed():
+        return True
+    stored = _stored_repowise_entry(_claude_code_user_config_path())
+    if stored is None or _pinned_command_missing(stored):
+        return False
+    target = _entry_repo_target(stored)
+    if target is None:
+        return _is_launch_dir_entry(stored)
+    return any(_same_target(target, p) for p in (repo_path, _resolve_mcp_target(repo_path)))
+
+
+def _upsert_user_entry(config_path: Path, entry: dict) -> bool:
+    """Write *entry* as ``mcpServers.repowise`` in ~/.claude.json, touching nothing else.
+
+    A minimal edit with an atomic replace. A file that does not parse is left
+    as it is and the write reports failure.
+    """
+    import click
+
+    from repowise.cli.agent_targets.formats.json_merge import merge_json_object_member
+    from repowise.cli.agent_targets.types import FileAction
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        action = merge_json_object_member(config_path, "mcpServers", "repowise", entry)
+    except (OSError, ValueError, TypeError, click.ClickException):
+        # ValueError/TypeError: a stored member that is not an object.
+        return False
+    return action is not FileAction.KEPT
+
+
+def _is_our_entry(entry: dict) -> bool:
+    """``repowise mcp ...`` under a bare or pinned ``repowise`` command: the shape init writes."""
+    import re
+
+    command = entry.get("command")
+    args = entry.get("args")
+    if not isinstance(command, str) or not isinstance(args, list) or args[:1] != ["mcp"]:
+        return False
+    name = re.split(r"[\\/]", command)[-1].lower()
+    return name in ("repowise", "repowise.exe")
+
+
+def migrate_claude_code_mcp_entry() -> None:
+    """Move a repowise entry from settings.json to ~/.claude.json, where Claude Code reads it.
+
+    Earlier releases wrote ``mcpServers.repowise`` into settings.json, which
+    Claude Code never loads. Only an entry of the shape repowise writes moves.
+    It was never live, so it moves path-less with the running install's
+    command; its extra flags and keys (``env``) are kept. An entry already in
+    ~/.claude.json, or the plugin, wins, and the old one is just dropped. The
+    old entry stays when the new one could not be written.
+    """
+    settings = _claude_code_settings_path()
+    legacy = _stored_repowise_entry(settings)
+    if legacy is None or not _is_our_entry(legacy):
+        return
+    user_config = _claude_code_user_config_path()
+    if _stored_repowise_entry(user_config) is None and not claude_code_plugin_installed():
+        args = list(legacy["args"])
+        if _entry_repo_target(legacy) is not None:
+            del args[1]
+        moved = {**legacy, "command": resolve_repowise_command(), "args": args}
+        if not _upsert_user_entry(user_config, moved):
+            return
+    _drop_repowise_server(settings)
 
 
 def _stored_repowise_entry(config_path: Path | None) -> dict | None:
@@ -121,57 +311,16 @@ def _stored_repowise_entry(config_path: Path | None) -> dict | None:
 
 
 def _entry_repo_target(entry: dict) -> str | None:
-    """The repo path an existing MCP entry points at (``mcp <path> …``)."""
-    args = entry.get("args")
-    if not isinstance(args, list) or len(args) < 2:
-        return None
-    return str(args[1])
+    """The repo path an existing MCP entry points at (``mcp <path> …``).
 
-
-def describe_mcp_registration_change(repo_path: Path) -> str | None:
-    """Warn when registering would repoint an existing ``repowise`` MCP entry.
-
-    Both Claude configs hold a single ``repowise`` key, so an ``init`` from a
-    second repo *replaces* the entry rather than adding one alongside it. That
-    write is silent, and only surfaces later when the binary or repo it points
-    at is gone and the MCP server stops loading. This is a read-only probe run
-    before registration; it returns a one-line notice when the stored command
-    or repo target differs from what is about to be written, else None.
+    None for any other shape. An entry whose slot after ``mcp`` is a flag or
+    missing serves whichever repo the client launches it in.
     """
-    new_entry = generate_mcp_config(
-        _resolve_mcp_target(repo_path), command=resolve_repowise_command()
-    )["mcpServers"]["repowise"]
-    new_command = new_entry.get("command")
-    new_target = _entry_repo_target(new_entry)
-
-    for config_path in (_claude_code_settings_path(), _claude_desktop_config_path()):
-        stored = _stored_repowise_entry(config_path)
-        if stored is None:
-            continue
-        # Both fields are reported when both move, which is the usual shape of
-        # the mistake: a second repo indexed by a second install. Naming only
-        # one would hide half of what is about to change.
-        changes = [
-            (label, was, now)
-            for label, was, now in (
-                ("repo", _entry_repo_target(stored), new_target),
-                ("command", stored.get("command"), new_command),
-            )
-            if was != now
-        ]
-        if not changes:
-            continue
-        fields = " and ".join(label for label, _was, _now in changes)
-        lines = [f"Replacing the existing repowise MCP {fields} in {config_path}:"]
-        for label, was, now in changes:
-            # A hand-edited entry can be missing either field outright.
-            lines.append(f"    {label} was: {was if was is not None else '(not set)'}")
-            lines.append(f"    {label} now: {now}")
-        lines.append(
-            "  There is one 'repowise' entry per config; pass --no-editor-setup to leave it alone."
-        )
-        return "\n".join(lines)
-    return None
+    args = entry.get("args")
+    if not isinstance(args, list) or args[:1] != ["mcp"] or len(args) < 2:
+        return None
+    target = args[1]
+    return target if isinstance(target, str) and not target.startswith("-") else None
 
 
 def enable_tool_search_in_claude_code() -> Path | None:
@@ -221,8 +370,9 @@ def enable_tool_search_in_claude_code() -> Path | None:
 # paid before repowise reads the payload, so no gate inside the handler can
 # avoid it — the only lever is the matcher. Shell commands were also paying it
 # twice, here and again for the ``repowise-rewrite`` PreToolUse hook.
-# SessionStart already carries the freshness line, so what is given up is a
-# mid-session commit going unflagged until the next session.
+# SessionStart already carries the freshness line. A commit, pull, merge,
+# rebase or cherry-pick still reaches the handler through
+# :data:`_CAPTURE_MATCHER`'s entry, which gates in the shell.
 #
 # Claude Code only. ``_handle_bash_post`` stays in the augment dispatcher:
 # Codex has no Read/Grep/Glob tools and no SessionStart block, so the shell is
@@ -262,16 +412,169 @@ _FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
 
 
 #: The shell tools, as their own PostToolUse entry rather than widened into
-#: :data:`_AUGMENT_MATCHER`. The capture prompt is the only thing that needs
-#: them, it is off by default, and the narrowing of the shared matcher is a
-#: measured decision this must not quietly reverse: 51% of hook invocations
-#: for 0.7% of emissions. A separate entry means the cost is paid only where
-#: the prompt is switched on, and removing it is removing one entry.
+#: :data:`_AUGMENT_MATCHER`. Only the capture prompt and the stale-wiki check
+#: after a Git operation need them, and the narrowing of the shared matcher is
+#: a measured decision this must not quietly reverse: 51% of hook invocations
+#: for 0.7% of emissions. That cost was a Python start on every shell call;
+#: :data:`_CAPTURE_HOOK_COMMAND` gates in the shell instead, so a call that
+#: names none of the gated Git operations costs only the shell the host
+#: already spawns for the hook.
 #:
 #: **Never add this to :data:`_LEGACY_AUGMENT_MATCHERS`.** That list is what
 #: the self-heal rewrites to the narrow matcher, and this entry exists
 #: precisely to survive it.
 _CAPTURE_MATCHER = "Bash|PowerShell"
+
+#: The shell entry's filter: the payload mentions one of the Git operations that
+#: can leave the index behind ``HEAD``, the same list the stale-wiki check
+#: (``bash_staleness``) answers. The capture prompt answers only the commit
+#: and checks the command itself. A substring test over the whole payload,
+#: tool output included, so it is a cheap pre-filter rather than a parser: the
+#: handlers read the actual command. ``$(cat)`` rather than a builtin read:
+#: bash's ``read`` takes a pipe one byte at a time, and ``/dev/stdin`` does
+#: not resolve for a Windows pipe under Git Bash.
+_CAPTURE_GATE = (
+    'input=$(cat); case "$input" in '
+    '*"git commit"*|*"git pull"*|*"git merge"*|*"git rebase"*|*"git cherry-pick"*) '
+)
+
+#: Starts ``repowise-augment`` only past :data:`_CAPTURE_GATE`. The plugin's
+#: ``hooks.json`` ships this exact string.
+_CAPTURE_HOOK_COMMAND = (
+    f"{_CAPTURE_GATE}if command -v repowise-augment >/dev/null 2>&1; then "
+    'printf "%s" "$input" | repowise-augment; fi;; esac'
+)
+
+_AUGMENT = "repowise-augment"
+_REWRITE = "repowise-rewrite"
+
+
+def _augment_hook_command() -> str:
+    """:data:`_AUGMENT_HOOK_COMMAND`, pinned to the running install when it can be."""
+    return hook_shell_command(_AUGMENT)
+
+
+def _capture_hook_command() -> str:
+    """:data:`_CAPTURE_HOOK_COMMAND`, pinned to the running install when it can be."""
+    run = hook_shell_command(_AUGMENT, 'printf "%s" "$input" | {}')
+    return f"{_CAPTURE_GATE}{run};; esac"
+
+
+def _rewrite_hook_command() -> str:
+    return hook_shell_command(_REWRITE)
+
+
+#: The gate releases before :data:`_CAPTURE_GATE` wrote: ``git commit`` alone.
+_COMMIT_ONLY_GATE = 'input=$(cat); case "$input" in *"git commit"*) '
+
+
+def _widened_capture_gate(cmd: str) -> str:
+    """*cmd* with a commit-only release's gate widened, else *cmd* unchanged.
+
+    Only the gate moves. The invocation after it, and the install it pins,
+    stay as written: which install a hook runs is :func:`_needs_repin`'s call.
+    That call leaves a live pin alone during the self-heal, and an unpinned
+    command alone when this install has no script to pin, so a gate left to
+    it would stay commit-only in both cases.
+    """
+    if cmd.startswith(_COMMIT_ONLY_GATE) and cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
+        return _CAPTURE_GATE + cmd.removeprefix(_COMMIT_ONLY_GATE)
+    return cmd
+
+
+#: Unguarded commands older releases wrote. Each moves to the current form.
+_BARE_COMMANDS = ("repowise augment", _AUGMENT, _REWRITE)
+
+
+def _current_command(cmd: str) -> str | None:
+    """The command this release writes in place of *cmd*, or None if *cmd* is not ours.
+
+    Only the plain augment, capture and rewrite commands qualify: the coverage
+    and health-gate commands carry a flag and are written elsewhere.
+    """
+    if cmd in ("repowise augment", _AUGMENT) or cmd.endswith(f"exec {_AUGMENT}; fi"):
+        return None if " --" in cmd else _augment_hook_command()
+    if cmd == _REWRITE or cmd.endswith(f"exec {_REWRITE}; fi"):
+        return _rewrite_hook_command()
+    if cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
+        return _capture_hook_command()
+    return None
+
+
+def _needs_repin(cmd: str, want: str, *, repin: bool) -> bool:
+    """Whether to replace *cmd* with *want*.
+
+    ``repin`` (init, ``agents refresh``) points the hook at the running
+    install, as the MCP registration is. The self-heal passes False and only
+    moves a command that is unpinned or whose pinned script is gone, so two
+    installs on one machine do not take turns rewriting the file.
+    """
+    if want == cmd:
+        return False
+    if cmd in _BARE_COMMANDS:
+        return True
+    if not hook_pinned_paths(want):
+        return False  # nothing better to offer than what is there
+    paths = hook_pinned_paths(cmd)
+    return repin or not paths or not any(Path(p).is_file() for p in paths)
+
+
+def _all_hooks(hooks: object) -> list[dict]:
+    """Every hook dict under every event of a settings ``hooks`` block."""
+    if not isinstance(hooks, dict):
+        return []
+    entries = [e for group in hooks.values() if isinstance(group, list) for e in group]
+    return [h for entry in entries for h in _hooks_of(entry) if isinstance(h, dict)]
+
+
+def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
+    """Bring every repowise augment, capture and rewrite command up to date."""
+    changed = False
+    for hook in _all_hooks(hooks):
+        cmd = _hook_command(hook)
+        fresh = _widened_capture_gate(cmd)
+        want = _current_command(fresh)
+        if want is not None and _needs_repin(fresh, want, repin=repin):
+            fresh = want
+        if fresh != cmd:
+            hook["command"] = fresh
+            changed = True
+    return changed
+
+
+#: Where :func:`claude_code_hook_commands` says a user-level hook lives. Only
+#: these commands carry a pinned path that ``repowise agents refresh`` rewrites.
+CLAUDE_SETTINGS_LABEL = "~/.claude/settings.json"
+_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure")
+
+
+def claude_code_hook_commands(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(where, command)`` for each repowise hook Claude Code runs here.
+
+    User settings, every enabled repowise plugin and, with *repo_path*, the
+    repo's ``settings.local.json``. Only hooks repowise writes count, never a
+    user's own wrapper.
+    """
+    rows = [
+        (CLAUDE_SETTINGS_LABEL, _hook_command(h))
+        for h in _all_hooks(read_hooks_block(_claude_code_settings_path()))
+        if _current_command(_hook_command(h)) is not None
+    ]
+    for event in _PLUGIN_EVENTS:
+        for _, entries in _plugin_hook_entries(event):
+            rows += [
+                ("the repowise Claude Code plugin", _hook_command(h))
+                for h in _all_hooks({event: entries})
+                if _is_repowise_hook(h) or _is_rewrite_hook(h)
+            ]
+    if repo_path is not None:
+        local = _all_hooks(read_hooks_block(claude_code_local_settings_path(repo_path)))
+        rows += [
+            (f"{Path(repo_path).name}/.claude/settings.local.json", _hook_command(h))
+            for h in local
+            if _is_coverage_hook(h) or _is_health_gate_hook(h)
+        ]
+    return rows
 
 
 def _capture_entry() -> dict:
@@ -280,7 +583,7 @@ def _capture_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _capture_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking for a decision to record...",
             }
@@ -292,22 +595,92 @@ def _is_capture_entry(entry: object) -> bool:
     if not isinstance(entry, dict) or entry.get("matcher") != _CAPTURE_MATCHER:
         return False
     entry_hooks = _hooks_of(entry)
-    return bool(entry_hooks) and all(_is_repowise_hook(h) for h in entry_hooks)
+    # The coverage and health-gate entries share the shell matcher; they are
+    # repo-local today, but a sync here must never take one for this.
+    return bool(entry_hooks) and all(
+        _is_repowise_hook(h) and not _is_coverage_hook(h) and not _is_health_gate_hook(h)
+        for h in entry_hooks
+    )
+
+
+def _repowise_plugin_paths() -> list[Path]:
+    """Install paths of every enabled repowise Claude Code plugin."""
+    try:
+        settings_path = _claude_code_settings_path()
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        index_path = settings_path.parent / "plugins" / "installed_plugins.json"
+        installed = json.loads(index_path.read_text(encoding="utf-8")).get("plugins") or {}
+        enabled = settings.get("enabledPlugins") or {}
+        keys = [k for k, on in enabled.items() if on and str(k).startswith("repowise@")]
+        return [Path(i["installPath"]) for k in keys for i in installed.get(k) or []]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def _plugin_ships_capture_hook() -> bool:
+    """Whether an enabled repowise plugin already carries the shell entry.
+
+    Claude Code runs a plugin's hook and the same hook in settings.json
+    separately, so installing ours beside the plugin's would start the shell
+    twice on every shell call. Unreadable plugin state reads as "no": being
+    wrong that way costs one extra shell start, never a missing prompt.
+    """
+    return any(
+        _is_capture_entry(e) for _, entries in _plugin_hook_entries("PostToolUse") for e in entries
+    )
+
+
+def _plugin_hook_entries(event: str) -> list[tuple[Path, list]]:
+    """``(hooks.json, entries)`` for each enabled repowise plugin's *event* hooks.
+
+    Unreadable plugin state is skipped, so it reads as "the plugin does not
+    ship it" and the settings entry stays the one that runs.
+    """
+    found: list[tuple[Path, list]] = []
+    for path in _repowise_plugin_paths():
+        hooks_file = path / "hooks" / "hooks.json"
+        try:
+            entries = json.loads(hooks_file.read_text(encoding="utf-8"))["hooks"][event]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(entries, list):
+            found.append((hooks_file, entries))
+    return found
+
+
+def _plugin_rewrite_hook() -> tuple[Path, str] | None:
+    """``(hooks.json, matcher)`` of a plugin that ships the current rewrite hook.
+
+    A plugin build with an older matcher does not count, so the settings entry
+    (which install keeps current) stays the one that runs.
+    """
+    for hooks_file, entries in _plugin_hook_entries("PreToolUse"):
+        if _rewrite_matcher(entries) == _REWRITE_MATCHER:
+            return hooks_file, _REWRITE_MATCHER
+    return None
+
+
+def claude_code_plugin_ships_rewrite_hook() -> bool:
+    """True when an enabled repowise plugin runs the rewrite hook itself."""
+    return _plugin_rewrite_hook() is not None
 
 
 def set_claude_code_capture_hook(enabled: bool) -> Path | None:
-    """Add or remove the shell PostToolUse entry the capture prompt needs.
+    """Add, refresh or remove the shell PostToolUse entry the capture prompt needs.
 
     The switch owns its own prerequisite: `decisions.capture_prompt` is a
     per-repository policy, but the hook it fires from is a per-install
     matcher, so turning the policy on without this writes a flag nothing
-    reads. Returns the settings file when it changed, else ``None``.
+    reads. Where the repowise plugin already ships the entry, ours is left
+    out (and removed), so the hook runs once. Returns the settings file when
+    it changed, else ``None``.
 
-    The entry is per *install*, so one repository opting in widens the surface
-    for every repository on this machine. They pay a process start on shell
-    calls and nothing else — the handler returns before any work when their
-    own policy is off — and turning it off here narrows it back for all of
-    them, which is why the caller says so.
+    The entry is per *install* and ships on with the prompt: ``init``, the
+    self-heal and the plugin all put it in place. Every repository on this
+    machine pays a shell start on shell calls and nothing else, since the
+    entry starts Python only for a commit or another Git operation that moves
+    ``HEAD``, so a repository that turns the prompt off keeps the entry and
+    stays silent.
     """
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
@@ -317,32 +690,58 @@ def set_claude_code_capture_hook(enabled: bool) -> Path | None:
     except Exception:
         return None
 
-    hooks = existing.setdefault("hooks", {}) if enabled else existing.get("hooks")
+    want = enabled and not _plugin_ships_capture_hook()
+    hooks = existing.setdefault("hooks", {}) if want else existing.get("hooks")
     if not isinstance(hooks, dict):
         return None
     entries = hooks.get("PostToolUse")
     if not isinstance(entries, list):
-        if not enabled:
+        if not want:
             return None
         entries = []
         hooks["PostToolUse"] = entries
 
-    present = any(_is_capture_entry(e) for e in entries)
-    if enabled == present:
+    if not _sync_capture_entry(entries, want):
         return None
-    if enabled:
-        entries.append(_capture_entry())
-    else:
-        entries[:] = [e for e in entries if not _is_capture_entry(e)]
-        if not entries:
-            hooks.pop("PostToolUse", None)
-        if not hooks:
-            existing.pop("hooks", None)
+    if not entries:
+        hooks.pop("PostToolUse", None)
+    if not hooks:
+        existing.pop("hooks", None)
     return settings_path if _write_settings(settings_path, existing) else None
 
 
+def _without_commands(entry: dict) -> object:
+    """*entry* with each command replaced by the form this release writes for it."""
+    copy = json.loads(json.dumps(entry))
+    for hook in _hooks_of(copy):
+        cmd = _hook_command(hook)
+        if cmd:
+            hook["command"] = _current_command(cmd) or cmd
+    return copy
+
+
+def _sync_capture_entry(entries: list, want: bool) -> bool:
+    """Leave exactly the current capture entry in *entries* when *want*, else none.
+
+    An entry from an older release starts Python on every shell call, so it is
+    replaced rather than kept. Returns whether *entries* changed.
+    """
+    ours = [e for e in entries if _is_capture_entry(e)]
+    # Commands compare by kind: _refresh_hook_commands owns which path they pin.
+    if [_without_commands(e) for e in ours] == (
+        [_without_commands(_capture_entry())] if want else []
+    ):
+        return False
+    entries[:] = [e for e in entries if not _is_capture_entry(e)]
+    if want:
+        entries.append(_capture_entry())
+    return True
+
+
 def claude_code_capture_hook_installed() -> bool:
-    """Whether the shell PostToolUse entry is present."""
+    """Whether the shell PostToolUse entry is present, ours or the plugin's."""
+    if _plugin_ships_capture_hook():
+        return True
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
         return False
@@ -363,7 +762,7 @@ def _session_start_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Loading repowise context...",
             }
@@ -394,7 +793,7 @@ def _failure_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -404,11 +803,8 @@ def _failure_entry() -> dict:
 
 #: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
 #: runs that one surface, so it never revives the shell notices the narrowed
-#: :data:`_AUGMENT_MATCHER` dropped.
-_COVERAGE_HOOK_COMMAND = (
-    "if command -v repowise-augment >/dev/null 2>&1; "
-    "then exec repowise-augment --coverage-only; fi"
-)
+#: :data:`_AUGMENT_MATCHER` dropped. Its command is defined in core, which
+#: tells it from a user's hook in a working-tree score.
 _COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
 
 
@@ -418,12 +814,15 @@ def claude_code_local_settings_path(repo_path: Path) -> Path:
 
 
 def _coverage_entry() -> dict:
+    # Imported here: the hook's self-heal loads this module and must stay light.
+    from repowise.core.owned_paths import COVERAGE_HOOK_COMMAND
+
     return {
         "matcher": SHELL_TOOL_MATCHER,
         "hooks": [
             {
                 "type": "command",
-                "command": _COVERAGE_HOOK_COMMAND,
+                "command": COVERAGE_HOOK_COMMAND,
                 "timeout": 10,
             }
         ],
@@ -432,6 +831,26 @@ def _coverage_entry() -> dict:
 
 def _is_coverage_hook(hook: object) -> bool:
     return "--coverage-only" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
+def _health_gate_entry() -> dict:
+    from repowise.core.owned_paths import HEALTH_GATE_HOOK_COMMAND
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": HEALTH_GATE_HOOK_COMMAND,
+                # Above the gate's own 20 s budget, so the gate times out first and fails open.
+                "timeout": 30,
+            }
+        ],
+    }
+
+
+def _is_health_gate_hook(hook: object) -> bool:
+    return "--health-gate" in _hook_command(hook) and _is_repowise_hook(hook)
 
 
 def claude_code_augment_installed() -> bool:
@@ -455,9 +874,38 @@ def set_repo_coverage_hook(repo_path: Path, enabled: bool) -> Path | None:
     settings files. Returns the file when it changed, else ``None``. A file
     this leaves empty is removed.
     """
+    return _set_repo_local_hook(
+        repo_path, enabled, _COVERAGE_HOOK_EVENTS, _coverage_entry, _is_coverage_hook
+    )
+
+
+def set_repo_health_gate_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the opt-in health-gate PreToolUse entry, as :func:`set_repo_coverage_hook`.
+
+    Repo-local for the same reason: only a repository that turned the gate on
+    pays a process start per shell call.
+    """
+    return _set_repo_local_hook(
+        repo_path, enabled, ("PreToolUse",), _health_gate_entry, _is_health_gate_hook
+    )
+
+
+def repo_health_gate_hook_installed(repo_path: Path) -> bool:
+    """Whether the repo's ``settings.local.json`` carries the health-gate entry."""
+    settings = _read_local_settings(claude_code_local_settings_path(repo_path), False)
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    entries = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(entries, list):
+        return False
+    return any(_is_health_gate_hook(h) for e in _own_entries(entries) for h in _hooks_of(e))
+
+
+def _set_repo_local_hook(
+    repo_path: Path, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> Path | None:
     path = claude_code_local_settings_path(repo_path)
     settings = _read_local_settings(path, enabled)
-    if settings is None or not _apply_coverage_entries(settings, enabled):
+    if settings is None or not _apply_local_entries(settings, enabled, events, entry, is_ours):
         return None
     return _write_or_remove(path, settings)
 
@@ -472,33 +920,38 @@ def _read_local_settings(path: Path, enabled: bool) -> dict | None:
         return None
 
 
-def _apply_coverage_entries(settings: dict, enabled: bool) -> bool:
+def _apply_local_entries(
+    settings: dict, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> bool:
     """Add or remove our entry under each event of *settings*, in place; whether it changed."""
     hooks = settings.setdefault("hooks", {}) if enabled else settings.get("hooks")
     if not isinstance(hooks, dict):
         return False
     changed = False
-    for event in _COVERAGE_HOOK_EVENTS:
-        changed = _apply_coverage_entry(hooks, event, enabled) or changed
+    for event in events:
+        changed = _apply_local_entry(hooks, event, enabled, entry, is_ours) or changed
     if not hooks:
         settings.pop("hooks", None)
     return changed
 
 
-def _apply_coverage_entry(hooks: dict, event: str, enabled: bool) -> bool:
+def _own_entries(entries: list) -> list:
+    """Ours only inside a shell-matcher entry: the same command elsewhere is someone else's."""
+    return [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
+
+
+def _apply_local_entry(hooks: dict, event: str, enabled: bool, entry, is_ours) -> bool:
     entries = hooks.setdefault(event, []) if enabled else hooks.get(event)
     if not isinstance(entries, list):
         return False
-    # Ours only inside a shell-matcher entry: the same command under any other
-    # matcher was written by someone else and is left alone.
-    own = [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
-    present = any(_is_coverage_hook(h) for e in own for h in _hooks_of(e))
+    own = _own_entries(entries)
+    present = any(is_ours(h) for e in own for h in _hooks_of(e))
     changed = enabled != present
     if changed and enabled:
-        entries.append(_coverage_entry())
+        entries.append(entry())
     elif changed:
         kept = list(own)
-        _strip_hooks(kept, _is_coverage_hook)
+        _strip_hooks(kept, is_ours)
         dropped = [e for e in own if not any(e is k for k in kept)]
         entries[:] = [e for e in entries if not any(e is d for d in dropped)]
     if not entries:
@@ -520,7 +973,9 @@ def install_claude_code_hooks() -> Path | None:
     """Register the augment hooks in ~/.claude/settings.json.
 
     PostToolUse enriches Grep/Glob results and emits
-    Read-intelligence notices; SessionStart injects the live index-freshness
+    Read-intelligence notices, and a shell entry asks for a decision after a
+    commit and checks freshness after a commit, pull, merge, rebase or
+    cherry-pick; SessionStart injects the live index-freshness
     context block; PostToolUseFailure carries the wrong-path rescue. Existing
     user hooks are preserved.
     """
@@ -531,7 +986,7 @@ def install_claude_code_hooks() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -569,6 +1024,10 @@ def install_claude_code_hooks() -> Path | None:
         # AttributeError the OSError handler below would not catch.
         _backfill_event(hooks, "SessionStart", _session_start_entry)
         _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
+        # The capture prompt ships on, so its shell entry is part of the
+        # install, unless the plugin already runs the same one.
+        _sync_capture_entry(post_hooks, not _plugin_ships_capture_hook())
+        _refresh_hook_commands(hooks, repin=True)
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -577,6 +1036,12 @@ def install_claude_code_hooks() -> Path | None:
 
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
+
+#: The plugin's form of the rewrite hook. A plugin ships without the CLI, so it
+#: gets the same silent-when-absent guard as :data:`_AUGMENT_HOOK_COMMAND`.
+_PLUGIN_REWRITE_HOOK_COMMAND = (
+    "if command -v repowise-rewrite >/dev/null 2>&1; then exec repowise-rewrite; fi"
+)
 
 # Current rewrite PreToolUse matcher, derived from the adapter's own tool-name
 # set so the installed matcher and the gate that reads the payload cannot
@@ -588,18 +1053,25 @@ _LEGACY_REWRITE_MATCHERS = ("Bash",)
 
 
 def install_claude_code_rewrite_hook() -> Path | None:
-    """Register the opt-in distill PreToolUse rewrite hook (shell matcher).
+    """Register the distill PreToolUse rewrite hook (shell matcher).
 
     Idempotent; preserves user hooks and the augment PostToolUse entry.
-    Returns the settings path on success, None on failure.
+    Returns the settings path on success, None on failure. Where an enabled
+    repowise plugin already ships the hook, ours is left out (and removed) so
+    each shell call is rewritten and counted once, and the plugin's
+    ``hooks.json`` is returned.
     """
+    plugin = _plugin_rewrite_hook()
+    if plugin is not None:
+        uninstall_claude_code_rewrite_hook()
+        return plugin[0]
     settings_path = _claude_code_settings_path()
     pre_hook_entry = {
         "matcher": _REWRITE_MATCHER,
         "hooks": [
             {
                 "type": "command",
-                "command": _REWRITE_HOOK_COMMAND,
+                "command": _rewrite_hook_command(),
                 "timeout": 5,
                 "statusMessage": "Distilling command output...",
             }
@@ -619,6 +1091,7 @@ def install_claude_code_rewrite_hook() -> Path | None:
         if not _has_rewrite_hook(pre_hooks):
             pre_hooks.append(pre_hook_entry)
             changed = True
+        changed = _refresh_hook_commands({"PreToolUse": pre_hooks}, repin=True) or changed
         if changed:
             settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -800,44 +1273,35 @@ def uninstall_claude_code_augment_hooks() -> bool:
 
 
 def uninstall_claude_code_mcp_entry() -> bool:
-    """Drop ``mcpServers.repowise`` from settings.json, sparing sibling servers.
+    """Drop the user-scope ``mcpServers.repowise`` from ~/.claude.json, sparing sibling servers.
 
     Keyed on our exact server name, never on a prefix or on the entry's shape.
-    The wrapper goes when it empties; the file never does. ``settings.json`` is
-    the user's, it long predates us, and an empty object there is still their
-    file rather than a stub we left.
+    A minimal edit: Claude Code owns the rest of the file.
     """
-    settings_path = _claude_code_settings_path()
-    if not settings_path.exists():
-        return False
+    import click
+
+    from repowise.cli.agent_targets.formats.json_merge import remove_json_object_member
+    from repowise.cli.agent_targets.types import FileAction
+
     try:
-        existing = load_existing_config(settings_path)
-    except Exception:
+        action = remove_json_object_member(_claude_code_user_config_path(), "mcpServers", "repowise")
+    except (OSError, click.ClickException):
         return False
-
-    servers = existing.get("mcpServers")
-    if not isinstance(servers, dict) or "repowise" not in servers:
-        return False
-    servers.pop("repowise")
-    if not servers:
-        existing.pop("mcpServers", None)
-
-    return _write_settings(settings_path, existing)
+    return action is FileAction.REMOVED
 
 
-def uninstall_claude_desktop_mcp_entry() -> bool:
-    """Drop ``mcpServers.repowise`` from Claude Desktop's config.
+def uninstall_claude_code_settings_mcp_entry() -> bool:
+    """Drop the ``mcpServers.repowise`` older releases wrote into settings.json."""
+    return _drop_repowise_server(_claude_code_settings_path())
 
-    The sibling of :func:`uninstall_claude_code_mcp_entry`, and easy to miss
-    because the two live in different files on different platforms.
-    ``install`` writes both (:func:`register_with_claude_desktop` and
-    :func:`register_with_claude_code`), and leaving this one behind did more
-    than leave a stale entry: ``detect`` reads it, so a removed Claude Code
-    still reported a user-scope registration, ``refresh_wired_agents`` counted
-    it as wired, and the next ``repowise doctor --repair`` silently reinstalled
-    everything the uninstall had just removed.
+
+def _drop_repowise_server(config_path: Path | None) -> bool:
+    """Drop top-level ``mcpServers.repowise`` from *config_path*. True when the file changed.
+
+    The wrapper goes when it empties; the file never does. These files are the
+    user's or their client's, and an empty object there is still their file
+    rather than a stub we left.
     """
-    config_path = _claude_desktop_config_path()
     if config_path is None or not config_path.exists():
         return False
     try:
@@ -853,6 +1317,36 @@ def uninstall_claude_desktop_mcp_entry() -> bool:
         existing.pop("mcpServers", None)
 
     return _write_settings(config_path, existing)
+
+
+def uninstall_claude_desktop_mcp_entry() -> bool:
+    """Drop ``mcpServers.repowise`` from Claude Desktop's config.
+
+    The sibling of :func:`uninstall_claude_code_mcp_entry`, and easy to miss
+    because the two live in different files on different platforms.
+    ``install`` writes both (:func:`register_with_claude_desktop` and
+    :func:`register_with_claude_code`), and leaving this one behind did more
+    than leave a stale entry: ``detect`` reads it, so a removed Claude Code
+    still reported a user-scope registration, ``refresh_wired_agents`` counted
+    it as wired, and the next ``repowise doctor --repair`` silently reinstalled
+    everything the uninstall had just removed.
+    """
+    return _drop_repowise_server(_claude_desktop_config_path())
+
+
+def claude_code_user_config_leftover_reason() -> str | None:
+    """Whether ~/.claude.json still holds the user-scope repowise entry. None when clean or absent."""
+    config_path = _claude_code_user_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        existing = load_existing_config(config_path)
+    except Exception:
+        return "the file could not be read, so whether our MCP entry is gone is unknown"
+    servers = existing.get("mcpServers")
+    if isinstance(servers, dict) and "repowise" in servers:
+        return "our MCP registration was still present after the write"
+    return None
 
 
 def claude_code_leftover_reason() -> str | None:
@@ -976,8 +1470,17 @@ def claude_code_rewrite_hook_matcher() -> str | None:
 
     ``""`` is a real answer: an entry with no matcher at all. Presence and
     matcher say different things — an entry pointing at a tool name Claude
-    Code no longer uses is registered and will never fire.
+    Code no longer uses is registered and will never fire. An enabled
+    repowise plugin that ships the hook counts as installed.
     """
+    matcher = _settings_rewrite_matcher()
+    if matcher is not None:
+        return matcher
+    plugin = _plugin_rewrite_hook()
+    return plugin[1] if plugin is not None else None
+
+
+def _settings_rewrite_matcher() -> str | None:
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
         return None
@@ -1099,7 +1602,7 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
             # migrate to the guarded command, so an install predating the guard
             # stops emitting "command not found" without needing a re-init.
             if cmd in ("repowise augment", "repowise-augment"):
-                hook["command"] = _AUGMENT_HOOK_COMMAND
+                hook["command"] = _augment_hook_command()
                 changed = True
         if not isinstance(entry, dict):
             continue
@@ -1151,6 +1654,13 @@ def migrate_claude_code_hooks() -> bool:
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
             changed = True
+        # The capture prompt ships on: add its shell entry, or refresh one an
+        # older release wrote, unless the plugin already runs it.
+        if _sync_capture_entry(post, not _plugin_ships_capture_hook()):
+            changed = True
+
+    if _refresh_hook_commands(hooks, repin=False):
+        changed = True
 
     if not changed:
         return False

@@ -68,8 +68,8 @@ export function statusLabel(status: FreshnessStatus): string {
 /*
  * ALLOWLISTED raw hex (no-raw-hex gate): LANGUAGE_COLORS are canonical
  * language brand colors and EDGE_COLORS feed <canvas>/SVG viz where a CSS
- * var() string cannot resolve — both must be literal hex. Values mirror the
- * --color-lang-* / --color-edge-* tokens in styles/globals.css; keep in sync.
+ * var() string cannot resolve — both must be literal hex. EDGE_COLORS mirror
+ * the --color-edge-* tokens in styles/globals.css; keep in sync.
  * Theme-aware canvas tinting (resolving these from CSS vars at runtime) is
  * tracked as follow-up viz work.
  */

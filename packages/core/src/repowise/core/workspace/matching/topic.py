@@ -1,4 +1,4 @@
-"""Topic matching: routing keys, and queues reached through an exchange binding.
+"""Topic matching: routing keys, exchange-bound queues, and names that run over any broker.
 
 A message broker's producer and consumer often name different things. A
 RabbitMQ producer publishes to an *exchange* with a routing key; a consumer
@@ -10,6 +10,11 @@ alone, and the pass here links each consumer of the bound queue to the
 exchange's publishers, or the binding site itself when no consumer of the
 queue was found. The routing check keeps a binding from linking to a publisher
 whose key it would never receive.
+
+Two ends link only when they can be one broker's destination. The same broker
+always can. A Laravel, NestJS or Dapr name runs over a transport configured
+outside the code, so it meets any broker but BullMQ, whose queue is Redis keys
+only BullMQ reads (``_ANY_TRANSPORT``, ``_OWN_KIND_ONLY``).
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from repowise.core.workspace.contracts import (
     TOPIC_ROUTING_KEY_UNRESOLVED,
     normalize_contract_id,
 )
+from repowise.core.workspace.origins import LinkStrategy
 
 from .common import find_matching_keys, internal
 
@@ -115,12 +121,12 @@ def matching_keys(consumer: Contract, provider_index: dict[str, list[Contract]])
 
 
 # Brokers that meet only their own kind: a BullMQ queue is a set of Redis keys
-# only BullMQ reads. Laravel and NestJS name a queue or pattern whose transport
-# is configured outside the code (RabbitMQ, SQS, Redis, Kafka, NATS), so either
-# meets any broker but those. Every other pair must be the same broker: a Kafka
-# topic and a RabbitMQ queue that share a name are two things.
+# only BullMQ reads. Laravel, NestJS, and Dapr name a queue, pattern, or topic whose
+# transport is configured outside the code (RabbitMQ, SQS, Redis, Kafka, NATS), so
+# either meets any broker but those. Every other pair must be the same broker: a
+# Kafka topic and a RabbitMQ queue that share a name are two things.
 _OWN_KIND_ONLY = frozenset({"bullmq"})
-_ANY_TRANSPORT = frozenset({"laravel", "nestjs"})
+_ANY_TRANSPORT = frozenset({"laravel", "nestjs", "dapr"})
 
 
 def same_transport(provider: Contract, consumer: Contract) -> bool:
@@ -144,7 +150,10 @@ def accepts(provider: Contract, consumer: Contract) -> bool:
     A key the source did not settle routes nowhere: reading it as match-all
     would link every binding on the exchange. The two ends must be able to be
     one broker's destination (:func:`same_transport`), and a Laravel job is
-    read by a Laravel worker only if it is the worker's own class.
+    read by a Laravel worker only if it is the worker's own class. A job class
+    consumer therefore takes only a Laravel dispatch of that class: a raw
+    publish on a queue of the same name (amqplib ``sendToQueue``) is not the
+    serialized job envelope its worker reads.
     """
     if provider.meta.get(TOPIC_ROUTING_KEY_UNRESOLVED) or consumer.meta.get(
         TOPIC_ROUTING_KEY_UNRESOLVED
@@ -152,10 +161,9 @@ def accepts(provider: Contract, consumer: Contract) -> bool:
         return False
     if not same_transport(provider, consumer):
         return False
-    if (
-        provider.meta.get("broker") == consumer.meta.get("broker") == "laravel"
-        and provider.meta.get("job") != consumer.meta.get("job")
-    ):
+    job = consumer.meta.get("job")
+    both_laravel = provider.meta.get("broker") == consumer.meta.get("broker") == "laravel"
+    if (job or both_laravel) and provider.meta.get("job") != job:
         return False
     return routing_matches(
         consumer.meta.get("routing_key", ""), provider.meta.get("routing_key", "")
@@ -184,19 +192,15 @@ def binding_pass(state: MatchState) -> None:
         for provider in publishers:
             if not readers:
                 if not internal(provider, binding):
-                    state.add(
-                        binding, provider, "exact", min(provider.confidence, binding.confidence)
-                    )
+                    state.add(binding, provider, LinkStrategy.BINDING_ROUTED)
                 continue
             for consumer in readers:
-                if internal(provider, consumer):
+                # The reader is held to the same rule: a job class behind a
+                # binding still takes only its own Laravel dispatch.
+                if internal(provider, consumer) or not accepts(provider, consumer):
                     continue
                 state.add(
-                    consumer,
-                    provider,
-                    "exact",
-                    min(provider.confidence, consumer.confidence, binding.confidence),
-                    via_alias=True,
+                    consumer, provider, LinkStrategy.BINDING_ROUTED, via=binding, via_alias=True
                 )
 
 

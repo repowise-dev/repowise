@@ -9,6 +9,7 @@ import { SymbolDrawerWrapper } from "./symbol-drawer-wrapper";
 import { listSymbolsPage, type SymbolSortKey } from "@/lib/api/symbols";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import type { Paginated, SymbolResponse } from "@/lib/api/types";
+import { useTranslations } from "next-intl";
 
 const LIMIT = 50;
 
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export function SymbolTableWrapper({ repoId }: Props) {
+  const t = useTranslations("symbols");
   // `?file=` deep link (graph inspection panel "Symbols" action) scopes the
   // table to one source file until dismissed.
   const searchParams = useSearchParams();
@@ -82,19 +84,19 @@ export function SymbolTableWrapper({ repoId }: Props) {
     <div className="space-y-6">
       {fileFilter && (
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2.5 py-1 text-xs font-mono text-[var(--color-accent-primary)]">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] px-2.5 py-1 text-xs font-mono text-[var(--color-text-primary)]">
             {fileFilter}
             <button
               type="button"
               onClick={() => setFileFilter(null)}
-              aria-label="Clear file filter"
+              aria-label={t("clearFileFilter")}
               className="hover:opacity-70"
             >
               <X className="h-3 w-3" />
             </button>
           </span>
           <span className="text-xs text-[var(--color-text-tertiary)]">
-            showing symbols in this file only
+            {t("fileOnly")}
           </span>
         </div>
       )}

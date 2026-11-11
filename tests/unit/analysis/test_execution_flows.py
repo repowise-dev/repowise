@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import networkx as nx
 
 from repowise.core.analysis.execution_flows import (
@@ -109,6 +111,68 @@ def test_trace_uses_dispatch_edges_and_rejects_unreliable_origins():
     ]
 
 
+def _mention_chain(extra_edge_type: str | None, **extra_attrs) -> nx.DiGraph:
+    """main -> load -> parse, with an optional non-call out-edge from parse."""
+    g = nx.DiGraph()
+    for nid, nm in [
+        ("app.py::main", "main"),
+        ("app.py::load", "load"),
+        ("app.py::parse", "parse"),
+        ("app.py::HANDLERS", "HANDLERS"),
+    ]:
+        _sym(g, nid, nm)
+    g.add_edge(
+        "app.py::main",
+        "app.py::load",
+        edge_type="calls",
+        confidence=1.0,
+        resolution_origin="import",
+    )
+    g.add_edge(
+        "app.py::load",
+        "app.py::parse",
+        edge_type="calls",
+        confidence=1.0,
+        resolution_origin="same_file",
+    )
+    if extra_edge_type is not None:
+        g.add_edge(
+            "app.py::parse",
+            "app.py::HANDLERS",
+            edge_type=extra_edge_type,
+            confidence=extra_attrs.get("confidence", 1.0),
+            resolution_origin=extra_attrs.get("resolution_origin", "same_file"),
+        )
+    return g
+
+
+def test_mention_out_edges_terminate_as_no_callees():
+    """references / type_use are mentions, not declined execution successors."""
+    for edge_type in (None, "references", "type_use"):
+        report = trace_execution_flows(
+            _mention_chain(edge_type), {}, FlowConfig(min_flow_depth=1, min_fan_out=1)
+        )
+        flow = next(f for f in report.flows if f.entry_point_id == "app.py::main")
+        assert flow.termination == "no_callees"
+        assert flow.termination_detail == {}
+
+
+def test_weak_call_successor_still_confidence_filtered():
+    """A real calls edge below the floor, or with an unreliable origin, is filtered."""
+    for attrs, origin in [
+        ({"confidence": 0.4, "resolution_origin": "same_file"}, "same_file"),
+        ({"confidence": 1.0, "resolution_origin": "global_unique"}, "global_unique"),
+    ]:
+        report = trace_execution_flows(
+            _mention_chain("calls", **attrs),
+            {},
+            FlowConfig(min_flow_depth=1, min_fan_out=1),
+        )
+        flow = next(f for f in report.flows if f.entry_point_id == "app.py::main")
+        assert flow.termination == "confidence_filtered"
+        assert flow.termination_detail == {origin: 1}
+
+
 def test_min_flow_depth_filters_trivial_flows():
     """A lone single-call entry point is not reported as a flow by default."""
     g = nx.DiGraph()
@@ -155,30 +219,80 @@ class TestWhatCountsAsAnExcludedNode:
         return g
 
     def test_a_symbol_node_is_judged_on_its_declared_file(self) -> None:
-        from repowise.core.analysis.execution_flows import _is_excluded_node
+        from repowise.core.analysis.execution_flows import is_excluded_node
 
         g = self._graph("tests/test_a.py::helper", file_path="tests/test_a.py")
-        assert _is_excluded_node(g, "tests/test_a.py::helper")
+        assert is_excluded_node(g, "tests/test_a.py::helper")
 
         g = self._graph("src/main.py::run", file_path="src/main.py")
-        assert not _is_excluded_node(g, "src/main.py::run")
+        assert not is_excluded_node(g, "src/main.py::run")
 
     def test_a_file_node_is_judged_on_its_own_id(self) -> None:
         """A file node has no ``file_path`` attribute — its id is the path."""
-        from repowise.core.analysis.execution_flows import _is_excluded_node
+        from repowise.core.analysis.execution_flows import is_excluded_node
 
-        assert _is_excluded_node(self._graph("scripts/build.py"), "scripts/build.py")
-        assert _is_excluded_node(self._graph("tests/test_a.py"), "tests/test_a.py")
-        assert not _is_excluded_node(self._graph("src/main.py"), "src/main.py")
+        assert is_excluded_node(self._graph("scripts/build.py"), "scripts/build.py")
+        assert is_excluded_node(self._graph("tests/test_a.py"), "tests/test_a.py")
+        assert not is_excluded_node(self._graph("src/main.py"), "src/main.py")
 
     def test_an_unresolved_call_target_is_judged_on_its_bare_name(self) -> None:
         """A mis-resolved edge into a test fake is what this filter is for."""
-        from repowise.core.analysis.execution_flows import _is_excluded_node
+        from repowise.core.analysis.execution_flows import is_excluded_node
 
-        assert _is_excluded_node(self._graph("test_helper"), "test_helper")
-        assert not _is_excluded_node(self._graph("fetchall"), "fetchall")
+        assert is_excluded_node(self._graph("test_helper"), "test_helper")
+        assert not is_excluded_node(self._graph("fetchall"), "fetchall")
 
     def test_an_external_is_not_a_path_and_is_never_excluded(self) -> None:
-        from repowise.core.analysis.execution_flows import _is_excluded_node
+        from repowise.core.analysis.execution_flows import is_excluded_node
 
-        assert not _is_excluded_node(self._graph("external:pytest"), "external:pytest")
+        assert not is_excluded_node(self._graph("external:pytest"), "external:pytest")
+
+
+# ---------------------------------------------------------------------------
+# Reach-ranked selection
+# ---------------------------------------------------------------------------
+
+
+def _reach_graph(drivers: int = 1) -> nx.DiGraph:
+    """``wrapper`` calls ``drive0`` and one helper, so it outscores every
+    ``driveN`` (each has a caller). Each ``driveN`` calls ``8 - N`` helpers of a
+    chain, so reach falls with N and every trace is deep enough to keep."""
+    g = nx.DiGraph()
+    helpers = [f"lib/h{i}.py::h{i}" for i in range(8)]
+    drives = [f"app/d{n}.py::drive{n}" for n in range(drivers)]
+    for node in ["app/cli.py::wrapper", *drives, *helpers]:
+        _sym(g, node, node.rsplit("::", 1)[1])
+    _call(g, "app/cli.py::wrapper", helpers[0])
+    for n, drive in enumerate(drives):
+        _call(g, "app/cli.py::wrapper", drive)
+        for helper in helpers[: 8 - n]:
+            _call(g, drive, helper)
+    for a, b in pairwise(helpers):
+        _call(g, a, b)
+    return g
+
+
+def test_the_highest_reach_candidate_is_traced_beyond_the_score_budget():
+    by_score = trace_execution_flows(_reach_graph(), {}, FlowConfig(max_flows=1, max_important_flows=0))
+    with_reach = trace_execution_flows(_reach_graph(), {}, FlowConfig(max_flows=1, max_important_flows=1))
+
+    assert [f.entry_point_id for f in by_score.flows] == ["app/cli.py::wrapper"]
+    assert {f.entry_point_id: f.reach for f in with_reach.flows} == {
+        "app/cli.py::wrapper": 9,
+        "app/d0.py::drive0": 8,
+    }
+
+
+def test_reach_selection_is_capped_and_takes_the_largest_first():
+    report = trace_execution_flows(
+        _reach_graph(drivers=3), {}, FlowConfig(max_flows=1, max_important_flows=2)
+    )
+    traced = {f.entry_point_id for f in report.flows}
+    assert traced == {"app/cli.py::wrapper", "app/d0.py::drive0", "app/d1.py::drive1"}
+
+
+def test_reach_stops_counting_at_the_cap():
+    report = trace_execution_flows(
+        _reach_graph(), {}, FlowConfig(max_flows=1, max_important_flows=1, reach_cap=3)
+    )
+    assert max(f.reach for f in report.flows) == 3

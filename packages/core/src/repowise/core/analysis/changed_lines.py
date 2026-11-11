@@ -23,10 +23,10 @@ from __future__ import annotations
 import re
 import subprocess
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .git_cli import _git, split_revspec
+from .git_cli import _git, checkout_relative, path_filter, split_revspec, untracked_paths
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
@@ -186,6 +186,22 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     return result
 
 
+# A record of ``git log -p --format=%x00%H`` opens with a NUL at the start of a
+# line, then a full commit id (sha1 or sha256). Patch text can hold a NUL too:
+# git calls a file binary only from a NUL in its first 8000 bytes. A patch line
+# always opens with its ``+``/``-``/space prefix, so a NUL there never starts one.
+_COMMIT_START = re.compile(r"(?<![^\n])\x00(?=[0-9a-f]{40}(?:[0-9a-f]{24})?(?:\n|$))")
+
+
+def split_commit_patches(raw: str) -> list[tuple[str, str]]:
+    """``(sha, patch)`` per commit of ``git log -p --format=%x00%H`` output."""
+    return [
+        (sha, patch)
+        for record in _COMMIT_START.split(raw)[1:]
+        for sha, _, patch in [record.partition("\n")]
+    ]
+
+
 def line_ranges(lines: Iterable[int]) -> tuple[tuple[int, int], ...]:
     """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
     spans: list[tuple[int, int]] = []
@@ -227,6 +243,7 @@ def changed_lines(
     staged: bool = False,
     working_tree: bool = False,
     base: str | None = None,
+    skip_untracked: tuple[str, ...] = (),
 ) -> tuple[dict[str, set[int]], str]:
     """Return ``({file: changed_lines}, label)`` for a change.
 
@@ -234,21 +251,25 @@ def changed_lines(
     ``base...head`` the change since the two forked, a bare ref a single commit. With no *revspec* (or *staged*), the staged diff
     (``git diff --cached``) is used - the "what will I commit" case.
     *working_tree* widens that to everything ``HEAD`` does not have, staged or
-    not, matching what change risk counts for an uncommitted change. With
-    *base* as well, it diffs the working tree from the merge-base of *base*
-    and ``HEAD``, untracked files included (every line changed): everything a
-    push of this branch would bring. A *base* that does not resolve, or shares
+    not, untracked files included (every line changed), matching what change
+    risk counts for an uncommitted change. With *base* as well, it diffs the
+    working tree from the merge-base of *base* and ``HEAD``: everything a push
+    of this branch would bring. A *base* that does not resolve, or shares
     no merge-base, falls back to the plain working-tree diff and its label.
-    *label* is a human string naming what was diffed. Raises ``ValueError`` on
-    an unknown revision so the caller can fail loudly rather than silently
-    reporting "no changes".
+    *skip_untracked* (gitignore-style) names untracked files not to read; the
+    caller still filters tracked paths. Paths are relative to *repo_path*, as
+    the index names them (see :func:`~.git_cli.checkout_relative`).
+    *label* is a human string naming what was diffed.
+    Raises ``ValueError`` on an unknown revision so the caller can fail loudly
+    rather than silently reporting "no changes".
     """
     if working_tree:
-        return _working_tree_lines(repo_path, base)
-
-    command, revisions, label = _change_command(repo_path, revspec, staged=staged)
-    diff = _diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *revisions])
-    return _parse_unified_diff(diff), label
+        changed, label = _working_tree_lines(repo_path, base, skip_untracked)
+    else:
+        command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+        diff = _diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *revisions])
+        changed = _parse_unified_diff(diff)
+    return checkout_relative(repo_path, changed), label
 
 
 def _change_command(
@@ -297,26 +318,47 @@ class ChangeSet:
     head: str | None
 
 
-def change_set(repo_path: str, revspec: str | None = None, *, staged: bool = False) -> ChangeSet:
+def change_set(
+    repo_path: str,
+    revspec: str | None = None,
+    *,
+    staged: bool = False,
+    working_tree: bool = False,
+    exclude_patterns: tuple[str, ...] = (),
+) -> ChangeSet:
     """The change :func:`changed_lines` reads, with every touched path and its ends.
 
-    Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
+    *working_tree* reads what ``HEAD`` does not have, staged or not, untracked
+    files included; its base is ``HEAD``. *exclude_patterns* (gitignore-style)
+    drops paths that are not part of the change at all, such as repowise's own
+    output. Paths are relative to *repo_path*, as :func:`changed_lines` names
+    them. Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
     """
-    command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+    if working_tree:
+        command, revisions, label = ["diff"], ["HEAD"], working_tree_label()
+    else:
+        command, revisions, label = _change_command(repo_path, revspec, staged=staged)
     tail = ["--no-renames", *revisions]
     diffs = parse_unified_diff(_diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *tail]))
     listing = _diff(repo_path, [*command, "--name-status", "-z", *tail])
     fields = [f.strip("\n") for f in listing.split("\0")]
     files: dict[str, FileDiff] = {}
     deleted: set[str] = set()
+    counts = path_filter(exclude_patterns=exclude_patterns)
     for status, path in zip(fields[0::2], fields[1::2], strict=False):
-        if not path:
+        if not path or not counts(path):
             continue
         if status.startswith("D"):
             deleted.add(path)
         else:
             files[path] = diffs.get(path) or FileDiff(path=path)
-    base, head = _change_ends(repo_path, revspec, staged=staged)
+    if working_tree:
+        files.update(untracked_diffs(repo_path, exclude_patterns))
+    # One re-keying for both sides: each relative path maps back to git's.
+    named = checkout_relative(repo_path, {p: p for p in [*files, *deleted]})
+    deleted = {rel for rel, top in named.items() if top in deleted}
+    files = {rel: replace(files[top], path=rel) for rel, top in named.items() if top in files}
+    base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
     return ChangeSet(files, deleted, label, base, head)
 
 
@@ -340,22 +382,17 @@ def _change_ends(
     return sha(f"{revspec}^"), sha(revspec)
 
 
-def _working_tree_lines(repo_path: str, base: str | None) -> tuple[dict[str, set[int]], str]:
+def _working_tree_lines(
+    repo_path: str, base: str | None, skip_untracked: tuple[str, ...]
+) -> tuple[dict[str, set[int]], str]:
     """The working-tree half of :func:`changed_lines`: from *base*'s merge-base, else ``HEAD``."""
     start = _merge_base_or_empty(repo_path, base) if base and base != "HEAD" else ""
-    if start:
-        diff = _git(["diff", "--unified=0", *DIFF_ARGS, start], repo_path)
-        changed = _parse_unified_diff(diff)
-        changed.update(_untracked_lines(repo_path))
-        return changed, working_tree_label(base)
-    diff = _git(["diff", "--unified=0", *DIFF_ARGS, "HEAD"], repo_path)
+    diff = _git(["diff", "--unified=0", *DIFF_ARGS, start or "HEAD"], repo_path)
     changed = _parse_unified_diff(diff)
-    if base:
-        # Asked for what a push brings, with no merge-base to diff from: new
-        # files are still part of it. Without a base this is what the commit
-        # would change, and untracked files stay out by design.
-        changed.update(_untracked_lines(repo_path))
-    return changed, working_tree_label()
+    # New files are part of the work whether or not they are staged yet.
+    untracked = untracked_diffs(repo_path, skip_untracked)
+    changed.update({p: d.new_lines for p, d in untracked.items() if d.new_lines})
+    return changed, working_tree_label(base if start else None)
 
 
 def _merge_base_or_empty(repo_path: str, base: str) -> str:
@@ -367,19 +404,49 @@ def _merge_base_or_empty(repo_path: str, base: str) -> str:
         return ""
 
 
-def _untracked_lines(repo_path: str) -> dict[str, set[int]]:
-    """Every line of each untracked, not-ignored file: new code a push would add."""
-    out: dict[str, set[int]] = {}
-    listing = _git(["ls-files", "--others", "--exclude-standard", "-z"], repo_path)
-    for path in filter(None, listing.split("\0")):
+#: Untracked files above this count as touched with no lines rather than being
+#: read into memory. A multi-megabyte untracked blob is a build artifact, not
+#: authored code, and its exact line count would not change the risk band.
+_UNTRACKED_READ_LIMIT = 2_000_000
+
+
+def untracked_diffs(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> dict[str, FileDiff]:
+    """Each untracked, not-ignored file as the diff ``git add`` would make of it.
+
+    Every line is new, as git counts additions; a binary or oversized file has
+    none, as a tracked one would in ``--numstat``. One reader for every
+    working-tree surface, so they count the same files. A path matching
+    *exclude_patterns* is never read.
+    """
+    out: dict[str, FileDiff] = {}
+    # Listed from the git top level, so read from there too.
+    root = _git(["rev-parse", "--show-toplevel"], repo_path, check=False).strip() or repo_path
+    for path in untracked_paths(repo_path, exclude_patterns):
+        target = Path(root) / path
         try:
-            data = (Path(repo_path) / path).read_bytes()
+            data = b"" if target.stat().st_size > _UNTRACKED_READ_LIMIT else target.read_bytes()
         except OSError:
             continue
-        count = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
-        if count:
-            out[path] = set(range(1, count + 1))
+        out[path] = _new_file_diff(path, data)
     return out
+
+
+def _new_file_diff(path: str, data: bytes) -> FileDiff:
+    """*data* as an added file's diff; a binary file adds no lines."""
+    # Split on "\n" alone, as git counts lines; a final newline ends a line.
+    added = [] if b"\x00" in data else data.decode("utf-8", errors="replace").split("\n")
+    if added and added[-1] == "":
+        added.pop()
+    if not added:
+        return FileDiff(path=path)
+    count = len(added)
+    return FileDiff(
+        path=path,
+        new_lines=set(range(1, count + 1)),
+        insert_anchors=[0],
+        added=added,
+        hunks=[(0, 0, 1, count)],
+    )
 
 
 def diff_since(
@@ -389,10 +456,12 @@ def diff_since(
 
     What moves a line number read at one commit (an index's symbol spans) to
     the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
+    *paths* and the keys are relative to *repo_path*, as the index names them.
     """
     tail = [until] if until else []
     args = ["diff", "--unified=0", *DIFF_ARGS, since, *tail, "--", *paths]
-    return parse_unified_diff(_diff(repo_path, args))
+    diffs = checkout_relative(repo_path, parse_unified_diff(_diff(repo_path, args)))
+    return {p: replace(d, path=p) for p, d in diffs.items()}
 
 
 def change_diff(
@@ -434,35 +503,50 @@ def _diff(repo_path: str, args: list[str]) -> str:
         raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
 
 
-def is_shallow_root(repo_path: str, rev: str) -> bool:
-    """Whether *rev* is a boundary a shallow clone cut its parents from.
+def shallow_roots(repo_path: str) -> frozenset[str]:
+    """Full shas of the commits a shallow clone cut its parents from.
 
     Read from git's own list of grafted commits, so a genuine root commit is
-    never mistaken for a cut one.
+    never mistaken for a cut one. Empty for a full clone or when git cannot
+    answer.
     """
-    shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
-    path = Path(repo_path, shallow)
-    if not shallow or not path.is_file():
+    try:
+        shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
+        path = Path(repo_path, shallow)
+        if not shallow or not path.is_file():
+            return frozenset()
+        return frozenset(path.read_text(encoding="utf-8").split())
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+
+
+def is_shallow_root(repo_path: str, rev: str) -> bool:
+    """Whether *rev* is a boundary a shallow clone cut its parents from."""
+    roots = shallow_roots(repo_path)
+    if not roots:
         return False
     sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
-    return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()
+    return sha.strip() in roots
 
 
 def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> list[str] | None:
-    """Files outside *change* that differ between *indexed_commit* and its base.
+    """Files outside *change* that its base changed and *indexed_commit* lacks.
 
-    What an index built at another commit cannot see. Empty when the index was
-    built at either end of the change; ``None`` when that cannot be told (no
-    recorded commit, no base, or a commit this clone lacks).
+    What an index built at another commit cannot see. Only the base's side
+    counts (``indexed...base``, from their merge-base), so an index built after
+    the base is never said to predate it. Empty when the index was built at
+    either end of the change or later; ``None`` when that cannot be told (no
+    recorded commit, no base, a commit this clone lacks, or no merge-base).
     """
     if indexed_commit and indexed_commit in (change.base, change.head):
         return []
     if not indexed_commit or not change.base:
         return None
-    args = ["diff", "--name-only", "-z", "--no-renames", indexed_commit, change.base]
+    args = ["diff", "--name-only", "-z", "--no-renames", f"{indexed_commit}...{change.base}"]
     try:
         listing = _git(args, repo_path)
     except (subprocess.SubprocessError, OSError):
         return None
     touched = set(change.files) | change.deleted
-    return [p for p in listing.split("\0") if p.strip() and p not in touched]
+    gap = checkout_relative(repo_path, dict.fromkeys(p for p in listing.split("\0") if p.strip()))
+    return [p for p in gap if p not in touched]

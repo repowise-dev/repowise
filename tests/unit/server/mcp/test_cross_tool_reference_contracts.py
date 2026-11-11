@@ -109,6 +109,7 @@ class Cell:
 _PATH_FIELDS = {
     "affected_files",
     "candidate",
+    "candidate_files",
     "candidates",
     "citations",
     "entry_points",
@@ -157,7 +158,7 @@ _REFERENCE_KINDS = (
 )
 _EXPECTED_KINDS = {
     "get_answer": {"file"},
-    "get_change_risk": set(),
+    "get_change_risk": {"file"},
     "get_context": {
         "file",
         "symbol",
@@ -565,7 +566,9 @@ async def test_canonical_emitter_reference_inventory(
     # leads with composed opportunities. The plan reference is still emitted by
     # get_health, so the inventory asks the call that carries it.
     responses["get_health"].append(
-        await get_health(include=["refactoring"], only=["refactoring_plans"])
+        await get_health(
+            include=["refactoring"], only=["refactoring_plans"], refactoring_scope="all"
+        )
     )
     inventory = {
         emitter: [
@@ -672,7 +675,10 @@ async def test_canonical_emitter_reference_inventory(
                     )
                     assert resolved["resolved"] is True
                     if ref.entity_family == "evidence":
-                        assert ref.expected_object in resolved["evidence_refs"]
+                        assert any(
+                            _served_form_of(ref.expected_object, full)
+                            for full in resolved["evidence_refs"]
+                        )
                     else:
                         decision = next(
                             row for row in resolved["decisions"] if row["id"] == ref.value
@@ -721,6 +727,7 @@ async def _seed_plan(session, repository_id: str) -> None:
             }
         ],
     )
+    await crud.finalize_refactoring_opportunities(session, repository_id)
     await session.commit()
 
 
@@ -834,7 +841,8 @@ async def test_decision_and_evidence_ids_round_trip_through_get_why(
 
     evidence_result = await get_why(reference=evidence)
     assert evidence_result["resolved"] is True
-    assert evidence_result["evidence_refs"] == [evidence]
+    [full] = evidence_result["evidence_refs"]
+    assert _served_form_of(evidence, full)
 
     archaeology = await get_why("src/legacy/old_auth.py")
     rationale = archaeology["code_rationale"][0]
@@ -845,7 +853,16 @@ async def test_decision_and_evidence_ids_round_trip_through_get_why(
         _why_evidence._reference_cache.clear()
     rationale_result = await get_why(reference=rationale_ref)
     assert rationale_result["resolved"] is True
-    assert rationale_result["evidence_refs"] == [rationale_ref]
+    [full] = rationale_result["evidence_refs"]
+    assert _served_form_of(rationale_ref, full)
+
+
+def _served_form_of(served: dict[str, Any], full: dict[str, Any]) -> bool:
+    """Whether *served* is the lean form get_why emits of the resolved *full* ref."""
+    return all(
+        full.get(k) == v or (k == "commit" and str(full.get(k, "")).startswith(v))
+        for k, v in served.items()
+    )
 
 
 @pytest.mark.asyncio
@@ -854,8 +871,8 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     health_data,
     session,
 ) -> None:
+    from repowise.core.analysis.dead_code.serving import dead_code_finding_id
     from repowise.server.mcp_server import get_dead_code, get_health
-    from repowise.server.mcp_server.tool_dead_code import _dead_code_finding_id
     from repowise.server.mcp_server.tool_health import (
         _health_finding_id,
         _refactoring_plan_id,
@@ -867,6 +884,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
         include=["biomarkers", "refactoring"],
         only=["top_findings", "refactoring_plans"],
         limit=10,
+        refactoring_scope="all",
     )
     health_finding = health["top_findings"][0]
     health_lookup = await get_health(finding_id=health_finding["id"])
@@ -896,7 +914,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     plan_row = (await session.execute(select(RefactoringSuggestion))).scalars().first()
     for row, public_id, factory in (
         (health_row, health_finding["id"], _health_finding_id),
-        (dead_row, dead_finding["id"], _dead_code_finding_id),
+        (dead_row, dead_finding["id"], dead_code_finding_id),
         (plan_row, plan["id"], _refactoring_plan_id),
     ):
         replacement = copy(row)

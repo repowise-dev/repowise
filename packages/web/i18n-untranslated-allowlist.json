@@ -1,0 +1,32 @@
+{
+  "criteria": [
+    "A string belongs here only when translating it would be wrong, not when translating it would be work.",
+    "Brand and product names that stay Latin in every locale: repowise/Repowise, GitHub, GitLab, MCP, PageRank.",
+    "Identifiers, paths, file names, versions, units and code snippets the UI shows verbatim.",
+    "Developer-facing strings that never reach a user, e.g. React context guards thrown at the console.",
+    "NOT a reason for entry: 'hard to translate', 'small', 'someone else will do it'. Every entry carries an audit note.",
+    "The scanner warns about entries that matched nothing, so stale rows surface instead of rotting in place."
+  ],
+  "entries": [
+    {
+      "value": "repowise",
+      "reason": "Product wordmark, rendered as-is in the sidebar, mobile nav and version footer."
+    },
+    {
+      "value": "GitHub",
+      "reason": "Brand name of an external service; stays Latin in every locale."
+    },
+    {
+      "value": "GitLab",
+      "reason": "Brand name of an external service; stays Latin in every locale."
+    },
+    {
+      "value": "PageRank",
+      "reason": "Algorithm name (proper noun) shown as a graph metric label."
+    },
+    {
+      "value": "useRepositoryChat must be used within RepositoryChatProvider",
+      "reason": "React context guard thrown to developers; console output stays English in every locale."
+    }
+  ]
+}

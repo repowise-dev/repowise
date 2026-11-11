@@ -32,6 +32,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server._answer_pipeline import is_subsystem_query
 from repowise.server.mcp_server._graph_files import node_to_file
 from repowise.server.mcp_server._helpers import is_excluded
+from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_search_symbols import _tokens
 
@@ -293,7 +294,7 @@ async def _place_files(
     wanted: dict[str, float] = {}
     for i, path in enumerate([entry_file, *inject]):
         wanted.setdefault(path, top + _RANK_STEP * (len(inject) + 1 - i))
-    by_path = {h.get("target_path"): h for h in hits if h.get("page_type") == "file_page"}
+    by_path = {h.get("target_path"): h for h in hits if h.get("page_type") in FILE_ROW_TYPES}
     absent = [p for p in wanted if p not in by_path]
     if absent:
         res = await session.execute(

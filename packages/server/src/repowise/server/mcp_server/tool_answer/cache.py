@@ -61,6 +61,7 @@ def _cached_payload_paths(payload: dict) -> list:
     return [
         *(payload.get("citations") or []),
         *(payload.get("fallback_targets") or []),
+        *(payload.get("candidate_files") or []),
         # "path" is the serialized key; "target_path" survives in rows cached
         # before the clean retrieval view existed.
         *(h.get("path") or h.get("target_path") for h in (payload.get("retrieval") or [])),
@@ -69,7 +70,7 @@ def _cached_payload_paths(payload: dict) -> list:
 
 
 def _cache_bypass_reason(
-    payload: dict, created_at, repository, exclude_spec, cached_paths: list
+    payload: dict, created_at, repository, exclude_spec, cached_paths: list, question: str = ""
 ) -> str | None:
     """Why this cached row must not be served, or None when it is good to serve.
 
@@ -92,7 +93,7 @@ def _cache_bypass_reason(
             _ANSWER_SCHEMA_VERSION,
         )
         return "schema"
-    if _answer_is_hedged(payload.get("answer", "")):
+    if _answer_is_hedged(payload.get("answer", ""), question):
         _log.info("Bypassing hedged cache entry for re-synthesis")
         return "hedged"
     if not (payload.get("answer") or "").strip():
@@ -139,7 +140,9 @@ async def _serve_cached_answer(
     with contextlib.suppress(Exception):
         payload = _json.loads(cached.payload_json)
         cached_paths = _cached_payload_paths(payload)
-        if _cache_bypass_reason(payload, cached.created_at, repository, exclude_spec, cached_paths):
+        if _cache_bypass_reason(
+            payload, cached.created_at, repository, exclude_spec, cached_paths, question
+        ):
             return None
         # Cache-internal fields never reach the consumer (response keys must not
         # start with "_" except _meta).

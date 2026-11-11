@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -10,9 +10,12 @@ from sqlalchemy import select
 from repowise.core.analysis.health.counts import parse_counts
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.models import split_by_origin
-from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.analysis.health.rows import scored_rows
+from repowise.core.analysis.health.scope import parse_scope, rows_in_scope
+from repowise.core.persistence.crud.analysis.health import health_exclude_spec
+from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.models import HealthFileMetric
-from repowise.server.mcp_server._helpers import _get_exclude_spec, filter_rows_by_attr
+from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.targets import _expand_module_targets
 
@@ -29,10 +32,16 @@ class Population:
     reported_counts: str
     unscored_files: int
     unscored_paths: set[str]
+    # Files stored with no score because health has no dialect for their
+    # language. Out of every block; a target among them says so.
+    unanalysed_paths: set[str]
     file_targets: list[str]
     matched_modules: set[str]
     scoped: bool
     effective_targets: list[str]
+    #: Every stored metric row by path, before any narrowing: the file holds
+    #: read a finding's file origin and test flag off it.
+    files: dict[str, Any] = field(default_factory=dict)
 
     @property
     def code_shape(self) -> bool:
@@ -63,11 +72,16 @@ async def load_population(
     session: Any, repository: Any, repo_path: Any, req: HealthRequest
 ) -> Population:
     """Read the metric rows and narrow them the way every block will see them."""
-    all_metrics_q = select(HealthFileMetric).where(
+    # Plain rows, not entities: every block only reads them, and an entity per
+    # file costs most of a call's fixed time on a large repository.
+    all_metrics_q = select(*HealthFileMetric.__table__.columns).where(
         HealthFileMetric.repository_id == repository.id
     )
-    exclude_spec = _get_exclude_spec(repo_path)
-    indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
+    # The rule the CLI, get_overview and status count files by. The MCP-wide
+    # spec adds the gitignore stack, which hid a tracked file its pattern
+    # matched and left get_health one file short of every other surface.
+    exclude_spec = await health_exclude_spec(session, repository.id, repo_path)
+    indexed_rows = plain_rows(await session.execute(all_metrics_q))
     all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
     # Lets an unresolved target report "excluded" rather than "no_such_path".
     # Computed before ``scope`` narrows, or test files would count as excluded.
@@ -78,8 +92,14 @@ async def load_population(
     reported_scope = parse_scope(req.scope)
     scope_paths: set[str] | None = None
     if reported_scope == "production":
-        all_metrics = [m for m in all_metrics if not m.is_test]
+        all_metrics = rows_in_scope(reported_scope, all_metrics)
         scope_paths = {m.file_path for m in all_metrics}
+
+    # Before ``counts``, so a file nobody measured is reported as that rather
+    # than as a code-shape reading with no recorded split.
+    listed = all_metrics
+    unanalysed_paths = {m.file_path for m in all_metrics if m.score is None}
+    all_metrics = scored_rows(all_metrics)
 
     # Composes with the scope: a re-read off the stored structure/history
     # split, not a rescore. Findings narrow by origin, not by path, so a row
@@ -93,7 +113,7 @@ async def load_population(
         unscored_paths = before - {m.file_path for m in all_metrics}
 
     file_targets, matched_modules = _expand_module_targets(
-        all_metrics, req.module_targets, req.file_targets
+        listed, req.module_targets, req.file_targets
     )
     # Keyed off the raw targets, not the resolved ones: a target that resolves
     # to nothing must not fall through to repo-wide numbers.
@@ -107,8 +127,10 @@ async def load_population(
         reported_counts=reported_counts,
         unscored_files=unscored_files,
         unscored_paths=unscored_paths,
+        unanalysed_paths=unanalysed_paths,
         file_targets=file_targets,
         matched_modules=matched_modules,
         scoped=scoped,
         effective_targets=file_targets if scoped else [],
+        files={m.file_path: m for m in indexed_rows},
     )

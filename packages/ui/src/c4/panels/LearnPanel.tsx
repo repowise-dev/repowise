@@ -122,7 +122,7 @@ export function LearnPanel() {
             style={{
               width: `${progress}%`,
               height: "100%",
-              background: "var(--color-accent-primary)",
+              background: "var(--color-progress-fill)",
               borderRadius: 2,
               transition: "width 0.3s ease",
             }}
@@ -197,7 +197,7 @@ export function LearnPanel() {
                 borderRadius: "50%",
                 background:
                   i === currentTourStep
-                    ? "var(--color-accent-primary)"
+                    ? "var(--color-control-selected)"
                     : "var(--color-border-default)",
                 border: "none",
                 cursor: "pointer",

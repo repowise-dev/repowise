@@ -20,6 +20,7 @@ import {
 } from "@repowise-dev/types/doc-drift";
 
 import { PageLede } from "../shared/page-lede";
+import { ProportionBar } from "../shared/proportion-bar";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 
@@ -153,9 +154,8 @@ export function DocDriftLede({
 }
 
 /**
- * How the pile splits by confidence. Stepped down from one family rather than
- * reaching for three hues, because confidence is an ordered scale and not
- * three categories; amber leads because drift is an attention state.
+ * How the pile splits by confidence. An ordered scale, so it keeps its order
+ * (near-certain first) and steps down the share palette in that order.
  */
 function ConfidenceSplit({
   high,
@@ -166,43 +166,16 @@ function ConfidenceSplit({
   medium: number;
   low: number;
 }) {
-  const total = high + medium + low;
-  const segments = [
-    { key: "high", label: "near-certain", count: high, bar: "bg-[var(--color-warning)]" },
-    {
-      key: "medium",
-      label: "medium",
-      count: medium,
-      bar: "bg-[color-mix(in_srgb,var(--color-warning)_45%,var(--color-bg-inset))]",
-    },
-    {
-      key: "low",
-      label: "low",
-      count: low,
-      bar: "bg-[color-mix(in_srgb,var(--color-warning)_18%,var(--color-bg-inset))]",
-    },
-  ].filter((s) => s.count > 0);
-
   return (
-    <div className="space-y-1.5">
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-        {segments.map((s) => (
-          <div
-            key={s.key}
-            className={s.bar}
-            style={{ width: `${(s.count / total) * 100}%` }}
-            aria-label={`${s.count} ${s.label} confidence`}
-          />
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--color-text-tertiary)]">
-        {segments.map((s) => (
-          <span key={s.key} className="inline-flex items-center gap-1 tabular-nums">
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${s.bar}`} />
-            {formatNumber(s.count)} {s.label}
-          </span>
-        ))}
-      </div>
-    </div>
+    <ProportionBar
+      label="Drift findings by confidence"
+      size="sm"
+      sort={false}
+      segments={[
+        { key: "high", label: "near-certain", value: high },
+        { key: "medium", label: "medium", value: medium },
+        { key: "low", label: "low", value: low },
+      ].map((s) => ({ ...s, detail: formatNumber(s.value) }))}
+    />
   );
 }

@@ -31,10 +31,10 @@ interface ViewMeta {
 }
 
 const VIEW_META: Record<PanelViewId, ViewMeta> = {
-  health: { title: "Repowise Health", retainContextWhenHidden: false },
+  health: { title: "Repowise Code Health", retainContextWhenHidden: false },
   architecture: { title: "Repowise Architecture", retainContextWhenHidden: false },
   graph: { title: "Repowise Knowledge Graph", retainContextWhenHidden: false },
-  refactoring: { title: "Repowise Refactoring Plan", retainContextWhenHidden: false },
+  refactoring: { title: "Repowise Refactoring", retainContextWhenHidden: false },
   decisions: { title: "Repowise Decisions", retainContextWhenHidden: false },
   docs: { title: "Repowise Docs", retainContextWhenHidden: false },
   risk: { title: "Repowise Change Risk", retainContextWhenHidden: false },

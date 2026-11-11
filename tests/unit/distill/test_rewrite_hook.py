@@ -763,6 +763,54 @@ class TestMainCodex:
         assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
+class TestDistillNotOnPath:
+    """The hook runs from a pinned path; the rewrite runs bare ``repowise``.
+
+    When ``repowise`` is not on PATH the rewritten command would fail with
+    ``command not found``, so the hook passes the command through instead.
+    """
+
+    @pytest.fixture
+    def off_path(self, tmp_path, monkeypatch):
+        empty = tmp_path / "empty-bin"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+
+    @pytest.mark.parametrize("shell", ["posix", SHELL_POWERSHELL])
+    @pytest.mark.parametrize("command", ["git log -5", "pytest -q", "git status"])
+    def test_decide_passes_through(self, repo, off_path, shell, command) -> None:
+        result, reason, root = rewrite_hook._decide(command, str(repo), shell)
+        assert result is None
+        assert reason == rewrite_hook.BAIL_NO_DISTILL
+        assert root == str(repo)
+
+    def test_chain_passes_through(self, repo, off_path) -> None:
+        assert decide("ls src && git diff a.ts", str(repo)) is None
+
+    @pytest.mark.parametrize(
+        ("tool_name", "argv"),
+        [("Bash", []), ("PowerShell", []), ("Bash", ["--agent", "codex"])],
+    )
+    def test_main_emits_nothing(self, monkeypatch, repo, off_path, tool_name, argv) -> None:
+        payload = _payload("git status", str(repo), tool_name=tool_name)
+        assert _run_main(monkeypatch, payload, argv=argv) == ""
+
+    def test_non_candidates_skip_the_lookup(self, monkeypatch, repo) -> None:
+        def _fail() -> bool:
+            raise AssertionError("PATH looked up for a command that cannot rewrite")
+
+        monkeypatch.setattr(rewrite_hook, "_distill_on_path", _fail)
+        assert rewrite_hook._decide("cd src", str(repo))[1] == rewrite_hook.BAIL_UNRECOGNIZED
+        _write_config(repo, {"commands": {"families": {"test_output": "off"}}})
+        assert rewrite_hook._decide("pytest -x", str(repo))[1] == rewrite_hook.BAIL_FAMILY_OFF
+        _write_config(repo, {"commands": {"enabled": False}})
+        assert rewrite_hook._decide("pytest -x", str(repo))[1] == rewrite_hook.BAIL_DISABLED
+
+    def test_on_path_rewrite_is_unchanged(self, repo) -> None:
+        result = decide("git log -5", str(repo))
+        assert result.command == "repowise distill --source hook-bash git log -5"
+
+
 class TestNonRepoRoots:
     """~ and the system temp ROOT never count as repo opt-ins, even when a
     stray .repowise exists there; repos created UNDER them still match."""

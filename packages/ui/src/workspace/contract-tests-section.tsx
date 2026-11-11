@@ -57,6 +57,8 @@ const SUMMARY_REASON_WORDS: Record<string, string> = {
     "This workspace carries no contract data, so there is no link from this file to a consumer to follow.",
   no_matching_links:
     "No contract link joins this file to a consumer repository, so no test in another repository can be traced back to it.",
+  no_contract_links:
+    "Could not determine: the contract map links no consumer to any provider in this workspace, so an empty answer here says nothing about this file.",
   no_changed_files:
     "No provider file was submitted for analysis, so nothing was traced.",
   lookup_failed:

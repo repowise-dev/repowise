@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cache
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import bindparam, delete, insert, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from repowise.core.persistence.models import _new_uuid, _now_utc
 
@@ -59,16 +61,18 @@ class UpsertGate:
     table: the graph node / metric / membership snapshots rewrite every row
     every update, and on a steady-state update almost none of them moved.
     With a gate, :func:`_batch_upsert_keyed` reads the comparison columns as
-    plain tuples first (no ORM hydration), and hydrates + touches only the
-    rows that actually differ.
+    plain tuples first (no ORM hydration), and writes only the rows that
+    actually differ, as plain UPDATE statements (see :func:`_rewrite_gated_rows`).
 
     - *columns* are the comparison columns, keyed positionally; the key column
       is not one of them.
     - *item_values_fn* returns exactly the fields ``update_fn`` would write for
-      that item. A field it returns that is not in *columns* makes the item
-      unconditionally "changed": the gate can never suppress a write it cannot
-      prove is redundant, so a payload that grows a field degrades to the
-      ungated behaviour instead of silently dropping it.
+      that item, with the values it would write: a changed row is written from
+      it, without ``update_fn``. A field it returns that is not in *columns*
+      makes the item unconditionally "changed" and sends it through
+      ``update_fn``: the gate can never suppress a write it cannot prove is
+      redundant, so a payload that grows a field degrades to the ungated
+      behaviour instead of silently dropping it.
     - *float_columns* are compared with ``float_atol`` absolute tolerance. See
       :func:`_gate_unchanged` for why that is not the same thing as sloppiness.
     - *prefetched* lets a caller that already scans the table for its own
@@ -133,7 +137,7 @@ async def _batch_upsert_keyed(
     item_key_fn: Callable[[Any], Any],
     row_key_fn: Callable[[Any], Any],
     update_fn: Callable[[Any, Any], None],
-    insert_fn: Callable[[Any], Any],
+    insert_fn: Callable[[Any], dict[str, Any]],
     batch_size: int | None = None,
     gate: UpsertGate | None = None,
 ) -> None:
@@ -148,18 +152,21 @@ async def _batch_upsert_keyed(
     exactly when the legacy ``key_fn`` filter would have found that row.
 
     Within-batch duplicate keys keep the legacy outcome: the first item
-    inserts, later ones update the pending object (the per-item SELECT used
-    to see the autoflushed insert).
+    inserts, later ones update the not-yet-inserted row (the per-item SELECT
+    used to see the autoflushed insert), or the reloaded row once that insert
+    has been written.
+
+    *insert_fn* returns the new row's column values by attribute name,
+    primary key included, exactly as they would be passed to ``model(...)``.
 
     *gate*, when given, skips items whose stored row already matches (see
-    :class:`UpsertGate`). Only the surviving items are hydrated as ORM rows.
+    :class:`UpsertGate`) and writes the changed ones without hydrating them.
     It is disabled for a batch with duplicate keys, where "already matches"
     would have to reason about the whole run of items sharing that key.
     """
     materialized = list(items)
     if not materialized:
-        if batch_size is None:
-            await session.flush()
+        await session.flush()
         return
 
     gated_keys: list[Any] | None = None
@@ -180,18 +187,11 @@ async def _batch_upsert_keyed(
                 ).all()
                 stored = {row[0]: row[1:] for row in stored_rows}
             stored_count = len(stored)
-            surviving: list[Any] = []
-            gated_keys = []
-            for item, key in zip(materialized, keys, strict=True):
-                current = stored.get(key)
-                if current is None:
-                    surviving.append(item)  # new row — nothing to compare against
-                    continue
-                if _gate_unchanged(gate, index, item, current):
-                    continue
-                surviving.append(item)
-                gated_keys.append(key)
-            materialized = surviving
+            materialized, gated_keys, rewrites = _sort_gated_items(
+                gate, index, materialized, keys, stored
+            )
+            if rewrites:
+                await _rewrite_gated_rows(session, model, prefilter, gate, rewrites)
             if not materialized:
                 await session.flush()
                 return
@@ -216,22 +216,193 @@ async def _batch_upsert_keyed(
                 .all()
             )
     by_key: dict[Any, Any] = {row_key_fn(row): row for row in existing_rows}
+    mapper = inspect(model)
 
-    if batch_size is None:
-        chunks: list[list[Any]] = [materialized]
-    else:
-        chunks = [materialized[i : i + batch_size] for i in range(0, len(materialized), batch_size)]
-    for chunk in chunks:
-        for item in chunk:
+    # Rows this call inserted, by key -> primary key. Only the key is kept:
+    # holding every inserted row until the end pinned the whole table in memory
+    # at once (1.8M graph edges took ~5 GiB). A later duplicate key reloads its
+    # row through session.get instead.
+    flushed: dict[Any, tuple] = {}
+    pk_keys = [prop.key for prop in mapper.column_attrs if prop.columns[0].primary_key]
+    size = batch_size or _BATCH_SIZE
+    for start in range(0, len(materialized), size):
+        # New rows go out as one executemany INSERT of plain column values, never
+        # as ORM objects: building them and the unit of work's per-object state,
+        # identity map and flush bookkeeping cost more than the SQL itself.
+        pending: dict[Any, dict[str, Any]] = {}
+        for item in materialized[start : start + size]:
             key = item_key_fn(item)
             existing = by_key.get(key)
+            if existing is None and key in flushed:
+                existing = await session.get(model, flushed[key])
             if existing is not None:
                 update_fn(existing, item)
+            elif key in pending:
+                # Same key twice in one chunk: replay the update on a transient
+                # copy, as it used to land on the still-pending insert.
+                obj = model(**pending[key])
+                update_fn(obj, item)
+                pending[key] = _column_values(
+                    model, {k: v for k, v in vars(obj).items() if not k.startswith("_sa_")}
+                )
             else:
-                obj = insert_fn(item)
-                session.add(obj)
-                by_key[key] = obj
+                pending[key] = _column_values(model, insert_fn(item))
+        if pending:
+            await session.execute(
+                insert(model).execution_options(render_nulls=True), list(pending.values())
+            )
+            for key, values in pending.items():
+                flushed[key] = tuple(values[k] for k in pk_keys)
         await session.flush()
+
+
+def _sort_gated_items(
+    gate: UpsertGate,
+    index: dict[str, int],
+    items: list[Any],
+    keys: list[Any],
+    stored: dict[Any, tuple],
+) -> tuple[list[Any], list[Any], list[tuple[Any, dict[str, Any]]]]:
+    """Split items into those for the ORM path, their stored keys, and rewrites.
+
+    Unchanged items are dropped. A changed item whose fields the gate fully
+    compares is a rewrite (key, values); a new or partly comparable one stays.
+    """
+    surviving: list[Any] = []
+    gated_keys: list[Any] = []
+    rewrites: list[tuple[Any, dict[str, Any]]] = []
+    for item, key in zip(items, keys, strict=True):
+        current = stored.get(key)
+        if current is None:
+            surviving.append(item)  # new row — nothing to compare against
+            continue
+        if _gate_unchanged(gate, index, item, current):
+            continue
+        values = gate.item_values_fn(item)
+        if values.keys() <= index.keys():
+            rewrites.append((key, values))
+            continue
+        surviving.append(item)
+        gated_keys.append(key)
+    return surviving, gated_keys, rewrites
+
+
+async def _rewrite_gated_rows(
+    session: AsyncSession,
+    model: type[Any],
+    prefilter: tuple[Any, ...],
+    gate: UpsertGate,
+    rewrites: list[tuple[Any, dict[str, Any]]],
+) -> None:
+    """Write the rows the gate found changed as executemany UPDATEs.
+
+    A gate's ``item_values_fn`` is exactly what ``update_fn`` would set, so
+    these rows need no ORM object. Hydrating and flushing them one by one
+    issued an UPDATE per row with its own column set (the unit of work cannot
+    batch rows whose changed columns differ): ~0.4 ms each, 5-10 s on a
+    structural change that renumbers or renormalises most of a large graph.
+    Rows are grouped by field set, so each group is one statement.
+    """
+    # Pending ORM changes land first, so the statements below have the last word.
+    await session.flush()
+    table = model.__table__
+    mapper = inspect(model)
+    key_column = gate.key_column.property.columns[0]
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for key, values in rewrites:
+        params = {"_gate_key": key}
+        params.update({f"_gate_{name}": value for name, value in values.items()})
+        groups.setdefault(tuple(sorted(values)), []).append(params)
+    for names, params in groups.items():
+        stmt = (
+            update(table)
+            .where(*prefilter, key_column == bindparam("_gate_key"))
+            .values({mapper.attrs[name].columns[0]: bindparam(f"_gate_{name}") for name in names})
+        )
+        for start in range(0, len(params), _BATCH_SIZE):
+            await session.execute(stmt, params[start : start + _BATCH_SIZE])
+    await _refresh_held_rows(session, model, prefilter, gate, dict(rewrites))
+
+
+async def _refresh_held_rows(
+    session: AsyncSession,
+    model: type[Any],
+    prefilter: tuple[Any, ...],
+    gate: UpsertGate,
+    written: dict[Any, dict[str, Any]],
+) -> None:
+    """Put the written values on rows the session already holds.
+
+    The statements bypass the identity map, and the ORM path this replaces
+    left held rows carrying the new values. Expiring them instead would make
+    the next attribute read a lazy load, which an async session cannot do.
+    Only rows the prefilter selects are touched: another repository may hold
+    the same key.
+    """
+    key_attr = gate.key_column.key
+    held: dict[tuple, Any] = {}
+    for obj in list(session.sync_session.identity_map.values()):
+        if not isinstance(obj, model):
+            continue
+        state = inspect(obj)
+        if state.dict.get(key_attr) in written and state.identity is not None:
+            held[state.identity] = obj
+    if not held:
+        return
+    mapper = inspect(model)
+    keys = list({inspect(obj).dict[key_attr] for obj in held.values()})
+    for start in range(0, len(keys), _GATE_LOAD_CHUNK):
+        rows = await session.execute(
+            select(*mapper.primary_key).where(
+                *prefilter, gate.key_column.in_(keys[start : start + _GATE_LOAD_CHUNK])
+            )
+        )
+        for row in rows:
+            obj = held.get(tuple(row))
+            if obj is None:
+                continue
+            for name, value in written[inspect(obj).dict[key_attr]].items():
+                set_committed_value(obj, name, value)
+
+
+@cache
+def _insert_columns(model: type[Any]) -> tuple[tuple[str, Any, bool], ...]:
+    """Per mapped column: attribute key, Python default, server-default-only flag."""
+    return tuple(
+        (
+            prop.key,
+            prop.columns[0].default,
+            prop.columns[0].default is None and prop.columns[0].server_default is not None,
+        )
+        for prop in inspect(model).column_attrs
+    )
+
+
+def _column_values(model: type[Any], values: dict[str, Any]) -> dict[str, Any]:
+    """The INSERT parameters a flush of ``model(**values)`` would send.
+
+    A flush gives a column left unset or None its default, so that is resolved
+    here too. Every row of a model then carries the same keys, which is what
+    lets the bulk INSERT go out as one executemany (rows with differing keys
+    are split into separate statements). The INSERT renders the remaining
+    Nones as NULL, the value a flush writes for a column without a default.
+    """
+    row: dict[str, Any] = {}
+    used = 0
+    for key, default, server_only in _insert_columns(model):
+        if key in values:
+            used += 1
+        value = values.get(key)
+        if value is None:
+            if server_only:
+                continue  # left to the database, as a flush would
+            if default is not None:
+                value = default.arg if default.is_scalar else default.arg(None)
+        row[key] = value
+    if used != len(values):
+        unknown = sorted(set(values) - {c[0] for c in _insert_columns(model)})
+        raise TypeError(f"{unknown!r} are not columns of {model.__name__}")
+    return row
 
 
 async def _batch_delete_in(
@@ -278,18 +449,18 @@ def _row_updater(*natural_key: str) -> Callable[[Any, dict], None]:
     return update
 
 
-def _row_inserter(model: type[Any], repository_id: str) -> Callable[[dict], Any]:
+def _row_inserter(model: type[Any], repository_id: str) -> Callable[[dict], dict]:
     """Build the matching ``insert_fn``: the same columns, on a fresh row."""
 
-    def insert(row: dict) -> Any:
-        return model(
-            id=_new_uuid(),
-            repository_id=repository_id,
+    def insert(row: dict) -> dict:
+        return {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
             **{
                 k: v
                 for k, v in row.items()
                 if k not in ("id", "repository_id") and hasattr(model, k)
             },
-        )
+        }
 
     return insert

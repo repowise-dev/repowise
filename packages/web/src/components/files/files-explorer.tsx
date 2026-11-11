@@ -7,8 +7,10 @@ import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { FilesIndex } from "@repowise-dev/ui/files";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { getFilesIndex } from "@/lib/api/files";
+import { useTranslations } from "next-intl";
 
 export function FilesExplorer({ repoId }: { repoId: string }) {
+  const t = useTranslations("files");
   const { data, error, isLoading } = useSWR(
     `files-index:${repoId}`,
     () => getFilesIndex(repoId),
@@ -53,7 +55,7 @@ export function FilesExplorer({ repoId }: { repoId: string }) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] p-4 text-sm text-[var(--color-text-secondary)]">
         <AlertTriangle className="h-4 w-4 text-[var(--color-warning)]" />
-        Couldn&apos;t load the file index for this repository.
+        {t("explorer.loadFailed")}
       </div>
     );
   }

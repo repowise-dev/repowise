@@ -121,6 +121,9 @@ def _neg_str(s: str) -> tuple[int, ...]:
     return tuple(-ord(c) for c in s)
 
 
+_MAX_SHAPE_IDENTIFIERS = 4
+
+
 def _specific_identifiers(question_ids: set[str]) -> list[str]:
     """Keep only identifiers specific enough to ground a data shape on.
 
@@ -134,7 +137,9 @@ def _specific_identifiers(question_ids: set[str]) -> list[str]:
         for q in question_ids
         if len(q) >= _DATA_SHAPE_MIN_IDENT_LEN and ("_" in q or any(c.isupper() for c in q))
     ]
-    return sorted(kept, key=len, reverse=True)
+    # Each one costs a whole-repo grep run one after another; a pasted issue
+    # body names dozens. Name tie-break keeps the cut deterministic.
+    return sorted(kept, key=lambda q: (-len(q), q))[:_MAX_SHAPE_IDENTIFIERS]
 
 
 # Pathspecs limiting the grep to source and excluding heavy/vendored dirs. The
@@ -225,12 +230,10 @@ def _grep_identifier_files(repo_root: Path, identifier: str, spec: object = None
 
 def _read_lines(repo_root: Path, rel_path: str) -> list[str] | None:
     """Read a repo-relative file's lines, refusing any path outside the root."""
-    try:
-        abs_path = (repo_root / rel_path).resolve()
-        abs_path.relative_to(repo_root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except (OSError, ValueError):
-        return None
+    from repowise.server.mcp_server._helpers import read_repo_file_text
+
+    text = read_repo_file_text(repo_root, rel_path, allow_extracted=False)
+    return text.splitlines() if text is not None else None
 
 
 def _docstring_line_set(lines: list[str]) -> set[int]:

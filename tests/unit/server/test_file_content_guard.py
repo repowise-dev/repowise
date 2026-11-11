@@ -45,6 +45,35 @@ async def test_serves_indexed_file(client: AsyncClient, app, tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("default_encoding", ["utf-8", "cp1252"])
+async def test_serves_utf8_content_independent_of_default_encoding(
+    client: AsyncClient, app, tmp_path: Path, monkeypatch, default_encoding: str
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    target = Path(repo["local_path"]) / "main.py"
+    content = "# café — 日本語\n"
+    target.write_bytes(content.encode("utf-8"))
+    await _index_file(app.state.session_factory, repo["id"], "main.py")
+
+    original_read_text = Path.read_text
+
+    def read_text_with_default_encoding(
+        path: Path, encoding: str | None = None, errors: str | None = None
+    ) -> str:
+        if path == target and encoding is None:
+            encoding = default_encoding
+        return original_read_text(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", read_text_with_default_encoding)
+
+    resp = await client.get(
+        f"/api/repos/{repo['id']}/file-content", params={"file_path": "main.py"}
+    )
+    assert resp.status_code == 200
+    assert resp.text == content
+
+
+@pytest.mark.asyncio
 async def test_serves_indexed_dot_paths(client: AsyncClient, app, tmp_path: Path) -> None:
     """The traverser walks `.github` and friends, so those files stay readable.
 

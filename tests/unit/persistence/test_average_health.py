@@ -1,4 +1,4 @@
-"""``get_average_health`` — the badge's one number, without the dataset.
+"""``get_headline_health``: the badge's one number, without the dataset.
 
 The public badge endpoints render a single float and were reading the whole
 health dataset to get it. The narrow read has to agree with
@@ -9,7 +9,7 @@ dashboard it links to.
 from __future__ import annotations
 
 from repowise.core.persistence.crud import (
-    get_average_health,
+    get_headline_health,
     get_health_summary,
     save_health_metrics,
     upsert_repository,
@@ -37,9 +37,10 @@ async def test_matches_the_summary_and_is_nloc_weighted(async_session, tmp_path)
         [_metric("src/big.py", 1.0, 900), _metric("src/small.py", 10.0, 100)],
     )
 
-    avg = await get_average_health(async_session, repo.id)
+    avg, share = await get_headline_health(async_session, repo.id)
 
     assert avg == 1.9  # (1.0*900 + 10.0*100) / 1000
+    assert share == 1.0
     assert avg == (await get_health_summary(async_session, repo.id))["average_health"]
 
 
@@ -50,9 +51,9 @@ async def test_zero_nloc_rows_fall_back_to_a_plain_mean(async_session, tmp_path)
         async_session, repo.id, [_metric("a.py", 2.0, 0), _metric("b.py", 8.0, 0)]
     )
 
-    assert await get_average_health(async_session, repo.id) == 5.0
+    assert (await get_headline_health(async_session, repo.id))[0] == 5.0
     assert (
-        await get_average_health(async_session, repo.id)
+        (await get_headline_health(async_session, repo.id))[0]
         == (await get_health_summary(async_session, repo.id))["average_health"]
     )
 
@@ -77,9 +78,9 @@ async def test_honors_the_exclusion_spec(async_session, tmp_path) -> None:
     )
 
     # Unfiltered this would be 1.7; the excluded file must not count at all.
-    assert await get_average_health(async_session, repo.id) == 8.0
+    assert (await get_headline_health(async_session, repo.id))[0] == 8.0
     assert (
-        await get_average_health(async_session, repo.id)
+        (await get_headline_health(async_session, repo.id))[0]
         == (await get_health_summary(async_session, repo.id))["average_health"]
     )
 
@@ -87,14 +88,25 @@ async def test_honors_the_exclusion_spec(async_session, tmp_path) -> None:
 async def test_unmeasured_repo_reports_none_rather_than_a_perfect_score(
     async_session, tmp_path
 ) -> None:
-    """No rows is "not measured", not 10.0.
+    """No rows is "not measured", not 10.0, in the summary and the badge alike.
 
-    ``get_health_summary`` returns 10.0 here, which the badge endpoint has
-    always rendered and still does — it maps ``None`` back to 10.0 itself. The
-    crud helper stays honest so a new caller is not handed a perfect score for
-    a repo nobody has analysed.
+    A repository of only data and config files has no rows, since those files
+    never get one, so a 10.0 here would badge it as perfect.
     """
     repo = await upsert_repository(async_session, name="repo", local_path=str(tmp_path))
 
-    assert await get_average_health(async_session, repo.id) is None
-    assert (await get_health_summary(async_session, repo.id))["average_health"] == 10.0
+    assert (await get_headline_health(async_session, repo.id))[0] is None
+    assert (await get_health_summary(async_session, repo.id))["average_health"] is None
+
+
+async def test_share_counts_unscored_files_like_the_summary(async_session, tmp_path) -> None:
+    """The badge's band gate reads the same share the dashboard does."""
+    repo = await upsert_repository(async_session, name="repo", local_path=str(tmp_path))
+    unscored = [{**_metric(f"u{i}.swift", 0.0, 10), "score": None} for i in range(3)]
+    await save_health_metrics(async_session, repo.id, [_metric("a.py", 9.0, 10), *unscored])
+
+    avg, share = await get_headline_health(async_session, repo.id)
+
+    assert avg == 9.0
+    assert share == 0.25
+    assert share == (await get_health_summary(async_session, repo.id))["analysed_share"]
