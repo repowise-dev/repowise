@@ -43,6 +43,7 @@ import threading
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -57,10 +58,21 @@ log = structlog.get_logger(__name__)
 # far has the graph drifted, and which nodes were never in this scoring".
 # 4 when file betweenness moved to the graph without test-to-test edges; a
 # churn-budget hit would otherwise keep serving the old scoring.
-_CACHE_VERSION = 4
+# 5 when community detection results (CommunityInfo) and execution flow reports
+# were added to the cache, with flow reports keyed by symbol subgraph signature.
+# 6 when file and symbol communities were keyed by exact subgraph signature,
+# and execution flows were keyed on a comprehensive execution-graph signature.
+_CACHE_VERSION = 6
 _CACHE_FILENAME = "centrality_cache.pkl"
 
-__all__ = ["BetweennessScoring", "CentralityCache", "subgraph_signature"]
+__all__ = [
+    "BetweennessScoring",
+    "CentralityCache",
+    "execution_flow_signature",
+    "file_community_signature",
+    "subgraph_signature",
+    "symbol_community_signature",
+]
 
 
 def subgraph_signature(graph) -> str:
@@ -78,6 +90,112 @@ def subgraph_signature(graph) -> str:
         h.update(u.encode("utf-8", "replace"))
         h.update(b"\x00")
         h.update(v.encode("utf-8", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def file_community_signature(graph) -> str:
+    """Hash the structure and attributes that file community detection reads."""
+    from repowise.core.analysis.communities import (
+        _FILE_COMMUNITY_EDGE_TYPES,
+        _is_example_node,
+        _is_test_node,
+    )
+    from repowise.core.ids import is_external
+
+    h = hashlib.sha256()
+    file_nodes = sorted(
+        n
+        for n, d in graph.nodes(data=True)
+        if d.get("node_type", "file") == "file" and not is_external(n) and not d.get("is_external", False)
+    )
+    for n in file_nodes:
+        h.update(n.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        d = graph.nodes[n]
+        is_test = _is_test_node(n, d)
+        is_example = _is_example_node(n, d)
+        h.update(b"T" if is_test else b"P")
+        h.update(b"E" if is_example else b"O")
+    h.update(b"\x01")
+    file_set = frozenset(file_nodes)
+    edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type", "imports") in _FILE_COMMUNITY_EDGE_TYPES
+        and u in file_set
+        and v in file_set
+    )
+    for u, v in edges:
+        h.update(u.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(v.encode("utf-8", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def symbol_community_signature(graph) -> str:
+    """Hash the symbol nodes and call/heritage edges that symbol community detection reads."""
+    from repowise.core.analysis.communities import _SYMBOL_COMMUNITY_EDGE_TYPES
+
+    h = hashlib.sha256()
+    symbol_nodes = sorted(
+        n for n, d in graph.nodes(data=True) if d.get("node_type") == "symbol"
+    )
+    for n in symbol_nodes:
+        h.update(n.encode("utf-8", "replace"))
+        h.update(b"\x00")
+    h.update(b"\x01")
+    symbol_set = frozenset(symbol_nodes)
+    edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type") in _SYMBOL_COMMUNITY_EDGE_TYPES
+        and u in symbol_set
+        and v in symbol_set
+    )
+    for u, v in edges:
+        h.update(u.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(v.encode("utf-8", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def execution_flow_signature(graph, community_sig: str = "") -> str:
+    """Hash the nodes, attributes, and walkable edges that execution flow tracing reads."""
+    h = hashlib.sha256()
+    h.update(community_sig.encode("utf-8"))
+    h.update(b"\xff")
+    for n, d in sorted(graph.nodes(data=True)):
+        nt = d.get("node_type", "file")
+        if nt == "file":
+            if d.get("is_entry_point"):
+                h.update(n.encode("utf-8", "replace"))
+                h.update(b":entry\x00")
+        elif nt == "symbol":
+            h.update(n.encode("utf-8", "replace"))
+            h.update(b"\x00")
+            vis = str(d.get("visibility", "public"))
+            name = str(d.get("name", ""))
+            h.update(vis.encode("utf-8", "replace"))
+            h.update(b"\x00")
+            h.update(name.encode("utf-8", "replace"))
+            h.update(b"\x00")
+    h.update(b"\x01")
+    for u, v, d in sorted(graph.edges(data=True)):
+        etype = str(d.get("edge_type", ""))
+        origin = str(d.get("resolution_origin", ""))
+        conf = str(d.get("confidence", ""))
+        h.update(u.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(v.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(etype.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(origin.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(conf.encode("utf-8", "replace"))
         h.update(b"\x00")
     return h.hexdigest()
 
@@ -132,6 +250,9 @@ class CentralityCache:
         # kind -> (signature, alpha, values). Exact-signature reuse only: unlike
         # betweenness, PageRank is cheap enough that drift is never worth serving.
         self._pagerank: dict[str, tuple[str, float, dict[str, float]]] = {}
+        self._file_communities: tuple[str, dict[str, int], dict[int, Any], str] | None = None
+        self._symbol_communities: tuple[str, dict[str, int]] | None = None
+        self._execution_flow: tuple[str, Any] | None = None
         self._lock = threading.Lock()
         self._loaded = False
         self._signatures: dict[str, tuple[weakref.ref, str]] = {}
@@ -155,6 +276,9 @@ class CentralityCache:
         self._signature_lock = threading.Lock()
         self.__dict__.setdefault("_signatures", {})
         self.__dict__.setdefault("_pagerank", {})
+        self.__dict__.setdefault("_file_communities", None)
+        self.__dict__.setdefault("_symbol_communities", None)
+        self.__dict__.setdefault("_execution_flow", None)
 
     def signature(self, kind: str, graph) -> str:
         """:func:`subgraph_signature` of *graph*, hashed once per subgraph object.
@@ -182,6 +306,15 @@ class CentralityCache:
             self._entries = payload.get("entries", {})
             # Optional key: files written before PageRank was cached lack it.
             self._pagerank = payload.get("pagerank", {})
+            fc = payload.get("file_communities")
+            if isinstance(fc, tuple) and len(fc) == 4:
+                self._file_communities = fc
+            sc = payload.get("symbol_communities")
+            if isinstance(sc, tuple) and len(sc) == 2:
+                self._symbol_communities = sc
+            ef = payload.get("execution_flow")
+            if isinstance(ef, tuple) and len(ef) == 2:
+                self._execution_flow = ef
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
@@ -194,6 +327,9 @@ class CentralityCache:
                 "version": _CACHE_VERSION,
                 "entries": self._entries,
                 "pagerank": self._pagerank,
+                "file_communities": self._file_communities,
+                "symbol_communities": self._symbol_communities,
+                "execution_flow": self._execution_flow,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
@@ -219,14 +355,95 @@ class CentralityCache:
             self._pagerank[kind] = (signature, alpha, dict(values))
             self._save_locked()
 
+    def lookup_file_communities(
+        self, *, signature: str, rescore_due: bool = True
+    ) -> tuple[dict[str, int], dict[int, Any], str] | None:
+        """Return cached (assignment, info, algo) for file-level communities if signature matches."""
+        if rescore_due:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            if self._file_communities is None:
+                return None
+            cached_sig, assignment, info, algo = self._file_communities
+            if cached_sig != signature:
+                return None
+            import copy
+
+            return dict(assignment), copy.deepcopy(info), algo
+
+    def put_file_communities(
+        self, signature: str, assignment: dict[str, int], info: dict[int, Any], algo: str
+    ) -> None:
+        """Record file-level community detection results for signature and persist atomically."""
+        import copy
+
+        with self._lock:
+            self._ensure_loaded()
+            self._file_communities = (signature, dict(assignment), copy.deepcopy(info), algo)
+            self._save_locked()
+
+    def lookup_symbol_communities(
+        self, *, signature: str, rescore_due: bool = True
+    ) -> dict[str, int] | None:
+        """Return cached symbol-level community assignment if signature matches."""
+        if rescore_due:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            if self._symbol_communities is None:
+                return None
+            cached_sig, assignment = self._symbol_communities
+            if cached_sig != signature:
+                return None
+            return dict(assignment)
+
+    def put_symbol_communities(self, signature: str, assignment: dict[str, int]) -> None:
+        """Record symbol-level community detection results for signature and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._symbol_communities = (signature, dict(assignment))
+            self._save_locked()
+
+    def lookup_execution_flows(
+        self, *, signature: str, rescore_due: bool = True
+    ) -> Any | None:
+        """Return cached execution flow report if computed on this exact symbol structure."""
+        if rescore_due:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            if self._execution_flow is None:
+                return None
+            cached_sig, report = self._execution_flow
+            if cached_sig != signature:
+                return None
+            return report
+
+    def put_execution_flows(self, signature: str, report: Any) -> None:
+        """Record execution flow report for *signature* and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._execution_flow = (signature, report)
+            self._save_locked()
+
     def lookup(
-        self, kind: str, graph, *, signature: str, max_churn: int
+        self,
+        kind: str,
+        graph,
+        *,
+        signature: str,
+        max_churn: int,
+        rescore_due: bool = True,
     ) -> BetweennessScoring | None:
         """Return the last exact scoring for *kind* if *graph* is close enough.
 
         ``None`` when there is no entry, or when the graph has drifted further
-        than *max_churn* nodes-plus-edges from the one that was scored; both
-        mean the caller must recompute.
+        than *max_churn* nodes-plus-edges from the one that was scored and
+        *rescore_due* is True; both mean the caller must recompute. When
+        *rescore_due* is False (e.g. during incremental update between periodic
+        cadences), the previous scoring continues to be served past the churn budget
+        as long as the graph still overlaps with scored nodes.
         """
         with self._lock:
             self._ensure_loaded()
@@ -238,10 +455,21 @@ class CentralityCache:
         # Both compute paths return one entry per node, so the scored node set
         # is the values' keys.
         nodes = set(graph.nodes())
-        scored = entry.values.keys()
+        scored = set(entry.values.keys())
+        if not (nodes & scored):
+            return None
         churn = len(nodes - scored) + len(scored - nodes)
         churn += len(_edge_fingerprints(graph) ^ entry.edges)
-        if churn > max_churn:
+        # Zero churn budget means the graph is small enough that recompute is
+        # sub-second; only exact-signature matches are reused, even if rescore is not due.
+        if max_churn == 0 and entry.signature != signature:
+            return None
+        if rescore_due and churn > max_churn:
+            return None
+        # Bound drift during incremental updates: beyond a multiple of the
+        # churn budget, even an unscheduled run must rescore rather than serve
+        # a grossly drifted ranking (e.g. following a large directory rename).
+        if not rescore_due and churn > max(10, 4 * max_churn):
             return None
         return BetweennessScoring(dict(entry.values), entry.scored_commit, churn)
 

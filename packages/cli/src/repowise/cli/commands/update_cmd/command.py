@@ -1456,6 +1456,16 @@ def _rebuild_index(run: UpdateRun) -> None:
     # partial health's repo-wide aggregates are unaffected.
     run.working_tree_only = _working_tree_only(run)
     run.head_ts = None if run.working_tree_only else _head_commit_ts(run.repo_path)
+    from .persistence import metrics_rescore_due
+
+    metrics_due = metrics_rescore_due(
+        run.state,
+        run.head_ts,
+        extraction_changed=getattr(run, "extraction_changed", False),
+        traversal_changed=bool(getattr(getattr(run, "config", None), "traversal_changed", False)),
+        full_generation=getattr(run, "full_generation", False),
+        wiki_rebuild=getattr(run, "wiki_rebuild", False),
+    )
     (
         run.parsed_files,
         run.source_map,
@@ -1482,6 +1492,7 @@ def _rebuild_index(run: UpdateRun) -> None:
         ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
+        rescore_due=metrics_due,
     )
     run.degraded.extend(_unavailable_grammar_entries(run.parsed_files))
     decision = getattr(run.graph_builder, "incremental_graph_decision", None)
@@ -2276,6 +2287,8 @@ def _rescore_after_persist(run: UpdateRun) -> None:
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts
         run.state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    if run.head_ts is not None and getattr(run.graph_builder, "_rescore_due", True):
+        run.state["last_full_metrics_rescore_at"] = run.head_ts
     if health_changed and not rescored:
         raise RuntimeError(
             "Configuration-triggered health re-score failed; the previous "

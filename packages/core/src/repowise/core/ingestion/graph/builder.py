@@ -98,7 +98,9 @@ class GraphBuilder(
         head_commit: str | None = None,
         include_submodules: bool = False,
         include_nested_repos: bool = False,
+        rescore_due: bool = True,
     ) -> None:
+        self._rescore_due: bool = rescore_due
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         # Raw source bytes the caller already read, keyed like _parsed_files.
@@ -172,6 +174,9 @@ class GraphBuilder(
         self._symbol_pagerank_cache: dict[str, float] | None = None
         self._symbol_betweenness_cache: dict[str, float] | None = None
         self._execution_flow_cache: Any | None = None
+        self._symbol_signature: str | None = None
+        self._file_community_signature: str | None = None
+        self._symbol_community_signature: str | None = None
         # Filtered-subgraph caches — rebuilt lazily; guarded by a lock because
         # the init pipeline computes metrics concurrently (asyncio.to_thread).
         import threading
@@ -234,6 +239,9 @@ class GraphBuilder(
         self._symbol_pagerank_cache = None
         self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
+        self._symbol_signature = None
+        self._file_community_signature = None
+        self._symbol_community_signature = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
@@ -252,6 +260,9 @@ class GraphBuilder(
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
         self._centrality_subgraph_cache = None
+        self._symbol_signature = None
+        self._file_community_signature = None
+        self._symbol_community_signature = None
 
     def release_graph(self) -> None:
         """Drop the in-memory NetworkX object after metrics are materialized.

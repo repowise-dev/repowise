@@ -146,6 +146,8 @@ class RepoUpdateResult:
     # The graph rebuild's patch-or-rebuild decision, stamped as state.json
     # "graph_update"; None leaves the stored record alone.
     graph_update: dict[str, Any] | None = None
+    # Whether graph metrics rescoring was due/executed on the rebuild path.
+    rescore_due: bool = True
 
 
 @dataclass
@@ -180,6 +182,7 @@ async def _incremental_repo_update(
     force_full_git: bool = False,
     products_sink: list[UpdateProducts] | None = None,
     rescore_health: bool = False,
+    rescore_due: bool = True,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -251,6 +254,7 @@ async def _incremental_repo_update(
         # Same switch as the CLI update: it also invalidates the seed snapshot
         # before persistence rewrites the graph rows the snapshot mirrors.
         patch_graph=incremental_graph_enabled(),
+        rescore_due=rescore_due,
         timings=timings,
     )
 
@@ -349,6 +353,7 @@ async def _incremental_repo_update(
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
         health_rescored=rescored_report is not None,
         graph_update=getattr(graph_builder, "incremental_graph_decision", None),
+        rescore_due=getattr(graph_builder, "_rescore_due", rescore_due),
     )
 
 
@@ -572,6 +577,7 @@ async def update_single_repo_index(
     products_sink: list[UpdateProducts] | None = None,
     full_index_fallback: bool = True,
     rescore_health: bool = False,
+    rescore_due: bool = True,
 ) -> RepoUpdateResult:
     """Refresh the index for a single repo.
 
@@ -624,6 +630,7 @@ async def update_single_repo_index(
             include_working_tree,
             products_sink=products_sink,
             rescore_health=rescore_health,
+            rescore_due=rescore_due,
         )
         if incremental_result is not None:
             return incremental_result
@@ -730,6 +737,7 @@ async def _try_incremental_update(
     *,
     products_sink: list[UpdateProducts] | None = None,
     rescore_health: bool = False,
+    rescore_due: bool = True,
 ) -> tuple[RepoUpdateResult | None, str | None]:
     """The incremental update's result, or ``None`` and the error to fall back on."""
     from ...ingestion.document_extractors import DocumentExtractionError
@@ -744,6 +752,7 @@ async def _try_incremental_update(
             force_full_git=git_history_stale(state),
             products_sink=products_sink,
             rescore_health=rescore_health,
+            rescore_due=rescore_due,
         )
     except DocumentExtractionError:
         raise

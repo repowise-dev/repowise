@@ -186,7 +186,7 @@ def test_stale_cache_version_degrades_to_recompute(tmp_path):
         domain="centrality_cache.pkl",
     )
     assert _lookup(CentralityCache(tmp_path), "symbol", _graph([("a", "b")]), "sig-1") is None
-    assert cc._CACHE_VERSION == 4
+    assert cc._CACHE_VERSION == 6
 
 
 async def test_compute_metrics_parallel_with_cache(tmp_path):
@@ -445,3 +445,79 @@ def test_weighted_graphs_are_never_served_cached_pagerank(tmp_path):
     gb2 = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
     gb2.symbol_subgraph = lambda: weighted
     assert gb2.symbol_pagerank() == nx.pagerank(weighted)
+
+
+def test_lookup_past_churn_budget_reuses_when_rescore_not_due(tmp_path):
+    """Past churn budget, lookup still serves cached values if rescore is not due (#5283)."""
+    scored = _graph([("a", "b")])
+    cache = CentralityCache(tmp_path)
+    cache.put("symbol", "sig-1", {"a": 0.5, "b": 0.0}, graph=scored, scored_commit="c0ffee")
+
+    drifted = _graph([("a", "b"), ("b", "c"), ("c", "d")])
+    # When rescore_due=True (default), exceeding budget forces recompute
+    assert cache.lookup("symbol", drifted, signature="sig-2", max_churn=1, rescore_due=True) is None
+
+    # When rescore_due=False, it continues serving the previous scoring with drift
+    hit = cache.lookup("symbol", drifted, signature="sig-2", max_churn=1, rescore_due=False)
+    assert hit is not None
+    assert hit.values == {"a": 0.5, "b": 0.0}
+    assert hit.scored_commit == "c0ffee"
+    assert hit.churn == 4
+    assert "c" not in hit.values
+    assert "d" not in hit.values
+
+    # When max_churn == 0 (small graph), exact-signature is required even if rescore_due=False
+    assert cache.lookup("symbol", drifted, signature="sig-2", max_churn=0, rescore_due=False) is None
+
+    # Hard ceiling: if churn exceeds max(10, 4 * max_churn), even rescore_due=False refuses reuse
+    huge_drift = _graph([("a", "b")] + [(f"x{i}", f"y{i}") for i in range(15)])
+    assert cache.lookup("symbol", huge_drift, signature="sig-3", max_churn=1, rescore_due=False) is None
+
+
+def test_communities_and_execution_flows_disk_cache(tmp_path):
+    """File/symbol communities and execution flows persist and reload across runs (#5283)."""
+    from repowise.core.analysis.execution_flows import ExecutionFlowReport
+
+    cache = CentralityCache(tmp_path)
+    file_assign = {"file1.py": 1, "file2.py": 2}
+    file_info = {1: {"label": "c1"}, 2: {"label": "c2"}}
+    cache.put_file_communities("sig-file", file_assign, file_info, "leiden")
+
+    sym_assign = {"file1.py::fn1": 1, "file2.py::fn2": 2}
+    cache.put_symbol_communities("sig-sym", sym_assign)
+
+    report = ExecutionFlowReport(
+        total_entry_points_scored=2,
+        total_flows=1,
+        flows=[],
+        entry_point_scores={"file1.py::fn1": 0.9},
+    )
+    cache.put_execution_flows("sig-flow", report)
+
+    # Fresh cache instance reads back
+    reloaded = CentralityCache(tmp_path)
+
+    # When rescore_due=False and signatures match, cached items are returned
+    loaded_file = reloaded.lookup_file_communities(signature="sig-file", rescore_due=False)
+    assert loaded_file is not None
+    assert loaded_file[0] == file_assign
+    assert loaded_file[1] == file_info
+    assert loaded_file[2] == "leiden"
+
+    loaded_sym = reloaded.lookup_symbol_communities(signature="sig-sym", rescore_due=False)
+    assert loaded_sym == sym_assign
+
+    loaded_flows = reloaded.lookup_execution_flows(signature="sig-flow", rescore_due=False)
+    assert loaded_flows is not None
+    assert loaded_flows.total_entry_points_scored == 2
+    assert loaded_flows.entry_point_scores == {"file1.py::fn1": 0.9}
+
+    # Signature mismatch misses
+    assert reloaded.lookup_file_communities(signature="different-file", rescore_due=False) is None
+    assert reloaded.lookup_symbol_communities(signature="different-sym", rescore_due=False) is None
+    assert reloaded.lookup_execution_flows(signature="different-flow", rescore_due=False) is None
+
+    # When rescore_due=True, cached items miss to force fresh recompute
+    assert reloaded.lookup_file_communities(signature="sig-file", rescore_due=True) is None
+    assert reloaded.lookup_symbol_communities(signature="sig-sym", rescore_due=True) is None
+    assert reloaded.lookup_execution_flows(signature="sig-flow", rescore_due=True) is None
